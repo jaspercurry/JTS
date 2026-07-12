@@ -42,10 +42,10 @@ from jasper.active_speaker import (
 
 # Reuse the canonical mono DAC8x topology + passing-validation stub + path-safety
 # evidence writer from the protected-startup-load tests.
+from tests.active_speaker_fixtures import mono_output_topology as _topology
 from tests.test_active_speaker_startup_load import (
     _protected_prior,
     _staged,
-    _topology,
     _valid_config,
     _write_path_safety,
 )

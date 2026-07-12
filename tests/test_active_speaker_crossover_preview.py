@@ -14,94 +14,16 @@ from jasper.active_speaker import (
     save_crossover_preview,
 )
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology import OutputTopology
+from tests.active_speaker_fixtures import mono_output_topology
 
 
 def _topology(*, mode: str = "active_2_way", with_subwoofer: bool = False) -> OutputTopology:
-    channels = [
-        {
-            "role": "woofer",
-            "physical_output_index": 0,
-            "identity_verified": True,
-        },
-        {
-            "role": "tweeter",
-            "physical_output_index": 1,
-            "identity_verified": True,
-            "startup_muted": True,
-            "protection_required": True,
-            "protection_status": "software_guard_requested",
-        },
-    ]
-    if mode == "active_3_way":
-        channels = [
-            {
-                "role": "woofer",
-                "physical_output_index": 0,
-                "identity_verified": True,
-            },
-            {
-                "role": "mid",
-                "physical_output_index": 1,
-                "identity_verified": True,
-            },
-            {
-                "role": "tweeter",
-                "physical_output_index": 2,
-                "identity_verified": True,
-                "startup_muted": True,
-                "protection_required": True,
-                "protection_status": "software_guard_requested",
-            },
-        ]
-    if mode == "full_range_passive":
-        channels = [
-            {
-                "role": "full_range",
-                "physical_output_index": 0,
-                "identity_verified": True,
-            }
-        ]
-    groups = [
-        {
-            "id": "mono",
-            "label": "Mono cabinet",
-            "kind": "mono",
-            "mode": mode,
-            "channels": channels,
-        }
-    ]
-    routing = {"mono_group_id": "mono"}
-    if with_subwoofer:
-        groups.append({
-            "id": "sub",
-            "label": "Subwoofer",
-            "kind": "subwoofer",
-            "mode": "subwoofer",
-            "channels": [
-                {
-                    "role": "subwoofer",
-                    "physical_output_index": 3 if mode == "active_3_way" else 2,
-                    "identity_verified": True,
-                    "startup_muted": True,
-                }
-            ],
-        })
-        routing["subwoofer_group_ids"] = ["sub"]
-    return OutputTopology.from_mapping({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono cabinet",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": groups,
-        "routing": routing,
-    })
+    return mono_output_topology(
+        mode=mode,
+        with_subwoofer=with_subwoofer,
+        card_id=None,
+    )
 
 
 def _research() -> dict:

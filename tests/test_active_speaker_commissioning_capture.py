@@ -55,15 +55,19 @@ from jasper.active_speaker.measurement import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.output_topology import OutputTopology
+from tests.active_speaker_fixtures import mono_output_topology
 
 # Canonical fixtures reused across the active-speaker suite.
 from tests.test_active_speaker_measurement import (
     _safe_session,
     _summed_acoustic,
     _three_way_topology,
-    _topology,
 )
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
+
+
+def _topology(**kwargs) -> OutputTopology:
+    return mono_output_topology(topology_name="Bench mono", **kwargs)
 
 
 def _two_way() -> ActiveSpeakerPreset:

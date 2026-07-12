@@ -43,7 +43,8 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology import OutputTopology
+from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _two_way_preset
 
 
@@ -56,43 +57,15 @@ def _topology(
     physical_output_count: int = 8,
     card_id: str = "DAC8",
 ) -> OutputTopology:
-    return OutputTopology.from_mapping({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono",
-        "status": "draft",
-        "hardware": {
-            "device_id": device_id,
-            "device_label": device_label,
-            "physical_output_count": physical_output_count,
-            "card_id": card_id,
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono cabinet",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": tweeter_output,
-                        "identity_verified": tweeter_verified,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
+    return mono_output_topology(
+        tweeter_output=tweeter_output,
+        tweeter_verified=tweeter_verified,
+        topology_name="Bench mono",
+        device_id=device_id,
+        device_label=device_label,
+        physical_output_count=physical_output_count,
+        card_id=card_id,
+    )
 
 
 def _dual_apple_topology() -> OutputTopology:

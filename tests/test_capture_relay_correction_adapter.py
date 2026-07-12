@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from jasper.capture_relay import correction_adapter as adapter
 from jasper.capture_relay import crypto
 from jasper.capture_relay.client import RelayClient, RelayResponse
+from tests.active_speaker_fixtures import mono_output_topology
 
 _CAPTURE_PAGE = {
     "schema_version": 1,
@@ -33,6 +34,10 @@ _CAPTURE_PAGE = {
     "supported_capture_protocol_versions": [1],
     "capture_page_build": "20260710.1",
 }
+
+
+def _topology():
+    return mono_output_topology(topology_name="Bench mono")
 
 
 def _level_pi_session():
@@ -1152,7 +1157,6 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
     import jasper.output_topology as output_topology
     from jasper.web import correction_crossover_backend as backend
     from jasper.web import correction_setup
-    from tests.test_active_speaker_measurement import _topology
     from tests.test_active_speaker_profile import _two_way_preset
 
     monkeypatch.setenv(

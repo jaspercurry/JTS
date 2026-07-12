@@ -9,46 +9,17 @@ from jasper.active_speaker.bringup import (
     build_bringup_preflight,
 )
 from jasper.active_speaker.calibration_level import calibration_level_payload
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology import OutputTopology
+from tests.active_speaker_fixtures import mono_output_topology
 
 
 def _topology(*, protection_status: str = "software_guard_requested") -> OutputTopology:
-    return OutputTopology.from_mapping({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": protection_status,
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
+    return mono_output_topology(
+        protection_status=protection_status,
+        topology_name="Bench mono",
+        group_label="Mono speaker",
+        card_id=None,
+    )
 
 
 def _environment() -> dict:
