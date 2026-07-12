@@ -17,6 +17,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -366,6 +367,109 @@ async def test_set_volume_spotify_failure_records_guard_diagnostics(
         round(percent_to_db(25), 2)
     )
     assert diag["push_guard"]["reason"] == "push_write_failed"
+
+
+def _assert_push_guard_diagnostics(
+    diagnostics: dict,
+    *,
+    source: Source,
+    level: int,
+    guard_db: float,
+    reason: str,
+    context: str,
+) -> None:
+    push_guard = dict(diagnostics["push_guard"])
+    assert isinstance(push_guard.pop("updated_at"), str)
+    assert push_guard == {
+        "active": True,
+        "source": source.value,
+        "level": level,
+        "guard_db": pytest.approx(round(guard_db, 2)),
+        "previous_db": -7.5,
+        "reason": reason,
+        "context": context,
+    }
+
+
+@pytest.mark.parametrize(
+    ("source", "active_key", "setter_name", "context"),
+    [
+        (
+            Source.SPOTIFY,
+            "spotactive",
+            "_set_spotify",
+            "dispatch_spotify_degraded",
+        ),
+        (
+            Source.BLUETOOTH,
+            "btactive",
+            "_set_bluetooth",
+            "dispatch_bluetooth_degraded",
+        ),
+    ],
+)
+@pytest.mark.parametrize("guard_confirmed", [True, False])
+async def test_push_dispatch_failure_guard_preserves_diagnostics_and_warning(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    source: Source,
+    active_key: str,
+    setter_name: str,
+    context: str,
+    guard_confirmed: bool,
+):
+    diag_path = tmp_path / "volume_policy.json"
+    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
+    coord, _, persistence = _coord(
+        tmp_path, active={active_key: True}, db=0.0,
+    )
+    persistence.save_listening_level(70)
+    persistence.save_now(-7.5)
+
+    async def fail_push(_level: int) -> bool:
+        return False
+
+    guard_calls: list[tuple[float, str, bool]] = []
+
+    async def guard_camilla(db: float, *, context: str, persist: bool) -> bool:
+        guard_calls.append((db, context, persist))
+        return guard_confirmed
+
+    monkeypatch.setattr(coord, setter_name, fail_push)
+    monkeypatch.setattr(coord, "_set_camilla_db", guard_camilla)
+    level = 25
+    guard_db = percent_to_db(level)
+
+    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+        await coord.set_listening_level(level)
+
+    assert guard_calls == [(pytest.approx(guard_db), context, True)]
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == vc_mod.__name__ and record.levelno >= logging.WARNING
+    ]
+    diagnostics = read_diagnostics(str(diag_path))
+    if guard_confirmed:
+        assert warnings == [
+            f"{source.value} volume dispatch failed; camilla guarded at "
+            f"{guard_db:.1f} dB for {level}%"
+        ]
+        _assert_push_guard_diagnostics(
+            diagnostics,
+            source=source,
+            level=level,
+            guard_db=guard_db,
+            reason="push_write_failed",
+            context=context,
+        )
+    else:
+        assert warnings == [
+            f"{source.value} volume dispatch failed and camilla guard could "
+            f"not be confirmed for {guard_db:.1f} dB"
+        ]
+        assert "push_guard" not in diagnostics
 
 
 async def test_set_volume_bluetooth_active_routes_to_bt(tmp_path):
@@ -938,6 +1042,97 @@ async def test_observer_transition_push_failure_preserves_guard(tmp_path):
     assert cam.set_calls
     assert 0.0 not in cam.set_calls
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(40))
+
+
+@pytest.mark.parametrize(
+    (
+        "prev_source",
+        "current_source",
+        "setter_name",
+        "context",
+        "guarded_warning",
+        "unconfirmed_warning",
+    ),
+    [
+        (
+            Source.AIRPLAY,
+            Source.SPOTIFY,
+            "_set_spotify",
+            "active_source_transition_push_degraded",
+            "active source: airplay → spotify; source volume push failed, "
+            "keeping camilla guarded at {guard_db:.1f} dB",
+            "active source: airplay → spotify; source volume push failed and "
+            "camilla guard could not be confirmed for {guard_db:.1f} dB",
+        ),
+        (
+            Source.SPOTIFY,
+            Source.BLUETOOTH,
+            "_set_bluetooth",
+            "active_source_transition_push_push_degraded",
+            "active source: spotify → bluetooth (push→push); source volume "
+            "push failed, camilla guarded at {guard_db:.1f} dB",
+            "active source: spotify → bluetooth (push→push); source volume "
+            "push failed and camilla guard could not be confirmed for "
+            "{guard_db:.1f} dB",
+        ),
+    ],
+)
+@pytest.mark.parametrize("guard_confirmed", [True, False])
+async def test_transition_push_failure_guard_preserves_diagnostics_and_warning(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    prev_source: Source,
+    current_source: Source,
+    setter_name: str,
+    context: str,
+    guarded_warning: str,
+    unconfirmed_warning: str,
+    guard_confirmed: bool,
+):
+    diag_path = tmp_path / "volume_policy.json"
+    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
+    coord, _, persistence = _coord(tmp_path, active={}, db=0.0)
+    level = 42
+    persistence.save_listening_level(level)
+    persistence.save_now(-7.5)
+
+    async def fail_push(_level: int) -> bool:
+        return False
+
+    guard_calls: list[tuple[float, str, bool]] = []
+
+    async def guard_camilla(db: float, *, context: str, persist: bool) -> bool:
+        guard_calls.append((db, context, persist))
+        return guard_confirmed
+
+    monkeypatch.setattr(coord, setter_name, fail_push)
+    monkeypatch.setattr(coord, "_set_camilla_db", guard_camilla)
+    guard_db = percent_to_db(level)
+
+    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+        await coord.apply_active_source_transition(prev_source, current_source)
+
+    assert guard_calls == [(pytest.approx(guard_db), context, True)]
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == vc_mod.__name__ and record.levelno >= logging.WARNING
+    ]
+    diagnostics = read_diagnostics(str(diag_path))
+    if guard_confirmed:
+        assert warnings == [guarded_warning.format(guard_db=guard_db)]
+        _assert_push_guard_diagnostics(
+            diagnostics,
+            source=current_source,
+            level=level,
+            guard_db=guard_db,
+            reason="active_source_push_failed",
+            context=context,
+        )
+    else:
+        assert warnings == [unconfirmed_warning.format(guard_db=guard_db)]
+        assert "push_guard" not in diagnostics
 
 
 async def test_handoff_ducked_camilla_master_waits_until_guard_safe(tmp_path):
