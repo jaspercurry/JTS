@@ -77,6 +77,8 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
+use crate::json::json_string;
+
 /// Nanoseconds per second (for the frame → time mapping).
 const NANOS_PER_SEC: i128 = 1_000_000_000;
 
@@ -502,7 +504,7 @@ impl TapState {
                 "\"refractory_ms\":{},",
                 "\"max_events\":{},",
                 "\"auto_disarm_at_epoch_ms\":{},",
-                "\"path\":\"{}\"",
+                "\"path\":{}",
                 "}}"
             ),
             if self.armed() { "true" } else { "false" },
@@ -512,27 +514,9 @@ impl TapState {
             cfg.refractory_ms,
             cfg.max_events,
             self.auto_disarm_at_epoch_ms(),
-            json_escape_str(&cfg.path.to_string_lossy()),
+            json_string(&cfg.path.to_string_lossy()),
         )
     }
-}
-
-/// Minimal JSON string escaper for the operator-supplied tap path. Kept local
-/// so the module is self-contained and testable without the daemon's escaper.
-fn json_escape_str(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 // The audio thread reads detector knobs as atomics. f64 has no stable atomic
@@ -1284,14 +1268,15 @@ mod tests {
     #[test]
     fn status_fragment_escapes_untrusted_path() {
         let state = TapState::default();
+        let path = "/tmp/a\"b\\c\nunit\u{0001}delete\u{007f}next-line\u{0085}.jsonl";
         let cfg = TapConfig {
-            path: PathBuf::from("/tmp/a\"b\\c.jsonl"),
+            path: PathBuf::from(path),
             ..TapConfig::default()
         };
         let fragment = state.status_fragment(&cfg);
-        // Must still parse as valid JSON with the quote/backslash intact.
+        // Must still parse as valid JSON with hostile/control content intact.
         let value: Value = serde_json::from_str(&fragment).unwrap();
-        assert_eq!(value["path"].as_str(), Some("/tmp/a\"b\\c.jsonl"));
+        assert_eq!(value["path"].as_str(), Some(path));
     }
 
     #[test]

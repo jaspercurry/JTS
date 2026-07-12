@@ -32,14 +32,10 @@
 //!   code) and avoids long-lived connections eating file descriptors
 //!   if a client misbehaves.
 //!
-//! - **Hand-rolled JSON on the STATUS emit side, no `serde`.** Same
-//!   reasoning as `xrun_log.rs`: the response shape is small and
-//!   stable, so `snapshot_json` builds it by hand. (`serde_json` IS a
-//!   crate dependency now — `impulse_tap.rs`'s `TapConfig::from_arm_body`
-//!   needs the value model to PARSE an untrusted arm-body object — but
-//!   this STATUS response deliberately does not use it: hand-rolling one
-//!   fixed emit shape stays trivial and keeps the response path
-//!   allocation-light.)
+//! - **Hand-built fixed STATUS shape.** `snapshot_json` keeps the stable object
+//!   shape allocation-light while all variable string values go through the
+//!   crate's one `serde_json`-backed string serializer. The dependency already
+//!   exists for `impulse_tap.rs` arm-body parsing and host-compliance records.
 //!
 //! - **Shared atomic counters.** The mixer's `frames_written`,
 //!   per-input `frames_read`, `xrun_count` are already
@@ -70,6 +66,7 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use crate::impulse_tap::{TapConfig, TapState};
+use crate::json::json_string;
 use crate::lane_resampler::LaneResamplerObservability;
 use crate::mixer::{
     CouplingObservability, DirectObservability, Mixer, TrimControl, OUTPUT_DELAY_UNAVAILABLE,
@@ -366,8 +363,8 @@ impl StateServer {
                 self.tap_arm_command(body)
             }
             other => format!(
-                r#"{{"error":"unknown command","received":"{}"}}"#,
-                escape_json(other),
+                r#"{{"error":"unknown command","received":{}}}"#,
+                json_string(other),
             ),
         };
 
@@ -397,8 +394,8 @@ impl StateServer {
             self.snapshot_json()
         } else {
             format!(
-                r#"{{"error":"unknown input label","label":"{}"}}"#,
-                escape_json(label),
+                r#"{{"error":"unknown input label","label":{}}}"#,
+                json_string(label),
             )
         }
     }
@@ -431,8 +428,8 @@ impl StateServer {
             self.snapshot_json()
         } else {
             format!(
-                r#"{{"error":"unknown input label","label":"{}"}}"#,
-                escape_json(label),
+                r#"{{"error":"unknown input label","label":{}}}"#,
+                json_string(label),
             )
         }
     }
@@ -638,9 +635,7 @@ impl StateServer {
         buf.push_str(r#""selected_input":"#);
         if selected >= 0 {
             if let Some(input) = self.inputs.get(selected as usize) {
-                buf.push('"');
-                buf.push_str(&escape_json(&input.label));
-                buf.push('"');
+                buf.push_str(&json_string(&input.label));
             } else {
                 buf.push_str("null");
             }
@@ -1250,9 +1245,8 @@ fn epoch_millis() -> u64 {
 fn push_kv_str(buf: &mut String, key: &str, value: &str) {
     buf.push('"');
     buf.push_str(key);
-    buf.push_str(r#"":""#);
-    buf.push_str(&escape_json(value));
-    buf.push('"');
+    buf.push_str(r#"":"#);
+    buf.push_str(&json_string(value));
 }
 
 fn push_kv_u64(buf: &mut String, key: &str, value: u64) {
@@ -1294,24 +1288,6 @@ fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: us
         Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
         None => buf.push_str("null"),
     }
-}
-
-fn escape_json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -2008,10 +1984,20 @@ mod tests {
     }
 
     #[test]
-    fn escape_json_helper_handles_specials() {
-        assert_eq!(escape_json("plain"), "plain");
-        assert_eq!(escape_json(r#"a"b"#), r#"a\"b"#);
-        assert_eq!(escape_json("a\nb"), "a\\nb");
+    fn snapshot_json_round_trips_hostile_selected_input_and_lane_strings() {
+        let mut server = make_test_server();
+        let label = "quote\"backslash\\line\nunit\u{0001}delete\u{007f}next-line\u{0085}";
+        server.inputs[1].label = label.to_string();
+        server.inputs[1].pcm_name = "pcm\"\\\u{0008}\u{0085}".to_string();
+        server.selected_input_index.store(1, Ordering::Relaxed);
+
+        let parsed: serde_json::Value = serde_json::from_str(&server.snapshot_json()).unwrap();
+        assert_eq!(parsed["selected_input"].as_str(), Some(label));
+        assert_eq!(parsed["inputs"][1]["label"].as_str(), Some(label));
+        assert_eq!(
+            parsed["inputs"][1]["pcm"].as_str(),
+            Some("pcm\"\\\u{0008}\u{0085}"),
+        );
     }
 
     // ---- TRIM STATUS shape ------------------------------------------------

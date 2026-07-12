@@ -12,7 +12,7 @@
 //!
 //! Why persist xrun history to disk separately from journald:
 //!   - Survives daemon restarts (journald rotates eventually; this
-//!     ring is bounded but per-event guaranteed).
+//!     ring is bounded and written by one dedicated thread).
 //!   - Cheaper to grep when investigating "did the speaker have a
 //!     bad night?" than a full journal scan.
 //!   - Per-event JSON is machine-readable for downstream tooling
@@ -30,6 +30,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use log::warn;
+
+use crate::json::json_string;
 
 /// Soft size cap. Rotated by retaining the last N bytes when the
 /// file crosses this threshold. 10 KB is ~100 events at typical
@@ -92,8 +94,9 @@ impl XrunLog {
             .open(&self.path)
             .with_context(|| format!("opening xrun log {}", self.path.display()))?;
 
-        // Write line + newline atomically (single write() syscall on
-        // pipes/socks; for files write+sync is the closest equivalent).
+        // One dedicated writer keeps records ordered, but these are separate
+        // writes: a process/host crash between them can leave an unterminated
+        // final record. There is currently no startup tail-repair path.
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         // fdatasync — flushes file content but not metadata. The
@@ -172,16 +175,14 @@ impl XrunSource {
 }
 
 fn serialize_event(event: &XrunEvent) -> String {
-    // Hand-rolled JSON to avoid a serde dependency for one line shape.
-    // The shape is stable and trivial; if it ever grows, switch to serde.
-    // Label is the only field that could contain JSON-meaningful chars;
-    // simple-escape it.
+    // Keep the stable object shape hand-built; delegate its one variable string
+    // value to the crate's canonical JSON serializer.
     let ts = rfc3339_now();
     format!(
-        r#"{{"ts":"{}","source":"{}","label":"{}","frames":{},"count":{}}}"#,
+        r#"{{"ts":"{}","source":"{}","label":{},"frames":{},"count":{}}}"#,
         ts,
         event.source.as_str(),
-        escape_json(&event.label),
+        json_string(&event.label),
         event.frames,
         event.count,
     )
@@ -229,24 +230,6 @@ fn days_to_ymd(days_since_epoch: i64) -> (i32, u32, u32) {
     (year, m, d)
 }
 
-fn escape_json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,14 +260,17 @@ mod tests {
     }
 
     #[test]
-    fn escape_json_handles_quotes_backslashes_and_controls() {
-        assert_eq!(escape_json("plain"), "plain");
-        assert_eq!(escape_json(r#"with "quote""#), r#"with \"quote\""#);
-        assert_eq!(escape_json("back\\slash"), "back\\\\slash");
-        assert_eq!(escape_json("new\nline"), "new\\nline");
-        // Control character below 0x20:
-        let s = "x\x01y";
-        assert_eq!(escape_json(s), "x\\u0001y");
+    fn serialize_event_round_trips_hostile_and_control_label() {
+        let label = "quote\"backslash\\line\nunit\u{0001}delete\u{007f}next-line\u{0085}";
+        let line = serialize_event(&XrunEvent {
+            source: XrunSource::Input,
+            label: label.to_string(),
+            frames: 82,
+            count: 3,
+        });
+
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["label"].as_str(), Some(label));
     }
 
     #[test]

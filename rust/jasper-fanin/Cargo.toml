@@ -74,16 +74,13 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 
 # JSON parsing for the relocated impulse-tap arm-body endpoint
-# (src/impulse_tap.rs `TapConfig::from_arm_body`). NOTE: state.rs's STATUS
-# response is still hand-rolled JSON with NO serde — the "no serde_json" note
-# in that module's docstring covers the response-emit side, which is small and
-# stable. The tap-arm PARSE side is a mixed string/number/bool object with
-# integral-float coercion and reserved-path rejection; it was ported verbatim
-# from jasper-usbsink-audio (which already carries this dep) and re-hand-rolling
-# a correctness-critical object parser for the PoC would trade a large new
-# surface for marginal binary savings. serde's proc-macro machinery is already
-# in the lock via jiff, so the delta here is small. Revisit at hardening if the
-# fan-in binary size ever matters.
+# (src/impulse_tap.rs `TapConfig::from_arm_body`), persisted host-compliance
+# records, and canonical serialization of variable strings inside fan-in's
+# hand-built STATUS / xrun / tap observability objects. The fixed outer emit
+# shapes remain allocation-conscious; serde_json owns the correctness-sensitive
+# parse and string-quoting boundaries. The crate and its transitive serde
+# machinery were already present in Cargo.lock, so these emit callers add no
+# dependency or lock churn. Revisit at hardening if binary size ever matters.
 serde_json = "1"
 
 [profile.release]
