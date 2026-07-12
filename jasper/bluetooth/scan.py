@@ -15,6 +15,7 @@ device's properties changed — RSSI, Connected, Paired), "remove"
 The observer maintains the full device list in memory so it can
 materialise an initial snapshot for clients that subscribe mid-flight.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -95,7 +96,10 @@ class DeviceObserver:
         self._listeners: set[asyncio.Queue] = set()
         self._bus: MessageBus | None = None
         self._om = None
-        self._unsubscribes: list[Callable] = []
+        self._unsubscribes: list[Callable[[], None]] = []
+        self._device_unsubscribes: dict[str, Callable[[], None]] = {}
+        self._battery_unsubscribes: dict[str, Callable[[], None]] = {}
+        self._watch_tasks: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
 
     @property
@@ -117,11 +121,15 @@ class DeviceObserver:
         snapshot the current devices into memory."""
         if self._bus is not None:
             return
-        self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-        intro = await self._bus.introspect(BLUEZ_BUS, "/")
-        self._om = self._bus.get_proxy_object(
-            BLUEZ_BUS, "/", intro,
+        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        self._bus = bus
+        intro = await bus.introspect(BLUEZ_BUS, "/")
+        self._om = bus.get_proxy_object(
+            BLUEZ_BUS,
+            "/",
+            intro,
         ).get_interface("org.freedesktop.DBus.ObjectManager")
+        om = self._om
 
         # Snapshot existing devices + battery interfaces.
         managed = await self._om.call_get_managed_objects()
@@ -137,30 +145,59 @@ class DeviceObserver:
 
         # Live signals.
         def _on_added(path: str, ifaces: dict) -> None:
+            if self._bus is not bus or self._om is not om:
+                return
             dev_props = ifaces.get("org.bluez.Device1")
             batt_props = ifaces.get("org.bluez.Battery1")
             if dev_props is not None:
+                self._unsubscribe_path(self._device_unsubscribes, path)
+                self._unsubscribe_path(self._battery_unsubscribes, path)
+                battery_task = self._battery_read_tasks.pop(path, None)
+                if battery_task is not None and not battery_task.done():
+                    battery_task.cancel()
                 self._device_props[path] = dict(dev_props)
                 if batt_props is not None:
                     self._battery_props[path] = dict(batt_props)
+                else:
+                    # A fresh Device1 instance must not inherit Battery1 or
+                    # direct-GATT data cached for an older instance at the
+                    # same BlueZ path.
+                    self._battery_props.pop(path, None)
                 self._devices[path] = self._build(path)
                 self._broadcast("add", self._devices[path])
-                asyncio.create_task(self._watch_device_props(path))
+                task = asyncio.create_task(self._watch_device_props(path))
+                self._watch_tasks.add(task)
+                task.add_done_callback(self._watch_tasks.discard)
                 self._schedule_battery_refresh(path)
                 if batt_props is not None:
-                    asyncio.create_task(self._watch_battery_props(path))
+                    task = asyncio.create_task(self._watch_battery_props(path))
+                    self._watch_tasks.add(task)
+                    task.add_done_callback(self._watch_tasks.discard)
             elif batt_props is not None and path in self._device_props:
                 # Battery interface appeared on an existing device
                 # (typical right after pairing — bluez attaches
                 # Battery1 once it reads the GATT 0x180f service).
+                self._unsubscribe_path(self._battery_unsubscribes, path)
+                battery_task = self._battery_read_tasks.pop(path, None)
+                if battery_task is not None and not battery_task.done():
+                    battery_task.cancel()
                 self._battery_props[path] = dict(batt_props)
                 self._devices[path] = self._build(path)
                 self._broadcast("update", self._devices[path])
-                asyncio.create_task(self._watch_battery_props(path))
+                task = asyncio.create_task(self._watch_battery_props(path))
+                self._watch_tasks.add(task)
+                task.add_done_callback(self._watch_tasks.discard)
                 self._schedule_battery_refresh(path)
 
         def _on_removed(path: str, interfaces: list[str]) -> None:
+            if self._bus is not bus or self._om is not om:
+                return
             if "org.bluez.Device1" in interfaces:
+                self._unsubscribe_path(self._device_unsubscribes, path)
+                self._unsubscribe_path(self._battery_unsubscribes, path)
+                battery_task = self._battery_read_tasks.pop(path, None)
+                if battery_task is not None and not battery_task.done():
+                    battery_task.cancel()
                 self._device_props.pop(path, None)
                 self._battery_props.pop(path, None)
                 dev = self._devices.pop(path, None)
@@ -169,6 +206,10 @@ class DeviceObserver:
             elif "org.bluez.Battery1" in interfaces:
                 # Battery interface dropped (device disconnected).
                 # Keep the device entry but clear the battery field.
+                self._unsubscribe_path(self._battery_unsubscribes, path)
+                battery_task = self._battery_read_tasks.pop(path, None)
+                if battery_task is not None and not battery_task.done():
+                    battery_task.cancel()
                 self._battery_props.pop(path, None)
                 if path in self._device_props:
                     self._devices[path] = self._build(path)
@@ -176,32 +217,62 @@ class DeviceObserver:
 
         self._om.on_interfaces_added(_on_added)
         self._om.on_interfaces_removed(_on_removed)
-        self._unsubscribes.append(lambda: self._om.off_interfaces_added(_on_added))
-        self._unsubscribes.append(lambda: self._om.off_interfaces_removed(_on_removed))
+        self._unsubscribes.append(lambda: om.off_interfaces_added(_on_added))
+        self._unsubscribes.append(lambda: om.off_interfaces_removed(_on_removed))
 
         # Subscribe to PropertiesChanged on every existing device + battery.
         for path in list(self._devices.keys()):
-            asyncio.create_task(self._watch_device_props(path))
+            task = asyncio.create_task(self._watch_device_props(path))
+            self._watch_tasks.add(task)
+            task.add_done_callback(self._watch_tasks.discard)
             if path in self._battery_props:
-                asyncio.create_task(self._watch_battery_props(path))
+                task = asyncio.create_task(self._watch_battery_props(path))
+                self._watch_tasks.add(task)
+                task.add_done_callback(self._watch_tasks.discard)
             self._schedule_battery_refresh(path)
 
     async def stop(self) -> None:
-        for task in self._battery_read_tasks.values():
+        bus = self._bus
+        self._bus = None
+        self._om = None
+        for path in list(self._device_unsubscribes):
+            self._unsubscribe_path(self._device_unsubscribes, path)
+        for path in list(self._battery_unsubscribes):
+            self._unsubscribe_path(self._battery_unsubscribes, path)
+        tasks = [*self._battery_read_tasks.values(), *self._watch_tasks]
+        for task in tasks:
             task.cancel()
         self._battery_read_tasks.clear()
+        self._watch_tasks.clear()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         for unsub in self._unsubscribes:
             try:
                 unsub()
             except Exception:  # noqa: BLE001
                 pass
         self._unsubscribes.clear()
-        if self._bus is not None:
+        if bus is not None:
             try:
-                self._bus.disconnect()
+                bus.disconnect()
             except Exception:  # noqa: BLE001
                 pass
-            self._bus = None
+        self._devices.clear()
+        self._device_props.clear()
+        self._battery_props.clear()
+
+    @staticmethod
+    def _unsubscribe_path(
+        callbacks: dict[str, Callable[[], None]],
+        path: str,
+    ) -> None:
+        unsubscribe = callbacks.pop(path, None)
+        if unsubscribe is None:
+            return
+        try:
+            unsubscribe()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _build(self, path: str) -> BluetoothDevice:
         """Construct a BluetoothDevice from the cached prop dicts."""
@@ -212,80 +283,109 @@ class DeviceObserver:
         )
 
     async def _watch_device_props(self, path: str) -> None:
-        if self._bus is None:
+        bus = self._bus
+        live_props = self._device_props.get(path)
+        if bus is None or live_props is None:
             return
         try:
-            intro = await self._bus.introspect(BLUEZ_BUS, path)
+            intro = await bus.introspect(BLUEZ_BUS, path)
         except Exception:  # noqa: BLE001
             return
         try:
-            props = self._bus.get_proxy_object(
-                BLUEZ_BUS, path, intro,
+            props = bus.get_proxy_object(
+                BLUEZ_BUS,
+                path,
+                intro,
             ).get_interface("org.freedesktop.DBus.Properties")
         except Exception:  # noqa: BLE001
             return
+        if self._bus is not bus or self._device_props.get(path) is not live_props:
+            return
 
         def _on_changed(iface: str, changed: dict, invalidated: list) -> None:
-            if iface != "org.bluez.Device1":
+            if (
+                iface != "org.bluez.Device1"
+                or self._bus is not bus
+                or self._device_props.get(path) is not live_props
+            ):
                 return
             # Merge the delta into our cached Device1 props.
-            cur = self._device_props.setdefault(path, {})
-            cur.update(changed)
+            live_props.update(changed)
             for k in invalidated:
-                cur.pop(k, None)
+                live_props.pop(k, None)
             new = self._build(path)
             self._devices[path] = new
             self._broadcast("update", new)
             self._schedule_battery_refresh(path)
 
         try:
+            self._unsubscribe_path(self._device_unsubscribes, path)
             props.on_properties_changed(_on_changed)
         except Exception:  # noqa: BLE001
-            pass
+            return
+        self._device_unsubscribes[path] = lambda: props.off_properties_changed(
+            _on_changed
+        )
 
     async def _watch_battery_props(self, path: str) -> None:
         """Watch org.bluez.Battery1.Percentage changes. Same shape as
         device-props watcher; updates the cached battery dict and
         rebuilds the merged BluetoothDevice."""
-        if self._bus is None:
+        bus = self._bus
+        live_device_props = self._device_props.get(path)
+        live_battery_props = self._battery_props.get(path)
+        if bus is None or live_device_props is None or live_battery_props is None:
             return
         try:
-            intro = await self._bus.introspect(BLUEZ_BUS, path)
+            intro = await bus.introspect(BLUEZ_BUS, path)
         except Exception:  # noqa: BLE001
             return
         try:
-            props = self._bus.get_proxy_object(
-                BLUEZ_BUS, path, intro,
+            props = bus.get_proxy_object(
+                BLUEZ_BUS,
+                path,
+                intro,
             ).get_interface("org.freedesktop.DBus.Properties")
         except Exception:  # noqa: BLE001
             return
+        if (
+            self._bus is not bus
+            or self._device_props.get(path) is not live_device_props
+            or self._battery_props.get(path) is not live_battery_props
+        ):
+            return
 
         def _on_changed(iface: str, changed: dict, invalidated: list) -> None:
-            if iface != "org.bluez.Battery1":
+            if (
+                iface != "org.bluez.Battery1"
+                or self._bus is not bus
+                or self._device_props.get(path) is not live_device_props
+                or self._battery_props.get(path) is not live_battery_props
+            ):
                 return
-            cur = self._battery_props.setdefault(path, {})
-            cur.update(changed)
+            live_battery_props.update(changed)
             for k in invalidated:
-                cur.pop(k, None)
-            if path in self._device_props:
-                new = self._build(path)
-                self._devices[path] = new
-                self._broadcast("update", new)
-                self._schedule_battery_refresh(path)
+                live_battery_props.pop(k, None)
+            new = self._build(path)
+            self._devices[path] = new
+            self._broadcast("update", new)
+            self._schedule_battery_refresh(path)
 
         try:
+            self._unsubscribe_path(self._battery_unsubscribes, path)
             props.on_properties_changed(_on_changed)
         except Exception:  # noqa: BLE001
-            pass
+            return
+        self._battery_unsubscribes[path] = lambda: props.off_properties_changed(
+            _on_changed
+        )
 
     def _schedule_battery_refresh(self, path: str) -> None:
         if self._bus is None or self._om is None or path not in self._device_props:
             return
         device = self._build(path)
         if not (
-            device.connected
-            and device.services_resolved
-            and device.battery_capable
+            device.connected and device.services_resolved and device.battery_capable
         ):
             return
         existing = self._battery_read_tasks.get(path)
@@ -293,9 +393,12 @@ class DeviceObserver:
             return
         task = asyncio.create_task(self._refresh_battery_from_gatt(path))
         self._battery_read_tasks[path] = task
-        task.add_done_callback(
-            lambda _task, p=path: self._battery_read_tasks.pop(p, None),
-        )
+
+        def _forget(completed: asyncio.Task, p: str = path) -> None:
+            if self._battery_read_tasks.get(p) is completed:
+                self._battery_read_tasks.pop(p, None)
+
+        task.add_done_callback(_forget)
 
     async def _refresh_battery_from_gatt(self, path: str) -> None:
         """Directly read BLE Battery Level.
@@ -306,16 +409,22 @@ class DeviceObserver:
         has the correct value. Reading 0x2a19 keeps the UI honest
         without changing pairing/control semantics.
         """
-        if self._bus is None or self._om is None:
+        bus = self._bus
+        om = self._om
+        live_device_props = self._device_props.get(path)
+        live_battery_props = self._battery_props.get(path)
+        if bus is None or om is None or live_device_props is None:
             return
         try:
-            managed = await self._om.call_get_managed_objects()
+            managed = await om.call_get_managed_objects()
             char_path = _battery_level_characteristic_path(managed, path)
             if char_path is None:
                 return
-            intro = await self._bus.introspect(BLUEZ_BUS, char_path)
-            char = self._bus.get_proxy_object(
-                BLUEZ_BUS, char_path, intro,
+            intro = await bus.introspect(BLUEZ_BUS, char_path)
+            char = bus.get_proxy_object(
+                BLUEZ_BUS,
+                char_path,
+                intro,
             ).get_interface(BLUEZ_GATT_CHARACTERISTIC_IFACE)
             pct = _battery_percent_from_read_value(
                 await char.call_read_value({}),
@@ -329,12 +438,17 @@ class DeviceObserver:
             return
         if pct is None:
             return
+        if (
+            self._bus is not bus
+            or self._om is not om
+            or self._device_props.get(path) is not live_device_props
+            or self._battery_props.get(path) is not live_battery_props
+        ):
+            return
         cur = self._battery_props.setdefault(path, {})
         old = _variant_value(cur.get("Percentage"))
         cur["Percentage"] = pct
         cur.setdefault("Source", "GATT Battery Service")
-        if path not in self._device_props:
-            return
         new = self._build(path)
         self._devices[path] = new
         if old != pct:
