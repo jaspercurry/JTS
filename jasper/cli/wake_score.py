@@ -58,6 +58,8 @@ from typing import Iterable, Iterator
 
 import numpy as np
 
+from jasper.wake_conditions import CORPUS_DIR_CONDITIONS
+
 logger = logging.getLogger("jasper-wake-score")
 
 
@@ -77,10 +79,11 @@ FRAME_SAMPLES = 1280
 # via --threshold; threshold sweeps come later via repeated runs.
 DEFAULT_THRESHOLD = 0.5
 
-# Quadrant naming — must match `extract_wake_corpus.QUADRANTS` and
-# `wake_enroll.all_quadrant_dirs()`.
+# Quadrant naming. Base legs match `extract_wake_corpus.QUADRANTS` and
+# `wake_enroll.all_quadrant_dirs()`; directory-condition tokens come from the
+# writer/reader contract in `jasper.wake_conditions` so browser-recorder
+# `ambient` clips cannot silently disappear from scoring.
 LEGS = ("on", "off", "dtln")
-CONDITIONS = ("nomusic", "music")
 SPLITS = ("train", "eval")
 
 
@@ -94,9 +97,10 @@ class ClipMeta:
     """A single corpus clip with its inferred metadata.
 
     `leg` is "on", "off", or "dtln" (matching the `audio_<leg>_path`
-    schema convention); `condition` is "nomusic" or "music"; `split`
-    is "train", "eval", or "unknown" (the last covers flat-layout
-    corpora that don't have train/eval subdirs).
+    schema convention); `condition` is the on-disk corpus token
+    "nomusic", "ambient", or "music"; `split` is "train", "eval", or
+    "unknown" (the last covers flat-layout corpora that don't have
+    train/eval subdirs).
     """
 
     path: Path
@@ -133,7 +137,7 @@ def parse_quadrant(quadrant_name: str) -> tuple[str, str] | None:
     if len(parts) != 3 or parts[0] != "aec":
         return None
     _, leg, condition = parts
-    if leg not in LEGS or condition not in CONDITIONS:
+    if leg not in LEGS or condition not in CORPUS_DIR_CONDITIONS:
         return None
     return leg, condition
 
@@ -159,6 +163,11 @@ def walk_corpus(corpus_dir: Path) -> Iterator[ClipMeta]:
             continue
         parsed = parse_quadrant(quadrant_dir.name)
         if parsed is None:
+            if quadrant_dir.name.startswith("aec_"):
+                logger.warning(
+                    "skipping unrecognized corpus quadrant directory: %s",
+                    quadrant_dir,
+                )
             continue
         leg, condition = parsed
 
@@ -395,7 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         "corpus_dir",
         type=Path,
         help="Corpus root directory. Expected layout: "
-             "<dir>/aec_{on,off,dtln}_{nomusic,music}/{train,eval}/*.wav "
+             "<dir>/aec_{on,off,dtln}_{nomusic,ambient,music}/"
+             "{train,eval}/*.wav "
              "(the output of scripts/_extract_wake_corpus.py or "
              "jasper-wake-enroll). Flat layout (no split subdirs) is "
              "also supported for backward compat.",
