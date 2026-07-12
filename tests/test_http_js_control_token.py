@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Node-driven assertions for the control-token behaviour in the shared
-deploy/assets/shared/js/http.js module.
+"""Node-driven assertions for the shared HTTP module's headers and JSON
+response contract.
 
 http.js is the cross-page CSRF/JSON fetch layer; the control-token gate
 lives here too. These assertions pin the WS1 Phase-2 invisible delivery:
@@ -14,8 +14,9 @@ path). isControlTokenRequired classifies control's 403 verdict. The full
 prompt-and-retry fallback needs a real <dialog> + fetch, exercised
 on-device; this is the static-logic guard.
 
-Mirrors tests/test_local_web_host_js.py — strip `export`, eval the module
-under a minimal browser-global stub, assert the outputs.
+The header assertions mirror tests/test_local_web_host_js.py and evaluate the
+module under a minimal browser-global stub. The GET assertions import the real
+ES module and probe the fetch request plus success/error response shape.
 """
 from __future__ import annotations
 
@@ -86,6 +87,48 @@ console.log(JSON.stringify(out));
     return json.loads(proc.stdout)
 
 
+def _run_get_json(*, ok: bool, status: int, payload: dict | None) -> dict:
+    payload_js = "null" if payload is None else json.dumps(payload)
+    json_body = (
+        "async () => { throw new Error('not json'); }"
+        if payload is None
+        else f"async () => ({payload_js})"
+    )
+    script = f"""
+import {{ readFileSync }} from "node:fs";
+const src = readFileSync({json.dumps(str(_MODULE_PATH))}, "utf8");
+const url = "data:text/javascript;base64," + Buffer.from(src).toString("base64");
+const http = await import(url);
+let request = null;
+globalThis.fetch = async (path, options) => {{
+  request = {{ path, options }};
+  return {{
+    ok: {str(ok).lower()},
+    status: {status},
+    json: {json_body},
+  }};
+}};
+try {{
+  const body = await http.getJSON("/probe");
+  console.log(JSON.stringify({{ ok: true, body, request }}));
+}} catch (err) {{
+  console.log(JSON.stringify({{
+    ok: false,
+    message: err.message,
+    status: err.status ?? null,
+    body: err.body ?? null,
+    request,
+  }}));
+}}
+"""
+    proc = subprocess.run(
+        [_NODE, "--input-type=module", "-e", script],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
 def test_attaches_token_from_meta_invisible_delivery():
     """WS1 Phase 2: the token embedded in the page meta tag rides along with no
     stored value — the invisible path (the household never pasted anything)."""
@@ -125,3 +168,31 @@ def test_is_control_token_required_classifier():
     assert out["required_other_403"] is False   # different 403 error
     assert out["required_500"] is False          # wrong status
     assert out["required_null"] is False         # no error object
+
+
+def test_get_json_returns_success_body():
+    assert _run_get_json(ok=True, status=200, payload={"value": 7}) == {
+        "ok": True,
+        "body": {"value": 7},
+        "request": {"path": "/probe", "options": {"cache": "no-store"}},
+    }
+
+
+def test_get_json_preserves_server_error_verdict():
+    assert _run_get_json(ok=False, status=409, payload={"error": "not_ready"}) == {
+        "ok": False,
+        "message": "not_ready",
+        "status": 409,
+        "body": {"error": "not_ready"},
+        "request": {"path": "/probe", "options": {"cache": "no-store"}},
+    }
+
+
+def test_get_json_falls_back_for_non_json_error():
+    assert _run_get_json(ok=False, status=502, payload=None) == {
+        "ok": False,
+        "message": "HTTP 502",
+        "status": 502,
+        "body": None,
+        "request": {"path": "/probe", "options": {"cache": "no-store"}},
+    }

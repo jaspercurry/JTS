@@ -83,14 +83,12 @@ export function jsonHeaders() {
 // GET + parse JSON; throws on a non-2xx status or transport failure so the
 // caller can distinguish "control is down" from a successful render.
 export async function getJSON(path) {
-  const r = await fetch(path, { cache: "no-store" });
-  if (!r.ok) throw new Error("HTTP " + r.status);
-  return r.json();
+  return parseResponse(await fetch(path, { cache: "no-store" }));
 }
 
 // Parse a Response into a thrown Error carrying the server's JSON verdict on
-// `.body` / `.status`, or return the parsed JSON on success. Shared by the
-// one-shot poster below so success/failure shape is identical everywhere.
+// `.body` / `.status`, or return the parsed JSON on success. Shared by GET and
+// POST so success/failure shape is identical everywhere.
 async function parseResponse(r) {
   if (!r.ok) {
     let parsed = null;
