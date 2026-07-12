@@ -21,7 +21,7 @@ from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
 from jasper.output_topology import OutputTopology, OutputTopologyError
-from ._common import issue as _issue
+from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
 
 SCHEMA_VERSION = 1
 CROSSOVER_PREVIEW_KIND = "jts_active_speaker_crossover_preview"
@@ -30,10 +30,6 @@ DEFAULT_CROSSOVER_PREVIEW_PATH = Path(
 )
 CROSSOVER_PREVIEW_PATH_ENV = "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE"
 
-_ACTIVE_ROLE_PAIRS = {
-    "active_2_way": (("woofer", "tweeter"),),
-    "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),
-}
 _CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
 _DEFAULT_FILTER_TYPE = "Linkwitz-Riley"
 _DEFAULT_SLOPE_DB_PER_OCTAVE = 24.0
@@ -508,7 +504,7 @@ def build_crossover_preview(
                     )
                 )
         for group in topology.speaker_groups:
-            pairs = _ACTIVE_ROLE_PAIRS.get(group.mode, ())
+            pairs = ACTIVE_CROSSOVER_ROLE_PAIRS.get(group.mode, ())
             if not pairs:
                 continue
             crossovers = [
