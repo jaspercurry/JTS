@@ -595,7 +595,7 @@ class GeminiLiveConnection:
         # System-instruction provider. Called at every (re)connect so
         # time-injection ("right now it is Monday, May 4, 3:14 PM") stays
         # accurate across the daemon's lifetime — the connection lives
-        # for hours but reopens on every context-reset (default 5 min idle).
+        # for hours but rerenders on reconnect or an opt-in context reset.
         self._system_instruction_provider: Callable[[], str] | None = None
         # Initial state set directly (no log) — _set_state requires
         # self._state to already exist. Subsequent transitions go
@@ -1251,10 +1251,6 @@ class GeminiLiveConnection:
             raise
         self._session_cm = cm
         self._session = session
-        logger.info(
-            "live connection: self._session SET (id=%s) by _open_session",
-            id(session),
-        )
         connect_ms = (_time.monotonic() - t0) * 1000
         handle_short = (self._resumption_handle or "")[:8] or "<new>"
         logger.info(
@@ -1262,14 +1258,6 @@ class GeminiLiveConnection:
             connect_ms, handle_short,
         )
         self._reconnect_event.clear()
-        # Verify self._session is still what we set right before
-        # creating the receive task — instrumentation to chase a
-        # bug where receive_loop sees None at start.
-        logger.info(
-            "live connection: pre-create_task check — self._session id=%s, target id=%s",
-            id(self._session) if self._session is not None else None,
-            id(session),
-        )
         self._receive_task = asyncio.create_task(self._receive_loop())
         async with self._state_lock:
             self._set_state(ConnectionState.CONNECTED)
@@ -1312,14 +1300,10 @@ class GeminiLiveConnection:
             except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
                 logger.debug("live connection: session __aexit__ error (ignored): %s", e)
         self._session_cm = None
-        prior_session_id = id(self._session) if self._session is not None else None
         self._session = None
         self._connected_event.clear()
         teardown_ms = (_time.monotonic() - t0) * 1000
-        logger.info(
-            "live connection: session torn down in %.0fms (cleared session id=%s)",
-            teardown_ms, prior_session_id,
-        )
+        logger.info("live connection: session torn down in %.0fms", teardown_ms)
 
     async def _supervisor_loop(self) -> None:
         """Run for the connection's lifetime. Wakes on `_reconnect_event`,
@@ -1478,11 +1462,6 @@ class GeminiLiveConnection:
         (`session_resumption_update`, `go_away`) update connection
         state directly. On any exception the receive loop wakes the
         supervisor to drive a reconnect."""
-        logger.info(
-            "live connection: receive_loop ENTERED — self._session id=%s, conn id=%s",
-            id(self._session) if self._session is not None else None,
-            id(self),
-        )
         # Capture the session once, locally — if the connection is
         # torn down (and `self._session` is reassigned to None or to
         # a brand-new session), this loop stays bound to the session
@@ -1495,10 +1474,6 @@ class GeminiLiveConnection:
                 "exiting (likely a stale cancelled task post-teardown)"
             )
             return
-        logger.info(
-            "live connection: receive_loop bound to session id=%s",
-            id(session),
-        )
         try:
             while True:
                 response = await session._receive()

@@ -22,6 +22,7 @@ Coverage matches the handoff doc's "How to actually test this" list:
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -218,6 +219,48 @@ async def _wait_until(predicate, timeout: float = 2.0):
 # ---------------------------------------------------------------------------
 # Tests.
 # ---------------------------------------------------------------------------
+
+
+async def test_connection_lifecycle_info_logs_are_concise(caplog):
+    """Connect/teardown keep one timing summary without object-id probes."""
+    caplog.set_level(logging.INFO, logger="jasper.voice.gemini_session")
+    conn, _factory = _make_conn()
+    receive_entered = asyncio.Event()
+    receive_loop = conn._receive_loop
+
+    async def _tracked_receive_loop():
+        receive_entered.set()
+        await receive_loop()
+
+    conn._receive_loop = _tracked_receive_loop
+    await conn.start(ToolRegistry(), "system")
+    await asyncio.wait_for(receive_entered.wait(), timeout=1.0)
+    assert conn._receive_task is not None
+    assert not conn._receive_task.done()
+    await conn.stop()
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "jasper.voice.gemini_session"
+        and record.levelno == logging.INFO
+    ]
+    connect_summaries = [
+        message
+        for message in messages
+        if message.startswith("live connection: connect ok in ")
+    ]
+    teardown_summaries = [
+        message
+        for message in messages
+        if message.startswith("live connection: session torn down in ")
+    ]
+
+    assert len(connect_summaries) == 1
+    assert connect_summaries[0].endswith("ms (resumption=<new>)")
+    assert len(teardown_summaries) == 1
+    assert teardown_summaries[0].endswith("ms")
+    assert not any("id=" in message or "instrumentation" in message for message in messages)
 
 
 async def test_successful_connect_and_turn_cycle():
