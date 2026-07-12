@@ -250,6 +250,25 @@ const OPEN_LOCK_WAIT_TIMEOUT_MS: u64 = 500;
 const OPEN_LOCK_WAIT_STEP_US: u64 = 1_000;
 const OPEN_MAX_ATTEMPTS: usize = 8;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RingRole {
+    Reader,
+    Writer,
+}
+
+impl RingRole {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Reader => "reader",
+            Self::Writer => "writer",
+        }
+    }
+}
+
+fn ring_event(role: RingRole, suffix: &str) -> String {
+    format!("jts_ring.{}.{suffix}", role.as_str())
+}
+
 /// Adjacent, persistent advisory lock for one complete open transaction.
 ///
 /// This is deliberately a separate inode from the replaceable ring path. C and
@@ -260,7 +279,7 @@ struct OpenTransactionLock {
 }
 
 impl OpenTransactionLock {
-    fn acquire_with_wait_hook<F>(path: &str, mut on_wait: F) -> io::Result<Self>
+    fn acquire_with_wait_hook<F>(path: &str, role: RingRole, mut on_wait: F) -> io::Result<Self>
     where
         F: FnMut(),
     {
@@ -305,7 +324,10 @@ impl OpenTransactionLock {
                 wait_reported = true;
             }
             if monotonic_ns() >= deadline_ns {
-                eprintln!("event=outputd.shm_ring.open_lock_exhausted path={path}");
+                eprintln!(
+                    "event={} path={path}",
+                    ring_event(role, "open_lock_exhausted")
+                );
                 unsafe { libc::close(fd) };
                 return Err(io::Error::from_raw_os_error(libc::EAGAIN));
             }
@@ -329,14 +351,27 @@ struct FileIdentity {
     ino: u64,
 }
 
+fn stat_value_as_u64<T>(value: T, field: &'static str) -> io::Result<u64>
+where
+    T: TryInto<u64>,
+    T::Error: std::fmt::Display,
+{
+    value.try_into().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("fstat {field} cannot be represented as u64: {e}"),
+        )
+    })
+}
+
 fn fd_identity(fd: RawFd) -> io::Result<FileIdentity> {
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(fd, &mut st) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(FileIdentity {
-        dev: st.st_dev as u64,
-        ino: st.st_ino as u64,
+        dev: stat_value_as_u64(st.st_dev, "st_dev")?,
+        ino: stat_value_as_u64(st.st_ino, "st_ino")?,
     })
 }
 
@@ -443,7 +478,7 @@ impl RingReader {
     /// `attach_resyncs`) and stamps `reader_pid`.
     pub fn create_or_attach(path: &str, expected: Geometry) -> io::Result<Self> {
         expected.validate_self()?;
-        let map = attach_or_create(path, expected)?;
+        let map = attach_or_create(path, expected, RingRole::Reader)?;
 
         // Resync to the writer's current tip: the reader is joining a
         // possibly-running writer, and stale slots are worthless to a pacer.
@@ -639,13 +674,14 @@ unsafe fn copy_slot_to_i16(src: *const u8, out: &mut [i16], samples: usize) {
 /// `O_EXCL` create (init + magic-last) or attach (bounded size+magic wait +
 /// geometry validation). A magic-invalid file under the owned
 /// `/dev/shm/jts-ring/` root is unlinked and recreated.
-fn attach_or_create(path: &str, expected: Geometry) -> io::Result<RingMapping> {
-    attach_or_create_with_hooks(path, expected, || {}, |_| {}, || {})
+fn attach_or_create(path: &str, expected: Geometry, role: RingRole) -> io::Result<RingMapping> {
+    attach_or_create_with_hooks(path, expected, role, || {}, |_| {}, || {})
 }
 
 fn attach_or_create_with_hooks<F, G, H>(
     path: &str,
     expected: Geometry,
+    role: RingRole,
     on_lock_wait: F,
     mut on_created: G,
     mut on_before_reclaim: H,
@@ -658,7 +694,7 @@ where
     ensure_parent_dir(path)?;
     let c_path = std::ffi::CString::new(path)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "ring path contains NUL"))?;
-    let _open_lock = OpenTransactionLock::acquire_with_wait_hook(path, on_lock_wait)?;
+    let _open_lock = OpenTransactionLock::acquire_with_wait_hook(path, role, on_lock_wait)?;
 
     for _attempt in 0..OPEN_MAX_ATTEMPTS {
         #[cfg(test)]
@@ -680,7 +716,10 @@ where
                     match mapping_owns_linked_path(path, &map) {
                         Ok(true) => return Ok(map),
                         Ok(false) => {
-                            eprintln!("event=outputd.shm_ring.creator_path_lost path={path}");
+                            eprintln!(
+                                "event={} path={path}",
+                                ring_event(role, "creator_path_lost")
+                            );
                             drop(map);
                             continue;
                         }
@@ -764,17 +803,21 @@ where
                         continue; // another reclaimer won; retry create
                     }
                     eprintln!(
-                        "event=outputd.shm_ring.reclaim_failed errno={} path={path}",
+                        "event={} errno={} path={path}",
+                        ring_event(role, "reclaim_failed"),
                         e.raw_os_error().unwrap_or(-1)
                     );
                     return Err(e);
                 }
-                eprintln!("event=outputd.shm_ring.reclaimed_magic_invalid path={path}");
+                eprintln!(
+                    "event={} path={path}",
+                    ring_event(role, "reclaimed_magic_invalid")
+                );
                 // Loop back and re-create.
             }
         }
     }
-    eprintln!("event=outputd.shm_ring.attach_exhausted path={path}");
+    eprintln!("event={} path={path}", ring_event(role, "attach_exhausted"));
     Err(io::Error::from_raw_os_error(libc::EAGAIN))
 }
 
@@ -1115,7 +1158,7 @@ impl TestRingWriter {
     /// `writer_pid`, and continue from the stored `write_seq`.
     pub fn create_or_attach(path: &str, expected: Geometry) -> io::Result<Self> {
         expected.validate_self()?;
-        let map = attach_or_create(path, expected)?;
+        let map = attach_or_create(path, expected, RingRole::Writer)?;
         // Writer attach: epoch++ (Release), pid, heartbeat, continue from
         // stored write_seq (file-lifetime monotonic).
         let write_seq = map
@@ -1222,6 +1265,41 @@ mod tests {
             period_frames: 128,
             n_slots: 2,
         }
+    }
+
+    fn assert_open_event_vocabulary(role: RingRole, role_name: &str) {
+        for suffix in [
+            "open_lock_exhausted",
+            "creator_path_lost",
+            "reclaim_failed",
+            "reclaimed_magic_invalid",
+            "attach_exhausted",
+        ] {
+            assert_eq!(
+                ring_event(role, suffix),
+                format!("jts_ring.{role_name}.{suffix}")
+            );
+        }
+    }
+
+    #[test]
+    fn reader_open_failure_and_exhaustion_events_are_role_qualified() {
+        assert_open_event_vocabulary(RingRole::Reader, "reader");
+    }
+
+    #[test]
+    fn writer_open_failure_and_exhaustion_events_are_role_qualified() {
+        assert_open_event_vocabulary(RingRole::Writer, "writer");
+    }
+
+    #[test]
+    fn stat_identity_values_convert_without_platform_specific_same_type_casts() {
+        assert_eq!(stat_value_as_u64(42_u64, "st_ino").unwrap(), 42);
+        assert_eq!(stat_value_as_u64(42_i32, "st_dev").unwrap(), 42);
+        assert_eq!(
+            stat_value_as_u64(-1_i32, "st_dev").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     fn cleanup(path: &str) {
@@ -1446,6 +1524,7 @@ mod tests {
             attach_or_create_with_hooks(
                 &path_a,
                 g,
+                RingRole::Reader,
                 || {},
                 |_| {
                     created_tx.send(()).unwrap();
@@ -1462,11 +1541,25 @@ mod tests {
         let path_b = path.clone();
         let wait_b = wait_tx.clone();
         let b = std::thread::spawn(move || {
-            attach_or_create_with_hooks(&path_b, g, || wait_b.send(()).unwrap(), |_| {}, || {})
+            attach_or_create_with_hooks(
+                &path_b,
+                g,
+                RingRole::Reader,
+                || wait_b.send(()).unwrap(),
+                |_| {},
+                || {},
+            )
         });
         let path_c = path.clone();
         let c = std::thread::spawn(move || {
-            attach_or_create_with_hooks(&path_c, g, || wait_tx.send(()).unwrap(), |_| {}, || {})
+            attach_or_create_with_hooks(
+                &path_c,
+                g,
+                RingRole::Reader,
+                || wait_tx.send(()).unwrap(),
+                |_| {},
+                || {},
+            )
         });
         wait_rx
             .recv_timeout(std::time::Duration::from_secs(2))
@@ -1509,6 +1602,7 @@ mod tests {
             let result = attach_or_create_with_hooks(
                 &path_a,
                 g,
+                RingRole::Reader,
                 || {},
                 |_| {},
                 || {
@@ -1527,11 +1621,25 @@ mod tests {
         let path_b = path.clone();
         let wait_b = wait_tx.clone();
         let b = std::thread::spawn(move || {
-            attach_or_create_with_hooks(&path_b, g, || wait_b.send(()).unwrap(), |_| {}, || {})
+            attach_or_create_with_hooks(
+                &path_b,
+                g,
+                RingRole::Reader,
+                || wait_b.send(()).unwrap(),
+                |_| {},
+                || {},
+            )
         });
         let path_c = path.clone();
         let c = std::thread::spawn(move || {
-            attach_or_create_with_hooks(&path_c, g, || wait_tx.send(()).unwrap(), |_| {}, || {})
+            attach_or_create_with_hooks(
+                &path_c,
+                g,
+                RingRole::Reader,
+                || wait_tx.send(()).unwrap(),
+                |_| {},
+                || {},
+            )
         });
         wait_rx
             .recv_timeout(std::time::Duration::from_secs(2))
@@ -1568,6 +1676,7 @@ mod tests {
         let result = attach_or_create_with_hooks(
             &path,
             g,
+            RingRole::Reader,
             || {},
             move |_| {
                 std::fs::rename(&path_for_hook, &orphan_for_hook).unwrap();
@@ -1590,7 +1699,7 @@ mod tests {
         let path = tmp_ring_path("retry-exhaustion");
         let g = proto_geometry();
         TEST_FORCE_OPEN_RETRY.with(|slot| slot.set(true));
-        let exhausted = attach_or_create(&path, g);
+        let exhausted = attach_or_create(&path, g, RingRole::Reader);
         TEST_FORCE_OPEN_RETRY.with(|slot| slot.set(false));
         let err = match exhausted {
             Ok(_) => panic!("forced retries must exhaust"),
@@ -1598,8 +1707,8 @@ mod tests {
         };
         assert_eq!(err.raw_os_error(), Some(libc::EAGAIN));
 
-        let map =
-            attach_or_create(&path, g).expect("retry exhaustion must release the transaction lock");
+        let map = attach_or_create(&path, g, RingRole::Reader)
+            .expect("retry exhaustion must release the transaction lock");
         drop(map);
         cleanup(&path);
     }
@@ -1608,9 +1717,11 @@ mod tests {
     fn lock_timeout_touches_no_ring_and_recovers_after_release() {
         let path = tmp_ring_path("lock-timeout");
         let g = proto_geometry();
-        let held = OpenTransactionLock::acquire_with_wait_hook(&path, || {}).unwrap();
+        let held =
+            OpenTransactionLock::acquire_with_wait_hook(&path, RingRole::Reader, || {}).unwrap();
         let path_for_waiter = path.clone();
-        let waiter = std::thread::spawn(move || attach_or_create(&path_for_waiter, g));
+        let waiter =
+            std::thread::spawn(move || attach_or_create(&path_for_waiter, g, RingRole::Reader));
         let err = match waiter.join().unwrap() {
             Ok(_) => panic!("waiter must not bypass the held transaction lock"),
             Err(err) => err,
@@ -1622,7 +1733,8 @@ mod tests {
         );
         drop(held);
 
-        let map = attach_or_create(&path, g).expect("closing lock fd releases ownership");
+        let map = attach_or_create(&path, g, RingRole::Reader)
+            .expect("closing lock fd releases ownership");
         drop(map);
         cleanup(&path);
     }

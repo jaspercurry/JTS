@@ -67,7 +67,7 @@ use std::io;
 use std::sync::atomic::Ordering;
 
 use crate::layout::{self, Geometry};
-use crate::{monotonic_ns, RingMapping, WRITER_LIVENESS_TIMEOUT_NS};
+use crate::{monotonic_ns, RingMapping, RingRole, WRITER_LIVENESS_TIMEOUT_NS};
 
 /// Bounded number of full-ring wait ticks before a live-reader publish gives up
 /// and drops (defends against a reader that stamps a heartbeat but never
@@ -142,7 +142,7 @@ impl RingWriter {
     /// filesystem (a mismatch is a fail-loud config error).
     pub fn create_or_attach(path: &str, expected: Geometry) -> io::Result<Self> {
         expected.validate_self()?;
-        let map = crate::attach_or_create(path, expected)?;
+        let map = crate::attach_or_create(path, expected, RingRole::Writer)?;
 
         // Writer attach: continue from the stored write_seq, epoch++ (Release),
         // stamp pid + heartbeat. Identical to the C writer's attach stamp.

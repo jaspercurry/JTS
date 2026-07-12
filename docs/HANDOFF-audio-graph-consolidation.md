@@ -232,7 +232,11 @@ Verified missing on main (2026-07-03):
    valid replacement and a creator cannot report success on an unlinked private
    mapping. Valid-magic geometry/version failures remain fatal and are never
    reclaimed. Lock contention fails with `EAGAIN` without touching the ring;
-   there is no background repair loop.
+   there is no background repair loop. Structured open/reclaim events emitted
+   by either implementation use the role-qualified shared vocabulary
+   `event=jts_ring.reader.*` / `event=jts_ring.writer.*`; these events describe
+   the ring endpoint role, not whichever daemon happens to invoke the Rust
+   crate.
 3. **Config emission**: ~~no product emitter can produce a ring CamillaDSP
    config.~~ **CLOSED by P2**: `capture_kwargs_for_coupling("shm_ring")`
    (`jasper/fanin_coupling.py`) now returns the FULL end-to-end ring topology —
@@ -545,7 +549,8 @@ renderers,aec}.py`, `jasper/cli/{aec_tune,aec_bridge}.py`,
 measured floors: [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md)
 "Final state — 2026-07-03".
 
-Last verified: 2026-07-12 (cross-language ring open/reclaim transaction checked;
+Last verified: 2026-07-12 (cross-language ring open/reclaim transaction and
+role-qualified event vocabulary checked;
 A2/P5a marked DONE — the Rust solo/aloop USB capture
 path was deleted 2026-07-10; the standby daemon stays and `JASPER_USBSINK_AUDIO_STANDBY`
 is now always `1`. Only the USB-ingress rows were re-verified this pass; other
