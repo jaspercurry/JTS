@@ -15,6 +15,9 @@ Modules:
     generation + WAV I/O.
   - :mod:`~jasper.audio_measurement.deconv` — regularized FFT deconvolution
     (impulse-response extraction) + magnitude response.
+  - :mod:`~jasper.audio_measurement.gating` — impulse-response gating (first-
+    reflection detection, the reflection-free window) and the low-frequency
+    validity floor it implies.
   - :mod:`~jasper.audio_measurement.analysis` — fractional-octave smoothing,
     log resampling, spatial averaging, deviation metrics.
   - :mod:`~jasper.audio_measurement.calibration` — measurement-mic calibration

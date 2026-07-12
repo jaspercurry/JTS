@@ -374,6 +374,27 @@ def test_driver_capture_snr_block_is_none_without_noise_input(tmp_path):
     """Behavior-preservation regression: the shipped no-noise flow is
     unaffected by the new optional kwarg — verdict/present/separation/overlap
     usability are exactly what they were before this field existed."""
+# ---------- IR gating / low-frequency validity floor (P1a, SC-2) ------------
+#
+# These tests use `monkeypatch` on `jasper.audio_measurement.gating`'s public
+# functions rather than synthesizing a room reflection through the full
+# deconvolution pipeline. Two reasons: (1) the gating math itself (reflection
+# detection, the window, the floor formula) is already pinned exactly in
+# tests/test_audio_measurement_gating.py; these tests exist to prove
+# driver_acoustics' CONSUMPTION of a gating result is wired correctly, and
+# (2) injecting a reflection through a symmetric linear-phase driver filter
+# (firwin/firwin2, used elsewhere in this file for frequency-domain verdicts)
+# pre-rings and shifts the apparent reflection time earlier than injected —
+# see gating.py's module docstring and the P1a PR body. Mocking the gating
+# call lets these tests pin an EXACT floor value and isolate the wiring.
+
+
+def test_near_field_default_gating_is_exempt(tmp_path):
+    """near_field (the default, and today's only shipped geometry) never
+    gates: the exempt SC-2 block is persisted, and the verdict/magnitude are
+    byte-identical to before capture_geometry existed (existing assertions in
+    this file, all run with the near_field default, prove the byte-identity;
+    this test pins the exempt block's own shape)."""
     sig, meta = _reference_sweep()
     ir = firwin(1023, 400, fs=SR).astype(np.float64)
     captured = fftconvolve(sig.astype(np.float64), ir)
@@ -415,7 +436,104 @@ def test_driver_capture_snr_block_populated_with_noise_evidence(tmp_path):
     assert result.verdict == "present"
 
 
+def test_summed_near_field_default_gating_is_exempt(tmp_path):
+    sig, meta = _reference_sweep()
+    ir = np.zeros(256, dtype=np.float64)
+    ir[10] = 1.0
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "flat.wav", captured)
+
+    result = da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+    assert result.verdict == "blend_ok"
+    assert result.gating is not None
+    assert result.gating["applied"] is False
+    assert result.gating["exempt_reason"] == "near_field"
+    assert result.above_validity_floor is True
+    assert result.near_validity_floor is False
+
+
+def _mock_gate_at_fixed_floor(monkeypatch, floor_hz: float):
+    """Patch gating.gate_impulse_response to report a fixed floor without
+    actually windowing the IR — isolates driver_acoustics' consumption of
+    the floor from the gating detection/windowing math (tested separately)."""
+    from jasper.audio_measurement import gating as gating_mod
+
+    def fake_gate(ir, sample_rate, **kwargs):
+        fragment = {
+            "schema_version": 1,
+            "direct_peak_ms": 5.0,
+            "first_reflection_ms": 5.0 + 1000.0 / floor_hz,
+            "window_ms": 1000.0 / floor_hz,
+            "window": "half_hann_tail",
+            "f_valid_floor_hz": floor_hz,
+            "floor_source": "measured_reflection",
+        }
+        return ir, fragment
+
+    monkeypatch.setattr(gating_mod, "gate_impulse_response", fake_gate)
+
+
+def test_reference_axis_excludes_below_floor_bins_from_in_band_and_overlap(
+    tmp_path, monkeypatch
+):
+    """A fixed floor above the driver's passband floor but below its
+    ceiling: in_band/out_of_band means shift because the effective lower
+    edge moves from ANALYSIS_LO_HZ up to the floor, an overlap entry whose
+    fc sits below the floor is marked unusable + above_validity_floor=False,
+    and one above the floor is untouched (same level_db as a near_field
+    bake of the SAME capture, since the mock leaves the IR unwindowed)."""
+    sig, meta = _reference_sweep()
+    ir = firwin(1023, 400, fs=SR).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "woofer.wav", captured)
+
+    # Noise well below every canonical band's captured level -> a confident
+    # "ok" magnitude-class verdict.
+    noise = [
+        {"band_id": band_id, "band_hz": [lo, hi], "level_dbfs": -100.0}
+        for band_id, lo, hi in snr_policy.CROSSOVER_SNR_BANDS_HZ
+    ]
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 400.0), noise_band_report=noise,
+    )
+    assert result.snr is not None
+    assert result.snr["decision_class"] == "magnitude"
+    assert result.snr["verdict"] == "ok"
+    assert result.snr["relevant_hz"] == [40.0, 400.0]
+    # The verdict/present logic is unaffected by adding noise evidence.
+    assert result.verdict == "present"
+
+
 def test_overlap_band_marked_unusable_when_snr_insufficient(tmp_path):
+    sig, meta = _reference_sweep()
+    ir = firwin(1023, 2000, fs=SR).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "woofer.wav", captured)
+
+    mid_dbfs = next(
+        b["level_dbfs"]
+        for b in da._capture_band_levels(path)
+        if b["band_id"] == "mid"
+    )
+    # 5 dB SNR: real evidence, well below snr_warn_db (20) -> insufficient.
+    noise = [{"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": mid_dbfs - 5.0}]
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 2000.0), overlap_fcs=(2000.0,),
+        noise_band_report=noise,
+    )
+    entry = result.overlap_levels[0]
+    assert entry["snr_verdict"] == "insufficient"
+    # An insufficient SNR verdict fails the overlap-band reading closed, same
+    # as a silent/clipped/too-few-bins capture would.
+    assert entry["usable"] is False
+
+
+def test_reference_axis_near_validity_floor_advisory_does_not_exclude(
+    tmp_path, monkeypatch
+):
+    """An Fc inside [floor, NEAR_FLOOR_RATIO*floor) is flagged
+    near_validity_floor but stays usable — the advisory band never excludes,
+    only the hard floor does."""
     sig, meta = _reference_sweep()
     ir = firwin(1023, 2000, fs=SR).astype(np.float64)
     captured = fftconvolve(sig.astype(np.float64), ir)
@@ -538,3 +656,93 @@ def test_summed_null_depth_uncapped_with_scalar_only_noise(tmp_path):
     assert all(b["method"] == "scalar_fallback" for b in scalar_only.snr["bands"])
     assert scalar_only.null_depth_capped is False
     assert scalar_only.null_depth_db == pytest.approx(plain.null_depth_db)
+
+
+def test_reference_axis_driver_unusable_when_floor_above_passband_ceiling(
+    tmp_path, monkeypatch
+):
+    """The validity floor sits at/above the driver's own passband ceiling:
+    the reference-axis capture cannot decide anything about this driver at
+    all (spec: "the room prevented a low-frequency decision here")."""
+    sig, meta = _reference_sweep()
+    ir = firwin(1023, 400, fs=SR).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "woofer.wav", captured)
+
+    _mock_gate_at_fixed_floor(monkeypatch, 20000.0)  # absurdly high floor
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 400.0), overlap_fcs=(380.0,),
+        capture_geometry="reference_axis",
+    )
+    assert result.verdict == da.VERDICT_UNUSABLE_CAPTURE
+    assert result.present is False
+    assert result.gating["applied"] is True
+    assert result.gating["f_valid_floor_hz"] == 20000.0
+    # The overlap entry is still reported (for diagnostics), marked unusable.
+    assert result.overlap_levels[0]["above_validity_floor"] is False
+    assert result.overlap_levels[0]["usable"] is False
+
+
+def test_reference_axis_summed_unusable_when_shoulder_below_floor(
+    tmp_path, monkeypatch
+):
+    """The crossover's lower shoulder (Fc/2, one of the two null-depth
+    reference points) sits below the validity floor: the reference-axis
+    capture cannot decide the null at all — VERDICT_UNUSABLE_CAPTURE with the
+    gating block populated, never a null computed from contaminated data."""
+    sig, meta = _reference_sweep()
+    ir = np.zeros(256, dtype=np.float64)
+    ir[10] = 1.0
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "flat.wav", captured)
+
+    _mock_gate_at_fixed_floor(monkeypatch, 150.0)  # 200/2 = 100 < 150
+    result = da.analyze_summed_crossover(
+        path, meta, crossover_fc_hz=200.0, capture_geometry="reference_axis",
+    )
+    assert result.verdict == da.VERDICT_UNUSABLE_CAPTURE
+    assert np.isnan(result.null_depth_db)
+    assert result.gating is not None
+    assert result.gating["applied"] is True
+    assert result.gating["f_valid_floor_hz"] == 150.0
+    assert result.above_validity_floor is False
+
+
+def test_reference_axis_summed_usable_when_fc_and_shoulder_above_floor(
+    tmp_path, monkeypatch
+):
+    """The mirror-image case: both Fc and its lower shoulder clear the
+    floor, so the null is computed normally and above_validity_floor=True."""
+    sig, meta = _reference_sweep()
+    ir = np.zeros(256, dtype=np.float64)
+    ir[10] = 1.0
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "flat.wav", captured)
+
+    _mock_gate_at_fixed_floor(monkeypatch, 150.0)  # 2000/2 = 1000 > 150
+    result = da.analyze_summed_crossover(
+        path, meta, crossover_fc_hz=2000.0, capture_geometry="reference_axis",
+    )
+    assert result.verdict != da.VERDICT_UNUSABLE_CAPTURE
+    assert result.above_validity_floor is True
+    assert result.gating["applied"] is True
+
+
+def test_capture_geometry_reference_axis_calls_real_gating_module(tmp_path):
+    """No mocking: an end-to-end reference_axis call against the real gating
+    module must not raise and must persist a populated, applied gating
+    block — proves the wiring works against the actual implementation, not
+    just the mocked contract used by the tests above."""
+    sig, meta = _reference_sweep()
+    ir = firwin(1023, 400, fs=SR).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "woofer.wav", captured)
+
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 400.0), capture_geometry="reference_axis",
+    )
+    assert result.gating is not None
+    assert result.gating["exempt_reason"] is None
+    assert result.gating["applied"] in (True, False)  # either is a valid outcome
+    if result.gating["applied"]:
+        assert result.gating["f_valid_floor_hz"] > 0

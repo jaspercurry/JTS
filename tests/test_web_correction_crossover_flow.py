@@ -185,6 +185,8 @@ def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
     assert calls["kwargs"]["safe_session"] is None
     assert calls["kwargs"]["placement_proof"] is None
     assert calls["kwargs"]["durable_floor_confirmation"] == confirmation
+    # No capture_geometry in the request payload -> defaults to near_field.
+    assert calls["kwargs"]["capture_geometry"] == "near_field"
 
 
 def test_driver_capture_rejects_post_play_topology_change_even_with_old_session(
@@ -327,6 +329,74 @@ def test_summed_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
     assert calls["kwargs"]["expect_null"] is True
     assert calls["kwargs"]["noise_floor_dbfs"] == -70.0
     assert calls["kwargs"]["noise_band_report"] is None
+    assert calls["kwargs"]["capture_geometry"] == "near_field"
+
+
+def test_driver_capture_threads_reference_axis_capture_geometry(monkeypatch, tmp_path):
+    """A client-supplied capture_geometry of "reference_axis" reaches
+    record_driver_acoustic_capture; an unrecognized value falls back to
+    near_field rather than propagating an arbitrary client string."""
+    topology = object()
+    wav_path = tmp_path / "driver.wav"
+
+    monkeypatch.setattr(web_measurement, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web_measurement, "capture_preset", lambda _t, supplied=None: supplied
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_wav_path",
+        lambda raw, kind, wav_bytes=None: wav_path,
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_sweep_meta",
+        lambda raw: {"sample_rate": 48000, "n_samples": 1},
+    )
+    monkeypatch.setattr(
+        web_measurement, "capture_calibration", lambda raw: (None, None, {})
+    )
+
+    import jasper.active_speaker.calibration_level as calibration_level
+    import jasper.active_speaker.commissioning_capture as capture
+    import jasper.active_speaker.measurement as measurement
+
+    monkeypatch.setattr(
+        calibration_level, "load_calibration_level_state", lambda: {}
+    )
+    monkeypatch.setattr(measurement, "load_measurement_state", lambda _t: {})
+    monkeypatch.setattr(
+        measurement,
+        "current_driver_floor_evidence",
+        lambda *_a, **_k: {"valid": True, "source": "test", "confirmation": None},
+    )
+
+    seen: list[str] = []
+
+    def fake_record(*_args, capture_geometry, **_kwargs):
+        seen.append(capture_geometry)
+        return {"recorded": True}
+
+    monkeypatch.setattr(capture, "record_driver_acoustic_capture", fake_record)
+
+    backend.record_driver_capture(
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "capture_geometry": "reference_axis",
+        },
+        b"wav",
+    )
+    backend.record_driver_capture(
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "capture_geometry": "not_a_real_geometry",
+        },
+        b"wav",
+    )
+
+    assert seen == ["reference_axis", "near_field"]
 
 
 def test_backend_status_includes_active_speaker_commission_state(monkeypatch):
