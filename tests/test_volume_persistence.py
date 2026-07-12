@@ -9,7 +9,7 @@ Covers:
 - corrupt / missing file handling
 - debounce: maybe_save respects min-delta and time gates
 - save_now bypasses debounce
-- regress_if_stale: first boot, fresh, stale-low, stale-high, stale-safe
+- regress_listening_level_if_stale: first boot, fresh, stale clamps
 - out-of-range stored values are rejected
 """
 from __future__ import annotations
@@ -25,7 +25,6 @@ from jasper.volume_persistence import (
     db_to_percent,
     percent_to_db,
     regress_listening_level_if_stale,
-    regress_if_stale,
 )
 
 
@@ -170,79 +169,6 @@ def test_save_now_always_writes(tmp_path):
 NOW = datetime(2026, 5, 5, 10, 0, 0, tzinfo=timezone.utc)
 
 
-def test_regress_first_boot_returns_default():
-    db, reason = regress_if_stale(None, now=NOW, first_boot_default_pct=50)
-    assert db_to_percent(db) == 50
-    assert "first-boot" in reason
-
-
-def test_regress_fresh_record_unchanged():
-    rec = VolumeRecord(
-        main_volume_db=percent_to_db(85),
-        updated_at=NOW - timedelta(seconds=60),
-    )
-    db, reason = regress_if_stale(
-        rec, now=NOW, stale_after_sec=1800.0,
-        safe_low_pct=20, safe_high_pct=70,
-    )
-    assert db_to_percent(db) == 85
-    assert "restored from disk" in reason
-    assert "regressed" not in reason
-
-
-def test_regress_stale_high_clamped_down():
-    rec = VolumeRecord(
-        main_volume_db=percent_to_db(90),
-        updated_at=NOW - timedelta(hours=12),
-    )
-    db, reason = regress_if_stale(
-        rec, now=NOW, stale_after_sec=1800.0,
-        safe_low_pct=20, safe_high_pct=70,
-    )
-    assert db_to_percent(db) == 70
-    assert "regressed down" in reason
-
-
-def test_regress_stale_low_clamped_up():
-    rec = VolumeRecord(
-        main_volume_db=percent_to_db(5),
-        updated_at=NOW - timedelta(hours=12),
-    )
-    db, reason = regress_if_stale(
-        rec, now=NOW, stale_after_sec=1800.0,
-        safe_low_pct=20, safe_high_pct=70,
-    )
-    assert db_to_percent(db) == 20
-    assert "regressed up" in reason
-
-
-def test_regress_stale_safe_unchanged():
-    """Stale but inside [safe_low, safe_high]: keep as-is.
-    Modest middle volumes don't deserve to be punished."""
-    rec = VolumeRecord(
-        main_volume_db=percent_to_db(45),
-        updated_at=NOW - timedelta(hours=12),
-    )
-    db, reason = regress_if_stale(
-        rec, now=NOW, stale_after_sec=1800.0,
-        safe_low_pct=20, safe_high_pct=70,
-    )
-    assert db_to_percent(db) == 45
-    assert "within safe band" in reason
-    assert "regressed" not in reason
-
-
-def test_regress_threshold_exact_boundary():
-    """Right at the threshold (just barely stale) → still regresses
-    if extreme. The contract is: > threshold → stale."""
-    rec = VolumeRecord(
-        main_volume_db=percent_to_db(95),
-        updated_at=NOW - timedelta(seconds=1801),
-    )
-    db, _ = regress_if_stale(rec, now=NOW, stale_after_sec=1800.0)
-    assert db_to_percent(db) == 70
-
-
 # ---------- listening_level (schema v2) -----------------------------------
 def test_save_listening_level_round_trip(tmp_path):
     p = VolumePersistence(_path(tmp_path))
@@ -266,7 +192,7 @@ def test_save_listening_level_clamps(tmp_path):
 def test_save_listening_level_without_main_volume_derives_it(tmp_path):
     """Coordinator may write listening_level without prior save_now —
     main_volume_db should be derived from listening_level so the
-    file has a coherent main_volume_db field for legacy callers."""
+    file stays coherent for diagnostics and external schema readers."""
     p = VolumePersistence(_path(tmp_path))
     p.save_listening_level(50)
     rec = p.load()
@@ -377,6 +303,49 @@ def test_regress_listening_level_stale_high_clamped():
     )
     pct, reason = regress_listening_level_if_stale(
         rec, now=NOW, safe_high_pct=70,
+    )
+    assert pct == 70
+    assert "regressed down" in reason
+
+
+def test_regress_listening_level_stale_low_clamped():
+    rec = VolumeRecord(
+        main_volume_db=percent_to_db(5),
+        updated_at=NOW - timedelta(hours=12),
+        listening_level=5,
+        last_used_at=NOW - timedelta(hours=12),
+    )
+    pct, reason = regress_listening_level_if_stale(
+        rec, now=NOW, safe_low_pct=20,
+    )
+    assert pct == 20
+    assert "regressed up" in reason
+
+
+def test_regress_listening_level_stale_safe_unchanged():
+    rec = VolumeRecord(
+        main_volume_db=percent_to_db(45),
+        updated_at=NOW - timedelta(hours=12),
+        listening_level=45,
+        last_used_at=NOW - timedelta(hours=12),
+    )
+    pct, reason = regress_listening_level_if_stale(
+        rec, now=NOW, safe_low_pct=20, safe_high_pct=70,
+    )
+    assert pct == 45
+    assert "within safe band" in reason
+    assert "regressed" not in reason
+
+
+def test_regress_listening_level_exact_stale_boundary_clamps():
+    rec = VolumeRecord(
+        main_volume_db=percent_to_db(95),
+        updated_at=NOW - timedelta(seconds=1800),
+        listening_level=95,
+        last_used_at=NOW - timedelta(seconds=1800),
+    )
+    pct, reason = regress_listening_level_if_stale(
+        rec, now=NOW, stale_after_sec=1800.0, safe_high_pct=70,
     )
     assert pct == 70
     assert "regressed down" in reason

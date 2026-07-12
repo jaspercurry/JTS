@@ -307,8 +307,8 @@ class VolumePersistence:
 
         If `main_volume_db` hasn't been written yet (no save_now call
         in this process), derive it from listening_level so the file
-        always has a coherent main_volume_db field for legacy
-        callers (boot-time regress_if_stale, external readers, etc.)."""
+        always has a coherent main_volume_db field for diagnostics and
+        external readers of the persisted schema."""
         clamped = max(0, min(100, int(percent)))
         self._current_listening_level = clamped
         if mark_user_change:
@@ -453,47 +453,3 @@ def regress_listening_level_if_stale(
         safe_high_pct=safe_high_pct,
         first_boot_default_pct=first_boot_default_pct,
     )
-
-
-def regress_if_stale(
-    record: VolumeRecord | None,
-    *,
-    now: datetime | None = None,
-    stale_after_sec: float = 1800.0,
-    safe_low_pct: int = 20,
-    safe_high_pct: int = 70,
-    first_boot_default_pct: int = 50,
-) -> tuple[float, str]:
-    """Compute the main_volume_db to apply at boot. Operates on the
-    legacy main_volume_db field only — for callers that haven't been
-    moved to the listening_level coordinator yet.
-
-    Rules:
-      - No record → first-boot default (50%).
-      - Record fresh (now - updated_at < stale_after_sec) → use as-is.
-      - Record stale + extreme:
-          percent < safe_low_pct  → clamp up to safe_low_pct
-          percent > safe_high_pct → clamp down to safe_high_pct
-      - Record stale but already in [safe_low, safe_high] → use as-is.
-
-    Returns (main_volume_db, reason_string).
-    """
-    now = now or datetime.now(timezone.utc)
-    if record is None:
-        db = percent_to_db(first_boot_default_pct)
-        return db, f"first-boot default ({first_boot_default_pct}%)"
-    age_sec = (now - record.updated_at).total_seconds()
-    pct = db_to_percent(record.main_volume_db)
-    target_pct, reason = _regress_percent(
-        pct, age_sec,
-        stale_after_sec=stale_after_sec,
-        safe_low_pct=safe_low_pct,
-        safe_high_pct=safe_high_pct,
-        first_boot_default_pct=first_boot_default_pct,
-    )
-    # If the regressor didn't move us, return the original db
-    # (preserves sub-percent precision); if it clamped, compute the
-    # target db from the new percent.
-    if target_pct == pct:
-        return record.main_volume_db, reason
-    return percent_to_db(target_pct), reason
