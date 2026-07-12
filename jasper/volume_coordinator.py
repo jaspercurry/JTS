@@ -586,6 +586,55 @@ class VolumeCoordinator:
     # Internal dispatch — picks the right source and pushes
     # ------------------------------------------------------------------
 
+    async def _guard_camilla_after_push_failure(
+        self,
+        source: Source,
+        level: int,
+        *,
+        context: str,
+        reason: str,
+        warning_prefix: str,
+        guarded_warning_suffix: str,
+    ) -> bool:
+        """Fall back to Camilla after a source-volume push fails.
+
+        Callers own their operator-facing warning wording; this helper owns
+        the safety sequence and diagnostics so dispatch and source-transition
+        paths cannot drift. The bounded success suffix may reference
+        ``guard_db`` and ``level``; every failure path shares the same suffix.
+        """
+        guard_db = percent_to_db(level)
+        previous_db = self._persisted_main_volume_db()
+        guarded = await self._set_camilla_db(
+            guard_db,
+            context=context,
+            persist=True,
+        )
+        if guarded:
+            self._record_push_guard(
+                source,
+                level,
+                guard_db,
+                reason=reason,
+                context=context,
+                previous_db=previous_db,
+            )
+            logger.warning(
+                "%s%s",
+                warning_prefix,
+                guarded_warning_suffix.format(
+                    guard_db=guard_db,
+                    level=level,
+                ),
+            )
+        else:
+            logger.warning(
+                "%s and camilla guard could not be confirmed for %.1f dB",
+                warning_prefix,
+                guard_db,
+            )
+        return bool(guarded)
+
     async def _dispatch(
         self, level: int, *, persist: bool, user_change: bool = True,
     ) -> None:
@@ -618,33 +667,17 @@ class VolumeCoordinator:
                         context="dispatch_spotify_push_confirmed",
                     )
                 else:
-                    guard_db = percent_to_db(level)
-                    previous_db = self._persisted_main_volume_db()
-                    guarded = await self._set_camilla_db(
-                        guard_db,
+                    await self._guard_camilla_after_push_failure(
+                        source,
+                        level,
                         context="dispatch_spotify_degraded",
-                        persist=True,
+                        reason=volume_diagnostics.GUARD_PUSH_WRITE_FAILED,
+                        warning_prefix="spotify volume dispatch failed",
+                        guarded_warning_suffix=(
+                            "; camilla guarded at {guard_db:.1f} dB for "
+                            "{level:d}%"
+                        ),
                     )
-                    if guarded:
-                        self._record_push_guard(
-                            source,
-                            level,
-                            guard_db,
-                            reason=volume_diagnostics.GUARD_PUSH_WRITE_FAILED,
-                            context="dispatch_spotify_degraded",
-                            previous_db=previous_db,
-                        )
-                        logger.warning(
-                            "spotify volume dispatch failed; camilla "
-                            "guarded at %.1f dB for %d%%",
-                            guard_db, level,
-                        )
-                    else:
-                        logger.warning(
-                            "spotify volume dispatch failed and camilla "
-                            "guard could not be confirmed for %.1f dB",
-                            guard_db,
-                        )
             elif source == Source.BLUETOOTH:
                 ok = await self._set_bluetooth(level)
                 if ok:
@@ -654,33 +687,17 @@ class VolumeCoordinator:
                         context="dispatch_bluetooth_push_confirmed",
                     )
                 else:
-                    guard_db = percent_to_db(level)
-                    previous_db = self._persisted_main_volume_db()
-                    guarded = await self._set_camilla_db(
-                        guard_db,
+                    await self._guard_camilla_after_push_failure(
+                        source,
+                        level,
                         context="dispatch_bluetooth_degraded",
-                        persist=True,
+                        reason=volume_diagnostics.GUARD_PUSH_WRITE_FAILED,
+                        warning_prefix="bluetooth volume dispatch failed",
+                        guarded_warning_suffix=(
+                            "; camilla guarded at {guard_db:.1f} dB for "
+                            "{level:d}%"
+                        ),
                     )
-                    if guarded:
-                        self._record_push_guard(
-                            source,
-                            level,
-                            guard_db,
-                            reason=volume_diagnostics.GUARD_PUSH_WRITE_FAILED,
-                            context="dispatch_bluetooth_degraded",
-                            previous_db=previous_db,
-                        )
-                        logger.warning(
-                            "bluetooth volume dispatch failed; camilla "
-                            "guarded at %.1f dB for %d%%",
-                            guard_db, level,
-                        )
-                    else:
-                        logger.warning(
-                            "bluetooth volume dispatch failed and camilla "
-                            "guard could not be confirmed for %.1f dB",
-                            guard_db,
-                        )
             else:
                 # IDLE and USBSINK both land here. USBSINK is
                 # camilla-master like AirPlay; we don't write back
@@ -1115,34 +1132,21 @@ class VolumeCoordinator:
                         "accepted" if carrier_ok else "failed",
                     )
                 else:
-                    guard_db = percent_to_db(self._level)
-                    previous_db = self._persisted_main_volume_db()
-                    guarded = await self._set_camilla_db(
-                        guard_db,
+                    await self._guard_camilla_after_push_failure(
+                        current_source,
+                        self._level,
                         context="active_source_transition_push_degraded",
-                        persist=True,
+                        reason=(
+                            volume_diagnostics.GUARD_ACTIVE_SOURCE_PUSH_FAILED
+                        ),
+                        warning_prefix=(
+                            f"active source: {prev_source.value} → "
+                            f"{current_source.value}; source volume push failed"
+                        ),
+                        guarded_warning_suffix=(
+                            ", keeping camilla guarded at {guard_db:.1f} dB"
+                        ),
                     )
-                    if guarded:
-                        self._record_push_guard(
-                            current_source,
-                            self._level,
-                            guard_db,
-                            reason=volume_diagnostics.GUARD_ACTIVE_SOURCE_PUSH_FAILED,
-                            context="active_source_transition_push_degraded",
-                            previous_db=previous_db,
-                        )
-                        logger.warning(
-                            "active source: %s → %s; source volume push "
-                            "failed, keeping camilla guarded at %.1f dB",
-                            prev_source.value, current_source.value, guard_db,
-                        )
-                    else:
-                        logger.warning(
-                            "active source: %s → %s; source volume push "
-                            "failed and camilla guard could not be confirmed "
-                            "for %.1f dB",
-                            prev_source.value, current_source.value, guard_db,
-                        )
             elif curr_carries and not prev_carries:
                 # Push-mode renderer → camilla-master. Hand
                 # listening_level back to camilla so the remembered
@@ -1176,34 +1180,22 @@ class VolumeCoordinator:
                         prev_source.value, current_source.value, self._level,
                     )
                 else:
-                    guard_db = percent_to_db(self._level)
-                    previous_db = self._persisted_main_volume_db()
-                    guarded = await self._set_camilla_db(
-                        guard_db,
+                    await self._guard_camilla_after_push_failure(
+                        current_source,
+                        self._level,
                         context="active_source_transition_push_push_degraded",
-                        persist=True,
+                        reason=(
+                            volume_diagnostics.GUARD_ACTIVE_SOURCE_PUSH_FAILED
+                        ),
+                        warning_prefix=(
+                            f"active source: {prev_source.value} → "
+                            f"{current_source.value} (push→push); source "
+                            "volume push failed"
+                        ),
+                        guarded_warning_suffix=(
+                            ", camilla guarded at {guard_db:.1f} dB"
+                        ),
                     )
-                    if guarded:
-                        self._record_push_guard(
-                            current_source,
-                            self._level,
-                            guard_db,
-                            reason=volume_diagnostics.GUARD_ACTIVE_SOURCE_PUSH_FAILED,
-                            context="active_source_transition_push_push_degraded",
-                            previous_db=previous_db,
-                        )
-                        logger.warning(
-                            "active source: %s → %s (push→push); source "
-                            "volume push failed, camilla guarded at %.1f dB",
-                            prev_source.value, current_source.value, guard_db,
-                        )
-                    else:
-                        logger.warning(
-                            "active source: %s → %s (push→push); source "
-                            "volume push failed and camilla guard could not "
-                            "be confirmed for %.1f dB",
-                            prev_source.value, current_source.value, guard_db,
-                        )
             else:
                 # Idle ↔ AirPlay: both are camilla-master modes, so
                 # camilla already carries listening_level.
