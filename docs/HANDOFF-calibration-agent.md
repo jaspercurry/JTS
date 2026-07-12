@@ -231,7 +231,8 @@ full picture. The bits that matter for this proposal:
 | `deconv.py` | FFT + Tikhonov-regularized inversion (`H(f) = Y(f) conj(X(f)) / (\|X(f)\|² + ε)`), IR window 5 ms pre / 500 ms post direct arrival. |
 | `analysis.py` | 1/48-octave power-mean smoothing, log-spaced 480-point resampling, multi-position power-mean spatial averaging. |
 | `peq.py` | Greedy peak-fit: residual = measured − target → find max peak → estimate Q from -3 dB bandwidth → add peaking biquad → repeat. Cuts-only by default, 20–350 Hz, ≤5 filters, Q ∈ [1.0, 8.0], max -10 dB. |
-| `target.py` | Named targets: `flat` / `neutral` / `warm` / `bright` (interpolations over a Harman-shaped base). |
+| `target.py` | Deterministic flat, Harman, and warmth-interpolated house-curve math. |
+| `strategy.py` | Named target registry: `flat` / `neutral` / `warm` / `bright`, including labels, descriptions, and warmth coefficients. |
 | `sound/camilla_yaml.py` | Live generated-DSP emitter shared by room correction and sound preferences. Preserves `master_gain`; emits room PEQs as `room_peq_*` / `room_peq_r*` before sound-curve and preference-EQ filters. Historical `peq_*` correction configs remain parser-compatible for old bundles/configs. |
 | `coordinator.py` | `measurement_window()` async context manager — preconditions (no active voice session), pauses renderers via `systemctl stop`, sends UDS `MEASURE_PAUSE` to `jasper-voice`, restores in `finally`. |
 | `session.py` / `artifacts.py` | `MeasurementSession` + state enums own orchestration; `SessionArtifacts` owns per-session bundle writes and manifests. |
@@ -366,8 +367,8 @@ CamillaDSP-rejected reload reports `applied: false` ("the speaker kept its
 previous sound"), never a false success. The re-measure remains the true
 judge (the correction loop closes by re-measure; preference suggestions are
 phrased as questions). **Target moves are suggestion-only**: there is no
-apply route for them — the card points the household at the flow's own
-Target curve picker, and the model-facing contract says exactly that (no
+apply route for them — the card gives plain-text guidance to use the flow's
+own Target curve picker, and the model-facing contract says exactly that (no
 apply-after-confirm promise). The LLM never emits YAML / FIR / volume — the
 `_PROHIBITED_KEYS` blocklist and the `volume_limit: 0.0` ceiling are
 untouched.
@@ -376,9 +377,9 @@ untouched.
 (`deploy/assets/correction/js/main.js` `renderTuning` / `renderTuningProposals`):
 the explanation, a provenance note when the model cited an unverified number,
 confirm cards for **PEQ proposals only** (Apply → `/propose/apply`), and
-suggestion cards for target moves that link to the flow's Target curve
-picker. Untrusted model text reaches the DOM via `textContent` only, never
-`innerHTML`.
+suggestion cards for target moves that give plain-text guidance to use the
+flow's Target curve picker. Untrusted model text reaches the DOM via
+`textContent` only, never `innerHTML`.
 
 **Cost discipline.** The two calls are **per-tap** (no polling). Tests are
 100% fixture-driven (real-shape OpenAI payloads under

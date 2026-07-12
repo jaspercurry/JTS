@@ -17,8 +17,11 @@ Built-in targets (returned as dB arrays evaluated on a frequency grid):
   - house_curve(warmth) — interpolant between flat and harman.
     warmth=0 returns flat; warmth=1 returns full Harman; warmth>1
     extrapolates (more bass, more downward tilt) and warmth<0
-    extrapolates the other way (brighter / less bass). The Phase 2
-    UI exposes this as a 3-position slider, not a continuous knob.
+    extrapolates the other way (brighter / less bass).
+
+Product-visible named profiles and their warmth coefficients are owned by
+``jasper.correction.strategy.TARGET_PROFILES``. This module owns only the
+deterministic curve math.
 
 We deliberately do NOT ship the B&K-1974 / EBU Tech 3276 / JBL-Synthesis
 curves in V1. They're presets a power user might want, but the four
@@ -77,13 +80,3 @@ def house_curve(freqs: np.ndarray, warmth: float = 1.0) -> np.ndarray:
     """
     w = float(np.clip(warmth, -1.0, 2.0))
     return harman_target(freqs) * w
-
-
-# Phase 2 UI surfaces these three named presets in a 3-position
-# slider. Keeping the names + warmth coefficients as a single source
-# of truth so the UI label and the math line up.
-HOUSE_CURVE_PRESETS = {
-    "neutral": 0.0,    # = flat target
-    "warm":    0.7,    # mostly Harman, slightly less sub-bass / tilt
-    "bright": -0.3,    # negative tilt — more energy in the highs
-}

@@ -1558,8 +1558,8 @@ Concrete changes:
 - Robust error states: mic permission denied, sample-rate mismatch
   (force-reject), sweep clipping detected (rerun with -3 dB lower),
   ambient too loud (>50 dB pre-sweep, prompt user).
-- House-curve preset slider (warm / neutral / bright) interpolating
-  Flat ↔ Harman.
+- Named target selector (Flat / Neutral / Warm / Bright), with the
+  house-curve profiles interpolating around Flat ↔ Harman.
 - Calibrated external mic metadata and correction curve applied when
   available; built-in phone mic compensation is a degraded fallback,
   not the high-confidence path.
