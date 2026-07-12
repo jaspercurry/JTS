@@ -64,6 +64,9 @@ install_jasper_support_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-core-graph-park-units.sh" \
         /usr/local/lib/jasper/jasper-core-graph-park-units.sh
+    install -m 0644 \
+        "${REPO_DIR}/deploy/lib/jasper-apple-dongle.sh" \
+        /usr/local/lib/jasper/jasper-apple-dongle.sh
     install -d -m 0755 /usr/local/lib/jasper/install
     install -m 0644 \
         "${REPO_DIR}"/deploy/lib/install/*.sh \
@@ -846,6 +849,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-core-graph-park-units.sh" \
         /usr/local/lib/jasper/jasper-core-graph-park-units.sh
+    install -m 0644 \
+        "${REPO_DIR}/deploy/lib/jasper-apple-dongle.sh" \
+        /usr/local/lib/jasper/jasper-apple-dongle.sh
     # Installer-only sourced libs (install.sh sources them REPO_DIR-
     # relative from the rsync checkout; the installed copies mirror the
     # other deploy/lib files for on-Pi inspection/consistency).
