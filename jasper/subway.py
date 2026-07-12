@@ -104,6 +104,60 @@ SUBWAYNOW_AGENT = "jts-jasper"
 # than make the user wait. The direct MTA fallback will pick up the slack.
 SUBWAYNOW_TIMEOUT = 1.5
 MTA_GTFS_TIMEOUT = 4.0
+_NYCT_TRIP_DESCRIPTOR_FIELD = 1001
+
+
+def _nyct_trip_descriptor_extension():
+    """Register the one NYCT extension field needed for stable trip identity.
+
+    The standard GTFS trip id can repeat during the daylight-saving repeated
+    hour. MTA's field 1001 carries the operations train id that disambiguates
+    those trips. Defining only that wire-compatible field keeps JTS on current
+    protobuf bindings without vendoring nyct-gtfs's stale generated package.
+    """
+    from google.protobuf import descriptor_pb2, descriptor_pool
+    from google.transit import gtfs_realtime_pb2
+
+    pool = descriptor_pool.Default()
+    try:
+        return pool.FindExtensionByNumber(
+            gtfs_realtime_pb2.TripDescriptor.DESCRIPTOR,
+            _NYCT_TRIP_DESCRIPTOR_FIELD,
+        )
+    except KeyError:
+        pass
+
+    field_type = descriptor_pb2.FieldDescriptorProto
+    schema = descriptor_pb2.FileDescriptorProto(
+        name="jasper-nyct-trip-identity.proto",
+        package="jasper.nyct",
+        syntax="proto2",
+        dependency=["gtfs-realtime.proto"],
+    )
+    message = schema.message_type.add(name="NyctTripDescriptor")
+    message.field.add(
+        name="train_id",
+        number=1,
+        label=field_type.LABEL_OPTIONAL,
+        type=field_type.TYPE_STRING,
+    )
+    schema.extension.add(
+        name="nyct_trip_descriptor",
+        number=_NYCT_TRIP_DESCRIPTOR_FIELD,
+        label=field_type.LABEL_OPTIONAL,
+        type=field_type.TYPE_MESSAGE,
+        type_name=".jasper.nyct.NyctTripDescriptor",
+        extendee=".transit_realtime.TripDescriptor",
+    )
+    try:
+        pool.AddSerializedFile(schema.SerializeToString())
+    except TypeError:
+        # Another first-load thread may have registered the same extension.
+        pass
+    return pool.FindExtensionByNumber(
+        gtfs_realtime_pb2.TripDescriptor.DESCRIPTOR,
+        _NYCT_TRIP_DESCRIPTOR_FIELD,
+    )
 
 
 @dataclass(frozen=True)
@@ -150,8 +204,21 @@ class _GTFSRealtimeFeed:
         return feed
 
     @staticmethod
-    def _trip_key(trip) -> tuple[str, str, str, str]:
-        return (trip.trip_id, trip.route_id, trip.start_date, trip.start_time)
+    def _trip_key(trip, nyct_extension) -> tuple[str, ...]:
+        if trip.HasExtension(nyct_extension):
+            train_id = trip.Extensions[nyct_extension].train_id
+            if train_id:
+                # Preserve nyct-gtfs's pairing contract: MTA may vary the
+                # train-id prefix between TripUpdate and VehiclePosition,
+                # while the final seven characters identify the train.
+                return ("nyct", trip.trip_id, train_id[-7:])
+        return (
+            "gtfs",
+            trip.trip_id,
+            trip.route_id,
+            trip.start_date,
+            trip.start_time,
+        )
 
     @staticmethod
     def _event_time(event) -> datetime | None:
@@ -162,6 +229,7 @@ class _GTFSRealtimeFeed:
     def _load(self, payload: bytes) -> None:
         from google.transit import gtfs_realtime_pb2
 
+        nyct_extension = _nyct_trip_descriptor_extension()
         message = gtfs_realtime_pb2.FeedMessage()
         message.ParseFromString(payload)
         if not message.HasField("header") or not message.header.HasField("timestamp"):
@@ -170,14 +238,16 @@ class _GTFSRealtimeFeed:
         header_timestamp = int(message.header.timestamp)
         self.last_generated = datetime.fromtimestamp(header_timestamp)
 
-        vehicle_timestamps: dict[tuple[str, str, str, str], int] = {}
+        vehicle_timestamps: dict[tuple[str, ...], int] = {}
         for entity in message.entity:
             if not entity.HasField("vehicle"):
                 continue
             vehicle = entity.vehicle
             if not vehicle.HasField("trip") or not vehicle.HasField("timestamp"):
                 continue
-            vehicle_timestamps[self._trip_key(vehicle.trip)] = int(vehicle.timestamp)
+            vehicle_timestamps[
+                self._trip_key(vehicle.trip, nyct_extension)
+            ] = int(vehicle.timestamp)
 
         trips: list[_Trip] = []
         for entity in message.entity:
@@ -187,7 +257,9 @@ class _GTFSRealtimeFeed:
             if not update.HasField("trip"):
                 continue
             trip = update.trip
-            vehicle_timestamp = vehicle_timestamps.get(self._trip_key(trip))
+            vehicle_timestamp = vehicle_timestamps.get(
+                self._trip_key(trip, nyct_extension)
+            )
             # Match nyct-gtfs's `underway=True` contract: MTA publishes
             # VehiclePosition before some B-division departures, but future-
             # dated positions are not underway. Allow one minute for clock skew.

@@ -36,6 +36,7 @@ from jasper.subway import (
     _build_aliases,
     _expand_label,
     _load_stations,
+    _nyct_trip_descriptor_extension,
     feed_url_for_line,
     normalise_direction,
 )
@@ -472,6 +473,58 @@ def test_mta_fallback_parses_recorded_gtfs_realtime_feed():
             "minutes_from_now": 38,
         }
     ]
+
+
+def test_mta_parser_disambiguates_duplicate_trip_ids_with_nyct_train_id():
+    """The repeated DST hour can publish the same standard trip id twice."""
+    from google.transit import gtfs_realtime_pb2
+
+    extension = _nyct_trip_descriptor_extension()
+    message = gtfs_realtime_pb2.FeedMessage()
+    message.header.gtfs_realtime_version = "1.0"
+    message.header.timestamp = 1_800_000_000
+
+    def add_pair(*, entity_number, train_id, stop_id, vehicle_timestamp):
+        trip_entity = message.entity.add(id=f"trip-{entity_number}")
+        descriptor = trip_entity.trip_update.trip
+        descriptor.trip_id = "duplicate-dst-trip"
+        descriptor.route_id = "D"
+        descriptor.start_date = "20261101"
+        descriptor.start_time = "01:30:00"
+        descriptor.Extensions[extension].train_id = train_id
+        stop = trip_entity.trip_update.stop_time_update.add(stop_id=stop_id)
+        stop.arrival.time = message.header.timestamp + 300
+
+        vehicle_entity = message.entity.add(id=f"vehicle-{entity_number}")
+        vehicle_entity.vehicle.trip.CopyFrom(descriptor)
+        # nyct-gtfs deliberately paired on the last seven train-id
+        # characters because MTA can vary the prefix across entity types.
+        vehicle_entity.vehicle.trip.Extensions[extension].train_id = (
+            f"vehicle-prefix/{train_id[-7:]}"
+        )
+        vehicle_entity.vehicle.timestamp = vehicle_timestamp
+
+    add_pair(
+        entity_number=1,
+        train_id="train-first-hour",
+        stop_id="B12S",
+        vehicle_timestamp=message.header.timestamp,
+    )
+    add_pair(
+        entity_number=2,
+        train_id="train-second-hour",
+        stop_id="B13S",
+        vehicle_timestamp=message.header.timestamp + 3600,
+    )
+
+    feed = _GTFSRealtimeFeed.from_bytes(message.SerializeToString())
+    trips = feed.filter_trips(
+        line_id="D",
+        headed_for_stop_id="B12S",
+        underway=True,
+    )
+    assert len(trips) == 1
+    assert trips[0].stop_time_updates[0].stop_id == "B12S"
 
 
 def test_subwaynow_5xx_falls_back():

@@ -29,15 +29,13 @@ offline guard therefore tracks the whole cross-ecosystem chain, not only
 packages currently held back.
 
 Each PR was green alone; NO CI check pip-resolved the file, so the
-unresolvable combination shipped. These two guards close that gap:
+unresolvable combination shipped. These three guards close that gap:
 
 1. ``test_cross_ecosystem_pin_chain_matches_uv_lock`` — DETERMINISTIC +
    OFFLINE. The packages that sit in a cross-ecosystem pin chain must match
    the co-resolved ``uv.lock`` (the authoritative resolution CI already
-   validates via ``uv sync --locked``). Their correct version is fixed
-   by package metadata that is identical on the arm64/py3.13 Pi and the
-   x86 CI runner, so the Pi snapshot must agree. This is the guard that
-   fails offline on the broken state — no network, no third-party deps.
+   validates via ``uv sync --locked``). This is the guard that fails
+   offline on the broken state — no network, no third-party deps.
 
 2. ``test_pip_dry_run_resolves_constraints`` — FAITHFUL + NETWORK.
    Reproduces install.sh's ``pip install -c constraints-pi.txt <full
@@ -47,6 +45,11 @@ unresolvable combination shipped. These two guards close that gap:
    (offline dev) or when no pip/uv resolver is available (a bare uv
    venv), so it never spuriously fails; it runs in CI, which already has
    network and ``uv`` on PATH for ``uv sync``.
+
+3. ``test_uv_dry_run_resolves_pi_platform`` — PI-TARGETED + NETWORK.
+   Resolves the same versioned requirements for Linux aarch64 / Python
+   3.13, including Linux-only markers, so an x86-only wheel cannot make
+   the faithful current-runner probe green while the Pi remains broken.
 """
 from __future__ import annotations
 
@@ -177,26 +180,50 @@ def _resolver_cmd() -> list[str] | None:
     return None
 
 
-def _full_extra_requirement_names() -> list[str]:
-    """Top-level requirement names install.sh pulls via ``-e .[full]``,
-    with env markers evaluated for the current interpreter/platform,
-    minus install.sh's two documented special-cases: the camilladsp URL
-    dep (a pinned archive, not a version-conflict source) and
-    openwakeword (installed ``--no-deps`` because of its tflite dep)."""
+def _constrained_runtime_requirements() -> list[str]:
+    """Versioned requirements from install.sh's constrained pip calls.
+
+    Preserve specifiers and markers: passing only bare distribution names
+    would let this guard accept a constraints pin that conflicts with
+    pyproject.toml. The direct pycamilladsp URL is omitted because it is a
+    hash-pinned archive rather than a version-resolution input.
+    """
     from packaging.requirements import Requirement
 
     data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    names: list[str] = []
-    for spec in data["project"]["optional-dependencies"]["full"]:
-        if "@" in spec:  # URL dep, e.g. camilladsp @ https://...
-            continue
+    specs = [
+        *data["project"]["dependencies"],
+        *data["project"]["optional-dependencies"]["full"],
+        # install_full_python_runtime installs these under the same
+        # constraints before the editable [full] install. Most overlap the
+        # full graph; scikit-learn is the important independent input.
+        "requests",
+        "tqdm",
+        "scipy>=1.3,<2",
+        "scikit-learn>=1,<2",
+    ]
+    requirements: list[str] = []
+    for spec in specs:
         req = Requirement(spec)
-        if _canon(req.name) == "openwakeword":
+        if req.url is not None:
             continue
-        if req.marker is not None and not req.marker.evaluate():
-            continue
-        names.append(req.name)
-    return names
+        requirements.append(str(req))
+    return requirements
+
+
+def test_resolver_inputs_preserve_pyproject_specifiers_and_markers() -> None:
+    """Regression for the bare-name resolver false-positive bug."""
+    from packaging.requirements import Requirement
+
+    requirements = {}
+    for spec in _constrained_runtime_requirements():
+        requirement = Requirement(spec)
+        requirements[_canon(requirement.name)] = requirement
+    assert str(requirements["protobuf"].specifier) == "==7.35.1"
+    assert str(requirements["google-genai"].specifier) == "==2.9.0"
+    assert str(requirements["sdnotify"].specifier) == ">=0.3.2"
+    assert requirements["audioop-lts"].marker is not None
+    assert requirements["pyalsaaudio"].marker is not None
 
 
 def test_pip_dry_run_resolves_constraints() -> None:
@@ -215,7 +242,7 @@ def test_pip_dry_run_resolves_constraints() -> None:
     if cmd is None:
         pytest.skip("no pip/uv resolver available in this environment")
 
-    reqs = _full_extra_requirement_names()
+    reqs = _constrained_runtime_requirements()
     proc = subprocess.run(
         [*cmd, "-c", str(_CONSTRAINTS), *reqs],
         capture_output=True,
@@ -227,4 +254,43 @@ def test_pip_dry_run_resolves_constraints() -> None:
         "[full] runtime requirements — this is exactly what install.sh runs on "
         "every deploy (#1275). Resolver output:\n"
         + (proc.stderr or proc.stdout)[-3000:]
+    )
+
+
+def test_uv_dry_run_resolves_pi_platform() -> None:
+    """Resolve the real specs for PiOS Trixie's Python/platform markers.
+
+    The ordinary pip dry-run uses the CI runner's platform. This companion
+    probe asks uv to resolve Linux aarch64 + Python 3.13 explicitly, catching
+    missing Pi wheels and Linux-only marker conflicts before deploy.
+    """
+    pytest.importorskip("packaging.requirements")
+    if not _pypi_reachable():
+        pytest.skip("PyPI unreachable — offline; the offline guard still runs")
+    from shutil import which
+
+    if which("uv") is None:
+        pytest.skip("uv is required for cross-platform Pi resolution")
+
+    proc = subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--dry-run",
+            "--python-version",
+            "3.13",
+            "--python-platform",
+            "aarch64-manylinux_2_28",
+            "-c",
+            str(_CONSTRAINTS),
+            *_constrained_runtime_requirements(),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert proc.returncode == 0, (
+        "uv could not resolve the Pi constraints for Linux aarch64 / "
+        "Python 3.13. Resolver output:\n" + (proc.stderr or proc.stdout)[-3000:]
     )
