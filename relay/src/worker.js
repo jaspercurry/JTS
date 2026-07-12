@@ -53,8 +53,8 @@ const MAX_SESSION_ID_LEN = 128;
 const MAX_TOKEN_LEN = 512;
 
 // Per-session fallback rate limit (used only when env.RELAY_RATELIMIT binding is
-// absent — production uses the binding, which is atomic). Phone-facing endpoints
-// only; the Pi's pull_token poll is not limited.
+// absent — production uses Cloudflare's managed Rate Limit binding).
+// Phone-facing endpoints only; the Pi's pull_token poll is not limited.
 const RATE_WINDOW_MS = 10_000;
 const RATE_MAX_REQUESTS = 80;
 
@@ -229,8 +229,9 @@ async function loadLive(store, id, env) {
   return meta;
 }
 
-// Module-level, per-isolate fallback rate state. Used ONLY when the atomic
-// RELAY_RATELIMIT binding is absent (production declares it in wrangler.toml).
+// Module-level, per-isolate fallback rate state. Used ONLY when the
+// Cloudflare-managed RELAY_RATELIMIT binding is absent (production declares it
+// in wrangler.toml).
 // It deliberately NEVER touches R2: an earlier version persisted the counter
 // into meta/<id>, which (a) wrote R2 on every read-only GET /spec and (b)
 // read-modify-wrote the shared state object, so a concurrent spec/event fetch
