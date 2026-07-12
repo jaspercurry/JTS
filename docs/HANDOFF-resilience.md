@@ -1140,9 +1140,9 @@ PSK redaction is enforced in three layers:
 Diagnostic surfaces:
 
 ```sh
-# Per-event structured lines:
-journalctl -u jasper-wifi-recover -u jasper-wifi-guardian \
-  | grep -E 'event=wifi_(recover|guardian)'
+# Per-event structured lines (wizard actions + recovery/guardian work):
+journalctl -u jasper-web -u jasper-wifi-recover -u jasper-wifi-guardian \
+  | grep -E 'event=(wifi\.(connect|forget|radio|post_dispatch_failed)|wifi_(recover|guardian))'
 
 # Live state from jasper-control:
 curl -s http://jts.local:8780/state | jq .resilience.wifi_guardian
@@ -1372,7 +1372,9 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-07-10 (output-DAC staged transport coherence and optional
+Last verified: 2026-07-12 (Wi-Fi wizard action/exception events and their
+operator journal query rechecked against the real HTTP handler; output-DAC
+staged transport coherence and optional
 chip-reference failure isolation rechecked against the runtime plan,
 audio-hardware reconciler, outputd STATUS/worker lifecycle, and doctor; nginx
 added to the OOM ladder via package

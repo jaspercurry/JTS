@@ -168,7 +168,11 @@ def _run_nmcli(
             text=True,
         )
     except subprocess.TimeoutExpired as e:
-        logger.warning("nmcli timed out after %ss: %s", timeout, " ".join(cmd))
+        logger.warning(
+            "nmcli timed out after %ss: %s",
+            timeout,
+            " ".join(_scrub_argv(cmd)),
+        )
         # Synthesize a CompletedProcess so callers don't have to
         # special-case TimeoutExpired in addition to non-zero returns.
         return subprocess.CompletedProcess(
@@ -1312,7 +1316,10 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             self._send(status, body, "application/json")
 
         def _read_json(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length") or "0")
+            try:
+                length = int(self.headers.get("Content-Length") or "0")
+            except (TypeError, ValueError):
+                return {}
             if length <= 0 or length > 100_000:
                 return {}
             try:
@@ -1348,9 +1355,20 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 reject_csrf(self)
                 return
             body = self._read_json()
+            response_committed = False
+
+            def commit_json_response(
+                payload: dict[str, Any], *, status: int = 200,
+            ) -> None:
+                nonlocal response_committed
+                if response_committed:
+                    raise RuntimeError("response already committed")
+                response_committed = True
+                self._send_json(payload, status=status)
+
             try:
                 if path == "/scan":
-                    self._send_json(scan_networks_report())
+                    commit_json_response(scan_networks_report())
                     return
                 if path == "/connect":
                     ssid = (body.get("ssid") or "").strip()
@@ -1364,35 +1382,92 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     elif name:
                         ok, msg = connect_saved(name)
                     else:
-                        self._send_json(
+                        commit_json_response(
                             {"ok": False, "message": "ssid or name required"},
                             status=400,
                         )
                         return
-                    self._send_json({"ok": ok, "message": msg},
-                                    status=200 if ok else 502)
+                    connect_fields = (
+                        {"mode": "new", "ssid": ssid}
+                        if ssid
+                        else {"mode": "saved", "profile": name}
+                    )
+                    log_event(
+                        logger,
+                        "wifi.connect",
+                        fields=connect_fields,
+                        ok=ok,
+                        client=self.address_string(),
+                        level=logging.INFO if ok else logging.WARNING,
+                    )
+                    commit_json_response(
+                        {"ok": ok, "message": msg},
+                        status=200 if ok else 502,
+                    )
                     return
                 if path == "/forget":
                     name = (body.get("name") or "").strip()
                     if not name:
-                        self._send_json(
+                        commit_json_response(
                             {"ok": False, "message": "name required"},
                             status=400,
                         )
                         return
                     ok, msg = forget(name)
-                    self._send_json({"ok": ok, "message": msg},
-                                    status=200 if ok else 502)
+                    log_event(
+                        logger,
+                        "wifi.forget",
+                        profile=name,
+                        ok=ok,
+                        client=self.address_string(),
+                        level=logging.INFO if ok else logging.WARNING,
+                    )
+                    commit_json_response(
+                        {"ok": ok, "message": msg},
+                        status=200 if ok else 502,
+                    )
                     return
                 if path == "/radio":
-                    on = bool(body.get("on"))
+                    if (
+                        not isinstance(body, dict)
+                        or type(body.get("on")) is not bool
+                    ):
+                        commit_json_response(
+                            {"ok": False, "message": "on must be a boolean"},
+                            status=400,
+                        )
+                        return
+                    on = body["on"]
                     ok, msg = set_radio(on)
-                    self._send_json({"ok": ok, "message": msg},
-                                    status=200 if ok else 502)
+                    log_event(
+                        logger,
+                        "wifi.radio",
+                        enabled=on,
+                        ok=ok,
+                        client=self.address_string(),
+                        level=logging.INFO if ok else logging.WARNING,
+                    )
+                    commit_json_response(
+                        {"ok": ok, "message": msg},
+                        status=200 if ok else 502,
+                    )
                     return
             except Exception as e:  # noqa: BLE001
-                logger.exception("POST %s failed", path)
-                self._send_json({"ok": False, "message": str(e)}, status=502)
+                if response_committed:
+                    raise
+                log_event(
+                    logger,
+                    "wifi.post_dispatch_failed",
+                    action=path.removeprefix("/"),
+                    error=type(e).__name__,
+                    ok=False,
+                    client=self.address_string(),
+                    level=logging.ERROR,
+                )
+                commit_json_response(
+                    {"ok": False, "message": "Wi-Fi action failed"},
+                    status=502,
+                )
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 

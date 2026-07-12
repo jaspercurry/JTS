@@ -14,8 +14,8 @@ parse for any tool that reads the journal as logfmt.
 
 This module is the one place that renders that line. It keeps the
 exact same on-the-wire shape for clean values (so existing greps and
-parsers are unaffected), adds proper logfmt quoting/escaping for
-values that need it, and offers an opt-in JSON sink
+parsers are unaffected), adds proper logfmt quoting plus one-line control
+character escaping for values that need it, and offers an opt-in JSON sink
 (``JASPER_LOG_JSON=1``) for machine consumers that would rather parse
 one object per line than logfmt.
 
@@ -34,13 +34,44 @@ from typing import Any
 __all__ = ["log_event", "render_logfmt", "render_json", "json_mode_enabled"]
 
 
-# Characters that force a value to be quoted in logfmt. A bare token
-# (no whitespace, no `=`, no quote, no backslash) is emitted as-is so
-# the common case stays byte-identical to the old hand-written lines.
+# Printable characters that force a value to be quoted in logfmt. A bare token
+# (no ASCII space/control, no `=`, no quote, no backslash) is emitted as-is so
+# the common case stays byte-identical to the old hand-written lines. C0/DEL
+# controls and Unicode line separators are handled by _unsafe_logfmt_char.
 # A backslash forces quoting too: a bare `C:\x` is not safely
 # round-trippable by a logfmt parser, and backslashes are rare in JTS
 # field values (log paths are POSIX), so the churn is negligible.
 _NEEDS_QUOTING = (" ", "\t", "\n", "\r", "=", '"', "\\")
+
+
+def _unsafe_logfmt_char(ch: str) -> bool:
+    codepoint = ord(ch)
+    return (
+        codepoint < 0x20
+        or codepoint == 0x7F
+        or ch in {"\u0085", "\u2028", "\u2029"}
+    )
+
+
+def _escape_logfmt_text(text: str) -> str:
+    escaped: list[str] = []
+    for ch in text:
+        codepoint = ord(ch)
+        if ch == "\\":
+            escaped.append("\\\\")
+        elif ch == '"':
+            escaped.append('\\"')
+        elif ch == "\n":
+            escaped.append("\\n")
+        elif ch == "\r":
+            escaped.append("\\r")
+        elif ch == "\t":
+            escaped.append("\\t")
+        elif _unsafe_logfmt_char(ch):
+            escaped.append(f"\\u{codepoint:04x}")
+        else:
+            escaped.append(ch)
+    return "".join(escaped)
 
 
 def json_mode_enabled(env: dict[str, str] | None = None) -> bool:
@@ -66,8 +97,8 @@ def _render_value(value: Any) -> str:
     ``false`` (checked before int, since ``bool`` is an ``int``
     subclass); ``float`` via ``repr`` so ``1.0`` stays ``1.0`` and
     doesn't collapse to ``1``. Everything else is stringified, then
-    quoted+escaped only if it is empty or contains whitespace, ``=``,
-    a quote, or a backslash.
+    quoted+escaped only if it is empty or contains an ASCII space, ``=``,
+    a quote, a backslash, an ASCII control, or a Unicode line separator.
     """
     if value is None:
         return "null"
@@ -77,9 +108,10 @@ def _render_value(value: Any) -> str:
         text = repr(value)
     else:
         text = str(value)
-    if text == "" or any(ch in text for ch in _NEEDS_QUOTING):
-        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
+    if text == "" or any(
+        ch in _NEEDS_QUOTING or _unsafe_logfmt_char(ch) for ch in text
+    ):
+        return f'"{_escape_logfmt_text(text)}"'
     return text
 
 
