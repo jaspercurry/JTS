@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`7d5c9e62`): 2026-07-12.
+Last reconciled against `main` (`570cf270`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 483
-- **fixed**: 184
+- **open**: 478
+- **fixed**: 189
 - **in-progress**: 0
 - **mooted**: 9
 - **deferred**: 1
@@ -57,10 +57,10 @@ Last reconciled against `main` (`7d5c9e62`): 2026-07-12.
 | DA-0033 | `jasper/web/sound_setup.py` :: Handler.do_POST | should-fix | W5 | **open** | — |
 | DA-0038 | `jasper/web/wifi_setup.py` :: do_POST | should-fix | W5 | **open** | — |
 | DA-0042 | `scripts/_extract_wake_corpus.py` :: main --force deletion boundary | should-fix | W5 | **fixed** | positive ownership proof + lexical/resolved/filesystem-identity guards — #1291 |
-| DA-0043 | `scripts/doc-freshness.sh` :: :28-37, epoch_days_ago | should-fix | W5 | **open** | — |
-| DA-0044 | `scripts/multiroom-spike.sh` :: usage() :528-532 | should-fix | W5 | **open** | — |
-| DA-0045 | `scripts/s0-sync-bench.sh` :: :660,:674 | should-fix | W5 | **open** | — |
-| DA-0046 | `scripts/s0-sync-measure.py` :: run_soak:304 | should-fix | W5 | **open** | — |
+| DA-0043 | `scripts/doc-freshness.sh` :: :28-37, epoch_days_ago | should-fix | W5 | **fixed** | help is parsed before the optional threshold and prints the complete doc block — #1306 |
+| DA-0044 | `scripts/multiroom-spike.sh` :: usage() :528-532 | should-fix | W5 | **fixed** | help/no-action paths print the complete safety and operation block — #1306 |
+| DA-0045 | `scripts/s0-sync-bench.sh` :: :660,:674 | should-fix | W5 | **fixed** | help/no-action paths share complete portable usage extraction — #1306 |
+| DA-0046 | `scripts/s0-sync-measure.py` :: run_soak:304 | should-fix | W5 | **fixed** | drained or unavailable buffer telemetry now fails clock lock without crashing — #1307 |
 | DA-0047 | `capture-page/js/level-events.js` :: LevelStreamer | should-fix | W1 | **fixed** | level-ramp protocol wired into the shipped capture page — #1202 |
 | DA-0048 | `deploy/assets/sound-profile/js/main.js` :: fmtDbfs :193, toneSummary :1600, outputStart | should-fix | W1 | **open** | — |
 | DA-0049 | `deploy/install.sh` :: camilla_config_has_safe_volume_limit | should-fix | W1 | **open** | — |
@@ -362,7 +362,7 @@ Last reconciled against `main` (`7d5c9e62`): 2026-07-12.
 | DA-0423 | `scripts/onboard.sh` :: :447-452 | nit | W5 | **open** | — |
 | DA-0424 | `scripts/rename-speaker.sh` :: :1 | nit | W5 | **open** | — |
 | DA-0425 | `scripts/wake-rate-test.sh` :: OUT_REMOTE:75 | nit | W5 | **open** | — |
-| DA-0426 | `scripts/xvf-interrogate.sh` :: usage:43-47 | nit | W5 | **open** | — |
+| DA-0426 | `scripts/xvf-interrogate.sh` :: usage:43-47 | nit | W5 | **fixed** | usage extraction now includes the complete final state-restoration text — #1306 |
 | DA-0497 | `capture-page/index.html` :: :187 | nit | W3 | **open** | — |
 | DA-0498 | `deploy/assets/correction/js/main.js` :: pollState:2919 | nit | W3 | **open** | — |
 | DA-0499 | `deploy/assets/correction/js/main.js` :: reportIssueList:1766 vs renderQuality:868 /  | nit | W3 | **open** | — |
