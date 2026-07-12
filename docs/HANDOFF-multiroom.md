@@ -765,6 +765,11 @@ component numbers are from research, not a measured stack.
   Snapcast client latency; listening-seat arrival delta belongs in leader-side
   CamillaDSP channel delay. See
   [`research/balance-sync-calibration.md`](research/balance-sync-calibration.md).
+  The `/sync/apply` write is a bounded ownership phase: while its leader-local
+  `/grouping/set` request is in flight (the transport timeout is 5 s), a stop or
+  replacement start returns conflict. This prevents an older acoustic-delay
+  write from committing after a newer sync session has replaced its evidence;
+  failure returns the existing session to `analyzed` so the operator can retry.
 - Pin **48 kHz / S16** end-to-end (snd-aloop locks format/rate on first open).
 
 **Solo-impact contract (hard requirement for EVERY increment — owner-stated
@@ -2770,8 +2775,9 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-07-12 (rooms package-shared public boundary, IPv4-only
-SSRF predicate, and shared peer GET transport rechecked). Prior 2026-07-11:
+Last verified: 2026-07-12 (`/sync/apply` bounded session ownership, rooms
+package-shared public boundary, IPv4-only SSRF predicate, and shared peer GET
+transport rechecked). Prior 2026-07-11:
 SS2 KNOWN GAP note on TTS-rides-synced-stream
 annotated as pre-PR-2/resolved, cross-checked against SS0's PR-2-built
 status). Prior 2026-06-26 pass: `/rooms/` backend-owned stereo-pair intent,

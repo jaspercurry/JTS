@@ -155,8 +155,12 @@ The product is three tiers:
 - `active_speaker/driver_acoustics.py` **imports**
   `jasper.audio_measurement.{sweep, deconv, analysis, quality}` and the `DRIVER`
   quality profile — it reuses the shared DSP verbatim.
-- `web/balance_flow.py` + `web/sync_flow.py` **import** `measurement_window`
-  and gate on `_reserve_start_slot` mutual exclusion.
+- `web/balance_flow.py` + `web/sync_flow.py` **import** `measurement_window`.
+  Their `/start` dispatches first consult correction's read-only
+  `_correction_start_blocker`; the correction `/start` path alone uses
+  `_reserve_start_slot`. The coordinator's atomic `measurement_window` mutex
+  is the final race-free exclusion once any of those flows begins opening a
+  window.
 - `jasper/measurement/` now holds the first small shared primitives outside
   correction: `level.py` retains browser-mic dBFS frames and derives backend
   floor/target/liveness, while `volume_guard.py` snapshots, normalizes, and
@@ -860,4 +864,5 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-12
+Last verified: 2026-07-12 (measurement-flow admission ownership rechecked
+against correction, balance, sync, and the coordinator mutex)

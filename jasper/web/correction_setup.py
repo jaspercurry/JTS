@@ -3482,9 +3482,10 @@ def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any
     from . import sync_flow
 
     relay_base = _require_relay_base()  # gated off until configured; inert otherwise
-    err = sync_flow.relay_precheck()
+    session_token, err = sync_flow.relay_session_token()
     if err is not None:
         raise ValueError(err)
+    assert session_token is not None
 
     def _open(
         client: RelayClient,
@@ -3500,10 +3501,17 @@ def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any
             return_url=return_url,
         )
 
+    async def _run(client: RelayClient, pi_session: PiCaptureSession) -> None:
+        await sync_flow.relay_run_and_consume(
+            client,
+            pi_session,
+            session_token=session_token,
+        )
+
     kind = RelayCaptureKind(
         label="sync_marker",
         open=_open,
-        run_and_consume=sync_flow.relay_run_and_consume,
+        run_and_consume=_run,
     )
     return {
         "relay": _run_relay_capture(

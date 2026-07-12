@@ -28,9 +28,10 @@ logger = logging.getLogger("jasper.web.sync")
 
 SESSION_MAX_S = 240.0
 WINDOW_OPEN_TIMEOUT_S = 20.0
+PLAYBACK_REAP_TIMEOUT_S = 2.0
 PLAYBACK_DEVICE = "correction_substream"
 
-_ACTIVE_PHASES = frozenset({"measuring"})
+_ACTIVE_PHASES = frozenset({"measuring", "applying"})
 
 _lock = threading.Lock()
 _state: dict[str, Any] = {
@@ -40,12 +41,14 @@ _state: dict[str, Any] = {
     "result": None,
     "recommendation": None,
     "playback": None,
+    "session_token": 0,
     "release_window": None,
     "wav_path": "",
 }
 
 
 def _reset_locked(error: str = "") -> None:
+    next_session_token = int(_state.get("session_token", 0)) + 1
     playback = _state.get("playback")
     if playback and playback.get("proc") is not None:
         try:
@@ -60,10 +63,18 @@ def _reset_locked(error: str = "") -> None:
         "result": None,
         "recommendation": None,
         "playback": None,
+        "session_token": next_session_token,
         "release_window": None,
     })
     if release is not None:
         release()
+
+
+def _owns_session_locked(session_token: int, *, phase: str) -> bool:
+    return (
+        int(_state.get("session_token", 0)) == session_token
+        and _state.get("phase") == phase
+    )
 
 
 def active_phase() -> str | None:
@@ -93,31 +104,43 @@ def handle_status() -> dict:
         }
 
 
-async def _session_window(entered: threading.Event) -> None:
+async def _session_window(session_token: int, entered: threading.Event) -> None:
     from jasper.correction.coordinator import measurement_window
 
     release = asyncio.Event()
     loop = asyncio.get_running_loop()
     with _lock:
+        if not _owns_session_locked(session_token, phase="measuring"):
+            entered.set()
+            return
         _state["release_window"] = (
             lambda: loop.call_soon_threadsafe(release.set)
         )
     try:
         async with measurement_window():
+            with _lock:
+                if not _owns_session_locked(session_token, phase="measuring"):
+                    return
             entered.set()
             try:
                 await asyncio.wait_for(release.wait(), SESSION_MAX_S)
             except asyncio.TimeoutError:
                 log_event(logger, "sync.session_timeout", level=logging.WARNING)
                 with _lock:
-                    if _state["phase"] == "measuring":
+                    if _owns_session_locked(session_token, phase="measuring"):
                         _state["release_window"] = None
                         _reset_locked("session timed out")
     except Exception as e:  # noqa: BLE001
         log_event(logger, "sync.window_failed", level=logging.ERROR, exc_info=True)
         with _lock:
-            _state["release_window"] = None
-            _reset_locked(f"measurement window failed: {e}")
+            # A successful analysis advances the phase before it releases the
+            # window. Cleanup can then fail in measurement_window.__aexit__;
+            # generation, not the old measuring phase, owns that failure. A
+            # replacement reset increments the token, so stale cleanup still
+            # cannot damage the newer session.
+            if int(_state.get("session_token", 0)) == session_token:
+                _state["release_window"] = None
+                _reset_locked(f"measurement window failed: {e}")
     finally:
         entered.set()
 
@@ -157,7 +180,7 @@ def _terminate_proc(proc: Any) -> None:
 async def _watch_playback(proc) -> None:
     await proc.wait()
     with _lock:
-        if _state.get("playback", {}).get("proc") is proc:
+        if (_state.get("playback") or {}).get("proc") is proc:
             _state["playback"] = None
             log_event(logger, "sync.marker_finished")
 
@@ -190,16 +213,33 @@ def handle_start(hostname: str, schedule: Callable) -> tuple[dict, int]:
         _reset_locked()
         _state["phase"] = "measuring"
         _state["members"] = members
+        session_token = int(_state["session_token"])
 
     entered = threading.Event()
-    schedule(_session_window(entered))
-    if not entered.wait(WINDOW_OPEN_TIMEOUT_S):
+    window_coro = _session_window(session_token, entered)
+    try:
+        window_future = schedule(window_coro)
+    except RuntimeError as e:
+        window_coro.close()
+        log_event(logger, "sync.window_schedule_failed", level=logging.ERROR)
         with _lock:
-            _reset_locked("measurement window did not open")
+            if _owns_session_locked(session_token, phase="measuring"):
+                _reset_locked(f"measurement window did not start: {e}")
+        return {
+            "ok": False,
+            "error": "could not start the measurement window",
+        }, HTTPStatus.INTERNAL_SERVER_ERROR
+    if not entered.wait(WINDOW_OPEN_TIMEOUT_S):
+        cancel = getattr(window_future, "cancel", None)
+        if callable(cancel):
+            cancel()
+        with _lock:
+            if _owns_session_locked(session_token, phase="measuring"):
+                _reset_locked("measurement window did not open")
         return {"ok": False, "error": "could not pause the speaker"}, \
             HTTPStatus.INTERNAL_SERVER_ERROR
     with _lock:
-        if _state["phase"] != "measuring":
+        if not _owns_session_locked(session_token, phase="measuring"):
             return {"ok": False, "error": _state["error"]}, \
                 HTTPStatus.INTERNAL_SERVER_ERROR
         members_out = _public_members(_state["members"])
@@ -215,6 +255,7 @@ def handle_play(run_async: Callable, schedule: Callable) -> tuple[dict, int]:
         if _state["playback"] is not None:
             return {"ok": False, "error": "sync marker already playing"}, \
                 HTTPStatus.CONFLICT
+        session_token = int(_state["session_token"])
     try:
         proc = run_async(_start_playback(_marker_wav_path()), timeout=10.0)
     except Exception as e:  # noqa: BLE001
@@ -230,6 +271,8 @@ def handle_play(run_async: Callable, schedule: Callable) -> tuple[dict, int]:
         abort_error = ""
         if _state["phase"] != "measuring":
             abort_error = f"no active sync session (phase {_state['phase']})"
+        elif int(_state["session_token"]) != session_token:
+            abort_error = "sync session changed before playback started"
         elif _state["playback"] is not None:
             abort_error = "sync marker already playing"
         if abort_error:
@@ -242,7 +285,47 @@ def handle_play(run_async: Callable, schedule: Callable) -> tuple[dict, int]:
             )
             return {"ok": False, "error": abort_error}, HTTPStatus.CONFLICT
         _state["playback"] = {"proc": proc}
-    schedule(_watch_playback(proc))
+    watcher = _watch_playback(proc)
+    try:
+        schedule(watcher)
+    except RuntimeError as e:
+        watcher.close()
+        _terminate_proc(proc)
+        reaped = False
+        wait_coro = proc.wait()
+        try:
+            run_async(wait_coro, timeout=PLAYBACK_REAP_TIMEOUT_S)
+            reaped = True
+        except (
+            concurrent.futures.TimeoutError,
+            concurrent.futures.CancelledError,
+            RuntimeError,
+            OSError,
+        ):
+            close = getattr(wait_coro, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except RuntimeError:
+                    pass
+        with _lock:
+            playback = _state.get("playback") or {}
+            if (
+                int(_state.get("session_token", 0)) == session_token
+                and playback.get("proc") is proc
+            ):
+                _state["playback"] = None
+        log_event(
+            logger,
+            "sync.play_watch_schedule_failed",
+            error=str(e),
+            reaped=reaped,
+            level=logging.ERROR,
+        )
+        return {
+            "ok": False,
+            "error": "could not monitor marker playback",
+        }, HTTPStatus.INTERNAL_SERVER_ERROR
     log_event(logger, "sync.marker_started")
     return {"ok": True}, HTTPStatus.OK
 
@@ -257,6 +340,7 @@ def handle_analyze(wav_bytes: bytes) -> tuple[dict, int]:
         if _state["phase"] != "measuring":
             return {"ok": False, "error": "no active sync session"}, \
                 HTTPStatus.CONFLICT
+        session_token = int(_state["session_token"])
     try:
         result = analyze_wav_bytes(wav_bytes)
     except Exception as e:  # noqa: BLE001
@@ -269,6 +353,17 @@ def handle_analyze(wav_bytes: bytes) -> tuple[dict, int]:
         "recommendation": recommendation.to_dict(),
     }
     with _lock:
+        if not _owns_session_locked(session_token, phase="measuring"):
+            log_event(
+                logger,
+                "sync.analyze_aborted",
+                reason="session-changed",
+                level=logging.WARNING,
+            )
+            return {
+                "ok": False,
+                "error": "sync session changed while analysis was in progress",
+            }, HTTPStatus.CONFLICT
         _state["result"] = payload["result"]
         _state["recommendation"] = payload["recommendation"]
         if result.ok:
@@ -314,32 +409,62 @@ def handle_apply(handler) -> tuple[dict, int]:
         if _state["phase"] != "analyzed" or not _state["recommendation"]:
             return {"ok": False, "error": "nothing to apply"}, HTTPStatus.CONFLICT
         members = _state["members"]
-        rec = dict(_state["recommendation"])
-    if not members:
-        return {"ok": False, "error": "session has no members"}, \
-            HTTPStatus.CONFLICT
+        if not members:
+            return {"ok": False, "error": "session has no members"}, \
+                HTTPStatus.CONFLICT
 
-    # Self is the leader by /sync/start gate; write its existing grouping
-    # fields plus the leader-owned rendered-channel delays.
-    self_member = next((m for m in members.values() if m["is_self"]), None)
-    if self_member is None:
-        return {"ok": False, "error": "could not identify leader member"}, \
-            HTTPStatus.CONFLICT
-    g = self_member["grouping"]
-    body = {
-        "enabled": True,
-        "role": str(g.get("role") or ""),
-        "channel": str(g.get("channel") or ""),
-        "bond_id": str(g.get("bond_id") or ""),
-        "leader_addr": str(g.get("leader_addr") or ""),
-        "left_delay_ms": rec["left_delay_ms"],
-        "right_delay_ms": rec["right_delay_ms"],
-    }
-    ok, detail = post_grouping_to_member(
-        "", body, self_addresses(), token=token)
-    if ok:
-        with _lock:
+        # Self is the leader by /sync/start gate; write its existing grouping
+        # fields plus the leader-owned rendered-channel delays. Build the body
+        # and claim the bounded apply while holding the lock: after this point,
+        # stop/start reject instead of replacing the session while its external
+        # /grouping/set side effect is in flight. The network write itself stays
+        # outside the lock and is capped at CONTROL_HTTP_TIMEOUT_SEC (5 s) by
+        # post_grouping_to_member.
+        self_member = next((m for m in members.values() if m["is_self"]), None)
+        if self_member is None:
+            return {"ok": False, "error": "could not identify leader member"}, \
+                HTTPStatus.CONFLICT
+        rec = dict(_state["recommendation"])
+        g = self_member["grouping"]
+        body = {
+            "enabled": True,
+            "role": str(g.get("role") or ""),
+            "channel": str(g.get("channel") or ""),
+            "bond_id": str(g.get("bond_id") or ""),
+            "leader_addr": str(g.get("leader_addr") or ""),
+            "left_delay_ms": rec["left_delay_ms"],
+            "right_delay_ms": rec["right_delay_ms"],
+        }
+        session_token = int(_state["session_token"])
+        _state["phase"] = "applying"
+
+    apply_call_completed = False
+    try:
+        ok, detail = post_grouping_to_member(
+            "", body, self_addresses(), token=token)
+        apply_call_completed = True
+    finally:
+        if not apply_call_completed:
+            with _lock:
+                if _owns_session_locked(session_token, phase="applying"):
+                    _state["phase"] = "analyzed"
+    with _lock:
+        if not _owns_session_locked(session_token, phase="applying"):
+            log_event(
+                logger,
+                "sync.apply_aborted",
+                reason="session-changed",
+                level=logging.WARNING,
+            )
+            return {
+                "ok": False,
+                "error": "sync session changed while apply was in progress",
+                "detail": detail,
+            }, HTTPStatus.CONFLICT
+        if ok:
             _state["phase"] = "applied"
+        else:
+            _state["phase"] = "analyzed"
     log_event(
         logger,
         "sync.apply",
@@ -353,6 +478,11 @@ def handle_apply(handler) -> tuple[dict, int]:
 
 def handle_stop() -> tuple[dict, int]:
     with _lock:
+        if _state["phase"] == "applying":
+            return {
+                "ok": False,
+                "error": "sync delay apply is in progress",
+            }, HTTPStatus.CONFLICT
         _reset_locked()
     log_event(logger, "sync.stopped")
     return {"ok": True}, HTTPStatus.OK
@@ -367,11 +497,32 @@ def handle_stop() -> tuple[dict, int]:
 # acoustic and not exercised hardware-free (same status as the room relay).
 
 
-async def _play_marker_once(wav_path: str) -> None:
+async def _play_marker_once(wav_path: str, session_token: int):
+    with _lock:
+        if not _owns_session_locked(session_token, phase="measuring"):
+            raise RuntimeError("sync session changed before relay marker playback")
+        if _state["playback"] is not None:
+            raise RuntimeError("sync marker already playing")
     proc = await _start_playback(wav_path)
     with _lock:
+        if not _owns_session_locked(session_token, phase="measuring"):
+            _terminate_proc(proc)
+            raise RuntimeError("sync session changed before relay marker playback")
+        if _state["playback"] is not None:
+            _terminate_proc(proc)
+            raise RuntimeError("sync marker already playing")
         _state["playback"] = {"proc": proc}
     asyncio.get_running_loop().create_task(_watch_playback(proc))
+    return proc
+
+
+def relay_session_token() -> tuple[int | None, str | None]:
+    """Return the active sync-session generation or a precheck error."""
+
+    with _lock:
+        if _state["phase"] != "measuring":
+            return None, "no active sync session — open /sync/ and press Start first"
+        return int(_state["session_token"]), None
 
 
 def relay_precheck() -> str | None:
@@ -379,13 +530,16 @@ def relay_precheck() -> str | None:
     handle_start must have opened the session window first (phase == measuring),
     so the relay capture only swaps the recording transport. Returns an error
     message or None."""
-    with _lock:
-        if _state["phase"] != "measuring":
-            return "no active sync session — open /sync/ and press Start first"
-    return None
+    _session_token, error = relay_session_token()
+    return error
 
 
-async def relay_run_and_consume(client: Any, pi_session: Any) -> None:
+async def relay_run_and_consume(
+    client: Any,
+    pi_session: Any,
+    *,
+    session_token: int,
+) -> None:
     """Run a phone-relay sync capture and consume the verified WAV exactly as
     handle_analyze does. On `armed` (phone recording), play the markers through
     the held session window, publish ``sweep_complete`` once playback truly
@@ -399,18 +553,17 @@ async def relay_run_and_consume(client: Any, pi_session: Any) -> None:
     )
 
     loop = asyncio.get_running_loop()
+    with _lock:
+        if not _owns_session_locked(session_token, phase="measuring"):
+            raise RuntimeError("sync session changed before relay capture started")
 
     async def _play_and_wait() -> None:
         # _play_marker_once only spawns aplay (a watcher task reaps it); the
         # sweep_complete contract needs the marker to have FINISHED, so wait
         # for the process too. Multiple wait()ers on one asyncio subprocess
         # are supported, so this coexists with _watch_playback.
-        await _play_marker_once(_marker_wav_path())
-        with _lock:
-            playback = _state.get("playback") or {}
-        proc = playback.get("proc")
-        if proc is not None:
-            await proc.wait()
+        proc = await _play_marker_once(_marker_wav_path(), session_token)
+        await proc.wait()
 
     def _on_armed() -> None:
         # Called from run_capture's poll thread (never the loop): the marker
@@ -461,9 +614,18 @@ async def relay_run_and_consume(client: Any, pi_session: Any) -> None:
     finally:
         if not analyzed:
             with _lock:
-                _reset_locked("phone-relay capture failed")
+                if _owns_session_locked(session_token, phase="measuring"):
+                    _reset_locked("phone-relay capture failed")
     recommendation = recommend_channel_delays(result.delta_ms)
     with _lock:
+        if not _owns_session_locked(session_token, phase="measuring"):
+            log_event(
+                logger,
+                "sync.relay_analyze_aborted",
+                reason="session-changed",
+                level=logging.WARNING,
+            )
+            raise RuntimeError("sync session changed during relay capture")
         _state["result"] = result.to_dict()
         _state["recommendation"] = recommendation.to_dict()
         if result.ok:

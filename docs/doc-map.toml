@@ -660,6 +660,9 @@ code = [
   "jasper/audio_measurement/**",
   "jasper/calibration_agent/**",
   "jasper/web/correction_setup.py",
+  "jasper/web/balance_flow.py",
+  "jasper/web/sync_flow.py",
+  "jasper/web/pair_flow.py",
   "deploy/jasper-correction-web.*",
   "docs/active-crossover-information-design.md",
   "docs/calibration-agent/**",
@@ -667,6 +670,7 @@ code = [
 docs = [
   "docs/HANDOFF-audio-measurement-core.md",
   "docs/HANDOFF-correction.md",
+  "docs/HANDOFF-multiroom.md",
   "docs/HANDOFF-correction-revision-plan.md",
   "docs/HANDOFF-calibration-agent.md",
   "docs/HANDOFF-active-speaker-dsp.md",
