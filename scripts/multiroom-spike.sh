@@ -228,50 +228,28 @@ ensure_pkg() {
 # Built with sox if present, else a tiny pure-stdlib WAV writer (no numpy).
 # -----------------------------------------------------------------------------
 make_chirp_remote() {
-    leader_ssh "sudo install -d -m 0777 ${SPIKE_TMP_DIR}; bash -s" <<REMOTE
+    if leader_ssh "command -v sox >/dev/null 2>&1"; then
+        leader_ssh "sudo install -d -m 0777 ${SPIKE_TMP_DIR}; bash -s" <<REMOTE
 set -eu
 out='${CHIRP_WAV}'
-if command -v sox >/dev/null 2>&1; then
-    # 60 s of: 2 ms broadband click (filtered noise burst) + 998 ms silence.
-    sox -n -r 48000 -c 2 -b 16 /tmp/_click.wav \
-        synth 0.002 noise gain -20 sinc 300-7000
-    sox -n -r 48000 -c 2 -b 16 /tmp/_gap.wav synth 0.998 sine 0 gain -120
-    : > /tmp/_concat.txt
-    for i in \$(seq 1 60); do printf '/tmp/_click.wav\n/tmp/_gap.wav\n' >> /tmp/_concat.txt; done
-    sox \$(cat /tmp/_concat.txt) "\$out"
-    rm -f /tmp/_click.wav /tmp/_gap.wav /tmp/_concat.txt
-else
-    # Pure-stdlib fallback: identical click track, no sox dependency. The click
-    # is a deterministic pseudo-random burst (fixed seed) band-limited by a
-    # simple 1-pole smoother so it's broadband but not full-bandwidth noise.
-    python3 - "\$out" <<'PY'
-import random, struct, sys, wave
-out = sys.argv[1]
-sr = 48000
-click_s, gap_s, reps = 0.002, 0.998, 60
-amp = 32767 * (10 ** (-20/20))  # -20 dBFS peak
-rng = random.Random(1234)       # fixed seed → identical click every run
-n_click = int(click_s * sr)
-# Generate ONE click, lightly smoothed (1-pole) to band-limit, then reuse it.
-raw = [rng.uniform(-1, 1) for _ in range(n_click)]
-sm, prev = [], 0.0
-for x in raw:
-    prev = 0.5 * prev + 0.5 * x
-    sm.append(prev)
-peak = max(abs(v) for v in sm) or 1.0
-click = [int(amp * v / peak) for v in sm]
-frames = bytearray()
-gap = b'\\x00\\x00\\x00\\x00' * int(gap_s * sr)
-for _ in range(reps):
-    for s in click:
-        frames += struct.pack('<hh', s, s)  # identical L and R
-    frames += gap
-w = wave.open(out, 'wb'); w.setnchannels(2); w.setsampwidth(2); w.setframerate(sr)
-w.writeframes(bytes(frames)); w.close()
-PY
-fi
-echo "click track: \$out (\$(stat -c%s "\$out" 2>/dev/null || echo '?') bytes)"
+# 60 s of: 2 ms broadband click (filtered noise burst) + 998 ms silence.
+sox -n -r 48000 -c 2 -b 16 /tmp/_click.wav \
+    synth 0.002 noise gain -20 sinc 300-7000
+sox -n -r 48000 -c 2 -b 16 /tmp/_gap.wav synth 0.998 sine 0 gain -120
+: > /tmp/_concat.txt
+for i in \$(seq 1 60); do printf '/tmp/_click.wav\n/tmp/_gap.wav\n' >> /tmp/_concat.txt; done
+sox \$(cat /tmp/_concat.txt) "\$out"
+rm -f /tmp/_click.wav /tmp/_gap.wav /tmp/_concat.txt
 REMOTE
+    else
+        # Pure-stdlib fallback shared with s0-sync-bench.sh. Stream the helper
+        # over stdin so the Pi does not need a checkout or staged script file.
+        leader_ssh \
+            "sudo install -d -m 0777 ${SPIKE_TMP_DIR}; python3 - --format wav --output ${CHIRP_WAV}" \
+            < "${SCRIPT_DIR}/_make_click_track.py"
+    fi
+    leader_ssh \
+        "echo 'click track: ${CHIRP_WAV}' \"(\$(stat -c%s '${CHIRP_WAV}' 2>/dev/null || echo '?') bytes)\""
 }
 
 # -----------------------------------------------------------------------------
