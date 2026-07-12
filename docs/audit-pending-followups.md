@@ -48,7 +48,9 @@ across slaves with different default period sizes. Pinning identical
 cross-correlation and is diagnostic-only by default. Its explicit `--apply`
 mode is a guarded **volatile** lab write: it requires sufficient finite
 confidence, the firmware-confirmed `[-64,+256]` range, a present XVF, and an
-exact readback. It does not write a state file or persist on-chip (firmware
+exact readback. It retains the previous value and rolls back on an apply or
+readback failure, reporting an explicit uncertain-state error if rollback
+itself cannot be verified. It does not write a state file or persist on-chip (firmware
 2.0.6's `SAVE_CONFIGURATION` has a brick hazard per respeaker repo issue #8).
 The next `jasper-aec-init` run — including AEC reconcile or reboot — restores
 the active profile's `JASPER_AEC_*_CHIP_SYS_DELAY` value and therefore

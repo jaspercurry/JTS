@@ -15,14 +15,15 @@ and wake-word fires on the speaker's own playback.
 Two modes:
 
   PASSIVE (default, safe). Records both the reference signal
-  (hw:Loopback,1,sub1 capture, fed by jasper-aec-bridge's input)
+  (pcm.jasper_capture, the pre-Camilla fan-in diagnostic tap)
   and the XVF mic for ~5 seconds, then cross-correlates. NO test
   signal injected — uses whatever you're already playing. Requires
   music or other audio to be audible during the test. Volume is
   not modified.
 
   ACTIVE (`--inject-noise`). Plays a brief, low-level noise burst
-  via pcm.jasper_out. Volume is RELATIVELY ducked from the current
+  through pcm.correction_substream, the canonical pre-Camilla fan-in
+  lane. Volume is RELATIVELY ducked from the current
   level by `--duck-by` dB (default 20 dB quieter); the code refuses
   to ever raise the volume above the current setting. Use only
   when nothing is playing.
@@ -31,16 +32,16 @@ Procedure (passive mode):
 
   1. Read the current `main_volume` so we can sanity-check that
      audio is actually flowing.
-  2. Stop jasper-voice for the duration so we can grab the XVF
-     capture EP.
+  2. Stop whichever managed services currently own or consume the XVF
+     capture endpoint (jasper-voice and, on supported profiles,
+     jasper-aec-bridge) for the duration.
   3. For 5 seconds, capture from BOTH:
-        - hw:Loopback,1,sub1 (the AEC reference signal — what the
-          XVF chip is being told to expect from the speakers)
+        - pcm.jasper_capture (the pre-Camilla fan-in reference)
         - the detected supported XVF card, device 0 (the processed
           mic — what the chip actually hears from the room)
   4. Cross-correlate (200-3400 Hz bandpass to focus on speech-band
      echo). Lag in samples = AUDIO_MGR_SYS_DELAY.
-  5. Restart jasper-voice and print the diagnostic candidate.
+  5. Restore every service that was active and print the diagnostic candidate.
 
 The command is diagnostic-only by default. `--apply` performs one
 explicit, volatile write after checking confidence, the firmware's
@@ -62,14 +63,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import logging
 import math
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import wave
+from collections.abc import Iterator
 from pathlib import Path
+from types import FrameType
 
 import numpy as np
 
@@ -85,6 +90,27 @@ MIN_SYS_DELAY = -64
 MAX_SYS_DELAY = 256
 PROCESS_EXIT_GRACE_SEC = 3.0
 VOLUME_READBACK_TOLERANCE_DB = 0.05
+SYSTEMCTL_TIMEOUT_SEC = 10.0
+CAMILLA_OPERATION_TIMEOUT_SEC = 5.0
+AUDIO_CONTROL_ERRORS = (
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+    TimeoutError,
+    subprocess.SubprocessError,
+)
+SUBPROCESS_CLEANUP_ERRORS = (OSError, subprocess.SubprocessError)
+
+# Stop the consumer before its producer, then restore in reverse order. In
+# profile-managed XVF modes the bridge owns the hardware capture endpoint and
+# voice consumes its UDP output. In direct-mic mode the bridge is inactive and
+# voice itself is the owner. Tracking both active units covers either topology
+# without trying to re-derive reconciler policy here.
+CAPTURE_OWNER_STOP_ORDER: tuple[tuple[str, str], ...] = (
+    ("jasper-voice.service", "voice capture consumer"),
+    ("jasper-aec-bridge.service", "XVF capture owner"),
+)
 
 
 class CamillaVolumeError(RuntimeError):
@@ -93,6 +119,28 @@ class CamillaVolumeError(RuntimeError):
 
 class TuneError(RuntimeError):
     """Raised when a diagnostic cannot produce a trustworthy candidate."""
+
+
+@contextmanager
+def _bounded_sync_operation(label: str, timeout_sec: float) -> Iterator[None]:
+    """Hard-bound one synchronous hardware/client operation on Linux.
+
+    `jasper-aec-tune` is a foreground Pi CLI and executes on the main thread,
+    so SIGALRM is the one mechanism that can interrupt pycamilladsp calls even
+    when the underlying websocket has wedged. Restore any caller alarm on exit.
+    """
+
+    def _raise_timeout(_signum: int, _frame: FrameType | None) -> None:
+        raise TimeoutError(f"{label} timed out after {timeout_sec:g}s")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _raise_timeout)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout_sec)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def _positive_channel_count(value: str) -> int:
@@ -180,12 +228,24 @@ def _camilla_get_volume() -> float:
     c = CamillaClient("localhost", 1234)
     connected = False
     try:
-        c.connect()
+        with _bounded_sync_operation(
+            "CamillaDSP connect",
+            CAMILLA_OPERATION_TIMEOUT_SEC,
+        ):
+            c.connect()
         connected = True
-        volume = float(c.volume.main_volume())
+        with _bounded_sync_operation(
+            "CamillaDSP main_volume read",
+            CAMILLA_OPERATION_TIMEOUT_SEC,
+        ):
+            volume = float(c.volume.main_volume())
     finally:
         if connected:
-            c.disconnect()
+            with _bounded_sync_operation(
+                "CamillaDSP disconnect",
+                CAMILLA_OPERATION_TIMEOUT_SEC,
+            ):
+                c.disconnect()
     if not math.isfinite(volume):
         raise CamillaVolumeError(f"Camilla main_volume is not finite: {volume!r}")
     return volume
@@ -201,13 +261,29 @@ def _camilla_set_volume(db: float) -> None:
     c = CamillaClient("localhost", 1234)
     connected = False
     try:
-        c.connect()
+        with _bounded_sync_operation(
+            "CamillaDSP connect",
+            CAMILLA_OPERATION_TIMEOUT_SEC,
+        ):
+            c.connect()
         connected = True
-        c.volume.set_main_volume(db)
-        actual = float(c.volume.main_volume())
+        with _bounded_sync_operation(
+            "CamillaDSP main_volume write",
+            CAMILLA_OPERATION_TIMEOUT_SEC,
+        ):
+            c.volume.set_main_volume(db)
+        with _bounded_sync_operation(
+            "CamillaDSP main_volume readback",
+            CAMILLA_OPERATION_TIMEOUT_SEC,
+        ):
+            actual = float(c.volume.main_volume())
     finally:
         if connected:
-            c.disconnect()
+            with _bounded_sync_operation(
+                "CamillaDSP disconnect",
+                CAMILLA_OPERATION_TIMEOUT_SEC,
+            ):
+                c.disconnect()
     if not math.isfinite(actual):
         raise CamillaVolumeError(
             f"Camilla volume readback is not finite after setting {db:.2f} dB"
@@ -251,29 +327,47 @@ def _correlate_and_find_lag(
     return int(lag), peak_normalized
 
 
-def _stop_service_if_running(unit: str, label: str) -> bool:
-    """Returns True if the unit was active and we stopped it."""
-    check = subprocess.run(
+def _service_is_active(unit: str) -> bool:
+    result = subprocess.run(
         ["systemctl", "is-active", unit],
         capture_output=True,
         text=True,
+        timeout=SYSTEMCTL_TIMEOUT_SEC,
     )
-    if check.stdout.strip() == "active":
-        logger.info("stopping %s to free %s", unit, label)
-        stopped = subprocess.run(["systemctl", "stop", unit], check=False)
-        if stopped.returncode != 0:
-            raise RuntimeError(f"failed to stop {unit}")
+    state = result.stdout.strip()
+    if state == "active":
         return True
-    return False
-
-
-def _restart_service(unit: str) -> bool:
-    logger.info("restarting %s", unit)
-    result = subprocess.run(["systemctl", "start", unit], check=False)
-    if result.returncode != 0:
-        logger.error("failed to restart %s", unit)
+    if state in {"inactive", "failed", "unknown"}:
         return False
-    return True
+    raise RuntimeError(
+        f"could not determine {unit} state: rc={result.returncode} state={state!r}"
+    )
+
+
+def _stop_service(unit: str, label: str) -> None:
+    logger.info("stopping %s to free %s", unit, label)
+    result = subprocess.run(
+        ["systemctl", "stop", unit],
+        check=False,
+        timeout=SYSTEMCTL_TIMEOUT_SEC,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"failed to stop {unit}: rc={result.returncode}")
+    if _service_is_active(unit):
+        raise RuntimeError(f"failed to stop {unit}: unit remains active")
+
+
+def _start_service(unit: str) -> None:
+    logger.info("starting %s", unit)
+    result = subprocess.run(
+        ["systemctl", "start", unit],
+        check=False,
+        timeout=SYSTEMCTL_TIMEOUT_SEC,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"failed to start {unit}: rc={result.returncode}")
+    if not _service_is_active(unit):
+        raise RuntimeError(f"failed to start {unit}: unit is not active")
 
 
 def _terminate_and_reap(proc: subprocess.Popen | None, label: str) -> None:
@@ -287,15 +381,15 @@ def _terminate_and_reap(proc: subprocess.Popen | None, label: str) -> None:
         return
     except subprocess.TimeoutExpired:
         logger.warning("%s did not terminate; killing it", label)
-    except Exception as exc:  # noqa: BLE001
+    except SUBPROCESS_CLEANUP_ERRORS as exc:
         logger.warning("failed to terminate %s cleanly: %s", label, exc)
     try:
         proc.kill()
-    except Exception as exc:  # noqa: BLE001
+    except SUBPROCESS_CLEANUP_ERRORS as exc:
         logger.warning("failed to kill %s: %s", label, exc)
     try:
         proc.wait(timeout=PROCESS_EXIT_GRACE_SEC)
-    except Exception as exc:  # noqa: BLE001
+    except SUBPROCESS_CLEANUP_ERRORS as exc:
         logger.error("failed to reap %s: %s", label, exc)
 
 
@@ -320,9 +414,9 @@ def _capture_simultaneous(
 ) -> bool:
     """Capture both legs, with bounded cleanup for every child-start outcome."""
     # Capture from pcm.jasper_capture — the dsnoop fan-out on the
-    # renderer→camilla loopback. dsnoop accepts multiple readers
-    # (jasper-camilla and jasper-aec-bridge are the existing two);
-    # the tuner becomes a third reader without disrupting either.
+    # renderer→Camilla loopback. Camilla and optional diagnostic readers can
+    # share this tap; production AEC normally consumes outputd's final-speaker
+    # UDP monitor instead. The tuner is one temporary diagnostic reader.
     ref_proc: subprocess.Popen | None = None
     mic_proc: subprocess.Popen | None = None
     capture_timeout = int(duration_sec) + 1 + PROCESS_EXIT_GRACE_SEC
@@ -426,12 +520,6 @@ def _argument_parser() -> argparse.ArgumentParser:
         help="Explicitly write the validated candidate to the chip for this "
         "runtime only. The next AEC reconcile/init or reboot overwrites it.",
     )
-    parser.add_argument(
-        "--keep-voice-running",
-        action="store_true",
-        help="Don't stop jasper-voice during the test (default: stop "
-        "and restart so we can grab the XVF capture EP)",
-    )
     return parser
 
 
@@ -512,29 +600,57 @@ def _apply_volatile_delay(lag: int, confidence: float) -> bool:
         from ..xvf import xvf_host
 
         dev = xvf_host.find()
-    except Exception as exc:  # noqa: BLE001
+    except AUDIO_CONTROL_ERRORS as exc:
         logger.error("XVF3800 control unavailable; volatile apply failed: %s", exc)
         return False
     if dev is None:
         logger.error("XVF3800 not on USB; volatile apply was not attempted")
         return False
     try:
-        dev.write("AUDIO_MGR_SYS_DELAY", [lag])
-        actual = dev.read("AUDIO_MGR_SYS_DELAY")
-        if tuple(actual) != (lag,):
+        try:
+            prior = tuple(dev.read("AUDIO_MGR_SYS_DELAY"))
+            if len(prior) != 1 or not isinstance(prior[0], int):
+                raise ValueError(f"invalid prior value {prior!r}")
+        except AUDIO_CONTROL_ERRORS as exc:
             logger.error(
-                "AUDIO_MGR_SYS_DELAY readback mismatch: wrote %d, read %r",
-                lag,
-                actual,
+                "cannot read prior AUDIO_MGR_SYS_DELAY; no write attempted: %s",
+                exc,
             )
             return False
-    except Exception as exc:  # noqa: BLE001
-        logger.error("volatile AUDIO_MGR_SYS_DELAY apply failed: %s", exc)
-        return False
+
+        try:
+            dev.write("AUDIO_MGR_SYS_DELAY", [lag])
+            actual = tuple(dev.read("AUDIO_MGR_SYS_DELAY"))
+            if actual != (lag,):
+                raise RuntimeError(f"wrote {lag}, read {actual!r}")
+        except AUDIO_CONTROL_ERRORS as apply_exc:
+            logger.error(
+                "volatile AUDIO_MGR_SYS_DELAY apply failed (%s); rolling back to %d",
+                apply_exc,
+                prior[0],
+            )
+            try:
+                dev.write("AUDIO_MGR_SYS_DELAY", [prior[0]])
+                restored = tuple(dev.read("AUDIO_MGR_SYS_DELAY"))
+                if restored != prior:
+                    raise RuntimeError(
+                        f"expected prior value {prior!r}, read {restored!r}"
+                    )
+            except AUDIO_CONTROL_ERRORS as rollback_exc:
+                logger.critical(
+                    "AUDIO_MGR_SYS_DELAY rollback failed; chip state is uncertain: %s",
+                    rollback_exc,
+                )
+            else:
+                logger.warning(
+                    "rolled back AUDIO_MGR_SYS_DELAY to prior value %d",
+                    prior[0],
+                )
+            return False
     finally:
         try:
             dev.close()
-        except Exception as exc:  # noqa: BLE001
+        except AUDIO_CONTROL_ERRORS as exc:
             logger.warning("failed to close XVF3800 control handle: %s", exc)
 
     logger.warning(
@@ -554,7 +670,7 @@ def main() -> int:
         format="%(asctime)s aec-tune %(levelname)s %(message)s",
     )
     status = 1
-    voice_was_active = False
+    services_to_restore: list[str] = []
     restore_volume: float | None = None
     original_volume: float | None = None
     test_volume: float | None = None
@@ -575,7 +691,7 @@ def main() -> int:
         else:
             try:
                 current_volume = _camilla_get_volume()
-            except Exception as exc:  # noqa: BLE001
+            except AUDIO_CONTROL_ERRORS as exc:
                 logger.warning(
                     "Camilla volume unavailable in passive diagnostic mode: %s",
                     exc,
@@ -584,14 +700,13 @@ def main() -> int:
                 logger.info("current main_volume = %.1f dB", current_volume)
             logger.info("passive mode: no test signal injected; ducking unchanged")
 
-        # jasper-voice owns the XVF capture endpoint. Track the successful
-        # stop before the settling wait so KeyboardInterrupt still restarts it.
-        if not args.keep_voice_running:
-            voice_was_active = _stop_service_if_running(
-                "jasper-voice.service", "XVF capture EP"
-            )
-            if voice_was_active:
-                time.sleep(0.5)
+        # Record each active unit before stopping it. If systemctl returns an
+        # error (or this process is interrupted) after the unit actually
+        # stopped, the outer finally still restores its original active state.
+        for unit, label in CAPTURE_OWNER_STOP_ORDER:
+            if _service_is_active(unit):
+                services_to_restore.append(unit)
+                _stop_service(unit, label)
 
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
@@ -622,7 +737,7 @@ def main() -> int:
                             "aplay",
                             "-q",
                             "-D",
-                            "plug:jasper_out",
+                            "correction_substream",
                             str(noise_wav),
                         ],
                     )
@@ -689,17 +804,15 @@ def main() -> int:
                 logger.info(
                     "restored and verified main_volume = %.1f dB", restore_volume
                 )
-            except Exception as exc:  # noqa: BLE001
+            except AUDIO_CONTROL_ERRORS as exc:
                 logger.error("failed to restore Camilla main_volume: %s", exc)
                 cleanup_failed = True
-        if voice_was_active:
+        for unit in reversed(services_to_restore):
             try:
-                restarted = _restart_service("jasper-voice.service")
-            except Exception as exc:  # noqa: BLE001
-                logger.error("failed to restart jasper-voice.service: %s", exc)
+                _start_service(unit)
+            except AUDIO_CONTROL_ERRORS as exc:
+                logger.error("failed to restore %s: %s", unit, exc)
                 cleanup_failed = True
-            else:
-                cleanup_failed = cleanup_failed or not restarted
         if cleanup_failed:
             status = 1
     return status

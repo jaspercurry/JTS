@@ -925,7 +925,7 @@ forgotten:
 
 | CLI | Privileged operation today | Direction |
 |---|---|---|
-| `jasper-aec-tune` | Stops/starts `jasper-voice`, optionally adjusts and verifies Camilla volume, and captures audio. The default is diagnostic-only; explicit `--apply` performs one guarded XVF write with readback, never a state-file or on-chip persistence write. AEC reconcile/init overwrites that volatile value from the active profile. | Leave sudo-only until the AEC root-helper boundary exists. |
+| `jasper-aec-tune` | Stops/restores the active XVF capture participants (`jasper-voice` and `jasper-aec-bridge`), optionally adjusts and verifies Camilla volume, and captures audio; service and Camilla operations are bounded. The default is diagnostic-only; explicit `--apply` retains the prior value, performs one guarded XVF write with readback, and rolls back on apply/readback failure. It never owns a state-file or on-chip persistence write. AEC reconcile/init overwrites a successful volatile value from the active profile. | Leave sudo-only until the AEC root-helper boundary exists. |
 | `jasper-wake-enroll` | Requires root so it can stop/start `jasper-voice` and bind/capture the same mic/UDP resources without fighting the daemon. | Later split could use the restart broker plus an `audio`/state-writer user, but this is operator-only and not first. |
 | `jasper-noise-capture` | Same stop/start and capture shape as wake enrollment, without active wake prompts. | Same direction as wake enrollment. |
 

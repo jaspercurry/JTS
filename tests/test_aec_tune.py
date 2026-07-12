@@ -7,8 +7,10 @@
 import logging
 import math
 from pathlib import Path
+import signal
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
@@ -64,10 +66,14 @@ def _prepare_main(
     detector = _use_asound_root(monkeypatch, tmp_path)
     _fake_capture_with_channels(monkeypatch, recorded_channels)
     monkeypatch.setattr(aec_tune, "_camilla_get_volume", lambda: 0.0)
-    stop = MagicMock(return_value=True)
-    restart = MagicMock(return_value=True)
-    monkeypatch.setattr(aec_tune, "_stop_service_if_running", stop)
-    monkeypatch.setattr(aec_tune, "_restart_service", restart)
+    monkeypatch.setattr(
+        aec_tune,
+        "_service_is_active",
+        MagicMock(side_effect=lambda unit: unit == "jasper-voice.service"),
+    )
+    monkeypatch.setattr(aec_tune, "_stop_service", MagicMock())
+    restart = MagicMock()
+    monkeypatch.setattr(aec_tune, "_start_service", restart)
     monkeypatch.setattr(aec_tune.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
         sys,
@@ -215,14 +221,17 @@ def test_explicit_apply_uses_verified_volatile_write_and_voice_recovers(
     from jasper.xvf import xvf_host
 
     device = MagicMock()
-    device.read.return_value = (12,)
+    device.read.side_effect = [(9,), (12,)]
     monkeypatch.setattr(xvf_host, "find", MagicMock(return_value=device))
     sys.argv.append("--apply")
 
     assert aec_tune.main() == 0
 
     device.write.assert_called_once_with("AUDIO_MGR_SYS_DELAY", [12])
-    device.read.assert_called_once_with("AUDIO_MGR_SYS_DELAY")
+    assert device.read.call_args_list == [
+        call("AUDIO_MGR_SYS_DELAY"),
+        call("AUDIO_MGR_SYS_DELAY"),
+    ]
     device.close.assert_called_once_with()
     restart.assert_called_once_with("jasper-voice.service")
     detector.assert_called_once_with()
@@ -259,7 +268,7 @@ def test_apply_accepts_confirmed_range_boundaries(monkeypatch, lag: int) -> None
     from jasper.xvf import xvf_host
 
     device = MagicMock()
-    device.read.return_value = (lag,)
+    device.read.side_effect = [(0,), (lag,)]
     monkeypatch.setattr(xvf_host, "find", MagicMock(return_value=device))
 
     assert aec_tune._apply_volatile_delay(lag, aec_tune.MIN_APPLY_CONFIDENCE)
@@ -275,17 +284,37 @@ def test_apply_fails_closed_when_device_is_missing(monkeypatch) -> None:
     assert aec_tune._apply_volatile_delay(12, 0.5) is False
 
 
+def test_apply_refuses_write_when_prior_delay_cannot_be_read(
+    monkeypatch, caplog
+) -> None:
+    from jasper.xvf import xvf_host
+
+    device = MagicMock()
+    device.read.side_effect = OSError("USB read failed")
+    monkeypatch.setattr(xvf_host, "find", MagicMock(return_value=device))
+
+    with caplog.at_level(logging.ERROR, logger="jasper.aec_tune"):
+        assert aec_tune._apply_volatile_delay(12, 0.5) is False
+
+    assert "no write attempted" in caplog.text
+    device.write.assert_not_called()
+    device.close.assert_called_once_with()
+
+
 def test_apply_fails_closed_on_readback_mismatch_and_closes_device(
     monkeypatch,
 ) -> None:
     from jasper.xvf import xvf_host
 
     device = MagicMock()
-    device.read.return_value = (13,)
+    device.read.side_effect = [(7,), (13,), (7,)]
     monkeypatch.setattr(xvf_host, "find", MagicMock(return_value=device))
 
     assert aec_tune._apply_volatile_delay(12, 0.5) is False
-    device.write.assert_called_once_with("AUDIO_MGR_SYS_DELAY", [12])
+    assert device.write.call_args_list == [
+        call("AUDIO_MGR_SYS_DELAY", [12]),
+        call("AUDIO_MGR_SYS_DELAY", [7]),
+    ]
     device.close.assert_called_once_with()
 
 
@@ -293,11 +322,38 @@ def test_apply_fails_closed_on_write_error_and_closes_device(monkeypatch) -> Non
     from jasper.xvf import xvf_host
 
     device = MagicMock()
-    device.write.side_effect = OSError("USB write failed")
+    device.read.side_effect = [(7,), (7,)]
+    device.write.side_effect = [OSError("USB write failed"), None]
     monkeypatch.setattr(xvf_host, "find", MagicMock(return_value=device))
 
     assert aec_tune._apply_volatile_delay(12, 0.5) is False
-    device.read.assert_not_called()
+    assert device.write.call_args_list == [
+        call("AUDIO_MGR_SYS_DELAY", [12]),
+        call("AUDIO_MGR_SYS_DELAY", [7]),
+    ]
+    assert device.read.call_args_list == [
+        call("AUDIO_MGR_SYS_DELAY"),
+        call("AUDIO_MGR_SYS_DELAY"),
+    ]
+    device.close.assert_called_once_with()
+
+
+def test_apply_reports_uncertain_state_when_rollback_fails(monkeypatch, caplog) -> None:
+    from jasper.xvf import xvf_host
+
+    device = MagicMock()
+    device.read.side_effect = [(7,), (13,)]
+    device.write.side_effect = [None, OSError("rollback write failed")]
+    monkeypatch.setattr(xvf_host, "find", MagicMock(return_value=device))
+
+    with caplog.at_level(logging.WARNING, logger="jasper.aec_tune"):
+        assert aec_tune._apply_volatile_delay(12, 0.5) is False
+
+    assert "chip state is uncertain" in caplog.text
+    assert device.write.call_args_list == [
+        call("AUDIO_MGR_SYS_DELAY", [12]),
+        call("AUDIO_MGR_SYS_DELAY", [7]),
+    ]
     device.close.assert_called_once_with()
 
 
@@ -309,7 +365,7 @@ def test_active_mode_rejects_invalid_duck_before_runtime_side_effects(
     get_volume = MagicMock()
     stop = MagicMock()
     monkeypatch.setattr(aec_tune, "_camilla_get_volume", get_volume)
-    monkeypatch.setattr(aec_tune, "_stop_service_if_running", stop)
+    monkeypatch.setattr(aec_tune, "_stop_service", stop)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -330,7 +386,7 @@ def test_active_mode_rejects_nonfinite_current_volume_before_side_effects(
     monkeypatch.setattr(aec_tune, "_camilla_get_volume", lambda: math.nan)
     stop = MagicMock()
     popen = MagicMock()
-    monkeypatch.setattr(aec_tune, "_stop_service_if_running", stop)
+    monkeypatch.setattr(aec_tune, "_stop_service", stop)
     monkeypatch.setattr(aec_tune.subprocess, "Popen", popen)
     monkeypatch.setattr(sys, "argv", ["jasper-aec-tune", "--inject-noise"])
 
@@ -362,6 +418,45 @@ def test_camilla_set_volume_requires_finite_matching_readback(monkeypatch) -> No
     client.disconnect.assert_called_once_with()
 
 
+def test_bounded_sync_operation_interrupts_a_wedged_client_call() -> None:
+    started = time.monotonic()
+
+    with pytest.raises(TimeoutError, match="test operation timed out"):
+        with aec_tune._bounded_sync_operation("test operation", 0.01):
+            signal.pause()
+
+    assert time.monotonic() - started < 1.0
+
+
+def test_systemctl_state_stop_and_start_are_all_bounded(monkeypatch) -> None:
+    run = MagicMock(
+        side_effect=[
+            SimpleNamespace(returncode=0, stdout="active\n"),
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=3, stdout="inactive\n"),
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=0, stdout="active\n"),
+        ]
+    )
+    monkeypatch.setattr(aec_tune.subprocess, "run", run)
+
+    assert aec_tune._service_is_active("jasper-voice.service")
+    aec_tune._stop_service("jasper-voice.service", "capture endpoint")
+    aec_tune._start_service("jasper-voice.service")
+
+    assert [item.args[0] for item in run.call_args_list] == [
+        ["systemctl", "is-active", "jasper-voice.service"],
+        ["systemctl", "stop", "jasper-voice.service"],
+        ["systemctl", "is-active", "jasper-voice.service"],
+        ["systemctl", "start", "jasper-voice.service"],
+        ["systemctl", "is-active", "jasper-voice.service"],
+    ]
+    assert all(
+        item.kwargs["timeout"] == aec_tune.SYSTEMCTL_TIMEOUT_SEC
+        for item in run.call_args_list
+    )
+
+
 def test_active_mode_does_not_play_until_duck_is_verified_and_restores_volume(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -380,6 +475,26 @@ def test_active_mode_does_not_play_until_duck_is_verified_and_restores_volume(
         call(0.0),
     ]
     popen.assert_not_called()
+
+
+def test_active_noise_uses_canonical_correction_fanin_lane(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _prepare_main(monkeypatch, tmp_path, 1, 0)
+    monkeypatch.setattr(aec_tune, "_camilla_set_volume", MagicMock())
+    monkeypatch.setattr(aec_tune, "_correlate_and_find_lag", lambda mic, ref: (12, 0.5))
+    play_proc = MagicMock()
+    play_proc.wait.return_value = 0
+    play_proc.poll.return_value = 0
+    popen = MagicMock(return_value=play_proc)
+    monkeypatch.setattr(aec_tune.subprocess, "Popen", popen)
+    sys.argv.append("--inject-noise")
+
+    assert aec_tune.main() == 0
+
+    argv = popen.call_args.args[0]
+    assert argv[argv.index("-D") + 1] == "correction_substream"
+    assert "jasper_out" not in " ".join(argv)
 
 
 def test_active_capture_exception_reaps_aplay_restores_volume_and_voice(
@@ -423,14 +538,86 @@ def test_keyboard_interrupt_during_capture_still_restarts_voice(
     restart.assert_called_once_with("jasper-voice.service")
 
 
+def test_active_capture_owner_services_stop_and_restore_in_dependency_order(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _prepare_main(monkeypatch, tmp_path, 1, 0)
+    events: list[tuple[str, str]] = []
+    monkeypatch.setattr(aec_tune, "_service_is_active", lambda _unit: True)
+    monkeypatch.setattr(
+        aec_tune,
+        "_stop_service",
+        lambda unit, _label: events.append(("stop", unit)),
+    )
+    monkeypatch.setattr(
+        aec_tune,
+        "_start_service",
+        lambda unit: events.append(("start", unit)),
+    )
+    monkeypatch.setattr(aec_tune, "_correlate_and_find_lag", lambda mic, ref: (12, 0.5))
+
+    assert aec_tune.main() == 0
+
+    assert events == [
+        ("stop", "jasper-voice.service"),
+        ("stop", "jasper-aec-bridge.service"),
+        ("start", "jasper-aec-bridge.service"),
+        ("start", "jasper-voice.service"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_status"),
+    [(RuntimeError("systemctl failed"), 1), (KeyboardInterrupt(), 130)],
+)
+def test_service_is_restored_when_stop_fails_after_unit_may_have_stopped(
+    monkeypatch,
+    tmp_path: Path,
+    failure: BaseException,
+    expected_status: int,
+) -> None:
+    _prepare_main(monkeypatch, tmp_path, 1, 0)
+    monkeypatch.setattr(
+        aec_tune,
+        "_service_is_active",
+        lambda unit: unit == "jasper-voice.service",
+    )
+    monkeypatch.setattr(aec_tune, "_stop_service", MagicMock(side_effect=failure))
+    restore = MagicMock()
+    monkeypatch.setattr(aec_tune, "_start_service", restore)
+
+    assert aec_tune.main() == expected_status
+    restore.assert_called_once_with("jasper-voice.service")
+
+
 def test_restart_failure_overrides_successful_diagnostic(
     monkeypatch, tmp_path: Path
 ) -> None:
     _detector, restart = _prepare_main(monkeypatch, tmp_path, 1, 0)
-    restart.return_value = False
+    restart.side_effect = RuntimeError("start failed")
     monkeypatch.setattr(aec_tune, "_correlate_and_find_lag", lambda mic, ref: (12, 0.5))
 
     assert aec_tune.main() == 1
+
+
+def test_bridge_restore_timeout_does_not_skip_voice_restore(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _prepare_main(monkeypatch, tmp_path, 1, 0)
+    monkeypatch.setattr(aec_tune, "_service_is_active", lambda _unit: True)
+    monkeypatch.setattr(aec_tune, "_stop_service", MagicMock())
+    monkeypatch.setattr(aec_tune, "_correlate_and_find_lag", lambda mic, ref: (12, 0.5))
+    restored: list[str] = []
+
+    def restore(unit: str) -> None:
+        restored.append(unit)
+        if unit == "jasper-aec-bridge.service":
+            raise subprocess.TimeoutExpired(["systemctl", "start", unit], 10.0)
+
+    monkeypatch.setattr(aec_tune, "_start_service", restore)
+
+    assert aec_tune.main() == 1
+    assert restored == ["jasper-aec-bridge.service", "jasper-voice.service"]
 
 
 def test_partial_arecord_start_terminates_and_reaps_first_child(

@@ -2077,26 +2077,35 @@ renderers / internal producers
                                               ▼
                          pcm.jasper_capture  ← dsnoop on Loopback,1,7
                                               │
-                    ┌─────────────────────────┴─────────────────────────┐
-                    │                                                   │
-                    ▼                                                   ▼
-        reader A: jasper-camilla, via plug:jasper_capture   reader B: jasper-aec-bridge, via pcm.jasper_ref
-          main_volume ducking + flat passthrough              captures jasper_ref (48k stereo) for FAR-END REFERENCE
-          writes to → pcm.jasper_out (dmix on dongle)         captures detected supported XVF card, device 0 for NEAR-END MIC
-          → speaker (audible path)                            takes channel 1 (ASR beam; chip AEC disabled via SHF_BYPASS=1)
-                                                               downsamples ref 48k → 16k mono on left, HPF at 125 Hz
-                                                               runs WebRTC AEC3 (10ms windows)
-                                                               sends AEC'd mono 16k via UDP → 127.0.0.1:9876
-                                                                                                   │
-                                                                                                   ▼
-                                                                                                jasper-voice
-                                                                                                   UdpMicCapture
+                    ▼
+        jasper-camilla, via plug:jasper_capture
+          main_volume ducking + active processing
+                    │
+                    ▼
+       Ring B or outputd_content_playback/capture
+                    │
+                    ▼
+        jasper-outputd → physical DAC → speaker
+                    │
+                    └─ final speaker monitor UDP :9891 ───────┐
+                                                              ▼
+        detected supported XVF card, device 0 ──────── jasper-aec-bridge
+          NEAR-END MIC                                  FAR-END REFERENCE
+                                                        WebRTC AEC3 fallback
+                                                              │ UDP :9876
+                                                              ▼
+                                                         jasper-voice
 ```
 
-One snd-aloop card. "Loopback" (card 6) carries the music chain —
-renderer → camilla → dongle, with the bridge tapping the camilla
-input via dsnoop. The AEC'd mic from bridge to voice rides UDP
-localhost instead of a second snd-aloop card; see
+One snd-aloop card provides the private renderer/correction lanes plus the
+loopback fallbacks at both sides of CamillaDSP. The product-default eligible
+path uses Ring A from fan-in to CamillaDSP and Ring B from CamillaDSP to
+outputd; the fallback uses `jasper_capture` and `outputd_content_*`. In both
+cases outputd owns the DAC and publishes the final-speaker UDP monitor that
+the production bridge consumes. `pcm.jasper_ref` remains an explicit
+pre-Camilla diagnostic fallback, and active tuner noise enters through the
+ordinary `correction_substream` fan-in lane. The AEC'd mic from bridge to voice
+rides UDP localhost instead of a second snd-aloop card; see
 [HANDOFF-resilience.md](HANDOFF-resilience.md) for why we retired
 the original `LoopbackAEC` snd-aloop topology in May 2026 (short
 version: snd-aloop's kernel-side `loopback_cable` wedges when a
@@ -2268,17 +2277,16 @@ true`). We haven't implemented this; AEC3 currently rides on its
 own delay-estimator robustness. Listed as a Tier 2 item in
 PLAN.md's tuning roadmap.
 
-### Reference tap is pre-CamillaDSP, speaker is post
+### Legacy ALSA fallback reference is pre-CamillaDSP
 
-`jasper_capture` taps the dsnoop on the renderer→camilla
-loopback, *before* CamillaDSP applies `main_volume` ducking.
-What hits the speaker is what comes out of CamillaDSP, *after*
-ducking. So when the bridge ducks during a wake event, the
-reference signal stays at full level while the speaker output
-drops — meaning AEC3 momentarily sees a louder reference than
-the actual echo. AEC3's residual suppressor masks most of this,
-but the architecturally clean fix is to consume the outputd speaker
-reference fanout once it is exposed to AEC/corpus consumers.
+Normal production AEC consumes outputd's final speaker monitor, after
+CamillaDSP processing and ducking. `jasper_capture` / `pcm.jasper_ref` remains
+an explicit diagnostic fallback and taps the renderer→Camilla loopback
+*before* CamillaDSP. Do not infer speaker amplitude or final reference timing
+from that legacy tap. `jasper-aec-tune` deliberately captures it only to
+estimate the host-to-XVF bulk delay; in active mode its noise enters through
+`correction_substream`, so the stimulus is present in that tap while
+CamillaDSP `main_volume` still governs the audible output.
 
 ### Bridge is Python (RAM-heavy)
 
@@ -2306,7 +2314,13 @@ hardware-AEC profile and prepares the chip USB-IN reference path. The older
 work. It prints a candidate without changing state by default. Explicit
 `--apply` requires finite confidence of at least `0.001`, a candidate in the
 firmware-confirmed `[-64,+256]` range, a present XVF, and matching write
-readback. That write is volatile: the tool creates no delay state file and
+readback. Before writing, it retains the current chip value and restores it if
+the apply or readback fails; an unsuccessful rollback is reported as uncertain
+chip state. The tuner stops and later restores both capture participants that
+were active (`jasper-voice` and `jasper-aec-bridge`) so its direct XVF capture
+cannot race either the bridge-owned or direct-mic topology. Every service and
+Camilla control operation is bounded. That write is volatile: the tool creates
+no delay state file and
 does not call `SAVE_CONFIGURATION`; the next AEC reconcile/init or reboot
 overwrites it from the active profile's `JASPER_AEC_*_CHIP_SYS_DELAY` value.
 The supported production path remains profile-managed through the reconciler
