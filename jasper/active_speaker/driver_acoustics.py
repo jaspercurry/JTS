@@ -173,6 +173,11 @@ class DriverAcousticResult:
     # downsampled (calibrated) magnitude response surfaced for the maintainer.
     fr_curve: dict[str, Any] | None = None
     calibrated: bool = False
+    # SC-1 band-specific SNR verdict block (magnitude decision class), from
+    # jasper.audio_measurement.snr_policy.band_snr_verdicts. None when no
+    # noise_band_report was supplied to analyze_driver_capture — there is no
+    # noise evidence to gate on, so there is nothing to report.
+    snr: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -190,6 +195,7 @@ class DriverAcousticResult:
             "overlap_levels": [dict(entry) for entry in self.overlap_levels],
             "fr_curve": self.fr_curve,
             "calibrated": self.calibrated,
+            "snr": self.snr,
         }
 
 
@@ -211,6 +217,17 @@ class SummedAcousticResult:
     expect_null: bool = False
     fr_curve: dict[str, Any] | None = None
     calibrated: bool = False
+    # SC-1 band-specific SNR verdict block (alignment decision class), from
+    # jasper.audio_measurement.snr_policy.band_snr_verdicts over the overlap
+    # band [fc/2, fc*2]. None when neither noise_band_report nor
+    # noise_floor_dbfs was supplied to analyze_summed_crossover.
+    snr: dict[str, Any] | None = None
+    # True when null_depth_db was reduced from its raw measured value because
+    # the overlap-band SNR could not prove a deeper null (see
+    # jasper.audio_measurement.snr_policy.cap_null_depth_db). The verdict
+    # above is always decided from the UNCAPPED measured depth; only the
+    # reported number is capped.
+    null_depth_capped: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -224,6 +241,8 @@ class SummedAcousticResult:
             "expect_null": self.expect_null,
             "fr_curve": self.fr_curve,
             "calibrated": self.calibrated,
+            "snr": self.snr,
+            "null_depth_capped": self.null_depth_capped,
         }
 
 
@@ -350,6 +369,28 @@ def _capture_to_magnitude(
     return report, freqs, smoothed
 
 
+def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
+    """Raw-domain per-band FFT levels of a captured WAV, for the SC-1 SNR gate.
+
+    Deliberately mirrors how a ``noise_band_report`` is built — both sides via
+    :func:`jasper.audio_measurement.snr_policy.band_levels_dbfs` on the raw
+    signal — rather than the deconvolved (gain-corrected) magnitude response
+    ``_capture_to_magnitude`` produces: an SNR verdict compares captured
+    broadband energy against measured ambient noise in the same band, so both
+    sides must be in the same (raw dBFS) units to be physically meaningful.
+    """
+    import numpy as np
+
+    from jasper.audio_measurement import deconv, snr_policy
+    from jasper.audio_measurement import sweep as sweep_mod
+
+    captured, sr = sweep_mod.read_wav_mono(captured_wav)
+    captured = deconv.cap_capture_length(captured, sweep_len=0, sample_rate=sr)
+    return snr_policy.band_levels_dbfs(
+        captured.astype(np.float64), sr, snr_policy.CROSSOVER_SNR_BANDS_HZ
+    )
+
+
 def _band_mean_db(freqs, mag_db, lo_hz: float, hi_hz: float) -> float | None:
     import numpy as np
 
@@ -401,16 +442,30 @@ def _overlap_band_levels(
     capture_usable: bool,
     silent: bool,
     mic_clipping: bool,
+    snr_bands: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Mean deconvolved magnitude in a one-octave band centred on each Fc.
 
     Returns one entry per crossover ``Fc`` (``{fc_hz, lo_hz, hi_hz, level_db,
-    bins, usable}``). An entry is ``usable`` only when the capture passed quality
-    gating, was not silent, the mic did not clip, and the band held at least
-    ``OVERLAP_MIN_BINS`` bins — otherwise ``level_db`` is NaN and ``usable`` is
-    False so the level-match trim math can fail closed to the datasheet trim.
+    bins, usable, snr_verdict}``). An entry is ``usable`` only when the capture
+    passed quality gating, was not silent, the mic did not clip, the band held
+    at least ``OVERLAP_MIN_BINS`` bins, AND its SC-1 SNR verdict is not
+    ``"insufficient"`` — otherwise ``level_db`` is NaN and ``usable`` is False
+    so the level-match trim math can fail closed to the datasheet trim.
+
+    ``snr_bands`` is the ``"bands"`` list from
+    :func:`jasper.audio_measurement.snr_policy.band_snr_verdicts` (magnitude
+    class) when the caller supplied noise evidence, else ``None``.
+    ``snr_verdict`` is the worst verdict among the ``snr_bands`` entries
+    covering ``[lo_hz, hi_hz]`` (:func:`~jasper.audio_measurement.snr_policy.worst_band_verdict`),
+    or ``"unknown"`` when there is no evidence — which leaves ``usable``
+    exactly as computed above (no regression for the shipped no-noise flow).
+    A "reduced" verdict does NOT force ``usable=False``: it is a
+    reduced-confidence result, not a refusal.
     """
     import numpy as np
+
+    from jasper.audio_measurement import snr_policy
 
     entries: list[dict[str, Any]] = []
     for raw_fc in overlap_fcs:
@@ -447,6 +502,10 @@ def _overlap_band_levels(
             and bins >= OVERLAP_MIN_BINS
             and math.isfinite(level_db)
         )
+        worst = snr_policy.worst_band_verdict(snr_bands, lo, hi) if snr_bands else None
+        snr_verdict = worst["verdict"] if worst else "unknown"
+        if snr_verdict == "insufficient":
+            usable = False
         entries.append({
             "fc_hz": fc,
             "lo_hz": lo,
@@ -454,6 +513,7 @@ def _overlap_band_levels(
             "level_db": level_db,
             "bins": bins,
             "usable": usable,
+            "snr_verdict": snr_verdict,
         })
     return tuple(entries)
 
@@ -466,6 +526,7 @@ def analyze_driver_capture(
     overlap_fcs: Sequence[float] = (),
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
 ) -> DriverAcousticResult:
     """Classify whether a driver is producing sound in its expected band.
 
@@ -481,6 +542,15 @@ def analyze_driver_capture(
     yields an overlap-band level entry (see :data:`OVERLAP_BAND_RATIO`) used to
     refine the datasheet sensitivity trim with a MEASURED level match. Magnitude
     only — never used to authorise a phase or delay decision.
+
+    ``noise_band_report`` is an optional band-specific ambient-noise report
+    (the correction-shape ``[{band_id, band_hz, level_dbfs}, ...]`` list —
+    see :func:`jasper.audio_measurement.snr_policy.band_levels_dbfs`). When
+    supplied, the SC-1 magnitude-class SNR verdict block
+    (:func:`jasper.audio_measurement.snr_policy.band_snr_verdicts`) is
+    computed and stored on the result's ``snr`` field, scoped to
+    ``relevant_hz = passband_hz ∩ [ANALYSIS_LO_HZ, ANALYSIS_HI_HZ]``; when
+    omitted, ``snr`` is ``None`` (no noise evidence to gate on).
     """
     import numpy as np
 
@@ -515,6 +585,7 @@ def analyze_driver_capture(
             ),
             fr_curve=None,
             calibrated=calibrated,
+            snr=None,
         )
 
     band_lo = max(lo, ANALYSIS_LO_HZ)
@@ -548,6 +619,21 @@ def analyze_driver_capture(
         # wrong. Treat as present so a real-but-quiet driver isn't rejected.
         verdict, present = VERDICT_PRESENT, True
 
+    snr_block = None
+    snr_bands = None
+    if noise_band_report:
+        from jasper.audio_measurement import snr_policy
+
+        snr_block = snr_policy.band_snr_verdicts(
+            decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
+            capture_bands=_capture_band_levels(captured_wav),
+            noise_bands=noise_band_report,
+            noise_floor_dbfs_scalar=None,
+            relevant_hz=(band_lo, band_hi),
+            model=DRIVER,
+        )
+        snr_bands = snr_block.get("bands")
+
     return DriverAcousticResult(
         verdict=verdict,
         present=present,
@@ -562,9 +648,11 @@ def analyze_driver_capture(
         overlap_levels=_overlap_band_levels(
             freqs, mag_db, overlap_fcs,
             capture_usable=True, silent=silent, mic_clipping=mic_clipping,
+            snr_bands=snr_bands,
         ),
         fr_curve=_downsample_curve(freqs, mag_db),
         calibrated=calibrated,
+        snr=snr_block,
     )
 
 
@@ -577,6 +665,8 @@ def analyze_summed_crossover(
     expect_null: bool = False,
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
+    noise_floor_dbfs: float | None = None,
 ) -> SummedAcousticResult:
     """Measure the cancellation null at the crossover in a summed-speaker capture.
 
@@ -597,6 +687,19 @@ def analyze_summed_crossover(
 
     ``calibration`` (L2 calibrated mic) corrects the magnitude before the shoulder
     comparison; ``has_mic_calibration`` alone only relaxes the quality gate.
+
+    ``noise_band_report`` (correction-shape band list) and/or
+    ``noise_floor_dbfs`` (a single scalar) feed the SC-1 alignment-class SNR
+    verdict (:func:`jasper.audio_measurement.snr_policy.band_snr_verdicts`)
+    over the overlap band ``[fc/2, fc*2]``, stored on the result's ``snr``
+    field. Per the split SNR policy, a scalar alone (or no evidence) reads as
+    "unknown" for this decision class — it is not sufficient evidence for a
+    null/alignment call. When real band evidence proves the overlap SNR, the
+    REPORTED ``null_depth_db`` is capped at what that SNR can prove
+    (:func:`~jasper.audio_measurement.snr_policy.cap_null_depth_db`,
+    ``null_depth_capped=True``); the verdict below is always decided from the
+    raw, uncapped measured depth — a capped-but-still-deep null is safely "at
+    least that deep".
     """
     import numpy as np
 
@@ -624,6 +727,8 @@ def analyze_summed_crossover(
             expect_null=expect_null,
             fr_curve=None,
             calibrated=calibrated,
+            snr=None,
+            null_depth_capped=False,
         )
 
     at_fc = float(np.interp(crossover_fc_hz, freqs, mag_db))
@@ -638,9 +743,31 @@ def analyze_summed_crossover(
         verdict = SUMMED_BLEND_OK if deep else SUMMED_POLARITY_OR_DELAY_PROBLEM
     else:
         verdict = SUMMED_POLARITY_OR_DELAY_PROBLEM if deep else SUMMED_BLEND_OK
+
+    snr_block = None
+    reported_null_depth = null_depth
+    null_depth_capped = False
+    if noise_band_report or noise_floor_dbfs is not None:
+        from jasper.audio_measurement import snr_policy
+
+        snr_block = snr_policy.band_snr_verdicts(
+            decision_class=snr_policy.DECISION_CLASS_ALIGNMENT,
+            capture_bands=_capture_band_levels(captured_wav),
+            noise_bands=noise_band_report,
+            noise_floor_dbfs_scalar=noise_floor_dbfs,
+            relevant_hz=(
+                max(crossover_fc_hz / 2.0, ANALYSIS_LO_HZ),
+                min(crossover_fc_hz * 2.0, ANALYSIS_HI_HZ),
+            ),
+            model=DRIVER,
+        )
+        reported_null_depth, null_depth_capped = snr_policy.cap_null_depth_db(
+            null_depth, snr_block.get("worst_relevant"), DRIVER.null_cap_margin_db,
+        )
+
     return SummedAcousticResult(
         verdict=verdict,
-        null_depth_db=null_depth,
+        null_depth_db=reported_null_depth,
         crossover_fc_hz=crossover_fc_hz,
         observed_mic_dbfs=report.rms_dbfs,
         mic_clipping=mic_clipping,
@@ -648,4 +775,6 @@ def analyze_summed_crossover(
         expect_null=expect_null,
         fr_curve=_downsample_curve(freqs, mag_db),
         calibrated=calibrated,
+        snr=snr_block,
+        null_depth_capped=null_depth_capped,
     )

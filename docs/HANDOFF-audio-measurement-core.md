@@ -59,10 +59,16 @@ The product is three tiers:
   `sweep.py` (Novak ESS), `deconv.py` (FFT/Tikhonov IR), `analysis.py` (octave
   smoothing, log resample, band normalize), `quality.py` (+ correction's
   `acoustic_quality.py`) (SNR/clipping gates), `calibration.py` (Dayton/miniDSP/
-  UMIK lookup + upload) — all under `jasper/audio_measurement/`; plus, staying in
-  `jasper/correction/`: `confidence.py`, `coordinator.py` (`measurement_window`:
-  pauses renderers + voice, serializes), `session.py` (`MeasurementSession` state
-  machine), `bundles.py` (schema-versioned durable evidence). Shipped, tested.
+  UMIK lookup + upload), `snr_policy.py` (the crossover-builder Slice 0
+  band-specific, decision-class-split SNR gate — `band_levels_dbfs` moved
+  verbatim from `correction/session.py._band_levels_dbfs`, which now
+  delegates to it; `band_snr_verdicts` / `cap_null_depth_db` are new,
+  consumed by `active_speaker/driver_acoustics.py` and
+  `crossover_alignment.py`) — all under `jasper/audio_measurement/`; plus,
+  staying in `jasper/correction/`: `confidence.py`, `coordinator.py`
+  (`measurement_window`: pauses renderers + voice, serializes), `session.py`
+  (`MeasurementSession` state machine), `bundles.py` (schema-versioned
+  durable evidence). Shipped, tested.
 - **Shared browser-mic capture**: `deploy/assets/shared/js/measurement-audio.js`
   (mono 48 kHz, AGC/EC/NS hard-coded off) + `correction/browser_audio.py`.
 - **Active-speaker subsystem** (`jasper/active_speaker/`, 32 files on
@@ -81,7 +87,16 @@ The product is three tiers:
   generalization of `correction/autolevel.py`; that browser-locked controller
   remains the no-relay local fallback). The ramp's control-loop tuning lives on
   `MeasurementRamp` (validated, env-overridable), not on the `RAMP` quality
-  profile.
+  profile. Crossover-builder Slice 0 (see
+  [active-crossover-information-design.md](active-crossover-information-design.md)
+  "Level control and SNR") added `snr_policy.py` — `band_snr_verdicts` splits
+  SNR trust by decision class (magnitude/trim reuses `snr_ok_db`/`snr_warn_db`;
+  null/alignment reads the new `QualityModel.alignment_snr_ok_db` (35 dB) and
+  rejects scalar-only evidence) and `cap_null_depth_db` caps a measured
+  reverse-polarity null to what the overlap-band SNR can prove
+  (`QualityModel.null_cap_margin_db`, 10 dB). Both new fields default
+  identically across `ROOM`/`DRIVER`/`RAMP`, so room correction (which does
+  not call `snr_policy` yet) is unaffected.
 - The relay level target is reusable state, not a long-lived live gain. A
   successful ramp restores the original listening volume immediately. Room,
   verification, and active-crossover adapters reassert the target only inside

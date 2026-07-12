@@ -53,6 +53,7 @@ from jasper.audio_measurement import (
     calibration,
     deconv,
     quality,
+    snr_policy,
     sweep,
 )
 from jasper.audio_measurement.calibration import CalibrationRecord
@@ -127,31 +128,14 @@ def _dbfs(value: float) -> float:
 
 
 def _band_levels_dbfs(samples: np.ndarray, sample_rate: int) -> list[dict[str, Any]]:
-    if samples.ndim != 1 or sample_rate <= 0 or samples.size < 8:
-        return []
-    # Bound the FFT input the same way deconvolve() does: callers pass
-    # uploaded WAVs (noise floor, capture band-SNR) limited only by the
-    # 32 MB HTTP body cap, so an oversized/stuck upload would otherwise
-    # drive this rfft + hanning to OOM on the 1 GB Pi. Band levels need
-    # only a few seconds; sweep_len=0 = "nothing to preserve".
-    samples = deconv.cap_capture_length(samples, sweep_len=0, sample_rate=sample_rate)
-    x = np.asarray(samples, dtype=np.float64)
-    window = np.hanning(x.size)
-    spectrum = np.fft.rfft(x * window)
-    freqs = np.fft.rfftfreq(x.size, d=1.0 / sample_rate)
-    power = np.abs(spectrum) ** 2
-    out: list[dict[str, Any]] = []
-    for band_id, low, high in SNR_BANDS_HZ:
-        mask = (freqs >= low) & (freqs < high)
-        if not np.any(mask):
-            continue
-        rms_like = math.sqrt(float(np.mean(power[mask]))) / max(1, x.size)
-        out.append({
-            "band_id": band_id,
-            "band_hz": [low, high],
-            "level_dbfs": round(_dbfs(rms_like), 2),
-        })
-    return out
+    # Thin delegation to the shared kernel implementation (moved verbatim to
+    # jasper.audio_measurement.snr_policy so active-crossover commissioning's
+    # band-specific SNR gate reuses the same FFT band-power math instead of
+    # forking it). SNR_BANDS_HZ stays defined here — room correction's 4-band
+    # table is unchanged and this call's output is byte-equal to the
+    # pre-move implementation (pinned by
+    # test_audio_measurement_snr_policy.py).
+    return snr_policy.band_levels_dbfs(samples, sample_rate, SNR_BANDS_HZ)
 
 
 class SessionState(Enum):

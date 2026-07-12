@@ -64,6 +64,43 @@ def _mapping_value(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _noise_band_report_value(value: Any) -> list[dict[str, Any]] | None:
+    """Validate a browser-supplied ``noise_band_report``.
+
+    The correction-shape band list (see
+    ``jasper.audio_measurement.snr_policy.band_levels_dbfs``) — a non-empty
+    list of ``{band_id, band_hz: [lo, hi], level_dbfs}`` mappings. Anything
+    else (missing, wrong shape, a malformed entry) resolves to ``None`` so a
+    bad upload degrades the SC-1 SNR block to "unknown" evidence rather than
+    computing from garbage — the same fail-closed posture as every other
+    browser-supplied evidence field on this bridge.
+    """
+    if not isinstance(value, list) or not value:
+        return None
+    out: list[dict[str, Any]] = []
+    for entry in value:
+        if not isinstance(entry, Mapping):
+            return None
+        band_id = entry.get("band_id")
+        band_hz = entry.get("band_hz")
+        level_dbfs = entry.get("level_dbfs")
+        if (
+            not isinstance(band_id, str)
+            or not band_id
+            or not isinstance(band_hz, (list, tuple))
+            or len(band_hz) != 2
+            or level_dbfs is None
+        ):
+            return None
+        try:
+            lo, hi = float(band_hz[0]), float(band_hz[1])
+            level = float(level_dbfs)
+        except (TypeError, ValueError):
+            return None
+        out.append({"band_id": band_id, "band_hz": [lo, hi], "level_dbfs": level})
+    return out
+
+
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -420,6 +457,7 @@ def record_driver_capture(
         calibration=calibration_curve,
         notes=raw.get("notes"),
         noise_floor_dbfs=raw.get("noise_floor_dbfs"),
+        noise_band_report=_noise_band_report_value(raw.get("noise_band_report")),
         calibration_level=load_calibration_level_state(),
         safe_session=None,
         durable_floor_confirmation=floor_evidence.get("confirmation"),
@@ -485,6 +523,7 @@ def record_summed_capture(
         calibration=calibration_curve,
         notes=raw.get("notes"),
         noise_floor_dbfs=raw.get("noise_floor_dbfs"),
+        noise_band_report=_noise_band_report_value(raw.get("noise_band_report")),
         calibration_level=load_calibration_level_state(),
     )
     payload["measurement_mode"] = measurement_mode
