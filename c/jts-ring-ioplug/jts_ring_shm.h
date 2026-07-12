@@ -68,9 +68,23 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // Rust WRITER_LIVENESS_TIMEOUT_NS.
 #define JTS_RING_WRITER_LIVENESS_TIMEOUT_NS 2000000000ull
 
-// Bounded spin for the creator's magic during attach (mirrors the Rust reader).
+// One bounded attach budget covers the O_EXCL creator's ftruncate and its
+// magic-last publish (mirrors the Rust reader). A size<header file is not torn
+// until this budget expires: the live creator may still be pre-ftruncate.
 #define JTS_RING_MAGIC_WAIT_TIMEOUT_MS 100ull
 #define JTS_RING_MAGIC_WAIT_STEP_US 200ull
+
+// Cross-language create/attach transaction lock. Both the C ioplug and the
+// Rust reader/writer take `<ring path>.open.lock` before classifying an
+// existing inode, reclaiming it, creating/initializing a replacement, and
+// verifying that the initialized fd still owns the linked pathname. The lock
+// file is persistent (flock ownership is on the fd), group-shared like the ring,
+// and bounded so a wedged opener cannot stall audio startup indefinitely.
+#define JTS_RING_OPEN_LOCK_SUFFIX ".open.lock"
+#define JTS_RING_OPEN_LOCK_MODE 0660
+#define JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS 500ull
+#define JTS_RING_OPEN_LOCK_WAIT_STEP_US 1000ull
+#define JTS_RING_OPEN_MAX_ATTEMPTS 8u
 
 // The SHM header. All multi-byte fields are little-endian (the only targets are
 // LE). The layout is fixed at 128 bytes; slots begin at JTS_RING_HEADER_BYTES.
@@ -195,7 +209,7 @@ int jts_ring_geometry_validate(const jts_ring_geometry_t *g, const char **reason
 // --- Writer attach / publish / close ---
 
 // Create-or-attach as the WRITER: O_EXCL create (init + magic-last) or attach
-// (bounded magic wait + geometry validation against `expected`). On attach the
+// (bounded size+magic wait + geometry validation against `expected`). On attach the
 // writer bumps writer_epoch, stamps writer_pid, and continues from the stored
 // write_seq. Returns 0 on success (fills *out), <0 (negative errno-ish) on a
 // fatal error. `path` must be an absolute /dev/shm/jts-ring/... path for the
@@ -262,7 +276,7 @@ void jts_ring_writer_close(jts_ring_writer_t *w);
 // --- Reader attach / consume / close (Ring A CAPTURE direction) ---
 
 // Create-or-attach as the READER: O_EXCL create (init + magic-last) or attach
-// (bounded magic wait + geometry validation against `expected`), then:
+// (bounded size+magic wait + geometry validation against `expected`), then:
 //   - resync read_seq = write_seq (drop the <= n_slots stale slots accumulated
 //     while the reader was down; count attach_resyncs) and publish it (Release)
 //     so the writer's space check is correct;

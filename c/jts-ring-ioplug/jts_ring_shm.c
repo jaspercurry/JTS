@@ -14,7 +14,9 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -24,6 +26,121 @@
 // unlinked and recreated (narrow-path reclaim, mirroring the Rust reader's
 // is_owned_ring_path / outputd's is_owned_runtime_pipe_path).
 #define JTS_RING_OWNED_DIR "/dev/shm/jts-ring"
+
+static const char *owned_ring_dir(void) {
+#ifdef JTS_RING_TESTING
+    const char *test_dir = getenv("JTS_RING_TEST_OWNED_DIR");
+    if (test_dir != NULL && test_dir[0] != '\0') return test_dir;
+#endif
+    return JTS_RING_OWNED_DIR;
+}
+
+static int unlink_owned_ring(const char *path) {
+#ifdef JTS_RING_TESTING
+    const char *forced_errno = getenv("JTS_RING_TEST_UNLINK_ERRNO");
+    if (forced_errno != NULL && forced_errno[0] != '\0') {
+        int injected_errno = (int)strtol(forced_errno, NULL, 10);
+        if (injected_errno == ENOENT) {
+            // Model a concurrent reclaimer winning between our attach timeout
+            // and unlink: the pathname is genuinely gone, then our syscall
+            // reports ENOENT. One-shot so the retry can create normally.
+            unsetenv("JTS_RING_TEST_UNLINK_ERRNO");
+            (void)unlink(path);
+        }
+        errno = injected_errno;
+        return -1;
+    }
+#endif
+    return unlink(path);
+}
+
+#ifdef JTS_RING_TESTING
+typedef struct {
+    uint64_t dev;
+    uint64_t ino;
+    int64_t size;
+} test_inode_observation_t;
+
+static int test_fd_from_env(const char *name) {
+    const char *value = getenv(name);
+    if (value == NULL || value[0] == '\0') return -1;
+    char *end = NULL;
+    long fd = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || fd < 0 || fd > INT_MAX) return -1;
+    return (int)fd;
+}
+
+static void test_write_all(int fd, const void *data, size_t len) {
+    const uint8_t *cursor = (const uint8_t *)data;
+    while (len > 0) {
+        ssize_t n = write(fd, cursor, len);
+        if (n > 0) {
+            cursor += (size_t)n;
+            len -= (size_t)n;
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return;
+        }
+    }
+}
+
+static void test_report_inode(int report_fd, int ring_fd,
+                              const struct stat *known_stat) {
+    if (report_fd < 0) return;
+    struct stat st;
+    if (known_stat != NULL) {
+        st = *known_stat;
+    } else if (fstat(ring_fd, &st) < 0) {
+        return;
+    }
+    test_inode_observation_t observation = {
+        .dev = (uint64_t)st.st_dev,
+        .ino = (uint64_t)st.st_ino,
+        .size = (int64_t)st.st_size,
+    };
+    test_write_all(report_fd, &observation, sizeof(observation));
+}
+
+static void test_barrier_after_exclusive_create(int fd) {
+    int ready_fd = test_fd_from_env("JTS_RING_TEST_CREATOR_READY_FD");
+    int release_fd = test_fd_from_env("JTS_RING_TEST_CREATOR_RELEASE_FD");
+    if (ready_fd < 0 || release_fd < 0) return;
+    test_report_inode(ready_fd, fd, NULL);
+    char release = '\0';
+    while (read(release_fd, &release, 1) < 0 && errno == EINTR) {
+    }
+}
+
+static void test_report_size_wait(int fd, const struct stat *st) {
+    test_report_inode(test_fd_from_env("JTS_RING_TEST_SIZE_WAIT_FD"), fd, st);
+}
+
+static void test_report_lock_wait(void) {
+    int fd = test_fd_from_env("JTS_RING_TEST_LOCK_WAIT_FD");
+    if (fd >= 0) test_write_all(fd, "w", 1);
+}
+
+static void test_barrier_after_init(int fd) {
+    int ready_fd = test_fd_from_env("JTS_RING_TEST_POST_INIT_READY_FD");
+    int release_fd = test_fd_from_env("JTS_RING_TEST_POST_INIT_RELEASE_FD");
+    if (ready_fd < 0 || release_fd < 0) return;
+    test_report_inode(ready_fd, fd, NULL);
+    char release = '\0';
+    while (read(release_fd, &release, 1) < 0 && errno == EINTR) {
+    }
+}
+
+static void test_barrier_before_reclaim(void) {
+    int ready_fd = test_fd_from_env("JTS_RING_TEST_RECLAIM_READY_FD");
+    int release_fd = test_fd_from_env("JTS_RING_TEST_RECLAIM_RELEASE_FD");
+    if (ready_fd < 0 || release_fd < 0) return;
+    test_write_all(ready_fd, "r", 1);
+    char release = '\0';
+    while (read(release_fd, &release, 1) < 0 && errno == EINTR) {
+    }
+}
+#endif
 
 // Bounded number of full-ring wait ticks before a live-reader publish gives up
 // and drops (defends against a reader that stamps a heartbeat but never
@@ -117,11 +234,13 @@ static void clamped_nanosleep(uint32_t period_frames) {
 }
 
 static int owned_ring_path(const char *path) {
-    // True iff `path` is directly under JTS_RING_OWNED_DIR (no nesting), i.e.
-    // dirname(path) == JTS_RING_OWNED_DIR. Narrow, string-based, mirroring the
-    // Rust reader.
-    const size_t dlen = sizeof(JTS_RING_OWNED_DIR) - 1;
-    if (strncmp(path, JTS_RING_OWNED_DIR, dlen) != 0) return 0;
+    // True iff `path` is directly under the owned root (no nesting), i.e.
+    // dirname(path) == owned_ring_dir(). Narrow, string-based, mirroring the
+    // Rust reader. Product builds always resolve the fixed /dev/shm root; only
+    // the host-test binary compiles the per-process override.
+    const char *owned_dir = owned_ring_dir();
+    const size_t dlen = strlen(owned_dir);
+    if (strncmp(path, owned_dir, dlen) != 0) return 0;
     if (path[dlen] != '/') return 0;
     const char *rest = path + dlen + 1;
     if (rest[0] == '\0') return 0;          // the dir itself
@@ -163,9 +282,117 @@ static void *map_fd(int fd, size_t len) {
     return base;
 }
 
+// Role-neutral ownership for one validated mmap + fd. The public writer and
+// reader structs intentionally remain distinct: this private type owns only the
+// byte-identical create/attach transport, while each role applies its own SPSC
+// guard and attach stamps after taking the mapping.
+typedef struct {
+    void *base;
+    size_t map_len;
+    int fd;
+    jts_ring_geometry_t geometry;
+} ring_mapping_t;
+
+typedef enum {
+    RING_ATTACH_FATAL = -1,
+    RING_ATTACH_VALID = 0,
+    RING_ATTACH_TORN = 1,
+} ring_attach_result_t;
+
+typedef enum {
+    RING_ROLE_WRITER,
+    RING_ROLE_READER,
+} ring_role_t;
+
+static const char *ring_role_name(ring_role_t role) {
+    return role == RING_ROLE_WRITER ? "writer" : "reader";
+}
+
+static void ring_mapping_reset(ring_mapping_t *mapping) {
+    memset(mapping, 0, sizeof(*mapping));
+    mapping->fd = -1;
+}
+
+static void ring_mapping_close(ring_mapping_t *mapping) {
+    if (mapping->base != NULL) munmap(mapping->base, mapping->map_len);
+    if (mapping->fd >= 0) close(mapping->fd);
+    ring_mapping_reset(mapping);
+}
+
+static int path_matches_fd(const char *path, int fd) {
+    struct stat fd_st;
+    struct stat path_st;
+    if (fstat(fd, &fd_st) < 0) return -errno;
+    if (stat(path, &path_st) < 0) return -errno;
+    return fd_st.st_dev == path_st.st_dev && fd_st.st_ino == path_st.st_ino ? 1 : 0;
+}
+
+static void open_lock_sleep(void) {
+    struct timespec ts = {
+        .tv_sec = 0,
+        .tv_nsec = (long)(JTS_RING_OPEN_LOCK_WAIT_STEP_US * 1000ull),
+    };
+    nanosleep(&ts, NULL);
+}
+
+static int acquire_open_lock(const char *path, ring_role_t role, int *lock_fd) {
+    char lock_path[PATH_MAX];
+    int n = snprintf(lock_path, sizeof(lock_path), "%s%s", path,
+                     JTS_RING_OPEN_LOCK_SUFFIX);
+    if (n < 0 || (size_t)n >= sizeof(lock_path)) return -ENAMETOOLONG;
+    int fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC,
+                  JTS_RING_OPEN_LOCK_MODE);
+    if (fd < 0) return -errno;
+    // Heal a creator's restrictive umask so future group-jasper peers can
+    // participate. A non-owner peer may see EPERM on an already-correct lock;
+    // it can still lock the opened fd, so that is not a transaction failure.
+    if (fchmod(fd, JTS_RING_OPEN_LOCK_MODE) < 0 && errno != EPERM) {
+        int chmod_errno = errno;
+        close(fd);
+        return -chmod_errno;
+    }
+    uint64_t deadline = jts_ring_monotonic_ns() +
+                        JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS * 1000000ull;
+#ifdef JTS_RING_TESTING
+    int wait_reported = 0;
+#endif
+    for (;;) {
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+            *lock_fd = fd;
+            return 0;
+        }
+        int lock_errno = errno;
+        if (lock_errno != EWOULDBLOCK && lock_errno != EAGAIN &&
+            lock_errno != EINTR) {
+            close(fd);
+            return -lock_errno;
+        }
+#ifdef JTS_RING_TESTING
+        if (!wait_reported) {
+            test_report_lock_wait();
+            wait_reported = 1;
+        }
+#endif
+        if (jts_ring_monotonic_ns() >= deadline) {
+            fprintf(stderr, "event=jts_ring.%s.open_lock_exhausted path=%s\n",
+                    ring_role_name(role), path);
+            close(fd);
+            return -EAGAIN;
+        }
+        open_lock_sleep();
+    }
+}
+
+static void release_open_lock(int lock_fd) {
+    if (lock_fd < 0) return;
+    (void)flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+}
+
 // Init a freshly-created (O_EXCL) fd: ftruncate, map, write config fields, then
 // publish magic LAST with release. Returns 0 on success.
-static int init_created(int fd, const jts_ring_geometry_t *g, jts_ring_writer_t *out) {
+static int init_created_mapping(int fd, const jts_ring_geometry_t *g,
+                                ring_mapping_t *out) {
     size_t file_size = jts_ring_file_size(g);
     if (ftruncate(fd, (off_t)file_size) < 0) return -errno;
     void *base = map_fd(fd, file_size);
@@ -201,10 +428,47 @@ static int init_created(int fd, const jts_ring_geometry_t *g, jts_ring_writer_t 
     return 0;
 }
 
+static void magic_wait_sleep(void) {
+    struct timespec ts = {.tv_sec = 0,
+                          .tv_nsec = (long)(JTS_RING_MAGIC_WAIT_STEP_US * 1000ull)};
+    nanosleep(&ts, NULL);
+}
+
+// Wait until the O_EXCL creator has completed ftruncate and the file is safe to
+// mmap. A zero/small file is not immediately torn: the creator may simply be
+// between open(O_EXCL) and ftruncate. Returns VALID once at least the header is
+// present, TORN on timeout, or FATAL on fstat failure.
+static ring_attach_result_t wait_for_mappable_size(int fd, uint64_t deadline,
+                                                   size_t *actual,
+                                                   const char **reason) {
+#ifdef JTS_RING_TESTING
+    int size_wait_reported = 0;
+#endif
+    for (;;) {
+        struct stat st;
+        if (fstat(fd, &st) < 0) {
+            if (reason) *reason = "fstat failed";
+            return RING_ATTACH_FATAL;
+        }
+        if ((uint64_t)st.st_size >= (uint64_t)JTS_RING_HEADER_BYTES) {
+            *actual = (size_t)st.st_size;
+            return RING_ATTACH_VALID;
+        }
+#ifdef JTS_RING_TESTING
+        if (!size_wait_reported) {
+            test_report_size_wait(fd, &st);
+            size_wait_reported = 1;
+        }
+#endif
+        if (jts_ring_monotonic_ns() >= deadline) return RING_ATTACH_TORN;
+        magic_wait_sleep();
+    }
+}
+
 // Wait (bounded) for the creator's magic. Returns 1 if seen, 0 on timeout.
-// `base` is the mmap base (offset 0 = the magic+version qword).
-static int wait_for_magic(void *base) {
-    uint64_t deadline = jts_ring_monotonic_ns() + JTS_RING_MAGIC_WAIT_TIMEOUT_MS * 1000000ull;
+// `base` is the mmap base (offset 0 = the magic+version qword). The deadline is
+// shared with the size wait so attach has one 100 ms budget, not two.
+static int wait_for_magic(void *base, uint64_t deadline) {
     for (;;) {
         // Acquire-load the magic+version qword (mirrors the Rust reader). The
         // Acquire pairs with the creator's Release qword store, so observing
@@ -214,37 +478,32 @@ static int wait_for_magic(void *base) {
         uint32_t magic = (uint32_t)qword;
         if (magic == JTS_RING_MAGIC) return 1;
         if (jts_ring_monotonic_ns() >= deadline) return 0;
-        struct timespec ts = {.tv_sec = 0,
-                              .tv_nsec = (long)(JTS_RING_MAGIC_WAIT_STEP_US * 1000ull)};
-        nanosleep(&ts, NULL);
+        magic_wait_sleep();
     }
 }
 
-// Attach to an existing fd. On a valid ring, fills *out and returns 0. On a
-// creator-crashed-mid-init file (no magic / too small), returns 1 (caller may
-// reclaim if owned). On a genuine geometry mismatch (valid magic, wrong
-// shape/size), returns -1 (fatal).
-static int attach_existing(int fd, const jts_ring_geometry_t *expected,
-                           jts_ring_writer_t *out, const char **reason) {
-    struct stat st;
-    if (fstat(fd, &st) < 0) {
-        if (reason) *reason = "fstat failed";
-        return -1;
-    }
-    if ((uint64_t)st.st_size < (uint64_t)JTS_RING_HEADER_BYTES) {
-        // Mid-init (or not a ring): reclaimable-as-torn.
-        return 1;
-    }
-    size_t actual = (size_t)st.st_size;
+// Attach to an existing fd. A valid ring transfers its mmap + fd into *out. A
+// creator-crashed-mid-init file (no magic / too small) is RING_ATTACH_TORN so
+// the caller may reclaim it if owned. A valid-magic geometry/size mismatch is
+// RING_ATTACH_FATAL and is never reclaimed.
+static ring_attach_result_t attach_existing_mapping(
+    int fd, const jts_ring_geometry_t *expected, ring_mapping_t *out,
+    const char **reason) {
+    uint64_t deadline =
+        jts_ring_monotonic_ns() + JTS_RING_MAGIC_WAIT_TIMEOUT_MS * 1000000ull;
+    size_t actual = 0;
+    ring_attach_result_t size_result =
+        wait_for_mappable_size(fd, deadline, &actual, reason);
+    if (size_result != RING_ATTACH_VALID) return size_result;
     void *base = map_fd(fd, actual);
     if (!base) {
         if (reason) *reason = "mmap failed";
-        return -1;
+        return RING_ATTACH_FATAL;
     }
     jts_ring_header_t *h = (jts_ring_header_t *)base;
-    if (!wait_for_magic(base)) {
+    if (!wait_for_magic(base, deadline)) {
         munmap(base, actual);
-        return 1; // torn init
+        return RING_ATTACH_TORN;
     }
     // Magic present -> header fully written. Cross-check the size the header's
     // own declared geometry implies (a valid-magic corrupt/truncated ring is
@@ -257,7 +516,7 @@ static int attach_existing(int fd, const jts_ring_geometry_t *expected,
     if (jts_ring_file_size(&header_g) != actual) {
         munmap(base, actual);
         if (reason) *reason = "file size inconsistent with header geometry";
-        return -1;
+        return RING_ATTACH_FATAL;
     }
     if (h->version != JTS_RING_VERSION || header_g.rate != expected->rate ||
         header_g.channels != expected->channels ||
@@ -266,21 +525,26 @@ static int attach_existing(int fd, const jts_ring_geometry_t *expected,
         header_g.n_slots != expected->n_slots) {
         munmap(base, actual);
         if (reason) *reason = "ring header does not match expected geometry";
-        return -1;
+        return RING_ATTACH_FATAL;
     }
     out->base = base;
     out->map_len = actual;
     out->fd = fd;
     out->geometry = *expected;
-    return 0;
+    return RING_ATTACH_VALID;
 }
 
-int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
-                         jts_ring_writer_t *out) {
-    memset(out, 0, sizeof(*out));
+// The byte-identical create/attach/torn-reclaim state machine used by both
+// roles. On success, *out owns the mmap and fd. On every failure, *out remains
+// detached; locally-opened fds and temporary mappings are released here or by
+// attach_existing_mapping. `role` selects only the stable event namespace.
+static int ring_mapping_open(const char *path, const jts_ring_geometry_t *expected,
+                             ring_role_t role, ring_mapping_t *out) {
+    ring_mapping_reset(out);
+    const char *role_name = ring_role_name(role);
     const char *reason = NULL;
     if (jts_ring_geometry_validate(expected, &reason) != 0) {
-        fprintf(stderr, "event=jts_ring.writer.bad_geometry reason=%s\n",
+        fprintf(stderr, "event=jts_ring.%s.bad_geometry reason=%s\n", role_name,
                 reason ? reason : "(unknown)");
         return -EINVAL;
     }
@@ -289,66 +553,171 @@ int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
     // after disarm.sh removed the tmpfs dir). Mirrors the Rust reader.
     int mkrc = ensure_parent_dir(path);
     if (mkrc != 0) {
-        fprintf(stderr, "event=jts_ring.writer.mkdir_failed rc=%d path=%s\n", mkrc, path);
+        fprintf(stderr, "event=jts_ring.%s.mkdir_failed rc=%d path=%s\n", role_name,
+                mkrc, path);
         return mkrc;
     }
 
-    for (int attempt = 0; attempt < 8; attempt++) {
+    int lock_fd = -1;
+    int lock_rc = acquire_open_lock(path, role, &lock_fd);
+    if (lock_rc != 0) return lock_rc;
+
+    int result = -EAGAIN;
+
+    for (unsigned attempt = 0; attempt < JTS_RING_OPEN_MAX_ATTEMPTS; attempt++) {
+#ifdef JTS_RING_TESTING
+        const char *force_retry = getenv("JTS_RING_TEST_FORCE_RETRY");
+        if (force_retry != NULL && force_retry[0] == '1') continue;
+#endif
         int create_fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0660);
         if (create_fd >= 0) {
-            int rc = init_created(create_fd, expected, out);
+#ifdef JTS_RING_TESTING
+            test_barrier_after_exclusive_create(create_fd);
+#endif
+            int rc = init_created_mapping(create_fd, expected, out);
             if (rc != 0) {
+                int still_linked = path_matches_fd(path, create_fd);
                 close(create_fd);
-                unlink(path); // drop the half-baked file
-                fprintf(stderr, "event=jts_ring.writer.create_failed rc=%d\n", rc);
-                return rc;
+                if (still_linked == 1) (void)unlink(path);
+                fprintf(stderr, "event=jts_ring.%s.create_failed rc=%d\n", role_name,
+                        rc);
+                result = rc;
+                break;
             }
-            break; // created + initialized; fall through to writer-attach stamp
+#ifdef JTS_RING_TESTING
+            test_barrier_after_init(out->fd);
+#endif
+            int owns_path = path_matches_fd(path, out->fd);
+            if (owns_path != 1) {
+                fprintf(stderr,
+                        "event=jts_ring.%s.creator_path_lost path=%s rc=%d\n",
+                        role_name, path, owns_path);
+                ring_mapping_close(out);
+                if (owns_path == 0 || owns_path == -ENOENT) continue;
+                result = owns_path;
+                break;
+            }
+            result = 0;
+            break;
         }
-        if (errno != EEXIST) {
-            fprintf(stderr, "event=jts_ring.writer.create_open_failed errno=%d\n", errno);
-            return -errno;
+        int create_errno = errno;
+        if (create_errno != EEXIST) {
+            fprintf(stderr, "event=jts_ring.%s.create_open_failed errno=%d\n",
+                    role_name, create_errno);
+            result = -create_errno;
+            break;
         }
 
         int fd = open(path, O_RDWR | O_CLOEXEC);
         if (fd < 0) {
-            if (errno == ENOENT) continue; // raced an unlink; retry create
-            return -errno;
+            int attach_errno = errno;
+            if (attach_errno == ENOENT) continue; // raced an unlink; retry create
+            result = -attach_errno;
+            break;
         }
-        int rc = attach_existing(fd, expected, out, &reason);
-        if (rc == 0) break; // attached to a valid ring
+        struct stat opened_st;
+        int opened_stat_rc = fstat(fd, &opened_st);
+        if (opened_stat_rc < 0) {
+            result = -errno;
+            close(fd);
+            break;
+        }
+        ring_attach_result_t rc =
+            attach_existing_mapping(fd, expected, out, &reason);
+        if (rc == RING_ATTACH_VALID) {
+            int owns_path = path_matches_fd(path, out->fd);
+            if (owns_path == 1) {
+                result = 0;
+                break;
+            }
+            ring_mapping_close(out);
+            if (owns_path == 0 || owns_path == -ENOENT) continue;
+            result = owns_path;
+            break;
+        }
         close(fd);
-        if (rc < 0) {
-            fprintf(stderr, "event=jts_ring.writer.attach_fatal reason=%s\n",
+        if (rc == RING_ATTACH_FATAL) {
+            fprintf(stderr, "event=jts_ring.%s.attach_fatal reason=%s\n", role_name,
                     reason ? reason : "(unknown)");
-            return -EINVAL;
+            result = -EINVAL;
+            break;
         }
-        // rc == 1: torn init. Only the owner may reclaim, only under the owned
-        // path. Otherwise fatal (do not clobber a foreign file).
+        // Torn init. Only the owner may reclaim, only under the owned path.
+        // Otherwise fatal (do not clobber a foreign file).
         if (!owned_ring_path(path)) {
-            fprintf(stderr, "event=jts_ring.writer.torn_not_reclaimable path=%s\n", path);
-            return -EINVAL;
+            fprintf(stderr, "event=jts_ring.%s.torn_not_reclaimable path=%s\n",
+                    role_name, path);
+            result = -EINVAL;
+            break;
         }
-        unlink(path);
-        fprintf(stderr, "event=jts_ring.writer.reclaimed_magic_invalid path=%s\n", path);
+        struct stat linked_st;
+        if (stat(path, &linked_st) < 0) {
+            if (errno == ENOENT) continue;
+            result = -errno;
+            break;
+        }
+        if (linked_st.st_dev != opened_st.st_dev ||
+            linked_st.st_ino != opened_st.st_ino) {
+            continue; // pathname changed while this inode was classified
+        }
+#ifdef JTS_RING_TESTING
+        test_barrier_before_reclaim();
+#endif
+        if (unlink_owned_ring(path) < 0) {
+            int unlink_errno = errno;
+            if (unlink_errno == ENOENT) continue; // another reclaimer won; retry
+            fprintf(stderr,
+                    "event=jts_ring.%s.reclaim_failed errno=%d path=%s\n",
+                    role_name, unlink_errno, path);
+            result = -unlink_errno;
+            break;
+        }
+        fprintf(stderr, "event=jts_ring.%s.reclaimed_magic_invalid path=%s\n",
+                role_name, path);
         // loop and re-create
     }
 
-    // Guard against attempt exhaustion: if every one of the 8 iterations ended
-    // in `continue` (raced an unlink) or reclaim-and-loop (pathological racing),
-    // the loop falls through here with out->base still NULL. Dereferencing it
-    // via hdr(out) below would segfault inside CamillaDSP/aplay. Fail loud
-    // instead — the caller (ioplug open / bench) maps this to an open error.
-    if (out->base == NULL) {
-        fprintf(stderr, "event=jts_ring.writer.attach_exhausted path=%s\n", path);
-        return -EAGAIN;
+    if (result == -EAGAIN) {
+        fprintf(stderr, "event=jts_ring.%s.attach_exhausted path=%s\n", role_name,
+                path);
     }
+    release_open_lock(lock_fd);
+    return result;
+}
+
+static void writer_take_mapping(jts_ring_writer_t *out, ring_mapping_t *mapping) {
+    out->base = mapping->base;
+    out->map_len = mapping->map_len;
+    out->fd = mapping->fd;
+    out->geometry = mapping->geometry;
+    out->slot_bytes = jts_ring_slot_bytes(&out->geometry);
+    out->samples_per_slot = jts_ring_samples_per_slot(&out->geometry);
+    ring_mapping_reset(mapping);
+}
+
+static void reader_take_mapping(jts_ring_reader_t *out, ring_mapping_t *mapping) {
+    out->base = mapping->base;
+    out->map_len = mapping->map_len;
+    out->fd = mapping->fd;
+    out->geometry = mapping->geometry;
+    out->slot_bytes = jts_ring_slot_bytes(&out->geometry);
+    out->samples_per_slot = jts_ring_samples_per_slot(&out->geometry);
+    ring_mapping_reset(mapping);
+}
+
+int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
+                         jts_ring_writer_t *out) {
+    memset(out, 0, sizeof(*out));
+    out->fd = -1;
+
+    ring_mapping_t mapping;
+    int rc = ring_mapping_open(path, expected, RING_ROLE_WRITER, &mapping);
+    if (rc != 0) return rc;
+    writer_take_mapping(out, &mapping);
 
     // Writer-attach stamp: epoch++ (release), pid, heartbeat, continue from the
     // stored write_seq (file-lifetime monotonic).
     jts_ring_header_t *h = hdr(out);
-    out->slot_bytes = jts_ring_slot_bytes(&out->geometry);
-    out->samples_per_slot = jts_ring_samples_per_slot(&out->geometry);
     out->write_seq = atomic_load_explicit(&h->write_seq, memory_order_acquire);
     uint64_t epoch = atomic_load_explicit(&h->writer_epoch, memory_order_acquire);
     atomic_store_explicit(&h->writer_epoch, epoch + 1, memory_order_release);
@@ -525,151 +894,16 @@ static int foreign_reader_is_live(const jts_ring_header_t *h, uint64_t now_ns) {
     return age < JTS_RING_WRITER_LIVENESS_TIMEOUT_NS;
 }
 
-// Fill the reader's common (geometry/mmap) fields from an already-mapped ring.
-// Shared by init_created_reader (fresh create) and attach_existing_reader.
-static void reader_fill_common(jts_ring_reader_t *r, void *base, size_t map_len,
-                               int fd, const jts_ring_geometry_t *g) {
-    r->base = base;
-    r->map_len = map_len;
-    r->fd = fd;
-    r->geometry = *g;
-    r->slot_bytes = jts_ring_slot_bytes(g);
-    r->samples_per_slot = jts_ring_samples_per_slot(g);
-}
-
-// Init a freshly-created (O_EXCL) fd as the reader-creator (reboot-while-armed:
-// camilla may open before fanin). ftruncate + map + write config + publish magic
-// LAST with Release — byte-identical to init_created (the writer creator) so
-// either side can create the ring. Returns 0 on success.
-static int init_created_reader(int fd, const jts_ring_geometry_t *g,
-                               jts_ring_reader_t *out) {
-    size_t file_size = jts_ring_file_size(g);
-    if (ftruncate(fd, (off_t)file_size) < 0) return -errno;
-    void *base = map_fd(fd, file_size);
-    if (!base) return -errno;
-    jts_ring_header_t *h = (jts_ring_header_t *)base;
-    h->version = JTS_RING_VERSION;
-    h->rate = g->rate;
-    h->channels = g->channels;
-    h->sample_format = g->sample_format;
-    h->period_frames = g->period_frames;
-    h->n_slots = g->n_slots;
-    h->_pad = 0;
-    h->futex_word = 0;
-    uint64_t magic_qword = (uint64_t)JTS_RING_MAGIC | ((uint64_t)JTS_RING_VERSION << 32);
-    atomic_store_explicit(magic_qword_ptr(base), magic_qword, memory_order_release);
-    reader_fill_common(out, base, file_size, fd, g);
-    return 0;
-}
-
-// Attach to an existing fd as the reader. Same tri-state as attach_existing
-// (the writer's): 0 = attached to a valid ring, 1 = torn init (reclaimable if
-// owned), -1 = fatal geometry mismatch.
-static int attach_existing_reader(int fd, const jts_ring_geometry_t *expected,
-                                  jts_ring_reader_t *out, const char **reason) {
-    struct stat st;
-    if (fstat(fd, &st) < 0) {
-        if (reason) *reason = "fstat failed";
-        return -1;
-    }
-    if ((uint64_t)st.st_size < (uint64_t)JTS_RING_HEADER_BYTES) {
-        return 1; // mid-init / not a ring
-    }
-    size_t actual = (size_t)st.st_size;
-    void *base = map_fd(fd, actual);
-    if (!base) {
-        if (reason) *reason = "mmap failed";
-        return -1;
-    }
-    jts_ring_header_t *h = (jts_ring_header_t *)base;
-    if (!wait_for_magic(base)) {
-        munmap(base, actual);
-        return 1; // torn init
-    }
-    jts_ring_geometry_t header_g = {.rate = h->rate,
-                                    .channels = h->channels,
-                                    .sample_format = h->sample_format,
-                                    .period_frames = h->period_frames,
-                                    .n_slots = h->n_slots};
-    if (jts_ring_file_size(&header_g) != actual) {
-        munmap(base, actual);
-        if (reason) *reason = "file size inconsistent with header geometry";
-        return -1;
-    }
-    if (h->version != JTS_RING_VERSION || header_g.rate != expected->rate ||
-        header_g.channels != expected->channels ||
-        header_g.sample_format != expected->sample_format ||
-        header_g.period_frames != expected->period_frames ||
-        header_g.n_slots != expected->n_slots) {
-        munmap(base, actual);
-        if (reason) *reason = "ring header does not match expected geometry";
-        return -1;
-    }
-    reader_fill_common(out, base, actual, fd, expected);
-    return 0;
-}
-
 int jts_ring_reader_open(const char *path, const jts_ring_geometry_t *expected,
                          jts_ring_reader_t *out) {
     memset(out, 0, sizeof(*out));
     out->fd = -1;
-    const char *reason = NULL;
-    if (jts_ring_geometry_validate(expected, &reason) != 0) {
-        fprintf(stderr, "event=jts_ring.reader.bad_geometry reason=%s\n",
-                reason ? reason : "(unknown)");
-        return -EINVAL;
-    }
 
-    int mkrc = ensure_parent_dir(path);
-    if (mkrc != 0) {
-        fprintf(stderr, "event=jts_ring.reader.mkdir_failed rc=%d path=%s\n", mkrc, path);
-        return mkrc;
-    }
+    ring_mapping_t mapping;
+    int rc = ring_mapping_open(path, expected, RING_ROLE_READER, &mapping);
+    if (rc != 0) return rc;
 
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int create_fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0660);
-        if (create_fd >= 0) {
-            int rc = init_created_reader(create_fd, expected, out);
-            if (rc != 0) {
-                close(create_fd);
-                unlink(path);
-                fprintf(stderr, "event=jts_ring.reader.create_failed rc=%d\n", rc);
-                return rc;
-            }
-            break; // created; fall through to reader-attach stamp
-        }
-        if (errno != EEXIST) {
-            fprintf(stderr, "event=jts_ring.reader.create_open_failed errno=%d\n", errno);
-            return -errno;
-        }
-
-        int fd = open(path, O_RDWR | O_CLOEXEC);
-        if (fd < 0) {
-            if (errno == ENOENT) continue; // raced an unlink; retry create
-            return -errno;
-        }
-        int rc = attach_existing_reader(fd, expected, out, &reason);
-        if (rc == 0) break; // attached to a valid ring
-        close(fd);
-        if (rc < 0) {
-            fprintf(stderr, "event=jts_ring.reader.attach_fatal reason=%s\n",
-                    reason ? reason : "(unknown)");
-            return -EINVAL;
-        }
-        if (!owned_ring_path(path)) {
-            fprintf(stderr, "event=jts_ring.reader.torn_not_reclaimable path=%s\n", path);
-            return -EINVAL;
-        }
-        unlink(path);
-        fprintf(stderr, "event=jts_ring.reader.reclaimed_magic_invalid path=%s\n", path);
-    }
-
-    if (out->base == NULL) {
-        fprintf(stderr, "event=jts_ring.reader.attach_exhausted path=%s\n", path);
-        return -EAGAIN;
-    }
-
-    jts_ring_header_t *h = rdr_hdr(out);
+    jts_ring_header_t *h = (jts_ring_header_t *)mapping.base;
 
     // SPSC GUARD: refuse if a live FOREIGN reader already owns the ring. Do this
     // AFTER the mmap but BEFORE stamping our own pid, so a rejected open leaves
@@ -693,12 +927,12 @@ int jts_ring_reader_open(const char *path, const jts_ring_geometry_t *expected,
         fprintf(stderr,
                 "event=jts_ring.reader.busy path=%s existing_reader_pid=%llu\n",
                 path, (unsigned long long)other);
-        munmap(out->base, out->map_len);
-        if (out->fd >= 0) close(out->fd);
-        memset(out, 0, sizeof(*out));
-        out->fd = -1;
+        ring_mapping_close(&mapping);
         return -EBUSY;
     }
+
+    reader_take_mapping(out, &mapping);
+    h = rdr_hdr(out);
 
     // Reader-attach: resync read_seq = write_seq (drop <= n_slots stale slots),
     // publish it (Release) so the writer's space check is correct, stamp

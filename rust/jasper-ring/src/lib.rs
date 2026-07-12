@@ -108,10 +108,16 @@
 //! one side at a time (writer needs `W - R < n_slots`; reader needs `W > R`) and
 //! the writer never touches `read_seq`, so the two-sided discipline is exact. A
 //! writer crash mid-memcpy leaves `write_seq` unbumped — the garbage slot is
-//! never readable. A creator crash mid-init leaves `magic` unset — attachers spin
-//! <=100 ms for magic then error; the reader unlinks-and-recreates a
-//! magic-invalid file under its owned `/dev/shm/jts-ring/` path (narrow-path
-//! check, mirroring outputd's `is_owned_runtime_pipe_path`).
+//! never readable. Every cooperating C or Rust opener first takes the persistent
+//! adjacent `<ring path>.open.lock` transaction flock (0660, bounded 500 ms
+//! acquisition). It holds that lock across existing-inode classification, the
+//! O_EXCL creator's `ftruncate` + magic-last publish, conditional torn-inode
+//! reclaim, and a final fd-versus-linked-path identity proof. Lock contention
+//! times out without touching the ring. Only while holding the lock may an
+//! opener's <=100 ms size+magic budget classify a magic-invalid inode as
+//! crashed mid-init and unlink/recreate it under the narrow owned
+//! `/dev/shm/jts-ring/` path. This prevents a stale reclaimer from deleting a
+//! replacement another opener already initialized.
 //!
 //! There is ONE narrow window where writer and reader may store `read_seq`
 //! concurrently: a reader whose heartbeat has gone stale (wedged > liveness
@@ -171,6 +177,7 @@
 
 use std::io;
 use std::os::fd::RawFd;
+use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod layout;
@@ -234,9 +241,160 @@ pub struct RingMetrics {
 /// dead (reader reports `writer_alive:false`; the writer side free-runs).
 pub const WRITER_LIVENESS_TIMEOUT_NS: u64 = 2_000_000_000;
 
-/// Bounded spin for the creator's magic to appear during attach.
+/// One bounded attach budget for the creator's ftruncate + magic publish.
 const MAGIC_WAIT_TIMEOUT_MS: u64 = 100;
 const MAGIC_WAIT_STEP_US: u64 = 200;
+const OPEN_LOCK_SUFFIX: &str = ".open.lock";
+const OPEN_LOCK_MODE: u32 = 0o660;
+const OPEN_LOCK_WAIT_TIMEOUT_MS: u64 = 500;
+const OPEN_LOCK_WAIT_STEP_US: u64 = 1_000;
+const OPEN_MAX_ATTEMPTS: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RingRole {
+    Reader,
+    Writer,
+}
+
+impl RingRole {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Reader => "reader",
+            Self::Writer => "writer",
+        }
+    }
+}
+
+fn ring_event(role: RingRole, suffix: &str) -> String {
+    format!("jts_ring.{}.{suffix}", role.as_str())
+}
+
+/// Adjacent, persistent advisory lock for one complete open transaction.
+///
+/// This is deliberately a separate inode from the replaceable ring path. C and
+/// Rust both hold `<ring path>.open.lock` across classification, conditional
+/// reclaim, create, initialization, and final linked-path ownership proof.
+struct OpenTransactionLock {
+    fd: RawFd,
+}
+
+impl OpenTransactionLock {
+    fn acquire_with_wait_hook<F>(path: &str, role: RingRole, mut on_wait: F) -> io::Result<Self>
+    where
+        F: FnMut(),
+    {
+        let lock_path = format!("{path}{OPEN_LOCK_SUFFIX}");
+        let c_lock_path = std::ffi::CString::new(lock_path).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "ring lock path contains NUL")
+        })?;
+        let fd = unsafe {
+            libc::open(
+                c_lock_path.as_ptr(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC,
+                OPEN_LOCK_MODE as libc::c_uint,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::fchmod(fd, OPEN_LOCK_MODE as libc::mode_t) } < 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::EPERM) {
+                unsafe { libc::close(fd) };
+                return Err(e);
+            }
+        }
+        let deadline_ns = monotonic_ns() + OPEN_LOCK_WAIT_TIMEOUT_MS * 1_000_000;
+        let mut wait_reported = false;
+        loop {
+            if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self { fd });
+            }
+            let e = io::Error::last_os_error();
+            let retryable = matches!(
+                e.raw_os_error(),
+                Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN || code == libc::EINTR
+            );
+            if !retryable {
+                unsafe { libc::close(fd) };
+                return Err(e);
+            }
+            if !wait_reported {
+                on_wait();
+                wait_reported = true;
+            }
+            if monotonic_ns() >= deadline_ns {
+                eprintln!(
+                    "event={} path={path}",
+                    ring_event(role, "open_lock_exhausted")
+                );
+                unsafe { libc::close(fd) };
+                return Err(io::Error::from_raw_os_error(libc::EAGAIN));
+            }
+            open_lock_sleep();
+        }
+    }
+}
+
+impl Drop for OpenTransactionLock {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.fd, libc::LOCK_UN);
+            libc::close(self.fd);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FileIdentity {
+    dev: u64,
+    ino: u64,
+}
+
+fn stat_value_as_u64<T>(value: T, field: &'static str) -> io::Result<u64>
+where
+    T: TryInto<u64>,
+    T::Error: std::fmt::Display,
+{
+    value.try_into().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("fstat {field} cannot be represented as u64: {e}"),
+        )
+    })
+}
+
+fn fd_identity(fd: RawFd) -> io::Result<FileIdentity> {
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut st) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(FileIdentity {
+        dev: stat_value_as_u64(st.st_dev, "st_dev")?,
+        ino: stat_value_as_u64(st.st_ino, "st_ino")?,
+    })
+}
+
+fn identity_matches_linked_path(path: &str, identity: FileIdentity) -> io::Result<bool> {
+    let metadata = std::fs::metadata(path)?;
+    Ok(metadata.dev() == identity.dev && metadata.ino() == identity.ino)
+}
+
+fn fd_matches_linked_path(path: &str, fd: RawFd) -> io::Result<bool> {
+    identity_matches_linked_path(path, fd_identity(fd)?)
+}
+
+fn mapping_owns_linked_path(path: &str, map: &RingMapping) -> io::Result<bool> {
+    fd_matches_linked_path(path, map.fd)
+}
+
+fn open_lock_sleep() {
+    let ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: (OPEN_LOCK_WAIT_STEP_US * 1000) as _,
+    };
+    unsafe { libc::nanosleep(&ts, std::ptr::null_mut()) };
+}
 
 /// A mmap'd view of the shared header + slots.
 ///
@@ -320,7 +478,7 @@ impl RingReader {
     /// `attach_resyncs`) and stamps `reader_pid`.
     pub fn create_or_attach(path: &str, expected: Geometry) -> io::Result<Self> {
         expected.validate_self()?;
-        let map = attach_or_create(path, expected)?;
+        let map = attach_or_create(path, expected, RingRole::Reader)?;
 
         // Resync to the writer's current tip: the reader is joining a
         // possibly-running writer, and stale slots are worthless to a pacer.
@@ -513,15 +671,36 @@ unsafe fn copy_slot_to_i16(src: *const u8, out: &mut [i16], samples: usize) {
     }
 }
 
-/// `O_EXCL` create (init + magic-last) or attach (bounded magic wait + geometry
-/// validation). A magic-invalid file under the owned `/dev/shm/jts-ring/` root
-/// is unlinked and recreated.
-fn attach_or_create(path: &str, expected: Geometry) -> io::Result<RingMapping> {
+/// `O_EXCL` create (init + magic-last) or attach (bounded size+magic wait +
+/// geometry validation). A magic-invalid file under the owned
+/// `/dev/shm/jts-ring/` root is unlinked and recreated.
+fn attach_or_create(path: &str, expected: Geometry, role: RingRole) -> io::Result<RingMapping> {
+    attach_or_create_with_hooks(path, expected, role, || {}, |_| {}, || {})
+}
+
+fn attach_or_create_with_hooks<F, G, H>(
+    path: &str,
+    expected: Geometry,
+    role: RingRole,
+    on_lock_wait: F,
+    mut on_created: G,
+    mut on_before_reclaim: H,
+) -> io::Result<RingMapping>
+where
+    F: FnMut(),
+    G: FnMut(&RingMapping),
+    H: FnMut(),
+{
     ensure_parent_dir(path)?;
     let c_path = std::ffi::CString::new(path)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "ring path contains NUL"))?;
+    let _open_lock = OpenTransactionLock::acquire_with_wait_hook(path, role, on_lock_wait)?;
 
-    loop {
+    for _attempt in 0..OPEN_MAX_ATTEMPTS {
+        #[cfg(test)]
+        if TEST_FORCE_OPEN_RETRY.with(|slot| slot.get()) {
+            continue;
+        }
         // Try to create exclusively; the creator inits the header.
         let create_fd = unsafe {
             libc::open(
@@ -532,12 +711,34 @@ fn attach_or_create(path: &str, expected: Geometry) -> io::Result<RingMapping> {
         };
         if create_fd >= 0 {
             match init_created(create_fd, expected) {
-                Ok(map) => return Ok(map),
+                Ok(map) => {
+                    on_created(&map);
+                    match mapping_owns_linked_path(path, &map) {
+                        Ok(true) => return Ok(map),
+                        Ok(false) => {
+                            eprintln!(
+                                "event={} path={path}",
+                                ring_event(role, "creator_path_lost")
+                            );
+                            drop(map);
+                            continue;
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                            drop(map);
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
                 Err(e) => {
                     // Creation failed mid-init; drop the half-baked file so the
-                    // next opener does not attach to a magic-less carcass.
+                    // next opener does not attach to a magic-less carcass. Do
+                    // not unlink a pathname that no longer names our fd.
+                    let still_linked = fd_matches_linked_path(path, create_fd);
                     unsafe { libc::close(create_fd) };
-                    let _ = std::fs::remove_file(path);
+                    if matches!(still_linked, Ok(true)) {
+                        let _ = std::fs::remove_file(path);
+                    }
                     return Err(e);
                 }
             }
@@ -558,14 +759,30 @@ fn attach_or_create(path: &str, expected: Geometry) -> io::Result<RingMapping> {
             }
             return Err(err);
         }
-        match attach_existing(fd, expected) {
-            Ok(map) => return Ok(map),
-            Err(AttachError::Fatal(e)) => {
+        let opened_identity = match fd_identity(fd) {
+            Ok(identity) => identity,
+            Err(e) => {
                 unsafe { libc::close(fd) };
                 return Err(e);
             }
+        };
+        match attach_existing(fd, expected) {
+            Ok(map) => match mapping_owns_linked_path(path, &map) {
+                Ok(true) => return Ok(map),
+                Ok(false) => {
+                    drop(map);
+                    continue;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    drop(map);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            },
+            Err(AttachError::Fatal(e)) => {
+                return Err(e);
+            }
             Err(AttachError::MagicInvalid) => {
-                unsafe { libc::close(fd) };
                 // A creator crashed mid-init (magic never appeared). Only the
                 // owner may reclaim, and only under the narrow owned path.
                 if !is_owned_ring_path(path) {
@@ -574,18 +791,40 @@ fn attach_or_create(path: &str, expected: Geometry) -> io::Result<RingMapping> {
                         format!("ring {path:?} has no valid magic and is not reclaimable"),
                     ));
                 }
-                std::fs::remove_file(path)?;
-                eprintln!("event=outputd.shm_ring.reclaimed_magic_invalid path={path}");
+                match identity_matches_linked_path(path, opened_identity) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e),
+                }
+                on_before_reclaim();
+                if let Err(e) = remove_owned_ring(path) {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        continue; // another reclaimer won; retry create
+                    }
+                    eprintln!(
+                        "event={} errno={} path={path}",
+                        ring_event(role, "reclaim_failed"),
+                        e.raw_os_error().unwrap_or(-1)
+                    );
+                    return Err(e);
+                }
+                eprintln!(
+                    "event={} path={path}",
+                    ring_event(role, "reclaimed_magic_invalid")
+                );
                 // Loop back and re-create.
             }
         }
     }
+    eprintln!("event={} path={path}", ring_event(role, "attach_exhausted"));
+    Err(io::Error::from_raw_os_error(libc::EAGAIN))
 }
 
 enum AttachError {
     Fatal(io::Error),
-    /// The magic never appeared within the bounded wait (creator crashed
-    /// mid-init). Reclaimable under the owned path.
+    /// The creator did not complete ftruncate + magic publication within the
+    /// bounded wait. Reclaimable under the owned path.
     MagicInvalid,
 }
 
@@ -616,36 +855,47 @@ fn init_created(fd: RawFd, g: Geometry) -> io::Result<RingMapping> {
     Ok(map)
 }
 
+/// Consume `fd` and attach it to a validated mapping. On every error this
+/// function closes the fd itself: either explicitly before mmap ownership is
+/// established, or through `RingMapping::drop` afterward.
 fn attach_existing(fd: RawFd, expected: Geometry) -> Result<RingMapping, AttachError> {
-    // fstat the file to learn its ACTUAL size. We map the actual size, never
-    // the expected size: mmapping past EOF would SIGBUS on access, and a
-    // genuinely-smaller valid ring (a geometry mismatch) must be readable so we
-    // can name the mismatch honestly rather than misreport it as "still
-    // growing." A file too small to hold even the header is mid-init.
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    if unsafe { libc::fstat(fd, &mut st) } < 0 {
-        return Err(AttachError::Fatal(io::Error::last_os_error()));
-    }
-    let actual_size = st.st_size as u64;
-    if actual_size < HEADER_BYTES as u64 {
-        // The creator has not finished ftruncate/init yet (or it is not a ring
-        // at all). Treat as magic-invalid: reclaimable under the owned path,
-        // fatal otherwise.
-        return Err(AttachError::MagicInvalid);
-    }
-    let actual_size = actual_size as usize;
+    attach_existing_with_size_wait_hook(fd, expected, |_, _| {})
+}
+
+fn attach_existing_with_size_wait_hook<F>(
+    fd: RawFd,
+    expected: Geometry,
+    mut on_size_wait: F,
+) -> Result<RingMapping, AttachError>
+where
+    F: FnMut(RawFd, &libc::stat),
+{
+    // One bounded budget covers both the creator's ftruncate and magic publish.
+    // A zero/small file is not immediately torn: an O_EXCL winner may simply be
+    // between open and ftruncate.
+    let deadline_ns = monotonic_ns() + MAGIC_WAIT_TIMEOUT_MS * 1_000_000;
+    let actual_size = match wait_for_mappable_size(fd, deadline_ns, &mut on_size_wait) {
+        Ok(size) => size,
+        Err(e) => {
+            unsafe { libc::close(fd) };
+            return Err(e);
+        }
+    };
 
     // Map the ACTUAL bytes with the expected geometry recorded only for slot
     // math; the header's own declared geometry is validated below before any
     // slot is indexed, so a mismatch fails loud before slot math runs.
     let map = match mmap_fd(fd, actual_size, expected) {
         Ok(m) => m,
-        Err(e) => return Err(AttachError::Fatal(e)),
+        Err(e) => {
+            unsafe { libc::close(fd) };
+            return Err(AttachError::Fatal(e));
+        }
     };
 
     // Bounded wait for the creator's magic. No magic within the window means
     // the creator crashed mid-init (or this is not a ring).
-    if !wait_for_magic(&map) {
+    if !wait_for_magic(&map, deadline_ns) {
         return Err(AttachError::MagicInvalid);
     }
 
@@ -729,8 +979,43 @@ fn mismatch(field: &str, got: u32, want: u32) -> io::Error {
     )
 }
 
-fn wait_for_magic(map: &RingMapping) -> bool {
-    let deadline_ns = monotonic_ns() + MAGIC_WAIT_TIMEOUT_MS * 1_000_000;
+fn magic_wait_sleep() {
+    let ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: (MAGIC_WAIT_STEP_US * 1000) as _,
+    };
+    unsafe { libc::nanosleep(&ts, std::ptr::null_mut()) };
+}
+
+fn wait_for_mappable_size<F>(
+    fd: RawFd,
+    deadline_ns: u64,
+    on_size_wait: &mut F,
+) -> Result<usize, AttachError>
+where
+    F: FnMut(RawFd, &libc::stat),
+{
+    let mut size_wait_reported = false;
+    loop {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(fd, &mut st) } < 0 {
+            return Err(AttachError::Fatal(io::Error::last_os_error()));
+        }
+        if st.st_size as u64 >= HEADER_BYTES as u64 {
+            return Ok(st.st_size as usize);
+        }
+        if !size_wait_reported {
+            on_size_wait(fd, &st);
+            size_wait_reported = true;
+        }
+        if monotonic_ns() >= deadline_ns {
+            return Err(AttachError::MagicInvalid);
+        }
+        magic_wait_sleep();
+    }
+}
+
+fn wait_for_magic(map: &RingMapping, deadline_ns: u64) -> bool {
     loop {
         let magic = map
             .header_atomic(layout::OFF_MAGIC_QWORD)
@@ -741,11 +1026,7 @@ fn wait_for_magic(map: &RingMapping) -> bool {
         if monotonic_ns() >= deadline_ns {
             return false;
         }
-        let ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: (MAGIC_WAIT_STEP_US * 1000) as _,
-        };
-        unsafe { libc::nanosleep(&ts, std::ptr::null_mut()) };
+        magic_wait_sleep();
     }
 }
 
@@ -799,10 +1080,43 @@ fn ensure_parent_dir(path: &str) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    // Per-test-thread hooks avoid process-global env races under Rust's parallel
+    // test runner. Product builds compile both overrides out entirely.
+    static TEST_OWNED_RING_DIR: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_RECLAIM_ERRNO: std::cell::Cell<Option<i32>> =
+        const { std::cell::Cell::new(None) };
+    static TEST_FORCE_OPEN_RETRY: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+fn remove_owned_ring(path: &str) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(injected_errno) = TEST_RECLAIM_ERRNO.with(|slot| slot.replace(None)) {
+        if injected_errno == libc::ENOENT {
+            // Model another reclaimer winning before our unlink. The pathname
+            // is genuinely removed, then this attempt observes NotFound.
+            let _ = std::fs::remove_file(path);
+        }
+        return Err(io::Error::from_raw_os_error(injected_errno));
+    }
+    std::fs::remove_file(path)
+}
+
 /// The reader may only unlink-and-recreate a magic-invalid file directly under
 /// the owned `/dev/shm/jts-ring/` root — a narrow-path check mirroring outputd's
 /// `is_owned_runtime_pipe_path`. A nested or foreign path is never reclaimed.
 fn is_owned_ring_path(path: &str) -> bool {
+    #[cfg(test)]
+    if let Some(is_owned) = TEST_OWNED_RING_DIR.with(|root| {
+        root.borrow()
+            .as_ref()
+            .map(|root| std::path::Path::new(path).parent() == Some(root.as_path()))
+    }) {
+        return is_owned;
+    }
     std::path::Path::new(path).parent() == Some(std::path::Path::new("/dev/shm/jts-ring"))
 }
 
@@ -844,7 +1158,7 @@ impl TestRingWriter {
     /// `writer_pid`, and continue from the stored `write_seq`.
     pub fn create_or_attach(path: &str, expected: Geometry) -> io::Result<Self> {
         expected.validate_self()?;
-        let map = attach_or_create(path, expected)?;
+        let map = attach_or_create(path, expected, RingRole::Writer)?;
         // Writer attach: epoch++ (Release), pid, heartbeat, continue from
         // stored write_seq (file-lifetime monotonic).
         let write_seq = map
@@ -923,6 +1237,9 @@ impl Drop for TestRingWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::IntoRawFd;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::sync::mpsc;
 
     fn tmp_ring_path(tag: &str) -> String {
         // Host-testable: not /dev/shm on macOS. Use the OS temp dir so the
@@ -950,11 +1267,77 @@ mod tests {
         }
     }
 
+    fn assert_open_event_vocabulary(role: RingRole, role_name: &str) {
+        for suffix in [
+            "open_lock_exhausted",
+            "creator_path_lost",
+            "reclaim_failed",
+            "reclaimed_magic_invalid",
+            "attach_exhausted",
+        ] {
+            assert_eq!(
+                ring_event(role, suffix),
+                format!("jts_ring.{role_name}.{suffix}")
+            );
+        }
+    }
+
+    #[test]
+    fn reader_open_failure_and_exhaustion_events_are_role_qualified() {
+        assert_open_event_vocabulary(RingRole::Reader, "reader");
+    }
+
+    #[test]
+    fn writer_open_failure_and_exhaustion_events_are_role_qualified() {
+        assert_open_event_vocabulary(RingRole::Writer, "writer");
+    }
+
+    #[test]
+    fn stat_identity_values_convert_without_platform_specific_same_type_casts() {
+        assert_eq!(stat_value_as_u64(42_u64, "st_ino").unwrap(), 42);
+        assert_eq!(stat_value_as_u64(42_i32, "st_dev").unwrap(), 42);
+        assert_eq!(
+            stat_value_as_u64(-1_i32, "st_dev").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
     fn cleanup(path: &str) {
         let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(format!("{path}{OPEN_LOCK_SUFFIX}"));
         if let Some(parent) = std::path::Path::new(path).parent() {
             let _ = std::fs::remove_dir(parent);
         }
+    }
+
+    struct OwnedReclaimTestGuard;
+
+    impl OwnedReclaimTestGuard {
+        fn arm(path: &str, reclaim_errno: i32) -> Self {
+            let parent = std::path::Path::new(path).parent().unwrap().to_path_buf();
+            TEST_OWNED_RING_DIR.with(|root| *root.borrow_mut() = Some(parent));
+            TEST_RECLAIM_ERRNO.with(|slot| slot.set(Some(reclaim_errno)));
+            Self
+        }
+    }
+
+    impl Drop for OwnedReclaimTestGuard {
+        fn drop(&mut self) {
+            TEST_RECLAIM_ERRNO.with(|slot| slot.set(None));
+            TEST_OWNED_RING_DIR.with(|root| *root.borrow_mut() = None);
+        }
+    }
+
+    fn create_full_size_torn_ring(path: &str, g: Geometry) -> (std::fs::File, std::fs::Metadata) {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap();
+        file.set_len(g.file_size() as u64).unwrap();
+        let metadata = file.metadata().unwrap();
+        (file, metadata)
     }
 
     #[test]
@@ -1126,6 +1509,234 @@ mod tests {
             err.to_string().contains("period_frames") || err.to_string().contains("file size"),
             "{err}"
         );
+        let _reader = RingReader::create_or_attach(&path, g)
+            .expect("fatal attach releases the transaction lock");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn open_transaction_lock_serializes_a_then_b_then_c() {
+        let path = tmp_ring_path("open-lock-a-b-c");
+        let g = proto_geometry();
+        let (created_tx, created_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let path_a = path.clone();
+        let a = std::thread::spawn(move || {
+            attach_or_create_with_hooks(
+                &path_a,
+                g,
+                RingRole::Reader,
+                || {},
+                |_| {
+                    created_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+                || {},
+            )
+        });
+        created_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("A must hold the lock after initialization");
+
+        let (wait_tx, wait_rx) = mpsc::channel();
+        let path_b = path.clone();
+        let wait_b = wait_tx.clone();
+        let b = std::thread::spawn(move || {
+            attach_or_create_with_hooks(
+                &path_b,
+                g,
+                RingRole::Reader,
+                || wait_b.send(()).unwrap(),
+                |_| {},
+                || {},
+            )
+        });
+        let path_c = path.clone();
+        let c = std::thread::spawn(move || {
+            attach_or_create_with_hooks(
+                &path_c,
+                g,
+                RingRole::Reader,
+                || wait_tx.send(()).unwrap(),
+                |_| {},
+                || {},
+            )
+        });
+        wait_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("B must contend on A's transaction lock");
+        wait_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("C must contend on A's transaction lock");
+        release_tx.send(()).unwrap();
+
+        let map_a = a.join().unwrap().unwrap();
+        let map_b = b.join().unwrap().unwrap();
+        let map_c = c.join().unwrap().unwrap();
+        let identity = fd_identity(map_a.fd).unwrap();
+        assert!(identity_matches_linked_path(&path, identity).unwrap());
+        assert_eq!(fd_identity(map_b.fd).unwrap().dev, identity.dev);
+        assert_eq!(fd_identity(map_b.fd).unwrap().ino, identity.ino);
+        assert_eq!(fd_identity(map_c.fd).unwrap().dev, identity.dev);
+        assert_eq!(fd_identity(map_c.fd).unwrap().ino, identity.ino);
+        drop((map_a, map_b, map_c));
+
+        let lock_metadata = std::fs::metadata(format!("{path}{OPEN_LOCK_SUFFIX}")).unwrap();
+        assert_eq!(lock_metadata.permissions().mode() & 0o777, 0o660);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn stale_reclaimer_a_cannot_delete_replacement_seen_by_b_and_c() {
+        let path = tmp_ring_path("stale-reclaimer-a-b-c");
+        let g = proto_geometry();
+        let (_torn_file, torn) = create_full_size_torn_ring(&path, g);
+        let (reclaim_tx, reclaim_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let path_a = path.clone();
+        let a = std::thread::spawn(move || {
+            let parent = std::path::Path::new(&path_a)
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            TEST_OWNED_RING_DIR.with(|root| *root.borrow_mut() = Some(parent));
+            let result = attach_or_create_with_hooks(
+                &path_a,
+                g,
+                RingRole::Reader,
+                || {},
+                |_| {},
+                || {
+                    reclaim_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+            );
+            TEST_OWNED_RING_DIR.with(|root| *root.borrow_mut() = None);
+            result
+        });
+        reclaim_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("A must hold the lock after classifying the torn inode");
+
+        let (wait_tx, wait_rx) = mpsc::channel();
+        let path_b = path.clone();
+        let wait_b = wait_tx.clone();
+        let b = std::thread::spawn(move || {
+            attach_or_create_with_hooks(
+                &path_b,
+                g,
+                RingRole::Reader,
+                || wait_b.send(()).unwrap(),
+                |_| {},
+                || {},
+            )
+        });
+        let path_c = path.clone();
+        let c = std::thread::spawn(move || {
+            attach_or_create_with_hooks(
+                &path_c,
+                g,
+                RingRole::Reader,
+                || wait_tx.send(()).unwrap(),
+                |_| {},
+                || {},
+            )
+        });
+        wait_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        wait_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        release_tx.send(()).unwrap();
+
+        let map_a = a.join().unwrap().unwrap();
+        let map_b = b.join().unwrap().unwrap();
+        let map_c = c.join().unwrap().unwrap();
+        let replacement = fd_identity(map_a.fd).unwrap();
+        assert_ne!((replacement.dev, replacement.ino), (torn.dev(), torn.ino()));
+        assert!(identity_matches_linked_path(&path, replacement).unwrap());
+        for map in [&map_b, &map_c] {
+            let identity = fd_identity(map.fd).unwrap();
+            assert_eq!(
+                (identity.dev, identity.ino),
+                (replacement.dev, replacement.ino)
+            );
+        }
+        drop((map_a, map_b, map_c));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn creator_rejects_replaced_linked_path() {
+        let path = tmp_ring_path("creator-path-replaced");
+        let orphan = format!("{path}.orphan");
+        let g = proto_geometry();
+        let path_for_hook = path.clone();
+        let orphan_for_hook = orphan.clone();
+        let result = attach_or_create_with_hooks(
+            &path,
+            g,
+            RingRole::Reader,
+            || {},
+            move |_| {
+                std::fs::rename(&path_for_hook, &orphan_for_hook).unwrap();
+                std::fs::create_dir(&path_for_hook).unwrap();
+            },
+            || {},
+        );
+        assert!(
+            result.is_err(),
+            "creator must not return an unlinked mapping"
+        );
+        assert!(std::fs::metadata(&orphan).unwrap().is_file());
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::remove_file(&orphan).unwrap();
+        cleanup(&path);
+    }
+
+    #[test]
+    fn retry_exhaustion_is_bounded_and_releases_lock() {
+        let path = tmp_ring_path("retry-exhaustion");
+        let g = proto_geometry();
+        TEST_FORCE_OPEN_RETRY.with(|slot| slot.set(true));
+        let exhausted = attach_or_create(&path, g, RingRole::Reader);
+        TEST_FORCE_OPEN_RETRY.with(|slot| slot.set(false));
+        let err = match exhausted {
+            Ok(_) => panic!("forced retries must exhaust"),
+            Err(err) => err,
+        };
+        assert_eq!(err.raw_os_error(), Some(libc::EAGAIN));
+
+        let map = attach_or_create(&path, g, RingRole::Reader)
+            .expect("retry exhaustion must release the transaction lock");
+        drop(map);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn lock_timeout_touches_no_ring_and_recovers_after_release() {
+        let path = tmp_ring_path("lock-timeout");
+        let g = proto_geometry();
+        let held =
+            OpenTransactionLock::acquire_with_wait_hook(&path, RingRole::Reader, || {}).unwrap();
+        let path_for_waiter = path.clone();
+        let waiter =
+            std::thread::spawn(move || attach_or_create(&path_for_waiter, g, RingRole::Reader));
+        let err = match waiter.join().unwrap() {
+            Ok(_) => panic!("waiter must not bypass the held transaction lock"),
+            Err(err) => err,
+        };
+        assert_eq!(err.raw_os_error(), Some(libc::EAGAIN));
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "lock timeout must not touch the ring pathname"
+        );
+        drop(held);
+
+        let map = attach_or_create(&path, g, RingRole::Reader)
+            .expect("closing lock fd releases ownership");
+        drop(map);
         cleanup(&path);
     }
 
@@ -1151,6 +1762,129 @@ mod tests {
             Err(e) => e,
         };
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn attacher_waits_for_live_creator_before_ftruncate() {
+        // Hold a real O_EXCL-created inode at size zero. A test hook inside the
+        // production size-wait loop reports the competitor fd's dev/inode/size
+        // and blocks. Only after this thread proves that the competitor opened
+        // the exact zero-size original inode does it initialize the creator and
+        // release the competitor. No sleep establishes the race ordering.
+        let path = tmp_ring_path("pre-ftruncate-race");
+        let g = proto_geometry();
+        let creator_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let creator_metadata = creator_file.metadata().unwrap();
+        assert_eq!(creator_metadata.len(), 0);
+        let creator_fd = creator_file.into_raw_fd();
+        let attach_fd = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .into_raw_fd();
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let attacher = std::thread::spawn(move || {
+            attach_existing_with_size_wait_hook(attach_fd, g, move |_, st| {
+                #[cfg(target_os = "macos")]
+                let device = st.st_dev as u64;
+                #[cfg(not(target_os = "macos"))]
+                let device = st.st_dev;
+                entered_tx.send((device, st.st_ino, st.st_size)).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        let (attach_dev, attach_ino, attach_size) = entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("competitor must report entry into the production size-wait loop");
+        assert_eq!(
+            attach_size, 0,
+            "competitor must observe the pre-ftruncate inode"
+        );
+        assert_eq!(attach_dev, creator_metadata.dev());
+        assert_eq!(attach_ino, creator_metadata.ino());
+
+        let creator_map = init_created(creator_fd, g).unwrap();
+        release_tx
+            .send(())
+            .expect("release competitor after creator publishes magic");
+        let attached_map = match attacher.join().unwrap() {
+            Ok(map) => map,
+            Err(_) => panic!("attacher must wait for the live creator"),
+        };
+
+        let final_metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(final_metadata.dev(), creator_metadata.dev());
+        assert_eq!(final_metadata.ino(), creator_metadata.ino());
+
+        // A shared atomic round-trip proves both mappings still name the O_EXCL
+        // winner's inode rather than a split-brain replacement.
+        creator_map
+            .header_atomic(layout::OFF_WRITE_SEQ)
+            .store(37, Ordering::Release);
+        assert_eq!(
+            attached_map
+                .header_atomic(layout::OFF_WRITE_SEQ)
+                .load(Ordering::Acquire),
+            37
+        );
+        drop(attached_map);
+        drop(creator_map);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn owned_reclaim_enoent_retries_after_concurrent_reclaimer() {
+        // The injected ENOENT removes the torn inode first, exactly as another
+        // reclaimer winning the race would. This opener must retry and create a
+        // valid replacement rather than failing like the EACCES case below.
+        let path = tmp_ring_path("reclaim-enoent");
+        let g = proto_geometry();
+        let (_torn_file, torn_metadata) = create_full_size_torn_ring(&path, g);
+        let _hooks = OwnedReclaimTestGuard::arm(&path, libc::ENOENT);
+
+        let reader = RingReader::create_or_attach(&path, g)
+            .expect("concurrent-reclaimer ENOENT must retry create/attach");
+        let replacement_metadata = std::fs::metadata(&path).unwrap();
+        assert_ne!(
+            (replacement_metadata.dev(), replacement_metadata.ino()),
+            (torn_metadata.dev(), torn_metadata.ino()),
+            "retry must map a replacement for the concurrently removed torn inode"
+        );
+        assert_eq!(
+            reader
+                .map
+                .header_atomic(layout::OFF_MAGIC_QWORD)
+                .load(Ordering::Acquire) as u32,
+            MAGIC
+        );
+        drop(reader);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn owned_reclaim_eacces_fails_closed_without_retry() {
+        let path = tmp_ring_path("reclaim-eacces");
+        let g = proto_geometry();
+        let (_torn_file, torn_metadata) = create_full_size_torn_ring(&path, g);
+        let _hooks = OwnedReclaimTestGuard::arm(&path, libc::EACCES);
+
+        let err = match RingReader::create_or_attach(&path, g) {
+            Ok(_) => panic!("permission-denied reclaim must fail closed"),
+            Err(err) => err,
+        };
+        assert_eq!(err.raw_os_error(), Some(libc::EACCES));
+        let preserved_metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(preserved_metadata.dev(), torn_metadata.dev());
+        assert_eq!(preserved_metadata.ino(), torn_metadata.ino());
         cleanup(&path);
     }
 

@@ -26,6 +26,11 @@ CC ?= cc
 # "implicit declaration of ftruncate" / "O_CLOEXEC undeclared" before this.
 CFLAGS ?= -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -fPIC
 LDFLAGS ?=
+# Host tests need a writable, portable owned root to exercise successful and
+# failed torn-file reclamation without assuming Linux /dev/shm exists. The
+# test-only build reads its per-process root from JTS_RING_TEST_OWNED_DIR;
+# product and bench/plugin builds compile out that override entirely.
+TEST_CPPFLAGS ?= -DJTS_RING_TESTING
 
 # ALSA plugin install dir (aarch64 Trixie). Override for other multiarch dirs.
 ALSA_PLUGIN_DIR ?= /usr/lib/aarch64-linux-gnu/alsa-lib
@@ -41,7 +46,7 @@ all: test bench
 # --- Host-safe (no ALSA) ---
 
 test_ring_core: test_ring_core.c $(CORE) jts_ring_shm.h
-	$(CC) $(CFLAGS) -o $@ test_ring_core.c $(CORE)
+	$(CC) $(CFLAGS) $(TEST_CPPFLAGS) -o $@ test_ring_core.c $(CORE)
 
 test: test_ring_core
 	./test_ring_core
