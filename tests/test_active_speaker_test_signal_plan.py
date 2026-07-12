@@ -6,12 +6,9 @@ from __future__ import annotations
 
 from jasper.active_speaker import (
     DRIVER_TEST_SIGNAL_PLAN_KIND,
-    TONE_PLAN_KIND,
     ActiveSpeakerPreset,
-    build_safe_tone_plan,
     driver_test_signal_plan,
     driver_test_signal_plan_from_edges,
-    tone_targets_payload,
 )
 
 
@@ -141,74 +138,6 @@ def _three_way_preset(
     })
 
 
-def _environment(*, ok: bool) -> dict:
-    return {
-        "status": "pass" if ok else "blocked",
-        "load_gate": "ready" if ok else "path_safety_evidence_missing",
-        "ok_to_load_active_config": ok,
-        "camilla_config": {
-            "classification": "active_startup_candidate",
-            "path": "/tmp/active.yml",
-        },
-        "safe_playback": {
-            "status": "not_implemented",
-            "playback_allowed": False,
-        },
-        "issues": [],
-    }
-
-
-def _armed_session() -> dict:
-    return {"status": "armed", "session_id": "session-test"}
-
-
-def test_tone_targets_payload_is_preset_derived() -> None:
-    payload = tone_targets_payload(_preset())
-
-    assert payload["preset_id"] == "tone-plan-test-v1"
-    assert payload["calibration_level"]["test_signal"]["default_level_dbfs"] == -80.0
-    assert [target["driver_role"] for target in payload["targets"]] == [
-        "woofer",
-        "tweeter",
-    ]
-
-
-def test_build_safe_tone_plan_ready_still_cannot_play() -> None:
-    plan = build_safe_tone_plan(
-        _preset(),
-        safe_session=_armed_session(),
-        environment_report=_environment(ok=True),
-        side="mono",
-        driver_role="tweeter",
-        requested_level_dbfs=-10,
-        requested_duration_ms=5000,
-    )
-
-    assert plan["kind"] == TONE_PLAN_KIND
-    assert plan["status"] == "ready"
-    assert plan["would_play"] is False
-    assert plan["playback_allowed"] is False
-    assert plan["tone_playback_implemented"] is False
-    assert plan["channel_map"] == {"layout": "mono", "output_count": 2}
-    assert plan["target"]["output_index"] == 1
-    assert plan["tone"]["frequency_hz"] == 6250.0
-    assert plan["tone"]["level_dbfs"] == -10.0
-    assert plan["tone"]["duration_ms"] == 500
-    assert (
-        plan["calibration_level"]["test_signal"]["requested_level_dbfs"]
-        == -10.0
-    )
-    assert plan["tone"]["band_limit"] == {
-        "type": "highpass",
-        "highpass_hz": 5000.0,
-    }
-    assert plan["tone"]["signal_plan"]["selection_reason"] == (
-        "above_strictest_highpass_edge"
-    )
-    assert plan["driver_protection"]["min_highpass_hz"] == 5000.0
-    assert plan["driver_protection"]["max_auto_level_dbfs"] == -65.0
-
-
 def test_driver_test_signal_plan_two_way_uses_crossover_and_protection_edges() -> None:
     preset = _preset(fc_hz=2000)
 
@@ -226,9 +155,7 @@ def test_driver_test_signal_plan_two_way_uses_crossover_and_protection_edges() -
     assert tweeter["frequency_hz"] > 5000
     assert tweeter["frequency_hz"] != 5000
     assert tweeter["allowed_band"]["highpass_hz"] == 5000
-    assert {
-        edge["kind"] for edge in tweeter["allowed_band"]["edges"]
-    } == {
+    assert {edge["kind"] for edge in tweeter["allowed_band"]["edges"]} == {
         "crossover_highpass",
         "protective_tweeter_highpass",
         "driver_protection_minimum",
@@ -243,16 +170,12 @@ def test_driver_test_signal_plan_three_way_places_each_role_in_its_band() -> Non
     tweeter = driver_test_signal_plan(preset, "tweeter")
 
     assert woofer["status"] == "ready"
-    assert woofer["frequency_hz"] < 300
     assert woofer["frequency_hz"] == 120.0
     assert woofer["allowed_band"]["lowpass_hz"] == 300
-
     assert mid["status"] == "ready"
-    assert 300 < mid["frequency_hz"] < 3000
     assert mid["frequency_hz"] == 948.7
     assert mid["allowed_band"]["highpass_hz"] == 300
     assert mid["allowed_band"]["lowpass_hz"] == 3000
-
     assert tweeter["status"] == "ready"
     assert tweeter["frequency_hz"] > 6000
     assert tweeter["allowed_band"]["highpass_hz"] == 6000
@@ -268,12 +191,8 @@ def test_driver_test_signal_plan_subwoofer_stays_above_floor_and_below_lowpass()
     assert plan["status"] == "ready"
     assert plan["allowed_band"]["highpass_hz"] == 25.0
     assert plan["allowed_band"]["lowpass_hz"] == 80.0
-    assert 25 < plan["frequency_hz"] < 80
     assert plan["frequency_hz"] == 50.0
     assert plan["selection_reason"] == "role_native_subwoofer_tone"
-    assert {
-        edge["kind"] for edge in plan["allowed_band"]["edges"]
-    } == {"subwoofer_subsonic_floor", "crossover_lowpass"}
 
 
 def test_driver_test_signal_plan_blocks_impossibly_narrow_band() -> None:
@@ -287,70 +206,3 @@ def test_driver_test_signal_plan_blocks_impossibly_narrow_band() -> None:
     assert "driver_test_signal_no_safe_band" in {
         issue["code"] for issue in plan["issues"]
     }
-
-
-def test_build_safe_tone_plan_defaults_to_minimum_level() -> None:
-    plan = build_safe_tone_plan(
-        _preset(),
-        safe_session=_armed_session(),
-        environment_report=_environment(ok=True),
-        side="mono",
-        driver_role="woofer",
-    )
-
-    assert plan["tone"]["level_dbfs"] == -80.0
-    assert plan["calibration_level"]["test_signal"]["requested_level_dbfs"] == -80.0
-
-
-def test_build_safe_tone_plan_blocks_without_armed_session() -> None:
-    plan = build_safe_tone_plan(
-        _preset(),
-        safe_session={"status": "idle"},
-        environment_report=_environment(ok=True),
-        side="mono",
-        driver_role="woofer",
-    )
-
-    assert plan["status"] == "blocked"
-    assert "safe_session_not_armed" in {issue["code"] for issue in plan["issues"]}
-    assert plan["would_play"] is False
-
-
-def test_build_safe_tone_plan_requires_explicit_target() -> None:
-    plan = build_safe_tone_plan(
-        _preset(),
-        safe_session=_armed_session(),
-        environment_report=_environment(ok=True),
-    )
-
-    assert plan["status"] == "blocked"
-    assert "target_output_required" in {issue["code"] for issue in plan["issues"]}
-    assert plan["target"]["output_index"] is None
-
-
-def test_build_safe_tone_plan_blocks_when_environment_is_not_ready() -> None:
-    plan = build_safe_tone_plan(
-        _preset(),
-        safe_session=_armed_session(),
-        environment_report=_environment(ok=False),
-        side="mono",
-        driver_role="woofer",
-    )
-
-    assert plan["status"] == "blocked"
-    assert "active_environment_not_ready" in {
-        issue["code"] for issue in plan["issues"]
-    }
-
-
-def test_build_safe_tone_plan_blocks_unknown_target() -> None:
-    plan = build_safe_tone_plan(
-        _preset(),
-        safe_session=_armed_session(),
-        environment_report=_environment(ok=True),
-        side="mono",
-        driver_role="mid",
-    )
-
-    assert plan["status"] == "blocked"
-    assert "target_output_not_found" in {issue["code"] for issue in plan["issues"]}

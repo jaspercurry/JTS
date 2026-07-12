@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker import ActiveSpeakerPreset, build_safe_tone_plan
+from jasper.active_speaker import (
+    TONE_PLAN_KIND,
+    ActiveSpeakerPreset,
+    driver_test_signal_plan,
+)
 from jasper.active_speaker.calibration_level import MAX_TEST_LEVEL_DBFS
 from jasper.active_speaker.playback import (
     AplayTonePlaybackBackend,
@@ -96,15 +100,38 @@ def _environment(*, ok: bool = True) -> dict:
 
 
 def _plan() -> dict:
-    return build_safe_tone_plan(
-        _preset(),
-        safe_session={"status": "armed", "session_id": "session-test"},
-        environment_report=_environment(),
-        side="mono",
-        driver_role="tweeter",
-        requested_level_dbfs=-55,
-        requested_duration_ms=120,
-    )
+    signal = driver_test_signal_plan(_preset(), "tweeter")
+    return {
+        "artifact_schema_version": 1,
+        "kind": TONE_PLAN_KIND,
+        "status": "ready",
+        "would_play": False,
+        "playback_allowed": False,
+        "tone_playback_implemented": False,
+        "channel_map": {"layout": "mono", "output_count": 2},
+        "target": {
+            "side": "mono",
+            "driver_role": "tweeter",
+            "output_index": 1,
+            "label": "mono tweeter",
+        },
+        "tone": {
+            "waveform": "sine",
+            "frequency_hz": signal["frequency_hz"],
+            "level_dbfs": -55.0,
+            "duration_ms": 120,
+            "ramp_ms": 20,
+            "band_limit": signal["band_limit"],
+            "signal_plan": signal,
+        },
+        "driver_protection": signal["driver_protection"],
+        "safety": {
+            "safe_session_id": "session-test",
+            "requires_emergency_stop": True,
+            "prepared_only": True,
+        },
+        "issues": [],
+    }
 
 
 def _with_loaded_startup(plan: dict) -> dict:

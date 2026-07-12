@@ -742,7 +742,7 @@ def crossover_edges_for_role(
     the role's upper (low-pass) edge. A woofer (no lower crossover) returns
     ``lower_edge=None``; a tweeter (no upper crossover) returns
     ``upper_edge=None``. This is the single source of a role's crossover edges:
-    ``tone_plan`` derives its test-tone band from it and
+    ``test_signal_plan`` derives its test-tone band from it and
     ``commissioning_capture`` derives the expected passband for the mic-backed
     driver verdict from it.
     """

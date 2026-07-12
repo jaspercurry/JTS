@@ -638,7 +638,7 @@ still must satisfy the safety gates before sound-emitting active use:
   left/right through role assignment, mark passive speakers, assign active
   driver roles up to 3-way, and identify subwoofer outputs. Do not bake
   HiFiBerry DAC-X8, Apple dongle, or any other DAC-specific physical
-  assumption into `tone_plan` or the dry playback artifact backend.
+  assumption into `test_signal_plan` or the dry playback artifact backend.
 - That product surface uses the backend substrate:
   `jasper.output_topology` and `/sound/output-topology` persist a
   versioned, complete-replacement topology draft at
@@ -1666,8 +1666,12 @@ Updated execution plan:
    exists and the active startup candidate validates. Expanded again with
    `jasper.active_speaker.safe_playback`, which provides no-audio arm/stop
    session bookkeeping for the future tone path without authorizing playback.
-   Expanded with `jasper.active_speaker.tone_plan`, which prepares
+   Historically expanded with `jasper.active_speaker.tone_plan`, which prepared
    preset-derived, clamped channel-test plans while still forbidding playback.
+   That standalone planner was later removed when product per-driver playback
+   converged on `test_signal_plan` plus the protected commission ramp;
+   `tone_plan` now retains only shared artifact vocabulary, timing bounds, and
+   preset loading.
    Expanded with `jasper.active_speaker.playback`, an artifact-first backend
    seam that renders bounded logical-output WAV artifacts and, only with
    explicit audio-lab env selection, can run the generated artifact through
