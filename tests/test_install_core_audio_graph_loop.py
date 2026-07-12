@@ -130,12 +130,30 @@ def test_full_install_uses_transactional_core_graph_installer():
     """
     source = FRAGMENT.read_text()
     function_tail = source.split("install_systemd_units() {", 1)[1]
-    first_command = next(
+    commands = [
         line.strip()
         for line in function_tail.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
-    )
-    assert first_command == "install_local_audio_graph_unit_files"
+    ]
+    assert commands[:2] == [
+        "install_jasper_support_files",
+        "install_local_audio_graph_unit_files",
+    ]
+
+
+def test_full_profile_does_not_duplicate_shared_install_rows() -> None:
+    source = FRAGMENT.read_text()
+    full = source.split("install_systemd_units() {", 1)[1]
+    table = source.split("JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(", 1)[1].split(
+        "\n)\n", 1,
+    )[0]
+    shared_sources = re.findall(r'"(?:0644|0755) ([^ ]+) ', table)
+    assert shared_sources
+    for shared_source in shared_sources:
+        assert shared_source not in full, (
+            f"full profile duplicates table-owned install source {shared_source}"
+        )
+    assert "jasper-fanin-pitch-neutralize" in table
 
 
 def _function_body(source: str, name: str) -> str:
@@ -186,8 +204,9 @@ def test_midloop_failure_still_attempts_every_later_unit(tmp_path):
     # Everything except the failed row was still attempted...
     for dst in EXPECTED_DSTS:
         assert dst in attempted, f"{dst} should still be attempted after a mid-loop failure"
-    # ...including the LAST guard (the regression that motivated this).
+    # ...including later guards and the final pitch-neutralization helper.
     assert "jasper-camilla-crossover-guard" in attempted
+    assert "jasper-fanin-pitch-neutralize" in attempted
     # daemon-reload ran despite the failure.
     assert (tmp_path / "reload.log").exists()
     assert "jasper-fanin.service" in r.stderr
@@ -196,7 +215,7 @@ def test_midloop_failure_still_attempts_every_later_unit(tmp_path):
 def test_last_unit_failure_still_runs_daemon_reload(tmp_path):
     """A failure on the FINAL row must still leave a daemon-reload behind so the
     earlier units that landed are known to systemd."""
-    r = _run(tmp_path, fail_basename="jasper-camilla-crossover-guard")
+    r = _run(tmp_path, fail_basename="jasper-fanin-pitch-neutralize")
     assert r.returncode != 0
     assert (tmp_path / "reload.log").exists()
 

@@ -84,8 +84,8 @@ install_jasper_support_files() {
 #
 # Annotations preserved from the prior flat form:
 #   jasper-camilla-crossover.service — camilla#2 endpoint-crossover (:1235),
-#     INERT: installed but NOT enabled; a later reconciler PR arms it only on
-#     an active leader. docs/HANDOFF-distributed-active.md "Stage B".
+#     not globally boot-enabled; grouping reconcile arms it only while the box
+#     is a bonded active leader. docs/HANDOFF-distributed-active.md "Stage B".
 #   jasper-doctor-json.service — WS1 Phase 3b-2 root oneshot capturing
 #     jasper-doctor --json for /system/diagnostics (non-root jasper-control
 #     triggers it via polkit). On-demand only — not enabled.
@@ -93,7 +93,7 @@ install_jasper_support_files() {
 #     statefile off a dead PLAYBACK/CAPTURE pipe config before camilla launches.
 #   jasper-camilla-crossover-guard — like the pipe-guard but repairs ONLY to the
 #     re-proven driver-domain graph (never flat — a flat crossover would send
-#     full-range to the tweeter). Shipped alongside the dormant crossover unit.
+#     full-range to the tweeter). Live only on a reconciled active leader.
 JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     "0644 deploy/systemd/jasper-camilla.service ${SYSTEMD_DIR}/jasper-camilla.service"
     "0644 deploy/systemd/jasper-camilla-recover.service ${SYSTEMD_DIR}/jasper-camilla-recover.service"
@@ -711,25 +711,10 @@ install_streambox_systemd_units() {
 }
 
 install_systemd_units() {
-    # The table-backed installer is the single source of truth for units and
-    # helpers shared by full-speaker and streambox profiles. Run it first so a
-    # newly added row is present (and daemon-reloaded) before any enable/start
-    # action below. Some older full-profile installs remain duplicated later in
-    # this function while they are migrated; those idempotent copies must not be
-    # relied on for completeness.
+    # Full speakers and streamboxes consume the same support-file and core-graph
+    # owners before any profile-specific units are staged or started.
+    install_jasper_support_files
     install_local_audio_graph_unit_files
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
-        "${SYSTEMD_DIR}/jasper-camilla.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-camilla-recover.service" \
-        "${SYSTEMD_DIR}/jasper-camilla-recover.service"
-    # camilla#2 — endpoint-crossover instance (:1235). INERT: installed but
-    # NOT enabled; a later reconciler PR arms it only on an active leader.
-    # docs/HANDOFF-distributed-active.md "Stage B".
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-camilla-crossover.service" \
-        "${SYSTEMD_DIR}/jasper-camilla-crossover.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-voice.service" \
         "${SYSTEMD_DIR}/jasper-voice.service"
@@ -786,16 +771,6 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-chat-web.socket" \
         "${SYSTEMD_DIR}/jasper-chat-web.socket"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-control.service" \
-        "${SYSTEMD_DIR}/jasper-control.service"
-    # WS1 Phase 3b-2: root oneshot for /system/diagnostics (see full-path note).
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-doctor-json.service" \
-        "${SYSTEMD_DIR}/jasper-doctor-json.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-xvf-firmware-update.service" \
-        "${SYSTEMD_DIR}/jasper-xvf-firmware-update.service"
     # jasper-input: third-party HID accessory bridge (Anticater VK-01
     # volume knob today; future macro pads / foot pedals). Reads
     # /dev/input/event* via python-evdev, translates known devices'
@@ -834,63 +809,6 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-aec-reconcile" \
         /usr/local/sbin/jasper-aec-reconcile
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-audio-hardware-reconcile.service" \
-        "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
-    install -d -m 0755 /usr/local/lib/jasper
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
-        /usr/local/lib/jasper/jasper-asound-render.sh
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-env-file.sh" \
-        /usr/local/lib/jasper/jasper-env-file.sh
-    # Single canonical core-graph park list, sourced at runtime by
-    # /usr/local/sbin/jasper-camilla-recover (../lib has no sibling there).
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-core-graph-park-units.sh" \
-        /usr/local/lib/jasper/jasper-core-graph-park-units.sh
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-apple-dongle.sh" \
-        /usr/local/lib/jasper/jasper-apple-dongle.sh
-    # Installer-only sourced libs (install.sh sources them REPO_DIR-
-    # relative from the rsync checkout; the installed copies mirror the
-    # other deploy/lib files for on-Pi inspection/consistency).
-    install -d -m 0755 /usr/local/lib/jasper/install
-    install -m 0644 \
-        "${REPO_DIR}"/deploy/lib/install/*.sh \
-        /usr/local/lib/jasper/install/
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-audio-hardware-reconcile" \
-        /usr/local/sbin/jasper-audio-hardware-reconcile
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-output-hardware-hotplug" \
-        /usr/local/sbin/jasper-output-hardware-hotplug
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-outputd-failure-reconcile" \
-        /usr/local/sbin/jasper-outputd-failure-reconcile
-
-    # jasper-fanin: per-renderer snd-aloop substream fan-in daemon.
-    # **Production default** as of 2026-05-26 — replaces the
-    # dmix-based topology that PR #214 introduced and that turned out
-    # to cause periodic AirPlay drops via WiFi-burst + dmix-write-
-    # timing interaction. This unit is mandatory for renderer audio;
-    # enable/start happens below after daemon-reload. See
-    # docs/HANDOFF-fan-in-daemon.md for the design + 2026-05-26
-    # validation; docs/HANDOFF-airplay.md Pattern A3 for the dmix
-    # failure mode that motivated the cutover.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-fanin.service" \
-        "${SYSTEMD_DIR}/jasper-fanin.service"
-    # P3/P4 default-flip: the boot-time coupling + USB combo default resolver.
-    # Enabled + run once by resolve_fanin_coupling_default below.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-fanin-coupling-auto.service" \
-        "${SYSTEMD_DIR}/jasper-fanin-coupling-auto.service"
-    # jasper-outputd: mainline final-output owner.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-outputd.service" \
-        "${SYSTEMD_DIR}/jasper-outputd.service"
-
     # WiFi profile guardian. Type=oneshot boot-time recreate of a lost
     # /etc/NetworkManager/system-connections/<SSID>.nmconnection from
     # the wizard-owned stash at /var/lib/jasper/wifi_guardian.env. See
@@ -914,30 +832,6 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-wifi-recover" \
         /usr/local/sbin/jasper-wifi-recover
-
-    # Camilla pipe guard. ExecStartPre= on jasper-camilla: when the
-    # statefile points at a bonded multi-room pipe config but the
-    # snapserver FIFO is dead, repair to the base config BEFORE camilla
-    # launches — camilladsp exits clean on a dead File sink (measured),
-    # and Restart=always + the start-limit recovery handler would otherwise
-    # turn that into a repeated parked/recovery cycle. Fail-open by design. See
-    # docs/HANDOFF-multiroom.md §2.
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-camilla-pipe-guard" \
-        /usr/local/sbin/jasper-camilla-pipe-guard
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-camilla-recover" \
-        /usr/local/sbin/jasper-camilla-recover
-    # Camilla #2 crossover guard. ExecStartPre= on
-    # jasper-camilla-crossover: same dead-pipe loop break as the pipe
-    # guard, but its safe-repair target is the re-proven DRIVER-DOMAIN
-    # (Layer-A-intact) graph — NEVER flat (a flat crossover would send
-    # full-range to the tweeter, the hazard this increment prevents).
-    # Installed now so the dormant unit is complete; the unit is not yet
-    # enabled. docs/HANDOFF-distributed-active.md "Stage B".
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-camilla-crossover-guard" \
-        /usr/local/sbin/jasper-camilla-crossover-guard
 
     # Identity reconciler. Type=oneshot snapshot of the speaker's
     # effective mDNS identity (OS hostname vs Avahi's post-collision
