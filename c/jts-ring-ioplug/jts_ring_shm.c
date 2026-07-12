@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -24,6 +25,36 @@
 // unlinked and recreated (narrow-path reclaim, mirroring the Rust reader's
 // is_owned_ring_path / outputd's is_owned_runtime_pipe_path).
 #define JTS_RING_OWNED_DIR "/dev/shm/jts-ring"
+
+static const char *owned_ring_dir(void) {
+#ifdef JTS_RING_TESTING
+    const char *test_dir = getenv("JTS_RING_TEST_OWNED_DIR");
+    if (test_dir != NULL && test_dir[0] != '\0') return test_dir;
+#endif
+    return JTS_RING_OWNED_DIR;
+}
+
+static int unlink_owned_ring(const char *path) {
+#ifdef JTS_RING_TESTING
+    const char *forced_errno = getenv("JTS_RING_TEST_UNLINK_ERRNO");
+    if (forced_errno != NULL && forced_errno[0] != '\0') {
+        errno = (int)strtol(forced_errno, NULL, 10);
+        return -1;
+    }
+#endif
+    return unlink(path);
+}
+
+#ifdef JTS_RING_TESTING
+static void test_pause_after_exclusive_create(void) {
+    const char *delay_us = getenv("JTS_RING_TEST_CREATE_DELAY_US");
+    if (delay_us == NULL || delay_us[0] == '\0') return;
+    unsigned long us = strtoul(delay_us, NULL, 10);
+    struct timespec ts = {.tv_sec = (time_t)(us / 1000000ul),
+                          .tv_nsec = (long)((us % 1000000ul) * 1000ul)};
+    nanosleep(&ts, NULL);
+}
+#endif
 
 // Bounded number of full-ring wait ticks before a live-reader publish gives up
 // and drops (defends against a reader that stamps a heartbeat but never
@@ -117,11 +148,13 @@ static void clamped_nanosleep(uint32_t period_frames) {
 }
 
 static int owned_ring_path(const char *path) {
-    // True iff `path` is directly under JTS_RING_OWNED_DIR (no nesting), i.e.
-    // dirname(path) == JTS_RING_OWNED_DIR. Narrow, string-based, mirroring the
-    // Rust reader.
-    const size_t dlen = sizeof(JTS_RING_OWNED_DIR) - 1;
-    if (strncmp(path, JTS_RING_OWNED_DIR, dlen) != 0) return 0;
+    // True iff `path` is directly under the owned root (no nesting), i.e.
+    // dirname(path) == owned_ring_dir(). Narrow, string-based, mirroring the
+    // Rust reader. Product builds always resolve the fixed /dev/shm root; only
+    // the host-test binary compiles the per-process override.
+    const char *owned_dir = owned_ring_dir();
+    const size_t dlen = strlen(owned_dir);
+    if (strncmp(path, owned_dir, dlen) != 0) return 0;
     if (path[dlen] != '/') return 0;
     const char *rest = path + dlen + 1;
     if (rest[0] == '\0') return 0;          // the dir itself
@@ -239,10 +272,38 @@ static int init_created_mapping(int fd, const jts_ring_geometry_t *g,
     return 0;
 }
 
+static void magic_wait_sleep(void) {
+    struct timespec ts = {.tv_sec = 0,
+                          .tv_nsec = (long)(JTS_RING_MAGIC_WAIT_STEP_US * 1000ull)};
+    nanosleep(&ts, NULL);
+}
+
+// Wait until the O_EXCL creator has completed ftruncate and the file is safe to
+// mmap. A zero/small file is not immediately torn: the creator may simply be
+// between open(O_EXCL) and ftruncate. Returns VALID once at least the header is
+// present, TORN on timeout, or FATAL on fstat failure.
+static ring_attach_result_t wait_for_mappable_size(int fd, uint64_t deadline,
+                                                   size_t *actual,
+                                                   const char **reason) {
+    for (;;) {
+        struct stat st;
+        if (fstat(fd, &st) < 0) {
+            if (reason) *reason = "fstat failed";
+            return RING_ATTACH_FATAL;
+        }
+        if ((uint64_t)st.st_size >= (uint64_t)JTS_RING_HEADER_BYTES) {
+            *actual = (size_t)st.st_size;
+            return RING_ATTACH_VALID;
+        }
+        if (jts_ring_monotonic_ns() >= deadline) return RING_ATTACH_TORN;
+        magic_wait_sleep();
+    }
+}
+
 // Wait (bounded) for the creator's magic. Returns 1 if seen, 0 on timeout.
-// `base` is the mmap base (offset 0 = the magic+version qword).
-static int wait_for_magic(void *base) {
-    uint64_t deadline = jts_ring_monotonic_ns() + JTS_RING_MAGIC_WAIT_TIMEOUT_MS * 1000000ull;
+// `base` is the mmap base (offset 0 = the magic+version qword). The deadline is
+// shared with the size wait so attach has one 100 ms budget, not two.
+static int wait_for_magic(void *base, uint64_t deadline) {
     for (;;) {
         // Acquire-load the magic+version qword (mirrors the Rust reader). The
         // Acquire pairs with the creator's Release qword store, so observing
@@ -252,9 +313,7 @@ static int wait_for_magic(void *base) {
         uint32_t magic = (uint32_t)qword;
         if (magic == JTS_RING_MAGIC) return 1;
         if (jts_ring_monotonic_ns() >= deadline) return 0;
-        struct timespec ts = {.tv_sec = 0,
-                              .tv_nsec = (long)(JTS_RING_MAGIC_WAIT_STEP_US * 1000ull)};
-        nanosleep(&ts, NULL);
+        magic_wait_sleep();
     }
 }
 
@@ -265,23 +324,19 @@ static int wait_for_magic(void *base) {
 static ring_attach_result_t attach_existing_mapping(
     int fd, const jts_ring_geometry_t *expected, ring_mapping_t *out,
     const char **reason) {
-    struct stat st;
-    if (fstat(fd, &st) < 0) {
-        if (reason) *reason = "fstat failed";
-        return RING_ATTACH_FATAL;
-    }
-    if ((uint64_t)st.st_size < (uint64_t)JTS_RING_HEADER_BYTES) {
-        // Mid-init (or not a ring): reclaimable-as-torn.
-        return RING_ATTACH_TORN;
-    }
-    size_t actual = (size_t)st.st_size;
+    uint64_t deadline =
+        jts_ring_monotonic_ns() + JTS_RING_MAGIC_WAIT_TIMEOUT_MS * 1000000ull;
+    size_t actual = 0;
+    ring_attach_result_t size_result =
+        wait_for_mappable_size(fd, deadline, &actual, reason);
+    if (size_result != RING_ATTACH_VALID) return size_result;
     void *base = map_fd(fd, actual);
     if (!base) {
         if (reason) *reason = "mmap failed";
         return RING_ATTACH_FATAL;
     }
     jts_ring_header_t *h = (jts_ring_header_t *)base;
-    if (!wait_for_magic(base)) {
+    if (!wait_for_magic(base, deadline)) {
         munmap(base, actual);
         return RING_ATTACH_TORN;
     }
@@ -341,6 +396,9 @@ static int ring_mapping_open(const char *path, const jts_ring_geometry_t *expect
     for (int attempt = 0; attempt < 8; attempt++) {
         int create_fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0660);
         if (create_fd >= 0) {
+#ifdef JTS_RING_TESTING
+            test_pause_after_exclusive_create();
+#endif
             int rc = init_created_mapping(create_fd, expected, out);
             if (rc != 0) {
                 close(create_fd);
@@ -380,7 +438,14 @@ static int ring_mapping_open(const char *path, const jts_ring_geometry_t *expect
                     role_name, path);
             return -EINVAL;
         }
-        unlink(path);
+        if (unlink_owned_ring(path) < 0) {
+            int unlink_errno = errno;
+            if (unlink_errno == ENOENT) continue; // another reclaimer won; retry
+            fprintf(stderr,
+                    "event=jts_ring.%s.reclaim_failed errno=%d path=%s\n",
+                    role_name, unlink_errno, path);
+            return -unlink_errno;
+        }
         fprintf(stderr, "event=jts_ring.%s.reclaimed_magic_invalid path=%s\n",
                 role_name, path);
         // loop and re-create

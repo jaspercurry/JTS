@@ -108,10 +108,12 @@
 //! one side at a time (writer needs `W - R < n_slots`; reader needs `W > R`) and
 //! the writer never touches `read_seq`, so the two-sided discipline is exact. A
 //! writer crash mid-memcpy leaves `write_seq` unbumped — the garbage slot is
-//! never readable. A creator crash mid-init leaves `magic` unset — attachers spin
-//! <=100 ms for magic then error; the reader unlinks-and-recreates a
-//! magic-invalid file under its owned `/dev/shm/jts-ring/` path (narrow-path
-//! check, mirroring outputd's `is_owned_runtime_pipe_path`).
+//! never readable. An attacher gives the O_EXCL creator one <=100 ms budget to
+//! complete both `ftruncate` and the magic-last publish; only after that expires
+//! is the inode classified as a crashed mid-init creator. The reader then
+//! unlinks-and-recreates a magic-invalid file under its owned
+//! `/dev/shm/jts-ring/` path (narrow-path check, mirroring outputd's
+//! `is_owned_runtime_pipe_path`).
 //!
 //! There is ONE narrow window where writer and reader may store `read_seq`
 //! concurrently: a reader whose heartbeat has gone stale (wedged > liveness
@@ -234,7 +236,7 @@ pub struct RingMetrics {
 /// dead (reader reports `writer_alive:false`; the writer side free-runs).
 pub const WRITER_LIVENESS_TIMEOUT_NS: u64 = 2_000_000_000;
 
-/// Bounded spin for the creator's magic to appear during attach.
+/// One bounded attach budget for the creator's ftruncate + magic publish.
 const MAGIC_WAIT_TIMEOUT_MS: u64 = 100;
 const MAGIC_WAIT_STEP_US: u64 = 200;
 
@@ -513,9 +515,9 @@ unsafe fn copy_slot_to_i16(src: *const u8, out: &mut [i16], samples: usize) {
     }
 }
 
-/// `O_EXCL` create (init + magic-last) or attach (bounded magic wait + geometry
-/// validation). A magic-invalid file under the owned `/dev/shm/jts-ring/` root
-/// is unlinked and recreated.
+/// `O_EXCL` create (init + magic-last) or attach (bounded size+magic wait +
+/// geometry validation). A magic-invalid file under the owned
+/// `/dev/shm/jts-ring/` root is unlinked and recreated.
 fn attach_or_create(path: &str, expected: Geometry) -> io::Result<RingMapping> {
     ensure_parent_dir(path)?;
     let c_path = std::ffi::CString::new(path)
@@ -561,11 +563,9 @@ fn attach_or_create(path: &str, expected: Geometry) -> io::Result<RingMapping> {
         match attach_existing(fd, expected) {
             Ok(map) => return Ok(map),
             Err(AttachError::Fatal(e)) => {
-                unsafe { libc::close(fd) };
                 return Err(e);
             }
             Err(AttachError::MagicInvalid) => {
-                unsafe { libc::close(fd) };
                 // A creator crashed mid-init (magic never appeared). Only the
                 // owner may reclaim, and only under the narrow owned path.
                 if !is_owned_ring_path(path) {
@@ -574,7 +574,16 @@ fn attach_or_create(path: &str, expected: Geometry) -> io::Result<RingMapping> {
                         format!("ring {path:?} has no valid magic and is not reclaimable"),
                     ));
                 }
-                std::fs::remove_file(path)?;
+                if let Err(e) = std::fs::remove_file(path) {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        continue; // another reclaimer won; retry create
+                    }
+                    eprintln!(
+                        "event=outputd.shm_ring.reclaim_failed errno={} path={path}",
+                        e.raw_os_error().unwrap_or(-1)
+                    );
+                    return Err(e);
+                }
                 eprintln!("event=outputd.shm_ring.reclaimed_magic_invalid path={path}");
                 // Loop back and re-create.
             }
@@ -584,8 +593,8 @@ fn attach_or_create(path: &str, expected: Geometry) -> io::Result<RingMapping> {
 
 enum AttachError {
     Fatal(io::Error),
-    /// The magic never appeared within the bounded wait (creator crashed
-    /// mid-init). Reclaimable under the owned path.
+    /// The creator did not complete ftruncate + magic publication within the
+    /// bounded wait. Reclaimable under the owned path.
     MagicInvalid,
 }
 
@@ -616,36 +625,36 @@ fn init_created(fd: RawFd, g: Geometry) -> io::Result<RingMapping> {
     Ok(map)
 }
 
+/// Consume `fd` and attach it to a validated mapping. On every error this
+/// function closes the fd itself: either explicitly before mmap ownership is
+/// established, or through `RingMapping::drop` afterward.
 fn attach_existing(fd: RawFd, expected: Geometry) -> Result<RingMapping, AttachError> {
-    // fstat the file to learn its ACTUAL size. We map the actual size, never
-    // the expected size: mmapping past EOF would SIGBUS on access, and a
-    // genuinely-smaller valid ring (a geometry mismatch) must be readable so we
-    // can name the mismatch honestly rather than misreport it as "still
-    // growing." A file too small to hold even the header is mid-init.
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    if unsafe { libc::fstat(fd, &mut st) } < 0 {
-        return Err(AttachError::Fatal(io::Error::last_os_error()));
-    }
-    let actual_size = st.st_size as u64;
-    if actual_size < HEADER_BYTES as u64 {
-        // The creator has not finished ftruncate/init yet (or it is not a ring
-        // at all). Treat as magic-invalid: reclaimable under the owned path,
-        // fatal otherwise.
-        return Err(AttachError::MagicInvalid);
-    }
-    let actual_size = actual_size as usize;
+    // One bounded budget covers both the creator's ftruncate and magic publish.
+    // A zero/small file is not immediately torn: an O_EXCL winner may simply be
+    // between open and ftruncate.
+    let deadline_ns = monotonic_ns() + MAGIC_WAIT_TIMEOUT_MS * 1_000_000;
+    let actual_size = match wait_for_mappable_size(fd, deadline_ns) {
+        Ok(size) => size,
+        Err(e) => {
+            unsafe { libc::close(fd) };
+            return Err(e);
+        }
+    };
 
     // Map the ACTUAL bytes with the expected geometry recorded only for slot
     // math; the header's own declared geometry is validated below before any
     // slot is indexed, so a mismatch fails loud before slot math runs.
     let map = match mmap_fd(fd, actual_size, expected) {
         Ok(m) => m,
-        Err(e) => return Err(AttachError::Fatal(e)),
+        Err(e) => {
+            unsafe { libc::close(fd) };
+            return Err(AttachError::Fatal(e));
+        }
     };
 
     // Bounded wait for the creator's magic. No magic within the window means
     // the creator crashed mid-init (or this is not a ring).
-    if !wait_for_magic(&map) {
+    if !wait_for_magic(&map, deadline_ns) {
         return Err(AttachError::MagicInvalid);
     }
 
@@ -729,8 +738,31 @@ fn mismatch(field: &str, got: u32, want: u32) -> io::Error {
     )
 }
 
-fn wait_for_magic(map: &RingMapping) -> bool {
-    let deadline_ns = monotonic_ns() + MAGIC_WAIT_TIMEOUT_MS * 1_000_000;
+fn magic_wait_sleep() {
+    let ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: (MAGIC_WAIT_STEP_US * 1000) as _,
+    };
+    unsafe { libc::nanosleep(&ts, std::ptr::null_mut()) };
+}
+
+fn wait_for_mappable_size(fd: RawFd, deadline_ns: u64) -> Result<usize, AttachError> {
+    loop {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(fd, &mut st) } < 0 {
+            return Err(AttachError::Fatal(io::Error::last_os_error()));
+        }
+        if st.st_size as u64 >= HEADER_BYTES as u64 {
+            return Ok(st.st_size as usize);
+        }
+        if monotonic_ns() >= deadline_ns {
+            return Err(AttachError::MagicInvalid);
+        }
+        magic_wait_sleep();
+    }
+}
+
+fn wait_for_magic(map: &RingMapping, deadline_ns: u64) -> bool {
     loop {
         let magic = map
             .header_atomic(layout::OFF_MAGIC_QWORD)
@@ -741,11 +773,7 @@ fn wait_for_magic(map: &RingMapping) -> bool {
         if monotonic_ns() >= deadline_ns {
             return false;
         }
-        let ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: (MAGIC_WAIT_STEP_US * 1000) as _,
-        };
-        unsafe { libc::nanosleep(&ts, std::ptr::null_mut()) };
+        magic_wait_sleep();
     }
 }
 
@@ -923,6 +951,8 @@ impl Drop for TestRingWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::IntoRawFd;
+    use std::sync::mpsc;
 
     fn tmp_ring_path(tag: &str) -> String {
         // Host-testable: not /dev/shm on macOS. Use the OS temp dir so the
@@ -1151,6 +1181,56 @@ mod tests {
             Err(e) => e,
         };
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn attacher_waits_for_live_creator_before_ftruncate() {
+        // Hold a real O_EXCL-created inode at size zero while another thread is
+        // already attaching. Size<header is not proof of a torn creator: the
+        // attacher must stay on this inode until ftruncate+magic completes.
+        let path = tmp_ring_path("pre-ftruncate-race");
+        let g = proto_geometry();
+        let creator_fd = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap()
+            .into_raw_fd();
+        let attach_fd = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .into_raw_fd();
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let attacher = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            attach_existing(attach_fd, g)
+        });
+        ready_rx.recv().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        let creator_map = init_created(creator_fd, g).unwrap();
+        let attached_map = match attacher.join().unwrap() {
+            Ok(map) => map,
+            Err(_) => panic!("attacher must wait for the live creator"),
+        };
+
+        // A shared atomic round-trip proves both mappings still name the O_EXCL
+        // winner's inode rather than a split-brain replacement.
+        creator_map
+            .header_atomic(layout::OFF_WRITE_SEQ)
+            .store(37, Ordering::Release);
+        assert_eq!(
+            attached_map
+                .header_atomic(layout::OFF_WRITE_SEQ)
+                .load(Ordering::Acquire),
+            37
+        );
+        drop(attached_map);
+        drop(creator_map);
         cleanup(&path);
     }
 
