@@ -135,6 +135,13 @@ The applied crossover is authoritative for playback. The working crossover is
 authoritative for the form. The candidate records exactly what would be applied.
 The UI must never merge values from those states implicitly.
 
+Working crossovers and candidates are strictly silent: the crossover preview
+emits no audio and no CamillaDSP YAML, may not stage or load a graph, and may
+not authorize playback (enforced today by
+`jasper.active_speaker.crossover_preview`'s no-audio permissions). Reviewing a
+proposal must remain possible even while safety gates block staging or
+playback — a blocked speaker can still show what JTS is thinking.
+
 ### Parameter provenance
 
 Every candidate should be able to explain where each value came from:
@@ -147,6 +154,12 @@ Every candidate should be able to explain where each value came from:
 
 Provenance is metadata on the canonical value, not a second value. It exists so
 the comparison and diagnostics can be honest.
+
+The shipped substrate carries a narrower, per-role trim provenance
+(`explicit` / `measured` / `sensitivity` / `none` in the baseline-profile
+layer). Implementation migrates that vocabulary into this per-parameter one —
+`sensitivity` maps to `recommended_start`, `explicit` to `manual` — rather
+than running two provenance models side by side.
 
 ### Replacement semantics
 
@@ -257,41 +270,70 @@ a synchronized capture reference or a bounded measured delay/null walk.
 The flow should identify the selected microphone and calibration, then explain
 one authoritative placement:
 
-> Put the microphone on the speaker's intended listening axis, approximately
-> one metre away when the room permits. Aim it according to the microphone's
-> calibration file. Keep the microphone and speaker completely still until all
-> driver and combined measurements are finished.
+> Put the microphone on the reference axis — the tweeter axis, or the design
+> axis named by the speaker profile — at the height that axis is specified
+> for, approximately one metre away when the room permits. Aim it according
+> to the microphone's calibration file. Keep the microphone and speaker
+> completely still until all driver and combined measurements are finished.
 
-The exact instruction may be specialized by a hardware/speaker profile, but the
-default automatic flow must not ask the user to move the microphone from driver
-to driver. A fixed reference-axis position preserves the drivers' relative
-arrival-time and summation evidence. Optional near-field diagnostics are a
-separate advanced tool, not the default alignment geometry.
+The instruction must state the axis and height concretely, because a few
+centimetres of vertical offset moves the microphone through the crossover
+lobe and produces a suck-out that looks like a design problem. The post-apply
+verification capture must use the same axis and height so it compares like
+with like. The exact wording may be specialized by a hardware/speaker
+profile, but the default automatic flow must not ask the user to move the
+microphone from driver to driver: a fixed reference-axis position is what
+keeps the drivers' relative summation evidence comparable across captures.
+It yields timing evidence only together with the bounded measured delay/null
+walk (or a synchronized capture reference); a fixed microphone alone does
+not create a shared clock.
+
+Near-field capture of a low-frequency driver is not an advanced diagnostic —
+it is the standard complement to the fixed reference-axis capture. In a
+domestic room the reference-axis capture is only valid above the
+reflection-free window's floor (see "Measurement validity" below), so when a
+crossover region sits at or below that floor, the flow requires a near-field
+capture of the lower driver, applies baffle-step/diffraction correction, and
+splices it to the gated reference-axis response. What remains rejected is
+the old near-field-only shape: uncorrected near-field level trims presented
+as far-field truth.
 
 JTS then performs this sequence:
 
-1. Capture ambient noise and determine whether the measurement can proceed.
+1. Capture ambient noise long enough to characterize non-stationary sources
+   and determine whether the measurement can proceed.
 2. For each driver, derive a protected level-probe band from the applied
    crossover and driver-protection edges.
-3. Gradually raise that driver's measurement level until the representative
-   probe reaches the target SNR with clipping headroom, or explain the exact
-   shortfall.
-4. Play a protected logarithmic sweep through that driver only.
+3. Gradually raise that driver's measurement level within the commissioning
+   envelope until the capture shows a safe, non-clipping level with
+   microphone headroom. The probe sets level only; the SNR verdict comes
+   from the deconvolved sweep, per band.
+4. Play a protected logarithmic sweep through that driver only, with a
+   driver-appropriate sweep length (longer for woofers, bounded short for
+   tweeters).
 5. Repeat the sweep three times without moving the microphone.
 6. Reject clipped, incomplete, stale-graph, wrong-driver, or low-SNR captures.
-7. Aggregate accepted repeats robustly and retain their spread.
-8. Continue to the next driver using its own safe probe and locked level.
-9. Measure all drivers in a crossover region together, first in the candidate
-   polarity and then with the bounded reverse-polarity validation needed for
-   alignment.
-10. Produce a measured proposal and a plain-language explanation.
+7. Gate each accepted impulse response to its measured reflection-free window
+   and record the resulting low-frequency validity floor.
+8. Aggregate accepted repeats robustly and retain their spread.
+9. Continue to the next driver using its own safe probe and locked level.
+10. Measure all drivers in a crossover region together, first in the candidate
+    polarity and then with the bounded reverse-polarity validation needed for
+    alignment.
+11. Produce a measured proposal and a plain-language explanation.
 
-Three exact-position repeats are the normal crossover default. They improve
-repeatability and expose outliers without confusing crossover commissioning
-with room spatial averaging. If timing is trustworthy, analysis may align and
-coherently aggregate them. Otherwise, it should use robust magnitude statistics
-while preserving the individual complex records. It must never average moved
-microphone positions into phase/alignment evidence.
+Three exact-position repeats are the normal crossover default. Their purpose
+is outlier rejection and a variance estimate — catching the door slam, the
+furnace kick, the drifted capture — not noise-floor reduction: acoustic-noise
+headroom comes from the level/SNR policy, never from raising the repeat
+count. Cross-repeat coherent averaging requires a shared sample clock between
+playback and capture, which today's browser and USB capture paths do not
+have, so analysis defaults to robust magnitude statistics while preserving
+the individual complex records; coherent aggregation may be enabled only
+behind a real shared-clock/loopback gate. If one of three repeats is
+rejected, the flow re-captures once to restore three, or proceeds with two
+and widens the reported confidence. It must never average moved microphone
+positions into phase/alignment evidence.
 
 ### Level control and SNR
 
@@ -303,38 +345,125 @@ frequency rules.
 The controller should:
 
 - begin at the bounded quiet level;
-- use a short band-limited probe or preview sweep representative of the driver's
-  useful measurement band;
+- use a short band-limited probe or preview sweep representative of the
+  driver's useful measurement band to find a safe, non-clipping capture level
+  with microphone headroom — the probe owns level safety, not the SNR
+  verdict;
 - raise gain gradually within the existing commissioning envelope;
-- target at least 25 dB SNR when practical;
-- accept 20–25 dB with an explicit reduced-confidence result;
-- stop below 20 dB and report how many decibels are missing;
+- choose a driver-appropriate sweep length (longer sweeps buy low-frequency
+  processing gain on a woofer; tweeter sweeps stay short and protected —
+  sweep length is a protected parameter of the safety floor, like level);
 - retain microphone peak and clipping headroom; and
 - keep a visible Stop action while sound is playing.
 
-A 1 kHz scalar level is not sufficient evidence that a broadband room or driver
-sweep has 20 dB SNR. The stored ambient recording and the accepted sweep should
-support band-specific quality reporting. Raising microphone gain does not fix
-acoustic SNR when it raises room noise and signal equally.
+The SNR verdict is computed after deconvolution, per band, from the accepted
+sweep against the stored ambient capture — never from the raw probe, which
+cannot see the sweep's band-dependent processing gain. The ambient capture
+must be long enough (or repeated) to characterize non-stationary noise, and
+the noise reference uses a percentile or maximum rather than one short quiet
+window.
+
+SNR thresholds are split by decision class, band-specific, and evaluated on
+the worst band the decision depends on:
+
+- **Magnitude and trim decisions** target at least 25 dB SNR as a floor
+  (prefer 40 dB or better where the room and level allow), accept 20–25 dB
+  with an explicit reduced-confidence result, and stop below 20 dB with a
+  report of how many decibels are missing. These tiers correspond to roughly
+  ±0.5 dB and ±0.9 dB magnitude accuracy.
+- **Null and alignment decisions** (reverse-polarity depth, delay-walk
+  evidence) need substantially more: a null of depth D cannot be measured
+  with less than about D + 10 dB of SNR in the overlap band. Alignment
+  evidence therefore requires the overlap band to reach approximately
+  35–40 dB SNR, or the reported null depth is capped at the measured noise
+  floor and the alignment verdict degrades to "review" — never "aligned".
+- The accept/reduce/refuse verdict is per band, with defined partial-pass
+  semantics: a woofer run may be good from 150–800 Hz, reduced 80–150 Hz,
+  and short below 80 Hz, and the proposal consumes exactly that rather than
+  refusing the whole capture over its worst octave.
+
+A 1 kHz scalar level is not sufficient evidence that a broadband room or
+driver sweep has 20 dB SNR. Raising microphone gain does not fix acoustic
+SNR when it raises room noise and signal equally. Low-frequency shortfall in
+the woofer's bottom octave is a NORMAL outcome in evening and urban rooms —
+residential noise is heavily low-frequency-weighted — so the shortfall path
+is ordinary product behavior, not an error state: name the actionable lever
+(quiet the room, accept reduced low-frequency confidence, or raise the level
+within the envelope).
+
+### Measurement validity: gating and the low-frequency floor
+
+A domestic room contaminates a far-field capture with reflections a few
+milliseconds after the direct sound. Analysis must therefore gate: detect the
+first strong reflection in each accepted impulse response, window the
+response to the reflection-free span, and record the resulting low-frequency
+validity floor (approximately the reciprocal of the window length — a 4 ms
+window resolves nothing below roughly 250 Hz). At one metre in a typical
+room the floor lands near 215–285 Hz, set by the floor bounce.
+
+The validity floor is a first-class result, reported with the same honesty
+as SNR:
+
+- every derived quantity (level, magnitude shape, polarity, delay, proposal
+  scoring) is computed only from data above the floor;
+- when a crossover region sits at or below the floor, the reference-axis
+  capture alone cannot decide it — the flow requires the near-field capture
+  plus baffle-step correction and splice described in Step 3B, and says so;
+- the review screen and evidence bundle record the achieved window, the
+  floor, and whether each proposed crossover frequency sits above it; and
+- a proposal whose frequency the room prevented measuring is marked
+  reduced-confidence or refused with "the room prevented a low-frequency
+  decision here", never silently emitted.
+
+Single-position capture also cannot observe vertical lobing: off-axis and
+directivity behavior are outside the single-position tier's evidence (First
+principles item 7 applies only where the measurement tier can observe it).
+An optional vertical fan capture (roughly ±15–30°) is the smallest set that
+can reveal a crossover lobe and may be offered as a deliberate extra step;
+the automatic proposal treats it as a veto input when present (see "Building
+the automatic proposal").
 
 ### Building the automatic proposal
 
-Automatic design should be deterministic and bounded. It should search only
-candidate values allowed by the driver constraints and current topology, then
-score them from measured acoustic evidence.
+Automatic design should be deterministic and bounded. It selects the best
+supported **electrical** filter candidate — it does not claim to synthesize
+a textbook acoustic target. Without per-driver EQ (out of scope for the
+first release), a real driver's baffle step, breakup, and natural rolloff
+mean an electrical Linkwitz–Riley does not produce an acoustic
+Linkwitz–Riley; credible active-crossover practice treats driver
+linearization as a prerequisite of acoustic-target design. The honest
+first-release deliverable is therefore the best electrical
+family/order/frequency plus trim, polarity, and delay, scored on the
+measured summed response, and presented as a suggested starting point the
+user reviews.
 
 The proposal considers:
 
-1. a usable overlap range in which both drivers are present and sufficiently
-   clean;
+1. a measured usable overlap range in which both drivers are present,
+   sufficiently clean, and above the low-frequency validity floor;
 2. crossover frequencies inside that range;
-3. a small supported set of acoustic target families/orders;
+3. the electrical filter families/orders already supported by
+   `ActiveSpeakerPreset`, defaulting to even-order Linkwitz–Riley; an
+   odd-order or asymmetric candidate may not be chosen on single-axis
+   evidence alone — it requires off-axis (vertical-fan) evidence acting as a
+   tie-breaker or veto;
 4. relative trim across the overlap, not unrelated single-frequency levels;
-5. polarity and relative delay that produce stable summation;
+5. polarity and relative delay that produce stable summation — a measured
+   delay value from the bounded delay walk is a prerequisite for any
+   automatic frequency/family choice, because lobe and null reasoning is
+   untrustworthy without it;
 6. combined-response deviation around the crossover;
 7. reverse-polarity null quality where applicable;
 8. bounded filter/headroom cost; and
-9. available off-axis evidence, when the user deliberately captures it.
+9. off-axis evidence as a veto, when the user deliberately captures it.
+
+When the measured overlap shows a driver that cannot blend without shaping —
+a baffle-step-dominated region, breakup, or a steep natural-rolloff
+mismatch — the proposal refuses with "this pairing needs per-driver EQ,
+which the builder does not yet design" rather than emitting a confident but
+unrealizable filter. The score is labeled **on-axis blend quality (single
+fixed axis)** in the review screen and evidence bundle, so a good number is
+not mistaken for a verdict on the whole polar behavior.
 
 The first complete implementation does not need an open-ended optimizer. A
 small deterministic candidate search over the filter families already supported
@@ -380,7 +509,8 @@ Apply uses the existing shared DSP transaction. It must:
 7. roll back if compilation, loading, or runtime confirmation fails.
 
 After apply, JTS measures the combined crossover again at the same fixed
-reference position. Verification compares like with like and records the result
+reference position (same axis and height as the commissioning captures).
+Verification compares like with like and records the result
 against the applied profile fingerprint. A failed acoustic verification does
 not silently declare success; the user can restore the previous crossover or
 return to edit/measure.
@@ -467,17 +597,26 @@ the top-level state payload.
 
 ### Structured events
 
-Log important transitions once using stable `event=` names, including:
+The shipped crossover flow already logs under the `correction.crossover_*`
+namespace (`correction.crossover_driver_capture_sweep`,
+`correction.crossover_summed_capture`, `correction.crossover_relay_recorded`,
+and friends, all via `jasper.log_event`). New lifecycle events extend that
+namespace rather than starting a parallel `crossover.*` prefix — operators
+already grep the shipped names, and the log-event conventions test pins the
+mechanism. Log important transitions once using stable `event=` names,
+including:
 
-- `crossover.session_started`;
-- `crossover.level_locked` or `crossover.level_failed`;
-- `crossover.capture_accepted` or `crossover.capture_rejected`;
-- `crossover.repeats_aggregated`;
-- `crossover.proposal_ready`;
-- `crossover.apply_started`;
-- `crossover.apply_succeeded`;
-- `crossover.apply_rolled_back`; and
-- `crossover.verification_passed` or `crossover.verification_failed`.
+- `correction.crossover_session_started`;
+- `correction.crossover_level_locked` or `correction.crossover_level_failed`;
+- `correction.crossover_capture_accepted` or
+  `correction.crossover_capture_rejected`;
+- `correction.crossover_repeats_aggregated`;
+- `correction.crossover_proposal_ready`;
+- `correction.crossover_apply_started`;
+- `correction.crossover_apply_succeeded`;
+- `correction.crossover_apply_rolled_back`; and
+- `correction.crossover_verification_passed` or
+  `correction.crossover_verification_failed`.
 
 Fields should include session, group, driver role, graph fingerprint, SNR,
 headroom, reason code, and candidate/applied fingerprint as relevant. Do not log
@@ -497,6 +636,8 @@ needs a small non-negotiable safety floor:
   midrange that requires protection.
 - Build every audible measurement through the protected production graph.
 - Start each driver at the bounded quiet level and raise it gradually.
+- Keep tweeter sweeps short and protected — sweep length is a bounded,
+  protected parameter like level.
 - Provide immediate Stop and bounded session expiry.
 - Reject clipped recordings and stale topology/graph evidence.
 - Keep automatic gain attenuation-only until positive-gain headroom and driver
@@ -525,14 +666,32 @@ validation seam. It should not add a parallel wizard or optimizer framework.
 
 ## Delivery slices
 
+### Slice 0: measurement-validity substrate
+
+Everything later depends on these; they land first, hardware-free and
+CI-provable:
+
+- Impulse-response gating and the per-capture low-frequency validity floor in
+  the shared measurement layer.
+- The band-specific, decision-class-split SNR gate in the single
+  measurement-quality model.
+- The three-repeat capture loop with robust aggregation, spread retention,
+  and the defined rejection fallback.
+- The cohesive commissioning bundle (session identity, manifest, hashing,
+  the capture-through-apply-and-verify chain), ported from the
+  room-correction session-bundle pattern.
+- Polarity and delay as first-class persisted working-crossover values, so a
+  trim-only apply can no longer reset them.
+- The lifecycle events above and the `/state` summary block.
+
 ### Slice 1: honest working foundation
 
 - Complete the manual parameter surface, including polarity and delay.
 - Ensure manual apply and rollback preserve exactly the reviewed values.
 - Rename current automatic behavior as **automatic driver level matching** where
   it still changes trims only.
-- Take three stationary sweeps per driver and aggregate them robustly.
-- Persist one cohesive commissioning bundle.
+- Keep the near-field low-frequency path first-class: baffle-step correction
+  and splice onto the gated reference-axis capture.
 - Require a post-trim summed capture and post-apply verification.
 - Preserve manual frequency, family, slope, polarity, and delay when applying a
   trim-only proposal.
@@ -540,18 +699,35 @@ validation seam. It should not add a parallel wizard or optimizer framework.
 ### Slice 2: automatic alignment
 
 - Retain both normal- and reverse-polarity summed evidence per crossover region.
-- Propose polarity deterministically.
-- Implement a bounded measured delay walk rather than assuming independently
-  started browser captures share sample timing.
+- Propose polarity deterministically from the relative reverse-versus-in-phase
+  null margin, never from absolute phase. (The proposer is shipped and tested
+  in `jasper.active_speaker.crossover_alignment`; this slice wires persisted
+  paired evidence and application around it.)
+- Implement the bounded measured delay walk rather than assuming independently
+  started browser captures share sample timing: the candidate delay is applied
+  in the Pi's DSP (exact, playback-clock-locked) and the browser reads only
+  gated null depth — a magnitude feature immune to capture-clock drift. The
+  walk is bounded by an a-priori delay estimate from driver geometry
+  (optionally seeded by a coarse acoustic timing chirp through an
+  already-verified driver — a seed, never the final value), searched within
+  about ± half a crossover period so it cannot lock a full cycle off, stepped
+  at roughly 50–100 µs, and gated by the repeatability check before any
+  verdict. Never emit a delay value from per-capture impulse arrival times —
+  browser capture jitter makes those physically meaningless.
+- The walk is shared infrastructure: subwoofer↔mains delay/polarity in bass
+  management rides the same implementation (see
+  [`HANDOFF-correction-revision-plan.md`](HANDOFF-correction-revision-plan.md)
+  §3.3), not a parallel one.
 - Support every crossover region in a three-way system, not only the lowest.
 - Verify the resulting sum before offering room correction.
 
-### Slice 3: automatic crossover design
+### Slice 3: measured candidate selection
 
-- Derive a measured usable overlap range.
-- Search a small supported set of frequencies and acoustic target slopes.
-- Score combined response, alignment, headroom, and available directivity
-  evidence.
+- Derive a measured usable overlap range above the validity floor.
+- Search the supported electrical frequencies and families/orders, even-order
+  Linkwitz–Riley by default.
+- Score on-axis blend quality, alignment, headroom, and off-axis evidence
+  where deliberately captured; refuse pairings that need per-driver EQ.
 - Produce the same canonical candidate and comparison used by Manual.
 - Allow explicit replacement of a manual or previously automatic crossover.
 
@@ -574,7 +750,10 @@ trim calculation is a complete automatic crossover.
   axis placement instruction.
 - Each driver receives a driver-appropriate protected level probe and sweep.
 - Three stationary repeats are accepted, rejected, and aggregated visibly.
-- The UI reports achieved SNR, shortfall, clipping headroom, and next action.
+- The UI reports achieved per-band SNR, shortfall, clipping headroom, and next
+  action.
+- The review reports the reflection-free window and low-frequency validity
+  floor, and no proposal rests on data below the floor.
 - Frequency, family/slope, trim, polarity, and delay proposals cite measurement
   evidence and provenance.
 - The combined response is measured before and after apply.
@@ -596,14 +775,18 @@ trim calculation is a complete automatic crossover.
 
 As of 2026-07-11, JTS has much of the substrate but not the full product:
 
-- Manual setup exposes frequency, filter family/slope, and trim, but not all
-  polarity/delay controls described here.
+- Manual setup exposes frequency, filter family/slope, and trim. There is no
+  manual polarity/delay authoring at all: the preset schema carries the
+  fields, but nothing writes them from user input, and a stereo apply
+  currently resets delay/inversion because corrections are re-derived from
+  measurement on every apply.
 - The relay-guided automatic flow takes one accepted near-field sweep per
   driver and derives attenuation-only relative trims.
 - Crossover frequency, family, and slope remain operator-owned rather than
   measured automatically.
-- The automatic success path does not require summed-response, reverse-polarity,
-  delay, off-axis, or post-apply acoustic verification.
+- The automatic success path requires a pre-apply combined listening check,
+  but not reverse-polarity/delay/off-axis evidence or post-apply acoustic
+  verification.
 - Existing alignment analysis is not fully reachable through persisted paired
   summed evidence.
 - Automatic trim application must not reset a manually applied delay or
@@ -654,11 +837,23 @@ measurement guidance, REW's sweep and timing-reference guidance, and Dirac's
 multi-position room-measurement guidance:
 
 - [Linkwitz: crossovers](https://www.linkwitzlab.com/crossovers.htm)
-- [AES: crossover networks for noncoincident drivers](https://secure.aes.org/forum/pubs/journal/?elib=2649)
-- [AES: crossover filter design for a listening window](https://secure.aes.org/forum/pubs/conventions/?elib=20947)
+- AES E-Library work on crossover networks for noncoincident drivers and on
+  crossover filter design optimized for a listening window (cited by title;
+  the AES library is paywalled and its URLs are unstable).
+- [Rane Note 160: Linkwitz–Riley crossovers and lobing error](https://www.ranecommercial.com/legacy/note160.html)
 - [KLIPPEL: transfer-function measurement](https://www.klippel.de/manuals/frequencyresponse-distortion/trf/trf.html)
 - [KLIPPEL: loudspeaker directivity measurement](https://klippel.de/training/attachments/training8/Training_8_Measurement_of_Loudspeaker_Directivity_en.pdf)
 - [REW: making measurements](https://www.roomeqwizard.com/help/help_en-GB/html/makingmeasurements.html)
 - [Dirac Live technical overview](https://www.dirac.com/wp-content/uploads/2024/06/Dirac-Live-a-technical-overview-white-paper.pdf)
+
+The core assumptions of this design — fixed-axis geometry, no-shared-clock
+timing, the repeat/SNR policy, the no-EQ deterministic proposal, and
+auto-level feasibility at domestic levels — were independently validated
+against the measurement literature and shipping calibration systems (REW,
+KLIPPEL, VituixCAD, DEQX, Genelec/Neumann/Dirac/Trinnov) on 2026-07-11. The
+gating/validity-floor requirement, the near-field splice reinstatement, the
+split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
+bounds, and the electrical-candidate reframe in this revision came out of
+that validation.
 
 Last verified: 2026-07-11
