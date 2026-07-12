@@ -1239,7 +1239,13 @@ sudo amixer -c Array cset name='Headset Capture Volume' 60,60,60,60,60,60
 sudo alsactl store
 ```
 
-`jasper-aec-reconcile` runs this on every reconcile pass now (via `ensure_capture_mixer_open`), so it self-heals. `jasper-doctor` flags drift under "XVF mixer state". This hypothesis was NOT in the original ranking below because the doc was written before the actual diagnosis landed — keeping the original list as a record of the analytical process and to cover the remaining-uncovered failure modes if this ever happens again with a different root cause.
+`jasper-aec-reconcile` runs this before arming the profile-managed six-channel
+AEC path (via `ensure_capture_mixer_open`), so normal boot/hotplug reconciliation
+self-heals it. `jasper-doctor` flags drift under "XVF mixer state". This
+hypothesis was NOT in the original ranking below because the doc was written
+before the actual diagnosis landed — keeping the original list as a record of
+the analytical process and to cover the remaining-uncovered failure modes if
+this ever happens again with a different root cause.
 
 ### Original ranking (pre-resolution)
 

@@ -38,6 +38,22 @@ def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
     return fake, log
 
 
+def _fake_mixer_tools(tmp_path: Path) -> tuple[Path, Path]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "mixer.log"
+    script = (
+        "#!/usr/bin/env bash\n"
+        "printf '%s %s\\n' \"${0##*/}\" \"$*\" >> \"$JASPER_MIXER_LOG\"\n"
+        "exit 0\n"
+    )
+    for name in ("amixer", "alsactl"):
+        executable = bin_dir / name
+        executable.write_text(script)
+        executable.chmod(0o755)
+    return bin_dir, log
+
+
 def _run_reconcile(
     tmp_path: Path,
     *args: str,
@@ -246,6 +262,40 @@ def test_reconcile_enables_udp_aec_when_array_is_6_channel(tmp_path: Path) -> No
     assert "restart jasper-aec-bridge.service" in commands
     assert "enable jasper-voice.service" in commands
     assert VOICE_RESTART_CMD in commands
+
+
+def test_reconcile_repairs_capture_mixer_before_arming_six_channel_aec(
+    tmp_path: Path,
+) -> None:
+    expected = [
+        "amixer -c Array cset name=Headset Capture Switch "
+        "on,on,on,on,on,on",
+        "amixer -c Array cset name=Headset Capture Volume "
+        "60,60,60,60,60,60",
+        "alsactl store",
+    ]
+
+    for channels, should_repair in ((6, True), (2, False)):
+        root = tmp_path / str(channels)
+        root.mkdir()
+        bin_dir, mixer_log = _fake_mixer_tools(root)
+        _write_env(root, "Array")
+        _write_mode(root)
+        _write_card(root, channels=channels)
+
+        result = _run_reconcile(
+            root,
+            "--reason",
+            "test",
+            extra_env={
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "JASPER_MIXER_LOG": str(mixer_log),
+            },
+        )
+
+        assert result.returncode == 0, result.stderr
+        calls = mixer_log.read_text().splitlines() if mixer_log.exists() else []
+        assert calls == (expected if should_repair else [])
 
 
 @pytest.mark.parametrize("provider_id", sorted(VALID_PROVIDER_IDS))
