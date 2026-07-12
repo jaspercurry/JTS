@@ -7,8 +7,12 @@
 from __future__ import annotations
 
 from http import HTTPStatus
+from pathlib import Path
 
 from jasper.web import correction_bass_flow as flow
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_render_page_is_a_canonical_page_with_the_bass_module():
@@ -27,6 +31,14 @@ def test_render_page_is_a_canonical_page_with_the_bass_module():
 def test_render_page_escapes_hostname_in_back_link():
     html = flow.render_page('js"><b>x', "tok").decode()
     assert '"><b>x' not in html  # the raw injection is escaped
+
+
+def test_bass_module_uses_shared_get_json():
+    source = (ROOT / "deploy/assets/correction/js/bass/main.js").read_text()
+    assert "import { getJSON } from '/assets/shared/js/http.js';" in source
+    assert "getJSON('/bass/status')" in source
+    assert "await fetch(" not in source
+    assert ".json()" not in source
 
 
 def _state(monkeypatch, **kwargs):

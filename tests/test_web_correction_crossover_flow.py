@@ -623,8 +623,8 @@ def test_crossover_module_is_a_thin_server_envelope_renderer():
         encoding="utf-8",
     )
 
-    assert "fetchJSON('/correction/crossover/envelope')" in source
-    assert "fetchJSON('status')" not in source
+    assert "getJSON('/correction/crossover/envelope')" in source
+    assert "getJSON('status')" not in source
     assert "postJSON" in source
     assert "action.endpoint" in source
     assert "getUserMedia" not in source

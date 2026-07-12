@@ -7,6 +7,7 @@
 // no DSP, no mutating POST — the corner is owned by the speaker layer, not here.
 
 import { h } from '/assets/shared/js/dom.js';
+import { getJSON } from '/assets/shared/js/http.js';
 
 const els = {
   message: document.getElementById('bass-state-message'),
@@ -63,13 +64,7 @@ function render(state) {
 async function load() {
   els.message.textContent = 'Loading…';
   try {
-    const resp = await fetch('/bass/status', {cache: 'no-store'});
-    let data = null;
-    try { data = await resp.json(); } catch (_) { /* non-JSON */ }
-    if (!resp.ok) {
-      throw new Error(data && data.error ? data.error : 'HTTP ' + resp.status);
-    }
-    render(data);
+    render(await getJSON('/bass/status'));
   } catch (err) {
     // Never block — a read failure just shows a plain message.
     els.list.hidden = true;

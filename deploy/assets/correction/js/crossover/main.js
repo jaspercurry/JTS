@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { postJSON } from '/assets/shared/js/http.js';
+import { getJSON, postJSON } from '/assets/shared/js/http.js';
 
 const els = {
   verdict: document.getElementById('crossover-verdict'),
@@ -35,13 +35,6 @@ function el(tag, attrs = {}, children = []) {
   }
   for (const child of children) node.append(child);
   return node;
-}
-
-async function fetchJSON(path) {
-  const response = await fetch(path, {cache: 'no-store'});
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-  return payload;
 }
 
 function setStatus(message, tone = '') {
@@ -184,7 +177,7 @@ async function runRefreshQueue() {
   do {
     refreshQueued = false;
     const epoch = renderEpoch;
-    const env = await fetchJSON('/correction/crossover/envelope');
+    const env = await getJSON('/correction/crossover/envelope');
     if (epoch === renderEpoch) render(env);
   } while (refreshQueued);
 }
