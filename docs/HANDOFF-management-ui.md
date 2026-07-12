@@ -98,14 +98,14 @@ was changed):
 
 - **Form:** `.field` (a labelled field stack; its `<label>` is the EYEBROW
   tier), themed text inputs (`input[type=text|email|password|number|search|
-  url]`, `select`, `textarea` — token borders/radii/fonts, focus ring from the
-  shared `:focus-visible`), `.form-actions` (button row), `.form-hint` (helper
-  text, with `code` styling).
+  url]`, `select`, `textarea` — token borders/radii/fonts; the management UI
+  intentionally suppresses browser focus outlines), `.form-actions` (button
+  row), `.form-hint` (helper text, with `code` styling).
 - **Banner:** `.banner` + `.banner--ok` / `.banner--info` / `.banner--danger`,
   tone driven by the same `--status-*` token vocabulary as the rest of the UI.
 - **Toggle:** the `.toggle` / `.toggle .track` / `.toggle input:checked +
   .track` vocabulary, matching `toggle_html()`'s native-checkbox markup, with
-  `:disabled` / `:focus-visible` / `prefers-reduced-motion` states. The CSS
+  checked / `:disabled` / `prefers-reduced-motion` states. The CSS
   lives in `app.css`; `toggle_html()` only emits the markup.
 
 ### Shared `http.js` ES module
@@ -1412,7 +1412,9 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-06-30 (`/system/` memory tile now surfaces root
+Last verified: 2026-07-12 (canonical toggle ownership and the no-focus-outline
+contract rechecked against `app.css` and the design-system guards; `/system/`
+memory tile now surfaces root
 cgroup-v2 memory buckets and the Home Assistant card handles the child-cache
 "Checking" state; rechecked against `jasper/control/system_metrics.py`,
 `jasper/control/ha_status_cache.py`, `jasper/control/server.py`, and

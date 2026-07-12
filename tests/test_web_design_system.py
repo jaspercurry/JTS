@@ -129,6 +129,50 @@ def test_spinner_primitive_is_shared_without_page_local_copies():
     assert "--button-spinner-color: var(--primary-foreground);" in wifi_css
 
 
+def test_page_css_does_not_redeclare_canonical_toggle():
+    offenders = []
+    # The same inventory used by the focus-contract guards includes static
+    # sheets/HTML and every jasper.web module that can carry a page_css string.
+    for path in _focus_ring_css_sources():
+        if path == APP_CSS:
+            continue
+        css = _without_css_comments(path.read_text())
+        if re.search(r"(?m)^\s*\.toggle(?![\w-])", css):
+            offenders.append(str(path.relative_to(ROOT)))
+    assert not offenders, (
+        "canonical .toggle styling belongs only in deploy/assets/app.css: "
+        + ", ".join(offenders)
+    )
+
+
+def test_app_css_owns_complete_canonical_toggle_contract():
+    css = _without_css_comments(APP_CSS.read_text())
+    for selector in (
+        r"\.toggle\s*\{",
+        r"\.toggle\s+input\s*\{",
+        r"\.toggle\s+\.track\s*\{",
+        r"\.toggle\s+\.track::before\s*\{",
+        r"\.toggle\s+input:checked\s*\+\s*\.track\s*\{",
+        r"\.toggle\s+input:checked\s*\+\s*\.track::before\s*\{",
+        r"\.toggle\s+input:disabled\s*\+\s*\.track\s*\{",
+    ):
+        assert re.search(selector, css), (
+            f"app.css missing canonical toggle selector: {selector}"
+        )
+    reduced_motion_blocks = re.findall(
+        r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(.*?)\n\}",
+        css,
+        flags=re.S,
+    )
+    toggle_reduced_motion = next(
+        (block for block in reduced_motion_blocks if ".toggle .track" in block),
+        None,
+    )
+    assert toggle_reduced_motion, "app.css missing toggle reduced-motion contract"
+    assert ".toggle .track::before" in toggle_reduced_motion
+    assert "transition: none" in toggle_reduced_motion
+
+
 def test_app_css_does_not_force_global_svg_size():
     # The landing page sets `svg { width:16px; height:16px }`, which would
     # squash the sound page's full-width EQ graph. The shared sheet must
