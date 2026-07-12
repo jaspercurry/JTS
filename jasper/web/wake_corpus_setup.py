@@ -1203,20 +1203,16 @@ def _render_index_html(csrf_token: str = "") -> str:
     ``canonical_page()`` (shared /assets/app.css); the body is the
     ``_INDEX_BODY_TEMPLATE`` fragment with the canonical header injected.
 
-    The Python-built leg labels + playback order (which depend on the
+    The Python-owned leg labels + playback order (which depend on the
     AEC3 sweep registry and so can't live in the cached ES module) are
     serialized into a JSON data island (``json_island()``) the
     behaviour module reads at load time; the helper owns the
     serialization + escaping that keeps a label from closing the inline
     ``<script>`` element early.
     """
-    aec3_playback_legs = AEC3_SWEEP_LEGS + LEGACY_AEC3_SWEEP_LEGS
     config = {
-        "aec3_sweep_labels": {
-            leg: LEG_LABELS[leg] for leg in aec3_playback_legs
-        },
-        "aec3_sweep_order": list(aec3_playback_legs),
-        "usb_aec3_corpus_label": USB_AEC3_CORPUS_LABEL,
+        "leg_labels": LEG_LABELS,
+        "aec3_sweep_order": list(AEC3_SWEEP_LEGS + LEGACY_AEC3_SWEEP_LEGS),
         "usb_aec3_sweep_baseline_label": USB_AEC3_SWEEP_BASELINE_LABEL,
     }
     header = canonical_header("Wake-word corpus")

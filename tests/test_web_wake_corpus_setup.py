@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+import shutil
+import subprocess
 
 
 from jasper.web import wake_corpus_setup as wc
@@ -125,7 +127,7 @@ def test_render_uses_canonical_toggles_for_capture_options() -> None:
 
 
 def test_config_island_carries_python_leg_data() -> None:
-    """Python-built leg labels/order + USB AEC3 labels (which can't live in
+    """Python-owned leg labels/order + USB AEC3 baseline label (which can't live in
     the cached ES module) ride in a JSON island the module reads."""
     import json
 
@@ -134,14 +136,11 @@ def test_config_island_carries_python_leg_data() -> None:
     end = html_text.index("</script>", start)
     config = json.loads(html_text[start:end])
     assert set(config) == {
-        "aec3_sweep_labels", "aec3_sweep_order",
-        "usb_aec3_corpus_label", "usb_aec3_sweep_baseline_label",
+        "leg_labels", "aec3_sweep_order", "usb_aec3_sweep_baseline_label",
     }
-    # AEC3 sweep legs + labels match the registry.
+    assert config["leg_labels"] == wc.LEG_LABELS
     for variant in wc.AEC3_SWEEP_VARIANTS:
         assert variant.leg in config["aec3_sweep_order"]
-        assert config["aec3_sweep_labels"][variant.leg] == variant.label
-    assert config["usb_aec3_corpus_label"] == wc.USB_AEC3_CORPUS_LABEL
     assert config["usb_aec3_sweep_baseline_label"] == wc.USB_AEC3_SWEEP_BASELINE_LABEL
 
 
@@ -156,6 +155,26 @@ def test_config_island_cannot_close_script_early() -> None:
     # `</script>` nor `<!--` can affect HTML parser state.
     assert "<" not in island
     assert ">" not in island
+
+
+def test_leg_label_contract_and_runtime_xss_sinks() -> None:
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+
+        pytest.skip("node is required for the leg-label harness")
+    labels = Path("deploy/assets/wake-corpus/js/labels.js")
+    harness = Path("tests/js/wake_corpus_labels_test.mjs")
+    result = subprocess.run(
+        [node, str(harness), str(labels)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    source = Path("deploy/assets/wake-corpus/js/main.js").read_text()
+    assert "option.textContent = legLabel(leg, c)" in source
+    assert "escapeHtml(legLabel(leg, s))" in source
 
 
 def test_public_surface_and_lazy_load_contract_preserved() -> None:

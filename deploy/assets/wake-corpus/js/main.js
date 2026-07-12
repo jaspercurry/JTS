@@ -21,9 +21,8 @@
 //     still compares that X-CSRF-Token header to its per-process token.
 //   * jtsConfirm comes from the shared dialog.js module — never
 //     window.confirm, which the browser can suppress.
-//   * The Python-injected leg labels/order + USB AEC3 labels (formerly
-//     {aec3_sweep_js_labels} / {aec3_sweep_js_order} / {usb_aec3_corpus_label}
-//     / {usb_aec3_sweep_baseline_label} template substitutions) now ride in a
+//   * The Python-owned leg labels/order + USB AEC3 sweep-baseline label
+//     (formerly template substitutions) now ride in a
 //     <script type="application/json" id="wake-corpus-config"> block the page
 //     renders, read once below. A cached ES module can't carry per-deploy
 //     Python data, so it's injected via the (no-store) HTML instead.
@@ -36,10 +35,12 @@
 
 import { jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
+import { escapeHtml } from "/assets/shared/js/escape.js";
 import {
   currentSessionPayload as buildCurrentSessionPayload,
   syncCorpusProfileControls as syncCaptureOptionControls,
 } from "./controls.js";
+import { createLegLabels } from "./labels.js";
 
 const $ = id => document.getElementById(id);
 let elapsedTimer = null;
@@ -55,49 +56,13 @@ if (_configEl) {
   try { _config = JSON.parse(_configEl.textContent || '{}'); }
   catch (_) { _config = {}; }
 }
-const LEG_LABELS = {
-  on: 'XVF WebRTC AEC3',
-  off: 'XVF raw',
-  dtln: 'XVF DTLN',
-  raw0: 'XVF raw0',
-  ref: 'Reference',
-  usb_raw: 'USB raw',
-  usb_webrtc: _config.usb_aec3_corpus_label || 'USB AEC3',
-  usb_dtln: 'USB DTLN',
-  chip_aec_150: 'Chip AEC ASR 150',
-  chip_aec_210: 'Chip AEC ASR 210',
-  xvf_raw0_webrtc_aec3: 'XVF raw0 WebRTC AEC3',
-  xvf_raw0_dtln: 'XVF raw0 DTLN',
-};
-// Merge the Python-injected AEC3 sweep + legacy-sweep labels (formerly the
-// {aec3_sweep_js_labels} substitution inside the LEG_LABELS literal).
-Object.assign(LEG_LABELS, _config.aec3_sweep_labels || {});
-const USB_AEC3_SWEEP_BASELINE_LABEL =
-  _config.usb_aec3_sweep_baseline_label || '';
-function planLegLabel(plan, leg) {
-  for (const detail of plan?.legs || []) {
-    if (detail?.token === leg && detail?.label) return detail.label;
-  }
-  return '';
-}
+const {
+  legLabel: resolveLegLabel,
+  planLegLabel,
+  applyAec3SweepVariants,
+} = createLegLabels(_config);
 function legLabel(leg, session = latestStatus) {
-  const planned = planLegLabel(session?.capture_plan, leg);
-  if (planned) return planned;
-  if (
-    leg === 'usb_webrtc' &&
-    session?.include_aec3_sweep &&
-    session?.aec3_sweep_source === 'usb'
-  ) {
-    return USB_AEC3_SWEEP_BASELINE_LABEL;
-  }
-  return LEG_LABELS[leg] || leg;
-}
-function applyAec3SweepVariants(variants) {
-  for (const variant of variants || []) {
-    if (variant?.leg && variant?.label) {
-      LEG_LABELS[variant.leg] = variant.label;
-    }
-  }
+  return resolveLegLabel(leg, session);
 }
 const LEG_ORDER = [
   'chip_aec_150', 'chip_aec_210', 'xvf_raw0_webrtc_aec3',
@@ -589,7 +554,8 @@ async function refreshSessions() {
       const aec3SweepPill = s.include_aec3_sweep
         ? `<span class="pill tiny purple">${s.aec3_sweep_source === 'usb' ? 'USB' : 'XVF'} AEC3 sweep</span>`
         : '';
-      const legsText = (s.enabled_legs || []).map(leg => legLabel(leg, s)).join(', ');
+      const legsText = (s.enabled_legs || [])
+        .map(leg => escapeHtml(legLabel(leg, s))).join(', ');
       const activeMark = s.is_active
         ? '<span class="pill tiny green">loaded</span> ' : '';
       const date = new Date(s.mtime * 1000).toLocaleString();
@@ -686,12 +652,9 @@ async function refreshClips() {
       row.className = 'clip';
       const fileLegs = orderedLegs(c.files || {});
       const firstLeg = fileLegs.includes('on') ? 'on' : fileLegs[0];
-      const options = fileLegs.map(leg => (
-        `<option value="${leg}" ${leg === firstLeg ? 'selected' : ''}>${legLabel(leg, c)}</option>`
-      )).join('');
       const audioHtml = firstLeg
         ? `<div class="clip-audio">
-             <select data-audio-leg="${c.clip_id}">${options}</select>
+             <select data-audio-leg="${c.clip_id}"></select>
              <audio controls preload="none" src="api/clip/${c.clip_id}/wav?leg=${firstLeg}"></audio>
            </div>`
         : '<span class="clip-audio">no WAVs</span>';
@@ -705,6 +668,13 @@ async function refreshClips() {
       `;
       const selector = row.querySelector('[data-audio-leg]');
       if (selector) {
+        for (const leg of fileLegs) {
+          const option = document.createElement('option');
+          option.value = leg;
+          option.textContent = legLabel(leg, c);
+          option.selected = leg === firstLeg;
+          selector.appendChild(option);
+        }
         selector.onchange = (ev) => {
           const audio = row.querySelector('audio');
           audio.src = `api/clip/${c.clip_id}/wav?leg=${encodeURIComponent(ev.target.value)}`;
