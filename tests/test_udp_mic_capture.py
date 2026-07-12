@@ -19,19 +19,11 @@ from __future__ import annotations
 
 import asyncio
 import socket
-import sys
-import types
 
 import numpy as np
 import pytest
 
-# audio_io.py imports sounddevice at module level. Stub it in case
-# the venv doesn't have it — same pattern as tests/test_doctor.py
-# and tests/test_aec_bridge_stall.py.
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = types.ModuleType("sounddevice")
-
-from jasper.audio_io import (  # noqa: E402
+from jasper.audio_io import (
     MicCapture,
     UdpMicCapture,
     make_mic_capture,

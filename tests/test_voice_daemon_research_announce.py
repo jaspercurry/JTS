@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import time
 import types
 
@@ -21,11 +20,6 @@ from jasper.research import (
     ResearchJobStore,
     ResearchScheduler,
 )
-
-
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = types.ModuleType("sounddevice")
-
 
 def _wake_loop():
     from jasper.voice_daemon import State, WakeLoop

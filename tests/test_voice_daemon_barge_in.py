@@ -18,19 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
-import types as _types
 
 import numpy as np
-
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = _types.ModuleType("sounddevice")
-
-# jasper.voice_daemon -> audio_io imports sounddevice at module scope, so the
-# stub above must run before the import. The helpers below import jasper
-# lazily (function scope) to keep that ordering without a module-top lint
-# suppression.
-
 
 class _SpyTurn:
     """LiveTurn stand-in exposing just the barge-in + forward surface."""

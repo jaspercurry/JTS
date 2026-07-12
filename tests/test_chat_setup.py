@@ -8,9 +8,7 @@ from __future__ import annotations
 import json
 import re
 import stat
-import sys
 import threading
-import types
 import urllib.error
 import urllib.request
 from email.message import Message
@@ -29,10 +27,6 @@ from jasper.conversation_history import (
     read_settings,
 )
 from jasper.web import chat_setup
-
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = types.ModuleType("sounddevice")
-
 
 def _turn(
     ts_utc: str,

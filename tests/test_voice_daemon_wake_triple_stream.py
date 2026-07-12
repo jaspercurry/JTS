@@ -20,24 +20,14 @@ mocks `_wake_event_store`, and inspects the kwargs passed to
 from __future__ import annotations
 
 import asyncio
-import sys
-import types as _types
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
 
-# voice_daemon → audio_io → sounddevice (eager module-level import).
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = _types.ModuleType("sounddevice")
-if "rapidfuzz" not in sys.modules:
-    rapidfuzz = _types.ModuleType("rapidfuzz")
-    rapidfuzz.fuzz = _types.SimpleNamespace()
-    sys.modules["rapidfuzz"] = rapidfuzz
-
-from jasper.voice_daemon import WakeLoop, _LegRuntime  # noqa: E402
-from jasper.wake_legs import by_token  # noqa: E402
+from jasper.voice_daemon import WakeLoop, _LegRuntime
+from jasper.wake_legs import by_token
 
 
 def _make_detector(threshold: float = 0.5) -> MagicMock:
