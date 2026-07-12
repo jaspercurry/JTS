@@ -364,15 +364,16 @@ class _Handler(BaseHTTPRequestHandler):
     # unchanged. Mirrors the route-table pattern in
     # jasper/control/server.py.
     #
-    # ORDERING IS LOAD-BEARING and preserved from the inline form:
+    # ORDERING IS LOAD-BEARING:
+    #   - Every method recognizes its route shape first, so unknown paths 404
+    #     without revealing read-guard or CSRF state.
     #   - GET is read-guarded but NOT CSRF-protected (read-only). POST +
-    #     DELETE check CSRF FIRST (before any body read or table lookup).
-    #   - do_POST reads + parses the JSON body AFTER the CSRF check, then
-    #     dispatches; each POST handler takes the parsed `body`.
+    #     DELETE check CSRF after route recognition and before any body read.
+    #   - do_POST reads + parses the JSON body AFTER the CSRF check, then looks
+    #     up and dispatches the route handler; each handler takes parsed `body`.
     #   - Prefix routes that don't fit an exact-match table
     #     (`/api/clip/<id>/wav` GET, `/api/clip|session/<id>` DELETE) are
     #     handled explicitly, in the same position as before.
-    #   - Unknown paths 404 LAST (table miss / prefix miss).
 
     def do_GET(self) -> None:  # noqa: N802
         url = urlparse(self.path)

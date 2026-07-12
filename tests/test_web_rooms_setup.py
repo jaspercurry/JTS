@@ -953,6 +953,102 @@ def test_post_peering_request_body_oserror_remains_distinct(monkeypatch):
     assert handler.status is None
 
 
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (
+            "/bond",
+            b'{"members":[{"addr":"","role":"leader","channel":"left"}],'
+            b'"bond_id":"bond-1"}',
+        ),
+        ("/trim", b'{"target":"pair","balance_db":1.5}'),
+        ("/mains-highpass", b'{"enabled":true}'),
+    ],
+)
+def test_grouping_routes_reject_incomplete_json_before_state_or_control_mutation(
+    monkeypatch,
+    path,
+    body,
+):
+    """Every grouping route sharing the reader rejects a short request body.
+
+    The payloads are otherwise valid for their route, so the sentinels would
+    observe credential/state/control work if an incomplete body were accepted.
+    """
+    effects: list[str] = []
+
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        rooms_setup.household_credential,
+        "ensure",
+        lambda: effects.append("household_credential.ensure"),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "_fan_out_grouping",
+        lambda targets, **_k: (
+            effects.append("_fan_out_grouping")
+            or [(True, "HTTP 200")] * len(targets)
+        ),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "_set_pair_balance",
+        lambda *_a, **_k: effects.append("_set_pair_balance"),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "read_grouping_state",
+        lambda: effects.append("read_grouping_state") or {
+            "enabled": True,
+            "role": "leader",
+            "channel": "left",
+            "bond_id": "bond-1",
+            "leader_addr": "",
+            "subwoofer_present": True,
+            "roster": [{"addr": "192.168.1.9", "channel": "sub"}],
+        },
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "post_grouping_to_member",
+        lambda *_a, **_k: (
+            effects.append("post_grouping_to_member") or (True, "HTTP 200")
+        ),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "write_env_file",
+        lambda *_a, **_k: effects.append("write_env_file"),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "restart_voice_daemon",
+        lambda: effects.append("restart_voice_daemon"),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "restart_systemd_units",
+        lambda *_a: effects.append("restart_systemd_units"),
+    )
+
+    handler_cls = rooms_setup._make_handler()
+    handler = _FakeHandler(path)
+    declared_length = len(body) + 1
+    handler.headers["Content-Length"] = str(declared_length)
+    handler.rfile = _TrackingReader(body)
+
+    handler_cls.do_POST(handler)
+
+    assert handler.status == 400
+    assert json.loads(handler.wfile.getvalue()) == {
+        "ok": False,
+        "error": "invalid JSON body",
+    }
+    assert handler.rfile.read_calls == [declared_length]
+    assert effects == []
+
+
 def test_post_peering_enables_and_preserves_room(monkeypatch, tmp_path):
     """Turning peering on read-modify-writes peering.env: JASPER_PEERING flips
     to on, JASPER_PEER_PRIMARY is set, and JASPER_PEER_ROOM (owned by
