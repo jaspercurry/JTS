@@ -160,28 +160,6 @@ class RemoteProfile:
     mic: RemoteMicSupport = field(default_factory=RemoteMicSupport)
     reserved_features: tuple[ReservedFeature, ...] = ()
 
-    @property
-    def vendor_id(self) -> int:
-        """Primary USB VID, kept for concise logs/tests."""
-        return self.identity.usb_ids[0][0]
-
-    @property
-    def product_id(self) -> int:
-        """Primary USB PID, kept for concise logs/tests."""
-        return self.identity.usb_ids[0][1]
-
-    @property
-    def bt_name_regex(self) -> str | None:
-        """Compatibility view for older callers/tests."""
-        return (
-            self.identity.bt_name_regexes[0]
-            if self.identity.bt_name_regexes else None
-        )
-
-
-# Backward-compatible type alias. New code should say RemoteProfile.
-Device = RemoteProfile
-
 
 # Anticater VK-01 Desktop Volume Knob (USB-C / BT 5.1 HID).
 # Default factory keymap: rotate = vol ±, click sends KEY_MUTE. Long-
@@ -307,8 +285,6 @@ WIIM_REMOTE_2 = RemoteProfile(
 
 
 KNOWN_PROFILES: list[RemoteProfile] = [VK01, WIIM_REMOTE_2]
-# Compatibility alias for the bridge and older tests/docs vocabulary.
-KNOWN_DEVICES = KNOWN_PROFILES
 
 
 def lookup(vendor_id: int, product_id: int) -> RemoteProfile | None:

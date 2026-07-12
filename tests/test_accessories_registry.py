@@ -24,7 +24,6 @@ from jasper.accessories.registry import (
     KEY_SEARCH,
     KEY_VOLUMEDOWN,
     KEY_VOLUMEUP,
-    KNOWN_DEVICES,
     KNOWN_PROFILES,
     VK01,
     WIIM_REMOTE_2,
@@ -39,14 +38,12 @@ from jasper.audio_io import parse_udp_device
 
 
 def test_vk01_in_registry():
-    assert KNOWN_DEVICES is KNOWN_PROFILES
     assert VK01 in KNOWN_PROFILES
     assert isinstance(VK01, RemoteProfile)
     assert VK01.id == "anticater_vk01"
-    assert VK01.vendor_id == 0x514C
-    assert VK01.product_id == 0x8850
     assert VK01.identity.usb_ids == ((0x514C, 0x8850),)
-    assert VK01.bt_name_regex == r"(?i)anticater"
+    assert VK01.identity.bt_name_regexes == (r"(?i)anticater",)
+    assert lookup_by_name("ANTICATER_MINI") is VK01
     assert VK01.capabilities == frozenset({
         CAP_VOLUME, CAP_TRANSPORT, CAP_TAP_GESTURES,
     })
