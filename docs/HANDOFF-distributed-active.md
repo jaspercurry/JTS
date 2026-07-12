@@ -972,10 +972,23 @@ tweeter TTS, inv-B-through-Layer-A).
 > either graph can't be re-proven the box **refuses to bond and falls back to
 > solo active** (invariant 5, self-recovery); on unbond camilla#2 is disabled and
 > camilla#1 restored to the re-proven solo-active baseline (never passive, via the
-> shared `follower_config.restore_active_camilla_solo` ladder). The unbond
-> teardown is gated on the camilla#2 unit being enabled, so the active-FOLLOWER
-> path stays byte-identical. `/state.grouping.endpoint` surfaces
+> shared `follower_config.restore_active_camilla_solo` ladder). The current
+> unbond discriminator uses both camilla#2 enabled intent and live activity;
+> either one selects the active-leader teardown, while explicit disabled plus
+> inactive selects the byte-identical active-FOLLOWER restore path.
+> `/state.grouping.endpoint` surfaces
 > `mode=active_crossover, role=leader` (or `mode=blocked` + reason on fail-closed).
+> The guard first loads topology strictly, then proves both camilla#2 unit-file
+> intent and live activity before changing any role-derived env or unit state.
+> Unknown topology or manager / D-Bus state preserves the existing runtime graph
+> and surfaces `active_speaker_topology_unknown` or
+> `crossover_ownership_state_unknown`; a required camilla#2 teardown must return
+> success and then report positively inactive before camilla#1 may reclaim the
+> DAC. After a teardown failure or unproven inactivity, the reconciler performs
+> no further role-derived mutation and never restores camilla#1; it reports a
+> persistent blocked reason for whatever runtime state remains. Hardware-free
+> `main()` regressions pin
+> that these blocks perform no args/env/unit-plan transition or solo restore.
 > Updated 2026-06-24: every active-leader reconcile disables camilla#2 before the
 > bake, re-seeds the statefile with the re-proven driver-domain graph, proves the
 > active-content PCM has been released, and then starts camilla#2 from that

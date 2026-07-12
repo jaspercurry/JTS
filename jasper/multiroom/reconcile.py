@@ -788,6 +788,30 @@ def desired_snapfifo_path(cfg: GroupingConfig) -> str:
 # calls. Keep that boundary crisp.
 # ============================================================
 
+def _active_speaker_box_state() -> bool | None:
+    """Tri-state ACTIVE (multi-driver) classification from saved topology.
+
+    ``None`` preserves load/parse uncertainty for hardware-sensitive callers;
+    they must not guess passive because that could bypass crossover protection.
+    """
+    try:
+        from jasper.active_speaker.playback_route import (
+            active_playback_route_capability,
+        )
+        from jasper.output_topology import load_output_topology_strict
+
+        topology = load_output_topology_strict()
+        return active_playback_route_capability(topology).active_group_count > 0
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            logger,
+            "multiroom.reconcile.active_speaker_probe_failed",
+            error=e,
+            level=logging.WARNING,
+        )
+        return None
+
+
 def is_active_speaker_box() -> bool:
     """True when this speaker is a commissioned ACTIVE (multi-driver) speaker —
     its saved output topology declares active 2-/3-way main groups. This is the
@@ -799,50 +823,91 @@ def is_active_speaker_box() -> bool:
     checked here — a box that declares active groups but is not yet commissioned
     still takes the active path, where the follower apply fail-closes (no ready
     baseline → refuse to bond) rather than silently degrading to a full-range
-    dumb follower."""
-    try:
-        from jasper.active_speaker.playback_route import (
-            active_playback_route_capability,
-        )
-        from jasper.output_topology import load_output_topology
+    dumb follower. Legacy boolean consumers fail-soft unknown to ``False``;
+    the grouping reconciler reads :func:`_active_speaker_box_state` directly
+    and blocks graph transitions on unknown."""
+    return _active_speaker_box_state() is True
 
-        topology = load_output_topology()
-        return active_playback_route_capability(topology).active_group_count > 0
-    except Exception:  # noqa: BLE001 — fail-soft to the passive path
+
+def _systemctl_unit_state(query: str, unit: str) -> bool | None:
+    """Tri-state truth for one ``systemctl is-*`` query.
+
+    A missing systemctl binary returns ``None`` silently; the legacy boolean
+    wrappers collapse it to safe-false, while hardware-sensitive callers can
+    preserve unknown state. Other spawn failures also return ``None`` and
+    surface one stable warning. Completed commands are classified by their
+    explicit state text, not return code alone, so a manager/D-Bus error cannot
+    masquerade as disabled or inactive.
+    """
+    try:
+        proc = subprocess.run(
+            ["systemctl", query, unit],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        log_event(
+            logger,
+            "multiroom.reconcile.unit_state_probe_failed",
+            unit=unit,
+            query=query,
+            error=e,
+            level=logging.WARNING,
+        )
+        return None
+
+    state = (proc.stdout or "").strip().lower()
+    true_states = {
+        "is-enabled": {"enabled", "enabled-runtime"},
+        "is-active": {"active"},
+    }
+    false_states = {
+        "is-enabled": {
+            "alias", "static", "indirect", "disabled", "generated",
+            "transient", "linked", "linked-runtime", "masked",
+            "masked-runtime", "not-found",
+        },
+        "is-active": {"inactive", "failed"},
+    }
+    if state in true_states.get(query, set()):
+        return True
+    if state in false_states.get(query, set()):
         return False
+    log_event(
+        logger,
+        "multiroom.reconcile.unit_state_probe_failed",
+        unit=unit,
+        query=query,
+        rc=proc.returncode,
+        state=state or "(none)",
+        stderr=(proc.stderr or "").strip(),
+        level=logging.WARNING,
+    )
+    return None
 
 
 def _unit_is_enabled(unit: str) -> bool:
-    """`systemctl is-enabled --quiet` truth for the restore intent.
+    """``systemctl is-enabled`` truth for the restore intent.
 
-    Anything other than rc=0 (disabled, static, masked, NOT-FOUND,
-    systemctl missing) reads as not-enabled — restore then skips, which
-    is the safe direction on every shape: a wizard-disabled source
-    stays off, and a never-installed unit is silently not started.
+    Only an explicit enabled state is true. Disabled, masked, absent, or
+    unknown reads as not-enabled — restore then skips, which is the safe
+    direction on every shape: a wizard-disabled source stays off, and a
+    never-installed unit is silently not started.
     """
-    try:
-        return subprocess.run(
-            ["systemctl", "is-enabled", "--quiet", unit],
-            capture_output=True,
-        ).returncode == 0
-    except FileNotFoundError:
-        return False
+    return _systemctl_unit_state("is-enabled", unit) is True
 
 
 def _unit_is_active(unit: str) -> bool:
-    """`systemctl is-active --quiet` truth. Anything other than rc=0 (inactive,
-    failed, NOT-FOUND, systemctl missing) reads as not-active — the safe
-    direction for the active-leader bake gate: a bake against a reader-less /
-    missing snapserver pipe must NOT proceed (it cannot release the DAC, so
-    arming camilla#2 would fight camilla#1 for it — the 2026-06-23 recovery
-    loop)."""
-    try:
-        return subprocess.run(
-            ["systemctl", "is-active", "--quiet", unit],
-            capture_output=True,
-        ).returncode == 0
-    except FileNotFoundError:
-        return False
+    """``systemctl is-active`` truth. Only explicit ``active`` is true.
+
+    Inactive, failed, absent, transitional, or unknown reads as not-active —
+    the safe direction for the active-leader bake gate: a bake against a
+    reader-less / missing snapserver pipe must NOT proceed (it cannot release
+    the DAC, so arming camilla#2 would fight camilla#1 for it — the 2026-06-23
+    recovery loop)."""
+    return _systemctl_unit_state("is-active", unit) is True
 
 
 def _probe_active_content_pcm_once(
@@ -1139,7 +1204,7 @@ def _ensure_member_fifo(*, path: str = MEMBER_CONTENT_FIFO) -> bool:
 
 
 def _reset_failed_unit(unit: str) -> None:
-    """`systemctl reset-failed <unit>` before a DELIBERATE reconciler restart.
+    """Reset failed state before a DELIBERATE reconciler start or restart.
 
     The reconciler's restarts are control-plane CONFIG-APPLIES, not crash
     recovery. A rapid burst of /grouping/set updates — e.g. an active-crossover
@@ -1157,7 +1222,7 @@ def _reset_failed_unit(unit: str) -> None:
     call this, so only reconciler-initiated (deliberate) restarts are exempted.
 
     Fail-soft and BEST-EFFORT: a reset-failed failure must never block the
-    restart it precedes. Mirrors grouping_supervisor.kick_reconciler and
+    start/restart it precedes. Mirrors grouping_supervisor.kick_reconciler and
     shairport_supervisor.restart_shairport, which reset-failed the same way."""
     try:
         subprocess.run(
@@ -1179,10 +1244,10 @@ def _restart_unit(unit: str, *, no_block: bool = False) -> bool:
     failure is logged + reflected in the exit code by the caller; the
     doctor's drift checks surface a lane left unwired).
 
-    reset-failed FIRST (see :func:`_reset_failed_unit`) so a config-apply
-    restart never spends the target's crash-reboot budget — this is the single
-    guard that turns a rapid grouping-config burst into harmless restarts
-    instead of a Pi reboot.
+    reset-failed FIRST (see :func:`_reset_failed_unit`) so a successful reset
+    keeps a config-apply restart from inheriting the target's accumulated
+    crash-reboot budget. The reset remains best-effort; the restart is the
+    load-bearing action.
 
     `no_block` is for cross-owner kicks whose target owns its own downstream
     startup graph (today: grouping -> AEC -> voice). Ordered, same-owner
@@ -1199,7 +1264,7 @@ def _restart_unit(unit: str, *, no_block: bool = False) -> bool:
             cmd,
             check=True, capture_output=True, text=True,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+    except (OSError, subprocess.CalledProcessError) as e:
         stderr = getattr(e, "stderr", "") or ""
         log_event(
             logger,
@@ -1231,11 +1296,8 @@ def _ensure_unit_active(unit: str, *, reason: str) -> bool:
     """
     if _unit_is_active(unit):
         return True
+    _reset_failed_unit(unit)
     try:
-        subprocess.run(
-            ["systemctl", "reset-failed", unit],
-            check=False, capture_output=True, text=True,
-        )
         subprocess.run(
             ["systemctl", "start", unit],
             check=True, capture_output=True, text=True,
@@ -1247,6 +1309,16 @@ def _ensure_unit_active(unit: str, *, reason: str) -> bool:
             unit=unit,
             reason=reason,
             error="systemctl_not_found",
+            level=logging.ERROR,
+        )
+        return False
+    except OSError as e:
+        log_event(
+            logger,
+            "multiroom.reconcile.unit_start_failed",
+            unit=unit,
+            reason=reason,
+            error=e,
             level=logging.ERROR,
         )
         return False
@@ -1318,7 +1390,7 @@ def _systemctl_crossover_unit(*verb: str, action: str) -> bool:
             ["systemctl", *verb, CROSSOVER_UNIT],
             check=True, capture_output=True, text=True,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+    except (OSError, subprocess.CalledProcessError) as e:
         stderr = getattr(e, "stderr", "") or ""
         log_event(
             logger,
@@ -1366,8 +1438,10 @@ def _write_follower_status(
     surface is always fresh truth. ``active_follower`` = this box runs its local
     Layer-A crossover on the bonded stream as a FOLLOWER; ``active_leader`` = it
     runs that crossover (camilla#2) as the bond LEADER (and also bakes the wire
-    on camilla#1); ``blocked_reason`` (non-empty) = an active-endpoint bond was
-    REFUSED and the box fell back to solo active (invariant 5 fail-closed)."""
+    on camilla#1); ``blocked_reason`` (non-empty) = an active-endpoint transition
+    was REFUSED and either fell back to solo active or preserved the existing
+    graph because ownership could not be changed safely (invariant 5
+    fail-closed)."""
     body = json.dumps(
         {
             "active_follower": active_follower,
@@ -1494,7 +1568,8 @@ def main(argv: list[str] | None = None) -> int:
     # CamillaDSP in the bonded path (distributed-active Slice 3); a DUMB
     # (single-DAC) follower uses outputd's dac_content ChannelPick. The box's
     # saved topology decides which path this reconcile takes.
-    box_is_active = is_active_speaker_box()
+    active_box_state = _active_speaker_box_state()
+    box_is_active = active_box_state is True
     active_follower = active and cfg.role == "follower" and box_is_active
     # An ACTIVE leader is brains + an endpoint: camilla#1 bakes the program
     # domain to the wire AND camilla#2 runs this box's own Layer-A crossover on
@@ -1516,7 +1591,7 @@ def main(argv: list[str] | None = None) -> int:
         enabled=cfg.enabled,
         role=cfg.role or "(none)",
         error=cfg.error or "(none)",
-        active_box=box_is_active,
+        active_box=("unknown" if active_box_state is None else box_is_active),
         active_follower=active_follower,
         active_leader=active_speaker_leader,
         summary=repr(decision.summary),
@@ -1524,6 +1599,23 @@ def main(argv: list[str] | None = None) -> int:
     rc = 0
     endpoint_block_reason = ""
     active_leader_arm_blocked = False
+
+    if active_box_state is None:
+        endpoint_block_reason = "active_speaker_topology_unknown"
+        log_event(
+            logger,
+            "multiroom.reconcile.active_restore_blocked",
+            reason=endpoint_block_reason,
+            action="preserve_runtime_graph",
+            level=logging.ERROR,
+        )
+        _write_follower_status(
+            active_follower=False,
+            active_leader=False,
+            blocked_reason=endpoint_block_reason,
+            path=FOLLOWER_STATUS_FILE,
+        )
+        return 1
 
     # Ring-armed box: REFUSE to form ANY bond (active or passive) while the fan-in
     # coupling is shm_ring (audio-graph consolidation P2, audit finding 3). Ring is
@@ -1643,6 +1735,53 @@ def main(argv: list[str] | None = None) -> int:
             active_endpoint = False
             rc = 1
 
+    # A solo-active box needs positive ownership proof BEFORE any role-derived
+    # file or unit mutation. Enabled intent alone is insufficient: a partial
+    # `disable --now` can leave camilla#2 active. If either probe is unknown,
+    # even applying the ordinary solo unit plan could remove SNAPFIFO's reader
+    # and indirectly restart camilla#1 onto a DAC camilla#2 may still own.
+    prior_crossover_owned = False
+
+    def block_active_restore(reason: str) -> int:
+        log_event(
+            logger,
+            "multiroom.reconcile.active_restore_blocked",
+            reason=reason,
+            unit=CROSSOVER_UNIT,
+            action="preserve_runtime_graph",
+            level=logging.ERROR,
+        )
+        _write_follower_status(
+            active_follower=False,
+            active_leader=False,
+            blocked_reason=reason,
+            path=FOLLOWER_STATUS_FILE,
+        )
+        return 1
+
+    if box_is_active and not active_leader and not active_follower:
+        prior_crossover_enabled = _systemctl_unit_state(
+            "is-enabled", CROSSOVER_UNIT,
+        )
+        prior_crossover_active = _systemctl_unit_state(
+            "is-active", CROSSOVER_UNIT,
+        )
+        if prior_crossover_enabled is None or prior_crossover_active is None:
+            return block_active_restore("crossover_ownership_state_unknown")
+        prior_crossover_owned = (
+            prior_crossover_enabled or prior_crossover_active
+        )
+        if prior_crossover_owned:
+            if not _disable_crossover_unit():
+                return block_active_restore("crossover_teardown_failed")
+            crossover_active_after = _systemctl_unit_state(
+                "is-active", CROSSOVER_UNIT,
+            )
+            if crossover_active_after is not False:
+                return block_active_restore(
+                    "crossover_inactive_state_unproven",
+                )
+
     # Endpoint status for /state + the dashboard (fresh truth every reconcile):
     # active-follower / active-leader mode, or the fail-closed block reason if
     # the bond was refused and we fell back to solo active.
@@ -1700,14 +1839,11 @@ def main(argv: list[str] | None = None) -> int:
     #    the common solo reconcile.
     if active_leader or active_follower:
         pass
-    elif box_is_active and _unit_is_enabled(CROSSOVER_UNIT):
+    elif box_is_active and prior_crossover_owned:
         # Unbond of an ACTIVE LEADER: camilla#2 (the crossover unit) is enabled
-        # ONLY after an active leader armed it, so its enable state is the
-        # discriminator "this box WAS an active leader" — tear camilla#2 down +
-        # restore camilla#1 via the leader stash (the untouched active-FOLLOWER
-        # path below stays byte-identical). disable is idempotent.
-        if not _disable_crossover_unit():
-            rc = 1
+        # or active only after an active leader armed it. The pre-mutation gate
+        # above has already disabled it and positively proved it inactive, so
+        # camilla#1 can now reclaim the DAC via the leader stash.
         try:
             from .active_leader_config import restore_active_leader_solo_sync
 

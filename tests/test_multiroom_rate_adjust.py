@@ -295,7 +295,7 @@ def _channel_pick_check(
         recmod, "OUTPUTD_GROUPING_ENV_FILE",
         str(env_path) if env_path else "/nonexistent/grouping-outputd.env",
     )
-    monkeypatch.setattr(recmod, "is_active_speaker_box", lambda: active_box)
+    monkeypatch.setattr(recmod, "_active_speaker_box_state", lambda: active_box)
     return groupmod.check_grouping_channel_pick()
 
 
@@ -434,7 +434,7 @@ def test_sub_corner_check_na_for_active_speaker_box(monkeypatch):
     clears the outputd dumb lane — the SUB_HZ env is correctly absent there.
     The check must be n/a, NOT a false 'corner missing' warn."""
     import jasper.multiroom.reconcile as recmod
-    monkeypatch.setattr(recmod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(recmod, "_active_speaker_box_state", lambda: True)
     r = _sub_corner_check(
         monkeypatch,
         cfg=_cfg(enabled=True, role="follower", channel="sub",
@@ -582,7 +582,7 @@ def _tts_lane_check(
         "_resolved_jasper_voice_env",
         lambda: (groupmod._parse_systemd_environment(resolved_voice_text), ""),
     )
-    monkeypatch.setattr(recmod, "is_active_speaker_box", lambda: active_box)
+    monkeypatch.setattr(recmod, "_active_speaker_box_state", lambda: active_box)
     return groupmod.check_grouping_tts_lane()
 
 

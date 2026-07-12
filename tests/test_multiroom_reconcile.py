@@ -912,7 +912,10 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
     # Default to the PASSIVE path (these legacy main() tests assert dumb-member
     # behavior); the active-follower main() flow has its own tests that override
     # this. is_active_speaker_box reads the topology, so stub it for hermeticity.
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: False)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: False)
+    monkeypatch.setattr(
+        reconcile_mod, "_systemctl_unit_state", lambda _query, _unit: False,
+    )
     monkeypatch.setattr(reconcile_mod, "load_config", lambda *a, **k: cfg)
     # Snapcast provisioning (main() calls it for any enabled bond): default to a
     # present no-op so these tests never shell out to apt. The provisioning tests
@@ -1332,7 +1335,13 @@ def _apply_with_fake_systemctl(monkeypatch, intents, *, enabled=(),
         calls.append(list(argv))
         verb, unit = argv[1], argv[-1]
         if verb == "is-enabled":
-            return sp.CompletedProcess(argv, 0 if unit in enabled else 1)
+            is_enabled = unit in enabled
+            return sp.CompletedProcess(
+                argv,
+                0 if is_enabled else 1,
+                stdout="enabled\n" if is_enabled else "disabled\n",
+                stderr="",
+            )
         if unit in absent:
             if kw.get("check"):
                 raise sp.CalledProcessError(
@@ -1447,7 +1456,7 @@ def test_main_active_follower_prechecks_early_then_swaps_camilla_after_units(
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     monkeypatch.setattr(
         fc_mod, "precheck_active_follower_sync",
         lambda cfg_: order.append("precheck") or "grouping_follower.yml",
@@ -1482,7 +1491,7 @@ def test_main_active_follower_precheck_failure_falls_back_to_solo(
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
 
     def _boom(cfg_):
         raise fc_mod.ActiveFollowerError("graph_unprovable", "nope")
@@ -1642,7 +1651,7 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     loopback (its own receiver), the leader hosts the stream, and the endpoint
     status persists active_leader=true."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
 
     rc = main(["--reason", "test"])
@@ -1690,7 +1699,7 @@ def test_main_active_leader_already_armed_skips_release_probe(
     A steady-state reconcile must not probe that handle as if it were camilla#1
     still lagging closed."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -1719,7 +1728,7 @@ def test_main_active_leader_precheck_failure_falls_back_to_solo(tmp_path, monkey
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
 
     def _boom(cfg_):
@@ -1755,12 +1764,14 @@ def test_main_active_leader_unbond_disables_camilla2_and_restores(tmp_path, monk
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
     # camilla#2 enabled => this box WAS an active leader.
     monkeypatch.setattr(
-        reconcile_mod, "_unit_is_enabled",
-        lambda unit: unit == reconcile_mod.CROSSOVER_UNIT,
+        reconcile_mod, "_systemctl_unit_state",
+        lambda query, unit: (
+            query == "is-enabled" and unit == reconcile_mod.CROSSOVER_UNIT
+        ),
     )
     monkeypatch.setattr(
         alc_mod, "restore_active_leader_solo_sync",
@@ -1778,6 +1789,41 @@ def test_main_active_leader_unbond_disables_camilla2_and_restores(tmp_path, monk
     assert "leader_restore" in order  # camilla#1 restored via the leader path
     assert "follower_restore" not in order  # the follower path is not taken
     # solo: snapcast cleared (no server, no client).
+    assert target.read_text() == f"{SERVER_KEY}=\n{CLIENT_KEY}=\n"
+
+
+def test_main_disabled_but_active_crossover_uses_leader_teardown(
+    tmp_path, monkeypatch,
+):
+    """Runtime ownership wins when a partial prior disable cleared intent."""
+    import jasper.multiroom.active_leader_config as alc_mod
+    import jasper.multiroom.follower_config as fc_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    states = iter((False, True, False))  # disabled, active, inactive after stop
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_systemctl_unit_state",
+        lambda _query, _unit: next(states),
+    )
+    monkeypatch.setattr(
+        alc_mod,
+        "restore_active_leader_solo_sync",
+        lambda: order.append("leader_restore") or "leader.yml",
+    )
+    monkeypatch.setattr(
+        fc_mod,
+        "restore_active_follower_solo_sync",
+        lambda: order.append("follower_restore") or "follower.yml",
+    )
+
+    assert main(["--reason", "test"]) == 0
+
+    assert "disable_camilla2" in order
+    assert "leader_restore" in order
+    assert "follower_restore" not in order
     assert target.read_text() == f"{SERVER_KEY}=\n{CLIENT_KEY}=\n"
 
 
@@ -1810,9 +1856,11 @@ def test_main_solo_active_box_takes_follower_path_not_leader_teardown(
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
-    monkeypatch.setattr(reconcile_mod, "_unit_is_enabled", lambda unit: False)
+    monkeypatch.setattr(
+        reconcile_mod, "_systemctl_unit_state", lambda _query, _unit: False,
+    )
     monkeypatch.setattr(
         fc_mod, "restore_active_follower_solo_sync",
         lambda: order.append("follower_restore") or None,
@@ -1826,6 +1874,170 @@ def test_main_solo_active_box_takes_follower_path_not_leader_teardown(
     assert "leader_restore" not in order
 
 
+def test_main_unknown_topology_preserves_graph_before_any_mutation(
+    tmp_path, monkeypatch, caplog,
+):
+    """A corrupt active/passive classifier can never authorize restoration."""
+    import jasper.multiroom.active_leader_config as alc_mod
+    import jasper.multiroom.follower_config as fc_mod
+    import jasper.multiroom.leader_config as leader_mod
+
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    monkeypatch.setattr(
+        reconcile_mod, "_active_speaker_box_state", lambda: None,
+    )
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        alc_mod,
+        "restore_active_leader_solo_sync",
+        lambda: order.append("leader_restore") or "leader.yml",
+    )
+    monkeypatch.setattr(
+        fc_mod,
+        "restore_active_follower_solo_sync",
+        lambda: order.append("follower_restore") or "follower.yml",
+    )
+    monkeypatch.setattr(
+        leader_mod,
+        "restore_solo_config_sync",
+        lambda: order.append("passive_restore") or "flat.yml",
+    )
+
+    with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
+        rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert order == []
+    events = [
+        record.message for record in caplog.records
+        if "event=multiroom.reconcile.active_restore_blocked" in record.message
+    ]
+    assert len(events) == 1
+    assert "reason=active_speaker_topology_unknown" in events[0]
+    assert "action=preserve_runtime_graph" in events[0]
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"blocked_reason": "active_speaker_topology_unknown"' in status
+
+
+def test_main_solo_active_box_blocks_restore_when_crossover_state_unknown(
+    tmp_path, monkeypatch, caplog,
+):
+    """Unknown camilla#2 ownership must never guess a solo restore path."""
+    import jasper.multiroom.active_leader_config as alc_mod
+    import jasper.multiroom.follower_config as fc_mod
+
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        reconcile_mod, "_systemctl_unit_state", lambda _query, _unit: None,
+    )
+    monkeypatch.setattr(
+        alc_mod,
+        "restore_active_leader_solo_sync",
+        lambda: order.append("leader_restore") or "leader.yml",
+    )
+    monkeypatch.setattr(
+        fc_mod,
+        "restore_active_follower_solo_sync",
+        lambda: order.append("follower_restore") or "follower.yml",
+    )
+
+    with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
+        rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert "disable_camilla2" not in order
+    assert "leader_restore" not in order
+    assert "follower_restore" not in order
+    assert "write" not in order
+    assert "outputd_restart" not in order
+    assert "apply" not in order
+    events = [
+        record.message for record in caplog.records
+        if "event=multiroom.reconcile.active_restore_blocked" in record.message
+    ]
+    assert len(events) == 1
+    assert "reason=crossover_ownership_state_unknown" in events[0]
+    assert "action=preserve_runtime_graph" in events[0]
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"blocked_reason": "crossover_ownership_state_unknown"' in status
+
+
+def test_main_crossover_teardown_failure_preserves_runtime_graph(
+    tmp_path, monkeypatch,
+):
+    """Camilla#1 cannot reclaim the DAC when camilla#2 failed to stop."""
+    import jasper.multiroom.active_leader_config as alc_mod
+    import jasper.multiroom.follower_config as fc_mod
+
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    states = iter((True, True))
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_systemctl_unit_state",
+        lambda _query, _unit: next(states),
+    )
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_disable_crossover_unit",
+        lambda: order.append("disable_failed") or False,
+    )
+    monkeypatch.setattr(
+        alc_mod,
+        "restore_active_leader_solo_sync",
+        lambda: order.append("leader_restore") or "leader.yml",
+    )
+    monkeypatch.setattr(
+        fc_mod,
+        "restore_active_follower_solo_sync",
+        lambda: order.append("follower_restore") or "follower.yml",
+    )
+
+    assert main(["--reason", "test"]) == 1
+
+    assert "disable_failed" in order
+    assert "leader_restore" not in order
+    assert "follower_restore" not in order
+    assert "write" not in order
+    assert "apply" not in order
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"blocked_reason": "crossover_teardown_failed"' in status
+
+
+def test_main_crossover_must_report_inactive_after_teardown(
+    tmp_path, monkeypatch,
+):
+    """A successful disable command is insufficient without inactive proof."""
+    import jasper.multiroom.active_leader_config as alc_mod
+
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    states = iter((True, True, True))  # still active after successful disable
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_systemctl_unit_state",
+        lambda _query, _unit: next(states),
+    )
+    monkeypatch.setattr(
+        alc_mod,
+        "restore_active_leader_solo_sync",
+        lambda: order.append("leader_restore") or "leader.yml",
+    )
+
+    assert main(["--reason", "test"]) == 1
+
+    assert "disable_camilla2" in order
+    assert "leader_restore" not in order
+    assert "write" not in order
+    assert "apply" not in order
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"blocked_reason": "crossover_inactive_state_unproven"' in status
+
+
 def test_main_active_leader_skips_arm_when_bake_fails(tmp_path, monkeypatch):
     """JTS5 incident regression (2026-06-23): if the camilla#1 bake FAILS, it
     stays on its solo-active DAC baseline — so camilla#2 must NOT be armed. Arming
@@ -1834,7 +2046,7 @@ def test_main_active_leader_skips_arm_when_bake_fails(tmp_path, monkeypatch):
     import jasper.multiroom.active_leader_config as alc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
 
     def _boom():
@@ -1857,7 +2069,7 @@ def test_main_active_leader_skips_arm_when_audio_hardware_reconcile_fails(
     re-converge to the active-content lane before camilla#2 can safely own the
     round-trip loopback. If that handoff fails, leave camilla#2 unarmed."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -1882,7 +2094,7 @@ def test_main_active_leader_skips_bake_when_camilla1_cannot_restart(
     lane, reconcile first releases camilla#2 and reset-starts camilla#1. If
     camilla#1 still cannot come back, do not bake or re-arm camilla#2."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -1909,7 +2121,7 @@ def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
     import jasper.multiroom.active_leader_config as alc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -1956,7 +2168,7 @@ def test_main_active_leader_fails_closed_when_probe_tool_missing(
     import jasper.multiroom.active_leader_config as alc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
         reconcile_mod,
@@ -1999,7 +2211,7 @@ def test_main_active_leader_skips_bake_and_arm_when_snapserver_down(
     neither the bake NOR the camilla#2 arm runs. camilla#1 keeps the DAC on its
     solo baseline; no two-instance conflict, no reboot."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
     # snapserver never came up (the bake gate must refuse).
     monkeypatch.setattr(reconcile_mod, "_unit_is_active", lambda unit: False)
@@ -2147,6 +2359,298 @@ def test_restart_unit_reports_real_restart_failure(monkeypatch):
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
     assert reconcile_mod._restart_unit("jasper-outputd.service") is False
+
+
+def test_restart_unit_contains_spawn_oserror(monkeypatch, caplog):
+    """A restart spawn failure is visible and cannot abort the reconciler."""
+    import subprocess as sp
+
+    def fake_run(argv, **_kw):
+        if argv[1] == "reset-failed":
+            return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+        raise OSError("cannot allocate process")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+
+    with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
+        assert reconcile_mod._restart_unit("jasper-outputd.service") is False
+
+    events = [
+        record.message for record in caplog.records
+        if "event=multiroom.reconcile.unit_restart_failed" in record.message
+    ]
+    assert len(events) == 1
+    assert "unit=jasper-outputd.service" in events[0]
+    assert 'error="cannot allocate process"' in events[0]
+
+
+def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):
+    """A systemctl spawn failure becomes a blocked teardown, not an escape."""
+    def fake_run(_argv, **_kw):
+        raise OSError("cannot spawn systemctl")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+
+    with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
+        assert reconcile_mod._disable_crossover_unit() is False
+
+    events = [
+        record.message for record in caplog.records
+        if "event=multiroom.reconcile.crossover_unit_failed" in record.message
+    ]
+    assert len(events) == 1
+    assert "action=disabled" in events[0]
+    assert 'error="cannot spawn systemctl"' in events[0]
+
+
+def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
+    """Enabled/active wrappers differ only by their systemctl query token."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+    results = iter(((0, "enabled\n"), (3, "inactive\n")))
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        assert kw == {"capture_output": True, "text": True}
+        returncode, stdout = next(results)
+        return sp.CompletedProcess(
+            argv, returncode, stdout=stdout, stderr="",
+        )
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+
+    assert reconcile_mod._unit_is_enabled("source.service") is True
+    assert reconcile_mod._unit_is_active("audio.service") is False
+    assert calls == [
+        ["systemctl", "is-enabled", "source.service"],
+        ["systemctl", "is-active", "audio.service"],
+    ]
+
+
+def test_active_speaker_topology_error_is_raw_unknown_but_legacy_false(
+    monkeypatch, caplog,
+):
+    """Safety callers retain corrupt-topology uncertainty; old readers do not."""
+    import jasper.output_topology as topology_mod
+
+    def fail_load():
+        raise topology_mod.OutputTopologyError("corrupt topology")
+
+    monkeypatch.setattr(topology_mod, "load_output_topology_strict", fail_load)
+
+    with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
+        assert reconcile_mod._active_speaker_box_state() is None
+        assert reconcile_mod.is_active_speaker_box() is False
+
+    events = [
+        record.message for record in caplog.records
+        if "event=multiroom.reconcile.active_speaker_probe_failed" in record.message
+    ]
+    assert len(events) == 2
+    assert all("corrupt topology" in event for event in events)
+
+
+def test_unit_state_vocabulary_has_explicit_jts_intent_semantics(monkeypatch):
+    """Every documented systemctl state is deliberately true/false/unknown."""
+    import subprocess as sp
+
+    current = [""]
+
+    def fake_run(argv, **_kw):
+        state = current[0]
+        return sp.CompletedProcess(
+            argv,
+            0 if state in {"enabled", "enabled-runtime", "active"} else 1,
+            stdout=f"{state}\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+
+    enabled_states = {
+        "enabled": True,
+        "enabled-runtime": True,
+        "alias": False,
+        "static": False,
+        "indirect": False,
+        "disabled": False,
+        "generated": False,
+        "transient": False,
+        "linked": False,
+        "linked-runtime": False,
+        "masked": False,
+        "masked-runtime": False,
+        "not-found": False,
+        "bad": None,
+    }
+    active_states = {
+        "active": True,
+        "inactive": False,
+        "failed": False,
+        "activating": None,
+        "deactivating": None,
+        "reloading": None,
+        "refreshing": None,
+        "maintenance": None,
+        "unknown": None,
+    }
+    for state, expected in enabled_states.items():
+        current[0] = state
+        assert reconcile_mod._systemctl_unit_state(
+            "is-enabled", "test.service",
+        ) is expected, state
+    for state, expected in active_states.items():
+        current[0] = state
+        assert reconcile_mod._systemctl_unit_state(
+            "is-active", "test.service",
+        ) is expected, state
+
+
+def test_unit_state_completed_manager_error_is_unknown(monkeypatch, caplog):
+    """A completed systemctl error cannot be interpreted as disabled."""
+    import subprocess as sp
+
+    monkeypatch.setattr(
+        reconcile_mod.subprocess,
+        "run",
+        lambda argv, **_kw: sp.CompletedProcess(
+            argv,
+            1,
+            stdout="",
+            stderr="Failed to connect to bus: No medium found\n",
+        ),
+    )
+
+    with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
+        state = reconcile_mod._systemctl_unit_state(
+            "is-enabled", reconcile_mod.CROSSOVER_UNIT,
+        )
+
+    assert state is None
+    events = [
+        record.message for record in caplog.records
+        if "event=multiroom.reconcile.unit_state_probe_failed" in record.message
+    ]
+    assert len(events) == 1
+    assert "rc=1" in events[0]
+    assert "state=(none)" in events[0]
+    assert "Failed to connect to bus" in events[0]
+
+
+def test_unit_state_query_oserror_is_safe_false_and_observable(
+    monkeypatch, caplog,
+):
+    """A spawn failure must not escape or masquerade as silent inactivity."""
+    def fake_run(_argv, **_kw):
+        raise OSError("cannot allocate process")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+
+    with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
+        assert reconcile_mod._systemctl_unit_state(
+            "is-enabled", "raw.service",
+        ) is None
+        assert reconcile_mod._unit_is_enabled("source.service") is False
+        assert reconcile_mod._unit_is_active("audio.service") is False
+
+    events = [
+        record.message for record in caplog.records
+        if "event=multiroom.reconcile.unit_state_probe_failed" in record.message
+    ]
+    assert len(events) == 3
+    assert "unit=raw.service" in events[0]
+    assert "query=is-enabled" in events[0]
+    assert "unit=source.service" in events[1]
+    assert "query=is-enabled" in events[1]
+    assert "unit=audio.service" in events[2]
+    assert "query=is-active" in events[2]
+
+
+def test_unit_state_query_missing_systemctl_is_silent_false(
+    monkeypatch, caplog,
+):
+    """The historical no-systemctl install-tier case remains a quiet miss."""
+    def fake_run(_argv, **_kw):
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+
+    with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
+        assert reconcile_mod._systemctl_unit_state(
+            "is-enabled", "raw.service",
+        ) is None
+        assert reconcile_mod._unit_is_enabled("source.service") is False
+        assert reconcile_mod._unit_is_active("audio.service") is False
+
+    assert not any(
+        "event=multiroom.reconcile.unit_state_probe_failed" in record.message
+        for record in caplog.records
+    )
+
+
+def test_ensure_unit_active_continues_after_probe_and_reset_oserrors(
+    monkeypatch, caplog,
+):
+    """Probe/reset are fail-soft; the idempotent start is load-bearing."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kw):
+        calls.append(list(argv))
+        if argv[1] in {"is-active", "reset-failed"}:
+            raise OSError(f"spawn failed for {argv[1]}")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+
+    with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
+        assert reconcile_mod._ensure_unit_active(
+            "jasper-camilla.service", reason="active-leader-bake",
+        ) is True
+
+    assert calls == [
+        ["systemctl", "is-active", "jasper-camilla.service"],
+        ["systemctl", "reset-failed", "jasper-camilla.service"],
+        ["systemctl", "start", "jasper-camilla.service"],
+    ]
+    assert any(
+        "event=multiroom.reconcile.unit_state_probe_failed" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        "event=multiroom.reconcile.reset_failed_error" in record.message
+        for record in caplog.records
+    )
+
+
+def test_ensure_unit_active_contains_start_oserror(monkeypatch, caplog):
+    """A failed recovery start returns False with one actionable event."""
+    import subprocess as sp
+
+    def fake_run(argv, **_kw):
+        if argv[1] == "is-active":
+            return sp.CompletedProcess(argv, 3)
+        if argv[1] == "start":
+            raise OSError("cannot spawn systemctl")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+
+    with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
+        assert reconcile_mod._ensure_unit_active(
+            "jasper-camilla.service", reason="active-leader-bake",
+        ) is False
+
+    events = [
+        record.message for record in caplog.records
+        if "event=multiroom.reconcile.unit_start_failed" in record.message
+    ]
+    assert len(events) == 1
+    assert "unit=jasper-camilla.service" in events[0]
+    assert "reason=active-leader-bake" in events[0]
+    assert 'error="cannot spawn systemctl"' in events[0]
 
 
 # --- ring-armed box refuses to bond (audit finding 3, P2) --------------------
