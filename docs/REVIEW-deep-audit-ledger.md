@@ -4,13 +4,13 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`05a500cc`): 2026-07-12.
+Last reconciled against `main` (`955b8c11`): 2026-07-12.
 
 ## Status counts
 
 - **open**: 490
-- **fixed**: 176
-- **in-progress**: 1
+- **fixed**: 177
+- **in-progress**: 0
 - **mooted**: 9
 - **deferred**: 1
 
@@ -38,7 +38,7 @@ Last reconciled against `main` (`05a500cc`): 2026-07-12.
 | DA-0040 | `rust/jasper-fanin/src/config.rs` :: env_u32 / Config::from_env sample_rate, period_frames | should-fix | W5 | **fixed** | zero load-bearing dimensions fall back safely + warn — #1237 |
 | DA-0041 | `rust/jasper-fanin/src/host_compliance.rs` :: RevalidationTracker::step | should-fix | W5 | **fixed** | fresh-lock phantom strike re-arm removed + regression — #1237 |
 | DA-0003 | `jasper/route_latency/pairing.py` :: pair_events | should-fix | W5 | **fixed** | ambiguous mic candidates cannot re-enter certifiable matches — #1292 |
-| DA-0004 | `LICENSE` :: §6 Trademarks / §9 Accepting Warranty or Additional Liability | should-fix | W5 | **in-progress** | canonical Apache-2.0 terms restored + packaged-license integrity guard; canonical adversarial re-review pending |
+| DA-0004 | `LICENSE` :: §6 Trademarks / §9 Accepting Warranty or Additional Liability | should-fix | W5 | **fixed** | canonical Apache-2.0 terms restored + packaged-license integrity guard — #1293 |
 | DA-0005 | `capture-page/js/main.js` :: boot():604-616 | should-fix | W5 | **open** | — |
 | DA-0007 | `deploy/systemd/jasper-usbsink.service` :: Slice=jts-audio.slice membership | should-fix | W5 | **fixed** | doctor derives and checks every protected audio/mic unit — #1287 |
 | DA-0008 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored | should-fix | W5 | **open** | — |
