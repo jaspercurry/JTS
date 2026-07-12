@@ -226,7 +226,8 @@ def parse_soak_log(path):
             if st not in ("RUNNING", "NA"):
                 non_running += 1
             bl = _fnum(kv.get("buffer_level"))
-            if bl is not None and bl > 0:
+            # Zero/negative levels are lock-loss evidence, not absent telemetry.
+            if bl is not None:
                 buf_levels.append(bl)
             ra = _fnum(kv.get("rate_adjust"))
             if ra is not None and ra > 0:
@@ -290,18 +291,25 @@ def run_soak(args):
     print("\nCLOCK-LOCK (camilla rate-adjust telemetry — direct seam signal):")
     clock_lock_pass = bool(budgets)
     for b in budgets:
-        has = b["rate_n"] > 0
-        ok = (has and b["non_running"] == 0 and (b["buf_min"] or 0) > 0
+        has_rate = b["rate_n"] > 0
+        ok = (has_rate and b["non_running"] == 0
+              and b["buf_min"] is not None and b["buf_min"] > 0
               and (b["rate_min"] or 0) >= 0.98 and (b["rate_max"] or 0) <= 1.02
               and (b["rate_max"] - b["rate_min"]) < 0.01)
         clock_lock_pass = clock_lock_pass and ok
-        if not has:
+        if not has_rate:
             print(f"  {b['host']:<9} (no camilla telemetry in log)")
             clock_lock_pass = False
             continue
         run_note = "always" if b["non_running"] == 0 else f"BROKE x{b['non_running']}"
+        if b["buf_min"] is None:
+            buffer_note = "unavailable"
+        else:
+            buffer_note = (
+                f"{b['buf_min']:.0f}-{b['buf_max']:.0f}(mean {b['buf_mean']})"
+            )
         print(f"  {b['host']:<9} RUNNING={run_note} "
-              f"buffer={b['buf_min']:.0f}-{b['buf_max']:.0f}(mean {b['buf_mean']}) "
+              f"buffer={buffer_note} "
               f"rate_adjust={b['rate_min']:.6f}..{b['rate_max']:.6f}  "
               f"{'LOCKED' if ok else 'CHECK'}")
 

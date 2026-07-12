@@ -157,6 +157,17 @@ def test_install_script_routes_to_deploy_docs():
     assert [item["id"] for item in report] == ["deploy-and-onboarding"]
 
 
+def test_s0_sync_tools_route_to_distributed_active_docs():
+    docs_impact = load_docs_impact()
+    subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
+
+    for path in ("scripts/s0-sync-bench.sh", "scripts/s0-sync-measure.py"):
+        report = docs_impact.impact_report(subsystems, (path,))
+
+        assert [item["id"] for item in report] == ["multiroom-grouping"], path
+        assert "docs/HANDOFF-distributed-active.md" in report[0]["docs"], path
+
+
 def test_doc_map_code_globs_match_at_least_one_tracked_file():
     """Stale-glob guard: a moved/renamed file leaves a code glob in
     doc-map.toml matching nothing, which silently un-routes the mapped
