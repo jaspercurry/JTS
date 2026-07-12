@@ -39,6 +39,13 @@ import numpy as np
 from scipy.io import wavfile
 from scipy import signal
 
+try:
+    from _wake_audio_metrics import rms_amplitude as _rms
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_audio_metrics":
+        raise
+    from scripts._wake_audio_metrics import rms_amplitude as _rms
+
 
 SAMPLE_RATE_EXPECTED = 16000
 
@@ -53,12 +60,6 @@ def _load_mono(path: Path) -> np.ndarray:
         # If somehow stereo, take first channel.
         data = data[:, 0]
     return data.astype(np.float32)
-
-
-def _rms(x: np.ndarray) -> float:
-    if x.size == 0:
-        return 0.0
-    return float(np.sqrt(np.mean(x.astype(np.float64) ** 2)))
 
 
 def _db(numer: float, denom: float, eps: float = 1.0) -> float:

@@ -33,6 +33,13 @@ from pathlib import Path
 import numpy as np
 from scipy import signal
 
+try:
+    from _wake_audio_metrics import rms_amplitude as _rms
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_audio_metrics":
+        raise
+    from scripts._wake_audio_metrics import rms_amplitude as _rms
+
 
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280               # 80 ms @ 16 kHz, matches bridge frame
@@ -42,12 +49,6 @@ RMS_WINDOW_SEC = 1.5               # window around peak for RMS
 SCORE_WINDOW_AHEAD_SEC = 2.0       # model needs context after utt start
 CANDIDATE_MIN_SCORE = 0.05
 MAX_PEAKS_REPORTED = 40
-
-
-def _rms(arr: np.ndarray) -> float:
-    if arr.size == 0:
-        return 0.0
-    return float(np.sqrt(np.mean(arr.astype(np.float64) ** 2)))
 
 
 def _load_wav_mono(path: Path) -> tuple[np.ndarray, int]:

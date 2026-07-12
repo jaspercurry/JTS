@@ -20,6 +20,13 @@ from pathlib import Path
 import numpy as np
 from scipy import signal
 
+try:
+    from _wake_audio_metrics import rms_amplitude as rms
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_audio_metrics":
+        raise
+    from scripts._wake_audio_metrics import rms_amplitude as rms
+
 
 SAMPLE_RATE = 16000
 EXPECTED_SEC = 6.0
@@ -38,12 +45,6 @@ def load_wav(path: Path) -> tuple[np.ndarray, int, int]:
             raise ValueError(f"{path.name}: expected mono, got {ch}-ch")
         data = np.frombuffer(w.readframes(n), dtype=np.int16)
     return data, sr, n
-
-
-def rms(arr: np.ndarray) -> float:
-    if arr.size == 0:
-        return 0.0
-    return float(np.sqrt(np.mean(arr.astype(np.float64) ** 2)))
 
 
 def lag_samples(a: np.ndarray, b: np.ndarray, max_lag: int = 4000) -> int:
