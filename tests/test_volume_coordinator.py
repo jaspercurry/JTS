@@ -212,6 +212,12 @@ def _coord(
     return coord, cam, persistence
 
 
+async def test_aclose_is_safe_without_owned_observer_tasks(tmp_path):
+    coord, _, _ = _coord(tmp_path, active={})
+
+    await coord.aclose()
+
+
 # ---------- outbound dispatch ----------------------------------------------
 
 
