@@ -96,8 +96,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var ACTIVE_GAIN_EPSILON_DB = 0.05;
   var activeSpeaker = {
     loading: false, action: '', session: null,
-    stagedConfig: null, calibrationLevel: null,
-    startupLoad: null, measurements: null,
+    calibrationLevel: null, measurements: null,
     baselineProfile: null, error: '', levelDbfs: null,
     combinedTestLevelDbfs: null,
     commission: null, commissioningView: null,
@@ -190,7 +189,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 'k' : String(Math.round(v));
   }
   function fmtQ(v) { return 'Q ' + (Number(v) || 0).toFixed(1); }
-  function fmtDbfs(v) { return fmtDb(v) + ' dBFS'; }
   function patchActiveSpeaker(patch) {
     activeSpeaker = Object.assign({}, activeSpeaker, patch || {});
     return activeSpeaker;
@@ -710,7 +708,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderActiveSpeakerSetup() {
     var open = activeSpeakerSetupOpen || activeSpeaker.loading ||
-      activeSpeaker.session || activeSpeaker.stagedConfig ||
+      activeSpeaker.session ||
       activeSpeaker.error || outputTopology.loading || outputTopology.saving ||
       outputTopology.identitySaving || outputTopology.protectionSaving || outputTopology.error ||
       outputTopology.dirty || outputTopology.touched;
@@ -1493,11 +1491,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }, []).slice(0, 4)
     };
   }
-  function driverResearchDraftSaved() {
-    var draftPayload = driverResearch.designDraft || {};
-    var savedStatus = draftPayload.status || '';
-    return savedStatus === 'ready_for_review' && !driverResearch.dirty;
-  }
   function driverResearchCanPreparePreview() {
     var draftPayload = driverResearch.designDraft || {};
     var savedStatus = draftPayload.status || '';
@@ -1610,16 +1603,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     ingestCrossoverPreview(payload);
     return payload;
   }
-  function toneSummary(tone) {
-    var frequency = Number(tone.frequency_hz);
-    var level = Number(tone.level_dbfs);
-    var duration = Number(tone.duration_ms);
-    if (!isFinite(frequency) || !isFinite(level) || !isFinite(duration)) {
-      return 'unknown';
-    }
-    return Math.round(frequency) + ' Hz at ' + level.toFixed(1) + ' dBFS for ' +
-      Math.round(duration) + ' ms';
-  }
   function outputChannelGuardReady(channel) {
     var statusValue = channel && channel.protection_status || 'unknown';
     return !channel || !channel.protection_required ||
@@ -1668,22 +1651,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!report) return false;
     return Number(report.assigned_channel_count || 0) > 0 &&
       Number(report.unverified_channel_count || 0) === 0;
-  }
-  function outputStartupLoaded() {
-    var startup = activeSpeaker.startupLoad || {};
-    var state = startup.state || {};
-    return state.status === 'loaded';
-  }
-  function quietTestStartupReady(load) {
-    load = load || activeSpeaker.startupLoad || {};
-    var state = load.state || {};
-    return state.status === 'loaded' &&
-      !!state.rollback_available &&
-      state.current_config_matches_loaded !== false;
-  }
-  function quietTestStagedReady(staged) {
-    staged = staged || activeSpeaker.stagedConfig || {};
-    return staged.status === 'staged';
   }
   function activeOutputGroups(topology) {
     return outputGroups(topology).filter(function(group) {
@@ -2823,21 +2790,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function driverMeasurementCaptured(groupId, role) {
     var latest = latestDriverMeasurement(groupId, role);
     return latest && latest.captured === true;
-  }
-  function driverCheckRolesForGroup(group) {
-    if (!group || !Array.isArray(group.channels)) return [];
-    return group.channels.map(function(channel) {
-      return channel && channel.role;
-    }).filter(function(role) {
-      return role && driverMeasurementCaptured(group.id, role);
-    });
-  }
-  function driverMeasurementCounts() {
-    var summary = measurementSummary();
-    return {
-      captured: Number(summary.captured_driver_count || 0),
-      required: Number(summary.required_driver_count || 0)
-    };
   }
   function latestSummedValidation(groupId) {
     var latest = measurementSummary().latest_summed_validations || {};
@@ -4371,7 +4323,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     driverResearch.dirty = true;
     crossoverPreview.payload = null;
     crossoverPreview.error = '';
-    patchActiveSpeaker({stagedConfig: null});
     render();
   }
   // Persist the user-entered bass-management corner onto the draft local-sub
@@ -5043,7 +4994,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.saving = true;
     outputTopology.touched = true;
     outputTopology.error = '';
-    patchActiveSpeaker({stagedConfig: null});
     render();
     try {
       var resp = await fetch('./output-topology', {
@@ -5102,8 +5052,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.resetting = true;
     outputTopology.error = '';
     patchActiveSpeaker({
-      stagedConfig: null,
-      startupLoad: null,
       commission: null,
       commissioningView: null,
       measurements: null,
@@ -5599,11 +5547,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Could not save and apply active profile: ' + e.message, true);
     }
     render();
-  }
-  async function fetchActiveSpeakerStartupLoad() {
-    var resp = await fetch('./active-speaker/startup-load', {cache: 'no-store'});
-    if (!resp.ok) throw new Error('startup load status failed');
-    return await resp.json();
   }
   async function fetchActiveSpeakerMeasurements() {
     var resp = await fetch('./active-speaker/measurements', {cache: 'no-store'});
