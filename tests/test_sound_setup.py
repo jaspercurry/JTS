@@ -761,8 +761,20 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
         "fetch('./active-speaker/play-tone'",
         "fetch('./active-speaker/floor-audio-result'",
         "fetch('./active-speaker/driver-measurement'",
+        "fetch('./active-speaker/startup-load'",
         "function activeSpeakerPost(",
         "function stopActiveSpeakerTest()",
+        "fmtDbfs",
+        "driverResearchDraftSaved",
+        "toneSummary",
+        "outputStartupLoaded",
+        "quietTestStartupReady",
+        "quietTestStagedReady",
+        "driverCheckRolesForGroup",
+        "driverMeasurementCounts",
+        "fetchActiveSpeakerStartupLoad",
+        "stagedConfig",
+        "startupLoad",
         "data-act=\"stop-active-speaker\"",
         "data-act=\"active-floor-result\"",
         "data-act=\"check-output-readiness\"",
@@ -788,7 +800,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "data-act=\"prepare-crossover-preview\"" in js
     assert "Save values" in js
     assert "Preview crossover" in js
-    assert "savedStatus === 'ready_for_review' && !driverResearch.dirty" in js
     assert "function driverResearchCanPreparePreview()" in js
     assert "function driverResearchStepSatisfied()" in js
     assert "function driverResearchFlowComplete(topology)" in js
