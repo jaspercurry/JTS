@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from jasper import atomic_io
+from jasper.audio_profile_state import MicProbe
 from jasper.chip_aec_policy import (
     ACTION_FIX_MIC_PROFILE,
     BLOCKER_DAC,
@@ -626,6 +627,65 @@ def test_aec_full_status_chip_available_tracks_firmware(
         lambda: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
     )
     assert server._aec_full_status()["legs"]["chip_aec"]["available"] is True
+
+
+def test_aec_full_status_rejects_unvalidated_beam_plan_from_one_probe(
+    aec_mode_file,
+    wake_model_file,
+    monkeypatch,
+):
+    plan = xvf3800.ChipBeamPlan(
+        plan_id="experimental_unvalidated",
+        display_name="Experimental unvalidated",
+        geometry="square",
+        description="test-only research plan",
+        legs=xvf3800.SQUARE_FIXED_150_210_PLAN.legs,
+        production_validated=False,
+    )
+    monkeypatch.setitem(xvf3800.CHIP_BEAM_PLANS, plan.plan_id, plan)
+    probe_calls = 0
+
+    def probe() -> MicProbe:
+        nonlocal probe_calls
+        probe_calls += 1
+        return MicProbe(
+            xvf_present=True,
+            capture_channels=6,
+            recommended_channels=6,
+            display_name="Experimental XVF",
+            alsa_card_name=xvf3800.ALSA_CARD_NAME,
+            variant_id="experimental_variant",
+            geometry="square",
+            chip_beam_plan=plan.plan_id,
+            probe_error=None,
+        )
+
+    aec_mode_file.write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=auto\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=0\n"
+    )
+    monkeypatch.setattr(aec_endpoints, "_xvf_mic_probe", probe)
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+        },
+    )
+
+    status = server._aec_full_status()
+
+    assert probe_calls == 1
+    assert status["microphone"]["detected"] is True
+    assert status["legs"]["chip_aec"]["available"] is False
+    assert status["audio_profile"]["requested"] == "xvf_software_aec3"
+    assert status["bridge_role"] == "software_aec3"
 
 
 def test_aec_full_status_surfaces_required_xvf_firmware_update(
