@@ -403,7 +403,12 @@ def _capture_to_magnitude(
     if capture_geometry == "reference_axis":
         gated_ir, fragment = gating.gate_impulse_response(ir, sr)
         applied = fragment["floor_source"] is not None
-        gating_block = {**fragment, "applied": applied, "exempt_reason": None}
+        gating_block = {
+            "schema_version": fragment["schema_version"],
+            "applied": applied,
+            "exempt_reason": None,
+            **{k: v for k, v in fragment.items() if k != "schema_version"},
+        }
         ir_used = gated_ir
     else:
         gating_block = gating.exempt_gating_block(ir, sr, reason="near_field")
