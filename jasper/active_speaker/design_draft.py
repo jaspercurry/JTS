@@ -21,7 +21,7 @@ from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
 from jasper.output_topology import OutputTopology
-from ._common import issue as _issue
+from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
 from .profile import SUPPORTED_POLARITY
 
 SCHEMA_VERSION = 1
@@ -41,10 +41,6 @@ _MAX_DRIVERS = 16
 _MAX_CANDIDATES = 16
 _MAX_SOURCES = 8
 MAX_DRIVER_NOTE_CHARS = 2048
-_CROSSOVER_ROLE_PAIRS = {
-    "active_2_way": (("woofer", "tweeter"),),
-    "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),
-}
 
 
 class ActiveSpeakerDesignDraftError(ValueError):
@@ -484,7 +480,7 @@ def _candidate_roles(candidates: list[dict[str, Any]]) -> set[frozenset[str]]:
 def _active_crossover_pairs(topology: OutputTopology) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for group in topology.speaker_groups:
-        for pair in _CROSSOVER_ROLE_PAIRS.get(group.mode, ()):
+        for pair in ACTIVE_CROSSOVER_ROLE_PAIRS.get(group.mode, ()):
             if pair not in pairs:
                 pairs.append(pair)
     return pairs

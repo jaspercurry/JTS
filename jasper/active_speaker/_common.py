@@ -30,6 +30,12 @@ from __future__ import annotations
 from typing import Any
 
 
+ACTIVE_CROSSOVER_ROLE_PAIRS: dict[str, tuple[tuple[str, str], ...]] = {
+    "active_2_way": (("woofer", "tweeter"),),
+    "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),
+}
+
+
 def issue(severity: str, code: str, message: str) -> dict[str, str]:
     """A severity-tagged diagnostic record (`blocker`/`warning`/…)."""
 
