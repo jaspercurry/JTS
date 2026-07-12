@@ -106,6 +106,16 @@ ALLOWED_EXPECTS: dict[tuple[str, str], str] = {
         "taken exactly once, immediately after Mixer::new, before READY=1. "
         "Fail-fast at boot is correct — systemd restarts the unit."
     ),
+    (
+        "jasper-fanin/src/json.rs",
+        "serializing a string to JSON cannot fail",
+    ): (
+        "Serialization invariant: Rust str is valid UTF-8 and its Serialize "
+        "implementation only calls serialize_str; serde_json::to_string uses "
+        "an in-memory Vec writer whose writes cannot return an error. The "
+        "other documented serde_json failure modes (custom Serialize errors "
+        "and non-string map keys) cannot apply to &str."
+    ),
 }
 
 _PANIC_PAT = re.compile(r"\.unwrap\(\)|\.expect\(|panic!")
