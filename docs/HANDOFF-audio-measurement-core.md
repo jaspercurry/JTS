@@ -160,11 +160,18 @@ The product is three tiers:
   one bounded fourth attempt is allowed. Repeat state is scoped by comparison
   set plus immutable target fingerprint and atomically persisted before audio
   by `active_speaker.repeat_admission`; bundles remain optional forensics. A
-  service restart preserves the bounded attempts: the single-process startup
-  claim marks an old active set aborted rather than silently restarting at one,
-  while an uncertain `ready` final write remains blocked. In either case the
-  envelope requires a new level check before another capture or automatic
-  apply. A new setup cannot inherit it. If attempt four fails in transport but
+  final measurement stores only the compact repeat projection; the full
+  process-local winning attempt remains bundle evidence. A failed measurement
+  write moves `ready` to `aborted`; a failed admission-completion write does
+  the same with a distinct reason. If either follow-up abort write succeeds,
+  the envelope can immediately require a new level check. If that abort write
+  also fails, same-process `ready` remains fail-closed and blocks replay and
+  automatic apply; it becomes actionable when the next service-start ownership
+  claim retires the old owner. A service restart preserves the bounded attempts: the
+  single-process startup claim marks an old `active` or `ready` set aborted
+  rather than silently restarting at one. In every interrupted case the
+  envelope requires a new level check. A new setup cannot inherit it. If
+  attempt four fails in transport but
   two prior deconvolved captures were accepted, the same shared finalizer keeps
   them at reduced confidence; fewer than two refuses the set.
   This closes the prior live-hardware `acoustic.snr: null` path without making

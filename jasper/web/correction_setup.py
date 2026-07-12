@@ -3786,6 +3786,22 @@ def _handle_crossover_relay_capture(
         from jasper.active_speaker import repeat_admission
         from jasper.active_speaker import web_measurement
 
+        # Recording owns the ready -> aborted transition when final measurement
+        # or admission-completion persistence fails. A second failed abort may
+        # leave a truthful fail-closed ``ready`` state.
+        # The relay boundary still sees and reports the original exception,
+        # but must not try to finish the consumed reservation a second time.
+        # Match the exact target/fingerprint/attempt before treating it as the
+        # same terminal finalization.
+        target_id = f"{raw['speaker_group_id']}:{raw['role']}"
+        if repeat_admission.reservation_is_finished(
+            comparison_set,
+            target_id=target_id,
+            target_fingerprint=target_fingerprint,
+            attempt=int(reservation.get("attempt") or 0),
+        ):
+            return
+
         if int(reservation.get("attempt") or 0) >= repeat_admission.MAX_ATTEMPTS:
             # The attempt may fail seconds after armed-time validation. Re-read
             # topology/profile/comparison before old accepted evidence can be
@@ -3805,7 +3821,7 @@ def _handle_crossover_relay_capture(
 
         repeat_admission.finish(
             comparison_set,
-            target_id=f"{raw['speaker_group_id']}:{raw['role']}",
+            target_id=target_id,
             target_fingerprint=target_fingerprint,
             token=str(reservation.get("token") or ""),
             result={

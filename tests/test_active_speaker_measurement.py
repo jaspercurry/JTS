@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 from pathlib import Path
@@ -1054,17 +1055,26 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
     topology = _topology(tweeter_output=1)
     state_path = tmp_path / "measurements.json"
 
-    def repeat(level: float, path: str) -> dict:
+    def repeat(level: float, path: Path) -> dict:
+        wav_path = tmp_path / path.name
         return {
             "verdict": "heard_correct_driver",
             "acoustic": {"observed_mic_dbfs": level, "mic_clipping": False},
             "artifact_path": path,
+            # These mirror the process-local continuation fields retained on
+            # each real Lane-D attempt. They must remain available to the web
+            # finalizer through ``aggregate_repeat`` but never enter durable
+            # measurement JSON.
+            "wav_path": wav_path,
+            "bundle_dir": tmp_path / "bundle",
+            "analysis_kwargs": {"captured_wav": wav_path},
+            "preset": object(),
         }
 
     repeats = [
-        repeat(-30.0, "repeat_captures/r0.wav"),
-        repeat(-30.2, "repeat_captures/r1.wav"),
-        repeat(-29.9, "repeat_captures/r2.wav"),
+        repeat(-30.0, Path("repeat_captures/r0.wav")),
+        repeat(-30.2, Path("repeat_captures/r1.wav")),
+        repeat(-29.9, Path("repeat_captures/r2.wav")),
     ]
     aggregate = aggregate_driver_repeats(repeats)
     assert aggregate["accepted"] == 3
@@ -1093,6 +1103,21 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
     assert record["repeats"]["accepted"] == 3
     assert record["repeats"]["confidence"] == "normal"
     assert len(record["repeats"]["per_repeat"]) == 3
+    assert "aggregate_repeat" not in record["repeats"]
+    assert [entry["artifact_path"] for entry in record["repeats"]["per_repeat"]] == [
+        "repeat_captures/r0.wav",
+        "repeat_captures/r1.wav",
+        "repeat_captures/r2.wav",
+    ]
+
+    # Re-read the actual file, not only the returned in-memory state. Before
+    # the fix, json.dumps failed here on aggregate_repeat.analysis_kwargs's
+    # PosixPath and no durable measurement was written after three accepted
+    # hardware repeats.
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    durable_repeats = persisted["driver_measurements"][-1]["repeats"]
+    assert durable_repeats == record["repeats"]
+    assert "aggregate_repeat" not in durable_repeats
 
     # The latest-wins pointer resolves to this exact aggregate record.
     latest = state["summary"]["latest_driver_measurements"]["mono:woofer"]
@@ -1118,6 +1143,72 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
             "above_validity_floor",
             "level_dbfs",
         }
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        "non_artifact_path",
+        "absolute_artifact_path",
+        "traversal_artifact_path",
+        "non_mapping_summary",
+        "summary_extra_key",
+        "per_repeat_extra_key",
+        "per_repeat_not_mapping",
+        "nan_spread",
+    ],
+)
+def test_malformed_repeat_summary_is_rejected_before_state_write(
+    tmp_path: Path, malformation: str
+) -> None:
+    from jasper.active_speaker.commissioning_capture import aggregate_driver_repeats
+
+    topology = _topology(tweeter_output=1)
+    state_path = tmp_path / "measurements.json"
+    repeats = [
+        {
+            "verdict": "heard_correct_driver",
+            "acoustic": {"observed_mic_dbfs": level, "mic_clipping": False},
+            "artifact_path": Path(f"repeat_captures/r{index}.wav"),
+        }
+        for index, level in enumerate((-30.0, -30.2, -29.9))
+    ]
+    aggregate: object = aggregate_driver_repeats(repeats)
+    assert isinstance(aggregate, dict)
+    if malformation == "non_artifact_path":
+        aggregate["confidence"] = tmp_path / "runtime-only"
+    elif malformation == "absolute_artifact_path":
+        aggregate["per_repeat"][0]["artifact_path"] = tmp_path / "r0.wav"
+    elif malformation == "traversal_artifact_path":
+        aggregate["per_repeat"][0]["artifact_path"] = "../outside.wav"
+    elif malformation == "non_mapping_summary":
+        aggregate = tmp_path / "runtime-only"
+    elif malformation == "summary_extra_key":
+        aggregate["runtime_only"] = object()
+    elif malformation == "per_repeat_extra_key":
+        aggregate["per_repeat"][0]["runtime_only"] = object()
+    elif malformation == "per_repeat_not_mapping":
+        aggregate["per_repeat"][0] = "not-an-object"
+    elif malformation == "nan_spread":
+        aggregate["spread_db_p90"] = float("nan")
+
+    with pytest.raises(ValueError, match="repeat summary"):
+        record_driver_measurement(
+            topology,
+            {
+                "speaker_group_id": "mono",
+                "role": "woofer",
+                "outcome": repeats[0]["verdict"],
+                "acoustic": repeats[0]["acoustic"],
+                "playback_id": "play-1",
+                "repeats": aggregate,
+            },
+            safe_session=_safe_session(
+                role="woofer", output_index=0, playback_id="play-1"
+            ),
+            state_path=state_path,
+        )
+    assert not state_path.exists()
 
 
 # --- lifecycle events (lane E, docs/active-crossover-information-design.md

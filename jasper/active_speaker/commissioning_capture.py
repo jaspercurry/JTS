@@ -1304,10 +1304,10 @@ def record_driver_repeat_aggregate(
     Logs ``correction.crossover_repeats_aggregated`` (SC-5) via
     :func:`jasper.log_event.log_event`. A pure evidence step: it does not
     itself call ``record_driver_measurement`` — the web orchestration layer
-    takes the returned ``aggregate_repeat`` and records it exactly
-    as a single-capture result, attaching this function's return value
-    under the record's ``repeats`` key so the durable record and the
-    bundle both carry the full repeat history.
+    uses the returned ``aggregate_repeat`` exactly to re-analyze and record
+    the winning capture.  Durable measurement state receives only the compact
+    counters, spread, and ``per_repeat`` projection; the process-local winner
+    object and full repeat artifacts remain in the commissioning bundle.
     """
 
     aggregate = aggregate_driver_repeats(repeats, target=target)
