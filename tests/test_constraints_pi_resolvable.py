@@ -19,15 +19,20 @@ every fresh deploy's pip install a ``ResolutionImpossible``:
   hard-pins ``pydantic-core==2.46.4``.
 * ``#864`` googleapis-common-protos 1.73.0 -> 1.75.0 and ``#744``
   proto-plus 1.27.1 -> 1.28.0 and ``#746`` onnxruntime 1.26.0 -> 1.27.0,
-  all of which floor ``protobuf>=4.25.8``, but ``protobuf`` is HELD at
-  ``4.25.3`` (``nyct-gtfs==2.1.0`` hard-pins it; the protobuf 7.x bump
-  ``#865`` is deliberately held).
+  all of which floor ``protobuf>=4.25.8``, while ``nyct-gtfs==2.1.0``
+  hard-pinned ``protobuf==4.25.3``.
+
+The protobuf chain was resolved together later that day: the subway
+fallback moved to ``gtfs-realtime-bindings``, protobuf became an explicit
+``[full]`` pin, and the ONNX/Google proto consumers moved with it. The
+offline guard therefore tracks the whole cross-ecosystem chain, not only
+packages currently held back.
 
 Each PR was green alone; NO CI check pip-resolved the file, so the
 unresolvable combination shipped. These two guards close that gap:
 
-1. ``test_held_pin_chain_matches_uv_lock`` — DETERMINISTIC + OFFLINE.
-   The packages that sit in a cross-ecosystem hard-pin chain must match
+1. ``test_cross_ecosystem_pin_chain_matches_uv_lock`` — DETERMINISTIC +
+   OFFLINE. The packages that sit in a cross-ecosystem pin chain must match
    the co-resolved ``uv.lock`` (the authoritative resolution CI already
    validates via ``uv sync --locked``). Their correct version is fixed
    by package metadata that is identical on the arm64/py3.13 Pi and the
@@ -90,33 +95,32 @@ def _parse_uv_lock() -> dict[str, str]:
     }
 
 
-# Packages whose correct constraints-pi.txt pin is fixed by a
-# cross-ecosystem hard pin that pyproject deliberately HOLDS. Each newer
-# release breaks resolution against the held pin, so the Pi snapshot must
-# track the co-resolved uv.lock. Reasons are load-bearing — verified
+# Packages whose constraints-pi.txt pin must track the co-resolved uv.lock.
+# Reasons are load-bearing — verified
 # against live PyPI metadata on 2026-07-11 (#1275). Names are PEP 503
 # canonical.
-_HELD_PIN_CHAIN: dict[str, str] = {
+_CROSS_ECOSYSTEM_PIN_CHAIN: dict[str, str] = {
     # pydantic hard-pins pydantic-core to an EXACT ==version
     # (pydantic 2.13.4 -> pydantic-core==2.46.4). Bumping pydantic-core
     # alone (dependabot #745) is ResolutionImpossible.
     "pydantic": "drives the pydantic-core exact pin",
     "pydantic-core": "pydantic pins this with ==; must track pydantic (#745)",
-    # protobuf is HELD at 4.25.3: nyct-gtfs==2.1.0 hard-pins
-    # protobuf==4.25.3 and the protobuf 7.x bump (#865) is deliberately
-    # held. Newer releases of the three packages below floor
-    # protobuf>=4.25.8 and cannot co-resolve with the held protobuf.
-    "protobuf": "held at 4.25.3 (nyct-gtfs hard pin; protobuf 7.x #865 held)",
-    "googleapis-common-protos": "1.74.0+ floor protobuf>=4.25.8 (#864)",
-    "proto-plus": "1.28.0+ floor protobuf>=4.25.8 (#744)",
-    "onnxruntime": "1.27.0+ floor protobuf>=4.25.8 (#746)",
+    # Protobuf is an explicit [full] pin shared by the MTA parser, ONNX
+    # Runtime, and the Google API proto stack. Keep every member aligned
+    # across uv and the Pi overlay so Dependabot cannot move one side alone.
+    "protobuf": "explicit shared runtime pin",
+    "gtfs-realtime-bindings": "subway fallback wire-schema binding",
+    "google-api-core": "2.31.0+ admits protobuf 7 (<8)",
+    "googleapis-common-protos": "1.74.0+ floor protobuf>=4.25.8",
+    "proto-plus": "1.28.0+ floor protobuf>=4.25.8",
+    "onnxruntime": "1.27.0+ floor protobuf>=4.25.8",
 }
 
 
-def test_held_pin_chain_matches_uv_lock() -> None:
-    """The deterministic offline guard for #1275.
+def test_cross_ecosystem_pin_chain_matches_uv_lock() -> None:
+    """The deterministic offline guard for the #1275 drift class.
 
-    Every held-pin-chain package must be pinned identically in
+    Every cross-ecosystem pin-chain package must be pinned identically in
     constraints-pi.txt and the co-resolved uv.lock. A mismatch means a
     pip-side bump landed without co-resolving uv.lock and a fresh
     ``pip install -c deploy/constraints-pi.txt`` will ResolutionImpossible.
@@ -125,9 +129,9 @@ def test_held_pin_chain_matches_uv_lock() -> None:
     lock = _parse_uv_lock()
 
     mismatches: list[str] = []
-    for pkg, reason in _HELD_PIN_CHAIN.items():
-        assert pkg in cons, f"held-pin-chain package {pkg!r} missing from constraints-pi.txt"
-        assert pkg in lock, f"held-pin-chain package {pkg!r} missing from uv.lock"
+    for pkg, reason in _CROSS_ECOSYSTEM_PIN_CHAIN.items():
+        assert pkg in cons, f"pin-chain package {pkg!r} missing from constraints-pi.txt"
+        assert pkg in lock, f"pin-chain package {pkg!r} missing from uv.lock"
         if cons[pkg] != lock[pkg]:
             mismatches.append(
                 f"{pkg}: constraints-pi.txt=={cons[pkg]} but uv.lock=={lock[pkg]}  [{reason}]"
@@ -135,11 +139,11 @@ def test_held_pin_chain_matches_uv_lock() -> None:
 
     assert not mismatches, (
         "deploy/constraints-pi.txt has drifted from the co-resolved uv.lock on "
-        "held-pin-chain packages — a fresh deploy's "
+        "cross-ecosystem pin-chain packages — a fresh deploy's "
         "`pip install -c deploy/constraints-pi.txt -e .[full]` will fail with "
         "ResolutionImpossible (see #1275).\n"
         "Fix: regenerate from a coherent Pi via scripts/generate-pi-constraints.sh, "
-        "or align these pins to uv.lock (the protobuf 7.x bump #865 stays HELD):\n  "
+        "or align these pins to uv.lock as one co-resolved change:\n  "
         + "\n  ".join(mismatches)
     )
 

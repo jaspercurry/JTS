@@ -70,7 +70,13 @@ full = [
     "spotipy==2.26.0",
     "httpx==0.28.1",
     "onnxruntime>=1.17",
-    "nyct-gtfs==2.1.0",
+    # The subway fallback only needs the standard GTFS-Realtime wire
+    # schema. nyct-gtfs hard-pins the unsupported protobuf 4.25.3 runtime;
+    # use the maintained schema bindings and keep the shared protobuf
+    # runtime explicit because ONNX Runtime and the Google client stack
+    # consume it too.
+    "gtfs-realtime-bindings==2.1.0",
+    "protobuf==7.35.1",
     "rapidfuzz>=3.6,<4",
     # XVF3800 control: jasper.xvf.xvf_host talks to the chip's USB
     # vendor-control interface for boot-time profile writes and diagnostics.

@@ -66,7 +66,7 @@ def make_subway_tools(subway):
                minutes_from_now: 3},
               ...
             ],
-            source: "subwaynow" | "nyct-gtfs",
+            source: "subwaynow" | "mta-gtfs",
           }
           Arrivals are sorted by ETA ascending and capped at 4
           total across all queried directions.

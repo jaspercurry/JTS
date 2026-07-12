@@ -1587,7 +1587,8 @@ at the station — including trains rerouted from other lines during
 service changes. This works because Subway Now's `/api/stops/{id}`
 endpoint aggregates across all 7 MTA GTFS-RT feeds server-side
 (an N rerouted onto D tracks at a D station appears in the same
-response as the regular Ds). The nyct-gtfs fallback can only see
+response as the regular Ds). The direct MTA GTFS-Realtime fallback can
+only see
 the station's CSV-documented lines (no reroutes during fallback —
 documented degradation; Subway Now outages are rare). See
 [`jasper/subway.py`](jasper/subway.py) docstring for the full

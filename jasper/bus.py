@@ -5,7 +5,8 @@
 """NYC MTA bus real-time arrivals via the BusTime SIRI API.
 
 One source of truth, no fallback (unlike subway, which has both
-Subway Now and nyct-gtfs). The MTA's BusTime is the canonical
+Subway Now and the direct MTA GTFS-Realtime fallback). The MTA's
+BusTime is the canonical
 authority for bus ETAs — what their own bus-prediction signs use
 and what every NYC bus app pulls from.
 

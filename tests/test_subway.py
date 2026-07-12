@@ -8,7 +8,7 @@ Covers:
   - Pure helpers (station loading, direction aliases, feed URL mapping).
   - Pure extraction (`_extract_subwaynow` against fixture data).
   - End-to-end SubwayClient flow with mocked Subway Now responses + a
-    fake nyct-gtfs feed for the fallback path.
+    fake MTA GTFS-Realtime feed for the fallback path.
 
 v2 response shape:
     {
@@ -20,22 +20,28 @@ v2 response shape:
         direction_label: str,            # "Manhattan", "Coney Island", ...
         minutes_from_now: int,
       }],
-      source: "subwaynow" | "nyct-gtfs",
+      source: "subwaynow" | "mta-gtfs",
     }
 """
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from jasper.subway import (
     ARRIVAL_LIMIT,
     SubwayClient,
+    _GTFSRealtimeFeed,
     _build_aliases,
     _expand_label,
     _load_stations,
     feed_url_for_line,
     normalise_direction,
 )
+
+
+_FIXTURES = Path(__file__).parent / "fixtures"
 
 
 # --- Pure helpers ----------------------------------------------------------
@@ -283,7 +289,7 @@ def test_extract_subwaynow_empty_upcoming_trips_returns_empty():
     assert _bound_client()._extract_subwaynow(data, ["N", "S"], "") == []
 
 
-# --- SubwayClient end-to-end with mocked Subway Now + nyct-gtfs ------------
+# --- SubwayClient end-to-end with mocked Subway Now + MTA GTFS-RT ----------
 
 
 class _FakeStopTimeUpdate:
@@ -416,8 +422,8 @@ def test_explicit_southbound_overrides_default_uptown():
     assert all(a["direction"] == "S" for a in result["arrivals"])
 
 
-def test_subwaynow_failure_falls_back_to_nyct_gtfs():
-    """When Subway Now raises, we silently use nyct-gtfs and report the
+def test_subwaynow_failure_falls_back_to_mta_gtfs():
+    """When Subway Now raises, we silently use MTA GTFS-RT and report the
     source. Fallback only sees the station's CSV-documented lines (no
     reroutes), per the documented degradation."""
     now = datetime(2024, 1, 1, 12, 0, 0)
@@ -428,10 +434,44 @@ def test_subwaynow_failure_falls_back_to_nyct_gtfs():
         default_direction="uptown",
     )
     result = client.get_arrivals()
-    assert result["source"] == "nyct-gtfs"
+    assert result["source"] == "mta-gtfs"
     assert len(result["arrivals"]) == 1
     assert result["arrivals"][0]["minutes_from_now"] == 8
     assert result["arrivals"][0]["line"] == "D"
+
+
+def test_mta_fallback_parses_recorded_gtfs_realtime_feed():
+    """Parse real MTA wire bytes, not a hand-built protobuf-shaped fake.
+
+    The fixture is a reduced recording of the public BDFM feed captured
+    2026-07-11T22:30:05-04:00. It retains the real feed header plus the
+    paired TripUpdate/VehiclePosition for a southbound D approaching B12.
+    """
+    encoded = (_FIXTURES / "mta_bdfm_b12_20260711.pb.b64").read_bytes()
+    feed = _GTFSRealtimeFeed.from_bytes(base64.b64decode(encoded))
+    assert feed.last_generated == datetime.fromtimestamp(1783825805)
+
+    def subwaynow_down(url, params):
+        raise RuntimeError("recorded fallback test")
+
+    client = SubwayClient(
+        station_id="B12",
+        default_direction="downtown",
+        feed_factory=lambda line: feed,
+        http_get=subwaynow_down,
+        clock=lambda: feed.last_generated,
+    )
+    result = client.get_arrivals(line="D")
+
+    assert result["source"] == "mta-gtfs"
+    assert result["arrivals"] == [
+        {
+            "line": "D",
+            "direction": "S",
+            "direction_label": "Coney Island",
+            "minutes_from_now": 38,
+        }
+    ]
 
 
 def test_subwaynow_5xx_falls_back():
@@ -443,7 +483,7 @@ def test_subwaynow_5xx_falls_back():
         default_direction="uptown",
     )
     result = client.get_arrivals()
-    assert result["source"] == "nyct-gtfs"
+    assert result["source"] == "mta-gtfs"
 
 
 def test_both_paths_fail_returns_error():
