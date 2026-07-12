@@ -7,7 +7,12 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile=/etc/jasper/jasper.env
 ExecStart=/opt/jasper/.venv/bin/jasper-xvf-firmware-update
-TimeoutStartSec=180
+# The updater refuses to enter DFU after 150s of pre-flash work, then can spend
+# 271s on its longest handled path: stop services (30s) + DFU flash (120s) +
+# re-enumeration/poll (31s) + reconcile (45s) + recovery reconcile (45s).
+# Retain at least 30s of process/scheduling headroom so systemd never kills
+# dfu-util during an update that remains within the updater's own deadlines.
+TimeoutStartSec=480
 
 # Runs as root because DFU, service stop/start, and reconciler handoff are
 # privileged hardware operations. This unit is only started by explicit user
@@ -24,4 +29,3 @@ ReadWritePaths=/var/lib/jasper
 RestrictNamespaces=true
 LockPersonality=true
 SystemCallArchitectures=native
-

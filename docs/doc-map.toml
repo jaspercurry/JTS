@@ -388,6 +388,7 @@ title = "AEC bridge, mic profiles, and XVF3800 control"
 safety = "audio-input-risk"
 code = [
   "jasper/cli/aec_*.py",
+  "jasper/cli/xvf_firmware_update.py",
   "jasper/aec_engines/**",
   "jasper/audio_profile_state.py",
   "jasper/audio_validation.py",
@@ -399,6 +400,7 @@ code = [
   "deploy/bin/jasper-aec-reconcile",
   "deploy/lib/jasper-env-file.sh",
   "deploy/systemd/jasper-aec-*.service",
+  "deploy/systemd/jasper-xvf-firmware-update.service",
   "deploy/systemd/jts-mic.slice",
   "deploy/udev/99-jasper-aec-reconcile.rules",
   "scripts/aec-*",
