@@ -120,6 +120,14 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
 install_local_audio_graph_unit_files() {
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
+    # The guards below are a coupled runtime set. Do not continue to overwrite
+    # either consumer when its required library could not be staged.
+    if ! install -m 0644 \
+            "${REPO_DIR}/deploy/lib/jasper-camilla-guard-common.sh" \
+            /usr/local/lib/jasper/jasper-camilla-guard-common.sh; then
+        echo "  ERROR: failed to install Camilla guard common library" >&2
+        return 1
+    fi
     # Transactional: attempt EVERY row even if one fails, so a newly-added unit
     # at the END of the table still lands on the first deploy. Failures are
     # collected and re-raised after the loop; the caller's daemon-reload runs

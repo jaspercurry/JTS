@@ -870,8 +870,9 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   budget in under a minute. `jasper-camilla-pipe-guard`
   (`ExecStartPre=-`, pure bash, fail-open) repairs the statefile to the
   base config BEFORE camilla launches when the bonded pipe is dead
-  (absent FIFO, or no reader via a write-open probe) — prevention, not
-  reaction, because an `OnFailure=` rescue would RACE the reboot. Camilla
+  (absent FIFO, or no reader via a write-open probe). This preserves the
+  dead-pipe evidence and avoids spending the bounded non-rebooting
+  `OnFailure=` recovery budget on a graph already known to be unstartable. Camilla
   then runs solo-safe (identity EQ, volume_limit intact); grouping.env
   stays bonded so the next reconcile re-applies the bond when snapserver
   is healthy; `event=camilla_pipe_guard.*` + the `leader pipe` doctor
@@ -2778,6 +2779,8 @@ Camilla/Snapcast volume guard rechecked against `jasper/web/balance_flow.py`,
 `jasper/measurement/volume_guard.py`, and `deploy/assets/balance/js/main.js`;
 Camilla pipe-guard/recovery-budget wording
 rechecked against `deploy/systemd/jasper-camilla.service` and
+`deploy/bin/jasper-camilla-pipe-guard`,
+`deploy/lib/jasper-camilla-guard-common.sh`, and
 `deploy/bin/jasper-camilla-recover`; 2026-06-24 pair-lock runtime surface
 rechecked against
 `state.py`, `snapcast_rpc.py`, and doctor wiring; control-side grouping kick

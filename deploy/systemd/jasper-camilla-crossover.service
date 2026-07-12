@@ -1,21 +1,19 @@
 [Unit]
-Description=CamillaDSP #2 (endpoint-crossover instance; reconciler-gated, INERT until armed)
+Description=CamillaDSP #2 (endpoint-crossover instance; active-leader reconciler-gated)
 After=sound.target network.target jasper-fanin.service
 Wants=sound.target jasper-fanin.service
 # camilla#2 is the per-driver crossover instance on an ACTIVE LEADER
 # (docs/HANDOFF-distributed-active.md "Stage B — the ratified active-
 # leader realization"). It coexists with the always-on camilla#1
-# (jasper-camilla.service, :1234) and is NOT enabled at boot — a later
-# reconciler PR starts it on demand only when the box is both leader
-# AND active. As of this PR it is dormant infrastructure: installed,
-# parseable, never started.
+# (jasper-camilla.service, :1234). Install does not enable it globally;
+# grouping reconcile enables/starts it only while the box is a bonded
+# active leader and disables it again on unbond.
 #
 # Start-limit loop-bound ONLY — NO StartLimitAction. camilla#1
-# escalates to StartLimitAction=reboot because it is the always-on
-# solo music daemon: if it cannot start, the speaker is silently dead
-# and a clean reboot is the least-bad recovery. camilla#2 is the
-# OPPOSITE case: it is a secondary, reconciler-gated instance, so a
-# crash must fail CLOSED to silence through the crossover, NEVER reboot
+# owns a separate bounded recovery/forensics oneshot because it is the
+# always-on solo music daemon. camilla#2 is the OPPOSITE case: it is a
+# secondary, reconciler-gated instance, so a crash must fail CLOSED to
+# silence through the crossover, NEVER reboot
 # the household speaker. We keep the burst guard (so a genuinely broken
 # config does not spin forever) but deliberately leave
 # StartLimitAction at its default (none) — see the no-reboot note in
@@ -82,16 +80,13 @@ LimitMEMLOCK=infinity
 # the later reconciler re-arms), never a reboot.
 OOMScoreAdjust=-500
 
-# [Install] present but the unit is NOT enabled at install time. This
+# [Install] present but the unit is not globally enabled by install. This
 # mirrors the established reconciler/wizard-gated pattern in this repo:
 # jasper-aec-bridge.service (enabled by jasper-aec-reconcile, not
 # install.sh) and jasper-usbsink.service (enabled by the /sources/
 # wizard) both keep WantedBy=multi-user.target yet ship disabled. A
-# later reconciler PR will `systemctl enable --now` this unit only when
-# the box is both leader AND active; install.sh deliberately does not
-# enable it, so it stays INERT (installed, parseable, never started)
-# until then. WantedBy here arms it ONLY after that explicit enable —
-# it does not auto-start at boot while disabled.
+# grouping reconciler uses `systemctl enable --now` only while the box is a
+# bonded active leader and disables the unit on unbond. WantedBy here arms it
+# only after that explicit reconcile decision.
 [Install]
 WantedBy=multi-user.target
-

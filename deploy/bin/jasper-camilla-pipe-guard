@@ -4,11 +4,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# jasper-camilla-pipe-guard — break the dead-pipe reboot-loop chain.
+# jasper-camilla-pipe-guard — break the dead-pipe recovery-loop chain.
 #
 # Runs as ExecStartPre= on jasper-camilla.service (the CORE music
-# daemon, whose unit carries StartLimitAction=reboot — and whose
-# OnFailure recovery handler can park it). Two dead-pipe classes,
+# daemon, whose bounded OnFailure recovery handler can park the graph).
+# Two dead-pipe classes,
 # both repaired by re-pointing the statefile to the packaged base
 # config BEFORE camilla launches, so the failing starts never happen:
 #
@@ -27,17 +27,15 @@
 #      strands the dangling config, so the guard is the durable floor
 #      that breaks this class permanently.
 #
-# Why ExecStartPre and not OnFailure=: StartLimitAction=reboot and
-# OnFailure= both fire when the unit fails — a rescue would RACE the
-# reboot. Prevention beats reaction.
+# Why ExecStartPre and not only OnFailure=: preventing a known dead-pipe start
+# preserves the pipe evidence and avoids spending the bounded recovery budget.
 #
 # The measured failure modes (camilladsp 4.1.3 on jts3, 2026-06-11):
 #   - File sink path ABSENT (snapserver stopped; its RuntimeDirectory
 #     reaped) -> "Playback error: No such file or directory" + CLEAN
-#     exit 0. With Restart=always + RestartSec=2 + StartLimitBurst=5/60s
-#     that is a clean-exit loop -> StartLimitAction=reboot fires in
-#     under a minute; if snapserver stays broken the boot reconcile
-#     cannot fix it -> REBOOT LOOP on the household speaker.
+#     exit 0. With Restart=always + RestartSec=2 + StartLimitBurst=5/60s,
+#     that would exhaust the burst and invoke the bounded non-rebooting
+#     jasper-camilla-recover path repeatedly as operators retry the graph.
 #   - FIFO present, NO reader -> camilladsp blocks in open(2) and the
 #     blocked open is not interrupted by SIGTERM (alive-but-silent).
 #
@@ -63,10 +61,13 @@
 set -uo pipefail
 
 STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
+# shellcheck disable=SC2034  # consumed by the sourced common guard library
 BASE_CONFIG="${JASPER_CAMILLA_BASE_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
+# shellcheck disable=SC2034  # consumed by the sourced common guard library
 RUNTIME_SAFE_GRAPH="${JASPER_RUNTIME_SAFE_GRAPH:-/opt/jasper/.venv/bin/jasper-active-speaker}"
 SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
 # Seconds the reader-presence probe waits before declaring "no reader".
+# shellcheck disable=SC2034  # consumed by the sourced common guard library
 PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
 # Capture-pipe roots: a RawFile capture whose filename lives under one of
 # these and is ABSENT means the transport-pipe producer is gone and
@@ -88,68 +89,25 @@ log() {
     echo "event=camilla_pipe_guard.${outcome} ${*}" >&2
 }
 
-# repair_statefile <why> <config_path>
-# Re-point STATEFILE to the runtime-contract-safe graph (base config for a
-# full-range system; a guarded active startup graph for a saved roleful
-# topology). A blocked decision intentionally leaves the statefile
-# untouched. Echoes the structured outcome line. Returns 0 always
-# (FAIL-OPEN: never block camilla's start path).
-repair_statefile() {
-    local why="$1" from="$2" repaired_to output
-    if ! command -v "$RUNTIME_SAFE_GRAPH" >/dev/null 2>&1; then
-        log skip reason=runtime_contract_unavailable "detail=$why"
-        return 0
-    fi
-    # Ask the active-speaker runtime contract for the only legal persisted
-    # graph. For ordinary full-range systems this is the packaged base
-    # config; for saved roleful/protected topologies it must be a guarded
-    # active startup graph. A blocked decision leaves the statefile
-    # untouched: flat stereo is not a safe recovery target once a
-    # tweeter/protected role is saved.
-    if output="$(
-        "$RUNTIME_SAFE_GRAPH" runtime-safe-graph \
-            --statefile "$STATEFILE" \
-            --flat-config "$BASE_CONFIG" \
-            --write-statefile \
-            --json 2>&1
-    )"; then
-        repaired_to="$(
-            sed -n 's/^[[:space:]]*config_path:[[:space:]]*//p' "$STATEFILE" \
-                | head -1 | tr -d '"' | tr -d "'"
-        )"
-        log repaired "reason=$why from=$from to=${repaired_to:-unknown}" \
-            "detail=camilla starts on runtime-contract-safe graph; next reconcile re-applies the live lane when its pipe is healthy"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+COMMON_LIB="${JASPER_CAMILLA_GUARD_COMMON_LIB:-}"
+if [ -z "$COMMON_LIB" ]; then
+    if [ -r "${SCRIPT_DIR}/../lib/jasper-camilla-guard-common.sh" ]; then
+        COMMON_LIB="${SCRIPT_DIR}/../lib/jasper-camilla-guard-common.sh"
     else
-        log skip reason=runtime_contract_blocked "detail=$why" \
-            "message=$(printf '%s' "$output" | tr '\n' ' ' | cut -c1-240)"
+        COMMON_LIB="/usr/local/lib/jasper/jasper-camilla-guard-common.sh"
     fi
-    return 0
-}
-
-check_playback_pipe_or_repair() {
-    local pipe_path="$1" absent_reason="$2" no_reader_reason="$3" \
-        healthy_reason="$4" probe_unavailable_reason="$5" why
-    if [ -p "$pipe_path" ]; then
-        # Reader-presence probe: opening a FIFO for write returns instantly
-        # iff a reader exists; with no reader it blocks (-> timeout). The
-        # momentary write-open is harmless to FIFO readers designed for writers
-        # that come and go. FAIL-OPEN if the timeout tool itself is unavailable.
-        if ! command -v timeout >/dev/null 2>&1; then
-            log ok "reason=$probe_unavailable_reason"
-            exit 0
-        fi
-        if timeout "$PROBE_TIMEOUT" bash -c "exec 3> '$pipe_path'" 2>/dev/null; then
-            log ok "reason=$healthy_reason"
-            exit 0
-        fi
-        why="$no_reader_reason"
-    else
-        why="$absent_reason"
-    fi
-
-    repair_statefile "$why" "$config_path"
+fi
+# shellcheck disable=SC1090  # runtime path is repo-sibling or installed fallback
+if [ ! -r "$COMMON_LIB" ] || ! source "$COMMON_LIB"; then
+    log skip reason=common_lib_unavailable
     exit 0
-}
+fi
+if ! declare -F camilla_guard_repair_statefile >/dev/null \
+        || ! declare -F camilla_guard_check_playback_pipe_or_repair >/dev/null; then
+    log skip reason=common_lib_invalid
+    exit 0
+fi
 
 [ -r "$STATEFILE" ] || { log skip reason=no_statefile; exit 0; }
 
@@ -185,7 +143,8 @@ if [ -n "$capture_filename" ]; then
     case "$capture_filename" in
         "${CAPTURE_RUNTIME_ROOT}"*)
             if [ ! -e "$capture_filename" ]; then
-                repair_statefile capture_pipe_absent "$config_path"
+                camilla_guard_repair_statefile capture_pipe_absent "$config_path" \
+                    "camilla starts on runtime-contract-safe graph; next reconcile re-applies the live lane when its pipe is healthy"
                 exit 0
             fi
             ;;
@@ -214,17 +173,21 @@ fi
 
 # Bonded pipe config. Healthy only if the FIFO exists AND has a reader.
 if [ "$playback_filename" = "$SNAPFIFO" ]; then
-    check_playback_pipe_or_repair \
-        "$SNAPFIFO" fifo_absent no_reader pipe_healthy pipe_exists_probe_unavailable
+    camilla_guard_check_playback_pipe_or_repair \
+        "$SNAPFIFO" fifo_absent no_reader pipe_healthy pipe_exists_probe_unavailable \
+        "$config_path" \
+        "camilla starts on runtime-contract-safe graph; next reconcile re-applies the live lane when its pipe is healthy"
 fi
 
 # Local transport-pipe config. Healthy only if outputd has already created and
 # opened its local content pipe for reading.
 case "$playback_filename" in
     "${PLAYBACK_RUNTIME_ROOT}"*)
-        check_playback_pipe_or_repair \
+        camilla_guard_check_playback_pipe_or_repair \
             "$playback_filename" playback_pipe_absent playback_pipe_no_reader \
-            playback_pipe_healthy playback_pipe_exists_probe_unavailable
+            playback_pipe_healthy playback_pipe_exists_probe_unavailable \
+            "$config_path" \
+            "camilla starts on runtime-contract-safe graph; next reconcile re-applies the live lane when its pipe is healthy"
         ;;
 esac
 

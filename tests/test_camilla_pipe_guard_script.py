@@ -4,11 +4,11 @@
 
 """Tests for deploy/bin/jasper-camilla-pipe-guard.
 
-The ExecStartPre chain-breaker for the bonded reboot loop
+The ExecStartPre chain-breaker for the bonded recovery loop
 (docs/HANDOFF-multiroom.md §2): camilladsp 4.1.3 exits CLEAN on a dead
 File sink (measured on jts3, 2026-06-11), which jasper-camilla's
-Restart=always + StartLimitAction=reboot would turn into a Pi reboot
-loop. The guard repairs the statefile to the base config BEFORE camilla
+Restart=always would otherwise drive into its bounded start-limit recovery
+path. The guard repairs the statefile to the base config BEFORE camilla
 launches when the bonded pipe is dead.
 
 Pure-bash policy script, tested via subprocess.run with env-overridden
@@ -236,7 +236,7 @@ def test_solo_alsa_capture_is_never_touched(tmp_path):
 
 def test_pipe_config_with_dead_fifo_repairs_to_base(tmp_path):
     """THE chain-breaker: bonded config + absent FIFO would clean-exit-loop
-    camilla into StartLimitAction=reboot. The guard repairs first."""
+    Camilla into its bounded start-limit recovery path. The guard repairs first."""
     fifo = tmp_path / SNAPFIFO_NAME  # never created
     cfg = _pipe_config(tmp_path, fifo)
     base = tmp_path / "base.yml"
