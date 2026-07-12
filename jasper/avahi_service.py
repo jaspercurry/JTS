@@ -25,9 +25,11 @@ callers route through ``render_service`` and the shared ``reload_avahi``.
 callers run on hot paths (/speaker save, /rooms peering save, deploy/install.sh)
 that must not break because mDNS could not be re-rendered. Every handled
 failure — missing/unreadable template, a stray ``__FOO__`` placeholder,
-a write failure — logs and returns ``False``; the backstop is the next
-daemon restart re-rendering the file. The render is idempotent (a
-byte-stable render skips the write+reload, so a long-lived advert like
+a write failure — logs and returns ``RenderResult.FAILED``. Retry belongs to
+each caller; for the control advert, the retry opportunities are a later
+/speaker apply or deploy/install render, not a jasper-control restart. The
+render is idempotent (a byte-stable render skips the write+reload, so a
+long-lived advert like
 ``_jasper-control._tcp`` never tears down and re-adds its service-group)
 and atomic (tmp + ``os.chmod(0o644)`` + ``os.replace``).
 
@@ -51,10 +53,11 @@ markers, e.g. ``{"__SPEAKER_NAME__": name}``.
 the bool couldn't carry is WROTE-vs-UNCHANGED: a caller that wants to
 log / reload only on an actual on-disk change can read it directly off
 the result instead of bracketing the call with two reads of the output
-file to diff before/after. The reload is internal and already fires only
-on a write — ``render_service`` is the single owner of "did the bytes
+file to diff before/after. The explicit reload is internal and attempted only
+after a write — ``render_service`` is the single owner of "did the bytes
 change."
 """
+
 from __future__ import annotations
 
 import enum
@@ -84,7 +87,8 @@ class RenderResult(enum.Enum):
     three states make that distinction first-class:
 
       - ``WROTE``     — the rendered bytes differed from disk; the file
-                        was atomic-written (and reloaded if ``reload``).
+                        was atomic-written (and a reload was attempted if
+                        ``reload``).
       - ``UNCHANGED`` — the render matched disk byte-for-byte; nothing was
                         written and nothing reloaded (the idempotent path).
       - ``FAILED``    — a handled failure (missing/unreadable template,
@@ -123,7 +127,9 @@ def render_service(
     Returns a :class:`RenderResult`:
 
       - ``WROTE``     — the file was atomic-written (bytes changed); a
-                        reload fired when ``reload`` is True.
+                        reload was attempted when ``reload`` is True. A
+                        best-effort reload exception does not undo the
+                        publication or change this result.
       - ``UNCHANGED`` — the render matched disk, so nothing was written
                         and nothing reloaded (the idempotent path — a
                         long-lived advert never tears down + re-adds its
@@ -132,10 +138,11 @@ def render_service(
                         stray placeholder, write failure); nothing
                         written, nothing reloaded.
 
-    NEVER raises — callers degrade gracefully; the backstop is the next
-    daemon restart re-rendering. The reload fires ONLY on ``WROTE``, so a
-    caller can drive its own reload off the result without re-reading the
-    output file to detect whether a write happened.
+    NEVER raises — callers degrade gracefully and own their retry policy. For
+    the control advert, a later /speaker apply or deploy/install render retries
+    a failure; jasper-control startup does not render it. Reload is attempted
+    ONLY on ``WROTE``, so a caller can drive its own reload off the result
+    without re-reading the output file to detect whether a write happened.
     """
     try:
         text = Path(template_path).read_text()
@@ -222,8 +229,10 @@ def reload_avahi() -> None:
     try:
         subprocess.run(
             ["systemctl", "reload", "avahi-daemon"],
-            check=False, timeout=4,
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            check=False,
+            timeout=4,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
     except (OSError, subprocess.SubprocessError) as e:
         log_event(

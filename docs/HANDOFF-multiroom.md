@@ -1892,12 +1892,17 @@ resolving):
   or `>` would otherwise make Avahi reject the whole `<service-group>` and
   drop `_jasper-control._tcp`, breaking the dial. A hostile-name test
   asserts the rendered file is still valid XML and round-trips.
-- **Fail-soft, never raises** — a missing template, unreadable name, or
-  failed Avahi reload logs `event=control_advert.*` and returns; the
-  `/speaker` save and `install.sh` never break on a render failure
-  (backstop: the next `jasper-control` restart re-renders). An unset/empty
-  name falls back to the hostname so the TXT is never empty and the
-  service always advertises.
+- **Fail-soft, never raises** — a missing/unreadable template, stray
+  placeholder, or write failure logs `event=avahi_service.*` and returns
+  `RenderResult.FAILED`; `_apply_name` then emits
+  `event=speaker_name.avahi result=soft_fail`. A reload invocation exception
+  happens after the new file is published, logs
+  `event=avahi_service.reload_failed` at DEBUG, and does not turn the render
+  into a failure (Avahi also watches the directory through inotify). The
+  `/speaker` save and `install.sh` therefore never break on an advert failure;
+  a later `/speaker` apply or deploy retries a failed render. An unset/empty
+  name falls back to the hostname so the TXT is never empty and the service
+  always advertises.
 
 ### Known scaling boundaries & future extraction points
 
