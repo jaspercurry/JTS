@@ -11,8 +11,9 @@
 #   bash scripts/tail-pi-logs.sh jasper-voice  # tail one unit
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
-PI_USER="${PI_USER:-pi}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
 
 if [[ $# -gt 0 ]]; then
     # Operator passed explicit unit names — tail just those.

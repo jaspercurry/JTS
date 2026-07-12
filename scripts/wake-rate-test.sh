@@ -48,8 +48,10 @@
 
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
-PI_USER="${PI_USER:-pi}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
+
 TEST_NUM="${1:-1}"
 SESSION="${SESSION:-$(date -u +%Y-%m-%d)}"
 DURATION="${DURATION:-120}"
@@ -67,7 +69,6 @@ case "$TEST_NUM" in
     *) TEST_LABEL="test-${TEST_NUM}" ;;
 esac
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="$REPO_ROOT/logs/wake-rate/${SESSION}"
 mkdir -p "$LOG_DIR"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
