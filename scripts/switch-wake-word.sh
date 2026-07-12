@@ -22,13 +22,15 @@
 # jasper/wake_models.py and re-deploy. install.sh fetches non-bundled
 # `download_url`s into /var/lib/jasper/wake/ on the next install.
 #
-# Defaults: PI_HOST falls back to JASPER_HOSTNAME, then to jts.local.
-# PI_USER=pi. Override either via env.
+# Defaults: PI_HOST/PI_USER come from .env.local when present, then
+# PI_HOST falls back to JASPER_HOSTNAME and jts.local.
 
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
-PI_USER="${PI_USER:-pi}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
+
 SSH="ssh -o ConnectTimeout=5 ${PI_USER}@${PI_HOST}"
 
 KEY="${1:-}"
