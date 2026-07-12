@@ -467,18 +467,6 @@ def is_jts_generated_config(
     )
 
 
-def validate_camilla_config(path: str | Path) -> bool:
-    """Compatibility wrapper for older callers.
-
-    New apply paths use :mod:`jasper.dsp_apply` directly so they can
-    distinguish invalid configs from validator runner failures.
-    """
-
-    from jasper.dsp_apply import validate_camilla_config as _validate
-
-    return _validate(path).ok_to_apply
-
-
 def extract_room_peqs_from_config_text(text: str) -> list[PeqFilter]:
     """Extract generated room-correction PEQs from a CamillaDSP YAML.
 
