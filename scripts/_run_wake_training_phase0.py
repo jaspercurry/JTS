@@ -29,7 +29,14 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
+
+try:
+    from _wake_pipeline_common import is_safe_wake_pipeline_output
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_pipeline_common":
+        raise
+    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
 
 
 SCHEMA_VERSION = 1
@@ -93,28 +100,24 @@ def _run_command(command: list[str], cwd: Path) -> CommandResult:
 
 
 def _safe_to_remove_output(path: Path) -> bool:
-    resolved = path.expanduser().resolve()
-    blocked = {
-        Path("/").resolve(),
-        Path.home().resolve(),
-        Path.cwd().resolve(),
-        _repo_root().resolve(),
-    }
-    if resolved in blocked:
-        return False
-    root = (Path.cwd() / DEFAULT_OUTPUT_ROOT).resolve()
-    return resolved == root or root in resolved.parents or _looks_like_phase0_output(resolved)
+    return is_safe_wake_pipeline_output(
+        path,
+        owned_root=Path.cwd() / DEFAULT_OUTPUT_ROOT,
+        protected_paths=(_repo_root(),),
+        marker_name="phase0_run.json",
+        marker_matches=_looks_like_phase0_output,
+    )
 
 
-def _looks_like_phase0_output(path: Path) -> bool:
-    marker = path / "phase0_run.json"
-    if not marker.is_file():
-        return False
-    try:
-        data = _read_json(marker)
-    except (OSError, json.JSONDecodeError, ValueError):
-        return False
-    return data.get("schema_version") == SCHEMA_VERSION and data.get("tool") == "run-wake-training-phase0"
+def _looks_like_phase0_output(data: Mapping[str, Any]) -> bool:
+    artifacts = data.get("artifacts")
+    return (
+        data.get("schema_version") == SCHEMA_VERSION
+        and data.get("tool") == "run-wake-training-phase0"
+        and isinstance(artifacts, dict)
+        and artifacts.get("phase0_run") == "phase0_run.json"
+        and artifacts.get("command_log") == "command_log.jsonl"
+    )
 
 
 def _non_empty(path: Path) -> bool:
@@ -265,13 +268,13 @@ def _feature_file(summary_path: Path, split: str) -> Path:
 def _run_phase0(args: argparse.Namespace, *, runner: CommandRunner = _run_command) -> dict[str, Any]:
     repo = _repo_root()
     output_dir = (Path(args.output_dir) if args.output_dir else _default_output_dir()).expanduser()
-    output_dir = output_dir.resolve()
     if _non_empty(output_dir):
         if not args.force:
             raise Phase0Error(f"output directory is not empty: {output_dir} (pass --force)")
         if not _safe_to_remove_output(output_dir):
             raise Phase0Error(f"refusing to remove unsafe output directory: {output_dir}")
         shutil.rmtree(output_dir)
+    output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     command_log = output_dir / "command_log.jsonl"
     _write_readme(

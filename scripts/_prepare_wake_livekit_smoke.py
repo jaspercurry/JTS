@@ -34,7 +34,14 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+try:
+    from _wake_pipeline_common import is_safe_wake_pipeline_output
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_pipeline_common":
+        raise
+    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
 
 try:
     import numpy as np
@@ -82,33 +89,20 @@ def _non_empty(path: Path) -> bool:
 
 
 def _safe_to_remove_output(path: Path, *, training_workdir: Path) -> bool:
-    resolved = path.expanduser().resolve()
-    training_resolved = training_workdir.expanduser().resolve()
-    blocked = {
-        Path("/").resolve(),
-        Path.home().resolve(),
-        Path.cwd().resolve(),
-        training_resolved,
-    }
-    if resolved in blocked:
-        return False
-    if training_resolved in resolved.parents:
-        rel = resolved.relative_to(training_resolved)
-        return bool(rel.parts and rel.parts[0] == "livekit-smoke")
-    return _looks_like_livekit_smoke_output(resolved)
+    return is_safe_wake_pipeline_output(
+        path,
+        owned_root=training_workdir / "livekit-smoke",
+        protected_paths=(training_workdir,),
+        marker_name="livekit_smoke.json",
+        marker_matches=_looks_like_livekit_smoke_output,
+    )
 
 
-def _looks_like_livekit_smoke_output(path: Path) -> bool:
-    marker = path / "livekit_smoke.json"
-    if not marker.is_file():
-        return False
-    try:
-        data = _read_json(marker)
-    except (OSError, json.JSONDecodeError, ValueError):
-        return False
+def _looks_like_livekit_smoke_output(data: Mapping[str, Any]) -> bool:
     artifacts = data.get("artifacts")
     return (
         data.get("schema_version") == SCHEMA_VERSION
+        and data.get("tool") == "prepare-wake-livekit-smoke"
         and isinstance(artifacts, dict)
         and artifacts.get("summary") == "livekit_smoke.json"
         and artifacts.get("config") == "livekit_smoke_config.yaml"

@@ -222,8 +222,79 @@ def test_force_remove_guard_allows_tool_owned_custom_output(tmp_path: Path) -> N
     (custom / "phase0_run.json").write_text(json.dumps({
         "schema_version": phase0.SCHEMA_VERSION,
         "tool": "run-wake-training-phase0",
+        "output_dir": str(custom),
+        "artifacts": {
+            "phase0_run": "phase0_run.json",
+            "command_log": "command_log.jsonl",
+        },
     }) + "\n")
 
     assert phase0._safe_to_remove_output(custom)
     assert not phase0._safe_to_remove_output(tmp_path)
     assert not phase0._safe_to_remove_output(Path.cwd())
+
+    copied = tmp_path / "copied"
+    copied.mkdir()
+    (copied / "phase0_run.json").write_bytes(
+        (custom / "phase0_run.json").read_bytes()
+    )
+    assert not phase0._safe_to_remove_output(copied)
+
+    alias = tmp_path / "alias"
+    alias.symlink_to(custom, target_is_directory=True)
+    assert not phase0._safe_to_remove_output(alias)
+    assert not phase0._safe_to_remove_output(phase0._repo_root().parent)
+
+
+def test_force_remove_guard_allows_standard_partial_retry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    owned = tmp_path / phase0.DEFAULT_OUTPUT_ROOT / "interrupted"
+
+    assert phase0._safe_to_remove_output(owned)
+    assert phase0._safe_to_remove_output(owned / "partial-step")
+
+
+def test_phase0_marker_predicate_rejects_wrong_contract() -> None:
+    valid = {
+        "schema_version": phase0.SCHEMA_VERSION,
+        "tool": "run-wake-training-phase0",
+        "artifacts": {
+            "phase0_run": "phase0_run.json",
+            "command_log": "command_log.jsonl",
+        },
+    }
+    assert phase0._looks_like_phase0_output(valid)
+    for invalid in (
+        {**valid, "schema_version": 2},
+        {**valid, "tool": "other-tool"},
+        {**valid, "artifacts": {"phase0_run": "phase0_run.json"}},
+    ):
+        assert not phase0._looks_like_phase0_output(invalid)
+
+
+def test_force_symlink_refusal_never_calls_rmtree(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "keep.txt").write_text("keep\n")
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    args = _parse([
+        str(alias),
+        "--positive-corpus-dir", str(tmp_path / "positives"),
+        "--force",
+    ])
+
+    def unexpected_rmtree(_path: Path) -> None:
+        raise AssertionError("rmtree must not run for a final symlink")
+
+    monkeypatch.setattr(phase0.shutil, "rmtree", unexpected_rmtree)
+    try:
+        phase0._run_phase0(args, runner=FakeRunner())
+    except phase0.Phase0Error as e:
+        assert "refusing to remove unsafe output directory" in str(e)
+    else:  # pragma: no cover
+        raise AssertionError("expected unsafe output refusal")
+    assert (target / "keep.txt").read_text() == "keep\n"

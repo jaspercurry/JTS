@@ -29,7 +29,14 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+try:
+    from _wake_pipeline_common import is_safe_wake_pipeline_output
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_pipeline_common":
+        raise
+    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
 
 try:
     import numpy as np
@@ -103,33 +110,20 @@ def _non_empty(path: Path) -> bool:
 
 
 def _safe_to_remove_output(path: Path, *, feature_bank_dir: Path) -> bool:
-    resolved = path.expanduser().resolve()
-    feature_bank_resolved = feature_bank_dir.expanduser().resolve()
-    blocked = {
-        Path("/").resolve(),
-        Path.home().resolve(),
-        Path.cwd().resolve(),
-        feature_bank_resolved,
-    }
-    if resolved in blocked:
-        return False
-    if feature_bank_resolved in resolved.parents:
-        rel = resolved.relative_to(feature_bank_resolved)
-        return bool(rel.parts and rel.parts[0] == "training-workdir")
-    return _looks_like_training_workdir_output(resolved)
+    return is_safe_wake_pipeline_output(
+        path,
+        owned_root=feature_bank_dir / "training-workdir",
+        protected_paths=(feature_bank_dir,),
+        marker_name="training_workdir.json",
+        marker_matches=_looks_like_training_workdir_output,
+    )
 
 
-def _looks_like_training_workdir_output(path: Path) -> bool:
-    marker = path / "training_workdir.json"
-    if not marker.is_file():
-        return False
-    try:
-        data = _read_json(marker)
-    except (OSError, json.JSONDecodeError, ValueError):
-        return False
+def _looks_like_training_workdir_output(data: Mapping[str, Any]) -> bool:
     artifacts = data.get("artifacts")
     return (
         data.get("schema_version") == SCHEMA_VERSION
+        and data.get("tool") == "prepare-wake-training-workdir"
         and isinstance(artifacts, dict)
         and artifacts.get("summary") == "training_workdir.json"
         and artifacts.get("real_positive_manifest") == "real_positive_manifest.jsonl"
