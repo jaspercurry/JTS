@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`a1fe24f0`): 2026-07-12.
+Last reconciled against `main` (`3023eac3`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 390
-- **fixed**: 274
+- **open**: 389
+- **fixed**: 275
 - **in-progress**: 0
 - **mooted**: 12
 - **deferred**: 1
@@ -183,7 +183,7 @@ Last reconciled against `main` (`a1fe24f0`): 2026-07-12.
 | DA-0242 | `deploy/assets/chat/js/views.js` :: dateValueToSince():122 / sinceToDateValue(): | should-fix | W4 | **fixed** | exact-source Node coverage for Gregorian/local-date conversions — #1400 |
 | DA-0243 | `deploy/bin/jasper-deploy-health` :: main() / REQUIRED_ACTIVE_UNITS / _status_jso | should-fix | W4 | **fixed** | profile/source-intent-aware bounded deploy health — #1404 |
 | DA-0244 | `jasper/accessories/wiim_remote_mic.py` :: _find_voice_characteristic | should-fix | W4 | **fixed** | fail-closed unique WiiM voice-report identity — #1403 |
-| DA-0245 | `jasper/active_speaker/commission_wiring.py` :: resolve_commission_inputs:70 | should-fix | W4 | **open** | — |
+| DA-0245 | `jasper/active_speaker/commission_wiring.py` :: resolve_commission_inputs:70 | should-fix | W4 | **fixed** | explicit-preset, ready-design, and blocked-fallback contract coverage — #1408 |
 | DA-0246 | `jasper/bluetooth/engine.py` :: _auto_stop_scan | should-fix | W4 | **open** | — |
 | DA-0247 | `jasper/bluetooth/scan.py` :: DeviceObserver | should-fix | W4 | **fixed** | bounded device-observer subscriptions, stale-callback guards, and battery-task cleanup — #1405 |
 | DA-0248 | `jasper/cli/aec_tune.py` :: DELAY_FILE / main | should-fix | W4 | **open** | — |
