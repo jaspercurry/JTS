@@ -26,7 +26,7 @@ import subprocess
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
@@ -1235,6 +1235,46 @@ def restart_unit(unit: str, timeout_sec: float = BRIDGE_RESTART_TIMEOUT_SEC) -> 
     _broker_restart_or_raise(unit, timeout_sec=timeout_sec)
 
 
+_BRIDGE_RESTART_ERRORS = (
+    subprocess.CalledProcessError,
+    subprocess.TimeoutExpired,
+    OSError,
+)
+
+
+def _write_env_and_restart_with_rollback(
+    *,
+    env_path: str,
+    existed: bool,
+    old_values: dict[str, str],
+    values: dict[str, str],
+    restart: Callable[[], None],
+    failure_context: str,
+) -> None:
+    """Apply recorder env and restore it if the matching restart fails."""
+    if values:
+        write_env_file(env_path, values, mode=0o644)
+    else:
+        delete_env_file(env_path)
+    try:
+        restart()
+    except _BRIDGE_RESTART_ERRORS:
+        if existed:
+            write_env_file(env_path, old_values, mode=0o644)
+        else:
+            delete_env_file(env_path)
+        try:
+            restart()
+        except _BRIDGE_RESTART_ERRORS as rollback_error:
+            logger.warning(
+                "bridge env rollback restart failed after corpus-output "
+                "%s failure: %s",
+                failure_context,
+                rollback_error,
+            )
+        raise
+
+
 def set_bridge_outputs_for_session(
     *,
     corpus_profile: str = PROFILE_STANDARD,
@@ -1298,41 +1338,22 @@ def set_bridge_outputs_for_plan(
     if values == old_values:
         return False
 
-    if values:
-        write_env_file(env_path, values, mode=0o644)
-    else:
-        delete_env_file(env_path)
     corpus_profile = str(capture_plan.data.get("corpus_profile") or PROFILE_STANDARD)
-    try:
+
+    def restart() -> None:
         if had_chip_profile or corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
             restart_unit(OUTPUTD_UNIT)
             restart_unit(AEC_INIT_UNIT)
         restart_aec_bridge()
-    except (
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        OSError,
-    ):
-        if existed:
-            write_env_file(env_path, old_values, mode=0o644)
-        else:
-            delete_env_file(env_path)
-        try:
-            if had_chip_profile or corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
-                restart_unit(OUTPUTD_UNIT)
-                restart_unit(AEC_INIT_UNIT)
-            restart_aec_bridge()
-        except (
-            subprocess.CalledProcessError,
-            subprocess.TimeoutExpired,
-            OSError,
-        ) as rollback_error:
-            logger.warning(
-                "bridge env rollback restart failed after corpus-output "
-                "configure failure: %s",
-                rollback_error,
-            )
-        raise
+
+    _write_env_and_restart_with_rollback(
+        env_path=env_path,
+        existed=existed,
+        old_values=old_values,
+        values=values,
+        restart=restart,
+        failure_context="configure",
+    )
     return True
 
 
@@ -1363,40 +1384,21 @@ def disable_bridge_corpus_outputs() -> bool:
         values.pop(key, None)
     if values == old_values:
         return False
-    if values:
-        write_env_file(env_path, values, mode=0o644)
-    else:
-        delete_env_file(env_path)
-    try:
+
+    def restart() -> None:
         if had_chip_profile:
             restart_unit(OUTPUTD_UNIT)
             restart_unit(AEC_INIT_UNIT)
         restart_aec_bridge()
-    except (
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        OSError,
-    ):
-        if existed:
-            write_env_file(env_path, old_values, mode=0o644)
-        else:
-            delete_env_file(env_path)
-        try:
-            if had_chip_profile:
-                restart_unit(OUTPUTD_UNIT)
-                restart_unit(AEC_INIT_UNIT)
-            restart_aec_bridge()
-        except (
-            subprocess.CalledProcessError,
-            subprocess.TimeoutExpired,
-            OSError,
-        ) as rollback_error:
-            logger.warning(
-                "bridge env rollback restart failed after corpus-output "
-                "disable failure: %s",
-                rollback_error,
-            )
-        raise
+
+    _write_env_and_restart_with_rollback(
+        env_path=env_path,
+        existed=existed,
+        old_values=old_values,
+        values=values,
+        restart=restart,
+        failure_context="disable",
+    )
     return True
 
 
