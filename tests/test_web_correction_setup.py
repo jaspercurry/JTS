@@ -31,6 +31,27 @@ def _render() -> str:
     ).decode("utf-8")
 
 
+def test_shared_measurement_start_blocker_prioritizes_reserved_start(
+    monkeypatch,
+):
+    class ActiveState:
+        value = "sweeping"
+
+    class ActiveSession:
+        state = ActiveState()
+
+    monkeypatch.setattr(correction_setup, "_session", ActiveSession())
+    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    assert correction_setup._correction_start_blocker() == "sweeping"
+
+    monkeypatch.setattr(correction_setup, "_start_in_progress", True)
+    assert correction_setup._correction_start_blocker() == "starting"
+
+    monkeypatch.setattr(correction_setup, "_session", None)
+    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    assert correction_setup._correction_start_blocker() is None
+
+
 def test_render_uses_canonical_shell():
     html = _render()
     assert html.startswith("<!doctype html>")

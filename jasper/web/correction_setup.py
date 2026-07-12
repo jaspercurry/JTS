@@ -419,6 +419,14 @@ def _active_state_for_session(sess: Any | None) -> str | None:
     return state if state in _ACTIVE_SESSION_STATES else None
 
 
+def _correction_start_blocker() -> str | None:
+    """Return the room-correction phase that blocks another measurement."""
+    with _session_lock:
+        if _start_in_progress:
+            return "starting"
+        return _active_state_for_session(_session)
+
+
 def active_correction_phase() -> str | None:
     """Read-only: the active room-correction session state, or None.
 
@@ -4611,11 +4619,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
             try:
                 if path == "/balance/start":
-                    with _session_lock:
-                        blocked = (
-                            "starting" if _start_in_progress
-                            else _active_state_for_session(_session)
-                        )
+                    blocked = _correction_start_blocker()
                     if blocked is not None:
                         self._send_json(
                             {"ok": False, "error": (
@@ -4665,11 +4669,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
             try:
                 if path == "/sync/start":
-                    with _session_lock:
-                        blocked = (
-                            "starting" if _start_in_progress
-                            else _active_state_for_session(_session)
-                        )
+                    blocked = _correction_start_blocker()
                     if blocked is not None:
                         self._send_json(
                             {"ok": False, "error": (
