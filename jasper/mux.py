@@ -91,6 +91,7 @@ from .source_state import (
     usbsink_direct_rms_dbfs,
     usbsink_playing,
 )
+from .spotify_oauth import default_spotify_redirect_uri
 
 logger = logging.getLogger(__name__)
 
@@ -1438,9 +1439,7 @@ class Mux:
             # build_clients returns BuildResult (clients dict + per-account
             # statuses). mux only needs the clients dict — it doesn't read
             # statuses or surface revoked-vs-needs-oauth distinctions.
-            default_redirect_uri = (
-                f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}"
-            )
+            default_redirect_uri = default_spotify_redirect_uri(hostname)
             result = build_clients(
                 registry,
                 client_id=client_id,

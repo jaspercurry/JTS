@@ -13,6 +13,7 @@ from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
 from .speaker_name import runtime_name as _speaker_runtime_name
+from .spotify_oauth import default_spotify_redirect_uri
 from .tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from .usage import (
     DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
@@ -786,9 +787,9 @@ class Config:
             spotify_redirect_uri=(
                 _env(
                     "SPOTIFY_REDIRECT_URI",
-                    f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
+                    default_spotify_redirect_uri(hostname),
                 )
-                or f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}"
+                or default_spotify_redirect_uri(hostname)
             ),
             # Legacy single-user cache. Read once at startup for the
             # one-shot migration into the new multi-account layout

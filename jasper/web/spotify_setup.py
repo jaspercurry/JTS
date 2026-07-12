@@ -32,12 +32,12 @@ host. Two supported modes side-step that:
     slightly worse UX. The wizard pre-warns the user about the
     "cannot connect" page before kicking off the flow.
 
-State CSRF protection: each /start generates a random nonce, stored in
-an in-memory pending-flows map (10-min TTL) keyed to the account name.
-The nonce is sent as Spotify's `state` parameter. On callback, the
-nonce is looked up to recover the account name; unknown or expired
-nonces are rejected. PKCE's verifier itself lives in the per-account
-spotipy cache file between /start and /oauth-callback.
+State CSRF protection: each /start generates a random nonce, stored as
+the key of an in-memory pending-flows map (10-min TTL). The map value
+holds the account name plus the PKCE verifier/challenge pair. The nonce
+is sent as Spotify's `state` parameter. On callback, it recovers that
+pending flow; unknown or expired nonces are rejected. The PKCE pair is
+process-local because Spotipy's token cache does not persist it.
 
 Three states, single index page renders the appropriate one:
   1. No CLIENT_ID → wizard prompts for ID and OAuth mode (bounce/manual).
@@ -96,6 +96,10 @@ from ..spotify_router import (
     BuildResult,
     build_clients,
 )
+from ..spotify_oauth import (
+    SPOTIFY_OAUTH_CALLBACK_BASE as _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE,
+    default_spotify_redirect_uri as _default_bounce_redirect_uri,
+)
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ..log_event import log_event
 from ._common import (
@@ -147,17 +151,8 @@ OAUTH_MODES = ("bounce", "manual")
 # `jaspercurry/spotify-oauth-callback` repo; the `?host=` query param
 # tells the page which mDNS hostname to forward back to, so a single
 # hosted page works for any speaker hostname.
-DEFAULT_BOUNCE_REDIRECT_URI_BASE = (
-    "https://jaspercurry.github.io/spotify-oauth-callback/"
-)
+DEFAULT_BOUNCE_REDIRECT_URI_BASE = _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE
 DEFAULT_MANUAL_REDIRECT_URI = "http://127.0.0.1:8888/callback"
-
-
-def _default_bounce_redirect_uri(hostname: str) -> str:
-    """Build the canonical bounce-mode redirect URI for the given
-    hostname. Forks may override the entire URL via
-    JASPER_SPOTIFY_BOUNCE_REDIRECT_URI; this is just the default."""
-    return f"{DEFAULT_BOUNCE_REDIRECT_URI_BASE}?host={hostname}"
 
 
 def _redirect_uri_for_mode(mode: str, cfg: dict[str, Any]) -> str:

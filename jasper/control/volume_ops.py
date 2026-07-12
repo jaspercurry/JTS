@@ -13,6 +13,10 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from .uds import _voice_socket_command
+from ..spotify_oauth import (
+    SPOTIFY_OAUTH_CALLBACK_BASE as _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE,
+    default_spotify_redirect_uri,
+)
 from ..volume_curve import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_CEILING_DB,
@@ -27,7 +31,8 @@ logger = logging.getLogger(__name__)
 # calibrated in /sound/; these constants are the shipped default.
 VOLUME_MIN_DB = DEFAULT_VOLUME_FLOOR_DB
 VOLUME_MAX_DB = VOLUME_CEILING_DB
-SPOTIFY_OAUTH_CALLBACK_BASE = "https://jaspercurry.github.io/spotify-oauth-callback/"
+# Compatibility re-export retained for server.py and older importers.
+SPOTIFY_OAUTH_CALLBACK_BASE = _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE
 _SPOTIFY_EMPTY_ROUTER_CACHE_TTL_SEC = 30.0
 
 
@@ -63,7 +68,7 @@ def _delta_db_to_delta_percent(delta_db: float) -> int:
 
 def _spotify_redirect_uri() -> str:
     hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
-    default_redirect_uri = f"{SPOTIFY_OAUTH_CALLBACK_BASE}?host={hostname}"
+    default_redirect_uri = default_spotify_redirect_uri(hostname)
     return os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri
 
 
