@@ -15,23 +15,20 @@ set -uo pipefail
 
 CONFIGURED_CARD="${1:-auto}"
 CONTROL="${2:-Headphone}"
-APPLE_DONGLE_REGEX="usb-c to 3.5mm"
-
-detect_apple_cards() {
-    aplay -L 2>/dev/null \
-        | grep -B1 -iE "$APPLE_DONGLE_REGEX" \
-        | grep -oE 'CARD=[^,]+' \
-        | sed 's/CARD=//' \
-        || true
-}
-
-resolve_cards() {
-    if [[ -n "$CONFIGURED_CARD" && "$CONFIGURED_CARD" != "auto" ]]; then
-        printf '%s\n' "$CONFIGURED_CARD"
-        return 0
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+APPLE_DONGLE_LIB="${JASPER_APPLE_DONGLE_LIB:-}"
+if [[ -z "$APPLE_DONGLE_LIB" ]]; then
+    if [[ -r "${SCRIPT_DIR}/../lib/jasper-apple-dongle.sh" ]]; then
+        APPLE_DONGLE_LIB="${SCRIPT_DIR}/../lib/jasper-apple-dongle.sh"
+    else
+        APPLE_DONGLE_LIB="/usr/local/lib/jasper/jasper-apple-dongle.sh"
     fi
-    detect_apple_cards
-}
+fi
+# shellcheck disable=SC1090  # runtime path is repo-sibling or installed fallback
+if [[ ! -r "$APPLE_DONGLE_LIB" ]] || ! source "$APPLE_DONGLE_LIB"; then
+    echo "event=apple_dongle.dac_init.failed reason=common_lib_unavailable" >&2
+    exit 1
+fi
 
 mapfile -t CARDS < <(resolve_cards)
 if [[ "${#CARDS[@]}" -eq 0 ]]; then
