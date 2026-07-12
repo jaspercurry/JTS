@@ -268,15 +268,18 @@ Increment 6 (per-follower calibration). What exists:
   a narrow `LogRateLimitBurst=30` per 60 s so a follower whose leader is
   powered off remains visible as degraded without filling the persistent
   journal with one refused-connection line per second.
-- **Reconciler `reset-failed`s before every deliberate restart
-  (config-apply ≠ crash).** `_restart_unit` runs `systemctl reset-failed
-  <unit>` before each restart it issues (outputd / `jasper-aec-reconcile`
-  kick / shairport / snap units), so a rapid burst of `/grouping/set` applies — e.g.
+- **Reconciler `reset-failed`s before deliberate recovery starts and config
+  restarts (control-plane action ≠ crash).** `_restart_unit` runs
+  `systemctl reset-failed <unit>` before each restart it issues (outputd /
+  `jasper-aec-reconcile` kick / shairport), and `_ensure_unit_active` does the
+  same before an active-leader recovery start. These best-effort resets prevent
+  a rapid burst of `/grouping/set` applies from inheriting prior
+  failed/start-limit parking when the reset succeeds — e.g.
   an active-crossover calibration/trim/delay sweep on the leader re-fanned to a
-  follower — can never spend a reboot-budget unit's `StartLimitBurst` and
-  escalate to `StartLimitAction=reboot`. Genuine crash loops still escalate (the
-  daemon's own `Restart=` path does not `reset-failed`, so only deliberate
-  reconciler restarts are exempted). Generalizes the outputd-only guard and
+  follower — instead of immediately escalating a reboot-budget unit through
+  `StartLimitAction=reboot`. Genuine crash loops still escalate (the
+  daemon's own `Restart=` path does not `reset-failed`, so only these deliberate
+  reconciler actions are exempted). Generalizes the outputd-only guard and
   mirrors `grouping_supervisor.kick_reconciler` +
   `shairport_supervisor.restart_shairport`. Cross-owner kicks are queued:
   grouping writes `grouping-voice.env`, then restarts
