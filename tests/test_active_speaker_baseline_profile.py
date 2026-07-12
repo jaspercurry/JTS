@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2912,3 +2913,256 @@ def test_corrections_provenance_present_on_candidate_and_applied_payload(
     # The recomposition_snapshot (the frozen "applied" projection once this
     # candidate is later applied) carries the same block.
     assert payload["recomposition_snapshot"]["corrections_provenance"] == provenance
+
+
+# --- lifecycle events (lane E, docs/active-crossover-information-design.md
+# "Structured events") -------------------------------------------------------
+
+_BASELINE_LOGGER = "jasper.active_speaker.baseline_profile"
+
+
+def _events(caplog, name: str) -> list[str]:
+    return [
+        r.getMessage() for r in caplog.records
+        if r.getMessage().startswith(f"event={name}")
+    ]
+
+
+async def test_apply_baseline_profile_emits_started_before_dsp_apply(
+    monkeypatch,
+    tmp_path: Path,
+    caplog,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    prior = tmp_path / "prior.yml"
+    prior.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    current_path = str(prior)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+    started_before_load: list[bool] = []
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        # apply_started must already be in the log by the time load_config
+        # (called from inside apply_dsp_config) runs.
+        started_before_load.append(
+            any(
+                r.getMessage().startswith("event=correction.crossover_apply_started")
+                for r in caplog.records
+            )
+        )
+        current_path = path
+        return True
+
+    async def current_config_path() -> str:
+        return current_path
+
+    with caplog.at_level(logging.INFO, logger=_BASELINE_LOGGER):
+        payload = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            load_config=load_config,
+            get_current_config_path=current_config_path,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+        )
+
+    assert payload["status"] == "applied"
+    assert started_before_load == [True]
+    started = _events(caplog, "correction.crossover_apply_started")
+    assert len(started) == 1
+    assert "baseline_id=baseline-bench_mono" in started[0]
+    assert "tuning_owner=manual" in started[0]
+    assert "topology_id=bench_mono" in started[0]
+    assert f"config_path={tmp_path}/active_speaker_baseline.yml" in started[0]
+
+
+async def test_apply_baseline_profile_success_emits_succeeded_with_fingerprints(
+    monkeypatch,
+    tmp_path: Path,
+    caplog,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    prior = tmp_path / "prior.yml"
+    prior.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    current_path = str(prior)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str:
+        return current_path
+
+    with caplog.at_level(logging.INFO, logger=_BASELINE_LOGGER):
+        payload = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            load_config=load_config,
+            get_current_config_path=current_config_path,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+        )
+
+    assert payload["status"] == "applied"
+    fingerprint = payload["profile"]["source"]["fingerprint"]
+    succeeded = _events(caplog, "correction.crossover_apply_succeeded")
+    assert len(succeeded) == 1
+    message = succeeded[0]
+    assert f"candidate_fingerprint={fingerprint}" in message
+    assert f"applied_fingerprint={fingerprint}" in message
+    assert f"applied_at={payload['profile']['applied_at']}" in message
+    # Exactly one succeeded event, no rolled_back event alongside it.
+    assert _events(caplog, "correction.crossover_apply_rolled_back") == []
+
+
+async def test_apply_baseline_profile_dsp_error_emits_exactly_one_rolled_back_event(
+    monkeypatch,
+    tmp_path: Path,
+    caplog,
+) -> None:
+    # Spec-promise guard: a failed apply emits exactly one typed rolled_back
+    # event, never a silent failure (docs/active-crossover-information-design.md
+    # "Structured events" pins apply_rolled_back as THE failure event name).
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+
+    async def load_config(path: str) -> bool:
+        # CamillaDSP rejects the candidate -> apply_dsp_config raises
+        # DspApplyError with rollback_attempted False (no prior config path
+        # was ever established in this fixture).
+        return False
+
+    with caplog.at_level(logging.INFO, logger=_BASELINE_LOGGER):
+        payload = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            load_config=load_config,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+        )
+
+    assert payload["status"] == "apply_failed"
+    rolled_back = _events(caplog, "correction.crossover_apply_rolled_back")
+    assert len(rolled_back) == 1
+    message = rolled_back[0]
+    assert "reason=" in message
+    # Faithful to exc.state, not hardcoded: no prior config path was ever
+    # established in this fixture (no get_current_config_path passed), so
+    # _rollback's early-out leaves rollback_attempted False and the other two
+    # rollback_* fields at their DspApplyState defaults (None -> "null").
+    assert "rollback_attempted=false" in message
+    assert "rollback_succeeded=null" in message
+    assert "rollback_error=null" in message
+    assert _events(caplog, "correction.crossover_apply_succeeded") == []
+    # There is no separate "apply_failed" event name -- rolled_back is it.
+    assert not any(
+        "correction.crossover_apply_failed" in r.getMessage() for r in caplog.records
+    )
+
+
+async def test_apply_baseline_profile_dsp_error_reports_real_rollback_attempt(
+    monkeypatch,
+    tmp_path: Path,
+    caplog,
+) -> None:
+    # Complements the previous test: with a prior config path known,
+    # apply_dsp_config actually attempts (and here succeeds at) a rollback on
+    # load failure. Proves rollback_attempted/rollback_succeeded reflect a
+    # real attempt from exc.state rather than always reading False/None.
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+    prior = tmp_path / "prior.yml"
+    prior.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    calls: list[str] = []
+
+    async def load_config(path: str) -> bool:
+        calls.append(path)
+        # The candidate load is rejected; the rollback load (to the prior
+        # config) succeeds.
+        return path == str(prior)
+
+    async def get_current_config_path() -> str:
+        return str(prior)
+
+    with caplog.at_level(logging.INFO, logger=_BASELINE_LOGGER):
+        payload = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            load_config=load_config,
+            get_current_config_path=get_current_config_path,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+        )
+
+    assert payload["status"] == "apply_failed"
+    assert calls == [str(tmp_path / "active_speaker_baseline.yml"), str(prior)]
+    rolled_back = _events(caplog, "correction.crossover_apply_rolled_back")
+    assert len(rolled_back) == 1
+    message = rolled_back[0]
+    assert "rollback_attempted=true" in message
+    assert "rollback_succeeded=true" in message
+    assert "rollback_error=null" in message
+
+
+async def test_apply_baseline_profile_blocked_emits_no_apply_events(
+    tmp_path: Path, caplog,
+) -> None:
+    # may_apply is False before the DSP transaction even starts (insufficient
+    # evidence) -- no apply_started/succeeded/rolled_back should fire.
+    topology = _topology()
+
+    with caplog.at_level(logging.INFO, logger=_BASELINE_LOGGER):
+        payload = await apply_baseline_profile(
+            topology,
+            design_draft={},
+            crossover_preview={},
+            measurements={},
+            load_config=lambda *a, **k: pytest.fail("load_config must not run"),
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+        )
+
+    assert payload["status"] == "blocked"
+    assert not any(
+        r.getMessage().startswith("event=correction.crossover_apply_")
+        for r in caplog.records
+    )

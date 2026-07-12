@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -36,6 +37,7 @@ from jasper.dsp_apply import (
     apply_dsp_config,
     validate_camilla_config,
 )
+from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
 from ._common import issue as _issue
@@ -63,6 +65,8 @@ from .staging import (
     compile_preset_from_crossover_preview,
     topology_is_passive_mains_with_sub,
 )
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
@@ -1899,6 +1903,16 @@ async def apply_baseline_profile(
             ],
         }
 
+    graph_fingerprint = (candidate.get("source") or {}).get("fingerprint")
+    log_event(
+        logger,
+        "correction.crossover_apply_started",
+        config_path=str((candidate.get("config") or {}).get("path") or ""),
+        baseline_id=candidate.get("baseline_id"),
+        tuning_owner=tuning_owner,
+        topology_id=topology.topology_id,
+        graph_fingerprint=graph_fingerprint,
+    )
     try:
         apply_state = await apply_dsp_config(
             source="active_speaker_baseline_apply",
@@ -1927,6 +1941,21 @@ async def apply_baseline_profile(
             json.dumps(failed, indent=2, sort_keys=True) + "\n",
             mode=0o640,
             group_from_parent=True,
+        )
+        # Spec-pinned failure event name: apply_rolled_back covers every
+        # DspApplyError, whether or not the underlying rollback itself
+        # succeeded -- see docs/active-crossover-information-design.md
+        # "Structured events" (there is no separate apply_failed event).
+        log_event(
+            logger,
+            "correction.crossover_apply_rolled_back",
+            baseline_id=candidate.get("baseline_id"),
+            topology_id=topology.topology_id,
+            graph_fingerprint=graph_fingerprint,
+            reason=str(exc),
+            rollback_attempted=exc.state.rollback_attempted,
+            rollback_succeeded=exc.state.rollback_succeeded,
+            rollback_error=exc.state.rollback_error,
         )
         await _record_apply_outcome_into_bundle(
             measurements,
@@ -1963,6 +1992,25 @@ async def apply_baseline_profile(
         json.dumps(applied, indent=2, sort_keys=True) + "\n",
         mode=0o640,
         group_from_parent=True,
+    )
+    log_event(
+        logger,
+        "correction.crossover_apply_succeeded",
+        baseline_id=candidate.get("baseline_id"),
+        topology_id=topology.topology_id,
+        tuning_owner=tuning_owner,
+        graph_fingerprint=graph_fingerprint,
+        # Nothing in this apply mutates `source`, so the candidate and the
+        # now-applied graph share one fingerprint value today -- see the
+        # comment on _source_payload for why that field is the "did the
+        # inputs change" identity. Two field names are kept (matching the
+        # documented graph_fingerprint/candidate_fingerprint/
+        # applied_fingerprint vocabulary) so a future apply step that DOES
+        # diverge the applied graph from the candidate has somewhere to put
+        # the different value without renaming anything here.
+        candidate_fingerprint=graph_fingerprint,
+        applied_fingerprint=graph_fingerprint,
+        applied_at=applied["applied_at"],
     )
     await _record_apply_outcome_into_bundle(
         measurements,
