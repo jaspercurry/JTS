@@ -2,17 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Active-driver adapter for the shared timing-locked null walk."""
+"""Active-driver adapter for the shared timing-locked null walk.
+
+The adapter declares the active-crossover lifecycle scope; the shared runner
+owns event names and rejects unknown scopes before DSP mutation.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 from jasper.audio_measurement.null_walk import (
+    DelayWalkScope,
     MAX_STEP_US,
     NullWalkSpec,
     geometry_seed_us,
 )
+
+DRIVER_DELAY_WALK_SCOPE: DelayWalkScope = "active_crossover"
 
 
 def driver_delay_walk_spec(

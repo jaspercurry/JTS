@@ -106,13 +106,37 @@ The product is three tiers:
   gated, above-floor, alignment-SNR-qualified, and with <2 dB null spread. Its
   public capture input has no impulse-arrival field. The injected runner rejects
   explicit apply/restore failure and reports a walk failure together with a
-  restore failure; subsystem adapters still own the actual DSP mutation and
-  capture transport. The exhaustive runner preflights and refuses above 25
+  restore failure. Before its first candidate mutation, the runner requires a
+  host-owned `DspPredecessor` carrying the exact entry-state payload; it freezes
+  the unambiguous JSON data model at the transaction boundary, derives its
+  canonical SHA-256 fingerprint, and passes a fresh copy of that snapshot to the
+  subsystem restore adapter. Restore must read back the active DSP state and
+  build `DspRestoreConfirmation` from that observation; the runner compares its
+  fingerprint with the predecessor. Restore runs in a dedicated task shielded
+  from repeated caller cancellation with a 15-second cancellation deadline by
+  default (30-second configured maximum); wall completion also includes the
+  host adapter's own bounded cancellation drain. Candidate DSP mutation is
+  likewise shielded and settled before restoration starts, so a cancelled
+  offloaded worker cannot finish after rollback and put the candidate back
+  live. Host adapters must
+  bound and cancellation-drain their mutation I/O (the shared Camilla controller
+  does), and orchestration must exclude concurrent DSP writers for the whole
+  walk. Cancellation is propagated only after restoration terminates; if
+  restore also fails, the runner preserves the entry failure, a cancellation
+  observed during cleanup, and the restore failure in causal order in a
+  `BaseExceptionGroup`. Timeout, refusal, or a mismatched read-back fails loudly.
+  Lifecycle evidence uses the generic `correction.delay_walk_*` event family
+  with one required closed scope declared by each adapter:
+  `active_crossover` or `bass_management`. Failure events expose only the closed
+  `failure_code` vocabulary (`timeout`, `readback_mismatch`,
+  `invalid_confirmation`, `self_cancelled`, or `other`); arbitrary exception
+  text and the snapshot payload never enter the journal. Subsystem adapters
+  still own the actual DSP mutation, exact restore, read-back, writer exclusion,
+  and capture transport. The exhaustive runner preflights and refuses above 25
   candidates or beyond CamillaDSP's 20 ms delay ceiling before touching DSP.
-  Production
-  CamillaDSP/web/persistence wiring is not shipped yet, and low-frequency bass
-  walks require a separately reviewed adaptive scheduler before they are
-  executable.
+  Production CamillaDSP/web/persistence wiring is not shipped yet, and
+  low-frequency bass walks require a separately reviewed adaptive scheduler
+  before they are executable.
 - The relay level target is reusable state, not a long-lived live gain. A
   successful ramp restores the original listening volume immediately. Room,
   verification, and active-crossover adapters reassert the target only inside

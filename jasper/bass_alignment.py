@@ -2,17 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bass-timing adapter for the shared timing-locked null walk."""
+"""Bass-timing adapter for the shared timing-locked null walk.
+
+The adapter declares the bass-management lifecycle scope; the shared runner
+owns event names and rejects unknown scopes before DSP mutation.
+"""
 
 from __future__ import annotations
 
 from jasper.audio_measurement.null_walk import (
+    DelayWalkScope,
     MAX_STEP_US,
     NullWalkError,
     NullWalkSpec,
     geometry_seed_us,
 )
 from jasper.bass_management import active_crossover_corner_hz
+
+SUB_MAINS_DELAY_WALK_SCOPE: DelayWalkScope = "bass_management"
 
 
 def sub_mains_delay_walk_spec(
