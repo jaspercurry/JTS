@@ -17,6 +17,7 @@ RecordingTask is constructed.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 import asyncio
 import json
 import logging
@@ -1430,18 +1431,21 @@ def test_clip_row_audio_cell_does_not_block_trash_button() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _serve_in_thread(backend):
-    """Spin up the recorder HTTP server on a random port in a daemon
-    thread; return (server, thread, port)."""
+@pytest.fixture
+def running_server_port(backend) -> Iterator[int]:
+    """Run one recorder HTTP server and own its complete lifecycle."""
     server = wake_corpus_setup.make_server(
         ("127.0.0.1", 0),
         csrf_token="test-token",
         backend=backend,
     )
     port = server.server_address[1]
-    th = threading.Thread(target=server.serve_forever, daemon=True)
-    th.start()
-    return server, th, port
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield port
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
 
 
 def _use_tmp_bridge_env(
@@ -1465,78 +1469,61 @@ def _use_tmp_bridge_env(
     return system_path, bridge_path
 
 
-def test_level_sse_returns_event_stream_headers(backend) -> None:
+def test_level_sse_returns_event_stream_headers(backend, running_server_port: int) -> None:
     """GET /api/recording/level must return 200 + correct SSE headers
     (Content-Type, no-cache, X-Accel-Buffering: no for nginx). We
     don't read the body — just confirm the headers, then close."""
     import http.client
 
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request("GET", "/api/recording/level")
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request("GET", "/api/recording/level")
-        resp = conn.getresponse()
-        try:
-            assert resp.status == 200
-            assert resp.getheader("Content-Type") == "text/event-stream"
-            assert resp.getheader("X-Accel-Buffering") == "no"
-            # Don't drain the stream — it's open-ended. Closing the
-            # connection cleanly exits the handler.
-        finally:
-            conn.close()
+        assert resp.status == 200
+        assert resp.getheader("Content-Type") == "text/event-stream"
+        assert resp.getheader("X-Accel-Buffering") == "no"
+        # Don't drain the stream — it's open-ended. Closing the
+        # connection cleanly exits the handler.
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_level_sse_streams_idle_payload_when_not_recording(
     backend,
+    running_server_port: int,
 ) -> None:
     """When no recording is in flight, the stream emits frames with
     recording=false + rms_dbfs=null. Read one frame then disconnect."""
     import http.client
 
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request("GET", "/api/recording/level")
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request("GET", "/api/recording/level")
-        resp = conn.getresponse()
-        try:
-            # SSE frames are 'data: <json>\n\n' — read up to the first
-            # blank line.
-            line = resp.fp.readline().decode()
-            assert line.startswith("data: "), f"unexpected: {line!r}"
-            payload = json.loads(line[len("data: "):].strip())
-            assert payload == {"recording": False, "rms_dbfs": None}
-        finally:
-            conn.close()
+        # SSE frames are 'data: <json>\n\n' — read up to the first
+        # blank line.
+        line = resp.fp.readline().decode()
+        assert line.startswith("data: "), f"unexpected: {line!r}"
+        payload = json.loads(line[len("data: "):].strip())
+        assert payload == {"recording": False, "rms_dbfs": None}
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
-def test_level_sse_does_not_require_csrf(backend) -> None:
+def test_level_sse_does_not_require_csrf(backend, running_server_port: int) -> None:
     """The SSE endpoint is read-only — like /api/status — and must
     NOT 403 when the X-CSRF-Token header is absent. (Browsers can't
     send custom headers on EventSource connections anyway.)"""
     import http.client
 
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    # No X-CSRF-Token header — must still get 200
+    conn.request("GET", "/api/recording/level")
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        # No X-CSRF-Token header — must still get 200
-        conn.request("GET", "/api/recording/level")
-        resp = conn.getresponse()
-        try:
-            assert resp.status == 200
-        finally:
-            conn.close()
+        assert resp.status == 200
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1547,33 +1534,27 @@ def test_level_sse_does_not_require_csrf(backend) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _mutating_status(backend, method: str, path: str, token: str = "") -> int:
-    """Issue one POST/DELETE against a live server; return the status."""
+def _mutating_status(port: int, method: str, path: str, token: str = "") -> int:
+    """Issue one POST/DELETE against the fixture-owned live server."""
     import http.client
 
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+    headers = {"Content-Length": "0"}
+    if token:
+        headers["X-CSRF-Token"] = token
+    conn.request(method, path, b"", headers)
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        headers = {"Content-Length": "0"}
-        if token:
-            headers["X-CSRF-Token"] = token
-        conn.request(method, path, b"", headers)
-        try:
-            return conn.getresponse().status
-        finally:
-            conn.close()
+        return conn.getresponse().status
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
-def test_post_unknown_path_404s_without_revealing_csrf_state(backend) -> None:
-    assert _mutating_status(backend, "POST", "/api/nope") == 404
+def test_post_unknown_path_404s_without_revealing_csrf_state(running_server_port: int) -> None:
+    assert _mutating_status(running_server_port, "POST", "/api/nope") == 404
 
 
-def test_post_known_path_without_token_403s(backend) -> None:
-    assert _mutating_status(backend, "POST", "/api/session") == 403
+def test_post_known_path_without_token_403s(running_server_port: int) -> None:
+    assert _mutating_status(running_server_port, "POST", "/api/session") == 403
 
 
 class _TrackingReader(BytesIO):
@@ -1673,12 +1654,12 @@ def test_post_request_body_oserror_remains_distinct_from_client_json_errors(
     assert captured["status"] is None
 
 
-def test_delete_unknown_path_404s_without_revealing_csrf_state(backend) -> None:
-    assert _mutating_status(backend, "DELETE", "/api/nope") == 404
+def test_delete_unknown_path_404s_without_revealing_csrf_state(running_server_port: int) -> None:
+    assert _mutating_status(running_server_port, "DELETE", "/api/nope") == 404
 
 
-def test_delete_known_route_shape_without_token_403s(backend) -> None:
-    assert _mutating_status(backend, "DELETE", "/api/clip/some-id") == 403
+def test_delete_known_route_shape_without_token_403s(running_server_port: int) -> None:
+    assert _mutating_status(running_server_port, "DELETE", "/api/clip/some-id") == 403
 
 
 # ---------------------------------------------------------------------------
@@ -3807,31 +3788,25 @@ def test_html_js_calls_sessions_endpoints() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_api_sessions_returns_empty_list(backend) -> None:
+def test_api_sessions_returns_empty_list(backend, running_server_port: int) -> None:
     import http.client
 
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request("GET", "/api/sessions")
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request("GET", "/api/sessions")
-        resp = conn.getresponse()
-        try:
-            assert resp.status == 200
-            raw_body = resp.read()
-            assert resp.getheader("Content-Type") == "application/json"
-            assert resp.getheader("Content-Length") == str(len(raw_body))
-            assert resp.getheader("Cache-Control") == "no-store"
-            assert raw_body == b'{"sessions": []}'
-            assert json.loads(raw_body) == {"sessions": []}
-        finally:
-            conn.close()
+        assert resp.status == 200
+        raw_body = resp.read()
+        assert resp.getheader("Content-Type") == "application/json"
+        assert resp.getheader("Content-Length") == str(len(raw_body))
+        assert resp.getheader("Cache-Control") == "no-store"
+        assert raw_body == b'{"sessions": []}'
+        assert json.loads(raw_body) == {"sessions": []}
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
-def test_api_session_load_round_trip(backend) -> None:
+def test_api_session_load_round_trip(backend, running_server_port: int) -> None:
     """POST /api/session/load with a valid session_id switches the
     active session. Use the same backend's begin_session to create
     the target so we don't need a separate disk fixture."""
@@ -3844,65 +3819,53 @@ def test_api_session_load_round_trip(backend) -> None:
     backend.stop_recording()
     backend.begin_session("brittany")  # second session, now active
 
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/session/load",
+        json.dumps({"session_id": first_id}),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/session/load",
-            json.dumps({"session_id": first_id}),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            assert resp.status == 200
-            body = json.loads(resp.read())
-            assert body["session_id"] == first_id
-            assert body["include_raw_mic_0"] is True
-        finally:
-            conn.close()
-        # Backend's active session swapped
-        assert backend.session_id() == first_id
-        marker = (
-            backend._output_dir  # noqa: SLF001
-            / "metadata"
-            / wake_corpus_setup.ACTIVE_SESSION_MARKER
-        )
-        assert json.loads(marker.read_text())["session_id"] == first_id
+        assert resp.status == 200
+        body = json.loads(resp.read())
+        assert body["session_id"] == first_id
+        assert body["include_raw_mic_0"] is True
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
+    # Backend's active session swapped
+    assert backend.session_id() == first_id
+    marker = (
+        backend._output_dir  # noqa: SLF001
+        / "metadata"
+        / wake_corpus_setup.ACTIVE_SESSION_MARKER
+    )
+    assert json.loads(marker.read_text())["session_id"] == first_id
 
 
-def test_api_session_unload_round_trip(backend) -> None:
+def test_api_session_unload_round_trip(backend, running_server_port: int) -> None:
     import http.client
 
     backend.begin_session("jasper")
     sid = backend.session_id()
 
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/session/unload",
+        json.dumps({}),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/session/unload",
-            json.dumps({}),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            assert resp.status == 200
-            body = json.loads(resp.read())
-            assert body["unloaded_session"] == sid
-        finally:
-            conn.close()
-        assert backend.session_id() is None
+        assert resp.status == 200
+        body = json.loads(resp.read())
+        assert body["unloaded_session"] == sid
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
+    assert backend.session_id() is None
 
 
-def test_api_session_delete_round_trip(backend) -> None:
+def test_api_session_delete_round_trip(backend, running_server_port: int) -> None:
     import http.client
 
     backend.begin_session("jasper")
@@ -3911,30 +3874,25 @@ def test_api_session_delete_round_trip(backend) -> None:
     backend.stop_recording()
     sid = backend.session_id()
 
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "DELETE", f"/api/session/{sid}",
+        headers={"X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "DELETE", f"/api/session/{sid}",
-            headers={"X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            assert resp.status == 200
-            body = json.loads(resp.read())
-            assert body["deleted_session"] == sid
-        finally:
-            conn.close()
-        # Active state cleared
-        assert backend.session_id() is None
+        assert resp.status == 200
+        body = json.loads(resp.read())
+        assert body["deleted_session"] == sid
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
+    # Active state cleared
+    assert backend.session_id() is None
 
 
 def test_api_status_includes_include_raw_mic_0(
     backend, monkeypatch: pytest.MonkeyPatch,
+    running_server_port: int,
 ) -> None:
     """status payload must surface include_raw_mic_0 so the UI's
     session-id label can show the raw-mic-0 marker.
@@ -3948,26 +3906,21 @@ def test_api_status_includes_include_raw_mic_0(
         bridge_session, "voice_daemon_active", lambda: False,
     )
     backend.begin_session("jasper", include_raw_mic_0=True)
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request("GET", "/api/status")
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request("GET", "/api/status")
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert body["include_raw_mic_0"] is True
-            assert body["include_dtln"] is True
-            assert body["enabled_legs"] == ["on", "off", "dtln", "raw0"]
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert body["include_raw_mic_0"] is True
+        assert body["include_dtln"] is True
+        assert body["enabled_legs"] == ["on", "off", "dtln", "raw0"]
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_status_includes_include_usb_mic(
     backend, monkeypatch: pytest.MonkeyPatch,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -3975,30 +3928,25 @@ def test_api_status_includes_include_usb_mic(
         bridge_session, "voice_daemon_active", lambda: False,
     )
     backend.begin_session("jasper", include_usb_mic=True)
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request("GET", "/api/status")
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request("GET", "/api/status")
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert body["include_usb_mic"] is True
-            assert body["include_usb_dtln"] is False
-            assert body["enabled_legs"] == [
-                "on", "off", "dtln", "ref", "usb_raw", "usb_webrtc",
-            ]
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert body["include_usb_mic"] is True
+        assert body["include_usb_dtln"] is False
+        assert body["enabled_legs"] == [
+            "on", "off", "dtln", "ref", "usb_raw", "usb_webrtc",
+        ]
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_capture_plan_previews_selected_layers(
     backend,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4006,40 +3954,35 @@ def test_api_capture_plan_previews_selected_layers(
         bridge_session, "voice_daemon_active", lambda: False,
     )
     _use_tmp_bridge_env(monkeypatch, tmp_path)
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/capture-plan",
+        json.dumps({
+            "corpus_profile": wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+            "include_usb_mic": True,
+            "include_usb_dtln": True,
+            "include_xvf_raw0_dtln": True,
+        }),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/capture-plan",
-            json.dumps({
-                "corpus_profile": wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
-                "include_usb_mic": True,
-                "include_usb_dtln": True,
-                "include_xvf_raw0_dtln": True,
-            }),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 200
-            plan = body["capture_plan"]
-            assert plan["recipe"] == "chip_aec_comparison_extended"
-            assert set(plan["selected_physical_mics"]) == {"xvf3800", "usb_mic"}
-            assert "usb_dtln" in plan["software_transforms"]["dtln"]
-            assert plan["resource"]["level"] in {"high", "unsafe"}
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert resp.status == 200
+        plan = body["capture_plan"]
+        assert plan["recipe"] == "chip_aec_comparison_extended"
+        assert set(plan["selected_physical_mics"]) == {"xvf3800", "usb_mic"}
+        assert "usb_dtln" in plan["software_transforms"]["dtln"]
+        assert plan["resource"]["level"] in {"high", "unsafe"}
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_session_stores_applied_capture_plan(
     backend,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4048,45 +3991,40 @@ def test_api_session_stores_applied_capture_plan(
     )
     monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
     _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/session",
+        json.dumps({
+            "member": "jasper",
+            "include_dtln": False,
+        }),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/session",
-            json.dumps({
-                "member": "jasper",
-                "include_dtln": False,
-            }),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 200
-            plan = body["capture_plan"]
-            assert plan["state"] == "session"
-            assert plan["plan_id"]
-            values = {
-                line.split("=", 1)[0]: line.split("=", 1)[1]
-                for line in bridge_path.read_text().splitlines()
-            }
-            assert values["JASPER_WAKE_CORPUS_PLAN_ID"] == plan["plan_id"]
-            assert values["JASPER_WAKE_CORPUS_EXPECTED_LEGS"] == "on,off"
+        body = json.loads(resp.read())
+        assert resp.status == 200
+        plan = body["capture_plan"]
+        assert plan["state"] == "session"
+        assert plan["plan_id"]
+        values = {
+            line.split("=", 1)[0]: line.split("=", 1)[1]
+            for line in bridge_path.read_text().splitlines()
+        }
+        assert values["JASPER_WAKE_CORPUS_PLAN_ID"] == plan["plan_id"]
+        assert values["JASPER_WAKE_CORPUS_EXPECTED_LEGS"] == "on,off"
 
-            metadata = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
-            assert len(metadata) == 1
-            data = json.loads(metadata[0].read_text())
-            assert data["capture_plan"]["plan_id"] == plan["plan_id"]
-        finally:
-            conn.close()
+        metadata = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
+        assert len(metadata) == 1
+        data = json.loads(metadata[0].read_text())
+        assert data["capture_plan"]["plan_id"] == plan["plan_id"]
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_status_includes_aec3_sweep(
     backend, monkeypatch: pytest.MonkeyPatch,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4096,33 +4034,28 @@ def test_api_status_includes_aec3_sweep(
     backend.begin_session(
         "jasper", include_dtln=False, include_aec3_sweep=True,
     )
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request("GET", "/api/status")
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request("GET", "/api/status")
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert body["include_aec3_sweep"] is True
-            assert body["include_usb_mic"] is True
-            assert body["aec3_sweep_source"] == "usb"
-            assert body["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata(
-                input_source="usb",
-            )
-            assert body["enabled_legs"] == [
-                "on", "off", "ref", "usb_raw", "usb_webrtc",
-                *wake_corpus_setup.AEC3_SWEEP_LEGS,
-            ]
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert body["include_aec3_sweep"] is True
+        assert body["include_usb_mic"] is True
+        assert body["aec3_sweep_source"] == "usb"
+        assert body["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata(
+            input_source="usb",
+        )
+        assert body["enabled_legs"] == [
+            "on", "off", "ref", "usb_raw", "usb_webrtc",
+            *wake_corpus_setup.AEC3_SWEEP_LEGS,
+        ]
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_session_begin_accepts_dtln_flags(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4131,38 +4064,33 @@ def test_api_session_begin_accepts_dtln_flags(
     )
     _use_tmp_bridge_env(monkeypatch, tmp_path)
     monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/session",
+        json.dumps({
+            "member": "jasper",
+            "include_dtln": False,
+            "include_usb_dtln": True,
+            "enable_bridge_outputs": True,
+        }),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/session",
-            json.dumps({
-                "member": "jasper",
-                "include_dtln": False,
-                "include_usb_dtln": True,
-                "enable_bridge_outputs": True,
-            }),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 200
-            assert body["include_dtln"] is False
-            assert body["include_usb_dtln"] is True
-            assert body["enabled_legs"] == [
-                "on", "off", "ref", "usb_raw", "usb_dtln",
-            ]
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert resp.status == 200
+        assert body["include_dtln"] is False
+        assert body["include_usb_dtln"] is True
+        assert body["enabled_legs"] == [
+            "on", "off", "ref", "usb_raw", "usb_dtln",
+        ]
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_session_begin_accepts_aec3_sweep(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4180,39 +4108,34 @@ def test_api_session_begin_accepts_aec3_sweep(
             "JASPER_AEC_CORPUS_USB_ENABLED=1\n"
         ),
     )
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/session",
+        json.dumps({
+            "member": "jasper",
+            "include_dtln": False,
+            "include_aec3_sweep": True,
+        }),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/session",
-            json.dumps({
-                "member": "jasper",
-                "include_dtln": False,
-                "include_aec3_sweep": True,
-            }),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 200
-            assert body["include_aec3_sweep"] is True
-            assert body["include_usb_mic"] is True
-            assert body["aec3_sweep_source"] == "usb"
-            assert body["enabled_legs"] == [
-                "on", "off", "ref", "usb_raw", "usb_webrtc",
-                *wake_corpus_setup.AEC3_SWEEP_LEGS,
-            ]
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert resp.status == 200
+        assert body["include_aec3_sweep"] is True
+        assert body["include_usb_mic"] is True
+        assert body["aec3_sweep_source"] == "usb"
+        assert body["enabled_legs"] == [
+            "on", "off", "ref", "usb_raw", "usb_webrtc",
+            *wake_corpus_setup.AEC3_SWEEP_LEGS,
+        ]
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_status_includes_bridge_output_status(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4228,14 +4151,24 @@ def test_api_status_includes_bridge_output_status(
             "JASPER_AEC_CORPUS_USB_ENABLED=0\n"
         ),
     )
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request("GET", "/api/status")
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request("GET", "/api/status")
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert body["bridge_outputs"] == {
+        body = json.loads(resp.read())
+        assert body["bridge_outputs"] == {
+            "dtln": True,
+            "ref": True,
+            "usb": False,
+            "usb_dtln": False,
+            "chip_aec": False,
+            "xvf_raw0_webrtc_aec3": False,
+            "xvf_raw0_dtln": False,
+            "outputd_ref": False,
+            "aec3_sweep": False,
+            "aec3_sweep_source": "xvf",
+            "env_path": str(tmp_path / "wake_corpus_bridge.env"),
+            "recorder_outputs": {
                 "dtln": True,
                 "ref": True,
                 "usb": False,
@@ -4246,31 +4179,16 @@ def test_api_status_includes_bridge_output_status(
                 "outputd_ref": False,
                 "aec3_sweep": False,
                 "aec3_sweep_source": "xvf",
-                "env_path": str(tmp_path / "wake_corpus_bridge.env"),
-                "recorder_outputs": {
-                    "dtln": True,
-                    "ref": True,
-                    "usb": False,
-                    "usb_dtln": False,
-                    "chip_aec": False,
-                    "xvf_raw0_webrtc_aec3": False,
-                    "xvf_raw0_dtln": False,
-                    "outputd_ref": False,
-                    "aec3_sweep": False,
-                    "aec3_sweep_source": "xvf",
-                },
-                "active": True,
-            }
-        finally:
-            conn.close()
+            },
+            "active": True,
+        }
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_bridge_outputs_disable(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4285,26 +4203,20 @@ def test_api_bridge_outputs_disable(
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/bridge-outputs",
+        json.dumps({"action": "disable"}),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/bridge-outputs",
-            json.dumps({"action": "disable"}),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 200
-            assert body["bridge_outputs"]["active"] is False
-            assert restarts == ["restart"]
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert resp.status == 200
+        assert body["bridge_outputs"]["active"] is False
+        assert restarts == ["restart"]
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_systemd_unit_active_is_bounded_and_parses_stable_states(
@@ -4486,6 +4398,7 @@ def test_enter_corpus_test_mode_aborts_before_mutation_when_voice_unknown(
 def test_api_corpus_test_mode_enter_reports_voice_probe_timeout_without_mutation(
     backend,
     monkeypatch: pytest.MonkeyPatch,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4507,32 +4420,26 @@ def test_api_corpus_test_mode_enter_reports_voice_probe_timeout_without_mutation
         lambda **kwargs: mutations.append("bridge"),
     )
 
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST",
+        "/api/corpus-test-mode",
+        json.dumps({"action": "enter", "include_dtln": False}),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST",
-            "/api/corpus-test-mode",
-            json.dumps({"action": "enter", "include_dtln": False}),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 500
-            assert body == {
-                "error": (
-                    "corpus test mode enter failed: could not determine whether "
-                    "jasper-voice is active: systemctl probe timed out "
-                    "after 1.5s"
-                ),
-            }
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert resp.status == 500
+        assert body == {
+            "error": (
+                "corpus test mode enter failed: could not determine whether "
+                "jasper-voice is active: systemctl probe timed out "
+                "after 1.5s"
+            ),
+        }
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
     assert mutations == []
 
@@ -4540,6 +4447,7 @@ def test_api_corpus_test_mode_enter_reports_voice_probe_timeout_without_mutation
 def test_api_corpus_test_mode_enter_rejects_manager_error_without_mutation(
     backend,
     monkeypatch: pytest.MonkeyPatch,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4565,38 +4473,33 @@ def test_api_corpus_test_mode_enter_rejects_manager_error_without_mutation(
         lambda **kwargs: mutations.append("bridge"),
     )
 
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST",
+        "/api/corpus-test-mode",
+        json.dumps({"action": "enter", "include_dtln": False}),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST",
-            "/api/corpus-test-mode",
-            json.dumps({"action": "enter", "include_dtln": False}),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 500
-            assert body == {
-                "error": (
-                    "corpus test mode enter failed: could not determine whether "
-                    "jasper-voice is active: systemctl is-active jasper-voice "
-                    "returned rc=1: Failed to connect to bus: Permission denied"
-                ),
-            }
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert resp.status == 500
+        assert body == {
+            "error": (
+                "corpus test mode enter failed: could not determine whether "
+                "jasper-voice is active: systemctl is-active jasper-voice "
+                "returned rc=1: Failed to connect to bus: Permission denied"
+            ),
+        }
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
     assert mutations == []
 
 
 def test_api_corpus_test_mode_enter_stops_voice_and_sets_outputs(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4627,41 +4530,36 @@ def test_api_corpus_test_mode_enter_stops_voice_and_sets_outputs(
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/corpus-test-mode",
+        json.dumps({
+            "action": "enter",
+            "include_dtln": False,
+            "include_usb_mic": True,
+            "include_usb_dtln": False,
+        }),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/corpus-test-mode",
-            json.dumps({
-                "action": "enter",
-                "include_dtln": False,
-                "include_usb_mic": True,
-                "include_usb_dtln": False,
-            }),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 200
-            assert body["voice_daemon_active"] is False
-            assert voice_actions == ["stop"]
-            assert restarts == ["restart"]
-            text = bridge_path.read_text()
-            assert "JASPER_AEC_CORPUS_REF_ENABLED=1" in text
-            assert "JASPER_AEC_CORPUS_USB_ENABLED=1" in text
-            assert "JASPER_AEC_DTLN_ENABLED" not in text
-            assert "JASPER_AEC_CORPUS_USB_DTLN_ENABLED" not in text
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert resp.status == 200
+        assert body["voice_daemon_active"] is False
+        assert voice_actions == ["stop"]
+        assert restarts == ["restart"]
+        text = bridge_path.read_text()
+        assert "JASPER_AEC_CORPUS_REF_ENABLED=1" in text
+        assert "JASPER_AEC_CORPUS_USB_ENABLED=1" in text
+        assert "JASPER_AEC_DTLN_ENABLED" not in text
+        assert "JASPER_AEC_CORPUS_USB_DTLN_ENABLED" not in text
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_corpus_test_mode_enter_can_enable_aec3_sweep(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4683,36 +4581,31 @@ def test_api_corpus_test_mode_enter_can_enable_aec3_sweep(
     )
     monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
 
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/corpus-test-mode",
+        json.dumps({
+            "action": "enter",
+            "include_dtln": False,
+            "include_aec3_sweep": True,
+        }),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/corpus-test-mode",
-            json.dumps({
-                "action": "enter",
-                "include_dtln": False,
-                "include_aec3_sweep": True,
-            }),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 200
-            assert body["voice_daemon_active"] is False
-            text = bridge_path.read_text()
-            assert "JASPER_AEC_DTLN_ENABLED=0" in text
-            assert "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED=1" in text
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert resp.status == 200
+        assert body["voice_daemon_active"] is False
+        text = bridge_path.read_text()
+        assert "JASPER_AEC_DTLN_ENABLED=0" in text
+        assert "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED=1" in text
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_corpus_test_mode_exit_disables_outputs_and_starts_voice(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4742,35 +4635,30 @@ def test_api_corpus_test_mode_exit_disables_outputs_and_starts_voice(
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/corpus-test-mode",
+        json.dumps({"action": "exit"}),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/corpus-test-mode",
-            json.dumps({"action": "exit"}),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 200
-            assert body["voice_daemon_active"] is True
-            assert body["bridge_outputs"]["active"] is False
-            assert body["action"] == "exit"
-            assert voice_actions == ["start"]
-            assert restarts == ["restart"]
-        finally:
-            conn.close()
-        assert backend.session_id() is None
-        assert sid is not None
+        body = json.loads(resp.read())
+        assert resp.status == 200
+        assert body["voice_daemon_active"] is True
+        assert body["bridge_outputs"]["active"] is False
+        assert body["action"] == "exit"
+        assert voice_actions == ["start"]
+        assert restarts == ["restart"]
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
+    assert backend.session_id() is None
+    assert sid is not None
 
 
 def test_voice_start_can_disable_bridge_outputs_first(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4799,31 +4687,26 @@ def test_voice_start_can_disable_bridge_outputs_first(
         wake_corpus_setup.subprocess, "run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout="active\n"),
     )
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/voice-daemon",
+        json.dumps({"action": "start", "disable_bridge_outputs": True}),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/voice-daemon",
-            json.dumps({"action": "start", "disable_bridge_outputs": True}),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 200
-            assert body["bridge_outputs"]["active"] is False
-            assert restarts == ["restart"]
-            assert voice_calls == [((wake_corpus_setup.VOICE_UNIT,), "start")]
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert resp.status == 200
+        assert body["bridge_outputs"]["active"] is False
+        assert restarts == ["restart"]
+        assert voice_calls == [((wake_corpus_setup.VOICE_UNIT,), "start")]
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_usb_mic_status_endpoint(
     backend, monkeypatch: pytest.MonkeyPatch,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4840,26 +4723,21 @@ def test_api_usb_mic_status_endpoint(
             },
         },
     )
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request("GET", "/api/usb-mic/status")
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request("GET", "/api/usb-mic/status")
-        resp = conn.getresponse()
-        try:
-            assert resp.status == 200
-            body = json.loads(resp.read())
-            assert body["hardware_agc"]["enabled"] is True
-            assert body["hardware_agc"]["control"] == "Auto Gain Control"
-        finally:
-            conn.close()
+        assert resp.status == 200
+        body = json.loads(resp.read())
+        assert body["hardware_agc"]["enabled"] is True
+        assert body["hardware_agc"]["control"] == "Auto Gain Control"
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_session_offers_bridge_enable_for_missing_outputs(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4867,38 +4745,33 @@ def test_api_session_offers_bridge_enable_for_missing_outputs(
         bridge_session, "voice_daemon_active", lambda: False,
     )
     _use_tmp_bridge_env(monkeypatch, tmp_path)
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/session",
+        json.dumps({
+            "member": "jasper",
+            "include_dtln": True,
+            "include_usb_mic": True,
+            "include_usb_dtln": True,
+        }),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/session",
-            json.dumps({
-                "member": "jasper",
-                "include_dtln": True,
-                "include_usb_mic": True,
-                "include_usb_dtln": True,
-            }),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 409
-            assert body["can_enable_bridge_outputs"] is True
-            assert body["missing_bridge_outputs"] == [
-                "dtln", "ref", "usb", "usb_dtln",
-            ]
-            assert backend.session_id() is None
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert resp.status == 409
+        assert body["can_enable_bridge_outputs"] is True
+        assert body["missing_bridge_outputs"] == [
+            "dtln", "ref", "usb", "usb_dtln",
+        ]
+        assert backend.session_id() is None
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 def test_api_session_enable_bridge_outputs_then_begins(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    running_server_port: int,
 ) -> None:
     import http.client
 
@@ -4912,39 +4785,33 @@ def test_api_session_enable_bridge_outputs_then_begins(
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
-    server, th, port = _serve_in_thread(backend)
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    conn.request(
+        "POST", "/api/session",
+        json.dumps({
+            "member": "jasper",
+            "include_dtln": True,
+            "include_usb_mic": True,
+            "include_usb_dtln": True,
+            "enable_bridge_outputs": True,
+        }),
+        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+    )
+    resp = conn.getresponse()
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        conn.request(
-            "POST", "/api/session",
-            json.dumps({
-                "member": "jasper",
-                "include_dtln": True,
-                "include_usb_mic": True,
-                "include_usb_dtln": True,
-                "enable_bridge_outputs": True,
-            }),
-            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
-        )
-        resp = conn.getresponse()
-        try:
-            body = json.loads(resp.read())
-            assert resp.status == 200
-            assert body["member"] == "jasper"
-            assert body["enabled_legs"] == [
-                "on", "off", "dtln", "ref", "usb_raw",
-                "usb_webrtc", "usb_dtln",
-            ]
-            assert restarts == ["restart"]
-            text = bridge_path.read_text()
-            assert "JASPER_AEC_CORPUS_USB_ENABLED=1" in text
-            assert "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1" in text
-        finally:
-            conn.close()
+        body = json.loads(resp.read())
+        assert resp.status == 200
+        assert body["member"] == "jasper"
+        assert body["enabled_legs"] == [
+            "on", "off", "dtln", "ref", "usb_raw",
+            "usb_webrtc", "usb_dtln",
+        ]
+        assert restarts == ["restart"]
+        text = bridge_path.read_text()
+        assert "JASPER_AEC_CORPUS_USB_ENABLED=1" in text
+        assert "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1" in text
     finally:
-        server.shutdown()
-        server.server_close()
-        th.join(timeout=2)
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
