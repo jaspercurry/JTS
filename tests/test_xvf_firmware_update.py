@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import signal
 import time
 from pathlib import Path
@@ -74,6 +76,69 @@ def _target_for_payload(payload: bytes, *, expected_size: int | None = None):
         expected_size_bytes=len(payload) if expected_size is None else expected_size,
         upstream_dir_url="https://example.invalid/",
     )
+
+
+def test_write_state_uses_canonical_atomic_writer(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    writes: list[tuple[Path, str, int]] = []
+
+    def fake_atomic_write_text(path: Path, text: str, *, mode: int) -> None:
+        writes.append((path, text, mode))
+
+    monkeypatch.setattr(xvf_firmware_update, "STATE_PATH", state_path)
+    monkeypatch.setattr(
+        xvf_firmware_update,
+        "atomic_write_text",
+        fake_atomic_write_text,
+    )
+    monkeypatch.setattr(
+        xvf_firmware_update.time,
+        "strftime",
+        lambda *_args: "2026-07-12T12:34:56Z",
+    )
+
+    xvf_firmware_update._write_state(
+        state="flashing",
+        detail="Firmware verified.",
+        error="",
+        extra={"sha256": "abc123"},
+    )
+
+    assert writes == [(
+        state_path,
+        "{\n"
+        '  "detail": "Firmware verified.",\n'
+        '  "error": "",\n'
+        '  "schema_version": 1,\n'
+        '  "sha256": "abc123",\n'
+        '  "state": "flashing",\n'
+        '  "updated_at": "2026-07-12T12:34:56Z"\n'
+        "}\n",
+        0o644,
+    )]
+
+
+def test_write_state_publishes_public_mode_under_restrictive_umask(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    monkeypatch.setattr(xvf_firmware_update, "STATE_PATH", state_path)
+
+    previous_umask = os.umask(0o077)
+    try:
+        xvf_firmware_update._write_state(
+            state="downloading",
+            detail="Downloading firmware.",
+        )
+    finally:
+        os.umask(previous_umask)
+
+    assert state_path.stat().st_mode & 0o777 == 0o644
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["state"] == "downloading"
+    assert payload["detail"] == "Downloading firmware."
 
 
 def test_unit_timeout_outlasts_the_firmware_operation_budget() -> None:

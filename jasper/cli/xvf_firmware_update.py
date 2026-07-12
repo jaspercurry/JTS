@@ -9,7 +9,6 @@ import argparse
 import contextlib
 import hashlib
 import json
-import os
 import signal
 import subprocess
 import sys
@@ -19,6 +18,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from jasper.atomic_io import atomic_write_text
 
 from ..mics import xvf3800
 
@@ -92,10 +93,11 @@ def _write_state(
         payload["target"] = target.as_dict()
     if extra:
         payload.update(extra)
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    os.replace(tmp, STATE_PATH)
+    atomic_write_text(
+        STATE_PATH,
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        mode=0o644,
+    )
 
 
 def _run(argv: list[str], *, timeout: float = 60.0) -> subprocess.CompletedProcess[str]:
