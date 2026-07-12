@@ -14,6 +14,7 @@ only mode** — we never publish from here. Advertising is handled by
 the static XML file at /etc/avahi/services/jasper-peer.service (see
 jasper.peering.avahi).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -72,6 +73,11 @@ class PeerDiscovery:
         # zeroconf's REMOVED notifications (which only give us the
         # service name, not the TXT records). Keyed by service name.
         self._peers: dict[str, PeerSeen] = {}
+        # Zeroconf resolves Added/Updated records asynchronously. Preserve
+        # callback arrival order across those awaits so a slow older resolve
+        # cannot overwrite a newer identity or resurrect a peer after its
+        # Removed notification has already arrived.
+        self._change_lock = asyncio.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def start(
@@ -89,9 +95,9 @@ class PeerDiscovery:
         # complexity for zero benefit on a home LAN.
         self._zc = AsyncZeroconf(ip_version=IPVersion.V4Only)
 
-        # Bound method captures self via closure. zeroconf calls this
-        # from its own thread; we schedule the actual handling on our
-        # asyncio loop so the state machine stays single-threaded.
+        # AsyncServiceBrowser invokes this synchronous handler on its event
+        # loop. Schedule the resolving coroutine so the handler returns
+        # promptly and all state changes pass through our serialized path.
         def on_change(zeroconf, service_type, name, state_change):  # noqa: ANN001
             self._loop.call_soon_threadsafe(  # type: ignore[union-attr]
                 lambda: asyncio.ensure_future(
@@ -140,11 +146,33 @@ class PeerDiscovery:
     # ---- internal ----
 
     async def _handle_change(
-        self, zeroconf, service_type: str, name: str, state_change,
+        self,
+        zeroconf,
+        service_type: str,
+        name: str,
+        state_change,
+    ) -> None:
+        async with self._change_lock:
+            await self._handle_change_serial(
+                zeroconf,
+                service_type,
+                name,
+                state_change,
+            )
+
+    async def _handle_change_serial(
+        self,
+        zeroconf,
+        service_type: str,
+        name: str,
+        state_change,
     ) -> None:
         ServiceStateChange = self._ServiceStateChange  # type: ignore[attr-defined]
 
-        if state_change is ServiceStateChange.Added or state_change is ServiceStateChange.Updated:
+        if (
+            state_change is ServiceStateChange.Added
+            or state_change is ServiceStateChange.Updated
+        ):
             try:
                 info = await zeroconf.async_get_service_info(service_type, name)
             except Exception:  # noqa: BLE001
@@ -157,7 +185,20 @@ class PeerDiscovery:
             if peer is None:
                 return
             if peer.peer_id == self._self_peer_id:
+                # A service instance can be re-used after its advertiser's
+                # identity changes. If this name previously belonged to a
+                # foreign peer, retire that identity before filtering the
+                # now-local advertisement or the daemon's peer-id keyed view
+                # remains stale until opportunistic HELLO pruning.
+                await self._remove_peer(name)
                 return  # ignore our own ad
+            previous = self._peers.get(name)
+            if previous is not None and previous.peer_id != peer.peer_id:
+                # A valid Updated event replaced the identity behind this
+                # service name. Downstream bookkeeping is keyed by peer_id,
+                # so explicitly retire the old identity before announcing
+                # the replacement.
+                await self._remove_peer(name)
             self._peers[name] = peer
             log_event(
                 logger,
@@ -169,16 +210,20 @@ class PeerDiscovery:
             )
             await self._fire(peer)
         elif state_change is ServiceStateChange.Removed:
-            peer = self._peers.pop(name, None)
-            if peer is None:
-                return
-            log_event(
-                logger,
-                "peering.discovery.peer_gone",
-                peer=peer.peer_id,
-                addr=peer.address,
-            )
-            await self._fire(PeerGone(peer_id=peer.peer_id, address=peer.address))
+            await self._remove_peer(name)
+
+    async def _remove_peer(self, name: str) -> None:
+        """Forget one service instance and notify peer-id keyed consumers."""
+        peer = self._peers.pop(name, None)
+        if peer is None:
+            return
+        log_event(
+            logger,
+            "peering.discovery.peer_gone",
+            peer=peer.peer_id,
+            addr=peer.address,
+        )
+        await self._fire(PeerGone(peer_id=peer.peer_id, address=peer.address))
 
     async def _fire(self, event: PeerSeen | PeerGone) -> None:
         if self._on_event is None:
@@ -195,28 +240,48 @@ def _parse_service_info(name: str, info) -> Optional[PeerSeen]:
     """Extract peer metadata from a zeroconf ServiceInfo."""
     try:
         properties = {
-            k.decode("utf-8", errors="replace") if isinstance(k, bytes) else k:
-                v.decode("utf-8", errors="replace") if isinstance(v, bytes) else v
-            for k, v in (info.properties or {}).items()
+            _txt_text(k): _txt_text(v) for k, v in (info.properties or {}).items()
         }
-    except Exception:  # noqa: BLE001
-        logger.exception("peering: TXT decode failed for %s", name)
+        peer_id = properties.get("peer_id", "").strip()
+        if not peer_id:
+            logger.debug("peering: %s missing peer_id TXT record", name)
+            return None
+
+        addresses = (
+            info.parsed_scoped_addresses()
+            if hasattr(info, "parsed_scoped_addresses")
+            else info.parsed_addresses()
+        )
+        if not addresses:
+            logger.debug("peering: %s has no addresses", name)
+            return None
+
+        return PeerSeen(
+            peer_id=peer_id,
+            room=properties.get("room", "").strip() or "default",
+            primary=properties.get("primary", "0").strip() == "1",
+            address=str(addresses[0]),
+            port=int(info.port or 0),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # ServiceInfo is network-controlled input. A malformed TXT value,
+        # address accessor, or port must drop only that advertisement rather
+        # than escaping the callback task and disrupting discovery.
+        logger.debug("peering: malformed service_info for %s: %s", name, exc)
         return None
 
-    peer_id = properties.get("peer_id", "").strip()
-    if not peer_id:
-        logger.debug("peering: %s missing peer_id TXT record", name)
-        return None
 
-    addresses = info.parsed_scoped_addresses() if hasattr(info, "parsed_scoped_addresses") else info.parsed_addresses()
-    if not addresses:
-        logger.debug("peering: %s has no addresses", name)
-        return None
+def _txt_text(value: object) -> str:
+    """Decode one Zeroconf TXT key/value into a total string form.
 
-    return PeerSeen(
-        peer_id=peer_id,
-        room=properties.get("room", "").strip() or "default",
-        primary=properties.get("primary", "0").strip() == "1",
-        address=str(addresses[0]),
-        port=int(info.port or 0),
-    )
+    python-zeroconf represents a bare TXT key as ``None``. Treat it as an
+    empty value so an optional bare ``room``/``primary`` key gets the normal
+    default and a bare required ``peer_id`` is ignored cleanly.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    return str(value)
