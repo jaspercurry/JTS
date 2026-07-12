@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`570cf270`): 2026-07-12.
+Last reconciled against `main` (`01713826`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 478
-- **fixed**: 189
+- **open**: 474
+- **fixed**: 193
 - **in-progress**: 0
 - **mooted**: 9
 - **deferred**: 1
@@ -52,8 +52,8 @@ Last reconciled against `main` (`570cf270`): 2026-07-12.
 | DA-0025 | `jasper/wake_corpus/bridge_session.py` :: voice_daemon_active:2107 | should-fix | W5 | **fixed** | bounded strict unit-state probe fails closed before corpus-mode mutation — #1304 |
 | DA-0026 | `jasper/wake_events.py` :: _STAGE_TO_COLUMN | should-fix | W5 | **open** | — |
 | DA-0028 | `jasper/web/bluetooth_setup.py` :: _start_pair_stream / _drive | should-fix | W5 | **fixed** | unexpected pair-driver failures now emit one structured error with traceback — #1301 |
-| DA-0031 | `jasper/web/rooms_setup.py` :: _self_addresses / _lan_target / _post_groupi | should-fix | W5 | **open** | — |
-| DA-0032 | `jasper/web/sound_setup.py` :: :177 | should-fix | W5 | **open** | — |
+| DA-0031 | `jasper/web/rooms_setup.py` :: _self_addresses / _lan_target / _post_groupi | should-fix | W5 | **fixed** | package-shared rooms control helpers now expose a tested public boundary — #1309 |
+| DA-0032 | `jasper/web/sound_setup.py` :: :177 | should-fix | W5 | **fixed** | all 92 structured sound events use canonical rendering with fidelity guards — #1310 |
 | DA-0033 | `jasper/web/sound_setup.py` :: Handler.do_POST | should-fix | W5 | **open** | — |
 | DA-0038 | `jasper/web/wifi_setup.py` :: do_POST | should-fix | W5 | **open** | — |
 | DA-0042 | `scripts/_extract_wake_corpus.py` :: main --force deletion boundary | should-fix | W5 | **fixed** | positive ownership proof + lexical/resolved/filesystem-identity guards — #1291 |
@@ -433,8 +433,8 @@ Last reconciled against `main` (`570cf270`): 2026-07-12.
 | DA-0565 | `jasper/weather.py` :: WeatherClient.get_weather | nit | W3 | **open** | — |
 | DA-0566 | `jasper/web/bluetooth_setup.py` :: _read_json (package-wide) | nit | W3 | **open** | — |
 | DA-0567 | `jasper/web/correction_setup.py` :: _dispatch_sync :3306 | nit | W3 | **open** | — |
-| DA-0568 | `jasper/web/rooms_setup.py` :: _get_member_grouping (~886-920) / _get_membe | nit | W3 | **open** | — |
-| DA-0569 | `jasper/web/rooms_setup.py` :: _lan_target (~line 692-719) vs jasper/multir | nit | W3 | **open** | — |
+| DA-0568 | `jasper/web/rooms_setup.py` :: _get_member_grouping (~886-920) / _get_membe | nit | W3 | **fixed** | bounded remote JSON GET transport consolidated behind one helper — #1309 |
+| DA-0569 | `jasper/web/rooms_setup.py` :: _lan_target (~line 692-719) vs jasper/multir | nit | W3 | **fixed** | one IPv4-only LAN predicate now owns validation and outbound SSRF policy — #1309 |
 | DA-0570 | `jasper/web/sound_setup.py` :: :2139 | nit | W3 | **open** | — |
 | DA-0571 | `jasper/web/sound_setup.py` :: _active_speaker_play_summed_commission_tone | nit | W3 | **open** | — |
 | DA-0572 | `jasper/web/speaker_setup.py` :: _systemctl / _unit_active | nit | W3 | **open** | — |
