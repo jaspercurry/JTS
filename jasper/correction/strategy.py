@@ -114,7 +114,7 @@ TARGET_PROFILES: dict[str, TargetProfile] = {
     "neutral": TargetProfile(
         target_id="neutral",
         label="Neutral",
-        description="Flat target exposed as the middle target preset.",
+        description="Zero-tilt house curve kept as a distinct named profile.",
         warmth=0.0,
     ),
     "warm": TargetProfile(
