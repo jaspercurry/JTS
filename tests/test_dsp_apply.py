@@ -9,6 +9,8 @@ import subprocess
 import stat
 from pathlib import Path
 
+import pytest
+
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
@@ -262,6 +264,32 @@ def test_validate_rejects_missing_volume_limit(tmp_path: Path, monkeypatch):
     cfg.write_text("---\ndevices:\n  samplerate: 48000\n")
     binary = _fake_camilladsp(tmp_path)
     monkeypatch.setenv("JASPER_CAMILLADSP_BIN", str(binary))
+
+    result = validate_camilla_config(cfg)
+
+    assert result.status == ValidationStatus.INVALID_CONFIG
+    assert not result.ok_to_apply
+    assert "volume_limit" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "---\ndevices:\n  playback:\n    volume_limit: 0.0\n",
+        "---\ndevices:\n  volume_limit: 0.0\ndevices: {volume_limit: 9.0}\n",
+        "---\ndevices:\n  volume_limit: 0.0\n  volume_limit: 9.0\n",
+    ],
+)
+def test_validate_rejects_ambiguous_volume_limit_without_binary(
+    tmp_path: Path,
+    monkeypatch,
+    text: str,
+):
+    import jasper.dsp_apply as dsp_apply
+
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text(text)
+    monkeypatch.setattr(dsp_apply, "_camilladsp_binary", lambda: None)
 
     result = validate_camilla_config(cfg)
 

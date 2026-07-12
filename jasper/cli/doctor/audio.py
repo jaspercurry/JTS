@@ -25,6 +25,7 @@ from ...audio_hardware.dac import (
 )
 from ...camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
+    parse_camilla_devices_config,
 )
 from ...config import Config
 from ...env_load import parse_env_file
@@ -43,7 +44,6 @@ from ._shared import (
     _active_audio_dac_env,
     _parked_as_bonded_follower,
     _active_audio_dac_id,
-    _camilla_block_field,
     _run,
 )
 from .correction import _active_camilla_config_path
@@ -2917,10 +2917,10 @@ def check_aec_clock_drift() -> CheckResult:
 
 def _devices_volume_limit_from_text(text: str) -> float | None:
     """``devices.volume_limit`` from a CamillaDSP config, or None if absent /
-    null. Raises ValueError on a non-numeric value (the caller surfaces it as a
-    fail). Reads via the shared :func:`_camilla_block_field` scanner."""
-    value = _camilla_block_field(text, "devices", "volume_limit")
-    if value is None or value in {"", "null", "~"}:
+    null. Uses the depth-aware shared devices parser so a nested capture or
+    playback field cannot masquerade as the global fader ceiling."""
+    value = parse_camilla_devices_config(text).get("volume_limit")
+    if value is None:
         return None
     return float(value)
 

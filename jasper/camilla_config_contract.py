@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import os
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -460,14 +461,37 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
     shape. Keeping this parser dependency-free preserves the existing
     no-PyYAML runtime contract while still giving dashboards and health
     checks one shared way to inspect samplerate/chunksize/target level
-    and ALSA endpoints.
+    and ALSA endpoints. Ambiguous duplicate ``devices`` or direct
+    ``volume_limit`` keys omit the limit so safety callers fail closed.
     """
+
+    text = textwrap.dedent(text)
+    top_level_devices = 0
+    for raw_line in text.splitlines():
+        if raw_line.startswith((" ", "\t")):
+            continue
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        raw_key = stripped.split(":", 1)[0].strip()
+        if (
+            len(raw_key) >= 2
+            and raw_key[0] == raw_key[-1]
+            and raw_key[0] in {"'", '"'}
+        ):
+            raw_key = raw_key[1:-1]
+        if raw_key == "devices":
+            top_level_devices += 1
+    if top_level_devices != 1:
+        return {}
 
     result: dict[str, Any] = {}
     in_devices = False
     devices_indent = 0
+    direct_indent: int | None = None
     nested: str | None = None
     nested_indent = 0
+    volume_limit_count = 0
 
     for raw_line in text.splitlines():
         stripped = raw_line.strip()
@@ -487,9 +511,16 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
         if indent <= devices_indent:
             break
 
+        if direct_indent is None:
+            direct_indent = indent
+        is_direct = indent == direct_indent
+
+        if nested is not None and indent <= nested_indent:
+            nested = None
+
         if stripped.endswith(":"):
             key = stripped[:-1].strip()
-            if key in {"capture", "playback"}:
+            if is_direct and key in {"capture", "playback"}:
                 nested = key
                 nested_indent = indent
             continue
@@ -500,18 +531,24 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
         key = key.strip()
         value = _clean_yaml_scalar(raw_value)
 
-        if key in {"samplerate", "chunksize", "target_level"}:
+        if is_direct and key in {"samplerate", "chunksize", "target_level"}:
             try:
                 result[key] = int(value)
             except ValueError:
                 continue
             continue
 
-        if key == "volume_limit":
+        if is_direct and key == "volume_limit":
+            volume_limit_count += 1
+            if volume_limit_count > 1:
+                result.pop("volume_limit", None)
+                continue
             try:
-                result[key] = float(value)
+                parsed_limit = float(value)
             except ValueError:
                 continue
+            if math.isfinite(parsed_limit):
+                result[key] = parsed_limit
             continue
 
         if nested in {"capture", "playback"} and indent > nested_indent:

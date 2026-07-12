@@ -166,13 +166,12 @@ def _camilla_block_field(text: str, block: str, key: str) -> str | None:
 
     This is the doctor's DELIBERATELY fail-soft way to read a CamillaDSP config
     field — a plain line scan that never raises, unlike ``yaml.safe_load`` which
-    can raise on a malformed config (the doctor must stay total). It is the one
-    home for the idiom: ``check_camilla_volume_limit`` (``devices.volume_limit``),
-    ``check_grouping_rate_adjust`` (``devices.enable_rate_adjust``), and
-    ``check_grouping_leader_pipe`` (``devices.playback`` pipe scan) all go
-    through it. Block-scoped: a matching key OUTSIDE ``block:`` does not match.
-    Use only for keys that are unambiguous within their block (the value is the
-    first indented ``key:`` line, at any depth)."""
+    can raise on a malformed config (the doctor must stay total). The grouping
+    rate-adjust check uses it for ``devices.enable_rate_adjust``. Block-scoped:
+    a matching key OUTSIDE ``block:`` does not match. Use only for keys that
+    are unambiguous at any depth within their block; depth-sensitive safety
+    fields such as ``devices.volume_limit`` use
+    :func:`jasper.camilla_config_contract.parse_camilla_devices_config`."""
     in_block = False
     for raw in text.splitlines():
         stripped = raw.strip()

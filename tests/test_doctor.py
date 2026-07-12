@@ -22,6 +22,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from jasper import audio_runtime_plan, audio_validation
 from jasper.audio_profile_state import MicProbe
 from jasper import wake_models
@@ -5211,6 +5213,31 @@ def test_check_camilla_volume_limit_fails_when_missing(monkeypatch, tmp_path):
 
     assert r.status == "fail"
     assert "omits devices.volume_limit" in r.detail
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "devices:\n  playback:\n    volume_limit: 0.0\n",
+        "devices:\n  volume_limit: 0.0\ndevices: {volume_limit: 9.0}\n",
+        "devices:\n  volume_limit: 0.0\n  volume_limit: 9.0\n",
+    ],
+)
+def test_check_camilla_volume_limit_fails_when_ownership_is_ambiguous(
+    monkeypatch,
+    tmp_path,
+    text,
+):
+    config = tmp_path / "v1.yml"
+    config.write_text(text)
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    result = doctor.check_camilla_volume_limit()
+
+    assert result.status == "fail"
+    assert "omits devices.volume_limit" in result.detail
 
 
 def test_check_camilla_volume_limit_fails_when_positive(monkeypatch, tmp_path):

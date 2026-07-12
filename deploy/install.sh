@@ -1051,30 +1051,6 @@ sys.exit(1)
 PY
 }
 
-camilla_config_has_safe_volume_limit() {
-    local config_path="$1"
-    awk '
-        /^[[:space:]]*#/ { next }
-        /^[[:space:]]*volume_limit:/ {
-            value = $0
-            sub(/^[^:]*:[[:space:]]*/, "", value)
-            sub(/[[:space:]]*#.*/, "", value)
-            sub(/^[[:space:]]*/, "", value)
-            sub(/[[:space:]]*$/, "", value)
-            found = 1
-            if (value ~ /^[-+]?[0-9]+([.][0-9]+)?$/ && value + 0 <= 0) {
-                safe = 1
-            }
-            exit
-        }
-        END {
-            if (!found || !safe) {
-                exit 1
-            }
-        }
-    ' "${config_path}"
-}
-
 install_camilladsp() {
     # Belt-and-suspenders: any pre-existing camilladsp.service from a
     # different install lineage shouldn't fight our copy over
