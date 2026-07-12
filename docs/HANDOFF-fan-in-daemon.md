@@ -228,7 +228,9 @@ CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongl
   saturating-add sum + 1 × (ALSA write) at 48 kHz S16_LE stereo. Per
   frame: ~256 sample-pair additions per period, trivial.
 - **Disk: append-only `/var/lib/jasper/fanin/xrun_history.jsonl`, ring of
-  last 100 events.** Atomic append. Bounded to ~10 KB.
+  roughly the last 100 events.** One dedicated writer keeps appends ordered;
+  the byte-bounded file stays at roughly 10 KB. A process or host crash can
+  leave an unterminated final record (details under "Persistent state").
 
 ### Real-time scheduling
 
@@ -472,18 +474,23 @@ Fan-in checks are in the main doctor run-list:
 
 ### Persistent state
 
-`/var/lib/jasper/fanin/xrun_history.jsonl` — append-only ring of the last
-100 xrun events. Rotated by truncating from the head when the file hits
-~10 KB. Each line:
+`/var/lib/jasper/fanin/xrun_history.jsonl` — append-only, byte-bounded history
+containing roughly the last 100 xrun events. Rotated by truncating from the
+head when the file hits ~10 KB. Each line:
 
 ```json
-{"ts": "2026-05-25T13:45:21Z", "source": "input", "slot": 1, "frames": 82}
+{"ts":"2026-05-25T13:45:21Z","source":"input","label":"spotify","frames":82,"count":3}
 ```
 
 Useful for "did the speaker have a bad night?" forensics across reboots.
 Survives systemd-managed daemon restarts.
 
-Atomic append: open with `O_APPEND`, write whole line + newline, `fdatasync`.
+Append contract: the single `fanin-xrun-writer` thread opens with `O_APPEND`,
+writes the JSON record and newline as two `write_all` calls, then calls
+`fdatasync`. There is no competing writer, so records cannot interleave, but a
+process or host crash between writes can leave an unterminated or partial final
+record. Fan-in currently has no startup repair or in-repo reader that strips
+such a crash-truncated tail; rotation retains bytes and does not validate JSON.
 
 ### Configuration
 
@@ -889,11 +896,12 @@ user. Same test as today, new device names.
 ```
 rust/jasper-fanin/                  ← new
   Cargo.toml
-  Cargo.lock                        ← pending supply-chain follow-up
+  Cargo.lock                        ← checked-in dependency lock; provenance-checked
   src/
     main.rs                         ← entry, signal handling, sd_notify wiring
     mixer.rs                        ← the work loop: read N → sum → write 1
     state.rs                        ← UDS status server
+    json.rs                         ← canonical serializer for variable JSON strings
     config.rs                       ← env-var parsing
     watchdog.rs                     ← progress-sentinel
     xrun_log.rs                     ← /var/lib/jasper/fanin/xrun_history.jsonl
@@ -1019,8 +1027,8 @@ infrastructure to be in place.
 
 ### Phase 2 — the daemon (built, installed, but inactive)
 
-- Land the Rust source tree + Cargo.toml. Cargo.lock is still pending
-  supply-chain follow-up; see
+- Land the Rust source tree, Cargo.toml, and checked-in Cargo.lock. Locked builds
+  and the provenance guard pin the resolved dependency graph; see
   [HANDOFF-supply-chain.md](HANDOFF-supply-chain.md).
 - `install.sh` builds it and installs to `/opt/jasper/bin/jasper-fanin`.
 - Land the systemd unit, but with `WantedBy=` set to a non-existent
@@ -1166,11 +1174,12 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-07-01 (`usb_low_latency_48k` now route-owns the USB input
-resampler: target 512 + cushion 1536, held target 2048, ring 4096, max adjust
-500 ppm. jts.local tuning found the global 4096-frame fan-in input buffer still
-required: 512/1024 never locked, 2048 and 3072 lock-churned and generated
-silence. A clean 5-minute steady-state sample with Rust bridge 256/3, fan-in
-4096/1024, CamillaDSP 256/1536, and outputd 128/256 had zero new bridge xruns,
-zero bridge underflows, zero resampler relocks, and zero resampler silence.
-Route-latency click/capture evidence remains required before claiming p95/p99.)
+Last verified: 2026-07-12 (rechecked the fan-in source/module layout, checked-in
+Cargo lock and provenance posture, current xrun JSONL schema, single-writer
+append/crash-tail behavior, and the existing `usb_low_latency_48k` ownership
+and 4096/1024 fan-in buffer contract. Prior jts.local tuning found 512/1024
+input buffers never locked, 2048 and 3072 lock-churned and generated silence;
+a clean five-minute run with Rust bridge 256/3, fan-in 4096/1024, CamillaDSP
+256/1536, and outputd 128/256 had zero new bridge xruns, bridge underflows,
+resampler relocks, or resampler silence. Route-latency click/capture evidence
+remains required before claiming p95/p99.)

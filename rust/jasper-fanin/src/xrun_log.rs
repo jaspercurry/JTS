@@ -12,7 +12,7 @@
 //!
 //! Why persist xrun history to disk separately from journald:
 //!   - Survives daemon restarts (journald rotates eventually; this
-//!     ring is bounded but per-event guaranteed).
+//!     ring is bounded and written by one dedicated thread).
 //!   - Cheaper to grep when investigating "did the speaker have a
 //!     bad night?" than a full journal scan.
 //!   - Per-event JSON is machine-readable for downstream tooling
@@ -94,8 +94,9 @@ impl XrunLog {
             .open(&self.path)
             .with_context(|| format!("opening xrun log {}", self.path.display()))?;
 
-        // Write line + newline atomically (single write() syscall on
-        // pipes/socks; for files write+sync is the closest equivalent).
+        // One dedicated writer keeps records ordered, but these are separate
+        // writes: a process/host crash between them can leave an unterminated
+        // final record. There is currently no startup tail-repair path.
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         // fdatasync — flushes file content but not metadata. The
