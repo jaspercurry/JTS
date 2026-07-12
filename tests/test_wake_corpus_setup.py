@@ -3718,8 +3718,12 @@ def test_api_sessions_returns_empty_list(backend) -> None:
         resp = conn.getresponse()
         try:
             assert resp.status == 200
-            body = json.loads(resp.read())
-            assert body == {"sessions": []}
+            raw_body = resp.read()
+            assert resp.getheader("Content-Type") == "application/json"
+            assert resp.getheader("Content-Length") == str(len(raw_body))
+            assert resp.getheader("Cache-Control") == "no-store"
+            assert raw_body == b'{"sessions": []}'
+            assert json.loads(raw_body) == {"sessions": []}
         finally:
             conn.close()
     finally:
