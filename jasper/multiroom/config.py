@@ -136,6 +136,20 @@ TRIM_DB_MAX = 0.0
 _LEADER_ADDR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")
 
 
+def is_private_or_loopback_ipv4(value: str) -> bool:
+    """Whether ``value`` is a private/loopback IPv4 literal.
+
+    This is the one pure acceptance predicate shared by persisted bond-member
+    validation and the /rooms outbound SSRF guard. Hostnames and every IPv6
+    form fail closed; cross-speaker control URLs are deliberately IPv4-only.
+    """
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return ip.version == 4 and (ip.is_private or ip.is_loopback)
+
+
 @dataclass(frozen=True)
 class BondMember:
     """One follower in a leader's bond roster: its LAN IPv4, directory
@@ -514,12 +528,7 @@ def validate_grouping(
             f"{CROSSOVER_HZ_LO} and {CROSSOVER_HZ_HI} Hz"
         )
     if peer_addr:
-        try:
-            ip = ipaddress.ip_address(peer_addr)
-        except ValueError:
-            ip = None
-        if ip is None or ip.version != 4 or not (
-                ip.is_private or ip.is_loopback):
+        if not is_private_or_loopback_ipv4(peer_addr):
             return (
                 f"JASPER_GROUPING_PEER_ADDR={peer_addr!r} is not a "
                 "private/loopback IPv4 address"
@@ -550,11 +559,7 @@ def validate_roster(roster: tuple[BondMember, ...]) -> str | None:
     addr or a malformed channel can never be persisted (it would otherwise become an
     _unbond disable target, or — if a delimiter split it — an orphaned member)."""
     for m in roster:
-        try:
-            ip = ipaddress.ip_address(m.addr)
-        except ValueError:
-            ip = None
-        if ip is None or ip.version != 4 or not (ip.is_private or ip.is_loopback):
+        if not is_private_or_loopback_ipv4(m.addr):
             return (
                 f"JASPER_GROUPING_ROSTER member addr={m.addr!r} is not a "
                 "private/loopback IPv4 address"

@@ -17,16 +17,55 @@ import pytest
 
 from jasper.multiroom.config import (
     ALLOWED_CODECS,
+    BondMember,
     DEFAULT_BUFFER_MS,
     DEFAULT_CLIENT_LATENCY_MS,
     DEFAULT_CODEC,
     is_enabled,
+    is_private_or_loopback_ipv4,
     load_config,
     validate_grouping,
+    validate_roster,
 )
 
 
 # ---------- validate_grouping: the shared rule (load_config + endpoint) ----
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["10.0.0.7", "172.16.0.7", "192.168.1.7", "127.0.0.1"],
+)
+def test_private_or_loopback_ipv4_accepts_only_supported_lan_literals(address):
+    assert is_private_or_loopback_ipv4(address) is True
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "8.8.8.8",
+        "jts3.local",
+        "",
+        "192.168.1.7 ",
+        "::1",
+        "fd00::7",
+        "fe80::7",
+        "::ffff:192.168.1.7",
+    ],
+)
+def test_private_or_loopback_ipv4_rejects_public_names_and_all_ipv6(address):
+    assert is_private_or_loopback_ipv4(address) is False
+
+
+def test_peer_and_roster_validators_share_ipv4_only_policy():
+    base = dict(role="leader", channel="left", bond_id="b", leader_addr="")
+
+    assert "private/loopback IPv4" in validate_grouping(
+        **base, peer_addr="fd00::7",
+    )
+    assert "private/loopback IPv4" in validate_roster(
+        (BondMember(addr="::1", name="peer", channel="right"),),
+    )
 
 
 def test_validate_grouping_valid_leader_and_follower():

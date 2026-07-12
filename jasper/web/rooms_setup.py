@@ -98,7 +98,7 @@ from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..control import household_credential
 from ..mdns import browse_once
 from ..multiroom.airplay_latency import with_airplay_latency_fit
-from ..multiroom.config import DEFAULT_CROSSOVER_HZ
+from ..multiroom.config import DEFAULT_CROSSOVER_HZ, is_private_or_loopback_ipv4
 from ..multiroom.state import parse_grouping_response, read_grouping_state
 from ..peering import config as peering_config
 from ..log_event import log_event
@@ -130,6 +130,7 @@ CONTROL_MDNS_TYPE = "_jasper-control._tcp.local."
 # port 80 (nginx), so the click-through URLs use the bare address.
 CONTROL_HTTP_PORT = 8780
 CONTROL_HTTP_TIMEOUT_SEC = 5.0
+PEER_RESPONSE_MAX_BYTES = 64 * 1024
 
 # Read-only balance display must not make the 7 s /rooms.json poll feel dead
 # when a paired speaker is powered off. Mutations still use the full control
@@ -166,11 +167,11 @@ ROOMS_SNAPSHOT_SLOW_MS = 1000
 # _build_rooms_payload — there are deliberately no per-field _self_name /
 # _self_room / _self_hostname helpers, since each would re-read identity and
 # the three fields must agree within one render. Only the LAN address is a
-# /rooms-local concern (NIC-derived, NOT part of identity), so _self_addresses
+# /rooms-local concern (NIC-derived, NOT part of identity), so self_addresses
 # / _self_address stay below.
 
 
-def _self_addresses() -> set[str]:
+def self_addresses() -> set[str]:
     """Best-effort set of this host's own LAN IPv4 addresses, used to drop
     self from the discovered-peer list. Never raises — a failure just
     yields a smaller set (worst case: a self-row leaks in, which the page
@@ -200,7 +201,7 @@ def _self_addresses() -> set[str]:
 def _self_address(known: set[str] | None = None) -> str:
     """A representative LAN address for the self card. Empty string when we
     genuinely can't resolve one (the module renders it as a dash)."""
-    pool = known if known is not None else _self_addresses()
+    pool = known if known is not None else self_addresses()
     return next(iter(sorted(pool)), "")
 
 
@@ -214,7 +215,7 @@ def _leader_handle() -> str:
     passes leader_addr verbatim to ``snapclient --host``, which resolves a
     .local name fine — no reconcile change needed.) Distinct from
     _self_address, which stays NIC-derived for SSRF self-routing in
-    _post_grouping_to_member / _lan_target."""
+    post_grouping_to_member / lan_target."""
     return identity.read_identity().hostname
 
 
@@ -295,7 +296,7 @@ def _discover_speakers(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict]:
     picking the directory label via `_peer_label` (TXT `name=` vs SRV host vs
     stripped instance name) and defaulting the port to jasper-control's.
 
-    Self is NOT filtered here (the caller does it against _self_addresses so
+    Self is NOT filtered here (the caller does it against self_addresses so
     the filter stays testable). `room` is "" until a `room=` TXT record is
     added to the avahi advertisement — `name=` and `peer_id=` already exist
     on `_jasper-control._tcp` today, so a discovered instance yields
@@ -330,7 +331,7 @@ _disc_lock = threading.Lock()
 _disc_cache: dict = {"at": 0.0, "result": []}
 
 
-def _discover_speakers_cached() -> list[dict]:
+def discover_speakers_cached() -> list[dict]:
     """`_discover_speakers()` behind a TTL cache (DISCOVERY_CACHE_TTL_SEC).
 
     The lock serializes the live browse so concurrent /rooms.json requests
@@ -387,7 +388,7 @@ def _build_rooms_payload() -> dict:
     here) so /rooms agrees with control_advert and the rest of the speaker
     on "who is this speaker" and the three fields are internally consistent
     within a single render; `address` stays best-effort from this host's own
-    NICs (_self_addresses) since that's a /rooms-local concern, not identity.
+    NICs (self_addresses) since that's a /rooms-local concern, not identity.
     The `peering` block is read FRESH from peering.env each call (via
     jasper.peering.config) so a save through POST /peering reflects on the
     next 7 s poll.
@@ -414,7 +415,7 @@ def _build_rooms_payload() -> dict:
     stages["identity_ms"] = round((time.perf_counter() - stage) * 1000)
 
     stage = time.perf_counter()
-    own = _self_addresses()
+    own = self_addresses()
     stages["self_addr_ms"] = round((time.perf_counter() - stage) * 1000)
 
     stage = time.perf_counter()
@@ -446,7 +447,7 @@ def _build_rooms_payload() -> dict:
     }
 
     stage = time.perf_counter()
-    discovered = _discover_speakers_cached()
+    discovered = discover_speakers_cached()
     stages["discovery_ms"] = round((time.perf_counter() - stage) * 1000)
 
     peers: list[dict] = []
@@ -691,7 +692,7 @@ def _generate_bond_id() -> str:
     return "bond-" + uuid.uuid4().hex[:8]
 
 
-def _lan_target(addr: str, known: set[str] | None = None) -> str | None:
+def lan_target(addr: str, known: set[str] | None = None) -> str | None:
     """Resolve ``addr`` to a host safe to call on the home LAN, or None to
     refuse it. The SSRF guard for every cross-speaker control call.
 
@@ -700,28 +701,26 @@ def _lan_target(addr: str, known: set[str] | None = None) -> str | None:
     parse as a PRIVATE or loopback IPv4 — the control API is a home-LAN
     surface, never a public host, and bare hostnames are refused (no DNS
     rebind surface). Returns the host string on accept, None on refuse.
-    Shared by _post_grouping_to_member (POST) and _get_member_grouping (GET)
+    Shared by post_grouping_to_member (POST) and _get_member_grouping (GET)
     so both apply the EXACT same guard.
 
     ``known`` is this host's own addresses (the self-routing set). Pass a
     precomputed set — as the fan-out callers do — to compute it ONCE per
-    operation instead of per peer (``_self_addresses`` does a socket probe +
+    operation instead of per peer (``self_addresses`` does a socket probe +
     ``getaddrinfo``); mirrors :func:`_self_address`'s ``known=`` param. ``None``
     → computed fresh (the standalone-call default)."""
     if known is None:
-        known = _self_addresses()
-    if not addr or addr in known:
+        known = self_addresses()
+    if not addr:
         return "127.0.0.1"
-    try:
-        ip = ipaddress.ip_address(addr)
-    except ValueError:
+    if not is_private_or_loopback_ipv4(addr):
         return None
-    if not (ip.is_private or ip.is_loopback):
-        return None
+    if addr in known:
+        return "127.0.0.1"
     return addr
 
 
-def _request_control_token(handler: BaseHTTPRequestHandler) -> str | None:
+def request_control_token(handler: BaseHTTPRequestHandler) -> str | None:
     """The browser-supplied X-JTS-Token to forward to each member, or None.
 
     The /rooms/ grouping mutations fan out SERVER-side to each member's
@@ -731,7 +730,7 @@ def _request_control_token(handler: BaseHTTPRequestHandler) -> str | None:
     the CSRF gate stays real. A forwarded browser token authenticates only
     browser→own-speaker; the cross-device fan-out's own auth is the household
     credential — a DISTINCT bearer (``X-JTS-Household``) that
-    ``_post_grouping_to_member`` injects from disk. That disk read is the
+    ``post_grouping_to_member`` injects from disk. That disk read is the
     intentional, scoped break of this relay-only rule for a DIFFERENT credential
     and trust domain (docs/HANDOFF-control-plane-auth.md §6); the control-token
     relay-only invariant here is unchanged."""
@@ -739,7 +738,7 @@ def _request_control_token(handler: BaseHTTPRequestHandler) -> str | None:
     return token or None
 
 
-def _post_grouping_to_member(
+def post_grouping_to_member(
     addr: str, body: dict, known: set[str] | None = None,
     *, token: str | None = None, household: str | None = None,
 ) -> tuple[bool, str]:
@@ -750,7 +749,7 @@ def _post_grouping_to_member(
     owns the member plan, and we fan the config out SERVER-side (no CORS) to
     each member's control API on the LAN. ``addr`` empty or one of
     this host's own addresses routes
-    to loopback (configure self). SSRF guard (via :func:`_lan_target`): a
+    to loopback (configure self). SSRF guard (via :func:`lan_target`): a
     remote target must be a PRIVATE / loopback IPv4 — the control API is a
     home-LAN surface, never a public host. ``known`` is forwarded to the guard
     so a fan-out computes the self-address set once. ``token`` is the
@@ -763,13 +762,13 @@ def _post_grouping_to_member(
     it (the unbond path reads it ONCE before it clears, so the concurrent peer
     POSTs can't race the secret out from under each other), else a fresh
     ``household_credential.current()`` read. Reading the secret from disk here is
-    the intentional, documented break of ``_request_control_token``'s relay-only
+    the intentional, documented break of ``request_control_token``'s relay-only
     invariant — a DIFFERENT credential, so injecting IT from disk is correct
     (docs/HANDOFF-control-plane-auth.md §6). A member with no secret yet (unpaired
     or lost) fail-safe-accepts and adopts it. Attaches nothing on a lone speaker
     (no secret). Returns (ok, detail); never raises.
     """
-    target = _lan_target(addr, known)
+    target = lan_target(addr, known)
     if target is None:
         try:
             ipaddress.ip_address(addr)
@@ -791,13 +790,25 @@ def _post_grouping_to_member(
     )
     try:
         with urllib.request.urlopen(req, timeout=CONTROL_HTTP_TIMEOUT_SEC) as r:
-            raw = r.read() if hasattr(r, "read") else b""
+            raw = _read_peer_response(r)
+            if raw is None:
+                return False, "peer response too large"
             return (
                 200 <= r.status < 300,
                 _grouping_set_success_detail(r.status, raw),
             )
     except urllib.error.HTTPError as e:
-        detail = (e.read() or b"").decode(errors="replace")[:200] if e.fp else ""
+        try:
+            raw = _read_peer_response(e) if e.fp else b""
+        except (OSError, http.client.HTTPException):
+            return False, f"HTTP {e.code}"
+        if raw is None:
+            return False, f"HTTP {e.code}: response too large"
+        detail = raw.decode(errors="replace")
+        for secret in (token, cred):
+            if secret:
+                detail = detail.replace(secret, "[redacted]")
+        detail = detail[:200]
         return False, f"HTTP {e.code}: {detail}".strip()
     except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
         # http.client.HTTPException (BadStatusLine / IncompleteRead) is NOT an
@@ -825,6 +836,14 @@ def _grouping_set_success_detail(status: int, raw: bytes) -> str:
     return f"HTTP {status}"
 
 
+def _read_peer_response(response) -> bytes | None:
+    """Read one small peer-control response, or None when it exceeds the cap."""
+    if not hasattr(response, "read"):
+        return b""
+    raw = response.read(PEER_RESPONSE_MAX_BYTES + 1)
+    return raw if len(raw) <= PEER_RESPONSE_MAX_BYTES else None
+
+
 # Bounded concurrency for every cross-speaker fan-out / discovery. Caps the
 # pool so a large household (or a wide bond) can't spawn an unbounded number of
 # blocking-HTTP threads; 8 covers any realistic bond in a single wave.
@@ -841,7 +860,7 @@ def _map_peers(fn, items):
     peer — at six speakers a serial dissolve would otherwise block ~5 s PER
     unreachable peer (10–25 s of dead spinner) — and both share one bounded-pool
     policy instead of two hand-rolled executors. ``fn`` MUST NOT raise: the
-    peer-call helpers (:func:`_post_grouping_to_member`, :func:`_get_member_grouping`)
+    peer-call helpers (:func:`post_grouping_to_member`, :func:`_get_member_grouping`)
     return a value on every failure, and ``pool.map`` would otherwise surface
     the first exception out of the batch. ``pool.map`` preserves submission
     order, so a slow item never reorders results (callers pair them back
@@ -863,7 +882,7 @@ def _fan_out_grouping(
 
     A thin wrapper over :func:`_map_peers`. The self-address set is computed
     ONCE here and shared across every member's SSRF guard (``known=``) rather
-    than recomputed per call inside the pool — ``_self_addresses`` does a
+    than recomputed per call inside the pool — ``self_addresses`` does a
     socket probe + ``getaddrinfo``, so per-peer recompute was N redundant
     lookups across N pool threads. Callers that already hold the set (e.g.
     :func:`_unbond`, which also used it for discovery) pass it in. ``token``
@@ -875,9 +894,9 @@ def _fan_out_grouping(
     live read can't race the clear; leave it None for bond/swap/trim and each
     member reads the current secret itself."""
     if known is None:
-        known = _self_addresses()
+        known = self_addresses()
     return _map_peers(
-        lambda t: _post_grouping_to_member(
+        lambda t: post_grouping_to_member(
             t[0], t[1], known, token=token, household=household,
         ),
         targets,
@@ -894,7 +913,7 @@ def _get_member_grouping(
     Used by :func:`_unbond` to find which siblings share this
     speaker's bond before dissolving it.
 
-    Same SSRF guard as the POST path (via :func:`_lan_target`): a refused /
+    Same SSRF guard as the POST path (via :func:`lan_target`): a refused /
     non-LAN / non-IP target returns None; ``known`` is forwarded so the
     discovery fan-out computes the self-address set once. Returns the peer's
     grouping dict — UNWRAPPED from the ``{"grouping": …}`` envelope that GET
@@ -903,18 +922,11 @@ def _get_member_grouping(
     ANY failure (refused, network error, non-2xx, malformed/truncated HTTP, a
     body that isn't a JSON object, or a null/absent grouping block) — never
     raises, so a single unreachable peer can't break a dissolve."""
-    target = _lan_target(addr, known)
+    target = lan_target(addr, known)
     if target is None:
         return None
-    url = f"http://{target}:{CONTROL_HTTP_PORT}/grouping"
-    req = urllib.request.Request(url, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            if not (200 <= r.status < 300):
-                return None
-            parsed = json.loads(r.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, http.client.HTTPException,
-            UnicodeDecodeError, json.JSONDecodeError):
+    parsed = _get_remote_json(target, "/grouping", timeout=timeout)
+    if parsed is None:
         return None
     # Unwrap the {"grouping": …} envelope via the shared parser — the paired
     # inverse of jasper-control's grouping_response (one home for the shape,
@@ -931,7 +943,7 @@ def _get_member_active_speaker_setup(
     Returns None on any failure so the bond preflight can fail closed before
     writing grouping.env anywhere.
     """
-    target = _lan_target(addr, known)
+    target = lan_target(addr, known)
     if target is None:
         return None
     if target == "127.0.0.1":
@@ -939,18 +951,39 @@ def _get_member_active_speaker_setup(
             return read_active_speaker_setup_status()
         except (OSError, RuntimeError, TypeError, ValueError, KeyError):
             return None
-    url = f"http://{target}:{CONTROL_HTTP_PORT}/state"
+    parsed = _get_remote_json(target, "/state", timeout=timeout)
+    if parsed is None:
+        return None
+    setup = parsed.get("active_speaker_setup")
+    return setup if isinstance(setup, dict) else None
+
+
+def _get_remote_json(
+    target: str,
+    path: str,
+    *,
+    timeout: float,
+) -> dict | None:
+    """GET a JSON object from an already-approved peer target and path.
+
+    Callers own LAN-target validation, constant path selection, timeout policy,
+    and domain parsing. This private transport seam only performs bounded HTTP
+    and returns ``None`` for every status, transport, or decode failure.
+    """
+    url = f"http://{target}:{CONTROL_HTTP_PORT}{path}"
     req = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             if not (200 <= r.status < 300):
                 return None
-            parsed = json.loads(r.read().decode("utf-8"))
+            raw = _read_peer_response(r)
+            if raw is None:
+                return None
+            parsed = json.loads(raw.decode("utf-8"))
     except (urllib.error.URLError, OSError, http.client.HTTPException,
             UnicodeDecodeError, json.JSONDecodeError):
         return None
-    setup = parsed.get("active_speaker_setup") if isinstance(parsed, dict) else None
-    return setup if isinstance(setup, dict) else None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _preflight_grouping_target(
@@ -975,7 +1008,7 @@ def _peer_name_from_directory(addr: str) -> str:
     target = str(addr or "").strip()
     if not target:
         return ""
-    for peer in _discover_speakers_cached():
+    for peer in discover_speakers_cached():
         if str(peer.get("address") or "").strip() == target:
             return str(peer.get("name") or "").strip()
     return ""
@@ -1147,7 +1180,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         targets.append((addr, body))
         target_idx.append(i)
 
-    known = _self_addresses()
+    known = self_addresses()
     preflight = _map_peers(
         lambda t: _preflight_grouping_target(t[0], t[1], known),
         targets,
@@ -1187,7 +1220,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
 
     # Mint the household credential on THIS leader before the fan-out, so each
     # member's /grouping/set carries it (X-JTS-Household, attached live by
-    # _post_grouping_to_member) and adopts it on receipt — locking down every
+    # post_grouping_to_member) and adopts it on receipt — locking down every
     # subsequent cross-device grouping change. Idempotent: re-bonding the same
     # household reuses the existing secret (control-plane-auth §6).
     try:
@@ -1203,7 +1236,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             logger, "household_credential.ensure_failed",
             error=str(exc), level=logging.WARNING,
         )
-    token = _request_control_token(handler)
+    token = request_control_token(handler)
     for slot, (addr, body), (ok, detail) in zip(
         target_idx, targets, _fan_out_grouping(targets, known=known, token=token)
     ):
@@ -1271,7 +1304,7 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     # candidates (it's in `known`) — it's disabled explicitly below, not
     # rediscovered. A peer we can't reach (GET → None) or one in a different
     # bond is simply not added to the disable set.
-    known = _self_addresses()
+    known = self_addresses()
     roster = grouping.get("roster")
     roster_addr = str(grouping.get("peer_addr") or "").strip()
     candidate_groupings: list = []
@@ -1296,13 +1329,13 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
         # can't confirm the peer (offline), still aim the disable at its
         # last known address so a powered-off-then-on follower isn't
         # left stranded by design; the fan-out reports the failure.
-        resolved_addr, _pg, _err = _resolve_bond_peer(grouping, known)
+        resolved_addr, _pg, _err = resolve_bond_peer(grouping, known)
         peer_addrs = [resolved_addr or roster_addr]
     else:
         candidate_addrs = [
             a for a in (
                 str(s.get("address") or "").strip()
-                for s in _discover_speakers_cached()
+                for s in discover_speakers_cached()
             ) if a and a not in known
         ]
         candidate_groupings = _map_peers(
@@ -1329,7 +1362,7 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     # regardless of clear ordering (control-plane-auth §6).
     household = household_credential.current()
     fan_results = _fan_out_grouping(
-        targets, known=known, token=_request_control_token(handler),
+        targets, known=known, token=request_control_token(handler),
         household=household,
     )
     results = [
@@ -1385,7 +1418,7 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     )
 
 
-def _resolve_bond_peer(
+def resolve_bond_peer(
     grouping: dict, known: set[str] | None = None, *,
     grouping_reader=None,
 ) -> tuple[str, dict | None, str]:
@@ -1412,7 +1445,7 @@ def _resolve_bond_peer(
     ``err`` is "" on success; on failure addr is "" and grouping None.
     """
     if known is None:
-        known = _self_addresses()
+        known = self_addresses()
     read_grouping = grouping_reader or _get_member_grouping
     bond_id = str(grouping.get("bond_id") or "").strip()
     roster_addr = str(grouping.get("peer_addr") or "").strip()
@@ -1424,7 +1457,7 @@ def _resolve_bond_peer(
                 and str(pg.get("bond_id") or "").strip() == bond_id):
             return roster_addr, pg, ""
         if roster_name:
-            for row in _discover_speakers_cached():
+            for row in discover_speakers_cached():
                 if str(row.get("name") or "").strip() != roster_name:
                     continue
                 addr = str(row.get("address") or "").strip()
@@ -1452,7 +1485,7 @@ def _resolve_bond_peer(
     candidate_addrs = [
         a for a in (
             str(sp.get("address") or "").strip()
-            for sp in _discover_speakers_cached()
+            for sp in discover_speakers_cached()
         ) if a and a not in known
     ]
     candidate_groupings = _map_peers(
@@ -1498,8 +1531,8 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
         )
         return
 
-    known = _self_addresses()
-    peer_addr_r, peer_grouping, perr = _resolve_bond_peer(grouping, known)
+    known = self_addresses()
+    peer_addr_r, peer_grouping, perr = resolve_bond_peer(grouping, known)
     if perr:
         _send_json(
             handler,
@@ -1553,7 +1586,7 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
         ("", _body(grouping, swapped_self)),
         (peer_addr, _body(peer_grouping, swapped_peer)),
     ]
-    token = _request_control_token(handler)
+    token = request_control_token(handler)
     fan_results = _fan_out_grouping(targets, known=known, token=token)
     results = [
         {"addr": addr, "channel": body["channel"], "ok": ok, "detail": detail}
@@ -1582,7 +1615,7 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
         rb_addr = targets[ok_idx][0]
         rb_grouping = grouping if ok_idx == 0 else peer_grouping
         rb_channel = self_channel if ok_idx == 0 else peer_channel
-        rb_ok, rb_detail = _post_grouping_to_member(
+        rb_ok, rb_detail = post_grouping_to_member(
             rb_addr, _body(rb_grouping, rb_channel), known, token=token,
         )
         rolled_back = bool(rb_ok)
@@ -1673,8 +1706,8 @@ def _pair_balance_snapshot(grouping: dict, known: set[str] | None = None) -> dic
     if not bond_id:
         return {"applicable": False}
     if known is None:
-        known = _self_addresses()
-    peer_addr, peer_grouping, perr = _resolve_bond_peer(
+        known = self_addresses()
+    peer_addr, peer_grouping, perr = resolve_bond_peer(
         grouping, known,
         grouping_reader=_get_member_grouping_for_balance_snapshot,
     )
@@ -1768,8 +1801,8 @@ def _set_pair_balance(handler: BaseHTTPRequestHandler, parsed: dict) -> None:
         )
         return
 
-    known = _self_addresses()
-    peer_addr, peer_grouping, perr = _resolve_bond_peer(grouping, known)
+    known = self_addresses()
+    peer_addr, peer_grouping, perr = resolve_bond_peer(grouping, known)
     if perr:
         _send_json(
             handler,
@@ -1808,13 +1841,13 @@ def _set_pair_balance(handler: BaseHTTPRequestHandler, parsed: dict) -> None:
     ]
     members.sort(key=lambda item: item[0] == "")  # peer first
 
-    token = _request_control_token(handler)
+    token = request_control_token(handler)
     results: list[dict] = []
     applied: list[tuple[str, dict, float]] = []
     rollbacks: list[dict] = []
     all_ok = True
     for addr, member_grouping, trim, original_trim in members:
-        ok, detail = _post_grouping_to_member(
+        ok, detail = post_grouping_to_member(
             addr,
             _grouping_body_with_trim(member_grouping, trim),
             known,
@@ -1834,7 +1867,7 @@ def _set_pair_balance(handler: BaseHTTPRequestHandler, parsed: dict) -> None:
 
     if not all_ok and applied:
         for rb_addr, rb_grouping, original_trim in reversed(applied):
-            rb_ok, rb_detail = _post_grouping_to_member(
+            rb_ok, rb_detail = post_grouping_to_member(
                 rb_addr,
                 _grouping_body_with_trim(rb_grouping, original_trim),
                 known,
@@ -1979,7 +2012,7 @@ def _set_mains_highpass(handler: BaseHTTPRequestHandler) -> None:
         )
         return
     crossover_hz = float(own.get("crossover_hz") or DEFAULT_CROSSOVER_HZ)
-    known = _self_addresses()
+    known = self_addresses()
     targets: list[tuple[str, dict]] = [
         ("", _grouping_set_body(
             own,
@@ -2018,7 +2051,7 @@ def _set_mains_highpass(handler: BaseHTTPRequestHandler) -> None:
         candidate_addrs = [
             a for a in (
                 str(s.get("address") or "").strip()
-                for s in _discover_speakers_cached()
+                for s in discover_speakers_cached()
             ) if a and a not in known
         ]
         candidate_groupings = _map_peers(
@@ -2041,7 +2074,7 @@ def _set_mains_highpass(handler: BaseHTTPRequestHandler) -> None:
             ))
 
     fan_results = _fan_out_grouping(
-        targets, known=known, token=_request_control_token(handler),
+        targets, known=known, token=request_control_token(handler),
     )
     results = [
         {"addr": addr, "ok": ok, "detail": detail}
