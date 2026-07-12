@@ -9,6 +9,11 @@
 > baseline path on a HiFiBerry DAC8x; other production hardware may
 > still use the stereo passthrough path.
 
+> Product behavior, manual-versus-measured parameter ownership, the guided user
+> journey, and delivery acceptance criteria are canonical in
+> [`active-crossover-information-design.md`](active-crossover-information-design.md).
+> This handoff owns the lower-level DSP, topology, and hardware-safety contracts.
+
 > **Implementation status, 2026-06-03:** A0 schema substrate has
 > started. `jasper.active_speaker` now defines import-cheap,
 > side-effect-free preset, channel-map, safety-envelope, crossover
