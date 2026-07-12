@@ -69,10 +69,14 @@ high-signal, always-on observability floor — keep them.
 f-string.** `log_event(logger, "<domain.action>", key=value, …)`
 ([`jasper/log_event.py`](../jasper/log_event.py)) is the one renderer
 for the spine. It is byte-identical to the old hand-written line for
-clean values, but it **logfmt-quotes/escapes** any value containing a
-space, `=`, or quote — so an untrusted field (SSID, USB descriptor,
-Bluetooth/​mDNS name, HA error body, free-text reason) can't corrupt
-the `key=val` parse — and it offers an opt-in JSON sink
+clean values, but it **logfmt-quotes/escapes** any value containing an ASCII
+space, `=`, a quote, a backslash, any ASCII control (C0 plus DEL), NEL, or the
+Unicode line/paragraph separators U+2028/U+2029. Backslash, quote, newline,
+carriage return, and tab use `\\`, `\"`, `\n`, `\r`, and `\t`; the remaining controls
+and separators use literal `\uXXXX` sequences. An untrusted field (SSID, USB
+descriptor, Bluetooth/​mDNS name, HA error body, free-text reason) therefore
+cannot corrupt the `key=val` parse or create a second physical journal line.
+It also offers an opt-in JSON sink
 (`JASPER_LOG_JSON=1`) for machine consumers. Mechanics:
 `level=logging.WARNING` sets severity; `exc_info=True` attaches a
 traceback (the `logger.exception("event=…")` equivalent); a field whose
@@ -528,8 +532,11 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-07-12 (full operational pass; the 13-file deferred
-inventory was cross-checked against the machine-enforced allowlist, including
+Last verified: 2026-07-12 (full operational pass; structured event values with
+backslashes, every ASCII control, NEL, and Unicode line/paragraph separators
+rechecked against the one-physical-line logfmt and JSON contracts; the 13-file
+deferred inventory was cross-checked against the machine-enforced allowlist,
+including
 the completed 92-site / 37-name `sound_setup.py` migration; debug, flight
 recorder, journald, resilience `/state`, and bounded-diagnostics claims were
 re-read against their current owners)

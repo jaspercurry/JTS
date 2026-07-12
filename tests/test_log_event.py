@@ -72,6 +72,55 @@ def test_logfmt_escapes_backslash_before_quote():
     assert line == r'event=x.y path="C:\\dir\\x"'
 
 
+def test_logfmt_escapes_control_characters_onto_one_physical_line():
+    value = "first\nsecond\rthird\tfourth\\tail"
+    line = render_logfmt("wifi.connect", {"ssid": value})
+
+    assert line == (
+        r'event=wifi.connect ssid="first\nsecond\rthird\tfourth\\tail"'
+    )
+    assert line.splitlines() == [line]
+
+
+@pytest.mark.parametrize("codepoint", [*range(0x20), 0x7F])
+def test_logfmt_escapes_every_ascii_control_in_one_field(codepoint):
+    value = "before" + chr(codepoint) + "after"
+    escaped = {
+        0x09: r"\t",
+        0x0A: r"\n",
+        0x0D: r"\r",
+    }.get(codepoint, f"\\u{codepoint:04x}")
+
+    line = render_logfmt("wifi.connect", {"ssid": value, "ok": True})
+
+    assert line == (
+        f'event=wifi.connect ssid="before{escaped}after" ok=true'
+    )
+    assert line.splitlines() == [line]
+    assert line.count(" ssid=") == 1
+
+
+@pytest.mark.parametrize(
+    ("separator", "escaped"),
+    [
+        ("\u0085", r"\u0085"),
+        ("\u2028", r"\u2028"),
+        ("\u2029", r"\u2029"),
+    ],
+)
+def test_logfmt_escapes_unicode_line_separators_in_one_field(separator, escaped):
+    line = render_logfmt(
+        "wifi.connect",
+        {"ssid": "before" + separator + "after", "ok": True},
+    )
+
+    assert line == (
+        f'event=wifi.connect ssid="before{escaped}after" ok=true'
+    )
+    assert line.splitlines() == [line]
+    assert line.count(" ssid=") == 1
+
+
 def test_logfmt_quotes_value_with_equals_sign():
     line = render_logfmt("x.y", {"kv": "a=b"})
     assert line == 'event=x.y kv="a=b"'
@@ -137,6 +186,17 @@ def test_render_json_handles_whitespace_value_without_escaping():
     # In JSON mode the SSID-with-a-space just round-trips as a string.
     obj = json.loads(render_json("wifi_guardian.recover", {"ssid": "My Home Wifi"}))
     assert obj["ssid"] == "My Home Wifi"
+
+
+def test_render_json_control_characters_stay_one_line_and_round_trip():
+    value = (
+        "".join(chr(codepoint) for codepoint in [*range(0x20), 0x7F])
+        + "\u0085\u2028\u2029\\tail"
+    )
+    line = render_json("wifi.connect", {"ssid": value})
+
+    assert line.splitlines() == [line]
+    assert json.loads(line)["ssid"] == value
 
 
 def test_render_json_falls_back_to_str_for_nonjson_values():
