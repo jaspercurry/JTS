@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`767fef2e`): 2026-07-12.
+Last reconciled against `main` (`04d60112`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 387
-- **fixed**: 277
+- **open**: 386
+- **fixed**: 278
 - **in-progress**: 0
 - **mooted**: 12
 - **deferred**: 1
@@ -184,7 +184,7 @@ Last reconciled against `main` (`767fef2e`): 2026-07-12.
 | DA-0243 | `deploy/bin/jasper-deploy-health` :: main() / REQUIRED_ACTIVE_UNITS / _status_jso | should-fix | W4 | **fixed** | profile/source-intent-aware bounded deploy health — #1404 |
 | DA-0244 | `jasper/accessories/wiim_remote_mic.py` :: _find_voice_characteristic | should-fix | W4 | **fixed** | fail-closed unique WiiM voice-report identity — #1403 |
 | DA-0245 | `jasper/active_speaker/commission_wiring.py` :: resolve_commission_inputs:70 | should-fix | W4 | **fixed** | explicit-preset, ready-design, and blocked-fallback contract coverage — #1408 |
-| DA-0246 | `jasper/bluetooth/engine.py` :: _auto_stop_scan | should-fix | W4 | **open** | — |
+| DA-0246 | `jasper/bluetooth/engine.py` :: _auto_stop_scan | should-fix | W4 | **fixed** | bounded fail-closed scan lifecycle and serialized shared-bus recovery — #1409 |
 | DA-0247 | `jasper/bluetooth/scan.py` :: DeviceObserver | should-fix | W4 | **fixed** | bounded device-observer subscriptions, stale-callback guards, and battery-task cleanup — #1405 |
 | DA-0248 | `jasper/cli/aec_tune.py` :: DELAY_FILE / main | should-fix | W4 | **open** | — |
 | DA-0249 | `jasper/cli/doctor/audio.py` :: check_loopback:263 / check_fanin_binary_inst | should-fix | W4 | **fixed** | hardware-free loopback and fan-in installation-check contracts — #1406 |
