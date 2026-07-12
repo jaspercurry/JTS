@@ -86,6 +86,8 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # -----------------------------------------------------------------------------
 # Config
 # -----------------------------------------------------------------------------
@@ -181,27 +183,9 @@ ssh_run() { local hk="$1"; shift; ssh -o ConnectTimeout=8 -o BatchMode=yes "${SS
 # -----------------------------------------------------------------------------
 make_click() {
   log "[leader] generating 1 Hz broadband click track (raw S16LE)..."
-  ssh_run leader "sudo install -d -m 0777 ${TMP_DIR}; python3 - ${CLICK_RAW}" <<'PY'
-import random, struct, sys
-out = sys.argv[1]; sr = 48000
-click_s, gap_s, reps = 0.002, 0.998, 60
-amp = 32767 * (10 ** (-20/20)); rng = random.Random(1234)
-n = int(click_s*sr); raw = [rng.uniform(-1, 1) for _ in range(n)]
-sm, prev = [], 0.0
-for x in raw:
-    prev = 0.5*prev + 0.5*x; sm.append(prev)
-peak = max(abs(v) for v in sm) or 1.0
-click = [int(amp*v/peak) for v in sm]
-gap = b'\x00\x00\x00\x00' * int(gap_s*sr)   # 4 bytes/frame (S16 stereo)
-frames = bytearray()
-for _ in range(reps):
-    for s in click:
-        frames += struct.pack('<hh', s, s)  # identical L and R
-    frames += gap
-with open(out, 'wb') as f:
-    f.write(bytes(frames))
-print(f"click.raw: {out} ({len(frames)} bytes, {len(frames)/4/sr:.1f}s @48k S16 stereo)")
-PY
+  ssh_run leader \
+    "sudo install -d -m 0777 ${TMP_DIR}; python3 - --format raw --output ${CLICK_RAW}" \
+    < "${SCRIPT_DIR}/_make_click_track.py"
 }
 
 # -----------------------------------------------------------------------------
