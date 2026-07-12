@@ -199,9 +199,9 @@ class VolumeCoordinator:
     loop per request — fine at dial-tick rate (~10/s peak), and
     avoids cross-daemon coordination of a shared loop.
 
-    Observers are optional and started via `start_observers()` —
-    voice_daemon does that; control daemon doesn't need them
-    (it doesn't react to inbound source changes).
+    Inbound observers are separate ``VolumeObserver`` instances owned by
+    the voice daemon. The coordinator does not create or own observer tasks;
+    short-lived control-daemon instances therefore need no observer cleanup.
     """
 
     def __init__(
@@ -239,10 +239,6 @@ class VolumeCoordinator:
         # single-threaded but multiple consumers (voice tool, dial
         # via UDS, observer) can race.
         self._lock = asyncio.Lock()
-
-        # Observer tasks (populated by start_observers). None when
-        # observers aren't running.
-        self._observer_tasks: list[asyncio.Task] = []
 
         # Voice-session gate: while True, the source-transition
         # handler is suppressed because the ducker has temporary
@@ -2121,14 +2117,7 @@ class VolumeCoordinator:
     # ------------------------------------------------------------------
 
     async def aclose(self) -> None:
-        for t in self._observer_tasks:
-            t.cancel()
-        for t in self._observer_tasks:
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        self._observer_tasks = []
+        """Retained lifecycle hook; this coordinator owns no async resources."""
 
 
 # ----------------------------------------------------------------------
