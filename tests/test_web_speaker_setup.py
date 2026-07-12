@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import http
 import types
-from email.message import Message
-from io import BytesIO
 
 from jasper.speaker_name import DEFAULT_SPEAKER_NAME, SpeakerNameError
 from jasper.web import speaker_setup
+
+from ._web_test_helpers import FakeHandler
 
 
 def _render(
@@ -114,47 +114,6 @@ def test_speaker_saved_flash_renders_ok_banner():
     assert "banner--ok" in out
 
 
-class _FakeHandler:
-    """Minimal BaseHTTPRequestHandler stand-in for driving do_GET/do_POST."""
-
-    def __init__(self, path: str, body: bytes = b"", cookies: str = "") -> None:
-        self.path = path
-        self.headers = Message()
-        self.headers["Content-Length"] = str(len(body))
-        self.headers["Content-Type"] = "application/x-www-form-urlencoded"
-        if cookies:
-            self.headers["Cookie"] = cookies
-        self.rfile = BytesIO(body)
-        self.wfile = BytesIO()
-        self.status = None
-        self.sent_headers = []
-        self.client_address = ("127.0.0.1", 0)
-
-    def send_response(self, status):
-        self.status = int(status)
-
-    def send_response_only(self, status):
-        self.status = int(status)
-
-    def send_header(self, name, value):
-        self.sent_headers.append((name, value))
-
-    def end_headers(self):
-        pass
-
-    def send_error(self, status, *a, **k):
-        self.status = int(status)
-
-    def address_string(self):
-        return "127.0.0.1"
-
-    def log_message(self, *a, **k):
-        pass
-
-    def header_values(self, name):
-        return [v for n, v in self.sent_headers if n.lower() == name.lower()]
-
-
 def _handler_cls():
     return speaker_setup._make_handler({"state_path": "/tmp/does-not-matter.env"})
 
@@ -171,7 +130,7 @@ def test_get_root_renders_canonical_page(monkeypatch):
         lambda path: types.SimpleNamespace(name="Kitchen", room=""),
     )
     handler = _handler_cls()
-    h = _FakeHandler("/")
+    h = FakeHandler("/")
     handler.do_GET(h)
     assert h.status == 200
     out = h.wfile.getvalue().decode()
@@ -181,7 +140,7 @@ def test_get_root_renders_canonical_page(monkeypatch):
 
 def test_post_unknown_route_404s():
     handler = _handler_cls()
-    h = _FakeHandler("/nope", body=b"")
+    h = FakeHandler("/nope", body=b"")
     handler.do_POST(h)
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 
@@ -197,7 +156,7 @@ def test_post_save_validation_error_redirects_with_flash(monkeypatch):
     # csrf_token is the form field (_common.CSRF_FORM_FIELD); jts_csrf is the
     # double-submit cookie. They must carry the same token to pass guard_mutating_request.
     body = ("csrf_token=" + token + "&name=waytoolong").encode()
-    h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
+    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
     handler.do_POST(h)
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert h.header_values("Location") == ["./"]
@@ -228,7 +187,7 @@ def test_post_save_applies_rename_and_restarts(monkeypatch):
     handler = _handler_cls()
     # csrf_token = form field (CSRF_FORM_FIELD); jts_csrf = double-submit cookie.
     body = ("csrf_token=" + token + "&name=NewName&room=Kitchen").encode()
-    h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
+    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
     handler.do_POST(h)
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
@@ -245,6 +204,6 @@ def test_post_save_rejects_bad_csrf(monkeypatch):
     # Form-field token (csrf_token) deliberately differs from the cookie token,
     # so the double-submit compare fails -> 403, no rename.
     body = b"csrf_token=" + b"a" * 64 + b"&name=NewName"
-    h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + "b" * 64)
+    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + "b" * 64)
     handler.do_POST(h)
     assert h.status == int(http.HTTPStatus.FORBIDDEN)
