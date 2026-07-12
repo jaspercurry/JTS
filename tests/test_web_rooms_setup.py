@@ -350,6 +350,8 @@ def test_rooms_json_is_application_json(monkeypatch):
     h = _get("/rooms.json")
     assert h.status == 200
     assert h.header_values("Content-Type") == ["application/json"]
+    body = h.wfile.getvalue()
+    assert h.header_values("Content-Length") == [str(len(body))]
     # No-store: the directory is live state, never a cached snapshot.
     assert "no-store" in (h.header_values("Cache-Control") or [""])[0]
 

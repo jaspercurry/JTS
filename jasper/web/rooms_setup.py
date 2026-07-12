@@ -112,6 +112,7 @@ from ._common import (
     restart_voice_daemon,
     restart_systemd_units,
     send_html_response,
+    send_json_response,
     write_env_file,
 )
 
@@ -578,13 +579,7 @@ def _render_page(*, csrf_token: str = "") -> bytes:
 
 
 def _send_json(handler: BaseHTTPRequestHandler, payload: dict, *, status: int = 200) -> None:
-    body = json.dumps(payload).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Cache-Control", "no-store")
-    handler.end_headers()
-    handler.wfile.write(body)
+    send_json_response(handler, payload, status=status)
 
 
 # Max JSON body on POST /peering. The real payload is ~30 B

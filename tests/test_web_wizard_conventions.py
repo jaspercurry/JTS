@@ -39,9 +39,7 @@ _LEGACY_JSON_RESPONSE_ASSEMBLERS = {
     "bluetooth_setup.py",
     "correction_setup.py",
     "dial_setup.py",
-    "rooms_setup.py",
     "sound_setup.py",
-    "wake_corpus_setup.py",
     "wifi_setup.py",
 }
 
@@ -109,8 +107,10 @@ def test_local_json_responses_use_the_shared_response_helper():
 def test_migrated_local_object_responses_use_object_helper_not_byte_helper():
     for filename in (
         "home_assistant_setup.py",
+        "rooms_setup.py",
         "sources_setup.py",
         "spotify_setup.py",
+        "wake_corpus_setup.py",
     ):
         source = (Path("jasper/web") / filename).read_text()
         assert "send_json_response(" in source

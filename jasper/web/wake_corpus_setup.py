@@ -218,6 +218,7 @@ from jasper.web._common import (
     canonical_page,
     guard_read_request,
     json_island,
+    send_json_response,
     toggle_html,
 )
 
@@ -301,13 +302,7 @@ class _Handler(BaseHTTPRequestHandler):
         logger.info("%s - %s", self.address_string(), fmt % args)
 
     def _send_json(self, body: Any, status: int = 200) -> None:
-        data = json.dumps(body).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
+        send_json_response(self, body, status=status)
 
     def _send_error_json(self, status: int, message: str) -> None:
         self._send_json({"error": message}, status=status)
