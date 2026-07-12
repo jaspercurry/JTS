@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import pytest
+from dbus_next import Variant
+
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_UDP_PORT
 from jasper.accessories.wiim_remote_mic import (
     BLUEZ_DEVICE_IFACE,
@@ -17,9 +20,104 @@ from jasper.accessories.wiim_remote_mic import (
     WIIM_VOICE_PACKET_BYTES,
     WIIM_VOICE_PACKET_SAMPLES,
     WIIM_VOICE_REPORT_REFERENCE,
+    DeviceNotReady,
     WiimVoicePacketStream,
+    _find_voice_characteristic,
     voice_characteristic_candidates,
 )
+
+
+class _FakeDescriptor:
+    def __init__(self, result: object) -> None:
+        self._result = result
+
+    async def call_read_value(self, options: dict) -> object:
+        assert options == {}
+        if isinstance(self._result, Exception):
+            raise self._result
+        return self._result
+
+
+class _FakeProxy:
+    def __init__(self, result: object) -> None:
+        self._result = result
+
+    def get_interface(self, interface: str) -> _FakeDescriptor:
+        assert interface == BLUEZ_GATT_DESCRIPTOR_IFACE
+        return _FakeDescriptor(self._result)
+
+
+class _FakeBus:
+    def __init__(self, results: dict[str, object] | None = None) -> None:
+        self.results = results or {}
+        self.introspected: list[str] = []
+
+    async def introspect(self, service: str, path: str) -> str:
+        assert service == "org.bluez"
+        self.introspected.append(path)
+        return path
+
+    def get_proxy_object(self, service: str, path: str, intro: str) -> _FakeProxy:
+        assert service == "org.bluez"
+        assert intro == path
+        return _FakeProxy(self.results[path])
+
+
+def _managed_voice_reports(
+    values: list[object | None],
+    *,
+    descriptorless: int = 0,
+    separate_devices: bool = False,
+) -> tuple[dict[str, dict[str, dict[str, object]]], list[str], list[str]]:
+    device_prefix = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE"
+    managed: dict[str, dict[str, dict[str, object]]] = {}
+
+    def add_device(index: int) -> str:
+        device = (
+            f"{device_prefix}_{index:02X}"
+            if separate_devices
+            else f"{device_prefix}_FF"
+        )
+        managed.setdefault(
+            device,
+            {
+                BLUEZ_DEVICE_IFACE: {
+                    "Connected": True,
+                    "Alias": "WiiM Remote 2",
+                }
+            },
+        )
+        return device
+
+    chars: list[str] = []
+    descs: list[str] = []
+    for index, value in enumerate(values):
+        device = add_device(index)
+        char = f"{device}/service0020/char{index:04x}"
+        desc = f"{char}/desc0001"
+        chars.append(char)
+        descs.append(desc)
+        managed[char] = {
+            BLUEZ_GATT_CHARACTERISTIC_IFACE: {
+                "UUID": HID_REPORT_UUID,
+                "Flags": ["notify"],
+            }
+        }
+        descriptor_props: dict[str, object] = {"UUID": REPORT_REFERENCE_UUID}
+        if value is not None:
+            descriptor_props["Value"] = value
+        managed[desc] = {BLUEZ_GATT_DESCRIPTOR_IFACE: descriptor_props}
+    for offset in range(descriptorless):
+        device = add_device(len(values) + offset)
+        char = f"{device}/service0020/char{len(values) + offset:04x}"
+        chars.append(char)
+        managed[char] = {
+            BLUEZ_GATT_CHARACTERISTIC_IFACE: {
+                "UUID": HID_REPORT_UUID,
+                "Flags": ["notify"],
+            }
+        }
+    return managed, chars, descs
 
 
 def _packet(seq: int) -> bytes:
@@ -138,3 +236,94 @@ def test_voice_characteristic_candidates_ignore_disconnected_wiim():
     }
 
     assert voice_characteristic_candidates(managed) == []
+
+
+@pytest.mark.asyncio
+async def test_find_voice_characteristic_uses_only_cached_matching_report():
+    managed, chars, _descs = _managed_voice_reports(
+        [b"\x01\x01", Variant("ay", WIIM_VOICE_REPORT_REFERENCE)]
+    )
+    bus = _FakeBus()
+
+    match = await _find_voice_characteristic(
+        bus,
+        managed,
+        name_regex="WiiM Remote 2",
+    )
+
+    assert match.characteristic_path == chars[1]
+    assert bus.introspected == []
+
+
+@pytest.mark.asyncio
+async def test_find_voice_characteristic_reads_missing_descriptor_value():
+    managed, chars, descs = _managed_voice_reports([None])
+    bus = _FakeBus({descs[0]: Variant("ay", WIIM_VOICE_REPORT_REFERENCE)})
+
+    match = await _find_voice_characteristic(
+        bus,
+        managed,
+        name_regex="WiiM Remote 2",
+    )
+
+    assert match.characteristic_path == chars[0]
+    assert bus.introspected == [descs[0]]
+
+
+@pytest.mark.asyncio
+async def test_find_voice_characteristic_rejects_no_match_and_descriptorless():
+    managed, _chars, _descs = _managed_voice_reports(
+        [b"\x02\x01"],
+        descriptorless=1,
+    )
+
+    with pytest.raises(DeviceNotReady, match="voice report not found"):
+        await _find_voice_characteristic(
+            _FakeBus(),
+            managed,
+            name_regex="WiiM Remote 2",
+        )
+
+
+@pytest.mark.asyncio
+async def test_find_voice_characteristic_rejects_multiple_matches_with_guidance():
+    managed, _chars, _descs = _managed_voice_reports(
+        [WIIM_VOICE_REPORT_REFERENCE, WIIM_VOICE_REPORT_REFERENCE],
+        separate_devices=True,
+    )
+
+    with pytest.raises(
+        DeviceNotReady,
+        match="leave exactly one remote connected and retry",
+    ):
+        await _find_voice_characteristic(
+            _FakeBus(),
+            managed,
+            name_regex="WiiM Remote 2",
+        )
+
+
+@pytest.mark.asyncio
+async def test_find_voice_characteristic_propagates_descriptor_read_error():
+    managed, _chars, descs = _managed_voice_reports([None])
+    bus = _FakeBus({descs[0]: OSError("BlueZ read failed")})
+
+    with pytest.raises(OSError, match="BlueZ read failed"):
+        await _find_voice_characteristic(
+            bus,
+            managed,
+            name_regex="WiiM Remote 2",
+        )
+
+
+@pytest.mark.asyncio
+async def test_find_voice_characteristic_scans_after_match_and_propagates_error():
+    managed, _chars, descs = _managed_voice_reports([WIIM_VOICE_REPORT_REFERENCE, None])
+    bus = _FakeBus({descs[1]: OSError("later BlueZ read failed")})
+
+    with pytest.raises(OSError, match="later BlueZ read failed"):
+        await _find_voice_characteristic(
+            bus,
+            managed,
+            name_regex="WiiM Remote 2",
+        )

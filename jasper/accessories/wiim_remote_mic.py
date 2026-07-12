@@ -313,6 +313,7 @@ async def _find_voice_characteristic(
         managed_objects,
         name_regex=name_regex,
     )
+    match: VoiceCharacteristicCandidate | None = None
     for candidate in candidates:
         if candidate.descriptor_path is None:
             continue
@@ -324,7 +325,14 @@ async def _find_voice_characteristic(
         if not value:
             value = await _read_descriptor_value(bus, candidate.descriptor_path)
         if value == WIIM_VOICE_REPORT_REFERENCE:
-            return candidate
+            if match is not None:
+                raise DeviceNotReady(
+                    "multiple WiiM Remote 2 voice reports found; "
+                    "leave exactly one remote connected and retry"
+                )
+            match = candidate
+    if match is not None:
+        return match
     raise DeviceNotReady("connected WiiM Remote 2 voice report not found")
 
 
