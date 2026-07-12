@@ -183,7 +183,6 @@ from .runtime_contract import (
     active_topology_requires_roleful_graph,
     classify_camilla_graph,
     classify_output_contract,
-    running_graph_violations,
     safe_graph_for_current_topology,
 )
 from .commission_ramp import (
@@ -432,7 +431,6 @@ __all__ = [
     "record_summed_test_artifact",
     "record_summed_validation",
     "resolve_active_playback_device",
-    "running_graph_violations",
     "rollback_driver_commissioning_config",
     "rollback_protected_startup_config",
     "save_design_draft",

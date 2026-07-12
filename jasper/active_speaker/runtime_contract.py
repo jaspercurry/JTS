@@ -1746,22 +1746,6 @@ def outputd_active_lane_decision(
     )
 
 
-def running_graph_violations(
-    topology: OutputTopology,
-    running_config_path: str | Path | None = None,
-    *,
-    text: str | None = None,
-    staged_config: dict[str, Any] | None = None,
-) -> list[dict[str, str]]:
-    graph = classify_camilla_graph(
-        running_config_path,
-        topology,
-        text=text,
-        staged_config=staged_config,
-    )
-    return list(graph.issues) if not graph.allowed else []
-
-
 def safe_graph_for_current_topology(
     topology: OutputTopology | None = None,
     *,
