@@ -2897,6 +2897,119 @@ def test_derive_corrections_stale_summed_evidence_never_overrides_manual_even_wh
     assert corrections["woofer"]["inverted"] is False
 
 
+def test_derive_corrections_automatic_tier_unaffected_by_later_reverse_capture(
+    tmp_path: Path,
+) -> None:
+    """Overwrite-bug regression, through REAL persistence (not a hand-built
+    measurements dict, unlike the fixtures above): baseline_profile's
+    automatic delay/polarity tier reads
+    measurements["latest_summed_by_group"] (measurement.py: the latest
+    IN-PHASE record per group). A reverse-polarity capture recorded AFTER
+    the in-phase evidence -- which can ALSO read validated=True, since a
+    formed reverse null IS the pass for a reverse capture -- must not
+    silently override or corrupt the delay/polarity the automatic tier
+    already derived from the in-phase capture."""
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    region = CrossoverRegion(
+        id="woofer_tweeter_1600hz",
+        lower_driver="woofer",
+        upper_driver="tweeter",
+        fc_hz=1600.0,
+        delay_target_driver="tweeter",
+        delay_ms=0.35,  # persisted (manual) delay
+    )
+    preset = _duck_preset(crossover_regions=[region])
+    crossover_preview = {"updated_at": "2026-06-19T12:10:00Z"}
+
+    record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "completed",
+                "backend": "aplay",
+                "playback_id": "summed-playback-audible",
+                "audio_emitted": True,
+                "artifact": {
+                    "wav_basename": "tone.wav",
+                    "metadata_basename": "tone.json",
+                    "target_output_indices": [0, 1],
+                    "channel_count": 2,
+                },
+                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
+            },
+        },
+        state_path=state_path,
+        now="2026-06-19T12:15:00Z",
+    )
+    record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40.0,
+            "summed_test_id": "summed-playback-audible",
+            "polarity": "invert_woofer",
+            "delay_ms": 1.2,
+            "delay_target_role": "tweeter",
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+        now="2026-06-19T12:20:00Z",  # fresher than the preview
+    )
+    measurements = load_measurement_state(topology, state_path=state_path)
+    corrections, _issues, meta = _derive_corrections(
+        preset, crossover_preview, measurements, tuning_owner="automatic",
+    )
+    # Sanity: this IS the fresh-automatic-override path (mirrors
+    # test_derive_corrections_automatic_fresh_evidence_overrides_persisted_
+    # delay_and_adds_polarity above), so the later assertions are a real
+    # regression check, not a no-op.
+    assert corrections["tweeter"]["delay_ms"] == 1.2
+    assert corrections["woofer"]["inverted"] is True
+    assert meta["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MEASURED
+
+    # A reverse-polarity capture, fresher still, with CONFLICTING evidence --
+    # if it leaked into the automatic tier, this would flip the delay target
+    # and polarity onto the wrong role.
+    record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -55.0,
+            "summed_test_id": "summed-playback-audible",
+            "polarity": "invert_tweeter",
+            "delay_ms": 9.9,
+            "delay_target_role": "woofer",
+            "acoustic": {
+                "verdict": "blend_ok",
+                "null_depth_db": 22.0,
+                "expect_null": True,
+                "calibrated": True,
+            },
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+        now="2026-06-19T12:30:00Z",
+    )
+    measurements_after = load_measurement_state(topology, state_path=state_path)
+    corrections_after, _issues_after, meta_after = _derive_corrections(
+        preset, crossover_preview, measurements_after, tuning_owner="automatic",
+    )
+
+    # Unaffected: still the ORIGINAL in-phase evidence, not the reverse
+    # capture's conflicting values.
+    assert corrections_after["tweeter"]["delay_ms"] == 1.2
+    assert corrections_after["woofer"]["inverted"] is True
+    assert corrections_after["woofer"]["delay_ms"] == 0.0
+    assert (
+        meta_after["corrections_provenance"]["tweeter"]["delay_ms"]
+        == PROVENANCE_MEASURED
+    )
+
+
 def test_is_fresh_usable_summed_alignment_fails_closed_on_malformed_timestamps():
     fresh_shaped = {"validated": True, "created_at": "2026-06-19T12:20:00Z"}
     assert _is_fresh_usable_summed_alignment(fresh_shaped, "2026-06-19T12:10:00Z") is True

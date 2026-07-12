@@ -40,6 +40,7 @@ from jasper.active_speaker.commissioning_capture import (
     record_driver_acoustic_capture,
     record_driver_repeat_aggregate,
     record_summed_acoustic_capture,
+    region_for_fc,
 )
 from jasper.active_speaker.driver_acoustics import (
     DRIVER_VERDICTS,
@@ -47,11 +48,21 @@ from jasper.active_speaker.driver_acoustics import (
     DriverAcousticResult,
     SummedAcousticResult,
 )
-from jasper.active_speaker.measurement import record_summed_validation
+from jasper.active_speaker.measurement import (
+    MAX_SUMMED_RECORDS,
+    load_measurement_state,
+    record_summed_validation,
+)
 from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.output_topology import OutputTopology
 
 # Canonical fixtures reused across the active-speaker suite.
-from tests.test_active_speaker_measurement import _safe_session, _topology
+from tests.test_active_speaker_measurement import (
+    _safe_session,
+    _summed_acoustic,
+    _three_way_topology,
+    _topology,
+)
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
 
@@ -1356,3 +1367,405 @@ def test_reserved_crossover_events_are_never_emitted():
             if f'"{name}"' in text or f"'{name}'" in text:
                 offenders.append(str(path.relative_to(root.parent)))
         assert offenders == [], f"{name} has a call site: {offenders}"
+
+
+# --- Paired summed evidence + multi-region proposals (lane E, Slice 2) ------
+
+
+def _capture_summed(
+    tmp_path: Path,
+    preset: ActiveSpeakerPreset,
+    result: SummedAcousticResult,
+    *,
+    topology: OutputTopology | None = None,
+    crossover_fc_hz: float | None = None,
+    state_path: Path | None = None,
+    now: str | None = None,
+    wav_name: str = "cap.wav",
+) -> dict:
+    """Run the REAL record_summed_acoustic_capture -> record_summed_validation
+    wire (region stamping included), unlike most tests above which spy on
+    ``record``."""
+    return record_summed_acoustic_capture(
+        topology or _topology(),
+        preset,
+        speaker_group_id="mono",
+        captured_wav=tmp_path / wav_name,
+        sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+        crossover_fc_hz=crossover_fc_hz,
+        expect_null=result.expect_null,
+        analyze=lambda *a, **k: result,
+        state_path=state_path or (tmp_path / "measurements.json"),
+        now=now,
+    )
+
+
+def test_record_summed_acoustic_capture_stamps_region_matching_analyzed_fc(
+    tmp_path: Path,
+) -> None:
+    out = _capture_summed(
+        tmp_path, _two_way(), _summed_result("blend_ok"),
+    )
+    record = out["measurement"]["summed_validations"][-1]
+    assert record["region"] == {
+        "lower_role": "woofer",
+        "upper_role": "tweeter",
+        "fc_hz": 1600.0,
+    }
+
+
+def test_record_summed_acoustic_capture_stamps_region_per_three_way_crossover(
+    tmp_path: Path,
+) -> None:
+    preset = _three_way()
+    topology = _three_way_topology()
+
+    lower_out = _capture_summed(
+        tmp_path,
+        preset,
+        _summed_result("blend_ok", observed=-34.0),
+        topology=topology,
+        crossover_fc_hz=350.0,
+        wav_name="lower.wav",
+    )
+    lower_record = lower_out["measurement"]["summed_validations"][-1]
+    assert lower_record["region"] == {
+        "lower_role": "woofer", "upper_role": "mid", "fc_hz": 350.0,
+    }
+
+    upper_out = _capture_summed(
+        tmp_path,
+        preset,
+        _summed_result("blend_ok", observed=-34.0),
+        topology=topology,
+        crossover_fc_hz=2500.0,
+        wav_name="upper.wav",
+    )
+    upper_record = upper_out["measurement"]["summed_validations"][-1]
+    assert upper_record["region"] == {
+        "lower_role": "mid", "upper_role": "tweeter", "fc_hz": 2500.0,
+    }
+
+
+def test_record_summed_acoustic_capture_unresolvable_fc_stamps_region_none(
+    tmp_path: Path,
+) -> None:
+    # A caller-supplied fc that matches no preset region: region_for_fc has
+    # nothing to resolve, so the persisted record stamps region=None rather
+    # than guessing.
+    out = _capture_summed(
+        tmp_path,
+        _two_way(),
+        _summed_result("blend_ok"),
+        crossover_fc_hz=999.0,
+    )
+    record = out["measurement"]["summed_validations"][-1]
+    assert record["region"] is None
+    assert region_for_fc(_two_way(), 999.0) is None
+
+
+def test_build_proposal_three_way_returns_two_region_proposals(
+    tmp_path: Path,
+) -> None:
+    """Spec: 'Support every crossover region in a three-way system.' Paired
+    evidence for BOTH regions of a 3-way yields two independent proposals,
+    each with its own region roles/fc and its own margin; the backward-
+    compatible top-level 'proposal' equals the lowest-fc region's dict."""
+    preset = _three_way()
+    topology = _three_way_topology()
+    state_path = tmp_path / "measurements.json"
+
+    # Region 1 (woofer/mid, fc=350): strong keep evidence (reverse null much
+    # deeper than in-phase).
+    _capture_summed(
+        tmp_path, preset,
+        SummedAcousticResult(
+            verdict="blend_ok", null_depth_db=2.0, crossover_fc_hz=350.0,
+            observed_mic_dbfs=-34.0, mic_clipping=False,
+            quality={"failed": False, "rms_dbfs": -34.0},
+            expect_null=False, calibrated=True,
+        ),
+        topology=topology, crossover_fc_hz=350.0, state_path=state_path,
+        wav_name="r1_inphase.wav", now="2026-07-11T12:00:00Z",
+    )
+    _capture_summed(
+        tmp_path, preset,
+        SummedAcousticResult(
+            verdict="blend_ok", null_depth_db=28.0, crossover_fc_hz=350.0,
+            observed_mic_dbfs=-50.0, mic_clipping=False,
+            quality={"failed": False, "rms_dbfs": -50.0},
+            expect_null=True, calibrated=True,
+        ),
+        topology=topology, crossover_fc_hz=350.0, state_path=state_path,
+        wav_name="r1_reverse.wav", now="2026-07-11T12:01:00Z",
+    )
+
+    # Region 2 (mid/tweeter, fc=2500): strong invert evidence (in-phase null
+    # much deeper than reverse).
+    _capture_summed(
+        tmp_path, preset,
+        SummedAcousticResult(
+            verdict="polarity_or_delay_problem", null_depth_db=30.0,
+            crossover_fc_hz=2500.0, observed_mic_dbfs=-50.0,
+            mic_clipping=False, quality={"failed": False, "rms_dbfs": -50.0},
+            expect_null=False, calibrated=True,
+        ),
+        topology=topology, crossover_fc_hz=2500.0, state_path=state_path,
+        wav_name="r2_inphase.wav", now="2026-07-11T12:02:00Z",
+    )
+    _capture_summed(
+        tmp_path, preset,
+        SummedAcousticResult(
+            verdict="polarity_or_delay_problem", null_depth_db=3.0,
+            crossover_fc_hz=2500.0, observed_mic_dbfs=-34.0,
+            mic_clipping=False, quality={"failed": False, "rms_dbfs": -34.0},
+            expect_null=True, calibrated=True,
+        ),
+        topology=topology, crossover_fc_hz=2500.0, state_path=state_path,
+        wav_name="r2_reverse.wav", now="2026-07-11T12:03:00Z",
+    )
+
+    measurements = load_measurement_state(topology, state_path=state_path)
+    out = build_crossover_alignment_proposal(
+        preset, measurements, requested_mode=ca.PHASE_AWARE,
+    )
+    assert out["status"] == "ok"
+    assert len(out["proposals"]) == 2
+
+    region1 = out["proposals"][0]
+    assert region1["region"] == {
+        "lower_role": "woofer", "upper_role": "mid", "fc_hz": 350.0,
+    }
+    proposal1 = region1["proposal"]
+    assert proposal1["polarity_action"] == ca.POLARITY_KEEP
+    assert proposal1["polarity_margin_db"] == pytest.approx(28.0 - 2.0)
+
+    region2 = out["proposals"][1]
+    assert region2["region"] == {
+        "lower_role": "mid", "upper_role": "tweeter", "fc_hz": 2500.0,
+    }
+    proposal2 = region2["proposal"]
+    assert proposal2["polarity_action"] == ca.POLARITY_INVERT
+    assert proposal2["polarity"] == "invert_tweeter"
+    assert proposal2["polarity_margin_db"] == pytest.approx(3.0 - 30.0)
+
+    # Backward compat: the flat top-level fields mirror the LOWEST region.
+    assert out["proposal"] == proposal1
+    assert out["mode"]["mode"] == ca.PHASE_AWARE
+
+
+def test_build_proposal_per_region_calibration_gate_is_independent(
+    tmp_path: Path,
+) -> None:
+    """An uncalibrated capture in region 2 downgrades ONLY region 2's
+    proposal to magnitude_only/unauthorized; region 1 (fully calibrated)
+    stays phase_aware."""
+    preset = _three_way()
+    topology = _three_way_topology()
+    state_path = tmp_path / "measurements.json"
+
+    _capture_summed(
+        tmp_path, preset,
+        SummedAcousticResult(
+            verdict="blend_ok", null_depth_db=2.0, crossover_fc_hz=350.0,
+            observed_mic_dbfs=-34.0, mic_clipping=False,
+            quality={"failed": False, "rms_dbfs": -34.0},
+            expect_null=False, calibrated=True,
+        ),
+        topology=topology, crossover_fc_hz=350.0, state_path=state_path,
+        wav_name="r1.wav", now="2026-07-11T12:00:00Z",
+    )
+    # Region 2's summed capture is UNCALIBRATED (a phone, not a calibrated
+    # measurement mic).
+    _capture_summed(
+        tmp_path, preset,
+        SummedAcousticResult(
+            verdict="blend_ok", null_depth_db=2.0, crossover_fc_hz=2500.0,
+            observed_mic_dbfs=-34.0, mic_clipping=False,
+            quality={"failed": False, "rms_dbfs": -34.0},
+            expect_null=False, calibrated=False,
+        ),
+        topology=topology, crossover_fc_hz=2500.0, state_path=state_path,
+        wav_name="r2.wav", now="2026-07-11T12:01:00Z",
+    )
+
+    measurements = load_measurement_state(topology, state_path=state_path)
+    out = build_crossover_alignment_proposal(
+        preset, measurements, requested_mode=ca.PHASE_AWARE,
+    )
+    proposal1 = out["proposals"][0]["proposal"]
+    proposal2 = out["proposals"][1]["proposal"]
+
+    assert proposal1["mode"] == ca.PHASE_AWARE
+    assert proposal1["authorized"] is True
+
+    assert proposal2["mode"] == ca.MAGNITUDE_ONLY
+    assert proposal2["authorized"] is False
+
+
+def test_build_proposal_reaches_both_captures_margin_through_persisted_pairs(
+    tmp_path: Path,
+) -> None:
+    """Paired persistence guard (spec: 'Retain both normal- and reverse-
+    polarity summed evidence per crossover region'). Recording an in-phase
+    then a reverse summed capture for one region leaves BOTH readable in
+    latest_summed_pairs_by_group, and the proposal computes polarity from the
+    reverse-vs-in-phase margin -- the shipped proposer's both-captures
+    branch, now reachable end-to-end through persisted state rather than a
+    hand-built dict."""
+    preset = _two_way()
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+
+    _capture_summed(
+        tmp_path, preset,
+        SummedAcousticResult(
+            verdict="blend_ok", null_depth_db=2.0, crossover_fc_hz=1600.0,
+            observed_mic_dbfs=-34.0, mic_clipping=False,
+            quality={"failed": False, "rms_dbfs": -34.0},
+            expect_null=False, calibrated=True,
+        ),
+        topology=topology, state_path=state_path,
+        wav_name="inphase.wav", now="2026-07-11T12:00:00Z",
+    )
+    _capture_summed(
+        tmp_path, preset,
+        SummedAcousticResult(
+            verdict="blend_ok", null_depth_db=18.0, crossover_fc_hz=1600.0,
+            observed_mic_dbfs=-50.0, mic_clipping=False,
+            quality={"failed": False, "rms_dbfs": -50.0},
+            expect_null=True, calibrated=True,
+        ),
+        topology=topology, state_path=state_path,
+        wav_name="reverse.wav", now="2026-07-11T12:01:00Z",
+    )
+
+    measurements = load_measurement_state(topology, state_path=state_path)
+    pair = measurements["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair["in_phase"]["acoustic"]["expect_null"] is False
+    assert pair["reverse"]["acoustic"]["expect_null"] is True
+
+    out = build_crossover_alignment_proposal(
+        preset, measurements, requested_mode=ca.PHASE_AWARE,
+    )
+    proposal = out["proposal"]
+    assert proposal["in_phase_null_depth_db"] == 2.0
+    assert proposal["reverse_null_depth_db"] == 18.0
+    assert proposal["polarity_margin_db"] == pytest.approx(18.0 - 2.0)
+    assert proposal["polarity_action"] == ca.POLARITY_KEEP
+
+
+def test_max_summed_records_eviction_degrades_to_single_capture_fallback(
+    tmp_path: Path,
+) -> None:
+    """MAX_SUMMED_RECORDS headroom: a 3-way needs 2 regions x 2 kinds = 4 live
+    slots; MAX_SUMMED_RECORDS is far above that, so no bump is needed. This
+    pins the degrade-gracefully behavior when the ring evicts one side of a
+    pair anyway (many repeat captures over a long session): the proposer
+    falls back to its existing single-capture path rather than raising or
+    mispairing a stale evicted record back in."""
+    preset = _two_way()
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    region = {"lower_role": "woofer", "upper_role": "tweeter", "fc_hz": 1600.0}
+
+    # The reverse capture that will fall off the ring.
+    record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "acoustic": _summed_acoustic(null_depth_db=22.0, expect_null=True),
+            "region": region,
+        },
+        state_path=state_path,
+        now="2026-07-11T12:00:00Z",
+    )
+
+    # MAX_SUMMED_RECORDS more in-phase fillers push the reverse capture above
+    # out of the retained [-MAX_SUMMED_RECORDS:] window.
+    state = {}
+    for i in range(MAX_SUMMED_RECORDS):
+        state = record_summed_validation(
+            topology,
+            {
+                "speaker_group_id": "mono",
+                "outcome": "blend_ok",
+                "acoustic": _summed_acoustic(
+                    null_depth_db=2.0, expect_null=False,
+                ),
+                "region": region,
+            },
+            state_path=state_path,
+            now=f"2026-07-11T13:{i:02d}:00Z",
+        )
+
+    assert len(state["summed_validations"]) == MAX_SUMMED_RECORDS
+    pair = state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair["reverse"] is None
+    assert pair["in_phase"] is not None
+
+    out = build_crossover_alignment_proposal(
+        preset, state, requested_mode=ca.PHASE_AWARE,
+    )
+    assert out["status"] == "ok"
+    proposal = out["proposal"]
+    # Single-capture (in-phase-only) fallback -- not a raised error, and not
+    # a margin computed against the evicted reverse record.
+    assert proposal["reverse_null_depth_db"] is None
+    assert proposal["in_phase_null_depth_db"] == 2.0
+    assert proposal["polarity_action"] == ca.POLARITY_KEEP
+
+
+# --- _summed_alignment_snr — conservative pair combination -------------------
+
+
+def test_summed_alignment_snr_pair_both_none_is_unknown():
+    assert _summed_alignment_snr(None, None) == (None, False)
+
+
+def test_summed_alignment_snr_pair_one_ok_one_no_evidence_is_true():
+    ok_record = {
+        "acoustic": {
+            "snr": {"worst_relevant": {"verdict": "ok"}, "verdict": "ok"},
+        },
+    }
+    assert _summed_alignment_snr(ok_record, None) == (True, False)
+    assert _summed_alignment_snr(None, ok_record) == (True, False)
+
+
+def test_summed_alignment_snr_pair_either_insufficient_is_false():
+    ok_record = {
+        "acoustic": {
+            "snr": {"worst_relevant": {"verdict": "ok"}, "verdict": "ok"},
+        },
+    }
+    bad_record = {
+        "acoustic": {
+            "snr": {
+                "worst_relevant": {"verdict": "insufficient"},
+                "verdict": "insufficient",
+            },
+        },
+    }
+    assert _summed_alignment_snr(ok_record, bad_record) == (False, False)
+    assert _summed_alignment_snr(bad_record, ok_record) == (False, False)
+
+
+def test_summed_alignment_snr_pair_either_capped_is_capped():
+    ok_record = {
+        "acoustic": {
+            "snr": {"worst_relevant": {"verdict": "ok"}, "verdict": "ok"},
+            "null_depth_capped": False,
+        },
+    }
+    capped_record = {
+        "acoustic": {
+            "snr": {"worst_relevant": {"verdict": "ok"}, "verdict": "ok"},
+            "null_depth_capped": True,
+        },
+    }
+    _, capped = _summed_alignment_snr(ok_record, capped_record)
+    assert capped is True
+    _, capped = _summed_alignment_snr(capped_record, ok_record)
+    assert capped is True
