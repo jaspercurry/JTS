@@ -838,24 +838,6 @@
     .output-role__actions { justify-content: stretch; }
     .output-role__action { flex: 1 1 9rem; }
   }
-  /* Canonical checkbox toggle (sage). Checkbox-based per web conventions. */
-  .toggle { position: relative; display: inline-block; flex-shrink: 0; width: 48px; height: 28px; }
-  .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
-  .toggle .track {
-    position: absolute; inset: 0; background: var(--foreground-020);
-    border-radius: 28px; cursor: pointer; transition: background-color 0.18s ease;
-  }
-  .toggle .track::before {
-    position: absolute; content: ""; width: 22px; height: 22px; top: 3px; left: 3px;
-    background: var(--background); border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); transition: transform 0.18s ease;
-  }
-  .toggle input:checked + .track { background: var(--primary); }
-  .toggle input:checked + .track::before { transform: translateX(20px); }
-  @media (prefers-reduced-motion: reduce) {
-    .toggle .track, .toggle .track::before { transition: none; }
-  }
-
   /* Protected single-audio-path driver commissioning card (Stage-5 ramp). */
   .commission-card {
     margin-top: 16px; padding: 14px; border-radius: 12px;
