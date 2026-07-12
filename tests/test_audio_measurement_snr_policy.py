@@ -68,6 +68,54 @@ def test_band_levels_dbfs_matches_session_delegation():
     assert len(via_session) == 4
 
 
+def test_ambient_report_uses_upper_percentile_across_one_second_frames():
+    rng = np.random.default_rng(91)
+    quiet = rng.normal(0.0, 0.001, SR * 11)
+    noisy = rng.normal(0.0, 0.02, SR)
+
+    report = snr_policy.ambient_band_report(
+        np.concatenate([quiet, noisy]),
+        SR,
+        (("wide", 20.0, 12000.0),),
+    )
+    quiet_report = snr_policy.ambient_band_report(
+        quiet,
+        SR,
+        (("wide", 20.0, 12000.0),),
+    )
+
+    assert report["duration_s"] == 12.0
+    assert report["method"] == "one_second_p95"
+    assert (
+        report["bands"][0]["level_dbfs"]
+        > quiet_report["bands"][0]["level_dbfs"] + 10.0
+    )
+
+
+def test_paired_signal_window_deconvolution_is_trusted_for_alignment():
+    noise = [{
+        "band_id": "wide",
+        "band_hz": [100.0, 8000.0],
+        "level_dbfs": -80.0,
+    }]
+    capture = [{**noise[0], "level_dbfs": -40.0}]
+
+    verdict = snr_policy.band_snr_verdicts(
+        decision_class=snr_policy.DECISION_CLASS_ALIGNMENT,
+        capture_bands=capture,
+        noise_bands=noise,
+        noise_floor_dbfs_scalar=None,
+        relevant_hz=(100.0, 8000.0),
+        model=DRIVER,
+        band_method="paired_signal_window_deconvolution",
+    )
+
+    assert verdict["verdict"] == "ok"
+    assert verdict["bands"][0]["method"] == (
+        "paired_signal_window_deconvolution"
+    )
+
+
 # ---------- band_snr_verdicts: magnitude class -------------------------------
 
 
@@ -107,6 +155,30 @@ def test_magnitude_class_22db_reads_reduced_with_shortfall_against_ok():
     # 25 dB (snr_ok_db) - 22 dB = 3 dB short of the confident floor.
     assert band["shortfall_db"] == pytest.approx(3.0)
     assert out["verdict"] == "reduced"
+
+
+@pytest.mark.parametrize(
+    ("capture_level", "expected_snr", "expected_verdict"),
+    [
+        (-20.0000001, 20.0, "reduced"),
+        (-20.1, 19.9, "insufficient"),
+    ],
+)
+def test_magnitude_warn_boundary_uses_displayed_inclusive_precision(
+    capture_level, expected_snr, expected_verdict
+):
+    out = snr_policy.band_snr_verdicts(
+        decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
+        capture_bands=_bands([("mid", 1000.0, 4000.0, capture_level)]),
+        noise_bands=_bands([("mid", 1000.0, 4000.0, -40.0)]),
+        noise_floor_dbfs_scalar=None,
+        relevant_hz=(1000.0, 4000.0),
+        model=DRIVER,
+    )
+
+    assert out["bands"][0]["estimated_snr_db"] == expected_snr
+    assert out["bands"][0]["verdict"] == expected_verdict
+    assert out["verdict"] == expected_verdict
 
 
 def test_magnitude_class_17db_reads_insufficient_with_missing_db_report():

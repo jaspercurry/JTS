@@ -128,21 +128,34 @@ last failure code — for the household/operator summary described in the design
 doc's "Runtime surface"; detailed curves and bundle paths stay out of `/state`
 by design.
 
-**Forward-wired fields.** A handful of the fields above have no producer on
-`main` yet, because the lanes that write them (per
-`docs/active-crossover-information-design.md`'s parallel-lane plan) land
-after this one: `session` / `session_id` come from lane D's
-`bundle_session_id` (the top-level measurement-state key; the per-capture
-event reader additionally expects a copy stamped onto the individual
-record), and `snr_db` / `floor_hz` / `last_capture.snr_db` come from lanes
-A/B's `acoustic.snr.worst_relevant.estimated_snr_db` and
-`acoustic.gating.f_valid_floor_hz`. Every read site is marked
-`FORWARD-WIRED(active-crossover)` in a comment/docstring; until the
-producing lane lands, the value is simply absent and CI stays green on
-fabricated-empty inputs only. When a producing lane merges, run
-`git grep 'FORWARD-WIRED(active-crossover)'`, re-verify each hit against the
-real key shape, drive one real-shape test through that site, then delete
-the marker.
+Lane D adds `correction.crossover_repeat_attempt` once per reserved attempt
+(including transport failures),
+`correction.crossover_repeats_aggregated` at the bounded decision, and
+`correction.crossover_repeat_aborted` when the single correction service's
+explicit startup claim retires an old owner's active set. A `ready` set is
+never guessed complete after a crash: it remains a no-more-audio/apply gate and
+the envelope asks for a fresh level-check context. Terminal attempt-four
+transport failures with two accepted captures emit
+`correction.crossover_repeats_finalized_after_transport_failure` and finalize
+at reduced confidence. Admission write failures emit
+`correction.crossover_repeat_persistence_failed`; the gate stays closed.
+Admission authority is the flocked, atomic
+`/var/lib/jasper/active_speaker_repeat_admission.json` state owned by
+`jasper.active_speaker.repeat_admission`; bundle `repeat_progress` is a
+best-effort forensic mirror and is never read to decide whether audio may play.
+The crossover envelope surfaces the latest rejection reason, worst-band SNR
+shortfall, clipping, or validity floor without copying curves into `/state`.
+Its count also comes from the durable ledger, so a failed relay attempt cannot
+make the page promise a fifth sweep that admission will refuse.
+
+**Former forward-wired fields — closed 2026-07-12.** The crossover lanes now
+produce the real shapes: `session` / `session_id` read
+`active_comparison_set.bundle_session_id`, and `snr_db` / `floor_hz` /
+`last_capture.snr_db` read
+`acoustic.snr.worst_relevant.estimated_snr_db` and
+`acoustic.gating.f_valid_floor_hz`. The fabricated top-level session-key
+assumption and all `FORWARD-WIRED(active-crossover)` markers were removed;
+real-shape tests pin the event and `/state` readers.
 
 **Remaining migration — 13 deferred active-zone files.** The migration is
 complete across the codebase *except* a small set of files an in-flight
@@ -539,4 +552,5 @@ deferred inventory was cross-checked against the machine-enforced allowlist,
 including
 the completed 92-site / 37-name `sound_setup.py` migration; debug, flight
 recorder, journald, resilience `/state`, and bounded-diagnostics claims were
-re-read against their current owners)
+re-read against their current owners; active-crossover forward-wired session,
+SNR, and validity-floor fields were closed against their real persisted shapes)

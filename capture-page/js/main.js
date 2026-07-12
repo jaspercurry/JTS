@@ -26,6 +26,7 @@ import {
 import { safeReturnUrl } from "./return-url.js";
 import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
 import { runLevelRampProtocol } from "./level-events.js";
+import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
   assertCaptureProtocolCompatible,
   requiredCaptureProtocol,
@@ -324,7 +325,7 @@ function renderLevelRampComplete(ctx, ramp) {
     locked: {
       heading: "Level matched",
       note: "The speaker locked a safe measurement level. Return to the speaker to continue.",
-      status: "Level matched — ready for the measurement sweep.",
+      status: "Level matched — return to the speaker for the next step.",
       kind: "done",
     },
     maxed_out: {
@@ -484,6 +485,20 @@ function renderCalibration(screenEl, ctx) {
         model.label
       ))
     : [];
+  if (String((setupState.calibration || {}).mode || "none") === "none") {
+    const selected = setupInputs.find((input) => input.deviceId === selectedDeviceId);
+    const inferred = inferCalibrationModel(
+      calibrationModels,
+      String((selected && selected.label) || ""),
+    );
+    if (inferred) {
+      setupState.calibration = {
+        mode: "serial",
+        model: inferred.key,
+        serial: "",
+      };
+    }
+  }
   const mode = el("select", { id: "calibration-mode" }, [
     el("option", { value: "none", text: "No calibration / phone built-in mic" }),
     el("option", { value: "serial", text: "Known measurement mic serial" }),
@@ -912,7 +927,12 @@ async function waitForSweepComplete(client, spec, isAborted) {
     }
     if (phase && phase !== lastPhase) {
       lastPhase = phase;
-      if (phase === "sweep_started") {
+      if (phase === "ambient_started") {
+        setStatus(
+          "Measuring room noise — stay quiet and keep the phone still.",
+          "recording",
+        );
+      } else if (phase === "sweep_started") {
         setStatus("Tone is playing — stay quiet and keep the phone still.", "recording");
       } else if (phase === "sweep_complete") {
         setStatus("Tone finished — capturing the room tail.", "recording");

@@ -218,7 +218,7 @@ def test_proposal_round_trips_to_dict():
 # itself wasn't fully provable) must never let a keep/invert action or an
 # "aligned" delay status through — the spec-promise guard: "the alignment
 # verdict degrades to review — never aligned". alignment_snr_ok=None (the
-# default, and the only value any caller passes today) must NOT degrade —
+# default for legacy/no-ambient callers) must NOT degrade —
 # every test above this section already pins that by never setting it.
 
 

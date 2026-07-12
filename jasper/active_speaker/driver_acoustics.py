@@ -178,6 +178,11 @@ class DriverAcousticResult:
     # noise_band_report was supplied to analyze_driver_capture — there is no
     # noise evidence to gate on, so there is nothing to report.
     snr: dict[str, Any] | None = None
+    # The paired ambient transform that produced ``snr``. This preserves the
+    # same deconvolved per-band noise evidence and signal-owned window/gate
+    # provenance for later consumers (including the LF splice lane) instead
+    # of forcing them back onto a scalar floor or a duplicate schema.
+    ambient: dict[str, Any] | None = None
     # SC-2 IR-gating / low-frequency validity-floor block (see
     # jasper.audio_measurement.gating and docs/active-crossover-information-design.md
     # "Measurement validity"). ``None`` only when there was no IR to gate at all
@@ -202,6 +207,7 @@ class DriverAcousticResult:
             "fr_curve": self.fr_curve,
             "calibrated": self.calibrated,
             "snr": self.snr,
+            "ambient": self.ambient,
             "gating": self.gating,
         }
 
@@ -229,6 +235,7 @@ class SummedAcousticResult:
     # band [fc/2, fc*2]. None when neither noise_band_report nor
     # noise_floor_dbfs was supplied to analyze_summed_crossover.
     snr: dict[str, Any] | None = None
+    ambient: dict[str, Any] | None = None
     # True when null_depth_db was reduced from its raw measured value because
     # the overlap-band SNR could not prove a deeper null (see
     # jasper.audio_measurement.snr_policy.cap_null_depth_db). The verdict
@@ -258,6 +265,7 @@ class SummedAcousticResult:
             "fr_curve": self.fr_curve,
             "calibrated": self.calibrated,
             "snr": self.snr,
+            "ambient": self.ambient,
             "null_depth_capped": self.null_depth_capped,
             "above_validity_floor": self.above_validity_floor,
             "near_validity_floor": self.near_validity_floor,
@@ -325,6 +333,7 @@ def _capture_to_magnitude(
     has_mic_calibration: bool,
     calibration: "CalibrationCurve | None" = None,
     capture_geometry: str = "near_field",
+    ambient_duration_s: float | None = None,
 ):
     """Shared capture → (quality, freqs, smoothed_magnitude_db, gating) pipeline.
 
@@ -368,26 +377,7 @@ def _capture_to_magnitude(
     sample_rate = int(sweep_meta["sample_rate"])
     n_samples = int(sweep_meta["n_samples"])
 
-    captured, sr = sweep_mod.read_wav_mono(captured_wav)
-    # Bound the capture before assess + deconv (mirrors the /correction
-    # session path) so quality and the IR describe the same signal and an
-    # over-long capture can't drive the FFT to OOM on the 1 GB Pi.
-    raw_capture_samples = len(captured)
-    captured = deconv.cap_capture_length(
-        captured, sweep_len=n_samples, sample_rate=sr,
-    )
-    report = quality.assess_capture(
-        captured,
-        sample_rate=sr,
-        expected_sample_rate=sample_rate,
-        sweep_n_samples=n_samples,
-        has_mic_calibration=has_cal,
-        truncated_from_samples=raw_capture_samples,
-        quality_model=DRIVER,
-    )
-    if report.failed:
-        return report, None, None, None
-
+    raw_captured, sr = sweep_mod.read_wav_mono(captured_wav)
     reference, _ = sweep_mod.synchronized_swept_sine(
         f1=float(sweep_meta["f1"]),
         f2=float(sweep_meta["f2"]),
@@ -395,13 +385,110 @@ def _capture_to_magnitude(
         sample_rate=sample_rate,
         amplitude_dbfs=float(sweep_meta["amplitude_dbfs"]),
     )
-    ir = deconv.deconvolve(
+    raw_capture_samples = len(raw_captured)
+    truncated_from_samples = None
+    capture_crop_start = 0
+    ambient_source = None
+    robust_ambient_source = None
+    alignment = None
+    if ambient_duration_s is not None:
+        from scipy.signal import resample_poly
+        from jasper.capture_relay.alignment import assert_alignment_confident
+
+        # Locate across the full legal relay window at 16 kHz.  The largest
+        # correlation is <=2**20, then only the final <=2**21 full-rate crop is
+        # deconvolved on the 1 GB Pi.
+        from jasper.active_speaker.test_signal_plan import (
+            CROSSOVER_CAPTURE_LOCATOR_WINDOW_S,
+        )
+
+        locator_input, locator_crop_start = deconv.cap_capture_tail(
+            raw_captured,
+            sweep_len=len(reference),
+            sample_rate=sr,
+            max_capture_seconds=CROSSOVER_CAPTURE_LOCATOR_WINDOW_S,
+        )
+        down = max(1, int(round(sr / 16000)))
+        located_capture = resample_poly(locator_input, 1, down)
+        located_reference = resample_poly(reference, 1, down)
+        alignment = assert_alignment_confident(
+            located_capture,
+            located_reference,
+            sample_rate=int(round(sr / down)),
+            max_capture_s=60.0,
+        )
+        arrival_sample = locator_crop_start + int(round(alignment.lag_samples * down))
+        pre_guard = int(round(0.250 * sr))
+        tail = int(round(0.500 * sr))
+        signal_start = arrival_sample - pre_guard
+        signal_end = arrival_sample + len(reference) + tail
+        ambient_start = arrival_sample - len(reference) - int(round(1.000 * sr))
+        ambient_end = arrival_sample - pre_guard
+        controlled_start = arrival_sample - int(round(float(ambient_duration_s) * sr))
+        if (
+            signal_start < 0
+            or signal_end > len(raw_captured)
+            or ambient_start < max(0, controlled_start)
+            or ambient_end <= ambient_start
+            or signal_end - signal_start != ambient_end - ambient_start
+        ):
+            raise ValueError(
+                "signal-located crossover capture lacks the complete controlled "
+                "ambient, sweep, or tail window"
+            )
+        captured = raw_captured[signal_start:signal_end]
+        ambient_source = raw_captured[ambient_start:ambient_end]
+        robust_ambient_source = raw_captured[controlled_start:ambient_end]
+        capture_crop_start = signal_start
+    else:
+        captured = deconv.cap_capture_length(
+            raw_captured,
+            sweep_len=n_samples,
+            sample_rate=sr,
+        )
+        if len(captured) < raw_capture_samples:
+            truncated_from_samples = raw_capture_samples
+    report = quality.assess_capture(
+        captured,
+        sample_rate=sr,
+        expected_sample_rate=sample_rate,
+        sweep_n_samples=n_samples,
+        has_mic_calibration=has_cal,
+        # The relay path intentionally selects equal-length signal and quiet
+        # evidence from a longer recording; that is not the memory-bound
+        # truncation this quality issue describes.  Only report a truncation
+        # when cap_capture_length actually discarded a tail.
+        truncated_from_samples=truncated_from_samples,
+        quality_model=DRIVER,
+    )
+    if report.failed:
+        return report, None, None, None, None
+
+    full_signal_ir = deconv.regularized_deconvolution_full(
         captured.astype(np.float64),
         reference.astype(np.float64),
         sample_rate=sr,
     )
+    arrival_peak_idx = int(np.argmax(np.abs(full_signal_ir)))
+    arrival_window = deconv.direct_arrival_window(
+        full_signal_ir, sr, direct_peak_idx=arrival_peak_idx
+    )
+    ir = deconv.apply_arrival_window(full_signal_ir, arrival_window)
+    noise_ir = None
+    if ambient_source is not None:
+        full_noise_ir = deconv.regularized_deconvolution_full(
+            ambient_source.astype(np.float64),
+            reference.astype(np.float64),
+            sample_rate=sr,
+        )
+        noise_ir = deconv.apply_arrival_window(full_noise_ir, arrival_window)
     if capture_geometry == "reference_axis":
         gated_ir, fragment = gating.gate_impulse_response(ir, sr)
+        gated_noise_ir = (
+            gating.apply_gate_fragment(noise_ir, sr, fragment)
+            if noise_ir is not None
+            else None
+        )
         applied = fragment["floor_source"] is not None
         gating_block = {
             "schema_version": fragment["schema_version"],
@@ -410,16 +497,100 @@ def _capture_to_magnitude(
             **{k: v for k, v in fragment.items() if k != "schema_version"},
         }
         ir_used = gated_ir
+        noise_ir_used = gated_noise_ir
     else:
         gating_block = gating.exempt_gating_block(ir, sr, reason="near_field")
         ir_used = ir
+        noise_ir_used = noise_ir
     freqs, mag_db = deconv.magnitude_response(ir_used, sr, normalize=False)
     smoothed = analysis.smooth_fractional_octave(
         freqs, mag_db, DEFAULT_SMOOTHING_FRACTION
     )
     if calibration is not None:
         smoothed = calibration_mod.apply_calibration_curve(freqs, smoothed, calibration)
-    return report, freqs, smoothed, gating_block
+    ambient_report = None
+    if noise_ir_used is not None and ambient_source is not None:
+        if (
+            robust_ambient_source is None
+            or ambient_duration_s is None
+            or alignment is None
+        ):
+            raise RuntimeError("controlled ambient analysis context is incomplete")
+        noise_freqs, noise_mag = deconv.magnitude_response(
+            noise_ir_used, sr, normalize=False
+        )
+        noise_smoothed = analysis.smooth_fractional_octave(
+            noise_freqs, noise_mag, DEFAULT_SMOOTHING_FRACTION
+        )
+        if calibration is not None:
+            noise_smoothed = calibration_mod.apply_calibration_curve(
+                noise_freqs, noise_smoothed, calibration
+            )
+        from jasper.audio_measurement import snr_policy
+
+        noise_bands = snr_policy.magnitude_band_levels(noise_freqs, noise_smoothed)
+        robust = snr_policy.framed_ambient_band_report(
+            robust_ambient_source,
+            sr,
+            percentile=95,
+        )
+        baseline = snr_policy.framed_ambient_band_report(
+            ambient_source,
+            sr,
+            percentile=50,
+        )
+        robust_by_id = {item["band_id"]: item for item in robust["bands"]}
+        baseline_by_id = {item["band_id"]: item for item in baseline["bands"]}
+        adjusted = []
+        for item in noise_bands:
+            robust_item = robust_by_id.get(item["band_id"])
+            baseline_item = baseline_by_id.get(item["band_id"])
+            delta = (
+                float(robust_item["level_dbfs"])
+                - float(baseline_item["level_dbfs"])
+                if robust_item is not None and baseline_item is not None
+                else 0.0
+            )
+            adjusted.append({
+                **item,
+                "level_dbfs": round(float(item["level_dbfs"]) + delta, 2),
+            })
+        ambient_report = {
+            "schema_version": 2,
+            "domain": "deconvolved",
+            "method": "paired_signal_window_deconvolution",
+            "ambient_duration_s": round(float(ambient_duration_s), 3),
+            "selected_quiet_duration_s": round(len(ambient_source) / sr, 3),
+            "bands": adjusted,
+            "raw_robust": robust,
+            "raw_baseline": baseline,
+            "source": {
+                "kind": "signal_bounded_pre_sweep_quiet",
+                "start_sample": ambient_start,
+                "end_sample": ambient_end,
+                "start_s": round(ambient_start / sr, 6),
+                "end_s": round(ambient_end / sr, 6),
+                "analysis_crop_start_sample": capture_crop_start,
+                "located_sweep_start_sample": arrival_sample,
+                "direct_arrival_sample": capture_crop_start + arrival_peak_idx,
+                "pre_arrival_guard_ms": 250.0,
+                "locator_sample_rate_hz": int(round(sr / down)),
+                "locator_crop_start_sample": locator_crop_start,
+                "locator_confidence": round(alignment.confidence, 6),
+                "locator_peak": round(alignment.peak, 6),
+            },
+            "operator": {
+                "deconvolution": "regularized_fft_inverse",
+                "arrival_window_source": "signal",
+                "ambient_alignment_source": "signal_direct_arrival_minus_guard",
+                "robust_delta": "one_second_p95_minus_one_second_p50",
+                "reflection_gate_source": (
+                    "signal" if capture_geometry == "reference_axis" else None
+                ),
+                "calibration_applied_to_signal_and_noise": calibration is not None,
+            },
+        }
+    return report, freqs, smoothed, gating_block, ambient_report
 
 
 def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
@@ -606,8 +777,9 @@ def analyze_driver_capture(
     overlap_fcs: Sequence[float] = (),
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
-    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     capture_geometry: str = "near_field",
+    ambient_duration_s: float | None = None,
 ) -> DriverAcousticResult:
     """Classify whether a driver is producing sound in its expected band.
 
@@ -624,9 +796,10 @@ def analyze_driver_capture(
     refine the datasheet sensitivity trim with a MEASURED level match. Magnitude
     only — never used to authorise a phase or delay decision.
 
-    ``noise_band_report`` is an optional band-specific ambient-noise report
-    (the correction-shape ``[{band_id, band_hz, level_dbfs}, ...]`` list —
-    see :func:`jasper.audio_measurement.snr_policy.band_levels_dbfs`). When
+    ``noise_band_report`` is an optional band-specific ambient-noise report:
+    either the legacy correction-shape
+    ``[{band_id, band_hz, level_dbfs}, ...]`` list, or a domain-tagged
+    ``{domain, method, bands}`` report from the controlled pre-sweep quiet crop. When
     supplied, the SC-1 magnitude-class SNR verdict block
     (:func:`jasper.audio_measurement.snr_policy.band_snr_verdicts`) is
     computed and stored on the result's ``snr`` field, scoped to
@@ -647,9 +820,10 @@ def analyze_driver_capture(
     if not (0 < lo < hi):
         raise DriverAcousticsError(f"invalid passband_hz: {passband_hz!r}")
 
-    report, freqs, mag_db, gating_block = _capture_to_magnitude(
+    report, freqs, mag_db, gating_block, paired_ambient = _capture_to_magnitude(
         captured_wav, sweep_meta, has_mic_calibration=has_mic_calibration,
         calibration=calibration, capture_geometry=capture_geometry,
+        ambient_duration_s=ambient_duration_s,
     )
     quality_dict = report.to_dict()
     mic_clipping = report.clipped_fraction >= 1e-4
@@ -711,6 +885,7 @@ def analyze_driver_capture(
             ),
             fr_curve=_downsample_curve(freqs, mag_db),
             calibrated=calibrated,
+            ambient=paired_ambient,
             gating=gating_block,
         )
 
@@ -748,16 +923,31 @@ def analyze_driver_capture(
 
     snr_block = None
     snr_bands = None
-    if noise_band_report:
+    effective_noise_report = paired_ambient or noise_band_report
+    if effective_noise_report:
         from jasper.audio_measurement import snr_policy
 
+        noise_domain, noise_bands = snr_policy.unwrap_noise_report(
+            effective_noise_report
+        )
+        if noise_domain == "deconvolved":
+            capture_bands = snr_policy.magnitude_band_levels(freqs, mag_db)
+            band_method = (
+                str(effective_noise_report.get("method") or "")
+                if isinstance(effective_noise_report, Mapping)
+                else ""
+            ) or "deconvolved_band_difference"
+        else:
+            capture_bands = _capture_band_levels(captured_wav)
+            band_method = "fft_band_power_difference"
         snr_block = snr_policy.band_snr_verdicts(
             decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
-            capture_bands=_capture_band_levels(captured_wav),
-            noise_bands=noise_band_report,
+            capture_bands=capture_bands,
+            noise_bands=noise_bands,
             noise_floor_dbfs_scalar=None,
             relevant_hz=(band_lo, band_hi),
             model=DRIVER,
+            band_method=band_method,
         )
         snr_bands = snr_block.get("bands")
 
@@ -781,6 +971,7 @@ def analyze_driver_capture(
         fr_curve=_downsample_curve(freqs, mag_db),
         calibrated=calibrated,
         snr=snr_block,
+        ambient=paired_ambient,
         gating=gating_block,
     )
 
@@ -794,9 +985,10 @@ def analyze_summed_crossover(
     expect_null: bool = False,
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
-    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     noise_floor_dbfs: float | None = None,
     capture_geometry: str = "near_field",
+    ambient_duration_s: float | None = None,
 ) -> SummedAcousticResult:
     """Measure the cancellation null at the crossover in a summed-speaker capture.
 
@@ -846,9 +1038,10 @@ def analyze_summed_crossover(
             f"crossover_fc_hz must be positive, got {crossover_fc_hz}"
         )
 
-    report, freqs, mag_db, gating_block = _capture_to_magnitude(
+    report, freqs, mag_db, gating_block, paired_ambient = _capture_to_magnitude(
         captured_wav, sweep_meta, has_mic_calibration=has_mic_calibration,
         calibration=calibration, capture_geometry=capture_geometry,
+        ambient_duration_s=ambient_duration_s,
     )
     quality_dict = report.to_dict()
     mic_clipping = report.clipped_fraction >= 1e-4
@@ -892,6 +1085,7 @@ def analyze_summed_crossover(
                 expect_null=expect_null,
                 fr_curve=None,
                 calibrated=calibrated,
+                ambient=paired_ambient,
                 gating=gating_block,
                 above_validity_floor=False,
                 near_validity_floor=False,
@@ -922,19 +1116,34 @@ def analyze_summed_crossover(
     snr_block = None
     reported_null_depth = null_depth
     null_depth_capped = False
-    if noise_band_report or noise_floor_dbfs is not None:
+    effective_noise_report = paired_ambient or noise_band_report
+    if effective_noise_report or noise_floor_dbfs is not None:
         from jasper.audio_measurement import snr_policy
 
+        noise_domain, noise_bands = snr_policy.unwrap_noise_report(
+            effective_noise_report
+        )
+        if noise_domain == "deconvolved":
+            capture_bands = snr_policy.magnitude_band_levels(freqs, mag_db)
+            band_method = (
+                str(effective_noise_report.get("method") or "")
+                if isinstance(effective_noise_report, Mapping)
+                else ""
+            ) or "deconvolved_band_difference"
+        else:
+            capture_bands = _capture_band_levels(captured_wav)
+            band_method = "fft_band_power_difference"
         snr_block = snr_policy.band_snr_verdicts(
             decision_class=snr_policy.DECISION_CLASS_ALIGNMENT,
-            capture_bands=_capture_band_levels(captured_wav),
-            noise_bands=noise_band_report,
+            capture_bands=capture_bands,
+            noise_bands=noise_bands,
             noise_floor_dbfs_scalar=noise_floor_dbfs,
             relevant_hz=(
                 max(crossover_fc_hz / 2.0, ANALYSIS_LO_HZ),
                 min(crossover_fc_hz * 2.0, ANALYSIS_HI_HZ),
             ),
             model=DRIVER,
+            band_method=band_method,
         )
         reported_null_depth, null_depth_capped = snr_policy.cap_null_depth_db(
             null_depth, snr_block.get("worst_relevant"), DRIVER.null_cap_margin_db,
@@ -951,6 +1160,7 @@ def analyze_summed_crossover(
         fr_curve=_downsample_curve(freqs, mag_db),
         calibrated=calibrated,
         snr=snr_block,
+        ambient=paired_ambient,
         null_depth_capped=null_depth_capped,
         gating=gating_block,
         above_validity_floor=above_validity_floor,

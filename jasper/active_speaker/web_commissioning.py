@@ -22,6 +22,7 @@ import socket
 import subprocess
 import threading
 import time
+from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any, Callable
 
@@ -75,6 +76,7 @@ from jasper.active_speaker.startup_load import (
     rollback_driver_commissioning_config,
 )
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
+from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
@@ -126,10 +128,18 @@ _MUX_COMMAND_ERRORS = (
     UnicodeError,
 )
 _COMMISSION_OPERATION_ERRORS = (
+    CamillaUnavailable,
     OSError,
     RuntimeError,
     ValueError,
     TypeError,
+)
+_TASK_SETTLE_ERRORS = (
+    Exception,
+    asyncio.CancelledError,
+    KeyboardInterrupt,
+    SystemExit,
+    GeneratorExit,
 )
 _PLAYBACK_OPERATION_ERRORS = (
     OSError,
@@ -141,6 +151,10 @@ _COMMISSION_START_ERRORS = _COMMISSION_OPERATION_ERRORS + _MUX_COMMAND_ERRORS
 
 class AutomaticDriverConfigRestoreError(RuntimeError):
     """Automatic driver capture could not restore its entry production config."""
+
+
+class AutomaticSummedConfigRestoreError(RuntimeError):
+    """Automatic summed capture could not restore its prior production config."""
 
 
 _SUMMED_TEST_ARM_REPORT: dict[str, Any] = {
@@ -381,8 +395,16 @@ def _combined_speech_stimulus_wav_path() -> tuple[Path, dict[str, Any]]:
     return ensure_combined_speech_stimulus()
 
 
-def _measurement_sweep_wav_path() -> tuple[Path, dict[str, Any]]:
-    """Return the cached swept-sine WAV + metadata used by acoustic capture."""
+def _measurement_sweep_wav_path(
+    duration_s: float | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Return the cached swept-sine WAV + metadata used by acoustic capture.
+
+    ``duration_s`` is supplied by the protected driver signal plan.  Leaving it
+    unset preserves the historical shared default for compatibility callers.
+    The cache filename already includes the realized duration, so role-specific
+    sweeps cannot collide.
+    """
 
     from jasper.active_speaker import driver_acoustics as acoustic
     from jasper.audio_measurement import sweep as sweep_mod
@@ -394,7 +416,9 @@ def _measurement_sweep_wav_path() -> tuple[Path, dict[str, Any]]:
     signal, meta = sweep_mod.synchronized_swept_sine(
         f1=acoustic.DEFAULT_F1_HZ,
         f2=acoustic.DEFAULT_F2_HZ,
-        duration_approx_s=acoustic.DEFAULT_DURATION_S,
+        duration_approx_s=(
+            duration_s if duration_s is not None else acoustic.DEFAULT_DURATION_S
+        ),
         sample_rate=acoustic.DEFAULT_SAMPLE_RATE,
         amplitude_dbfs=acoustic.DEFAULT_AMPLITUDE_DBFS,
     )
@@ -1313,6 +1337,24 @@ async def _load_applied_summed_measurement_config(
             "config_path": str(previous),
         }
 
+    async def _restore_previous_after_failed_load_resilient() -> dict[str, Any]:
+        async def _restore_or_raise() -> dict[str, Any]:
+            rollback = await _restore_previous_after_failed_load()
+            if rollback.get("status") != "rolled_back":
+                raise AutomaticSummedConfigRestoreError(
+                    str(rollback.get("error") or "CamillaDSP rejected the prior graph")
+                )
+            return rollback
+
+        restore_task = asyncio.create_task(_restore_or_raise())
+        return await _await_restore_task_resilient(restore_task)
+
+    async def _restore_after_failed_load_payload() -> dict[str, Any]:
+        try:
+            return await _restore_previous_after_failed_load_resilient()
+        except AutomaticSummedConfigRestoreError as exc:
+            return {"status": "failed", "error": str(exc)}
+
     def _failed_load_payload(
         *,
         message: str,
@@ -1352,17 +1394,54 @@ async def _load_applied_summed_measurement_config(
             "rollback": rollback,
         }
 
+    load_task = asyncio.create_task(
+        cam.set_config_file_path(str(target), best_effort=False)
+    )
     try:
-        loaded = await cam.set_config_file_path(str(target), best_effort=False)
+        # The real controller offloads this operation to a thread. Shield the
+        # task so caller cancellation cannot detach us from a worker that may
+        # still set and reload the transient graph.
+        loaded = await asyncio.shield(load_task)
+    except asyncio.CancelledError as operation_error:
+        async def _settle_load_then_restore() -> dict[str, Any]:
+            try:
+                await load_task
+            except _TASK_SETTLE_ERRORS:
+                # Cancellation already owns the outward result. Whatever the
+                # lost response says, the prior graph must be restored after
+                # the worker has definitively stopped mutating CamillaDSP.
+                pass
+            return await _restore_applied_summed_previous_config(
+                str(previous),
+                camilla_factory=camilla_factory,
+            )
+
+        cleanup_task = asyncio.create_task(_settle_load_then_restore())
+        try:
+            await _await_restore_task_resilient(cleanup_task)
+        except AutomaticSummedConfigRestoreError as restore_error:
+            raise restore_error from operation_error
+        raise
     except _COMMISSION_OPERATION_ERRORS as exc:
-        rollback = await _restore_previous_after_failed_load()
+        rollback = await _restore_after_failed_load_payload()
         return _failed_load_payload(
             message=f"the applied crossover measurement graph did not load: {exc}",
             rollback=rollback,
             failure_mode="load_exception",
         )
+    except _TASK_SETTLE_ERRORS as operation_error:
+        # The caller has not received ``previous_config_path`` yet, so it
+        # cannot own rollback if an unexpected base exception escapes the load.
+        try:
+            await _restore_applied_summed_previous_config_resilient(
+                str(previous),
+                camilla_factory=camilla_factory,
+            )
+        except AutomaticSummedConfigRestoreError as restore_error:
+            raise restore_error from operation_error
+        raise
     if loaded is not True:
-        rollback = await _restore_previous_after_failed_load()
+        rollback = await _restore_after_failed_load_payload()
         return _failed_load_payload(
             message="the applied crossover measurement graph did not load",
             rollback=rollback,
@@ -1380,6 +1459,72 @@ async def _load_applied_summed_measurement_config(
         "validation": validation.to_dict(),
         "excitation": excitation,
     }
+
+
+async def _restore_applied_summed_previous_config(
+    previous_config_path: str,
+    *,
+    camilla_factory: CamillaFactory,
+) -> dict[str, Any]:
+    """Restore summed capture's production graph or fail loudly."""
+    restore_error: str | None
+    try:
+        cam = camilla_factory()
+        restored = await cam.set_config_file_path(
+            previous_config_path,
+            best_effort=False,
+        )
+    except _COMMISSION_OPERATION_ERRORS as exc:
+        restore_error = str(exc)
+    else:
+        restore_error = (
+            None if restored is True else "CamillaDSP rejected the prior graph"
+        )
+    if restore_error is not None:
+        log_event(
+            logger,
+            "active_speaker.automatic_summed_config_rollback",
+            level=logging.WARNING,
+            status="failed",
+            failure_mode="load_interrupted",
+            previous_config_path=previous_config_path,
+            error=restore_error,
+        )
+        raise AutomaticSummedConfigRestoreError(restore_error)
+    return {"status": "rolled_back", "config_path": previous_config_path}
+
+
+async def _restore_applied_summed_previous_config_resilient(
+    previous_config_path: str,
+    *,
+    camilla_factory: CamillaFactory,
+) -> dict[str, Any]:
+    """Finish summed production restoration while the caller is cancelled."""
+    restore_task = asyncio.create_task(
+        _restore_applied_summed_previous_config(
+            previous_config_path,
+            camilla_factory=camilla_factory,
+        )
+    )
+    return await _await_restore_task_resilient(restore_task)
+
+
+async def _await_restore_task_resilient(
+    restore_task: asyncio.Task[dict[str, Any]],
+) -> dict[str, Any]:
+    """Await one graph restoration before propagating caller cancellation."""
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(restore_task)
+            break
+        except asyncio.CancelledError as exc:
+            if restore_task.cancelled():
+                raise
+            cancellation = exc
+    if cancellation is not None:
+        raise cancellation
+    return result
 
 
 async def _rollback_applied_summed_measurement_config(
@@ -1845,18 +1990,7 @@ async def _restore_automatic_driver_entry_config_resilient(
             camilla_factory=camilla_factory,
         )
     )
-    cancellation: asyncio.CancelledError | None = None
-    while True:
-        try:
-            result = await asyncio.shield(restore_task)
-            break
-        except asyncio.CancelledError as exc:
-            # Repeated cancellation requests still cannot cancel the child.
-            # Preserve the latest one and propagate it after restoration.
-            cancellation = exc
-    if cancellation is not None:
-        raise cancellation
-    return result
+    return await _await_restore_task_resilient(restore_task)
 
 
 async def prepare_automatic_driver_level_match(
@@ -1917,7 +2051,10 @@ async def _play_capture_sweep(
     load_payload: dict[str, Any],
     camilla_factory: CamillaFactory,
     planned_excitation: dict[str, Any] | None = None,
-    rollback_capture_config: Callable[[], Any] | None = None,
+    rollback_capture_config: (
+        Callable[[], Coroutine[Any, Any, dict[str, Any]]] | None
+    ) = None,
+    sweep_duration_s: float | None = None,
 ) -> dict[str, Any]:
     from jasper.correction.playback import play_sweep
 
@@ -1926,7 +2063,10 @@ async def _play_capture_sweep(
     rollback: dict[str, Any] | None = None
     rollback_issue: dict[str, str] | None = None
     try:
-        wav_path, sweep_meta = _measurement_sweep_wav_path()
+        if sweep_duration_s is None:
+            wav_path, sweep_meta = _measurement_sweep_wav_path()
+        else:
+            wav_path, sweep_meta = _measurement_sweep_wav_path(sweep_duration_s)
         excitation = (
             _played_excitation_ledger(planned_excitation, sweep_meta)
             if isinstance(planned_excitation, dict)
@@ -1974,13 +2114,15 @@ async def _play_capture_sweep(
         if fanin_gate is not None:
             _commission_tone_release_fanin_lane(reason="capture_sweep")
         try:
-            rollback = await (
+            rollback_operation = (
                 rollback_capture_config()
                 if rollback_capture_config is not None
                 else _rollback_summed_commissioning_config(
                     camilla_factory=camilla_factory,
                 )
             )
+            rollback_task = asyncio.create_task(rollback_operation)
+            rollback = await _await_restore_task_resilient(rollback_task)
         except _COMMISSION_OPERATION_ERRORS as exc:
             if not isinstance(exc, AutomaticDriverConfigRestoreError):
                 log_event(
@@ -2161,6 +2303,8 @@ async def play_driver_capture_sweep(
             camilla_factory=camilla_factory,
         )
 
+    from jasper.active_speaker.test_signal_plan import driver_sweep_duration_s
+
     playback = await _play_capture_sweep(
         backend=DRIVER_CAPTURE_SWEEP_BACKEND,
         target={"speaker_group_id": speaker_group_id, "role": role},
@@ -2170,6 +2314,7 @@ async def play_driver_capture_sweep(
         camilla_factory=camilla_factory,
         planned_excitation=planned_excitation,
         rollback_capture_config=_restore_entry_graph,
+        sweep_duration_s=driver_sweep_duration_s(role),
     )
     playback["floor_confirmation"] = latest.get("floor_confirmation")
     log_event(
@@ -2277,6 +2422,8 @@ async def play_summed_capture_sweep(
             camilla_factory=camilla_factory,
         )
 
+    from jasper.active_speaker.test_signal_plan import SUMMED_SWEEP_DURATION_S
+
     playback = await _play_capture_sweep(
         backend=SUMMED_CAPTURE_SWEEP_BACKEND,
         target={"speaker_group_id": speaker_group_id, "role": "summed"},
@@ -2286,6 +2433,7 @@ async def play_summed_capture_sweep(
         camilla_factory=camilla_factory,
         planned_excitation=planned_excitation,
         rollback_capture_config=_rollback,
+        sweep_duration_s=SUMMED_SWEEP_DURATION_S,
     )
     playback["summed_test_id"] = str(summed_test_id)
     log_event(

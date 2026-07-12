@@ -135,14 +135,26 @@
   `playback_id`), and measurement mutual-exclusion is
   server-computed twice: refused at POST while room/balance/sync is
   active, re-checked when the phone arms (never client-supplied). The
+  obsolete raw-WAV `POST /crossover/driver-capture` route was deleted when
+  the repeat controller landed: it had no product caller and could provide
+  neither the relay's controlled pre-sweep quiet interval nor its server-owned repeat
+  sequence. Driver evidence has one production ingress; the direct summed
+  diagnostic route remains separate.
   `crossover_sweep` capture spec's stimulus length derives from the
-  kernel-side `driver_acoustics.DEFAULT_DURATION_S` (one sweep
-  definition — the phone copy matches the sweep the Pi plays; the
+  kernel-side per-driver signal plan (12 s woofer/subwoofer, 8 s midrange,
+  4 s tweeter; one sweep definition — the phone copy matches the sweep the Pi plays; the
   deconv reference always regenerated from the played `sweep_meta`, so
-  the phone is a pure recorder), and its `duration_ms` — the phone's
-  hard recording deadline — is floored at 30 s like `room_sweep`'s
+  phone is a pure recorder). Driver recordings include a 14-second controlled
+  quiet interval before playback and their hard deadline is 45 s; the phone's
+  `duration_ms` remains only a backstop because normal completion follows the
+  Pi's `sweep_complete` event. The generic builder retains the 30 s floor like `room_sweep`'s
   `hard_timeout_ms` (the normal stop is the Pi's `sweep_complete` relay
-  event; the deadline is only the backstop). The same pass fixed the
+  event; the deadline is only the backstop). During the quiet interval and
+  playback, an authenticated phone-activity watchdog cancels on backgrounding,
+  early recorder completion, or loss of armed state. Cancellation kills/reaps
+  `aplay` and finishes the volume/graph rollback before the measurement window
+  resumes household audio; the host deadline sits inside the phone's 45 s
+  deadline. The same pass fixed the
   pre-existing **sync** relay bugs of that class: `sync_flow.
   relay_run_and_consume` now publishes `sweep_started`/`sweep_complete`
   (after the marker playback truly ends) and `build_sync_marker_spec`
@@ -192,9 +204,15 @@
   starting or awaiting the phone, so graph apply cannot race measurement
   playback or its rollback. The
   public page release that
-  implements this contract is `capture_page_build=20260711.4`, supporting
+  implements this contract, including UMIK-2 model/mode preselection (the
+  serial is still entered and validated once; there is no automatic
+  calibration-file match), is
+  `capture_page_build=20260712.2`, supporting
   protocols 1 and 2; publish it
   before deploying a Pi that emits v2 specs.
+  **Pending release gate (verified 2026-07-12):** the public page still reports
+  `capture_page_build=20260711.4`. Publish the repo's `20260712.2` page only
+  after this code merges, and do so before the matching Pi deploy.
   Relay room level setup temporarily suspends the local browser's 120-second
   upload watchdog while the human completes mic permission, calibration,
   placement, and auto-level, then restores a fresh bound for the actual room
@@ -1106,13 +1124,12 @@ POST /autolevel/lock         freeze main_volume at current ramp value
 POST /autolevel/cancel       abort ramp, restore pre-autolevel volume
 POST /crossover/level-match  guided mic/calibration + near-field automatic level
 POST /crossover/apply        atomically apply measured Layer A; restore gain lease
-POST /crossover/driver-capture body = WAV (audio/wav); analyze + record
-                             active-speaker per-driver acoustic evidence
 POST /crossover/summed-capture body = WAV (audio/wav); analyze + record
                              active-speaker summed-crossover evidence
 POST /crossover/relay-capture body: {kind: driver|summed, speaker_group_id,
                              role?}; phone-mic relay transport for one
-                             crossover sweep (same record_*_capture analysis;
+                             crossover sweep and the only production driver
+                             evidence ingress (same record_*_capture analysis;
                              refuses while room/balance/sync
                              is active — server-computed at POST and
                              re-checked when the phone arms). ON-DEVICE:

@@ -166,6 +166,7 @@ def assert_alignment_confident(
     threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     exclude_radius: int | None = None,
+    max_capture_s: float = DEFAULT_MAX_CAPTURE_S,
 ) -> AlignmentResult:
     """Score alignment and, when `require`, fail loud below `threshold`.
 
@@ -178,6 +179,7 @@ def assert_alignment_confident(
         stimulus,
         sample_rate=sample_rate,
         exclude_radius=exclude_radius,
+        max_capture_s=max_capture_s,
     )
     if require and result.confidence < threshold:
         raise AlignmentError(

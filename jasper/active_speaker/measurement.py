@@ -459,19 +459,10 @@ def start_active_comparison_set(
     out = _with_summary(topology, persisted)
     _write_state(path, out)
     event_fields: dict[str, Any] = {}
-    # FORWARD-WIRED(active-crossover): bundle_session_id has no producer on
-    # main yet (lanes A/B/D); when the producing lane lands, verify the real
-    # key path matches, drive one real-shape (non-fabricated) test through
-    # this site, then delete this marker.
-    #
-    # Read from `out` (the persisted measurement-state top level) rather than
-    # `comparison_set`: comparison_set is `{**core, "fingerprint"}` with a
-    # fixed inline key set (see `core` above), and adding a key there would
-    # change the fingerprint it's built from, so a bundle_session_id could
-    # never land on it. `out` is the same top-level object family
-    # setup_status.py already reads bundle_session_id from, aligning two of
-    # the three consumer sites on one assumption.
-    bundle_session_id = out.get("bundle_session_id")
+    # The optional session id is intentionally added after the comparison
+    # fingerprint is built: it is a forensic join key, not comparison-critical
+    # acoustic context.
+    bundle_session_id = comparison_set.get("bundle_session_id")
     if bundle_session_id:
         event_fields["session"] = str(bundle_session_id)
     event_fields["group"] = ",".join(sorted(_group_ids(topology)))

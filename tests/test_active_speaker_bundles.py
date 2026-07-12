@@ -147,6 +147,7 @@ def test_open_bundle_writes_every_required_info_field(tmp_path: Path) -> None:
     }
     assert info["captures"] == []
     assert info["summed_captures"] == []
+    assert info["repeat_progress"] == {}
     for reserved in (
         "proposal",
         "previous_values",
@@ -346,6 +347,7 @@ def test_append_capture_appends_compact_entry_with_driver_role(
     bundle_dir = Path(info["bundle_dir"])
     wav = _write_wav(tmp_path / "src.wav")
     payload = _driver_payload(group="mono", role="woofer")
+    payload["placement_proof"]["accepted"] = True
 
     entry = bundles.append_capture(
         bundle_dir, kind="driver", wav_source_path=wav, payload=payload
@@ -362,6 +364,32 @@ def test_append_capture_appends_compact_entry_with_driver_role(
     assert entry["excitation"] == payload["excitation"]
     assert entry["placement_ack"] == payload["placement_proof"]
     assert entry["measurement_id"] == "meas-1"
+    assert reloaded["placement"]["acknowledged"] is True
+
+
+def test_append_capture_does_not_acknowledge_unaccepted_or_wrong_policy_proof(
+    tmp_path: Path,
+) -> None:
+    for suffix, accepted, policy in (
+        ("unaccepted", False, "driver_same_distance_v1"),
+        ("wrong-policy", True, "summed_listening_position_v1"),
+    ):
+        root = tmp_path / suffix
+        info = _open(root)
+        bundle_dir = Path(info["bundle_dir"])
+        payload = _driver_payload(group="mono", role="woofer")
+        payload["placement_proof"].update({
+            "accepted": accepted,
+            "policy_id": policy,
+        })
+        bundles.append_capture(
+            bundle_dir,
+            kind="driver",
+            wav_source_path=_write_wav(root / "src.wav"),
+            payload=payload,
+        )
+
+        assert bundles._read_info(bundle_dir)["placement"]["acknowledged"] is False
 
 
 def test_append_capture_summed_kind_omits_role_and_carries_fc(
@@ -981,7 +1009,6 @@ def test_append_repeat_capture_multiple_attempts_coexist(tmp_path: Path) -> None
         )
         assert entry is not None
         paths.add(entry["artifact_path"])
-
     assert len(paths) == 3  # every attempt gets a distinct file
     manifest = read_artifact_manifest(bundle_dir)
     repeat_entries = [
@@ -990,6 +1017,46 @@ def test_append_repeat_capture_multiple_attempts_coexist(tmp_path: Path) -> None
     # 3 WAVs + 3 quality JSONs.
     assert len(repeat_entries) == 6
 
+
+def test_repeat_progress_is_compact_bounded_and_durable(tmp_path: Path) -> None:
+    info = _open(tmp_path)
+    bundle_dir = Path(info["bundle_dir"])
+    per_repeat = [
+        {
+            "index": index,
+            "accepted": index != 2,
+            "reject_reason": "level_outlier" if index == 2 else None,
+            "artifact_path": f"repeat_captures/{index}.wav",
+            "estimated_snr_db": 31.0 + index,
+            "clipping": False,
+            "above_validity_floor": True,
+            "level_dbfs": -30.0 + index / 10,
+            "full_acoustic_curve_must_not_be_copied": [1, 2, 3],
+        }
+        for index in range(5)
+    ]
+
+    entry = bundles.record_repeat_progress(
+        bundle_dir,
+        comparison_set_id="c" * 32,
+        target_fingerprint="driver-fp",
+        target_id="mono:woofer",
+        attempts=4,
+        accepted=3,
+        target=3,
+        per_repeat=per_repeat,
+        status="active",
+    )
+
+    assert entry is not None
+    assert entry["attempts"] == 4
+    assert len(entry["per_repeat"]) == 4
+    assert all(
+        "full_acoustic_curve_must_not_be_copied" not in repeat
+        for repeat in entry["per_repeat"]
+    )
+    reloaded = bundles._read_info(bundle_dir)["repeat_progress"]["mono:woofer"]
+    assert reloaded == entry
 
 def test_append_repeat_capture_rejects_missing_source(
     tmp_path: Path, caplog

@@ -481,14 +481,13 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   `test_level_dbfs`/`sweep_meta` — the same canonical read as the same-origin
   JS) and refusing while room/balance/sync measurements are active
   (server-computed at POST, re-checked when the phone arms); (2) the
-  stimulus-params alignment — `build_crossover_sweep_spec`'s
-  `stimulus_duration_ms` derives from the kernel-side
-  `driver_acoustics.DEFAULT_DURATION_S` (the sweep the Pi actually plays +
-  deconvolves), so there is **one** sweep definition, not a forked second one,
-  and its `duration_ms` — the phone's HARD recording deadline — is floored by
-  `hard_timeout_ms=30 s` exactly like `room_sweep` (a bare
-  pre+stimulus+post window left ~1.5 s for the Pi's entire armed-poll →
-  config-load → playback → relay-post round trip); the same floor + the
+  stimulus-params alignment — `build_crossover_sweep_spec` derives its role
+  duration from the kernel-side signal plan (12 s woofer/subwoofer, 8 s
+  midrange/summed, 4 s tweeter; the exact sweep the Pi plays + deconvolves),
+  so there is **one** sweep definition, not a forked second one. Driver capture
+  holds a 14 s controlled quiet interval before playback; the phone's hard
+  deadline is 45 s and the bounded mono-WAV allowance is 5 MiB. Normal stop is
+  still the Pi's authenticated `sweep_complete` event. The same 30 s floor + the
   missing `sweep_complete` publication were fixed for the **sync** relay kind
   in the same pass (pre-existing bug: the capture page deadline-kills any
   relay capture whose Pi never posts `sweep_complete`); (3) the **P2 nit** —
@@ -635,4 +634,4 @@ Follows the JTS orchestrator pattern (memory: `orchestrator-pattern-default`).
   comparison basis, confirmatory re-measure before revert) now in P4's bullet
   in §4.
 
-Last verified: 2026-07-11
+Last verified: 2026-07-12

@@ -221,11 +221,8 @@ def _last_capture_summary(
     inner block always carries all four keys, ``null`` where unknown) so a
     consumer never has to branch on which keys exist.
 
-    FORWARD-WIRED(active-crossover): acoustic['snr']['worst_relevant']
-    ['estimated_snr_db'] has no producer on main yet (lane B); when the
-    producing lane lands, verify the real key path matches, drive one
-    real-shape (non-fabricated) test through this site, then delete this
-    marker.
+    Lane D's stored-ambient SNR producer writes the real
+    ``acoustic.snr.worst_relevant.estimated_snr_db`` shape read here.
     """
     record = _newest_commissioning_record(measurements)
     if record is None:
@@ -286,21 +283,18 @@ def _derive_commissioning_summary(
     elif comparison_set_valid(measurements.get("active_comparison_set")) or bool(
         measurements.get("bundle_session_id")
     ):
-        # The "bundle_session_id" half of this check is forward-compatible
-        # with SC-4's bundle writer (a later lane): it never sets that key
-        # today, so only the comparison-set check is reachable yet.
-        # FORWARD-WIRED(active-crossover): bundle_session_id has no producer
-        # on main yet (lane D); when the producing lane lands, verify the
-        # real key path matches, drive one real-shape (non-fabricated) test
-        # through this site, then delete this marker.
         phase = "measuring"
     else:
         phase = "idle"
 
-    session_id = measurements.get("bundle_session_id")
+    active_comparison_set = measurements.get("active_comparison_set")
+    session_id = (
+        active_comparison_set.get("bundle_session_id")
+        if isinstance(active_comparison_set, Mapping)
+        else None
+    ) or measurements.get("bundle_session_id")
     session_id = str(session_id) if session_id else None
 
-    active_comparison_set = measurements.get("active_comparison_set")
     session_fingerprint = (
         active_comparison_set.get("fingerprint")
         if isinstance(active_comparison_set, Mapping)

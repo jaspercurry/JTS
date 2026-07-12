@@ -249,6 +249,86 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             ),
         })
 
+    durable_repeat = _mapping(
+        _mapping(_mapping(status.get("level_match")).get("repeats")).get("durable")
+    )
+    if durable_repeat.get("status") == "unavailable":
+        level_ready = False
+        done.discard("microphone")
+        nudges.append({
+            "code": "crossover_repeat_admission_unavailable",
+            "severity": "warn",
+            "text": (
+                "Repeat safety state is unavailable. Run the microphone level "
+                "check again before another sweep."
+            ),
+        })
+    repeat_targets = _mapping(durable_repeat.get("targets"))
+    driver_target_ids = {
+        f"{target.get('speaker_group_id') or ''}:{target.get('role') or ''}"
+        for target in drivers
+    }
+    blocked_controller_targets = []
+    for target_id, entry in repeat_targets.items():
+        if not isinstance(entry, Mapping) or target_id not in driver_target_ids:
+            continue
+        orphaned_inflight = (
+            entry.get("status") == "active"
+            and bool(entry.get("inflight"))
+            and not _relay_active(status)
+        )
+        # ready means the acoustic aggregate passed but the controller has not
+        # durably observed final measurement completion. It blocks apply even
+        # when that measurement write happened just before the controller write
+        # failed; a fresh level-check context safely resets the gate.
+        final_write_incomplete = entry.get("status") == "ready"
+        if orphaned_inflight or final_write_incomplete:
+            blocked_controller_targets.append(str(target_id))
+    if blocked_controller_targets:
+        level_ready = False
+        done.discard("microphone")
+        nudges.append({
+            "code": "crossover_repeat_persistence_interrupted",
+            "severity": "warn",
+            "text": (
+                "A repeat result could not be finished safely. Its attempt is "
+                "preserved; run the microphone level check again before playback."
+            ),
+        })
+    latest_rejection: Mapping[str, Any] = {}
+    latest_status = ""
+    for entry in repeat_targets.values():
+        if not isinstance(entry, Mapping):
+            continue
+        results = _list(entry.get("results"))
+        candidate = _mapping(results[-1]) if results else {}
+        if candidate.get("accepted") is not True or entry.get("status") in {
+            "refused", "aborted"
+        }:
+            latest_rejection = candidate
+            latest_status = str(entry.get("status") or "")
+    if latest_rejection or latest_status in {"refused", "aborted"}:
+        reason = str(latest_rejection.get("reject_reason") or latest_status)
+        if latest_rejection.get("clipping") is True:
+            text = "The latest sweep clipped. Keep the microphone still and reduce the input gain."
+        elif isinstance(latest_rejection.get("snr_shortfall_db"), (int, float)):
+            band = str(latest_rejection.get("worst_band_id") or "required")
+            text = (
+                f"The latest sweep needs {float(latest_rejection['snr_shortfall_db']):.1f} dB "
+                f"more SNR in the {band.replace('_', ' ')} band. Quiet the room and retry."
+            )
+        elif latest_rejection.get("above_validity_floor") is False:
+            floor = latest_rejection.get("validity_floor_hz")
+            suffix = f" ({float(floor):.0f} Hz floor)" if isinstance(floor, (int, float)) else ""
+            text = f"The latest sweep is below the reliable frequency floor{suffix}. Recheck microphone placement."
+        else:
+            text = f"The latest sweep was not usable ({reason.replace('_', ' ')}). Keep the room quiet and retry."
+        nudges.append({
+            "code": "crossover_repeat_rejected",
+            "severity": "warn",
+            "text": text,
+        })
+
     alternate_actions: list[dict[str, Any]] = []
     if not setup_ready:
         screen = "speaker_setup"
@@ -262,6 +342,20 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "href": "/sound/",
         }
         active_step = "speaker_setup"
+    elif blocked_controller_targets:
+        screen = "microphone"
+        verdict = (
+            "The repeat result is safely held, but its final persistence did "
+            "not complete. Run the driver level check again before measuring "
+            "or applying automatic trims."
+        )
+        action = {
+            "id": "level_match",
+            "label": "Restart driver level check",
+            "endpoint": "/correction/crossover/level-match",
+            "body": {},
+        }
+        active_step = "microphone"
     elif legacy_reapply and not (measurement_flow_active or level_ready):
         screen = "choose_tuning"
         if manual_preservation.get("ready") is True:
@@ -395,22 +489,74 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
 
         target = missing_drivers[0]
         role = str(target.get("role") or "driver")
-        screen = "driver"
-        verdict = (
-            f"Measure the {role}. {driver_placement_instruction(role)} "
-            "JTS will use the safe protected path and saved level."
+        target_id = f"{target.get('speaker_group_id') or ''}:{role}"
+        repeat_state = _mapping(
+            _mapping(_mapping(status.get("level_match")).get("repeats")).get(
+                "targets"
+            )
         )
-        action = {
-            "id": "measure_driver",
-            "label": f"Position the mic, then measure {role}",
-            "endpoint": "/correction/crossover/relay-capture",
-            "body": {
-                "kind": "driver",
-                "speaker_group_id": str(target.get("speaker_group_id") or ""),
-                "role": role,
-            },
-        }
-        active_step = "drivers"
+        repeat = _mapping(repeat_state.get(target_id))
+        repeat_failures = _mapping(
+            _mapping(_mapping(status.get("level_match")).get("repeats")).get(
+                "failures"
+            )
+        )
+        repeat_failure = _mapping(repeat_failures.get(target_id))
+        if repeat_failure:
+            nudges.append({
+                "code": "driver_repeat_capture_refused",
+                "severity": "warn",
+                "text": (
+                    "Too few repeat sweeps cleared the per-band SNR and clipping "
+                    "checks, or the service restarted mid-set. Quiet the room or "
+                    "adjust the external amplifier, then run the driver level "
+                    "check again before measuring."
+                ),
+            })
+        attempts = int(repeat.get("attempts") or 0)
+        accepted = int(repeat.get("accepted") or 0)
+        repeat_target = int(repeat.get("target") or 3)
+        repeat_copy = (
+            f" Repeat {attempts + 1}; {accepted} of {repeat_target} accepted so far."
+            if attempts
+            else f" JTS takes {repeat_target} stationary repeats."
+        )
+        if repeat_failure:
+            screen = "microphone"
+            verdict = (
+                f"The bounded repeat set for the {role} cannot continue. "
+                "Its attempts were preserved; run the driver level check to "
+                "start a fresh comparison-bound set."
+            )
+            action = {
+                "id": "level_match",
+                "label": f"Restart {role} driver level check",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {},
+            }
+            active_step = "microphone"
+        else:
+            screen = "driver"
+            verdict = (
+                f"Measure the {role}. {driver_placement_instruction(role)} "
+                "JTS will use the safe protected path and saved level."
+                f"{repeat_copy}"
+            )
+            action = {
+                "id": "measure_driver",
+                "label": (
+                    f"Measure {role} — repeat {attempts + 1}"
+                    if attempts
+                    else f"Position the mic, then measure {role}"
+                ),
+                "endpoint": "/correction/crossover/relay-capture",
+                "body": {
+                    "kind": "driver",
+                    "speaker_group_id": str(target.get("speaker_group_id") or ""),
+                    "role": role,
+                },
+            }
+            active_step = "drivers"
     elif automatic_candidate_ready:
         screen = "apply"
         replacing_manual = applied_ready and applied_owner == "manual"

@@ -951,6 +951,7 @@ def build_crossover_sweep_spec(
     accent: str = "sage",
     font: str = "figtree",
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+    ambient_duration_ms: int = 0,
 ) -> CaptureSpec:
     """`kind="crossover_sweep"` — per-driver frequency response for active
     crossover work. Same acoustic shape as `room_sweep` (a clean log sweep,
@@ -983,8 +984,10 @@ def build_crossover_sweep_spec(
         from jasper.active_speaker.driver_acoustics import DEFAULT_DURATION_S
 
         stimulus_duration_ms = int(round(DEFAULT_DURATION_S * 1000))
+    if ambient_duration_ms < 0:
+        raise CaptureSpecError("ambient_duration_ms must be >= 0")
     duration_ms = max(
-        pre_roll_ms + stimulus_duration_ms + post_roll_ms,
+        pre_roll_ms + ambient_duration_ms + stimulus_duration_ms + post_roll_ms,
         int(hard_timeout_ms),
     )
     from jasper.active_speaker.capture_geometry import (
@@ -1046,7 +1049,12 @@ def build_crossover_sweep_spec(
             ui_steps(
                 [
                     placement_instruction,
-                    f"Tap Start, then stay quiet for about {seconds} seconds",
+                    (
+                        "Tap Start and stay quiet while JTS measures the room "
+                        f"noise, then plays about {seconds} seconds of sweep"
+                        if ambient_duration_ms
+                        else f"Tap Start, then stay quiet for about {seconds} seconds"
+                    ),
                     "Keep the phone still until the sweep finishes",
                 ]
             ),

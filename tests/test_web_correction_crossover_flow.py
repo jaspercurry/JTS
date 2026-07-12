@@ -20,7 +20,7 @@ from jasper.web import correction_crossover_flow as flow
 def test_request_payload_parses_capture_query():
     handler = SimpleNamespace(
         path=(
-            "/crossover/driver-capture?speaker_group_id=mono&role=woofer"
+            "/crossover/summed-capture?speaker_group_id=mono&role=woofer"
             "&playback_id=abc&test_level_dbfs=-42.5"
             "&has_mic_calibration=true&expect_null=0"
             "&placement_proof=client-forged"
@@ -412,6 +412,533 @@ def test_driver_capture_threads_reference_axis_capture_geometry(monkeypatch, tmp
     )
 
     assert seen == ["reference_axis", "near_field"]
+
+
+@pytest.mark.parametrize("final_write_fails", [False, True])
+def test_driver_capture_wires_three_repeats_before_one_durable_record(
+    monkeypatch, tmp_path, final_write_fails
+):
+    topology = object()
+    wav_path = tmp_path / "driver.wav"
+    wav_path.write_bytes(b"wav")
+    comparison_set_id = "a" * 32
+    comparison_set = {
+        "comparison_set_id": comparison_set_id,
+        "fingerprint": "b" * 64,
+    }
+    admission_path = tmp_path / "repeat-admission.json"
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE", str(admission_path)
+    )
+    monkeypatch.setattr(web_measurement, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web_measurement, "capture_preset", lambda _topology, supplied=None: supplied
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_wav_path",
+        lambda raw, kind, wav_bytes=None: wav_path,
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_sweep_meta",
+        lambda raw: {
+            "sample_rate": 48000,
+            "n_samples": 48000,
+            "f1": 20.0,
+            "f2": 12000.0,
+            "duration_s": 1.0,
+            "amplitude_dbfs": -12.0,
+        },
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_calibration",
+        lambda raw: (None, None, {"mode": "magnitude_only"}),
+    )
+    ambient = {
+        "schema_version": 1,
+        "domain": "deconvolved",
+        "method": "deconvolved_band_difference",
+        "bands": [],
+    }
+    monkeypatch.setattr(
+        web_measurement, "_stored_ambient_report", lambda *a, **k: ambient
+    )
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    monkeypatch.setattr(
+        web_measurement,
+        "_resolve_bundle_for_capture",
+        lambda *a, **k: (bundle_dir, "captures/driver.wav"),
+    )
+    monkeypatch.setattr(
+        web_measurement, "_driver_target_fingerprint", lambda *a, **k: "target-fp"
+    )
+    repeat_events = []
+    monkeypatch.setattr(
+        web_measurement,
+        "log_event",
+        lambda _logger, event, **fields: repeat_events.append((event, fields)),
+    )
+
+    import jasper.active_speaker.calibration_level as calibration_level
+    import jasper.active_speaker.bundles as active_speaker_bundles
+    import jasper.active_speaker.commissioning_capture as capture
+    import jasper.active_speaker.measurement as measurement
+    import jasper.active_speaker.repeat_admission as repeat_admission
+
+    monkeypatch.setattr(
+        repeat_admission,
+        "log_event",
+        lambda _logger, event, **fields: repeat_events.append((event, fields)),
+    )
+
+    monkeypatch.setattr(calibration_level, "load_calibration_level_state", lambda: {})
+    monkeypatch.setattr(
+        measurement,
+        "load_measurement_state",
+        lambda _topology: {"active_comparison_set": comparison_set},
+    )
+    monkeypatch.setattr(
+        measurement,
+        "current_driver_floor_evidence",
+        lambda *_a, **_k: {
+            "valid": True,
+            "source": "durable_current_driver_measurement",
+            "confirmation": {},
+        },
+    )
+
+    calls = []
+
+    def fake_record(*_args, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("record") is not None:
+            index = sum(1 for call in calls if call.get("record") is not None)
+            return {
+                "recorded": True,
+                "verdict": "present",
+                "outcome": "heard_correct_driver",
+                "acoustic": {
+                    "verdict": "present",
+                    "observed_mic_dbfs": -30.0 + index / 10.0,
+                    "mic_clipping": False,
+                    "snr": {
+                        "verdict": "ok",
+                        "worst_relevant": {
+                            "band_id": "mid",
+                            "estimated_snr_db": 31.0,
+                            "verdict": "ok",
+                        },
+                    },
+                },
+                "excitation": {},
+                "placement_proof": kwargs.get("placement_proof"),
+            }
+        repeats = kwargs["repeats"]
+        if final_write_fails:
+            raise OSError("measurement state is read-only")
+        return {
+            "recorded": True,
+            "verdict": "present",
+            "acoustic": {"verdict": "present", "snr": {"verdict": "ok"}},
+            "measurement": {"repeats": repeats},
+            "placement_proof": kwargs.get("placement_proof"),
+        }
+
+    monkeypatch.setattr(capture, "record_driver_acoustic_capture", fake_record)
+    monkeypatch.setattr(
+        active_speaker_bundles,
+        "append_repeat_capture",
+        lambda *_a, **kwargs: {
+            "artifact_path": f"captures/repeat-{kwargs['index']}.wav"
+        },
+    )
+    monkeypatch.setattr(
+        active_speaker_bundles,
+        "record_repeat_progress",
+        lambda *_a, **kwargs: dict(kwargs),
+    )
+    repeat_admission.activate(comparison_set, path=admission_path)
+    store = backend.CrossoverLevelLease()
+    raw = {
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "playback_id": "play",
+        "ambient_duration_s": 12.0,
+    }
+
+    def capture_attempt(attempt):
+        reservation = repeat_admission.reserve(
+            comparison_set,
+            target_id="mono:woofer",
+            target_fingerprint="target-fp",
+            path=admission_path,
+        )
+        assert reservation["attempt"] == attempt
+        return backend.record_driver_capture(
+            {
+                **raw,
+                "repeat_reservation": reservation,
+            },
+            b"wav",
+            repeat_store=store,
+        )
+
+    first = capture_attempt(1)
+    second = capture_attempt(2)
+    if final_write_fails:
+        with pytest.raises(OSError, match="read-only"):
+            capture_attempt(3)
+        target_state = repeat_admission.snapshot(
+            comparison_set, path=admission_path
+        )["targets"]["mono:woofer"]
+        assert target_state["status"] == "ready"
+        with pytest.raises(ValueError, match="is ready"):
+            repeat_admission.reserve(
+                comparison_set,
+                target_id="mono:woofer",
+                target_fingerprint="target-fp",
+                path=admission_path,
+            )
+        attempts = [
+            fields
+            for event, fields in repeat_events
+            if event == "correction.crossover_repeat_attempt"
+        ]
+        assert [entry["attempt"] for entry in attempts] == [1, 2, 3]
+        return
+    third = capture_attempt(3)
+
+    assert first["repeat_progress"] == {
+        "attempts": 1,
+        "accepted": 1,
+        "target": 3,
+        "bounded_recapture": False,
+        "latest_rejection": None,
+    }
+    assert second["repeat_progress"]["attempts"] == 2
+    assert third["recorded"] is True
+    assert third["measurement"]["repeats"]["accepted"] == 3
+    assert third["acoustic"]["snr"] is not None
+    assert repeat_admission.snapshot(comparison_set, path=admission_path)["targets"][
+        "mono:woofer"
+    ]["status"] == "completed"
+    assert len([call for call in calls if call.get("record") is not None]) == 3
+    assert all(
+        call.get("emit_lifecycle_event") is False
+        for call in calls
+        if call.get("record") is not None
+    )
+    assert len([call for call in calls if call.get("repeats") is not None]) == 1
+    assert store.repeat_snapshot()["targets"] == {}
+    attempts = [
+        fields
+        for event, fields in repeat_events
+        if event == "correction.crossover_repeat_attempt"
+    ]
+    assert [entry["attempt"] for entry in attempts] == [1, 2, 3]
+    assert all(entry["accepted"] is True for entry in attempts)
+    assert all(entry["snr_db"] == 31.0 for entry in attempts)
+    assert all(entry["clipping"] is False for entry in attempts)
+
+
+def test_repeat_capture_refuses_without_controlled_quiet_interval(monkeypatch, tmp_path):
+    topology = object()
+    wav_path = tmp_path / "driver.wav"
+    wav_path.write_bytes(b"wav")
+    monkeypatch.setattr(web_measurement, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_wav_path",
+        lambda raw, kind, wav_bytes=None: wav_path,
+    )
+    monkeypatch.setattr(web_measurement, "capture_preset", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_calibration",
+        lambda _raw: (None, None, {}),
+    )
+    monkeypatch.setattr(web_measurement, "capture_sweep_meta", lambda _raw: {})
+
+    import jasper.active_speaker.measurement as measurement
+
+    monkeypatch.setattr(measurement, "load_measurement_state", lambda _topology: {})
+    monkeypatch.setattr(
+        measurement,
+        "current_driver_floor_evidence",
+        lambda *_a, **_k: {"valid": True, "confirmation": None},
+    )
+    with pytest.raises(ValueError, match="controlled pre-sweep quiet"):
+        web_measurement.record_driver_capture(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            b"wav",
+            repeat_store=backend.CrossoverLevelLease(),
+        )
+
+
+def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
+    monkeypatch, tmp_path
+):
+    from jasper.active_speaker import (
+        bundles as active_speaker_bundles,
+        commissioning_capture,
+        repeat_admission,
+    )
+
+    comparison = {
+        "comparison_set_id": "a" * 32,
+        "fingerprint": "b" * 64,
+    }
+    admission_path = tmp_path / "repeat-admission.json"
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE", str(admission_path)
+    )
+    repeat_admission.activate(comparison, path=admission_path)
+    store = backend.CrossoverLevelLease()
+    key = store.repeat_session_key(comparison["comparison_set_id"], "target-fp")
+    wav_path = tmp_path / "accepted.wav"
+    wav_path.write_bytes(b"wav")
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    acoustic = {
+        "verdict": "present",
+        "observed_mic_dbfs": -30.0,
+        "mic_clipping": False,
+        "snr": {
+            "verdict": "ok",
+            "worst_relevant": {
+                "band_id": "mid",
+                "estimated_snr_db": 30.0,
+                "verdict": "ok",
+            },
+        },
+    }
+    for attempt in (1, 2):
+        reservation = repeat_admission.reserve(
+            comparison,
+            target_id="mono:woofer",
+            target_fingerprint="target-fp",
+            path=admission_path,
+        )
+        store.append_driver_repeat(
+            key,
+            target_id="mono:woofer",
+            attempt=attempt,
+            item={
+                "attempt": attempt,
+                "verdict": "present",
+                "acoustic": acoustic,
+                "wav_path": str(wav_path),
+                "sweep_meta": {"sample_rate": 48000},
+                "playback_id": f"play-{attempt}",
+                "test_level_dbfs": -12.0,
+                "excitation": {},
+                "placement_proof": {"accepted": True, "policy_id": "driver"},
+                "ambient_report": {},
+                "ambient_duration_s": 14.0,
+                "analysis_kwargs": {},
+                "preset": object(),
+                "measurement_mode": {"mode": "magnitude_only"},
+                "calibration_id": None,
+                "bundle_dir": str(bundle_dir),
+                "capture_relpath": "captures/driver.wav",
+                "floor_evidence_source": "durable_current_driver_measurement",
+            },
+        )
+        repeat_admission.finish(
+            comparison,
+            target_id="mono:woofer",
+            target_fingerprint="target-fp",
+            token=reservation["token"],
+            result={"accepted": True},
+            status="active",
+            path=admission_path,
+        )
+    third = repeat_admission.reserve(
+        comparison,
+        target_id="mono:woofer",
+        target_fingerprint="target-fp",
+        path=admission_path,
+    )
+    repeat_admission.finish(
+        comparison,
+        target_id="mono:woofer",
+        target_fingerprint="target-fp",
+        token=third["token"],
+        result={"accepted": False, "reject_reason": "level_outlier"},
+        status="active",
+        path=admission_path,
+    )
+    fourth = repeat_admission.reserve(
+        comparison,
+        target_id="mono:woofer",
+        target_fingerprint="target-fp",
+        path=admission_path,
+    )
+    monkeypatch.setattr(web_measurement, "load_output_topology", lambda: object())
+    monkeypatch.setattr(
+        web_measurement,
+        "_driver_target_fingerprint",
+        lambda *_args, **_kwargs: "target-fp",
+    )
+    import jasper.active_speaker.measurement as measurement
+
+    monkeypatch.setattr(
+        measurement,
+        "load_measurement_state",
+        lambda _topology: {"active_comparison_set": comparison},
+    )
+    recorded = {}
+    appended = []
+    events = []
+
+    def fake_record(*_args, repeats, placement_proof, **_kwargs):
+        recorded.update(repeats)
+        return {
+            "recorded": True,
+            "verdict": "present",
+            "measurement": {"repeats": repeats},
+            "placement_proof": placement_proof,
+        }
+
+    monkeypatch.setattr(
+        commissioning_capture, "record_driver_acoustic_capture", fake_record
+    )
+    monkeypatch.setattr(
+        active_speaker_bundles,
+        "record_repeat_progress",
+        lambda *_args, **kwargs: dict(kwargs),
+    )
+    monkeypatch.setattr(
+        active_speaker_bundles,
+        "append_capture",
+        lambda *_args, **kwargs: appended.append(kwargs),
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
+    payload = web_measurement.finalize_driver_repeats_after_terminal_failure(
+        comparison_set=comparison,
+        speaker_group_id="mono",
+        role="woofer",
+        target_fingerprint="target-fp",
+        reservation=fourth,
+        failure_type="CaptureAborted",
+        repeat_store=store,
+    )
+    assert payload is not None and payload["recorded"] is True
+    assert recorded["accepted"] == 2
+    assert recorded["confidence"] == "reduced"
+    assert recorded["admission_attempts"] == 4
+    assert appended[0]["relative_path"] == "captures/driver.wav"
+    assert appended[0]["payload"]["placement_proof"]["accepted"] is True
+    assert {event for event, _fields in events} >= {
+        "active_speaker.web_driver_capture",
+        "correction.crossover_repeats_finalized_after_transport_failure",
+    }
+    assert repeat_admission.snapshot(comparison, path=admission_path)["targets"][
+        "mono:woofer"
+    ]["status"] == "completed"
+    assert store.driver_repeats(key) == []
+
+
+def test_repeat_store_never_pairs_attempts_across_comparison_sets():
+    store = backend.CrossoverLevelLease()
+    acoustic = {
+        "verdict": "present",
+        "observed_mic_dbfs": -30.0,
+        "mic_clipping": False,
+        "snr": {"verdict": "ok"},
+    }
+    item = {"verdict": "present", "acoustic": acoustic}
+
+    store.append_driver_repeat(
+        store.repeat_session_key("a" * 32, "driver-fp"),
+        target_id="mono:woofer",
+        item=item,
+    )
+    store.append_driver_repeat(
+        store.repeat_session_key("b" * 32, "driver-fp"),
+        target_id="mono:woofer:new-context",
+        item=item,
+    )
+
+    snapshot = store.repeat_snapshot()["targets"]
+    assert snapshot["mono:woofer"]["attempts"] == 1
+    assert snapshot["mono:woofer:new-context"]["attempts"] == 1
+    assert snapshot["mono:woofer"]["comparison_set_id"] != snapshot[
+        "mono:woofer:new-context"
+    ]["comparison_set_id"]
+
+
+def test_controlled_ambient_intent_never_claims_capture_prefix(tmp_path):
+    import wave
+
+    import numpy as np
+    from jasper.audio_measurement import sweep
+
+    sample_rate = 48000
+    rng = np.random.default_rng(7)
+    samples = np.clip(
+        rng.normal(0.0, 0.001, sample_rate * 3), -1.0, 1.0
+    )
+    wav_path = tmp_path / "capture.wav"
+    with wave.open(str(wav_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes((samples * 32767.0).astype("<i2").tobytes())
+    _reference, meta = sweep.synchronized_swept_sine(
+        f1=20.0,
+        f2=12000.0,
+        duration_approx_s=1.0,
+        sample_rate=sample_rate,
+        amplitude_dbfs=-12.0,
+    )
+
+    report = web_measurement._stored_ambient_report(
+        wav_path,
+        meta.to_dict(),
+        calibration=None,
+        ambient_duration_s=2.0,
+    )
+
+    assert report is not None
+    assert report["schema_version"] == 2
+    assert report["domain"] == "controlled_pre_sweep"
+    assert report["method"] == "paired_signal_window_deconvolution"
+    assert report["source"] == {
+        "kind": "pending_signal_boundary",
+        "protocol_paused_duration_s": 2.0,
+    }
+    assert report["ambient_duration_s"] == 2.0
+    assert "bands" not in report
+
+
+def test_aborted_repeat_set_cannot_restart_without_new_level_context(
+    monkeypatch
+):
+    store = backend.CrossoverLevelLease()
+    store.record_repeat_failure(
+        "mono:woofer",
+        {
+            "status": "aborted",
+            "reason": "correction_service_restarted",
+            "attempts": 3,
+        },
+    )
+    monkeypatch.setattr(web_measurement, "load_output_topology", object)
+
+    with pytest.raises(ValueError, match="run the driver level check again"):
+        backend.record_driver_capture(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            b"wav",
+            repeat_store=store,
+        )
 
 
 def _stub_driver_capture_collaborators(monkeypatch, wav_path: Path) -> None:
@@ -1470,6 +1997,382 @@ def test_applied_automatic_profile_can_run_a_fresh_sequential_retune():
     assert env["next_action"]["label"] == "Apply updated driver levels"
 
 
+def test_crossover_envelope_surfaces_server_owned_repeat_progress():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["level_match"]["repeats"] = {
+        "targets": {
+            "mono:woofer": {
+                "attempts": 2,
+                "accepted": 2,
+                "target": 3,
+            }
+        },
+        "failures": {},
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "driver"
+    assert "Repeat 3; 2 of 3 accepted" in env["verdict_text"]
+    assert env["next_action"]["label"] == "Measure woofer — repeat 3"
+
+
+def test_durable_attempts_override_process_only_repeat_count():
+    from jasper.active_speaker import crossover_envelope
+
+    store = backend.CrossoverLevelLease()
+    store.set_durable_repeat_progress({
+        "comparison": {
+            "comparison_set_id": "a" * 32,
+            "fingerprint": "b" * 64,
+        },
+        "targets": {
+            "mono:woofer": {
+                "target_fingerprint": "target-fp",
+                "attempts": 3,
+                "status": "active",
+                "results": [
+                    {"attempt": 1, "accepted": False},
+                    {"attempt": 2, "accepted": False},
+                    {"attempt": 3, "accepted": True},
+                ],
+            }
+        },
+    })
+    status = _envelope_status()
+    _locked_level(status)
+    status["level_match"]["repeats"] = store.repeat_snapshot()
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert "Repeat 4; 1 of 3 accepted" in env["verdict_text"]
+    assert env["next_action"]["label"] == "Measure woofer — repeat 4"
+
+
+@pytest.mark.asyncio
+async def test_automatic_apply_direct_post_refuses_unresolved_ready_controller(
+    monkeypatch
+):
+    from jasper.active_speaker import (
+        baseline_profile,
+        crossover_preview,
+        design_draft,
+        measurement,
+        repeat_admission,
+    )
+    from jasper import output_topology
+
+    topology = object()
+    monkeypatch.setattr(output_topology, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(design_draft, "load_design_draft", lambda: {})
+    monkeypatch.setattr(
+        crossover_preview, "load_crossover_preview", lambda **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        measurement,
+        "load_measurement_state",
+        lambda _topology: {"active_comparison_set": dict(_COMPARISON_SET)},
+    )
+    monkeypatch.setattr(
+        measurement,
+        "active_driver_targets",
+        lambda _topology: [{"target_id": "mono:woofer"}],
+    )
+    monkeypatch.setattr(
+        baseline_profile, "load_applied_baseline_profile_state", lambda: {}
+    )
+    apply_calls = []
+    monkeypatch.setattr(
+        baseline_profile,
+        "apply_baseline_profile",
+        lambda **_kwargs: apply_calls.append(True),
+    )
+    monkeypatch.setattr(
+        repeat_admission,
+        "snapshot",
+        lambda _comparison: {
+            "targets": {"mono:woofer": {"status": "ready"}}
+        },
+    )
+    with pytest.raises(ValueError, match="persistence is incomplete"):
+        await backend.apply_profile(
+            tuning_owner="automatic", camilla_factory=lambda: object()
+        )
+    assert apply_calls == []
+
+
+def test_crossover_envelope_requires_new_level_check_after_repeat_abort():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["level_match"]["repeats"] = {
+        "targets": {},
+        "failures": {
+            "mono:woofer": {
+                "status": "aborted",
+                "reason": "correction_service_restarted",
+                "attempts": 3,
+                "accepted": 2,
+                "target": 3,
+            }
+        },
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert "attempts were preserved" in env["verdict_text"]
+    assert env["next_action"] == {
+        "id": "level_match",
+        "label": "Restart woofer driver level check",
+        "endpoint": "/correction/crossover/level-match",
+        "body": {},
+    }
+
+
+def test_ready_controller_blocks_apply_even_after_measurement_write():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"] = {
+        "latest_driver_measurements": {
+            "mono:woofer": _driver_acoustic("woofer"),
+            "mono:tweeter": _driver_acoustic("tweeter"),
+        },
+        "latest_summed_validations": {},
+    }
+    status["setup"]["automatic_candidate"] = {"ready": True, "reason": None}
+    status["level_match"]["repeats"] = {
+        "targets": {
+            "mono:woofer": {
+                "attempts": 3,
+                "accepted": 3,
+                "target": 3,
+                "status": "ready",
+            }
+        },
+        "failures": {},
+        "durable": {
+            "targets": {
+                "mono:woofer": {
+                    "attempts": 3,
+                    "status": "ready",
+                    "inflight": None,
+                    "results": [{"attempt": 3, "accepted": True}],
+                }
+            }
+        },
+    }
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match"
+    assert any(
+        nudge["code"] == "crossover_repeat_persistence_interrupted"
+        for nudge in env["nudges"]
+    )
+
+
+def test_fresh_process_status_drives_restart_failure_into_envelope(
+    monkeypatch, tmp_path
+):
+    from jasper.active_speaker import (
+        baseline_profile,
+        crossover_envelope,
+        repeat_admission,
+        setup_status,
+        web_commissioning,
+    )
+
+    path = tmp_path / "repeat.json"
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE", str(path))
+    comparison = dict(_COMPARISON_SET)
+    repeat_admission.activate(comparison, path=path)
+    repeat_admission.reserve(
+        comparison,
+        target_id="mono:woofer",
+        target_fingerprint="woofer-fp",
+        path=path,
+    )
+    monkeypatch.setattr(repeat_admission, "OWNER_ID", "fresh-process")
+    repeat_admission.claim_owner(path=path)
+    monkeypatch.setattr(
+        web_measurement,
+        "status_payload",
+        lambda: {
+            "ok": True,
+            "targets": _envelope_status()["targets"],
+            "measurements": {
+                "active_comparison_set": comparison,
+                "summary": {},
+            },
+        },
+    )
+    monkeypatch.setattr(web_commissioning, "commission_status_payload", lambda: {})
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda: {
+            "status": "ready",
+            "protected_profile": {"source_fingerprint": "protected-profile"},
+        },
+    )
+    monkeypatch.setattr(
+        baseline_profile, "load_applied_baseline_profile_state", lambda: {}
+    )
+    monkeypatch.setattr(backend, "_LEVEL_LEASE", backend.CrossoverLevelLease())
+
+    live = backend.status_payload()
+    failure = live["level_match"]["repeats"]["failures"]["mono:woofer"]
+    assert failure["status"] == "aborted"
+    assert failure["attempts"] == 1
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["level_match"]["repeats"] = live["level_match"]["repeats"]
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match"
+
+
+def test_backend_status_redacts_repeat_token_and_owner(monkeypatch, tmp_path):
+    import json
+
+    from jasper.active_speaker import (
+        baseline_profile,
+        repeat_admission,
+        setup_status,
+        web_commissioning,
+    )
+
+    path = tmp_path / "repeat.json"
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE", str(path))
+    comparison = dict(_COMPARISON_SET)
+    repeat_admission.activate(comparison, path=path)
+    reservation = repeat_admission.reserve(
+        comparison,
+        target_id="mono:woofer",
+        target_fingerprint="woofer-fp",
+        path=path,
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "status_payload",
+        lambda: {
+            "ok": True,
+            "targets": _envelope_status()["targets"],
+            "measurements": {
+                "active_comparison_set": comparison,
+                "summary": {},
+            },
+        },
+    )
+    monkeypatch.setattr(web_commissioning, "commission_status_payload", lambda: {})
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda: {
+            "status": "ready",
+            "protected_profile": {"source_fingerprint": "protected-profile"},
+        },
+    )
+    monkeypatch.setattr(
+        baseline_profile, "load_applied_baseline_profile_state", lambda: {}
+    )
+    monkeypatch.setattr(backend, "_LEVEL_LEASE", backend.CrossoverLevelLease())
+    payload = backend.status_payload()
+    public_repeats = payload["level_match"]["repeats"]
+    serialized = json.dumps(public_repeats)
+    assert reservation["token"] not in serialized
+    assert "owner_id" not in serialized
+    assert public_repeats["durable"]["targets"]["mono:woofer"][
+        "inflight"
+    ] is True
+    backend._LEVEL_LEASE.set_durable_repeat_progress({
+        "targets": {
+            "mono:woofer": {
+                "target_id": "mono:woofer",
+                "target_fingerprint": "woofer-fp",
+                "owner_id": "owner-secret",
+                "attempts": 4,
+                "status": "refused",
+                "inflight": None,
+                "results": [{
+                    "attempt": 4,
+                    "accepted": False,
+                    "reject_reason": "capture_failed",
+                    "detail": reservation["token"],
+                }],
+            }
+        }
+    })
+    refused_serialized = json.dumps(backend._LEVEL_LEASE.repeat_snapshot())
+    assert reservation["token"] not in refused_serialized
+    assert "owner-secret" not in refused_serialized
+    assert "detail" not in refused_serialized
+
+
+@pytest.mark.parametrize("controller_status", ["active", "ready"])
+def test_orphaned_inflight_or_ready_without_measurement_restarts_level_check(
+    controller_status
+):
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["level_match"]["repeats"] = {
+        "targets": {},
+        "failures": {},
+        "durable": {
+            "targets": {
+                "mono:woofer": {
+                    "status": controller_status,
+                    "inflight": "a" * 32 if controller_status == "active" else None,
+                    "attempts": 3,
+                    "results": [],
+                }
+            }
+        },
+    }
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match"
+    assert any(
+        nudge["code"] == "crossover_repeat_persistence_interrupted"
+        for nudge in env["nudges"]
+    )
+
+
+def test_live_relay_does_not_misclassify_its_inflight_repeat_as_orphaned():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["relay"] = {"status": "awaiting_phone", "kind": "crossover_sweep:driver"}
+    status["level_match"]["repeats"] = {
+        "targets": {},
+        "failures": {},
+        "durable": {
+            "targets": {
+                "mono:woofer": {
+                    "status": "active",
+                    "inflight": "a" * 32,
+                    "attempts": 1,
+                    "results": [],
+                }
+            }
+        },
+    }
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "waiting"
+    assert not any(
+        nudge["code"] == "crossover_repeat_persistence_interrupted"
+        for nudge in env["nudges"]
+    )
+
+
 @pytest.mark.parametrize("applied_owner", ["manual", "automatic"])
 def test_applied_profile_keeps_partial_driver_retune_active(applied_owner):
     """The old applied result must not hide the next driver between relays."""
@@ -1636,6 +2539,13 @@ def _fake_relay_transport(monkeypatch, *, wav=b"phone-wav-bytes"):
 
     purged = {}
 
+    class AlwaysActive:
+        def __init__(self, *_args):
+            pass
+
+        def assert_active(self):
+            return None
+
     def fake_run_capture(client, pi_session, *, on_armed, **kw):
         required = pi_session.spec.acknowledgement
         on_armed(SimpleNamespace(
@@ -1653,6 +2563,7 @@ def _fake_relay_transport(monkeypatch, *, wav=b"phone-wav-bytes"):
         return SimpleNamespace(wav=wav, device={"label": "iPhone mic"})
 
     monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "CaptureActivityProbe", AlwaysActive)
     monkeypatch.setattr(
         relay_session, "purge", lambda c, s: purged.setdefault("done", True)
     )
@@ -1675,6 +2586,7 @@ def _relay_contract() -> dict:
     return {
         "comparison_set": _COMPARISON_SET,
         "target_fingerprint": "",
+        "ambient_duration_s": 0.0,
     }
 
 
@@ -1876,11 +2788,14 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
 
     record_calls = {}
 
-    def fake_record_driver(raw, wav_bytes, *, placement_proof, preset=None):
+    def fake_record_driver(
+        raw, wav_bytes, *, placement_proof, preset=None, repeat_store=None
+    ):
         record_calls["raw"] = raw
         record_calls["wav"] = wav_bytes
         record_calls["placement_proof"] = placement_proof
         record_calls["preset"] = preset
+        record_calls["repeat_store"] = repeat_store
         return {"recorded": True}
 
     monkeypatch.setattr(be, "record_driver_capture", fake_record_driver)
@@ -2022,7 +2937,7 @@ async def test_crossover_gain_is_scoped_to_the_measurement_window(monkeypatch):
     monkeypatch.setattr(
         be,
         "record_driver_capture",
-        lambda _raw, _wav, *, placement_proof: {"recorded": True},
+        lambda _raw, _wav, *, placement_proof, repeat_store=None: {"recorded": True},
     )
 
     run_and_consume = flow.build_crossover_relay_run_and_consume(
@@ -2036,6 +2951,402 @@ async def test_crossover_gain_is_scoped_to_the_measurement_window(monkeypatch):
     await run_and_consume(object(), _relay_pi_session("driver", session_id="s"))
 
     assert order == ["window_enter", "prepare", "play", "restore", "window_exit"]
+
+
+@pytest.mark.asyncio
+async def test_repeat_admission_precedes_ambient_prepare_and_audio(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from jasper.correction import coordinator
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    order = []
+
+    @asynccontextmanager
+    async def window():
+        order.append("window")
+        yield
+
+    async def prepare():
+        order.append("prepare")
+        return True
+
+    async def restore():
+        order.append("restore")
+        return True
+
+    async def play(*_args, **_kwargs):
+        order.append("play")
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+            "sweep_meta": {"sample_rate": 48000},
+        }
+
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    monkeypatch.setattr(
+        be,
+        "record_driver_capture",
+        lambda raw, *_a, **_k: order.append("record") or {"recorded": True},
+    )
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        reserve_repeat_attempt=lambda: order.append("reserve") or {
+            "token": "token",
+            "attempt": 1,
+        },
+        prepare_play=prepare,
+        restore_play=restore,
+        **_relay_contract(),
+    )
+    await run_and_consume(object(), _relay_pi_session("driver"))
+    assert order == ["reserve", "window", "prepare", "play", "restore", "record"]
+
+
+@pytest.mark.asyncio
+async def test_repeat_reservation_failure_prevents_prepare_and_audio(monkeypatch):
+    import logging
+
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    play_calls = []
+    events = []
+    monkeypatch.setattr(
+        flow,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
+
+    async def play(*_args, **_kwargs):
+        play_calls.append(True)
+        return {"status": "completed", "playback": {"audio_emitted": True}}
+
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        reserve_repeat_attempt=lambda: (_ for _ in ()).throw(OSError("disk full")),
+        **_relay_contract(),
+    )
+    with pytest.raises(OSError, match="disk full"):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+    assert play_calls == []
+    assert events == [
+        (
+            "correction.crossover_repeat_persistence_failed",
+            {"level": logging.ERROR, "reason": "OSError", "op": "reserve"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_at", ["play", "restore", "run_capture", "purge", "validate", "record"]
+)
+async def test_every_post_reservation_failure_consumes_and_releases_attempt(
+    monkeypatch, failure_at
+):
+    from jasper.capture_relay import session as relay_session
+    from jasper.web import correction_crossover_backend as be
+
+    finish_calls = []
+
+    def fake_run_capture(client, pi_session, *, on_armed, **_kwargs):
+        required = pi_session.spec.acknowledgement
+        on_armed(SimpleNamespace(
+            acknowledgement={
+                "schema_version": required.schema_version,
+                "id": required.id,
+                "binding_id": required.binding_id,
+                "accepted": True,
+            },
+            capture_page={"capture_protocol_version": 2, "capture_page_build": "test"},
+        ))
+        if failure_at == "run_capture":
+            raise OSError("run capture failed")
+        return SimpleNamespace(wav=b"wav", device={"label": "UMIK-2"})
+
+    def purge(*_args):
+        if failure_at == "purge":
+            raise OSError("purge failed")
+
+    async def play(*_args, **_kwargs):
+        if failure_at == "play":
+            raise OSError("play failed")
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+            "sweep_meta": {"sample_rate": 48000},
+        }
+
+    async def restore():
+        return failure_at != "restore"
+
+    def validate(_result):
+        if failure_at == "validate":
+            raise ValueError("device changed")
+
+    def record(*_args, **_kwargs):
+        if failure_at == "record":
+            raise OSError("record failed")
+        return {"recorded": True}
+
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "purge", purge)
+    monkeypatch.setattr(
+        relay_session,
+        "CaptureActivityProbe",
+        lambda *_args: SimpleNamespace(assert_active=lambda: None),
+    )
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    monkeypatch.setattr(be, "record_driver_capture", record)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        reserve_repeat_attempt=lambda: {"token": "token", "attempt": 4},
+        finish_failed_repeat_attempt=lambda reservation, error: finish_calls.append(
+            (dict(reservation), error)
+        ),
+        prepare_play=(lambda: _async_true()),
+        restore_play=restore,
+        validate_capture=validate,
+        **_relay_contract(),
+    )
+    with pytest.raises((OSError, RuntimeError, ValueError)):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+    assert len(finish_calls) == 1
+    assert finish_calls[0][0]["attempt"] == 4
+
+
+@pytest.mark.asyncio
+async def test_authenticated_phone_abort_during_ambient_restores_before_window_exit(
+    monkeypatch
+):
+    import asyncio
+    import threading
+    from contextlib import asynccontextmanager
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator
+    from jasper.web import correction_crossover_backend as be
+
+    prepared = threading.Event()
+    restore_started = threading.Event()
+    release_restore = threading.Event()
+    order = []
+    finish_calls = []
+    play_calls = []
+    runner_timeouts = []
+
+    def fake_run_capture(client, pi_session, *, on_armed, **_kwargs):
+        required = pi_session.spec.acknowledgement
+        on_armed(SimpleNamespace(
+            acknowledgement={
+                "schema_version": required.schema_version,
+                "id": required.id,
+                "binding_id": required.binding_id,
+                "accepted": True,
+            },
+            capture_page={
+                "capture_protocol_version": 2,
+                "capture_page_build": "20260711.1",
+            },
+        ))
+
+    class AbortAfterPrepare:
+        def __init__(self, *_args):
+            pass
+
+        def assert_active(self):
+            assert prepared.wait(timeout=2)
+            raise relay_session.CaptureAborted("phone backgrounded")
+
+    @asynccontextmanager
+    async def window():
+        order.append("window_enter")
+        try:
+            yield
+        finally:
+            order.append("window_exit")
+
+    async def prepare():
+        order.append("prepare")
+        prepared.set()
+        return True
+
+    async def restore():
+        order.append("restore_start")
+        restore_started.set()
+        await asyncio.to_thread(release_restore.wait)
+        order.append("restore_done")
+        return True
+
+    async def play(*_args, **_kwargs):
+        play_calls.append(True)
+        return {"status": "completed", "playback": {"audio_emitted": True}}
+
+    def run_async(coro, timeout=None):
+        runner_timeouts.append(timeout)
+        return _run_coro(coro)
+
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "CaptureActivityProbe", AbortAfterPrepare)
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        run_async,
+        lambda: object(),
+        reserve_repeat_attempt=lambda: {"token": "token", "attempt": 1},
+        finish_failed_repeat_attempt=lambda reservation, failure_type: finish_calls.append(
+            (dict(reservation), failure_type)
+        ),
+        prepare_play=prepare,
+        restore_play=restore,
+        ambient_duration_s=1.0,
+        comparison_set=_COMPARISON_SET,
+        target_fingerprint="target-fp",
+    )
+    task = asyncio.create_task(
+        run_and_consume(object(), _relay_pi_session("driver"))
+    )
+    assert await asyncio.to_thread(restore_started.wait, 3)
+    assert "window_exit" not in order
+    release_restore.set()
+    with pytest.raises(relay_session.CaptureAborted, match="backgrounded"):
+        await task
+    assert order == [
+        "window_enter",
+        "prepare",
+        "restore_start",
+        "restore_done",
+        "window_exit",
+    ]
+    assert play_calls == []
+    assert finish_calls == [({"token": "token", "attempt": 1}, "CaptureAborted")]
+    from jasper.active_speaker.test_signal_plan import (
+        CROSSOVER_CAPTURE_HARD_TIMEOUT_S,
+    )
+
+    assert runner_timeouts == [CROSSOVER_CAPTURE_HARD_TIMEOUT_S - 2.0]
+
+
+@pytest.mark.asyncio
+async def test_prepare_side_effect_then_failure_restores_before_window_exit(
+    monkeypatch
+):
+    from contextlib import asynccontextmanager
+
+    from jasper.correction import coordinator
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    order = []
+    finish_calls = []
+
+    @asynccontextmanager
+    async def window():
+        order.append("window_enter")
+        try:
+            yield
+        finally:
+            order.append("window_exit")
+
+    async def prepare():
+        order.append("prepare_lease_active")
+        raise OSError("camilla failed after lease side effect")
+
+    async def restore():
+        order.append("restore")
+        return True
+
+    async def play(*_args, **_kwargs):
+        order.append("play")
+        return {"status": "completed", "playback": {"audio_emitted": True}}
+
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        reserve_repeat_attempt=lambda: {"token": "token", "attempt": 1},
+        finish_failed_repeat_attempt=lambda reservation, failure_type: finish_calls.append(
+            (dict(reservation), failure_type)
+        ),
+        prepare_play=prepare,
+        restore_play=restore,
+        **_relay_contract(),
+    )
+    with pytest.raises(OSError, match="lease side effect"):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+    assert order == [
+        "window_enter",
+        "prepare_lease_active",
+        "restore",
+        "window_exit",
+    ]
+    assert finish_calls == [({"token": "token", "attempt": 1}, "OSError")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failed_phase", ["ambient_started", "sweep_started", "sweep_complete"]
+)
+async def test_required_host_event_failure_consumes_repeat_without_stray_audio(
+    monkeypatch, failed_phase
+):
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    finish_calls = []
+    play_calls = []
+
+    async def play(*_args, **_kwargs):
+        play_calls.append(True)
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+            "sweep_meta": {"sample_rate": 48000},
+        }
+
+    def post_host_event(_session, _token, payload):
+        if payload.get("phase") == failed_phase:
+            raise OSError(f"{failed_phase} post failed")
+
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        post_host_event=post_host_event,
+        reserve_repeat_attempt=lambda: {"token": "token", "attempt": 1},
+        finish_failed_repeat_attempt=lambda reservation, failure_type: finish_calls.append(
+            (dict(reservation), failure_type)
+        ),
+        ambient_duration_s=(0.001 if failed_phase == "ambient_started" else 0.0),
+        comparison_set=_COMPARISON_SET,
+        target_fingerprint="target-fp",
+    )
+    with pytest.raises(OSError, match="post failed"):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+    assert len(finish_calls) == 1
+    assert finish_calls[0][1] == "OSError"
+    if failed_phase in {"ambient_started", "sweep_started"}:
+        assert play_calls == []
+    else:
+        assert play_calls == [True]
+
+
+async def _async_true():
+    return True
 
 
 @pytest.mark.asyncio

@@ -205,25 +205,18 @@ def region_for_fc(
 def _bundle_session_id(measurement: Any) -> str | None:
     """Best-effort bundle session id from a just-recorded measurement.
 
-    FORWARD-WIRED(active-crossover): bundle_session_id has no producer on
-    main yet (lanes A/B/D); when the producing lane lands, verify the real
-    key path matches, drive one real-shape (non-fabricated) test through
-    this site, then delete this marker.
-
-    The commissioning-bundle writer (SC-4) is separate, later work and does
-    not stamp a bundle reference onto records yet, so this reads the single
-    most likely shape -- a per-record ``bundle_session_id`` on the just-
-    recorded measurement (distinct from the top-level-state assumption
-    `start_active_comparison_set` reads in measurement.py) -- meaning the
-    lifecycle event's ``session`` field starts populating itself the moment
-    that lands, without a further edit here. Absent today: the event's
-    ``session`` field is simply omitted
-    (docs/active-crossover-information-design.md "Structured events": fields
-    are included "when available, omit when not").
+    ``record_driver_measurement`` returns the whole persisted state. The
+    durable session is owned by its active comparison set; a direct key remains
+    a legacy fallback for older/fabricated callers.
     """
     if not isinstance(measurement, Mapping):
         return None
-    session_id = measurement.get("bundle_session_id")
+    comparison_set = measurement.get("active_comparison_set")
+    session_id = (
+        comparison_set.get("bundle_session_id")
+        if isinstance(comparison_set, Mapping)
+        else None
+    ) or measurement.get("bundle_session_id")
     return str(session_id) if session_id else None
 
 
@@ -254,11 +247,6 @@ def _log_capture_verdict_event(
         fields["verdict"] = verdict
     if result.get("recorded"):
         fields["outcome"] = result.get("outcome")
-        # FORWARD-WIRED(active-crossover): acoustic['snr']['worst_relevant']
-        # ['estimated_snr_db'] and acoustic['gating']['f_valid_floor_hz']
-        # have no producer on main yet (lanes A/B); when the producing lane
-        # lands, verify the real key path matches, drive one real-shape
-        # (non-fabricated) test through this site, then delete this marker.
         snr_block = acoustic.get("snr")
         worst_relevant = (
             snr_block.get("worst_relevant") if isinstance(snr_block, Mapping) else None
@@ -296,7 +284,9 @@ def record_driver_acoustic_capture(
     sweep_meta: Mapping[str, Any],
     playback_id: str | None = None,
     noise_floor_dbfs: float | None = None,
-    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    ambient_report: Mapping[str, Any] | None = None,
+    ambient_duration_s: float | None = None,
     test_level_dbfs: float | None = None,
     excitation: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
@@ -310,8 +300,10 @@ def record_driver_acoustic_capture(
     state_path: str | Path | None = None,
     now: str | None = None,
     capture_geometry: str = "near_field",
+    repeats: Mapping[str, Any] | None = None,
+    emit_lifecycle_event: bool = True,
     analyze: Callable[..., DriverAcousticResult] = analyze_driver_capture,
-    record: Callable[..., dict[str, Any]] = record_driver_measurement,
+    record: Callable[..., dict[str, Any] | None] = record_driver_measurement,
 ) -> dict[str, Any]:
     """Analyze one driver's sweep capture and record the result.
 
@@ -330,8 +322,8 @@ def record_driver_acoustic_capture(
     confirmation still records the acoustic evidence but leaves ``captured``
     False — the acoustic verdict never bypasses the operator floor gate.
 
-    ``noise_band_report`` (the correction-shape band-level list — see
-    ``jasper.audio_measurement.snr_policy.band_levels_dbfs``) is threaded to
+    ``noise_band_report`` (the legacy correction-shape band-level list or the
+    domain-tagged stored-ambient report) is threaded to
     ``analyze`` so the SC-1 magnitude-class SNR block
     (``DriverAcousticResult.snr``) can be computed; it is independent of the
     pre-existing scalar ``noise_floor_dbfs`` bolt-on below.
@@ -346,17 +338,22 @@ def record_driver_acoustic_capture(
     through to the single measurement write.
     """
     passband = driver_passband_hz(preset, role)
-    result = analyze(
-        captured_wav,
-        sweep_meta,
-        passband_hz=passband,
-        overlap_fcs=driver_crossover_fcs(preset, role),
-        has_mic_calibration=has_mic_calibration,
-        calibration=calibration,
-        noise_band_report=noise_band_report,
-        capture_geometry=capture_geometry,
-    )
+    analyze_kwargs: dict[str, Any] = {
+        "passband_hz": passband,
+        "overlap_fcs": driver_crossover_fcs(preset, role),
+        "has_mic_calibration": has_mic_calibration,
+        "calibration": calibration,
+        "noise_band_report": noise_band_report,
+        "capture_geometry": capture_geometry,
+    }
+    if ambient_duration_s is not None:
+        analyze_kwargs["ambient_duration_s"] = ambient_duration_s
+    result = analyze(captured_wav, sweep_meta, **analyze_kwargs)
     acoustic = result.to_dict()
+    if isinstance(ambient_report, Mapping) and not isinstance(
+        acoustic.get("ambient"), Mapping
+    ):
+        acoustic["ambient"] = dict(ambient_report)
     normalized_noise_floor = _finite_float(noise_floor_dbfs)
     if normalized_noise_floor is not None:
         acoustic["noise_floor_dbfs"] = normalized_noise_floor
@@ -374,9 +371,10 @@ def record_driver_acoustic_capture(
             "acoustic": acoustic,
             "measurement": None,
         }
-        _log_capture_verdict_event(
-            rejected, speaker_group_id=speaker_group_id, role=role,
-        )
+        if emit_lifecycle_event:
+            _log_capture_verdict_event(
+                rejected, speaker_group_id=speaker_group_id, role=role,
+            )
         return rejected
     sweep_peak_dbfs = _finite_float(sweep_meta.get("amplitude_dbfs"))
     commissioning_gain_db = _finite_float(test_level_dbfs)
@@ -458,6 +456,7 @@ def record_driver_acoustic_capture(
         "test_level_dbfs": test_level_dbfs,
         "excitation": excitation_ledger,
         "placement_proof": dict(placement_proof) if placement_proof else None,
+        "repeats": dict(repeats) if isinstance(repeats, Mapping) else None,
         "notes": notes,
     }
     measurement = record(
@@ -481,7 +480,10 @@ def record_driver_acoustic_capture(
         "placement_proof": dict(placement_proof) if placement_proof else None,
         "measurement": measurement,
     }
-    _log_capture_verdict_event(accepted, speaker_group_id=speaker_group_id, role=role)
+    if emit_lifecycle_event:
+        _log_capture_verdict_event(
+            accepted, speaker_group_id=speaker_group_id, role=role
+        )
     return accepted
 
 
@@ -497,7 +499,9 @@ def record_summed_acoustic_capture(
     summed_test_id: str | None = None,
     playback_id: str | None = None,
     noise_floor_dbfs: float | None = None,
-    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    ambient_report: Mapping[str, Any] | None = None,
+    ambient_duration_s: float | None = None,
     excitation: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
     polarity: str | None = None,
@@ -567,19 +571,24 @@ def record_summed_acoustic_capture(
     # a reverse-polarity capture (one driver inverted) a present null is the PASS,
     # for an in-phase one it is the PROBLEM. The cap-independent polarity call
     # (reverse-vs-in-phase margin) is the proposal's job, not this per-capture verdict.
-    result = analyze(
-        captured_wav,
-        sweep_meta,
-        crossover_fc_hz=fc,
-        null_threshold_db=null_threshold_db,
-        expect_null=expect_null,
-        has_mic_calibration=has_mic_calibration,
-        calibration=calibration,
-        noise_band_report=noise_band_report,
-        noise_floor_dbfs=noise_floor_dbfs,
-        capture_geometry=capture_geometry,
-    )
+    analyze_kwargs: dict[str, Any] = {
+        "crossover_fc_hz": fc,
+        "null_threshold_db": null_threshold_db,
+        "expect_null": expect_null,
+        "has_mic_calibration": has_mic_calibration,
+        "calibration": calibration,
+        "noise_band_report": noise_band_report,
+        "noise_floor_dbfs": noise_floor_dbfs,
+        "capture_geometry": capture_geometry,
+    }
+    if ambient_duration_s is not None:
+        analyze_kwargs["ambient_duration_s"] = ambient_duration_s
+    result = analyze(captured_wav, sweep_meta, **analyze_kwargs)
     acoustic = result.to_dict()
+    if isinstance(ambient_report, Mapping) and not isinstance(
+        acoustic.get("ambient"), Mapping
+    ):
+        acoustic["ambient"] = dict(ambient_report)
     normalized_noise_floor = _finite_float(noise_floor_dbfs)
     if normalized_noise_floor is not None:
         acoustic["noise_floor_dbfs"] = normalized_noise_floor
@@ -1093,15 +1102,31 @@ def _repeat_reject_reason(
 
     if verdict in (None, VERDICT_UNUSABLE_CAPTURE):
         return "unusable_capture"
-    snr = acoustic.get("snr")
-    snr_verdict = snr.get("verdict") if isinstance(snr, Mapping) else None
-    if snr_verdict in _REPEAT_REJECT_SNR_VERDICTS:
-        return f"snr_{snr_verdict}"
     if bool(acoustic.get("mic_clipping")):
         return "clipping"
     gating = acoustic.get("gating")
     if isinstance(gating, Mapping) and gating.get("above_validity_floor") is False:
         return "below_validity_floor"
+    overlap_entries = [
+        entry
+        for entry in acoustic.get("overlap_levels") or ()
+        if isinstance(entry, Mapping)
+    ]
+    if overlap_entries:
+        # A woofer's unusable bottom octave or a 3-way mid's unusable lower
+        # handoff must not veto a clean required overlap at the other edge.
+        # ``usable`` is the analyzer-owned conjunction of bins, local SNR,
+        # clipping and validity floor. Reject only when no topology overlap can
+        # support the trim decision.
+        if not any(entry.get("usable") is True for entry in overlap_entries):
+            return "no_usable_overlap"
+    else:
+        # Legacy/fabricated analyzers without topology overlap entries retain
+        # the coarse whole-passband SNR behavior.
+        snr = acoustic.get("snr")
+        snr_verdict = snr.get("verdict") if isinstance(snr, Mapping) else None
+        if snr_verdict in _REPEAT_REJECT_SNR_VERDICTS:
+            return f"snr_{snr_verdict}"
     if level_dbfs is None:
         return "level_unavailable"
     if (
@@ -1173,15 +1198,27 @@ def aggregate_driver_repeats(
         gating: Mapping[str, Any] = (
             gating_raw if isinstance(gating_raw, Mapping) else {}
         )
+        overlap_floor_evidence = [
+            entry.get("above_validity_floor")
+            for entry in acoustic.get("overlap_levels") or ()
+            if isinstance(entry, Mapping)
+            and isinstance(entry.get("above_validity_floor"), bool)
+        ]
+        above_validity_floor = (
+            bool(gating["above_validity_floor"])
+            if isinstance(gating.get("above_validity_floor"), bool)
+            else (any(overlap_floor_evidence) if overlap_floor_evidence else True)
+        )
         per_repeat.append({
             "index": index,
+            "attempt": int(item.get("attempt") or index + 1),
             "verdict": verdict,
             "accepted": accepted,
             "reject_reason": reason,
             "artifact_path": item.get("artifact_path"),
             "estimated_snr_db": _finite_float(worst_relevant.get("estimated_snr_db")),
             "clipping": bool(acoustic.get("mic_clipping")),
-            "above_validity_floor": bool(gating.get("above_validity_floor", True)),
+            "above_validity_floor": above_validity_floor,
             "level_dbfs": level_dbfs,
         })
         if accepted and level_dbfs is not None:
@@ -1266,9 +1303,8 @@ def record_driver_repeat_aggregate(
 
     Logs ``correction.crossover_repeats_aggregated`` (SC-5) via
     :func:`jasper.log_event.log_event`. A pure evidence step: it does not
-    itself call ``record_driver_measurement`` — the caller (a future
-    web/orchestration layer; the capture-loop UI is not part of this
-    change) takes the returned ``aggregate_repeat`` and records it exactly
+    itself call ``record_driver_measurement`` — the web orchestration layer
+    takes the returned ``aggregate_repeat`` and records it exactly
     as a single-capture result, attaching this function's return value
     under the record's ``repeats`` key so the durable record and the
     bundle both carry the full repeat history.

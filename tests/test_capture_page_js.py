@@ -41,6 +41,7 @@ _HARNESSES = [
     "capture_return_url_test.mjs",
     "capture_level_events_test.mjs",
     "capture_setup_store_test.mjs",
+    "capture_calibration_model_test.mjs",
     "capture_protocol_test.mjs",
     "capture_transport_integrity_test.mjs",
 ]
@@ -90,9 +91,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260711.4",
+        "capture_page_build": "20260712.3",
     }
-    assert "main.js?v=20260711-4" in index_html
+    assert "main.js?v=20260712-3" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -122,7 +123,8 @@ def test_capture_page_completion_renders_return_cta():
 def test_capture_page_waits_for_pi_sweep_completion():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    assert "Measuring room noise" in main_js
+    assert 'phase === "ambient_started"' in main_js
+    assert "Measuring room noise — stay quiet and keep the phone still." in main_js
     assert "fetchPhoneStatus" in main_js
     assert 'phase === "sweep_complete"' in main_js
     assert "recordWindowMs" not in main_js
@@ -247,3 +249,25 @@ def test_capture_page_rejects_oversize_calibration_and_unproven_agc():
     assert "capture.settings.autoGainControl !== false" in main_js
     assert 'reason: "agc_not_proven_off"' in main_js
     assert "JTS will not play the level tone" in main_js
+
+
+def test_capture_page_infers_calibration_from_pi_registry_without_serial():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "inferCalibrationModel(" in main_js
+    assert "calibrationModels," in main_js
+    assert 'mode: "serial"' in main_js
+    assert "model: inferred.key" in main_js
+    assert "umik-2" not in main_js.lower()
+    assert "minidsp_umik2" not in main_js
+    assert 'serial: ""' in main_js
+    assert "if (!setupState.calibration.serial)" in main_js
+    assert "Enter the microphone serial number." in main_js
+    assert "sessionStorage" not in main_js
+
+
+def test_capture_page_level_completion_does_not_promise_wrong_next_step():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "ready for the measurement sweep" not in main_js
+    assert "Level matched — return to the speaker for the next step." in main_js

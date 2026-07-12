@@ -247,11 +247,10 @@ def propose_crossover_alignment(
     ``jasper.audio_measurement.snr_policy``). ``alignment_snr_ok`` carries that
     verdict — ``True`` only when a real per-band SNR reading cleared the
     stricter alignment threshold, ``False`` only when real evidence proved it
-    insufficient. ``None`` — the default, and the value every caller passes
-    today, since the ambient-noise capture flow that would produce a real
-    verdict is not wired up yet — means unknown/no evidence and DELIBERATELY
-    does not degrade: it preserves the shipped margin/blend behavior rather
-    than silently degrading every proposal the moment this parameter existed.
+    insufficient. ``None`` means unknown/no evidence and DELIBERATELY does not
+    degrade: it preserves the shipped margin/blend behavior for legacy callers
+    and captures without usable ambient evidence. The commissioning repeat flow
+    now passes the paired ambient verdict when that evidence is available.
     When ``alignment_snr_ok is False``: any ``keep``/``invert`` polarity action
     downgrades to ``review``, and ``delay_status`` can never read ``aligned``
     (downgrades to ``unknown``). ``null_depth_capped`` (either contributing
@@ -384,12 +383,10 @@ def propose_crossover_alignment(
     # insufficient SNR (alignment_snr_ok is False) or a capped null depth
     # (the measured number itself wasn't fully provable) may not produce a
     # confident keep/invert or an "aligned" delay status — degrade to review
-    # / unknown instead. alignment_snr_ok=None ("unknown/no evidence" — the
-    # default, and the only value any caller passes today, since the ambient-
-    # noise capture flow that would produce a real verdict is not wired up
-    # yet) deliberately does NOT degrade: it preserves the shipped
-    # margin/blend behavior rather than silently degrading every proposal the
-    # moment this parameter existed. This never TIGHTENS the margin/blend
+    # / unknown instead. alignment_snr_ok=None ("unknown/no evidence")
+    # deliberately does NOT degrade: it preserves the shipped margin/blend
+    # behavior for legacy callers and captures without usable ambient evidence.
+    # This never TIGHTENS the margin/blend
     # classification above (computed from the raw depths); it only
     # downgrades the outward action/status so the evidence stays visible.
     if alignment_snr_ok is False or null_depth_capped:

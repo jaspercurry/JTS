@@ -91,6 +91,114 @@ def cap_capture_length(
     return captured[:max_samples]
 
 
+def cap_capture_tail(
+    captured: np.ndarray,
+    *,
+    sweep_len: int,
+    sample_rate: int,
+    max_capture_seconds: float,
+) -> tuple[np.ndarray, int]:
+    """Retain a bounded capture tail and return its source start offset.
+
+    Relay capture starts before an unbounded network/setup wait but stops just
+    after the sweep.  Crossover analysis therefore needs the tail, unlike the
+    generic :func:`cap_capture_length` contract whose existing callers retain
+    the beginning.  The returned offset makes persisted crop provenance exact.
+    """
+
+    if max_capture_seconds <= 0 or sample_rate <= 0:
+        return captured, 0
+    max_samples = max(sweep_len, int(round(max_capture_seconds * sample_rate)))
+    if len(captured) <= max_samples:
+        return captured, 0
+    start = len(captured) - max_samples
+    logger.warning(
+        "deconv: retaining final %d of %d samples for relay sweep analysis",
+        max_samples,
+        len(captured),
+    )
+    return captured[start:], start
+
+
+def regularized_deconvolution_full(
+    captured: np.ndarray,
+    sweep: np.ndarray,
+    sample_rate: int,
+    *,
+    epsilon_relative: float = DEFAULT_EPSILON_RELATIVE,
+    max_capture_seconds: float | None = None,
+) -> np.ndarray:
+    """Recover the full regularized linear-deconvolution impulse response.
+
+    Unlike :func:`deconvolve`, this primitive performs no peak selection or
+    time windowing.  A caller comparing signal and noise can therefore derive
+    one window from the signal and apply that identical linear operator to
+    both, rather than letting random noise choose its own argmax window.
+    """
+    if captured.ndim != 1 or sweep.ndim != 1:
+        raise ValueError(
+            f"captured and sweep must be 1-D; got shapes "
+            f"{captured.shape} and {sweep.shape}"
+        )
+    if len(captured) < len(sweep):
+        raise ValueError(
+            f"captured ({len(captured)} samples) shorter than sweep "
+            f"({len(sweep)} samples) — capture too short or "
+            f"misaligned"
+        )
+    captured = cap_capture_length(
+        captured,
+        sweep_len=len(sweep),
+        sample_rate=sample_rate,
+        max_capture_seconds=max_capture_seconds,
+    )
+    n_pad = 1
+    while n_pad < len(captured) + len(sweep):
+        n_pad *= 2
+    Y = np.fft.rfft(captured, n=n_pad)
+    X = np.fft.rfft(sweep, n=n_pad)
+    eps = epsilon_relative * float(np.max(np.abs(X) ** 2))
+    H = Y * np.conj(X) / (np.abs(X) ** 2 + eps)
+    return np.fft.irfft(H, n=n_pad)
+
+
+def direct_arrival_window(
+    full_ir: np.ndarray,
+    sample_rate: int,
+    *,
+    direct_peak_idx: int | None = None,
+    pre_arrival_ms: float = DEFAULT_PRE_ARRIVAL_MS,
+    post_arrival_ms: float = DEFAULT_POST_ARRIVAL_MS,
+) -> tuple[int, int]:
+    """Return the deterministic signal-derived ``[start, end)`` IR window."""
+
+    if full_ir.ndim != 1 or full_ir.size == 0:
+        raise ValueError("full_ir must be non-empty 1-D data")
+    peak_idx = (
+        int(np.argmax(np.abs(full_ir)))
+        if direct_peak_idx is None
+        else int(direct_peak_idx)
+    )
+    if not 0 <= peak_idx < len(full_ir):
+        raise ValueError("direct peak is outside the full impulse response")
+    pre_samples = max(0, int(round(pre_arrival_ms * sample_rate / 1000)))
+    post_samples = max(1, int(round(post_arrival_ms * sample_rate / 1000)))
+    return max(0, peak_idx - pre_samples), min(
+        len(full_ir), peak_idx + post_samples
+    )
+
+
+def apply_arrival_window(
+    full_ir: np.ndarray, window: tuple[int, int]
+) -> np.ndarray:
+    """Apply an explicit arrival window without inspecting ``full_ir``."""
+
+    start, end = int(window[0]), int(window[1])
+    if full_ir.ndim != 1 or not (0 <= start < end <= len(full_ir)):
+        raise ValueError("arrival window is outside the full impulse response")
+    return np.asarray(full_ir[start:end], dtype=np.float32)
+
+
 def deconvolve(
     captured: np.ndarray,
     sweep: np.ndarray,
@@ -127,61 +235,24 @@ def deconvolve(
     Returns:
       ir (float32): the room impulse response, windowed.
     """
-    if captured.ndim != 1 or sweep.ndim != 1:
-        raise ValueError(
-            f"captured and sweep must be 1-D; got shapes "
-            f"{captured.shape} and {sweep.shape}"
-        )
-    if len(captured) < len(sweep):
-        raise ValueError(
-            f"captured ({len(captured)} samples) shorter than sweep "
-            f"({len(sweep)} samples) — capture too short or "
-            f"misaligned"
-        )
-
-    # Bound the FFT working set: an over-long capture (stuck recording
-    # or oversized upload) would otherwise drive n_pad — and the complex
-    # FFT buffers it sizes — to OOM on the 1 GB Pi. Idempotent when the
-    # caller (e.g. _smooth_capture) already capped.
-    captured = cap_capture_length(
+    full_ir = regularized_deconvolution_full(
         captured,
-        sweep_len=len(sweep),
-        sample_rate=sample_rate,
+        sweep,
+        sample_rate,
+        epsilon_relative=epsilon_relative,
         max_capture_seconds=max_capture_seconds,
     )
-
-    # Pad to next power of 2 ≥ len(captured) + len(sweep) for clean
-    # linear convolution. (Strictly we only need len(captured), but
-    # the extra room avoids circular wraparound at high frequencies.)
-    n_pad = 1
-    while n_pad < len(captured) + len(sweep):
-        n_pad *= 2
-
-    Y = np.fft.rfft(captured, n=n_pad)
-    X = np.fft.rfft(sweep, n=n_pad)
-
-    # Tikhonov-regularized inversion. Epsilon scales with peak power
-    # so the same relative knob works for sweeps at different
-    # amplitudes.
-    eps = epsilon_relative * float(np.max(np.abs(X) ** 2))
-    H = Y * np.conj(X) / (np.abs(X) ** 2 + eps)
-    h_full = np.fft.irfft(H, n=n_pad)
-
-    # Direct-arrival peak. argmax of |h| handles the case where the
-    # peak is positive or negative (depends on sweep phase + sign of
-    # the sound-pressure → mic-voltage transduction).
-    peak_idx = int(np.argmax(np.abs(h_full)))
-
-    pre_samples = max(0, int(round(pre_arrival_ms * sample_rate / 1000)))
-    post_samples = max(1, int(round(post_arrival_ms * sample_rate / 1000)))
-
-    start = max(0, peak_idx - pre_samples)
-    end = min(len(h_full), peak_idx + post_samples)
-    ir = h_full[start:end].astype(np.float32)
+    window = direct_arrival_window(
+        full_ir,
+        sample_rate,
+        pre_arrival_ms=pre_arrival_ms,
+        post_arrival_ms=post_arrival_ms,
+    )
+    ir = apply_arrival_window(full_ir, window)
 
     logger.debug(
-        "deconv: n_pad=%d peak_idx=%d ir_len=%d pre=%d post=%d eps=%.3g",
-        n_pad, peak_idx, len(ir), pre_samples, post_samples, eps,
+        "deconv: full_ir=%d window=%d:%d ir_len=%d",
+        len(full_ir), window[0], window[1], len(ir),
     )
     return ir
 

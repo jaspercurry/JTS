@@ -903,6 +903,7 @@ def test_commissioning_summary_measuring_with_open_comparison_set(
         device_sha256="b" * 64,
         calibration_id="",
         driver_level_locks=driver_level_locks,
+        bundle_session_id="abc123def456",
         state_path=tmp_path / "measurements.json",
         now="2026-07-11T12:00:00Z",
     )
@@ -915,6 +916,7 @@ def test_commissioning_summary_measuring_with_open_comparison_set(
     )
 
     assert result["phase"] == "measuring"
+    assert result["session_id"] == "abc123def456"
     assert result["session_fingerprint"] == comparison_set["fingerprint"]
 
 

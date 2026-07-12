@@ -70,6 +70,12 @@ DECISION_CLASS_MAGNITUDE = "magnitude"
 DECISION_CLASS_ALIGNMENT = "alignment"
 DECISION_CLASSES = frozenset({DECISION_CLASS_MAGNITUDE, DECISION_CLASS_ALIGNMENT})
 
+_ALIGNMENT_BAND_METHODS = frozenset({
+    "fft_band_power_difference",
+    "deconvolved_band_difference",
+    "paired_signal_window_deconvolution",
+})
+
 # Per-band verdict severity, worst last. Used to reduce a list of per-band
 # verdicts to a single "worst" verdict for a frequency window. "unknown" is
 # deliberately absent — it carries no evidence, so it never outranks a real
@@ -127,6 +133,99 @@ def band_levels_dbfs(
             "level_dbfs": round(_dbfs(rms_like), 2),
         })
     return out
+
+
+def ambient_band_report(
+    samples: np.ndarray,
+    sample_rate: int,
+    bands: Sequence[tuple[str, float, float]] = CROSSOVER_SNR_BANDS_HZ,
+) -> dict[str, Any]:
+    """Return a non-stationary-robust ambient report.
+
+    The stored ambient window is split into one-second frames and each band's
+    95th percentile is retained.  This deliberately does not select one lucky
+    quiet instant: a fan, furnace, or traffic burst that is present during the
+    commissioning window remains part of the noise evidence.
+    """
+
+    return framed_ambient_band_report(samples, sample_rate, bands=bands, percentile=95)
+
+
+def framed_ambient_band_report(
+    samples: np.ndarray,
+    sample_rate: int,
+    bands: Sequence[tuple[str, float, float]] = CROSSOVER_SNR_BANDS_HZ,
+    *,
+    percentile: float,
+) -> dict[str, Any]:
+    """One-second-frame ambient PSD statistic, independent of total duration."""
+
+    x = np.asarray(samples, dtype=np.float64)
+    if sample_rate <= 0 or x.size < 8:
+        return {"schema_version": 1, "duration_s": 0.0, "bands": []}
+    frame_len = sample_rate
+    frames = [
+        x[start:start + frame_len]
+        for start in range(0, x.size - frame_len + 1, frame_len)
+    ] or [x]
+    per_frame = [band_levels_dbfs(frame, sample_rate, bands) for frame in frames]
+    out: list[dict[str, Any]] = []
+    for band_id, low, high in bands:
+        levels = [
+            float(entry["level_dbfs"])
+            for frame in per_frame
+            for entry in frame
+            if entry.get("band_id") == band_id
+        ]
+        if levels:
+            out.append({
+                "band_id": band_id,
+                "band_hz": [low, high],
+                "level_dbfs": round(float(np.percentile(levels, percentile)), 2),
+            })
+    return {
+        "schema_version": 1,
+        "duration_s": round(x.size / sample_rate, 3),
+        "method": f"one_second_p{percentile:g}",
+        "bands": out,
+    }
+
+
+def magnitude_band_levels(
+    frequencies_hz: np.ndarray,
+    magnitude_db: np.ndarray,
+    bands: Sequence[tuple[str, float, float]] = CROSSOVER_SNR_BANDS_HZ,
+) -> list[dict[str, Any]]:
+    """Power-mean levels for a deconvolved magnitude response."""
+
+    freqs = np.asarray(frequencies_hz, dtype=np.float64)
+    mag = np.asarray(magnitude_db, dtype=np.float64)
+    out: list[dict[str, Any]] = []
+    for band_id, low, high in bands:
+        mask = (freqs >= low) & (freqs < high)
+        if not np.any(mask):
+            continue
+        power = np.power(10.0, mag[mask] / 10.0)
+        level = 10.0 * math.log10(max(float(np.mean(power)), 1e-12))
+        out.append({
+            "band_id": band_id,
+            "band_hz": [low, high],
+            "level_dbfs": round(level, 2),
+        })
+    return out
+
+
+def unwrap_noise_report(
+    report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None,
+) -> tuple[str, Sequence[Mapping[str, Any]] | None]:
+    """Normalize legacy bare-band and domain-tagged ambient reports."""
+
+    if isinstance(report, Mapping):
+        rows = report.get("bands")
+        return str(report.get("domain") or "raw"), (
+            rows if isinstance(rows, (list, tuple)) else None
+        )
+    return "raw", report
 
 
 def _band_overlaps(band_hz: Any, lo_hz: float, hi_hz: float) -> bool:
@@ -191,7 +290,7 @@ def _band_verdict(
         # "unknown" rather than gate on an untrustworthy figure ("Level
         # control and SNR": "a 1 kHz scalar level is not sufficient evidence
         # that a broadband room or driver sweep has 20 dB SNR").
-        if method != "fft_band_power_difference":
+        if method not in _ALIGNMENT_BAND_METHODS:
             return "unknown", None
         if estimated_snr_db >= model.alignment_snr_ok_db:
             return "ok", None
@@ -212,6 +311,7 @@ def band_snr_verdicts(
     noise_floor_dbfs_scalar: float | None,
     relevant_hz: tuple[float, float],
     model: QualityModel,
+    band_method: str = "fft_band_power_difference",
 ) -> dict[str, Any]:
     """The SC-1 per-band SNR verdict block for one decision.
 
@@ -261,10 +361,16 @@ def band_snr_verdicts(
         if noise_band is not None:
             noise_level = _to_float(noise_band.get("level_dbfs"))
             if noise_level is not None:
-                estimated_snr_db = capture_level - noise_level
-                method = "fft_band_power_difference"
+                # Verdict and displayed evidence share the measurement's
+                # meaningful one-decimal precision. Without this normalization
+                # a binary-float 19.999999 result displayed as 20.0 dB failed
+                # the inclusive 20 dB reduced-confidence threshold.
+                estimated_snr_db = round(capture_level - noise_level, 1)
+                method = band_method
         if method == "none" and noise_floor_dbfs_scalar is not None:
-            estimated_snr_db = capture_level - float(noise_floor_dbfs_scalar)
+            estimated_snr_db = round(
+                capture_level - float(noise_floor_dbfs_scalar), 1
+            )
             method = "scalar_fallback"
 
         verdict, shortfall_db = _band_verdict(

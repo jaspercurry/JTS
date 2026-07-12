@@ -48,13 +48,15 @@ import secrets
 import sqlite3
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
+
+from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 from ..log_event import log_event
 
@@ -89,7 +91,7 @@ MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 # setup latency while still avoiding unbounded reads in the Pi web
 # process.
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
-MAX_CROSSOVER_WAV_BODY_BYTES = 3 * 1024 * 1024
+MAX_CROSSOVER_WAV_BODY_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 MAX_DEVICE_FIELD_CHARS = 160
 # P6 tuning-LLM per-tap call budget. A frontier text model answering the
 # interpret / propose packet is a few seconds; 90 s is a generous ceiling
@@ -190,7 +192,6 @@ _POST_ROUTES = frozenset({
     "/crossover/summed-test",
     "/crossover/driver-capture-sweep",
     "/crossover/summed-capture-sweep",
-    "/crossover/driver-capture",
     "/crossover/summed-capture",
     "/crossover/level-match",
     "/crossover/relay-capture",
@@ -513,7 +514,15 @@ def _run_async(coro, *, timeout: float = 60.0):
     pass shorter timeouts.
     """
     fut = asyncio.run_coroutine_threadsafe(coro, _ensure_loop())
-    return fut.result(timeout=timeout)
+    try:
+        return fut.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        # A timed-out HTTP/poll thread no longer owns a useful result. Cancel
+        # the loop task so delayed measurement audio cannot start after the
+        # caller has already reported failure. Owning coroutines retain their
+        # bounded/shielded rollback in ``finally`` blocks.
+        fut.cancel()
+        raise
 
 
 def _get_or_create_session():
@@ -3338,6 +3347,9 @@ def _handle_crossover_relay_level_match(
         # callback starts. A continuation preserves earlier driver locks; a
         # complete retune invalidates only after this run owns the slot.
         if not continuing:
+            from jasper.active_speaker import repeat_admission
+
+            repeat_admission.invalidate()
             lease.invalidate_comparison_context()
             clear_active_comparison_set(topology)
             log_event(
@@ -3414,6 +3426,14 @@ def _handle_crossover_relay_level_match(
             driver_level_locks=driver_level_locks,
             bundle_session_id=(bundle or {}).get("session_id"),
         )
+        from jasper.active_speaker import repeat_admission
+
+        try:
+            repeat_admission.activate(comparison_set)
+        except (OSError, RuntimeError, ValueError):
+            clear_active_comparison_set(topology)
+            repeat_admission.invalidate()
+            raise
         if bundle is not None:
             from jasper.active_speaker import bundles as active_speaker_bundles
 
@@ -3648,12 +3668,31 @@ def _handle_crossover_relay_capture(
         capture_origin: str,
         return_url: str,
     ) -> RelayCapture:
+        from jasper.active_speaker.test_signal_plan import (
+            CROSSOVER_AMBIENT_DURATION_S,
+            CROSSOVER_CAPTURE_HARD_TIMEOUT_S,
+            CROSSOVER_CAPTURE_MAX_WAV_BYTES,
+            SUMMED_SWEEP_DURATION_S,
+            driver_sweep_duration_s,
+        )
+
+        sweep_duration_s = (
+            driver_sweep_duration_s(str(raw.get("role") or ""))
+            if kind_id == "driver"
+            else SUMMED_SWEEP_DURATION_S
+        )
         return correction_adapter.open_capture(
             client,
             build_crossover_sweep_spec(
                 driver_label=driver_label,
                 driver_role=str(raw.get("role") or "summed"),
                 acknowledgement_binding=acknowledgement_binding,
+                stimulus_duration_ms=int(round(sweep_duration_s * 1000)),
+                ambient_duration_ms=int(
+                    round(CROSSOVER_AMBIENT_DURATION_S * 1000)
+                ),
+                hard_timeout_ms=int(round(CROSSOVER_CAPTURE_HARD_TIMEOUT_S * 1000)),
+                max_upload_bytes=CROSSOVER_CAPTURE_MAX_WAV_BYTES,
             ),
             relay_base=base,
             capture_origin=capture_origin,
@@ -3700,9 +3739,11 @@ def _handle_crossover_relay_capture(
             _set_capture_volume,
         )
 
-    async def _restore_capture_play() -> None:
+    async def _restore_capture_play() -> bool:
+        if not lease.sweep_volume_active:
+            return True
         if await lease.restore_sweep_volume(_set_capture_volume):
-            return
+            return True
         emergency_safe = await lease.emergency_lower_sweep_volume(
             _set_capture_volume
         )
@@ -3730,6 +3771,52 @@ def _handle_crossover_relay_capture(
             expected_target_fingerprint=target_fingerprint,
         )
 
+    def _reserve_repeat_attempt() -> Mapping[str, Any]:
+        from jasper.active_speaker import repeat_admission
+
+        return repeat_admission.reserve(
+            comparison_set,
+            target_id=f"{raw['speaker_group_id']}:{raw['role']}",
+            target_fingerprint=target_fingerprint,
+        )
+
+    def _finish_failed_repeat_attempt(
+        reservation: Mapping[str, Any], failure_type: str
+    ) -> None:
+        from jasper.active_speaker import repeat_admission
+        from jasper.active_speaker import web_measurement
+
+        if int(reservation.get("attempt") or 0) >= repeat_admission.MAX_ATTEMPTS:
+            # The attempt may fail seconds after armed-time validation. Re-read
+            # topology/profile/comparison before old accepted evidence can be
+            # committed through the terminal fallback.
+            _validate_current_context()
+            finalized = web_measurement.finalize_driver_repeats_after_terminal_failure(
+                comparison_set=comparison_set,
+                speaker_group_id=str(raw["speaker_group_id"]),
+                role=str(raw["role"]),
+                target_fingerprint=target_fingerprint,
+                reservation=reservation,
+                failure_type=failure_type,
+                repeat_store=lease,
+            )
+            if finalized is not None:
+                return
+
+        repeat_admission.finish(
+            comparison_set,
+            target_id=f"{raw['speaker_group_id']}:{raw['role']}",
+            target_fingerprint=target_fingerprint,
+            token=str(reservation.get("token") or ""),
+            result={
+                "accepted": False,
+                "reject_reason": "capture_failed",
+                "failure_type": str(failure_type)[:80],
+                "phase": "transport",
+            },
+            status=repeat_admission.failure_status(reservation.get("attempt")),
+        )
+
     base_run_and_consume = correction_crossover_flow.build_crossover_relay_run_and_consume(
         raw,
         _run_async,
@@ -3746,6 +3833,12 @@ def _handle_crossover_relay_capture(
         ),
         target_fingerprint=target_fingerprint,
         validate_current_context=_validate_current_context,
+        reserve_repeat_attempt=(
+            _reserve_repeat_attempt if kind_id == "driver" else None
+        ),
+        finish_failed_repeat_attempt=(
+            _finish_failed_repeat_attempt if kind_id == "driver" else None
+        ),
     )
 
     async def run_and_consume(client: RelayClient, pi_session: PiCaptureSession) -> None:
@@ -4690,7 +4783,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
             try:
                 if path in {
-                    "/crossover/driver-capture",
                     "/crossover/summed-capture",
                 }:
                     try:
@@ -4704,16 +4796,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             status=HTTPStatus.BAD_REQUEST,
                         )
                         return
-                    if path == "/crossover/driver-capture":
-                        payload, status = correction_crossover_flow.handle_driver_capture(
-                            self,
-                            body,
-                        )
-                    else:
-                        payload, status = correction_crossover_flow.handle_summed_capture(
-                            self,
-                            body,
-                        )
+                    payload, status = correction_crossover_flow.handle_summed_capture(
+                        self,
+                        body,
+                    )
                     self._send_json(payload, status=int(status))
                     return
 
@@ -5223,6 +5309,20 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    # Socket Accept=no + one service ExecStart make this the sole lifecycle
+    # boundary that may retire unfinished work from a previous process.
+    from jasper.active_speaker import repeat_admission
+
+    try:
+        repeat_admission.claim_owner()
+    except (OSError, RuntimeError, ValueError) as exc:
+        log_event(
+            logger,
+            "correction.crossover_repeat_admission_unavailable",
+            level=logging.ERROR,
+            reason=type(exc).__name__,
+        )
 
     from . import _systemd
     sockets = _systemd.adopt_systemd_sockets()

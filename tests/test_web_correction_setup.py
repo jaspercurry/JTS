@@ -15,8 +15,28 @@ so a static render needs no hardware.
 from __future__ import annotations
 
 import io
+import threading
+
+import pytest
 
 from jasper.web import correction_setup
+
+
+def test_run_async_timeout_cancels_loop_task():
+    import asyncio
+    import concurrent.futures
+
+    cancelled = threading.Event()
+
+    async def never_finishes():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    with pytest.raises(concurrent.futures.TimeoutError):
+        correction_setup._run_async(never_finishes(), timeout=0.01)
+    assert cancelled.wait(timeout=2)
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +280,7 @@ def test_known_post_routes_reach_csrf_guard():
         "/crossover/relay-capture", "/crossover/driver-test",
         "/crossover/driver-confirm", "/crossover/driver-abort",
         "/crossover/summed-test", "/crossover/driver-capture-sweep",
-        "/crossover/summed-capture-sweep", "/crossover/driver-capture",
-        "/crossover/summed-capture",
+        "/crossover/summed-capture-sweep", "/crossover/summed-capture",
         # P6 tuning-LLM routes.
         "/interpret", "/propose", "/propose/apply",
     }
@@ -270,6 +289,12 @@ def test_known_post_routes_reach_csrf_guard():
         assert b"403" in resp.split(b"\r\n", 1)[0], (
             f"{route} should reach the CSRF guard (403)"
         )
+
+    # Driver evidence requires the relay's signal-bounded quiet crop + repeat
+    # state machine. The former raw-WAV single-shot route had no product caller
+    # and is deliberately absent rather than implicitly accepting null SNR.
+    response = _drive("/crossover/driver-capture", method="POST", body=b"wav")
+    assert b"404" in response.split(b"\r\n", 1)[0]
 
 
 # ---------------------------------------------------------------------------

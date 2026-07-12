@@ -29,6 +29,7 @@ from scipy.signal import firwin, firwin2, fftconvolve
 
 from jasper.active_speaker import driver_acoustics as da
 from jasper.audio_measurement import deconv, snr_policy
+from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement import sweep as sweep_mod
 
 SR = 48000
@@ -50,6 +51,36 @@ def _reference_sweep(duration_s: float = 1.0):
 def _write_capture(tmp_path, name, signal):
     path = tmp_path / name
     sweep_mod.write_sweep_wav(path, signal.astype(np.float32), SR)
+    return path
+
+
+def _write_relay_capture(
+    tmp_path,
+    name,
+    reference,
+    *,
+    gain,
+    noise_sigma=0.001,
+    pre_s=1.0,
+    ambient_s=14.0,
+    tail_s=0.6,
+    pre_contamination=None,
+    seed=17,
+):
+    """Write the real relay shape with a controlled 14 s paused interval."""
+
+    rng = np.random.default_rng(seed)
+    total = int(round((pre_s + ambient_s + tail_s) * SR)) + len(reference)
+    full = rng.normal(0.0, noise_sigma, total)
+    sweep_start = int(round((pre_s + ambient_s) * SR))
+    if pre_contamination is not None:
+        contamination = np.asarray(pre_contamination, dtype=np.float64)
+        full[: min(sweep_start - int(ambient_s * SR), len(contamination))] += contamination[
+            : min(sweep_start - int(ambient_s * SR), len(contamination))
+        ]
+    full[sweep_start:sweep_start + len(reference)] += gain * reference
+    path = tmp_path / name
+    wavfile.write(path, SR, full.astype(np.float32))
     return path
 
 
@@ -368,6 +399,385 @@ def test_overlap_band_no_entries_when_no_fcs(tmp_path):
 # evidence is accepted for the magnitude class's "existing scalar path" at
 # the commissioning_capture layer but is explicitly NOT sufficient evidence
 # for an alignment/null decision (reads "unknown", never caps).
+
+
+def test_stored_ambient_uses_real_signal_bounded_window_and_calibration_cancels(
+    tmp_path, monkeypatch
+):
+    """End-to-end oracle for the Lane-D ambient/sweep transform.
+
+    Signal and quiet evidence are separate real contiguous crops of equal
+    length. They traverse the same inverse and signal-owned arrival window; a
+    deliberately non-flat calibration applies to both and cancels from SNR.
+    """
+
+    reference, sweep_meta = sweep_mod.synchronized_swept_sine(
+        f1=20.0,
+        f2=12000.0,
+        duration_approx_s=1.0,
+        sample_rate=SR,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    meta = sweep_meta.to_dict()
+    ambient_duration_s = 13.0
+    refuse_path = _write_relay_capture(
+        tmp_path, "ambient-refuse.wav", reference, gain=0.05
+    )
+    reduced_path = _write_relay_capture(
+        tmp_path, "ambient-reduced.wav", reference, gain=0.09
+    )
+    accept_path = _write_relay_capture(
+        tmp_path, "ambient-accept.wav", reference, gain=0.13
+    )
+
+    arrival_calls = 0
+    applied_windows = []
+    real_arrival = deconv.direct_arrival_window
+    real_apply = deconv.apply_arrival_window
+
+    def count_signal_window(*args, **kwargs):
+        nonlocal arrival_calls
+        arrival_calls += 1
+        return real_arrival(*args, **kwargs)
+
+    def record_applied_window(full_ir, window):
+        applied_windows.append(tuple(window))
+        return real_apply(full_ir, window)
+
+    monkeypatch.setattr(deconv, "direct_arrival_window", count_signal_window)
+    monkeypatch.setattr(deconv, "apply_arrival_window", record_applied_window)
+
+    refused = da.analyze_driver_capture(
+        refuse_path,
+        meta,
+        passband_hz=(100.0, 8000.0),
+        ambient_duration_s=ambient_duration_s,
+    )
+    reduced = da.analyze_driver_capture(
+        reduced_path,
+        meta,
+        passband_hz=(100.0, 8000.0),
+        ambient_duration_s=ambient_duration_s,
+    )
+    accepted = da.analyze_driver_capture(
+        accept_path,
+        meta,
+        passband_hz=(100.0, 8000.0),
+        ambient_duration_s=ambient_duration_s,
+    )
+
+    assert arrival_calls == 3  # once per signal; never once per ambient noise
+    assert len(applied_windows) == 6
+    assert applied_windows[0] == applied_windows[1]
+    assert applied_windows[2] == applied_windows[3]
+    assert applied_windows[4] == applied_windows[5]
+    assert accepted.ambient is not None
+    assert accepted.ambient["domain"] == "deconvolved"
+    assert accepted.ambient["method"] == "paired_signal_window_deconvolution"
+    assert accepted.ambient["operator"]["ambient_alignment_source"] == (
+        "signal_direct_arrival_minus_guard"
+    )
+    assert accepted.ambient["operator"]["robust_delta"] == (
+        "one_second_p95_minus_one_second_p50"
+    )
+    assert accepted.ambient["source"]["kind"] == "signal_bounded_pre_sweep_quiet"
+    assert accepted.ambient["source"]["start_sample"] > 0
+    assert accepted.ambient["source"]["end_sample"] < 16 * SR
+    assert accepted.ambient["source"]["pre_arrival_guard_ms"] == 250.0
+    assert accepted.ambient["source"]["locator_confidence"] >= 0.4
+    refused_snr = [band["estimated_snr_db"] for band in refused.snr["bands"]]
+    reduced_snr = [band["estimated_snr_db"] for band in reduced.snr["bands"]]
+    accepted_snr = [band["estimated_snr_db"] for band in accepted.snr["bands"]]
+    assert refused_snr == pytest.approx(
+        [39.1, 34.5, 32.8, 29.1, 23.6, 18.6], abs=0.2
+    )
+    assert reduced_snr == pytest.approx(
+        [44.2, 39.6, 37.9, 34.2, 28.7, 23.7], abs=0.2
+    )
+    assert accepted_snr == pytest.approx(
+        [47.4, 42.8, 41.1, 37.4, 31.9, 26.9], abs=0.2
+    )
+    assert refused.snr["verdict"] == "insufficient"
+    assert reduced.snr["verdict"] == "reduced"
+    assert accepted.snr["verdict"] == "ok"
+
+    # Non-flat across the range, constant inside each canonical band so the
+    # physical cancellation has an exact oracle.
+    calibration_freqs = []
+    calibration_db = []
+    for _band_id, lo, hi, correction_db in (
+        ("sub_bass", 20.0, 80.0, 12.0),
+        ("bass", 80.0, 160.0, 6.0),
+        ("upper_bass", 160.0, 350.0, 3.0),
+        ("transition", 350.0, 1000.0, 0.0),
+        ("mid", 1000.0, 4000.0, -6.0),
+        ("treble", 4000.0, 12000.0, -12.0),
+    ):
+        calibration_freqs.extend([lo, np.nextafter(hi, lo)])
+        calibration_db.extend([correction_db, correction_db])
+    calibrated = da.analyze_driver_capture(
+        accept_path,
+        meta,
+        passband_hz=(100.0, 8000.0),
+        ambient_duration_s=ambient_duration_s,
+        calibration=CalibrationCurve(calibration_freqs, calibration_db),
+    )
+
+    assert calibrated.ambient["operator"][
+        "calibration_applied_to_signal_and_noise"
+    ] is True
+    assert [band["estimated_snr_db"] for band in calibrated.snr["bands"]] == pytest.approx(
+        accepted_snr, abs=0.2
+    )
+
+
+def test_paired_ambient_reuses_exact_signal_owned_reflection_gate(
+    tmp_path, monkeypatch
+):
+    """Reference-axis ambient must never derive its own reflection gate."""
+
+    from jasper.audio_measurement import gating
+
+    reference, sweep_meta = sweep_mod.synchronized_swept_sine(
+        f1=20.0,
+        f2=12000.0,
+        duration_approx_s=1.0,
+        sample_rate=SR,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    path = _write_relay_capture(
+        tmp_path,
+        "paired-signal-gate.wav",
+        reference,
+        gain=0.2,
+    )
+    signal_fragment = {
+        "schema_version": 1,
+        "direct_peak_ms": 5.0,
+        "first_reflection_ms": None,
+        "window_ms": 500.0,
+        "window": "half_hann_tail",
+        "f_valid_floor_hz": None,
+        "floor_source": None,
+    }
+    signal_gate_calls = []
+    paired_gate_calls = []
+
+    def fake_signal_gate(ir, sample_rate, **_kwargs):
+        signal_gate_calls.append((ir, sample_rate))
+        return ir, signal_fragment
+
+    def fake_paired_gate(ir, sample_rate, fragment):
+        paired_gate_calls.append((ir, sample_rate, fragment))
+        return ir
+
+    monkeypatch.setattr(gating, "gate_impulse_response", fake_signal_gate)
+    monkeypatch.setattr(gating, "apply_gate_fragment", fake_paired_gate)
+
+    result = da.analyze_driver_capture(
+        path,
+        sweep_meta.to_dict(),
+        passband_hz=(100.0, 8000.0),
+        capture_geometry="reference_axis",
+        ambient_duration_s=14.0,
+    )
+
+    assert len(signal_gate_calls) == 1
+    assert len(paired_gate_calls) == 1
+    assert paired_gate_calls[0][1] == SR
+    assert paired_gate_calls[0][2] is signal_fragment
+    assert result.ambient is not None
+    assert result.ambient["operator"]["reflection_gate_source"] == "signal"
+
+
+@pytest.mark.parametrize(
+    ("target_snr_db", "expected_verdict"),
+    [(19.0, "insufficient"), (20.0, "reduced"), (25.0, "ok"), (40.0, "ok")],
+)
+def test_real_contiguous_paired_transform_has_exact_snr_threshold_oracle(
+    tmp_path, target_snr_db, expected_verdict
+):
+    """Equal real crops preserve exact gain through the paired transform."""
+
+    reference, meta = _reference_sweep()
+    reference_s = len(reference) / SR
+    ambient_duration_s = reference_s + 1.0
+    arrival = int(round((1.0 + ambient_duration_s) * SR))
+    tail = int(round(0.6 * SR))
+    captured = np.zeros(arrival + len(reference) + tail, dtype=np.float64)
+    ambient_start = arrival - len(reference) - SR
+    ambient_reference_start = ambient_start + int(round(0.25 * SR))
+    ambient_scale = 0.01
+    captured[
+        ambient_reference_start:ambient_reference_start + len(reference)
+    ] = ambient_scale * reference
+    # Center the sub-0.1 dB PCM16/frame-estimator spread on the exact policy
+    # boundary; every surfaced band is target or target+0.1 after the policy's
+    # one-decimal normalization.
+    signal_scale = ambient_scale * 10.0 ** ((target_snr_db - 0.05) / 20.0)
+    captured[arrival:arrival + len(reference)] = signal_scale * reference
+    path = _write_capture(tmp_path, f"exact-{target_snr_db}.wav", captured)
+
+    result = da.analyze_driver_capture(
+        path,
+        meta,
+        passband_hz=(100.0, 8000.0),
+        ambient_duration_s=ambient_duration_s,
+    )
+
+    assert [band["estimated_snr_db"] for band in result.snr["bands"]] == pytest.approx(
+        [target_snr_db] * 6, abs=0.11
+    )
+    assert result.snr["verdict"] == expected_verdict
+
+
+@pytest.mark.parametrize("relay_delay_s", [0.05, 0.8, 18.0])
+def test_stored_ambient_tracks_late_signal_and_excludes_pre_pause_music(
+    tmp_path, relay_delay_s
+):
+    """Recorder-start → armed/poll latency never moves the ambient oracle.
+
+    Arbitrary pre-armed/poll latency and a loud music-like burst precede the
+    controlled pause. Signal location must keep that contamination out, even
+    when the legal sweep starts after the old first-30-second cap.
+    """
+
+    reference, sweep_meta = sweep_mod.synchronized_swept_sine(
+        f1=20.0,
+        f2=12000.0,
+        duration_approx_s=1.0,
+        sample_rate=SR,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    music = 0.2 * np.sin(2 * np.pi * 997.0 * np.arange(max(1, int(relay_delay_s * SR))) / SR)
+    path = _write_relay_capture(
+        tmp_path,
+        f"delayed-{relay_delay_s}.wav",
+        reference,
+        gain=0.4,
+        pre_s=relay_delay_s,
+        pre_contamination=music,
+    )
+
+    result = da.analyze_driver_capture(
+        path,
+        sweep_meta.to_dict(),
+        passband_hz=(100.0, 8000.0),
+        ambient_duration_s=14.0,
+    )
+    source = result.ambient["source"]
+    assert source["start_s"] >= relay_delay_s
+    assert source["located_sweep_start_sample"] / SR == pytest.approx(
+        relay_delay_s + 14.0, abs=0.01
+    )
+    assert result.snr["verdict"] in {"ok", "reduced"}
+
+
+def test_random_noise_processing_gain_improves_with_real_sweep_duration(tmp_path):
+    """Longer protected sweeps retain their physical processing gain.
+
+    Every duration sees independent random noise with the same PSD. The robust
+    adjustment compares fixed one-second frames, so it cannot erase the
+    improvement by comparing a duration-varying FFT baseline.
+    """
+
+    observed = []
+    for index, duration_s in enumerate((1.0, 4.0, 8.0, 12.0)):
+        reference, meta = _reference_sweep(duration_s)
+        path = _write_relay_capture(
+            tmp_path,
+            f"processing-{duration_s}.wav",
+            reference,
+            gain=0.08,
+            noise_sigma=0.004,
+            seed=100 + index,
+        )
+        result = da.analyze_driver_capture(
+            path,
+            meta,
+            passband_hz=(100.0, 8000.0),
+            ambient_duration_s=14.0,
+        )
+        evidenced = [
+            float(band["estimated_snr_db"])
+            for band in result.snr["bands"]
+            if band["estimated_snr_db"] is not None
+        ]
+        observed.append(float(np.median(evidenced)))
+    assert observed == sorted(observed)
+    assert observed[-1] >= observed[0] + 7.0
+
+
+def test_random_noise_without_sweep_is_rejected_as_ambiguous(tmp_path):
+    reference, meta = _reference_sweep()
+    rng = np.random.default_rng(901)
+    path = _write_capture(tmp_path, "noise-only.wav", rng.normal(0, 0.005, 15 * SR))
+    with pytest.raises(RuntimeError, match="weak/ambiguous alignment"):
+        da.analyze_driver_capture(
+            path,
+            meta,
+            passband_hz=(100.0, 8000.0),
+            ambient_duration_s=14.0,
+        )
+
+
+def test_signal_locator_refuses_missing_controlled_quiet_or_tail(tmp_path):
+    reference, meta = _reference_sweep()
+    too_short = np.concatenate([np.zeros(2 * SR), reference])
+    path = _write_capture(tmp_path, "too-short-relay.wav", too_short)
+    with pytest.raises(ValueError, match="lacks the complete controlled"):
+        da.analyze_driver_capture(
+            path,
+            meta,
+            passband_hz=(100.0, 8000.0),
+            ambient_duration_s=14.0,
+        )
+
+
+def test_worst_legal_late_lf_sweep_keeps_locator_and_deconvolution_bounded(
+    tmp_path, monkeypatch
+):
+    from jasper.capture_relay import alignment as relay_alignment
+
+    reference, meta = _reference_sweep(12.0)
+    path = _write_relay_capture(
+        tmp_path,
+        "late-lf.wav",
+        reference,
+        gain=0.2,
+        pre_s=17.0,
+        ambient_s=14.0,
+    )
+    locator_fft_sizes = []
+    deconv_fft_sizes = []
+    real_alignment = relay_alignment.cross_correlation_alignment
+    real_deconv = deconv.regularized_deconvolution_full
+
+    def observed_alignment(captured, stimulus, **kwargs):
+        locator_fft_sizes.append(len(captured) + len(stimulus))
+        return real_alignment(captured, stimulus, **kwargs)
+
+    def observed_deconv(captured, stimulus, sample_rate, **kwargs):
+        deconv_fft_sizes.append(len(captured) + len(stimulus))
+        return real_deconv(captured, stimulus, sample_rate, **kwargs)
+
+    monkeypatch.setattr(
+        relay_alignment, "cross_correlation_alignment", observed_alignment
+    )
+    monkeypatch.setattr(deconv, "regularized_deconvolution_full", observed_deconv)
+    result = da.analyze_driver_capture(
+        path,
+        meta,
+        passband_hz=(40.0, 800.0),
+        ambient_duration_s=14.0,
+    )
+    assert result.verdict == "present"
+    assert not any(
+        issue["code"] == "capture_truncated" for issue in result.quality["issues"]
+    )
+    assert locator_fft_sizes and max(locator_fft_sizes) <= 2**20
+    assert len(deconv_fft_sizes) == 2
+    assert max(deconv_fft_sizes) <= 2**21
 
 
 def test_driver_capture_snr_block_is_none_without_noise_input(tmp_path):

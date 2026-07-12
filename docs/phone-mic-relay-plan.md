@@ -37,6 +37,25 @@
 > records a passive noise-floor window before the Pi plays anything, and the Pi
 > publishes `sweep_complete` so the phone stops from real sweep progress rather
 > than a fixed timer.
+> The crossover kind additionally holds a 14-second controlled quiet interval
+> before every role-sized ESS and carries the entire raw WAV back to the Pi.
+> A bounded signal locator selects separate, real, equal-length signal and
+> quiet crops after relay latency. The Pi runs both through the same regularized inverse,
+> applies the signal-owned arrival window and reflection gate to both (ambient
+> noise never chooses its own random argmax), applies the same calibration
+> domain. It never guesses a prefix, tiles noise, zero-pads a counterfactual,
+> or lets noise select an IR argmax. It admits driver evidence through the
+> three-repeat kernel (one bounded fourth try; at least two accepted). The
+> protected level ramp therefore sets playback headroom only and never supplies
+> the acoustic SNR verdict. An authenticated phone-activity watchdog covers the
+> full quiet interval and playback: backgrounding or an expired recorder
+> cancels the host task, kills/reaps `aplay`, and completes volume rollback
+> before household audio resumes. Selecting a UMIK-2 preselects the UMIK-2 model only;
+> it does not auto-match a calibration. Browser labels do not reliably expose
+> the serial, so the operator enters it and explicitly validates the vendor
+> calibration once; after validation, the existing
+> Pi-side bound setup carries that calibration into later
+> driver legs without placing the raw serial in browser storage.
 >
 > **Crossover relay kind — LANDED (P7, 2026-07-03):** `POST
 > /correction/crossover/relay-capture` (the third `RelayCaptureKind` caller)
@@ -46,9 +65,11 @@
 > feeds the verified WAV into the same `record_*_capture` analysis. Measurement mutual-exclusion is
 > server-computed twice (refused at POST while room/balance/sync is active,
 > re-checked at armed time); the `crossover_sweep` spec floors the phone's hard
-> recording deadline at 30 s (`hard_timeout_ms`, the `room_sweep` contract) so
-> the Pi's armed-poll → config-load → playback → `sweep_complete` round trip
-> never races the deadline. The preceding near-field level step owns microphone
+> recording deadline at 30 s (`hard_timeout_ms`, the `room_sweep` contract).
+> Lane D raises the crossover-only floor to 45 s so its controlled 14 s quiet
+> capture, per-driver sweep, config load, and `sweep_complete` round trip cannot
+> race the phone deadline; the room and sync relay floors remain 30 s. The
+> preceding near-field level step owns microphone
 > and calibration setup; its identity is bound to the protected applied speaker
 > profile. Driver/summed capture reuses that Pi-side calibration and validates
 > the phone-reported realized device before recording acoustic evidence. The
@@ -670,7 +691,12 @@ pairing proof, not a guess based on the Pages dashboard.
 
 ---
 
-Last updated: 2026-07-11 — capture specs are now MAC-bound to their fragment
+Last updated: 2026-07-12 — active-crossover capture now uses role-sized sweeps,
+a signal-bounded controlled quiet crop, paired-window deconvolved per-band SNR, and the
+server-owned three-repeat admission loop; selecting a UMIK-2 preselects only
+the miniDSP UMIK-2 model/mode. Browser labels do not contain a trustworthy
+serial, so the operator must still enter and validate it once; there is no
+automatic calibration-file match. Capture specs are MAC-bound to their fragment
 links and protocol-v2 phone events are authenticated end to end before any
 correctness-critical field can reach playback; protocol 1 remains compatible
 but cannot satisfy v2 evidence. The level stage now preflights and freezes microphone,

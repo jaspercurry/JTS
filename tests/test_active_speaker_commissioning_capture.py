@@ -1019,6 +1019,19 @@ def test_aggregate_rejects_on_snr_insufficient_when_lane_b_block_present():
     assert result["accepted"] == 2
 
 
+def test_aggregate_accepts_exact_warn_boundary_reduced_snr():
+    repeats = [
+        _repeat(-30.0, snr_verdict="reduced"),
+        _repeat(-30.1, snr_verdict="reduced"),
+        _repeat(-29.9, snr_verdict="reduced"),
+    ]
+
+    result = aggregate_driver_repeats(repeats)
+
+    assert result["accepted"] == 3
+    assert all(entry["reject_reason"] is None for entry in result["per_repeat"])
+
+
 def test_aggregate_rejects_below_validity_floor_when_lane_a_block_present():
     repeats = [
         _repeat(-30.0),
@@ -1029,6 +1042,62 @@ def test_aggregate_rejects_below_validity_floor_when_lane_a_block_present():
     result = aggregate_driver_repeats(repeats)
 
     assert result["per_repeat"][1]["reject_reason"] == "below_validity_floor"
+    assert result["accepted"] == 2
+
+
+def test_aggregate_woofer_bad_bottom_band_keeps_good_required_overlap():
+    repeat = _repeat(-30.0, snr_verdict="insufficient")
+    repeat["acoustic"]["overlap_levels"] = [
+        {
+            "fc_hz": 800.0,
+            "usable": True,
+            "snr_verdict": "ok",
+            "above_validity_floor": True,
+        }
+    ]
+    result = aggregate_driver_repeats([repeat])
+    assert result["accepted"] == 1
+    assert result["per_repeat"][0]["reject_reason"] is None
+
+
+def test_aggregate_three_way_mid_accepts_one_of_two_usable_handoffs():
+    repeat = _repeat(-30.0, snr_verdict="insufficient")
+    repeat["acoustic"]["overlap_levels"] = [
+        {
+            "fc_hz": 250.0,
+            "usable": False,
+            "snr_verdict": "insufficient",
+            "above_validity_floor": False,
+        },
+        {
+            "fc_hz": 2400.0,
+            "usable": True,
+            "snr_verdict": "reduced",
+            "above_validity_floor": True,
+        },
+    ]
+    result = aggregate_driver_repeats([repeat])
+    assert result["accepted"] == 1
+    assert result["per_repeat"][0]["above_validity_floor"] is True
+
+
+def test_aggregate_reads_real_driver_overlap_validity_shape_with_partial_pass():
+    below = _repeat(-30.1)
+    below["acoustic"]["overlap_levels"] = [
+        {"fc_hz": 200.0, "above_validity_floor": False, "usable": False}
+    ]
+    partial = _repeat(-29.9)
+    partial["acoustic"]["overlap_levels"] = [
+        {"fc_hz": 200.0, "above_validity_floor": False, "usable": False},
+        {"fc_hz": 2000.0, "above_validity_floor": True, "usable": True},
+    ]
+
+    result = aggregate_driver_repeats([_repeat(-30.0), below, partial])
+
+    assert result["per_repeat"][1]["reject_reason"] == "no_usable_overlap"
+    assert result["per_repeat"][1]["above_validity_floor"] is False
+    assert result["per_repeat"][2]["reject_reason"] is None
+    assert result["per_repeat"][2]["above_validity_floor"] is True
     assert result["accepted"] == 2
 
 
@@ -1236,11 +1305,13 @@ def test_driver_capture_accepted_surfaces_snr_and_floor_when_present(
 def test_driver_capture_accepted_includes_session_when_bundle_known(
     tmp_path: Path, caplog,
 ):
-    # SC-4's bundle writer (a later lane) is expected to stamp a top-level
-    # bundle_session_id on the persisted measurement state; this fake proves
-    # the event picks it up without depending on that lane's code.
+    # Real persisted shape: the bundle session belongs to the active comparison
+    # set, not a fabricated top-level measurement-state key.
     def spy_record(*_args, **_kwargs):
-        return {"driver_measurements": [], "bundle_session_id": "sess-abc123"}
+        return {
+            "driver_measurements": [],
+            "active_comparison_set": {"bundle_session_id": "sess-abc123"},
+        }
 
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         out = record_driver_acoustic_capture(

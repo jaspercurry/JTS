@@ -10,6 +10,7 @@ from jasper.active_speaker import (
     driver_test_signal_plan,
     driver_test_signal_plan_from_edges,
 )
+from jasper.active_speaker.test_signal_plan import driver_sweep_duration_s
 
 
 def _preset(*, fc_hz: float = 1600) -> ActiveSpeakerPreset:
@@ -206,3 +207,11 @@ def test_driver_test_signal_plan_blocks_impossibly_narrow_band() -> None:
     assert "driver_test_signal_no_safe_band" in {
         issue["code"] for issue in plan["issues"]
     }
+
+
+def test_driver_sweep_duration_is_longer_for_lf_and_bounded_for_tweeter() -> None:
+    assert driver_sweep_duration_s("subwoofer") == 12.0
+    assert driver_sweep_duration_s("woofer") == 12.0
+    assert driver_sweep_duration_s("mid") == 8.0
+    assert driver_sweep_duration_s("tweeter") == 4.0
+    assert driver_sweep_duration_s("future_role") == 6.0

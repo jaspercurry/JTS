@@ -343,16 +343,6 @@ def handle_summed_capture_sweep(
     )
 
 
-def handle_driver_capture(
-    handler: Any,
-    wav_body: bytes,
-) -> tuple[dict[str, Any], HTTPStatus]:
-    from . import correction_crossover_backend as backend
-
-    payload = backend.record_driver_capture(_request_payload(handler), wav_body)
-    return payload, HTTPStatus.OK
-
-
 def handle_summed_capture(
     handler: Any,
     wav_body: bytes,
@@ -713,6 +703,9 @@ def build_crossover_relay_run_and_consume(
     target_fingerprint: str = "",
     current_comparison_set: Callable[[], Mapping[str, Any]] | None = None,
     validate_current_context: Callable[[], None] | None = None,
+    reserve_repeat_attempt: Callable[[], Mapping[str, Any]] | None = None,
+    finish_failed_repeat_attempt: Callable[[Mapping[str, Any], str], None] | None = None,
+    ambient_duration_s: float | None = None,
 ) -> Callable[[Any, Any], Any]:
     """Return the relay ``run_and_consume(client, pi_session)`` coroutine.
 
@@ -742,6 +735,7 @@ def build_crossover_relay_run_and_consume(
     # Stash the play response between on_armed (poll thread) and the post-capture
     # record so the record carries the exact sweep the Pi played.
     played: dict[str, Any] = {}
+    repeat_reservation: dict[str, Any] = {}
     placement_proof: dict[str, Any] = {}
     frozen_driver_preset: Any = None
     if kind == "driver" and isinstance(applied_profile, Mapping):
@@ -753,8 +747,27 @@ def build_crossover_relay_run_and_consume(
 
             frozen_driver_preset = ActiveSpeakerPreset.from_mapping(preset_raw)
 
-    async def _play() -> dict[str, Any]:
+    def _finish_reservation_failure(error: BaseException) -> None:
+        if not repeat_reservation or finish_failed_repeat_attempt is None:
+            return
+        reservation = dict(repeat_reservation)
+        repeat_reservation.clear()
+        failure_type = type(error).__name__
+        finish_failed_repeat_attempt(reservation, failure_type)
+
+    if ambient_duration_s is None:
+        from jasper.active_speaker.test_signal_plan import (
+            CROSSOVER_AMBIENT_DURATION_S,
+        )
+
+        ambient_duration_s = CROSSOVER_AMBIENT_DURATION_S
+    ambient_duration_s = max(0.0, float(ambient_duration_s))
+
+    async def _play(
+        on_sweep_ready: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         from jasper.correction import coordinator
+        import asyncio
 
         # Re-evaluate the mutual-exclusion probe NOW (at play time, not POST
         # time) — the play functions refuse with reason=measurement_in_progress
@@ -768,6 +781,13 @@ def build_crossover_relay_run_and_consume(
                             "could not reassert the locked crossover measurement level"
                         )
                 phase = blocking_phase() if blocking_phase is not None else None
+                # Household audio stays paused for the whole controlled quiet
+                # interval. The probe has locked a safe volume but contributes
+                # no SNR verdict; only signal-bounded quiet evidence vs the
+                # following deconvolved sweep does.
+                await asyncio.sleep(ambient_duration_s)
+                if on_sweep_ready is not None:
+                    await asyncio.to_thread(on_sweep_ready)
                 if kind == "driver":
                     return await backend.play_driver_capture_sweep(
                         {"speaker_group_id": group_id, "role": role},
@@ -787,11 +807,25 @@ def build_crossover_relay_run_and_consume(
             finally:
                 # Restore before measurement_window resumes household audio.
                 if restore_play is not None:
-                    restored = await restore_play()
+                    # Cancellation must not let measurement_window resume
+                    # household audio before the volume/graph rollback ends.
+                    # Shield keeps the cleanup task alive; the loop absorbs
+                    # cancellation until cleanup is actually complete, then
+                    # re-raises it to the caller.
+                    cleanup = asyncio.create_task(restore_play())
+                    cancelled = False
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                    restored = cleanup.result()
                     if restored is False:
                         raise RuntimeError(
                             "the crossover measurement volume was not restored"
                         )
+                    if cancelled:
+                        raise asyncio.CancelledError
 
     def _post_phase(session_id: str, pull_token: str, phase: str, **extra: Any) -> None:
         """Post a REQUIRED progress event; failures propagate.
@@ -824,10 +858,43 @@ def build_crossover_relay_run_and_consume(
         import asyncio
 
         from jasper.capture_relay.session import (
+            CaptureActivityProbe,
             purge,
             run_capture,
             validate_capture_acknowledgement,
         )
+
+        async def _play_while_phone_active(
+            activity: CaptureActivityProbe,
+            on_sweep_ready: Callable[[], None],
+        ) -> dict[str, Any]:
+            """Cancel the protected stimulus if the authenticated phone dies."""
+
+            async def watch_phone() -> None:
+                while True:
+                    await asyncio.to_thread(activity.assert_active)
+                    await asyncio.sleep(0.2)
+
+            play_task = asyncio.create_task(_play(on_sweep_ready))
+            watch_task = asyncio.create_task(watch_phone())
+            try:
+                done, _pending = await asyncio.wait(
+                    {play_task, watch_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if watch_task in done:
+                    error = watch_task.exception()
+                    if error is None:
+                        raise RuntimeError(
+                            "phone capture activity watchdog stopped unexpectedly"
+                        )
+                    raise error
+                return await play_task
+            finally:
+                for task in (play_task, watch_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(play_task, watch_task, return_exceptions=True)
 
         def _on_armed(state: Any) -> None:
             # Called from run_capture's poll thread. `run_async` posts the play
@@ -875,12 +942,59 @@ def build_crossover_relay_run_and_consume(
                         comparison_set=comparison_set or {},
                     )
                 )
-                _post_phase(
-                    pi_session.session_id,
-                    pi_session.pull_token,
-                    "sweep_started",
+                if kind == "driver" and reserve_repeat_attempt is not None:
+                    repeat_reservation.clear()
+                    try:
+                        repeat_reservation.update(reserve_repeat_attempt())
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        log_event(
+                            logger,
+                            "correction.crossover_repeat_persistence_failed",
+                            level=logging.ERROR,
+                            reason=type(exc).__name__,
+                            op="reserve",
+                        )
+                        raise
+                if ambient_duration_s > 0:
+                    _post_phase(
+                        pi_session.session_id,
+                        pi_session.pull_token,
+                        "ambient_started",
+                        duration_s=ambient_duration_s,
+                    )
+                from jasper.active_speaker.test_signal_plan import (
+                    CROSSOVER_CAPTURE_HARD_TIMEOUT_S,
                 )
-                payload = run_async(_play(), timeout=45.0)
+
+                # Finish and publish sweep_complete with margin before the
+                # phone's own recorder deadline. asyncio.wait_for cancellation
+                # reaches play_sweep, which kills/reaps aplay.
+                play_deadline_s = CROSSOVER_CAPTURE_HARD_TIMEOUT_S - 5.0
+                runner_deadline_s = CROSSOVER_CAPTURE_HARD_TIMEOUT_S - 2.0
+                activity = CaptureActivityProbe(client, pi_session)
+
+                def _confirm_active_and_post_started() -> None:
+                    # The watchdog may itself be waiting on a slow relay
+                    # request. This synchronous pre-audio proof prevents the
+                    # backend from starting until one fresh authenticated armed
+                    # event has actually returned.
+                    activity.assert_active()
+                    _post_phase(
+                        pi_session.session_id,
+                        pi_session.pull_token,
+                        "sweep_started",
+                    )
+
+                payload = run_async(
+                    asyncio.wait_for(
+                        _play_while_phone_active(
+                            activity,
+                            _confirm_active_and_post_started,
+                        ),
+                        timeout=play_deadline_s,
+                    ),
+                    timeout=runner_deadline_s,
+                )
                 if not capture_sweep_played(payload):
                     raise ValueError(playback_issue_text(
                         payload,
@@ -889,12 +1003,24 @@ def build_crossover_relay_run_and_consume(
                     ))
                 played.clear()
                 played.update(payload)
+                if repeat_reservation:
+                    played["repeat_reservation"] = dict(repeat_reservation)
                 _post_phase(
                     pi_session.session_id,
                     pi_session.pull_token,
                     "sweep_complete",
                 )
             except (RuntimeError, OSError, ValueError) as exc:
+                try:
+                    _finish_reservation_failure(exc)
+                except (RuntimeError, OSError, ValueError) as persist_exc:
+                    log_event(
+                        logger,
+                        "correction.crossover_repeat_persistence_failed",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        reason=type(persist_exc).__name__,
+                    )
                 _post_failed(
                     pi_session.session_id,
                     pi_session.pull_token,
@@ -906,13 +1032,26 @@ def build_crossover_relay_run_and_consume(
         # off the correction event loop (mirrors the room flow's
         # `await asyncio.to_thread(run_and_store, ...)`) — otherwise the whole
         # capture window would freeze the loop the play coroutine schedules onto.
-        result = await asyncio.to_thread(
-            run_capture, client, pi_session, on_armed=_on_armed
-        )
-        purge(client, pi_session)
+        try:
+            result = await asyncio.to_thread(
+                run_capture, client, pi_session, on_armed=_on_armed
+            )
+            purge(client, pi_session)
 
-        if validate_capture is not None:
-            validate_capture(result)
+            if validate_capture is not None:
+                validate_capture(result)
+        except (RuntimeError, OSError, ValueError) as exc:
+            try:
+                _finish_reservation_failure(exc)
+            except (RuntimeError, OSError, ValueError) as persist_exc:
+                log_event(
+                    logger,
+                    "correction.crossover_repeat_persistence_failed",
+                    level=logging.ERROR,
+                    exc_info=True,
+                    reason=type(persist_exc).__name__,
+                )
+            raise
 
         # Calibration identity and measurement mode are injected by the host
         # from the level-check setup. ``validate_capture`` verifies that the
@@ -927,6 +1066,8 @@ def build_crossover_relay_run_and_consume(
             "sweep_meta": played.get("sweep_meta"),
             "playback_id": played.get("playback_id"),
             "excitation": played.get("excitation"),
+            "ambient_duration_s": ambient_duration_s,
+            "repeat_reservation": played.get("repeat_reservation"),
         }
         noise_floor = getattr(result, "noise_floor", None)
         if isinstance(noise_floor, Mapping):
@@ -942,14 +1083,29 @@ def build_crossover_relay_run_and_consume(
             record_raw["test_level_dbfs"] = played.get("test_level_dbfs")
             record_kwargs: dict[str, Any] = {
                 "placement_proof": placement_proof,
+                "repeat_store": backend.level_lease(),
             }
             if frozen_driver_preset is not None:
                 record_kwargs["preset"] = frozen_driver_preset
-            record_payload = backend.record_driver_capture(
-                record_raw,
-                result.wav,
-                **record_kwargs,
-            )
+            try:
+                record_payload = backend.record_driver_capture(
+                    record_raw,
+                    result.wav,
+                    **record_kwargs,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                if repeat_reservation and finish_failed_repeat_attempt is not None:
+                    try:
+                        _finish_reservation_failure(exc)
+                    except (OSError, RuntimeError, ValueError) as persist_exc:
+                        log_event(
+                            logger,
+                            "correction.crossover_repeat_persistence_failed",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            reason=type(persist_exc).__name__,
+                        )
+                raise
         else:
             record_raw["summed_test_id"] = played.get("summed_test_id") or played.get(
                 "playback_id"
@@ -966,6 +1122,12 @@ def build_crossover_relay_run_and_consume(
             group_id=group_id,
             role=role or None,
             recorded=bool(record_payload.get("recorded")),
+            snr_verdict=((record_payload.get("acoustic") or {}).get("snr") or {}).get(
+                "verdict"
+            ),
+            repeat_attempts=(record_payload.get("repeat_progress") or {}).get(
+                "attempts"
+            ),
             excitation_source=(record_raw.get("excitation") or {}).get(
                 "gain_source"
             ),

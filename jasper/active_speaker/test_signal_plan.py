@@ -25,6 +25,52 @@ SUBWOOFER_SUBSONIC_FLOOR_HZ = 25.0
 MIN_DRIVER_TEST_FREQUENCY_HZ = 20.0
 MAX_DRIVER_TEST_FREQUENCY_HZ = 20_000.0
 
+# Sweep duration is part of the protected stimulus contract, not presentation
+# policy.  Longer LF sweeps buy processing gain where domestic ambient noise is
+# highest; a tweeter stays deliberately short to bound thermal exposure.
+DRIVER_SWEEP_DURATIONS_S = {
+    "subwoofer": 12.0,
+    "woofer": 12.0,
+    "mid": 8.0,
+    "tweeter": 4.0,
+}
+DEFAULT_DRIVER_SWEEP_DURATION_S = 6.0
+MAX_TWEETER_SWEEP_DURATION_S = 4.0
+SUMMED_SWEEP_DURATION_S = 8.0
+# One fixed controlled interval covers the longest phase-closed protected
+# driver sweep plus locator/leakage margin. The analyzer selects a real quiet
+# crop; it never pads or repeats noise.
+# The synchronized-sweep kernel rounds an approximate 12.0 s request to about
+# 12.09 s so its phase closes cleanly. Two seconds of margin keeps the real
+# reference plus the 250 ms leakage guard entirely inside the paused interval.
+CROSSOVER_AMBIENT_DURATION_S = max(DRIVER_SWEEP_DURATIONS_S.values()) + 2.0
+
+# The public capture page's deadline begins at ``armed`` and includes relay
+# polling, the controlled ambient interval, DSP setup, the sweep, and post-roll.
+# A 45-second, 48 kHz mono PCM16 WAV is about 4.32 MB, so the old 3 MiB browser
+# bridge cap could reject a completely legal capture after the user waited for
+# it.  Five MiB covers the protocol deadline plus WAV framing/post-roll while
+# remaining far below the correction host's 32 MiB generic upload ceiling.
+CROSSOVER_CAPTURE_HARD_TIMEOUT_S = 45.0
+CROSSOVER_CAPTURE_MAX_WAV_BYTES = 5 * 1024 * 1024
+CROSSOVER_CAPTURE_LOCATOR_WINDOW_S = CROSSOVER_CAPTURE_HARD_TIMEOUT_S + 1.0
+
+def driver_sweep_duration_s(role: str) -> float:
+    """Return the protected measurement-sweep duration for ``role``.
+
+    This is intentionally colocated with the driver-safe frequency planner:
+    relay/UI code must not invent a second duration table.  The explicit
+    tweeter clamp is defense in depth if the table is edited later.
+    """
+
+    role_id = str(role or "").strip().lower()
+    duration = DRIVER_SWEEP_DURATIONS_S.get(
+        role_id, DEFAULT_DRIVER_SWEEP_DURATION_S
+    )
+    if role_id == "tweeter":
+        duration = min(duration, MAX_TWEETER_SWEEP_DURATION_S)
+    return float(duration)
+
 
 def protective_tweeter_highpass_frequency_hz(
     preset: ActiveSpeakerPreset,

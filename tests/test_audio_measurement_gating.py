@@ -352,6 +352,32 @@ def test_gate_impulse_response_ungateable_returns_ir_unchanged():
     assert applied is False
 
 
+def test_apply_gate_fragment_reuses_signal_gate_without_inspecting_noise():
+    """A paired IR receives the exact half-Hann operator chosen by signal."""
+
+    n_samples = 2000
+    signal, _ = _delta_ir_with_reflection(n_samples, 500, 4.0, -6.0)
+    signal += 1e-3
+    paired = np.linspace(-0.5, 0.5, n_samples, dtype=np.float64)
+
+    gated_signal, fragment = gating.gate_impulse_response(signal, SR)
+    gated_paired = gating.apply_gate_fragment(paired, SR, fragment)
+
+    signal_window = np.divide(
+        gated_signal,
+        signal,
+        out=np.zeros_like(gated_signal),
+        where=signal != 0,
+    )
+    paired_window = np.divide(
+        gated_paired,
+        paired,
+        out=np.zeros_like(gated_paired),
+        where=paired != 0,
+    )
+    assert paired_window == pytest.approx(signal_window, abs=1e-5)
+
+
 def test_gate_impulse_response_empty_ir_does_not_raise():
     gated, fragment = gating.gate_impulse_response(np.array([], dtype=np.float64), SR)
     assert gated.shape == (0,)

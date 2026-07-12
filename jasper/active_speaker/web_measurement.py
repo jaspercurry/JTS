@@ -16,18 +16,21 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+import math
 import os
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.log_event import log_event
 from jasper.output_topology import load_output_topology
+from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 logger = logging.getLogger(__name__)
 
-MAX_CAPTURE_WAV_BYTES = 3 * 1024 * 1024
+MAX_CAPTURE_WAV_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 MAX_CAPTURE_STORED_FILES = 24
 MAX_CAPTURE_STORAGE_BYTES = 32 * 1024 * 1024
 CAPTURE_FILE_MODE = 0o640
@@ -99,6 +102,49 @@ def _noise_band_report_value(value: Any) -> list[dict[str, Any]] | None:
             return None
         out.append({"band_id": band_id, "band_hz": [lo, hi], "level_dbfs": level})
     return out
+
+
+def _stored_ambient_report(
+    wav_path: Path,
+    sweep_meta: Mapping[str, Any],
+    *,
+    calibration: Any,
+    ambient_duration_s: Any,
+) -> dict[str, Any] | None:
+    """Validate and describe the relay's controlled pre-sweep interval.
+
+    This is a protocol-intent stub only. The acoustic analyzer locates the
+    sweep from the signal and persists the exact quiet-window sample offsets;
+    the beginning of the phone WAV is deliberately never treated as ambient.
+    """
+
+    try:
+        duration = float(ambient_duration_s)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(duration) or duration <= 0:
+        return None
+    from jasper.audio_measurement import sweep as sweep_mod
+
+    samples, sample_rate = sweep_mod.read_wav_mono(wav_path)
+    ambient_count = int(round(duration * sample_rate))
+    reference_count = int(sweep_meta.get("n_samples") or 0)
+    if (
+        ambient_count <= 0
+        or reference_count <= 0
+        or len(samples) < ambient_count + reference_count
+    ):
+        raise ValueError("crossover capture is missing its controlled ambient interval")
+    return {
+        "schema_version": 2,
+        "domain": "controlled_pre_sweep",
+        "method": "paired_signal_window_deconvolution",
+        "ambient_duration_s": round(duration, 3),
+        "source": {
+            "kind": "pending_signal_boundary",
+            "protocol_paused_duration_s": round(duration, 3),
+        },
+    }
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -289,7 +335,10 @@ def capture_sweep_meta(raw: Mapping[str, Any]) -> dict[str, Any]:
     return dict(sweep_meta)
 
 
-def capture_preset(topology: Any, frozen_preset: Any = None) -> Any:
+def capture_preset(
+    topology: Any,
+    frozen_preset: ActiveSpeakerPreset | None = None,
+) -> ActiveSpeakerPreset:
     """Resolve the active-speaker preset used to analyze browser captures."""
 
     if frozen_preset is not None:
@@ -475,17 +524,267 @@ def _resolve_bundle_for_capture(
         return None, None
 
 
+def _analyze_only_record(*_args: Any, **_kwargs: Any) -> None:
+    """Injection used while a repeat is still provisional."""
+
+    return None
+
+
+def _driver_target_fingerprint(
+    topology: Any, *, group_id: str, role: str
+) -> str:
+    from jasper.active_speaker.measurement import active_driver_targets
+
+    target_id = f"{group_id}:{role}"
+    for target in active_driver_targets(topology):
+        if target.get("target_id") == target_id:
+            return str(target.get("target_fingerprint") or "")
+    return ""
+
+
+def _finalize_driver_repeat_set(
+    *,
+    topology: Any,
+    comparison_set: Mapping[str, Any],
+    speaker_group_id: str,
+    role: str,
+    target_fingerprint: str,
+    reservation: Mapping[str, Any],
+    admission_result: Mapping[str, Any],
+    repeats: list[dict[str, Any]],
+    repeat_store: Any,
+    terminal_failure_type: str | None = None,
+) -> dict[str, Any]:
+    """One ready → measurement → complete transaction for every final path."""
+
+    from jasper.active_speaker import bundles as active_speaker_bundles
+    from jasper.active_speaker import repeat_admission
+    from jasper.active_speaker.commissioning_capture import (
+        DEFAULT_REPEAT_TARGET,
+        record_driver_acoustic_capture,
+        record_driver_repeat_aggregate,
+    )
+
+    comparison_set_id = str(comparison_set.get("comparison_set_id") or "")
+    target_id = f"{speaker_group_id}:{role}"
+    reservation_attempt = int(reservation.get("attempt") or 0)
+    key = repeat_store.repeat_session_key(comparison_set_id, target_fingerprint)
+    aggregate = record_driver_repeat_aggregate(
+        speaker_group_id=speaker_group_id,
+        role=role,
+        repeats=repeats,
+        target=DEFAULT_REPEAT_TARGET,
+        session_id=(
+            Path(str(repeats[-1]["bundle_dir"])).name
+            if repeats[-1].get("bundle_dir")
+            else None
+        ),
+    )
+    aggregate["admission_attempts"] = reservation_attempt
+    winner = aggregate.get("aggregate_repeat")
+    if aggregate["accepted"] < 2 or not isinstance(winner, Mapping):
+        raise RuntimeError("driver repeat set is not eligible for finalization")
+    analysis_kwargs = winner.get("analysis_kwargs")
+    if "preset" not in winner:
+        raise RuntimeError("accepted crossover repeats lost their analysis preset")
+    preset = winner["preset"]
+    if not isinstance(analysis_kwargs, Mapping):
+        raise RuntimeError("accepted crossover repeats lost finalization context")
+    winner_path = Path(str(winner.get("wav_path") or ""))
+    bundle_dir = (
+        Path(str(winner["bundle_dir"])) if winner.get("bundle_dir") else None
+    )
+    final_bundle_ref = None
+    if bundle_dir is not None and winner.get("artifact_path"):
+        durable_winner = bundle_dir / str(winner["artifact_path"])
+        if durable_winner.is_file():
+            winner_path = durable_winner
+            final_bundle_ref = {
+                "session_id": bundle_dir.name,
+                "artifact_path": str(winner["artifact_path"]),
+            }
+    final_kwargs = dict(analysis_kwargs)
+    final_kwargs.update({
+        "captured_wav": winner_path,
+        "sweep_meta": winner.get("sweep_meta"),
+        "playback_id": winner.get("playback_id"),
+        "test_level_dbfs": winner.get("test_level_dbfs"),
+        "excitation": winner.get("excitation"),
+        "noise_band_report": None,
+        "ambient_report": winner.get("ambient_report"),
+        "ambient_duration_s": winner.get("ambient_duration_s"),
+    })
+    repeat_admission.finish(
+        comparison_set,
+        target_id=target_id,
+        target_fingerprint=target_fingerprint,
+        token=str(reservation.get("token") or ""),
+        result=admission_result,
+        status="ready",
+    )
+    payload = record_driver_acoustic_capture(
+        topology,
+        preset,
+        placement_proof=winner.get("placement_proof"),
+        bundle_ref=final_bundle_ref,
+        repeats=aggregate,
+        **final_kwargs,
+    )
+    repeat_admission.complete(
+        comparison_set,
+        target_id=target_id,
+        target_fingerprint=target_fingerprint,
+    )
+    repeat_store.clear_driver_repeats(key)
+    payload["measurement_mode"] = winner.get("measurement_mode")
+    payload["calibration_id"] = winner.get("calibration_id")
+    if bundle_dir is not None:
+        active_speaker_bundles.record_repeat_progress(
+            bundle_dir,
+            comparison_set_id=comparison_set_id,
+            target_fingerprint=target_fingerprint,
+            target_id=target_id,
+            attempts=reservation_attempt,
+            accepted=aggregate["accepted"],
+            target=DEFAULT_REPEAT_TARGET,
+            per_repeat=aggregate["per_repeat"],
+            status="completed",
+            reason=(
+                "terminal_transport_failure_used_existing_repeats"
+                if terminal_failure_type
+                else None
+            ),
+        )
+        capture_relpath = winner.get("capture_relpath")
+        if capture_relpath:
+            active_speaker_bundles.append_capture(
+                bundle_dir,
+                kind="driver",
+                wav_source_path=winner_path,
+                relative_path=str(capture_relpath),
+                payload={
+                    **payload,
+                    "speaker_group_id": speaker_group_id,
+                    "role": role,
+                },
+            )
+    log_event(
+        logger,
+        "active_speaker.web_driver_capture",
+        status="recorded" if payload.get("recorded") else "not_recorded",
+        group_id=speaker_group_id,
+        role=role,
+        verdict=payload.get("verdict"),
+        excitation_source=(payload.get("excitation") or {}).get("gain_source"),
+        effective_peak_dbfs=(payload.get("excitation") or {}).get(
+            "effective_peak_dbfs"
+        ),
+        placement_schema=(payload.get("placement_proof") or {}).get(
+            "schema_version"
+        ),
+        placement_policy=(payload.get("placement_proof") or {}).get("policy_id"),
+        floor_evidence_source=winner.get("floor_evidence_source"),
+        bundle_session=bundle_dir.name if bundle_dir is not None else None,
+        repeats_accepted=aggregate["accepted"],
+    )
+    if terminal_failure_type:
+        log_event(
+            logger,
+            "correction.crossover_repeats_finalized_after_transport_failure",
+            group=speaker_group_id,
+            role=role,
+            attempt=reservation_attempt,
+            accepted=aggregate["accepted"],
+            failure_type=str(terminal_failure_type)[:80],
+        )
+    return payload
+
+
+def finalize_driver_repeats_after_terminal_failure(
+    *,
+    comparison_set: Mapping[str, Any],
+    speaker_group_id: str,
+    role: str,
+    target_fingerprint: str,
+    reservation: Mapping[str, Any],
+    failure_type: str,
+    repeat_store: Any,
+) -> dict[str, Any] | None:
+    """Finalize two accepted repeats when attempt four dies in transport."""
+
+    from jasper.active_speaker import repeat_admission
+    from jasper.active_speaker.commissioning_capture import (
+        DEFAULT_REPEAT_TARGET,
+        aggregate_driver_repeats,
+    )
+
+    if int(reservation.get("attempt") or 0) < repeat_admission.MAX_ATTEMPTS:
+        return None
+    key = repeat_store.repeat_session_key(
+        str(comparison_set.get("comparison_set_id") or ""), target_fingerprint
+    )
+    repeats = repeat_store.driver_repeats(key)
+    preview = aggregate_driver_repeats(repeats, target=DEFAULT_REPEAT_TARGET)
+    if preview["accepted"] < 2:
+        return None
+    topology = load_output_topology()
+    if _driver_target_fingerprint(
+        topology,
+        group_id=speaker_group_id,
+        role=role,
+    ) != target_fingerprint:
+        raise ValueError("the driver target changed before repeat finalization")
+    from jasper.active_speaker.measurement import load_measurement_state
+
+    current_comparison = load_measurement_state(topology).get(
+        "active_comparison_set"
+    )
+    if not isinstance(current_comparison, Mapping) or any(
+        current_comparison.get(key) != comparison_set.get(key)
+        for key in ("comparison_set_id", "fingerprint")
+    ):
+        raise ValueError("the comparison set changed before repeat finalization")
+    return _finalize_driver_repeat_set(
+        topology=topology,
+        comparison_set=comparison_set,
+        speaker_group_id=speaker_group_id,
+        role=role,
+        target_fingerprint=target_fingerprint,
+        reservation=reservation,
+        admission_result={
+            "accepted": False,
+            "reject_reason": "capture_failed",
+            "failure_type": str(failure_type)[:80],
+            "phase": "transport",
+        },
+        repeats=repeats,
+        repeat_store=repeat_store,
+        terminal_failure_type=failure_type,
+    )
+
+
 def record_driver_capture(
     raw: Mapping[str, Any],
     wav_bytes: bytes | None = None,
     *,
     placement_proof: Mapping[str, Any] | None = None,
     preset: Any = None,
+    repeat_store: Any = None,
 ) -> dict[str, Any]:
-    """Analyze one browser WAV and record per-driver acoustic evidence."""
+    """Analyze one browser WAV and record per-driver acoustic evidence.
+
+    When ``repeat_store`` is supplied, provisional attempts are analyzed and
+    bundled without touching durable measurement state.  Three accepted
+    stationary repeats finalize the median representative; one bounded fourth
+    attempt is automatic after a rejection, and fewer than two accepted
+    captures refuse the run.  The key is ``comparison_set_id`` plus immutable
+    target fingerprint, so attempts can never cross a level/profile context.
+    """
 
     from jasper.active_speaker.calibration_level import load_calibration_level_state
     from jasper.active_speaker.commissioning_capture import (
+        DEFAULT_REPEAT_TARGET,
+        aggregate_driver_repeats,
         record_driver_acoustic_capture,
     )
     from jasper.active_speaker.measurement import (
@@ -495,9 +794,21 @@ def record_driver_capture(
     topology = load_output_topology()
     group_id = str(raw.get("speaker_group_id") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
+    repeat_failure_reader = getattr(repeat_store, "repeat_failure", None)
+    prior_repeat_failure = (
+        repeat_failure_reader(f"{group_id}:{role}")
+        if callable(repeat_failure_reader)
+        else None
+    )
+    if isinstance(prior_repeat_failure, Mapping):
+        raise ValueError(
+            "the bounded crossover repeat set was refused or interrupted; "
+            "run the driver level check again before measuring"
+        )
+    measurements = load_measurement_state(topology)
     floor_evidence = current_driver_floor_evidence(
         topology,
-        load_measurement_state(topology),
+        measurements,
         speaker_group_id=group_id,
         role=role,
     )
@@ -521,6 +832,17 @@ def record_driver_capture(
     preset = capture_preset(topology, preset)
     wav_path = capture_wav_path(raw, kind="driver", wav_bytes=wav_bytes)
     calibration_curve, calibration_id, measurement_mode = capture_calibration(raw)
+    sweep_meta = capture_sweep_meta(raw)
+    ambient_report = _stored_ambient_report(
+        wav_path,
+        sweep_meta,
+        calibration=calibration_curve,
+        ambient_duration_s=raw.get("ambient_duration_s"),
+    )
+    if repeat_store is not None and ambient_report is None:
+        raise ValueError(
+            "crossover repeat capture requires a controlled pre-sweep quiet interval"
+        )
     bundle_dir, capture_relpath = _resolve_bundle_for_capture(
         topology,
         kind="driver",
@@ -533,30 +855,252 @@ def record_driver_capture(
         if bundle_dir is not None
         else None
     )
-    payload = record_driver_acoustic_capture(
-        topology,
-        preset,
+    analysis_kwargs: dict[str, Any] = dict(
         speaker_group_id=group_id,
         role=role,
         captured_wav=wav_path,
-        sweep_meta=capture_sweep_meta(raw),
+        sweep_meta=sweep_meta,
         playback_id=_playback_id(raw),
         test_level_dbfs=raw.get("test_level_dbfs"),
         excitation=_mapping_value(raw.get("excitation")),
-        placement_proof=placement_proof,
         has_mic_calibration=(
             bool(raw.get("has_mic_calibration")) or calibration_curve is not None
         ),
         calibration=calibration_curve,
         notes=raw.get("notes"),
         noise_floor_dbfs=raw.get("noise_floor_dbfs"),
-        noise_band_report=_noise_band_report_value(raw.get("noise_band_report")),
+        noise_band_report=(
+            _noise_band_report_value(raw.get("noise_band_report"))
+            if ambient_report is None
+            else None
+        ),
+        ambient_report=ambient_report,
+        ambient_duration_s=(
+            float(raw["ambient_duration_s"])
+            if ambient_report is not None
+            else None
+        ),
         calibration_level=load_calibration_level_state(),
         safe_session=None,
         durable_floor_confirmation=floor_evidence.get("confirmation"),
         capture_geometry=_capture_geometry(raw),
-        bundle_ref=bundle_ref,
     )
+    if repeat_store is None:
+        payload = record_driver_acoustic_capture(
+            topology,
+            preset,
+            placement_proof=placement_proof,
+            bundle_ref=bundle_ref,
+            **analysis_kwargs,
+        )
+    else:
+        comparison_set = measurements.get("active_comparison_set")
+        if not isinstance(comparison_set, Mapping):
+            raise ValueError(
+                "the crossover measurement context or repeat admission changed; "
+                "run the level check again"
+            )
+        comparison_set_id = str(comparison_set.get("comparison_set_id") or "")
+        target_fingerprint = _driver_target_fingerprint(
+            topology, group_id=group_id, role=role
+        )
+        reservation = raw.get("repeat_reservation")
+        reservation = reservation if isinstance(reservation, Mapping) else {}
+        reservation_token = str(reservation.get("token") or "")
+        reservation_attempt = int(reservation.get("attempt") or 0)
+        if (
+            not comparison_set_id
+            or not target_fingerprint
+            or not reservation_token
+            or not 1 <= reservation_attempt <= 4
+        ):
+            raise ValueError(
+                "the crossover measurement context or repeat admission changed; "
+                "run the level check again"
+            )
+        key = repeat_store.repeat_session_key(
+            comparison_set_id, target_fingerprint
+        )
+        provisional = record_driver_acoustic_capture(
+            topology,
+            preset,
+            placement_proof=placement_proof,
+            bundle_ref=None,
+            record=_analyze_only_record,
+            emit_lifecycle_event=False,
+            **analysis_kwargs,
+        )
+        artifact_path = None
+        if bundle_dir is not None:
+            from jasper.active_speaker import bundles as active_speaker_bundles
+
+            appended = active_speaker_bundles.append_repeat_capture(
+                bundle_dir,
+                index=reservation_attempt - 1,
+                wav_source_path=wav_path,
+                payload={
+                    **provisional,
+                    "speaker_group_id": group_id,
+                    "role": role,
+                },
+            )
+            if isinstance(appended, Mapping):
+                artifact_path = appended.get("artifact_path")
+        item = {
+            "attempt": reservation_attempt,
+            "verdict": provisional.get("verdict"),
+            "acoustic": provisional.get("acoustic"),
+            "artifact_path": artifact_path,
+            "wav_path": str(wav_path),
+            "sweep_meta": dict(sweep_meta),
+            "playback_id": _playback_id(raw),
+            "test_level_dbfs": raw.get("test_level_dbfs"),
+            "excitation": dict(_mapping_value(raw.get("excitation"))),
+            "placement_proof": (
+                dict(placement_proof) if isinstance(placement_proof, Mapping) else None
+            ),
+            "ambient_report": (
+                _mapping_value(provisional.get("acoustic")).get("ambient")
+                or ambient_report
+            ),
+            "ambient_duration_s": analysis_kwargs.get("ambient_duration_s"),
+            # Process-local continuation data for the bounded-attempt state
+            # machine. A terminal transport failure can still finalize two
+            # already-accepted acoustic repeats without replaying audio.
+            "analysis_kwargs": dict(analysis_kwargs),
+            "preset": preset,
+            "calibration_id": calibration_id,
+            "measurement_mode": measurement_mode,
+            "bundle_dir": str(bundle_dir) if bundle_dir is not None else None,
+            "capture_relpath": capture_relpath,
+            "floor_evidence_source": floor_evidence.get("source"),
+        }
+        repeats = repeat_store.append_driver_repeat(
+            key,
+            target_id=f"{group_id}:{role}",
+            item=item,
+            attempt=reservation_attempt,
+        )
+        aggregate = aggregate_driver_repeats(
+            repeats, target=DEFAULT_REPEAT_TARGET
+        )
+        latest_attempt = aggregate["per_repeat"][-1]
+        def persist_repeat_progress(status: str, reason: str | None = None) -> None:
+            if bundle_dir is None:
+                return
+            from jasper.active_speaker import bundles as active_speaker_bundles
+
+            active_speaker_bundles.record_repeat_progress(
+                bundle_dir,
+                comparison_set_id=comparison_set_id,
+                target_fingerprint=target_fingerprint,
+                target_id=f"{group_id}:{role}",
+                attempts=reservation_attempt,
+                accepted=aggregate["accepted"],
+                target=DEFAULT_REPEAT_TARGET,
+                per_repeat=aggregate["per_repeat"],
+                status=status,
+                reason=reason,
+            )
+
+        from jasper.active_speaker import repeat_admission
+
+        acoustic_block = _mapping_value(provisional.get("acoustic"))
+        snr_block = _mapping_value(acoustic_block.get("snr"))
+        worst_snr = _mapping_value(snr_block.get("worst_relevant"))
+        worst_band = next(
+            (
+                entry
+                for entry in snr_block.get("bands") or ()
+                if isinstance(entry, Mapping)
+                and entry.get("band_id") == worst_snr.get("band_id")
+            ),
+            {},
+        )
+        gating_block = _mapping_value(acoustic_block.get("gating"))
+        admission_result = {
+            "accepted": latest_attempt.get("accepted"),
+            "reject_reason": latest_attempt.get("reject_reason"),
+            "estimated_snr_db": latest_attempt.get("estimated_snr_db"),
+            "snr_verdict": snr_block.get("verdict"),
+            "worst_band_id": worst_snr.get("band_id"),
+            "snr_shortfall_db": worst_band.get("shortfall_db"),
+            "clipping": latest_attempt.get("clipping"),
+            "above_validity_floor": latest_attempt.get("above_validity_floor"),
+            "validity_floor_hz": gating_block.get("f_valid_floor_hz"),
+        }
+
+        attempt_budget_exhausted = (
+            reservation_attempt >= repeat_admission.MAX_ATTEMPTS
+        )
+        if aggregate["needed_recapture"] and not attempt_budget_exhausted:
+            repeat_admission.finish(
+                comparison_set,
+                target_id=f"{group_id}:{role}",
+                target_fingerprint=target_fingerprint,
+                token=reservation_token,
+                result=admission_result,
+                status="active",
+            )
+            persist_repeat_progress("active")
+            return {
+                "recorded": False,
+                "verdict": provisional.get("verdict"),
+                "acoustic": provisional.get("acoustic"),
+                "repeat_progress": {
+                    "attempts": reservation_attempt,
+                    "accepted": aggregate["accepted"],
+                    "target": DEFAULT_REPEAT_TARGET,
+                    "bounded_recapture": (
+                        reservation_attempt >= DEFAULT_REPEAT_TARGET
+                    ),
+                    "latest_rejection": (
+                        admission_result
+                        if latest_attempt.get("accepted") is not True
+                        else None
+                    ),
+                },
+            }
+        if aggregate["accepted"] < 2 or not isinstance(
+            aggregate.get("aggregate_repeat"), Mapping
+        ):
+            failure = {
+                "reason": "insufficient_accepted_repeats",
+                "attempts": reservation_attempt,
+                "accepted": aggregate["accepted"],
+                "target": DEFAULT_REPEAT_TARGET,
+                "per_repeat": aggregate["per_repeat"],
+            }
+            repeat_store.clear_driver_repeats(key)
+            repeat_store.record_repeat_failure(f"{group_id}:{role}", failure)
+            repeat_admission.finish(
+                comparison_set,
+                target_id=f"{group_id}:{role}",
+                target_fingerprint=target_fingerprint,
+                token=reservation_token,
+                result=admission_result,
+                status="refused",
+            )
+            persist_repeat_progress(
+                "refused", reason="insufficient_accepted_repeats"
+            )
+            return {
+                "recorded": False,
+                "status": "refused",
+                "verdict": "insufficient_repeats",
+                "repeat_failure": failure,
+            }
+        return _finalize_driver_repeat_set(
+            topology=topology,
+            comparison_set=comparison_set,
+            speaker_group_id=group_id,
+            role=role,
+            target_fingerprint=target_fingerprint,
+            reservation=reservation,
+            admission_result=admission_result,
+            repeats=repeats,
+            repeat_store=repeat_store,
+        )
     payload["measurement_mode"] = measurement_mode
     payload["calibration_id"] = calibration_id
     if bundle_dir is not None:
@@ -586,6 +1130,9 @@ def record_driver_capture(
         placement_policy=(payload.get("placement_proof") or {}).get("policy_id"),
         floor_evidence_source=floor_evidence.get("source"),
         bundle_session=bundle_dir.name if bundle_dir is not None else None,
+        repeats_accepted=_mapping_value(
+            (payload.get("measurement") or {}).get("repeats")
+        ).get("accepted"),
     )
     return payload
 
@@ -607,6 +1154,13 @@ def record_summed_capture(
     preset = capture_preset(topology)
     wav_path = capture_wav_path(raw, kind="summed", wav_bytes=wav_bytes)
     calibration_curve, calibration_id, measurement_mode = capture_calibration(raw)
+    sweep_meta = capture_sweep_meta(raw)
+    ambient_report = _stored_ambient_report(
+        wav_path,
+        sweep_meta,
+        calibration=calibration_curve,
+        ambient_duration_s=raw.get("ambient_duration_s"),
+    )
     group_id = str(raw.get("speaker_group_id") or "").strip()
     bundle_dir, capture_relpath = _resolve_bundle_for_capture(
         topology,
@@ -625,7 +1179,7 @@ def record_summed_capture(
         preset,
         speaker_group_id=group_id,
         captured_wav=wav_path,
-        sweep_meta=capture_sweep_meta(raw),
+        sweep_meta=sweep_meta,
         crossover_fc_hz=raw.get("crossover_fc_hz"),
         summed_test_id=_summed_test_id(raw),
         playback_id=_playback_id(raw),
@@ -641,7 +1195,17 @@ def record_summed_capture(
         calibration=calibration_curve,
         notes=raw.get("notes"),
         noise_floor_dbfs=raw.get("noise_floor_dbfs"),
-        noise_band_report=_noise_band_report_value(raw.get("noise_band_report")),
+        noise_band_report=(
+            _noise_band_report_value(raw.get("noise_band_report"))
+            if ambient_report is None
+            else None
+        ),
+        ambient_report=ambient_report,
+        ambient_duration_s=(
+            float(raw["ambient_duration_s"])
+            if ambient_report is not None
+            else None
+        ),
         calibration_level=load_calibration_level_state(),
         capture_geometry=_capture_geometry(raw),
         bundle_ref=bundle_ref,

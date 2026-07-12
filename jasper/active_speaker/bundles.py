@@ -70,6 +70,7 @@ from jasper.output_topology import OutputTopology
 
 from . import measurement as _measurement
 from .capture_geometry import DRIVER_PLACEMENT_POLICY_ID
+from .test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ SESSIONS_DIR_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR"
 # Mirrors jasper.active_speaker.web_measurement.MAX_CAPTURE_WAV_BYTES — the
 # browser capture store's own cap. A bundle copy is never larger than the
 # capture it was made from, so the same ceiling bounds the copy.
-MAX_CAPTURE_WAV_BYTES = 3 * 1024 * 1024
+MAX_CAPTURE_WAV_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 DEFAULT_SESSIONS_MAX_BYTES = 256 * 1024 * 1024
 SESSIONS_MAX_BYTES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BYTES"
@@ -420,6 +421,7 @@ def open_bundle(
         },
         "captures": [],
         "summed_captures": [],
+        "repeat_progress": {},
         "proposal": None,
         "previous_values": None,
         "proposed_values": None,
@@ -639,8 +641,20 @@ def append_capture(
 
     info = _read_info(bundle_dir)
     list_key = "captures" if kind == "driver" else "summed_captures"
+    placement = dict(info.get("placement") or {})
+    placement_proof = payload.get("placement_proof")
+    if (
+        isinstance(placement_proof, Mapping)
+        and placement_proof.get("accepted") is True
+        and placement_proof.get("policy_id") == placement.get("policy_id")
+    ):
+        # The acknowledgement is server-normalized after the relay verifies
+        # the operator's checked box.  This repairs the former dead literal:
+        # an opened bundle starts false and flips only on real accepted proof.
+        placement["acknowledged"] = True
     _write_info(bundle_dir, {
         **info,
+        "placement": placement,
         list_key: [*(info.get(list_key) or []), entry],
         "updated_at": time.time(),
     })
@@ -697,6 +711,71 @@ def append_repeat_capture(
         file_mode=BUNDLE_FILE_MODE,
     )
     return {"artifact_path": rel_path, "quality_json_path": json_rel}
+
+
+@_fail_soft("record_repeat_progress")
+def record_repeat_progress(
+    bundle_dir: Path,
+    *,
+    comparison_set_id: str,
+    target_fingerprint: str,
+    target_id: str,
+    attempts: int,
+    accepted: int,
+    target: int,
+    per_repeat: list[Mapping[str, Any]],
+    status: str,
+    reason: str | None = None,
+) -> dict[str, Any] | None:
+    """Persist compact, comparison-bound interim repeat state.
+
+    Raw WAVs and full analyses remain manifest artifacts. ``info.json`` keeps
+    only a forensic mirror of the authoritative admission ledger so a session
+    can be diagnosed without making bundle state a playback controller.
+    """
+
+    if status not in {"active", "completed", "refused"}:
+        raise BundleError("repeat progress status is invalid")
+    info = _read_info(bundle_dir)
+    progress = dict(info.get("repeat_progress") or {})
+    entry: dict[str, Any] = {
+        "schema_version": 1,
+        "comparison_set_id": str(comparison_set_id),
+        "target_fingerprint": str(target_fingerprint),
+        "target_id": str(target_id),
+        "attempts": int(attempts),
+        "accepted": int(accepted),
+        "target": int(target),
+        "status": status,
+        "per_repeat": [
+            {
+                key: item.get(key)
+                for key in (
+                    "index",
+                    "attempt",
+                    "accepted",
+                    "reject_reason",
+                    "artifact_path",
+                    "estimated_snr_db",
+                    "clipping",
+                    "above_validity_floor",
+                    "level_dbfs",
+                )
+            }
+            for item in per_repeat[:4]
+        ],
+        "updated_at": time.time(),
+    }
+    if reason:
+        entry["reason"] = str(reason)
+    progress[str(target_id)] = entry
+    _write_info(bundle_dir, {
+        **info,
+        "repeat_progress": progress,
+        "updated_at": time.time(),
+    })
+    return entry
+
 
 
 def _plain(value: Any) -> dict[str, Any] | None:
