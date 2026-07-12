@@ -54,6 +54,42 @@ def test_capture_preset_prefers_frozen_applied_snapshot(monkeypatch):
     assert web_measurement.capture_preset(object(), frozen) is frozen
 
 
+# ---------- _noise_band_report_value (SC-1 browser-input validation) --------
+
+
+def test_noise_band_report_value_accepts_correction_shape_list():
+    raw = [
+        {"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -80},
+        {"band_id": "treble", "band_hz": [4000.0, 12000.0], "level_dbfs": -75.5},
+    ]
+    out = web_measurement._noise_band_report_value(raw)
+    assert out == [
+        {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -80.0},
+        {"band_id": "treble", "band_hz": [4000.0, 12000.0], "level_dbfs": -75.5},
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        "not-a-list",
+        [],
+        [{"band_id": "mid", "band_hz": [1000.0, 4000.0]}],  # missing level_dbfs
+        [{"band_id": "mid", "level_dbfs": -80.0}],  # missing band_hz
+        [{"band_hz": [1000.0, 4000.0], "level_dbfs": -80.0}],  # missing band_id
+        [{"band_id": "", "band_hz": [1000.0, 4000.0], "level_dbfs": -80.0}],
+        [{"band_id": "mid", "band_hz": [1000.0], "level_dbfs": -80.0}],  # wrong len
+        [{"band_id": "mid", "band_hz": "1000-4000", "level_dbfs": -80.0}],
+        [{"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": "loud"}],
+        ["not-a-mapping"],
+        [{"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -80.0}, "bad"],
+    ],
+)
+def test_noise_band_report_value_rejects_malformed_input(raw):
+    assert web_measurement._noise_band_report_value(raw) is None
+
+
 def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_path):
     calls = {}
     topology = object()
@@ -124,6 +160,9 @@ def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
             "role": "woofer",
             "playback_id": "play-1",
             "has_mic_calibration": True,
+            "noise_band_report": [
+                {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -80.0},
+            ],
         },
         b"wav",
         preset=frozen_preset,
@@ -137,6 +176,10 @@ def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
     assert calls["kwargs"]["speaker_group_id"] == "mono"
     assert calls["kwargs"]["role"] == "woofer"
     assert calls["kwargs"]["captured_wav"] == wav_path
+    # Validated and threaded through to the analyzer call.
+    assert calls["kwargs"]["noise_band_report"] == [
+        {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -80.0},
+    ]
     assert calls["kwargs"]["playback_id"] == "play-1"
     assert calls["kwargs"]["calibration"] == "curve"
     assert calls["kwargs"]["safe_session"] is None
@@ -269,6 +312,8 @@ def test_summed_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
             "summed_test_id": "sum-1",
             "playback_id": "sum-1",
             "expect_null": True,
+            "noise_floor_dbfs": -70.0,
+            "noise_band_report": "not-a-list",  # invalid -> validated to None
         },
         b"wav",
     )
@@ -280,6 +325,8 @@ def test_summed_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
     assert calls["kwargs"]["captured_wav"] == wav_path
     assert calls["kwargs"]["summed_test_id"] == "sum-1"
     assert calls["kwargs"]["expect_null"] is True
+    assert calls["kwargs"]["noise_floor_dbfs"] == -70.0
+    assert calls["kwargs"]["noise_band_report"] is None
 
 
 def test_backend_status_includes_active_speaker_commission_state(monkeypatch):
