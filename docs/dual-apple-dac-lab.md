@@ -192,9 +192,9 @@ The first product-facing slice is intentionally non-audible:
 - The current acceptance contract is at least 900 s at 48 kHz, zero
   output xruns, `max_offset_delta_frames <= 1`, and
   `abs(drift_ppm) <= 1`.
-- `jasper.active_speaker.readiness` may treat that constrained composite
-  clock as satisfying the clock precondition, but topology/readiness still
-  grants no playback authority by itself.
+- `clock_domain_report` and the active playback-route capability expose that
+  constrained composite clock to topology checks, but neither grants playback
+  authority; the protected commission ramp owns per-driver audible tests.
 
 Sound-emitting product work now uses `jasper-outputd`'s dual direct-sink
 mode: one Rust process opens both pinned DAC PCMs, consumes the protected
@@ -375,4 +375,4 @@ Do not allow sound-emitting JTS paths to consume this topology unless a
 bundle proves the exact serials, physical port map, channel identity, and
 safe startup behavior.
 
-Last verified: 2026-06-08
+Last verified: 2026-07-12

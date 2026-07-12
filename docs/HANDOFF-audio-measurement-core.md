@@ -71,8 +71,8 @@ The product is three tiers:
   durable evidence). Shipped, tested.
 - **Shared browser-mic capture**: `deploy/assets/shared/js/measurement-audio.js`
   (mono 48 kHz, AGC/EC/NS hard-coded off) + `correction/browser_audio.py`.
-- **Active-speaker subsystem** (`jasper/active_speaker/`, 32 files on
-  `origin/main`): commissioning stages 1–5 (muted load → per-driver unmute
+- **Active-speaker subsystem** (`jasper/active_speaker/`): commissioning
+  stages 1–5 (muted load → per-driver unmute
   at a floor → audible gain ramp → audible-evidence confirmation), driver
   research/preset, `camilla_yaml.py` per-driver Gain/Crossover emit,
   `driver_protection.py`, `safe_playback.py`, runtime contract & staging.
