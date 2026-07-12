@@ -229,6 +229,15 @@ add a flag to one of these two instead.
 
 ## Wake-word scoring (offline)
 
+Repository-bound wake shell wrappers use one interpreter precedence contract:
+the effective `PYTHON` value (a single executable token or path), the invoking
+checkout's `.venv`, the main checkout's `.venv` when invoked from a linked
+worktree, then `python3`. An explicit override is authoritative and fails
+visibly if invalid; wrappers do not silently replace it. Resolution is anchored
+to the wrapper's checkout, so calls from another working directory neither
+select that directory's venv nor import an editable `jasper` package from a
+different checkout.
+
 Both score with `openwakeword.model.Model`, both use 1280-sample
 (80 ms @ 16 kHz) frames matching production's WakeLoop. They differ
 in scope:

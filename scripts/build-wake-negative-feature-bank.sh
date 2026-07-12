@@ -12,13 +12,10 @@
 #   bash scripts/build-wake-negative-feature-bank.sh logs/negative-bundle --allow-unlabeled-as ambient_negative
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
 
-if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
-  PY="${REPO_ROOT}/.venv/bin/python"
-else
-  PY="${PYTHON:-python3}"
-fi
+PY="$(resolve_repo_python)"
 
 exec "$PY" "${REPO_ROOT}/scripts/_build_wake_negative_feature_bank.py" "$@"
