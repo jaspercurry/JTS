@@ -178,6 +178,12 @@ class DriverAcousticResult:
     # noise_band_report was supplied to analyze_driver_capture — there is no
     # noise evidence to gate on, so there is nothing to report.
     snr: dict[str, Any] | None = None
+    # SC-2 IR-gating / low-frequency validity-floor block (see
+    # jasper.audio_measurement.gating and docs/active-crossover-information-design.md
+    # "Measurement validity"). ``None`` only when there was no IR to gate at all
+    # (the capture failed quality gating before deconvolution); otherwise always
+    # populated, exempt (near-field) or applied (reference-axis).
+    gating: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -196,6 +202,7 @@ class DriverAcousticResult:
             "fr_curve": self.fr_curve,
             "calibrated": self.calibrated,
             "snr": self.snr,
+            "gating": self.gating,
         }
 
 
@@ -228,6 +235,15 @@ class SummedAcousticResult:
     # above is always decided from the UNCAPPED measured depth; only the
     # reported number is capped.
     null_depth_capped: bool = False
+    # Whether the crossover Fc (and its lower shoulder, Fc/2) sit above the
+    # SC-2 low-frequency validity floor. True whenever gating was not applied
+    # (near-field/exempt) or found no floor issue; False only when a
+    # reference-axis capture's floor makes the null undecidable (paired with
+    # verdict=unusable_capture — see analyze_summed_crossover).
+    above_validity_floor: bool = True
+    near_validity_floor: bool = False
+    # SC-2 gating block — see DriverAcousticResult.gating.
+    gating: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -243,6 +259,9 @@ class SummedAcousticResult:
             "calibrated": self.calibrated,
             "snr": self.snr,
             "null_depth_capped": self.null_depth_capped,
+            "above_validity_floor": self.above_validity_floor,
+            "near_validity_floor": self.near_validity_floor,
+            "gating": self.gating,
         }
 
 
@@ -305,12 +324,14 @@ def _capture_to_magnitude(
     *,
     has_mic_calibration: bool,
     calibration: "CalibrationCurve | None" = None,
+    capture_geometry: str = "near_field",
 ):
-    """Shared capture → (quality, freqs, smoothed_magnitude_db) pipeline.
+    """Shared capture → (quality, freqs, smoothed_magnitude_db, gating) pipeline.
 
-    Returns ``(quality, None, None)`` when the capture fails quality gating —
-    deconvolving an unsafe (clipped / too short / wrong rate) capture would
-    fabricate a curve, so we stop and report the failure instead.
+    Returns ``(quality, None, None, None)`` when the capture fails quality
+    gating — deconvolving an unsafe (clipped / too short / wrong rate)
+    capture would fabricate a curve, so we stop and report the failure
+    instead.
 
     When ``calibration`` is supplied (an L2 calibrated measurement mic), the
     mic-correction curve is applied to the magnitude via the SAME
@@ -318,10 +339,29 @@ def _capture_to_magnitude(
     uses, so the surfaced FR is calibrated and the null-depth shoulders (taken at
     different frequencies) are corrected rather than relying on the additive cal
     cancelling.
+
+    ``capture_geometry`` selects whether the deconvolved impulse response is
+    gated to its reflection-free span before the magnitude response is taken
+    (see :mod:`jasper.audio_measurement.gating` and
+    docs/active-crossover-information-design.md "Measurement validity: gating
+    and the low-frequency floor"). ``"near_field"`` (today's shipped capture,
+    taken a few centimetres from the driver) is exempt — the room cannot
+    contaminate a capture that close — and the ungated IR is used, so a
+    near-field caller's result is byte-identical to before this parameter
+    existed. ``"reference_axis"`` (the ~1 m fixed-axis capture) gates the IR
+    and returns the SC-2 gating block describing what was done; the returned
+    ``gating`` dict is always populated (exempt or applied) whenever an IR
+    exists at all.
     """
     import numpy as np
 
-    from jasper.audio_measurement import analysis, calibration as calibration_mod, deconv, quality
+    from jasper.audio_measurement import (
+        analysis,
+        calibration as calibration_mod,
+        deconv,
+        gating,
+        quality,
+    )
     from jasper.audio_measurement import sweep as sweep_mod
 
     has_cal = has_mic_calibration or calibration is not None
@@ -346,7 +386,7 @@ def _capture_to_magnitude(
         quality_model=DRIVER,
     )
     if report.failed:
-        return report, None, None
+        return report, None, None, None
 
     reference, _ = sweep_mod.synchronized_swept_sine(
         f1=float(sweep_meta["f1"]),
@@ -360,13 +400,21 @@ def _capture_to_magnitude(
         reference.astype(np.float64),
         sample_rate=sr,
     )
-    freqs, mag_db = deconv.magnitude_response(ir, sr, normalize=False)
+    if capture_geometry == "reference_axis":
+        gated_ir, fragment = gating.gate_impulse_response(ir, sr)
+        applied = fragment["floor_source"] is not None
+        gating_block = {**fragment, "applied": applied, "exempt_reason": None}
+        ir_used = gated_ir
+    else:
+        gating_block = gating.exempt_gating_block(ir, sr, reason="near_field")
+        ir_used = ir
+    freqs, mag_db = deconv.magnitude_response(ir_used, sr, normalize=False)
     smoothed = analysis.smooth_fractional_octave(
         freqs, mag_db, DEFAULT_SMOOTHING_FRACTION
     )
     if calibration is not None:
         smoothed = calibration_mod.apply_calibration_curve(freqs, smoothed, calibration)
-    return report, freqs, smoothed
+    return report, freqs, smoothed, gating_block
 
 
 def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
@@ -443,15 +491,19 @@ def _overlap_band_levels(
     silent: bool,
     mic_clipping: bool,
     snr_bands: Sequence[Mapping[str, Any]] | None = None,
+    validity_floor_hz: float | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Mean deconvolved magnitude in a one-octave band centred on each Fc.
 
     Returns one entry per crossover ``Fc`` (``{fc_hz, lo_hz, hi_hz, level_db,
-    bins, usable, snr_verdict}``). An entry is ``usable`` only when the capture
-    passed quality gating, was not silent, the mic did not clip, the band held
-    at least ``OVERLAP_MIN_BINS`` bins, AND its SC-1 SNR verdict is not
+    bins, usable, snr_verdict, above_validity_floor, near_validity_floor}``).
+    An entry is ``usable`` only when the capture passed quality gating, was
+    not silent, the mic did not clip, the band held at least
+    ``OVERLAP_MIN_BINS`` bins, ``fc`` sits at/above the SC-2 low-frequency
+    validity floor (when one applies), AND its SC-1 SNR verdict is not
     ``"insufficient"`` — otherwise ``level_db`` is NaN and ``usable`` is False
-    so the level-match trim math can fail closed to the datasheet trim.
+    so the level-match trim math can fail closed to the datasheet trim, same
+    as a silent/clipped capture.
 
     ``snr_bands`` is the ``"bands"`` list from
     :func:`jasper.audio_measurement.snr_policy.band_snr_verdicts` (magnitude
@@ -462,10 +514,28 @@ def _overlap_band_levels(
     exactly as computed above (no regression for the shipped no-noise flow).
     A "reduced" verdict does NOT force ``usable=False``: it is a
     reduced-confidence result, not a refusal.
+
+    ``validity_floor_hz`` is ``None`` when gating did not apply (near-field
+    capture, or a reference-axis capture with no floor issue) — every entry
+    is then ``above_validity_floor=True``. When a floor applies, an entry
+    with ``fc < validity_floor_hz`` is marked ``above_validity_floor=False``
+    (and thereby unusable); ``near_validity_floor`` is the advisory
+    ``[floor, NEAR_FLOOR_RATIO * floor)`` reduced-confidence band and does
+    NOT affect ``usable``.
     """
     import numpy as np
 
     from jasper.audio_measurement import snr_policy
+    from jasper.audio_measurement.gating import NEAR_FLOOR_RATIO
+
+    # A local `floor` narrowed to `float | None` (rather than branching on a
+    # separate `has_floor` bool) lets every comparison below stay a plain
+    # `floor is not None and ...` — mypy narrows `floor` from that guard.
+    floor = (
+        validity_floor_hz
+        if validity_floor_hz is not None and math.isfinite(validity_floor_hz)
+        else None
+    )
 
     entries: list[dict[str, Any]] = []
     for raw_fc in overlap_fcs:
@@ -494,6 +564,8 @@ def _overlap_band_levels(
                 # log-symmetric SNR averaging, and the [lo, hi] octave is the
                 # confidence neighbourhood that must hold enough bins.
                 level_db = float(np.interp(fc, freqs, mag_db))
+        above = floor is None or fc >= floor
+        near = floor is not None and floor <= fc < NEAR_FLOOR_RATIO * floor
         usable = (
             capture_usable
             and not silent
@@ -501,6 +573,7 @@ def _overlap_band_levels(
             and in_range
             and bins >= OVERLAP_MIN_BINS
             and math.isfinite(level_db)
+            and above
         )
         worst = snr_policy.worst_band_verdict(snr_bands, lo, hi) if snr_bands else None
         snr_verdict = worst["verdict"] if worst else "unknown"
@@ -514,6 +587,8 @@ def _overlap_band_levels(
             "bins": bins,
             "usable": usable,
             "snr_verdict": snr_verdict,
+            "above_validity_floor": above,
+            "near_validity_floor": near,
         })
     return tuple(entries)
 
@@ -527,6 +602,7 @@ def analyze_driver_capture(
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
     noise_band_report: Sequence[Mapping[str, Any]] | None = None,
+    capture_geometry: str = "near_field",
 ) -> DriverAcousticResult:
     """Classify whether a driver is producing sound in its expected band.
 
@@ -551,6 +627,14 @@ def analyze_driver_capture(
     computed and stored on the result's ``snr`` field, scoped to
     ``relevant_hz = passband_hz ∩ [ANALYSIS_LO_HZ, ANALYSIS_HI_HZ]``; when
     omitted, ``snr`` is ``None`` (no noise evidence to gate on).
+    ``capture_geometry`` (``"near_field"`` default, or ``"reference_axis"``)
+    selects IR gating — see :func:`_capture_to_magnitude`. When gating is
+    applied and reports a low-frequency validity floor, every derived
+    quantity here (in-band/out-of-band means, overlap-band levels) is
+    restricted to data at/above that floor; a driver whose entire passband
+    sits below the floor is reported ``unusable_capture`` rather than a
+    magnitude computed from contaminated data (spec: "no proposal rests on
+    data below the floor").
     """
     import numpy as np
 
@@ -558,9 +642,9 @@ def analyze_driver_capture(
     if not (0 < lo < hi):
         raise DriverAcousticsError(f"invalid passband_hz: {passband_hz!r}")
 
-    report, freqs, mag_db = _capture_to_magnitude(
+    report, freqs, mag_db, gating_block = _capture_to_magnitude(
         captured_wav, sweep_meta, has_mic_calibration=has_mic_calibration,
-        calibration=calibration,
+        calibration=calibration, capture_geometry=capture_geometry,
     )
     quality_dict = report.to_dict()
     mic_clipping = report.clipped_fraction >= 1e-4
@@ -582,18 +666,56 @@ def analyze_driver_capture(
             overlap_levels=_overlap_band_levels(
                 None, None, overlap_fcs,
                 capture_usable=False, silent=silent, mic_clipping=mic_clipping,
+                validity_floor_hz=None,
             ),
             fr_curve=None,
             calibrated=calibrated,
             snr=None,
+            gating=None,
         )
 
-    band_lo = max(lo, ANALYSIS_LO_HZ)
+    floor_hz = None
+    if gating_block is not None and gating_block.get("applied"):
+        floor_hz = gating_block.get("f_valid_floor_hz")
+    eff_lo = max(ANALYSIS_LO_HZ, floor_hz) if floor_hz is not None else ANALYSIS_LO_HZ
+
+    band_lo = max(lo, eff_lo)
     band_hi = min(hi, ANALYSIS_HI_HZ)
+
+    if floor_hz is not None and band_lo >= band_hi:
+        # The validity floor sits at/above this driver's own passband
+        # ceiling: the reference-axis capture cannot decide anything about
+        # this driver at all. Near-field splice (Slice 1) is the product fix
+        # for this case; here we refuse rather than emit a magnitude
+        # computed from below-floor data.
+        return DriverAcousticResult(
+            verdict=VERDICT_UNUSABLE_CAPTURE,
+            present=False,
+            observed_mic_dbfs=report.rms_dbfs,
+            peak_dbfs=report.peak_dbfs,
+            in_band_db=float("nan"),
+            out_of_band_db=float("nan"),
+            band_separation_db=float("nan"),
+            passband_hz=(lo, hi),
+            mic_clipping=mic_clipping,
+            quality=quality_dict,
+            overlap_levels=_overlap_band_levels(
+                freqs, mag_db, overlap_fcs,
+                capture_usable=True, silent=silent, mic_clipping=mic_clipping,
+                validity_floor_hz=floor_hz,
+            ),
+            fr_curve=_downsample_curve(freqs, mag_db),
+            calibrated=calibrated,
+            gating=gating_block,
+        )
+
     in_band = _band_mean_db(freqs, mag_db, band_lo, band_hi)
 
-    # Out-of-band reference: trusted analysis window minus the passband.
-    out_mask = ((freqs >= ANALYSIS_LO_HZ) & (freqs <= ANALYSIS_HI_HZ)) & ~(
+    # Out-of-band reference: trusted analysis window minus the passband. The
+    # window's lower edge is the validity floor when one applies (eff_lo),
+    # not the raw ANALYSIS_LO_HZ — near_field's eff_lo == ANALYSIS_LO_HZ
+    # always, so this is byte-identical to before capture_geometry existed.
+    out_mask = ((freqs >= eff_lo) & (freqs <= ANALYSIS_HI_HZ)) & ~(
         (freqs >= band_lo) & (freqs <= band_hi)
     )
     out_of_band = (
@@ -649,10 +771,12 @@ def analyze_driver_capture(
             freqs, mag_db, overlap_fcs,
             capture_usable=True, silent=silent, mic_clipping=mic_clipping,
             snr_bands=snr_bands,
+            validity_floor_hz=floor_hz,
         ),
         fr_curve=_downsample_curve(freqs, mag_db),
         calibrated=calibrated,
         snr=snr_block,
+        gating=gating_block,
     )
 
 
@@ -667,6 +791,7 @@ def analyze_summed_crossover(
     calibration: "CalibrationCurve | None" = None,
     noise_band_report: Sequence[Mapping[str, Any]] | None = None,
     noise_floor_dbfs: float | None = None,
+    capture_geometry: str = "near_field",
 ) -> SummedAcousticResult:
     """Measure the cancellation null at the crossover in a summed-speaker capture.
 
@@ -700,6 +825,14 @@ def analyze_summed_crossover(
     ``null_depth_capped=True``); the verdict below is always decided from the
     raw, uncapped measured depth — a capped-but-still-deep null is safely "at
     least that deep".
+    ``capture_geometry`` — see :func:`_capture_to_magnitude`. When gating
+    applies and reports a floor, and either ``crossover_fc_hz`` or its lower
+    shoulder (``crossover_fc_hz / 2``, one of the two points the null depth is
+    measured from) sits below it, the reference-axis capture cannot decide
+    this crossover's null at all: reported ``unusable_capture`` rather than a
+    null computed from contaminated data. ``above_validity_floor`` /
+    ``near_validity_floor`` record the (non-excluding) advisory state for a
+    usable result.
     """
     import numpy as np
 
@@ -708,9 +841,9 @@ def analyze_summed_crossover(
             f"crossover_fc_hz must be positive, got {crossover_fc_hz}"
         )
 
-    report, freqs, mag_db = _capture_to_magnitude(
+    report, freqs, mag_db, gating_block = _capture_to_magnitude(
         captured_wav, sweep_meta, has_mic_calibration=has_mic_calibration,
-        calibration=calibration,
+        calibration=calibration, capture_geometry=capture_geometry,
     )
     quality_dict = report.to_dict()
     mic_clipping = report.clipped_fraction >= 1e-4
@@ -729,10 +862,47 @@ def analyze_summed_crossover(
             calibrated=calibrated,
             snr=None,
             null_depth_capped=False,
+            gating=None,
+            above_validity_floor=True,
+            near_validity_floor=False,
         )
 
+    floor_hz = None
+    if gating_block is not None and gating_block.get("applied"):
+        floor_hz = gating_block.get("f_valid_floor_hz")
+
+    lower_shoulder_hz = crossover_fc_hz / 2.0
+    if floor_hz is not None:
+        if crossover_fc_hz < floor_hz or lower_shoulder_hz < floor_hz:
+            # The room prevented a low-frequency decision here (spec:
+            # "no proposal rests on data below the floor"). Never emits a
+            # null computed from a below-floor shoulder.
+            return SummedAcousticResult(
+                verdict=VERDICT_UNUSABLE_CAPTURE,
+                null_depth_db=float("nan"),
+                crossover_fc_hz=crossover_fc_hz,
+                observed_mic_dbfs=report.rms_dbfs,
+                mic_clipping=mic_clipping,
+                quality=quality_dict,
+                expect_null=expect_null,
+                fr_curve=None,
+                calibrated=calibrated,
+                gating=gating_block,
+                above_validity_floor=False,
+                near_validity_floor=False,
+            )
+        from jasper.audio_measurement.gating import NEAR_FLOOR_RATIO
+
+        above_validity_floor = True
+        near_validity_floor = (
+            floor_hz <= lower_shoulder_hz < NEAR_FLOOR_RATIO * floor_hz
+        )
+    else:
+        above_validity_floor = True
+        near_validity_floor = False
+
     at_fc = float(np.interp(crossover_fc_hz, freqs, mag_db))
-    lower_shoulder = float(np.interp(crossover_fc_hz / 2.0, freqs, mag_db))
+    lower_shoulder = float(np.interp(lower_shoulder_hz, freqs, mag_db))
     upper_shoulder = float(np.interp(crossover_fc_hz * 2.0, freqs, mag_db))
     shoulder_mean = (lower_shoulder + upper_shoulder) / 2.0
     null_depth = shoulder_mean - at_fc
@@ -777,4 +947,7 @@ def analyze_summed_crossover(
         calibrated=calibrated,
         snr=snr_block,
         null_depth_capped=null_depth_capped,
+        gating=gating_block,
+        above_validity_floor=above_validity_floor,
+        near_validity_floor=near_validity_floor,
     )
