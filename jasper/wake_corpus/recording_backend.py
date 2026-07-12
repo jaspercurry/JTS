@@ -40,12 +40,16 @@ from jasper.aec_sweep import (
     config_metadata,
     variant_metadata,
 )
-from jasper.wake_conditions import CONDITIONS, DISTANCES
 from jasper.cli.wake_enroll import VOICE_UNIT, write_wav
 from jasper.log_event import log_event
 from jasper.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
     read_mic_muted,
+)
+from jasper.wake_conditions import (
+    CONDITIONS,
+    CORPUS_DIR_BY_CONDITION,
+    DISTANCES,
 )
 from jasper.wake_ports import build_ports
 
@@ -1295,11 +1299,7 @@ class RecordingBackend:
         # backward compat with existing recordings + downstream tools
         # (extract-wake-corpus.py emits the same name). "ambient" gets
         # its own dir so training can slice on it explicitly.
-        condition_dir = {
-            "quiet": "nomusic",
-            "ambient": "ambient",
-            "music": "music",
-        }[meta["condition"]]
+        condition_dir = CORPUS_DIR_BY_CONDITION[meta["condition"]]
         for leg, pcm in pcm_per_leg.items():
             if not pcm:
                 continue

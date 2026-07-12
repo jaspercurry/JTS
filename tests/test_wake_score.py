@@ -69,10 +69,13 @@ class _FakeDetector:
 
 @pytest.mark.parametrize("name,expected", [
     ("aec_on_nomusic", ("on", "nomusic")),
+    ("aec_on_ambient", ("on", "ambient")),
     ("aec_on_music", ("on", "music")),
     ("aec_off_nomusic", ("off", "nomusic")),
+    ("aec_off_ambient", ("off", "ambient")),
     ("aec_off_music", ("off", "music")),
     ("aec_dtln_nomusic", ("dtln", "nomusic")),
+    ("aec_dtln_ambient", ("dtln", "ambient")),
     ("aec_dtln_music", ("dtln", "music")),
 ])
 def test_parse_quadrant_valid_names(name: str, expected: tuple[str, str]) -> None:
@@ -125,6 +128,16 @@ def test_walk_corpus_handles_flat_layout(tmp_path: Path) -> None:
     assert all(c.split == "unknown" for c in clips)
 
 
+def test_walk_corpus_includes_ambient_quadrant(tmp_path: Path) -> None:
+    _make_wav(tmp_path / "aec_on_ambient" / "ambient.wav", 1600)
+
+    clips = list(wake_score.walk_corpus(tmp_path))
+
+    assert [(clip.leg, clip.condition) for clip in clips] == [
+        ("on", "ambient"),
+    ]
+
+
 def test_walk_corpus_mixed_split_and_flat(tmp_path: Path) -> None:
     """One quadrant has train/eval, another is flat — both should
     extract correctly with their own split tagging."""
@@ -148,6 +161,22 @@ def test_walk_corpus_skips_non_quadrant_dirs_and_files(tmp_path: Path) -> None:
     clips = list(wake_score.walk_corpus(tmp_path))
     assert len(clips) == 1
     assert clips[0].path.name == "ok.wav"
+
+
+def test_walk_corpus_warns_only_for_unrecognized_aec_directory(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    unrecognized = tmp_path / "aec_on_future"
+    unrecognized.mkdir()
+    unrelated = tmp_path / "random_dir"
+    unrelated.mkdir()
+
+    with caplog.at_level(logging.WARNING, logger="jasper-wake-score"):
+        assert list(wake_score.walk_corpus(tmp_path)) == []
+
+    assert [record.getMessage() for record in caplog.records] == [
+        f"skipping unrecognized corpus quadrant directory: {unrecognized}",
+    ]
 
 
 def test_walk_corpus_rejects_non_directory(tmp_path: Path) -> None:
@@ -292,7 +321,7 @@ def test_score_clip_threshold_at_peak_exact_match_fires() -> None:
 
 
 def test_score_corpus_end_to_end(tmp_path: Path) -> None:
-    # 4 clips across 2 quadrants × 2 splits.
+    # 5 clips across all three directory conditions and both splits.
     _make_wav(tmp_path / "aec_on_music" / "train" / "01.wav",
               wake_score.FRAME_SAMPLES * 2)
     _make_wav(tmp_path / "aec_on_music" / "eval" / "02.wav",
@@ -301,13 +330,15 @@ def test_score_corpus_end_to_end(tmp_path: Path) -> None:
               wake_score.FRAME_SAMPLES * 2)
     _make_wav(tmp_path / "aec_off_nomusic" / "eval" / "04.wav",
               wake_score.FRAME_SAMPLES * 2)
+    _make_wav(tmp_path / "aec_dtln_ambient" / "eval" / "05.wav",
+              wake_score.FRAME_SAMPLES * 2)
 
     detector = _FakeDetector(score=0.6)
     scored = wake_score.score_corpus(
         tmp_path, "fake.onnx", threshold=0.5, detector=detector,
     )
 
-    assert len(scored) == 4
+    assert len(scored) == 5
     assert all(c.fired for c in scored)
     assert all(c.frame_count == 2 for c in scored)
     assert all(c.duration_sec == pytest.approx(
@@ -318,6 +349,7 @@ def test_score_corpus_end_to_end(tmp_path: Path) -> None:
     assert by_name["01.wav"].meta.leg == "on"
     assert by_name["01.wav"].meta.condition == "music"
     assert by_name["03.wav"].meta.leg == "off"
+    assert by_name["05.wav"].meta.condition == "ambient"
 
 
 def test_score_corpus_skips_invalid_wavs_with_warning(
@@ -347,7 +379,7 @@ def test_score_corpus_skips_invalid_wavs_with_warning(
 
 
 def test_write_csv_has_expected_columns_and_values(tmp_path: Path) -> None:
-    _make_wav(tmp_path / "aec_on_music" / "train" / "01.wav",
+    _make_wav(tmp_path / "aec_on_nomusic" / "train" / "01.wav",
               wake_score.FRAME_SAMPLES)
     detector = _FakeDetector(score=0.7)
     scored = wake_score.score_corpus(
@@ -361,7 +393,9 @@ def test_write_csv_has_expected_columns_and_values(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert set(rows[0].keys()) == set(wake_score.CSV_FIELDS)
     assert rows[0]["leg"] == "on"
-    assert rows[0]["condition"] == "music"
+    # Preserve the historical on-disk/CSV token rather than translating
+    # quiet corpora to the newer semantic label.
+    assert rows[0]["condition"] == "nomusic"
     assert rows[0]["split"] == "train"
     assert rows[0]["fired"] == "1"
     assert float(rows[0]["peak_score"]) == pytest.approx(0.7)

@@ -25,10 +25,11 @@ Stability contract — mirrors :mod:`jasper.wake_legs`' frozen-token rule, so
 evolving the taxonomy later (e.g. as the corpus tool changes) can never
 corrupt already-collected data:
 
-  * Recorded data stores the condition as a plain **string** — the corpus
-    directory name and ``wake_events.condition_class`` — never an index into
-    these tuples. Historical rows/files keep their label even if this set
-    changes.
+  * Recorded data stores the condition as a plain **string**, never an index
+    into these tuples. Corpus metadata and ``wake_events.condition_class`` use
+    the semantic label. Corpus directories retain the historical ``nomusic``
+    alias for ``quiet`` via :data:`CORPUS_DIR_BY_CONDITION`. Historical
+    rows/files keep their label even if this set changes.
   * Consumers MUST tolerate a value outside the current set (older data or a
     forward-compat label). Use :func:`normalize_condition` when *consuming* a
     stored/inferred label; the fuser applies no condition-specific threshold
@@ -47,6 +48,20 @@ from __future__ import annotations
 # Acoustic conditions, ordered quietest -> loudest interference. "ambient" is
 # the realistic-home floor (AC, fridge, TV murmur; no music we control).
 CONDITIONS: tuple[str, ...] = ("quiet", "ambient", "music")
+
+# On-disk corpus directory condition tokens. ``quiet`` predates the shared
+# semantic taxonomy and was already stored as ``nomusic`` by the wake-events
+# extractor and enrollment CLI, so that alias is a compatibility contract.
+# Writers and directory readers share this mapping; metadata continues to use
+# the semantic CONDITIONS values above.
+CORPUS_DIR_BY_CONDITION: dict[str, str] = {
+    "quiet": "nomusic",
+    "ambient": "ambient",
+    "music": "music",
+}
+CORPUS_DIR_CONDITIONS: tuple[str, ...] = tuple(
+    CORPUS_DIR_BY_CONDITION[condition] for condition in CONDITIONS
+)
 
 # Corpus capture distance (operator-labelled). Corpus/training only — the
 # runtime fuser does not consume it.

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from jasper.wake_conditions import (
     CONDITIONS,
+    CORPUS_DIR_BY_CONDITION,
+    CORPUS_DIR_CONDITIONS,
     DEFAULT_CONDITION,
     DISTANCES,
     normalize_condition,
@@ -19,6 +21,17 @@ def test_conditions_taxonomy():
     # (see the module's stability contract), so it should fail loudly here.
     assert CONDITIONS == ("quiet", "ambient", "music")
     assert DISTANCES == ("near", "mid", "far")
+
+
+def test_corpus_directory_condition_encoding():
+    # The semantic label and on-disk token intentionally differ for quiet:
+    # existing enrollment/extractor corpora use the frozen ``nomusic`` name.
+    assert CORPUS_DIR_BY_CONDITION == {
+        "quiet": "nomusic",
+        "ambient": "ambient",
+        "music": "music",
+    }
+    assert CORPUS_DIR_CONDITIONS == ("nomusic", "ambient", "music")
 
 
 def test_default_condition_is_a_real_condition():
