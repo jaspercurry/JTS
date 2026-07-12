@@ -345,33 +345,9 @@ def capture_preset(
         frozen_preset.validate()
         return frozen_preset
 
-    from jasper.active_speaker.commission_wiring import resolve_commission_inputs
-    from jasper.active_speaker.tone_plan import load_active_speaker_preset
+    from jasper.active_speaker.commission_wiring import resolve_capture_preset
 
-    preset, crossover_preview = resolve_commission_inputs()
-    if preset is not None:
-        return preset
-    if crossover_preview is not None:
-        from jasper.active_speaker.staging import compile_preset_from_crossover_preview
-
-        compiled, issues, _gates = compile_preset_from_crossover_preview(
-            topology,
-            crossover_preview,
-        )
-        if compiled is not None:
-            return compiled
-        messages = [
-            str(issue.get("message") or issue.get("code"))
-            for issue in issues
-            if isinstance(issue, Mapping)
-        ]
-        raise ValueError(
-            "active speaker preset is not ready for capture analysis"
-            + (": " + "; ".join(messages[:2]) if messages else "")
-        )
-    return load_active_speaker_preset(
-        os.environ.get("JASPER_ACTIVE_SPEAKER_PRESET") or None
-    )
+    return resolve_capture_preset(topology)
 
 
 def capture_calibration(
