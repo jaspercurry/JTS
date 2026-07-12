@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 
 class CrossoverLevelLease:
-    """Process-scoped near-field gain lease for Layer-A measurements.
+    """Process-scoped, geometry-keyed gain lease for Layer-A measurements.
 
     The shared :class:`LevelMatchSession` owns ramp math and relay semantics;
     this thin domain owner supplies only single-flight lifetime, observability,
@@ -104,10 +104,38 @@ class CrossoverLevelLease:
             )
         context_id = str(ports.pop("context_id", "") or "") or None
         set_main_volume_db = ports.get("set_main_volume_db")
+        from jasper.active_speaker.capture_geometry import (
+            parse_driver_level_geometry,
+        )
+
+        capture_geometry, _speaker_group_id, _role = parse_driver_level_geometry(
+            str(geometry)
+        )
+        fixed_axis = capture_geometry == "reference_axis"
+        from jasper.audio_measurement.ramp import (
+            LISTENING_POSITION_CAP_BUMP_DB,
+            LISTENING_POSITION_CAP_CEIL_DB,
+        )
+
+        # A fixed-axis capture sits at the same roughly one-metre geometry as
+        # room measurement, so it uses that domain's already-reviewed cap.
+        # Near-field retains the quieter shared ramp default. Both still pass
+        # through MeasurementRamp's 0 dB hard ceiling and live clip abort.
+        config = MeasurementRamp.from_env(
+            allow_bounded_low_level=True,
+            **(
+                {
+                    "cap_bump_db": LISTENING_POSITION_CAP_BUMP_DB,
+                    "cap_ceil_db": LISTENING_POSITION_CAP_CEIL_DB,
+                }
+                if fixed_axis
+                else {}
+            ),
+        )
         run = LevelMatchSession(
             session_id=self.session_id,
             store=self.level_lock_store,
-            config=MeasurementRamp.from_env(allow_bounded_low_level=True),
+            config=config,
         )
         self._running = run
         try:
@@ -190,13 +218,61 @@ class CrossoverLevelLease:
         role: str,
         get_main_volume_db: Any,
         set_main_volume_db: Any,
+        *,
+        capture_geometry: str = "near_field",
     ) -> bool:
         """Acquire a sweep-scoped lease at this driver's measured target."""
 
-        geometry = f"near_field_driver:{speaker_group_id}:{role}"
+        from jasper.active_speaker.capture_geometry import driver_level_geometry
+
+        geometry = driver_level_geometry(
+            speaker_group_id, role, capture_geometry
+        )
         return await self._acquire_sweep_volume(
             self._outcomes.get(geometry), get_main_volume_db, set_main_volume_db
         )
+
+    def driver_sweep_locked_main_volume_db(
+        self,
+        speaker_group_id: str,
+        role: str,
+        *,
+        capture_geometry: str,
+    ) -> float | None:
+        """Return the exact lock a geometry-scoped sweep will reassert."""
+
+        from jasper.active_speaker.capture_geometry import driver_level_geometry
+
+        geometry = driver_level_geometry(
+            speaker_group_id, role, capture_geometry
+        )
+        outcome = self._outcomes.get(geometry)
+        value = outcome.ramp.locked_main_volume_db if outcome is not None else None
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) > 0
+        ):
+            return None
+        return float(value)
+
+    def discard_driver_level_outcome(
+        self,
+        speaker_group_id: str,
+        role: str,
+        *,
+        capture_geometry: str,
+    ) -> None:
+        """Drop a level result that failed post-ramp identity validation."""
+
+        from jasper.active_speaker.capture_geometry import driver_level_geometry
+
+        geometry = driver_level_geometry(
+            speaker_group_id, role, capture_geometry
+        )
+        self._outcomes.pop(geometry, None)
+        self.level_lock_store.discard(geometry)
 
     async def acquire_summed_sweep_volume(
         self,
@@ -238,6 +314,7 @@ class CrossoverLevelLease:
                 isinstance(target, bool)
                 or not isinstance(target, (int, float))
                 or not math.isfinite(float(target))
+                or float(target) > 0.0
             ):
                 return False
             entry = await get_main_volume_db()
@@ -850,6 +927,7 @@ async def play_driver_capture_sweep(
     camilla_factory: CamillaFactory,
     blocking_phase: str | None = None,
     applied_profile: dict[str, Any] | None = None,
+    locked_main_volume_db: float | None = None,
 ) -> dict[str, Any]:
     """Play a mic-capture sweep through an already-confirmed driver."""
 
@@ -858,6 +936,7 @@ async def play_driver_capture_sweep(
         camilla_factory=camilla_factory,
         blocking_phase=blocking_phase,
         applied_profile=applied_profile,
+        locked_main_volume_db=locked_main_volume_db,
     )
     log_event(
         logger,

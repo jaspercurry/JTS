@@ -107,6 +107,13 @@ LEVEL_EVENT_SCHEMA_VERSION = 1
 # forgets to clamp. Do not raise.
 HARD_CEILING_DBFS = 0.0
 
+# Fixed/listening-position measurements use the shared -12 dBFS stimulus at
+# roughly one metre. This policy permits up to 15 dB above the household entry
+# volume while retaining the digital-full-scale ceiling and live clipping abort.
+# Near-field measurement deliberately keeps MeasurementRamp's tighter default.
+LISTENING_POSITION_CAP_BUMP_DB = 15.0
+LISTENING_POSITION_CAP_CEIL_DB = HARD_CEILING_DBFS
+
 # Worst-case expected gap between consecutive phone samples reaching the kernel
 # (≤2 Hz phone batches behind the relay's ~0.75 s poll). Used only to budget the
 # derived safety timeout — not a gate.

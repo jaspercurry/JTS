@@ -239,6 +239,11 @@ class LevelLockStore:
             agc_frozen=lock.agc_frozen,
         )
 
+    def discard(self, geometry: str) -> None:
+        """Forget one invalidated geometry without disturbing sibling locks."""
+
+        self._locks.pop(str(geometry), None)
+
     def get(self, geometry: str) -> MeasurementLevelLock | None:
         return self._locks.get(geometry)
 

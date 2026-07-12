@@ -170,6 +170,33 @@ def test_crossover_driver_requires_explicit_bound_placement_acknowledgement():
     assert round_tripped.acknowledgement == spec.acknowledgement
 
 
+def test_crossover_driver_fixed_axis_uses_distinct_server_policy_and_copy():
+    spec = build_crossover_sweep_spec(
+        driver_label="woofer",
+        driver_role="woofer",
+        driver_capture_geometry="reference_axis",
+        acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+    )
+
+    assert spec.acknowledgement is not None
+    assert spec.acknowledgement.id == "driver_reference_axis_v1"
+    assert "tweeter axis" in spec.acknowledgement.label
+    assert "will not move" in spec.acknowledgement.label
+    steps = next(item for item in spec.screen if item["type"] == "steps")
+    assert "about 1 metre away" in steps["items"][0]
+    assert "measuring the woofer and every other driver" in steps["items"][0]
+    button = next(item for item in spec.screen if item["type"] == "button")
+    assert "fixed on-axis" in button["label"]
+
+
+def test_crossover_driver_rejects_unknown_capture_geometry():
+    with pytest.raises(spec_mod.CaptureSpecError, match="capture geometry"):
+        build_crossover_sweep_spec(
+            driver_role="woofer",
+            driver_capture_geometry="browser_invented",
+        )
+
+
 def test_crossover_summed_capture_binds_fixed_reference_axis():
     spec = build_crossover_sweep_spec(
         driver_label="summed crossover",

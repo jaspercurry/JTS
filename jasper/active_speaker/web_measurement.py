@@ -400,6 +400,48 @@ def capture_calibration(
     return curve, resolved_id, mode.to_dict()
 
 
+def driver_analysis_input_evidence(
+    *,
+    sweep_meta: Mapping[str, Any],
+    excitation: Mapping[str, Any] | None,
+    calibration_curve: Any,
+    calibration_id: str | None,
+    capture_geometry: str,
+    ambient_duration_s: float | None,
+) -> dict[str, Any]:
+    """Return the lossless replay contract stored beside a driver WAV.
+
+    ``acoustic.fr_curve`` is intentionally peak-normalized for display. LF
+    splice analysis must instead replay the immutable raw WAV with the exact
+    generated sweep, calibrated amplitude, and played-level ledger captured
+    here. The calibration snapshot contains no serial or vendor URL.
+    """
+
+    curve_to_dict = getattr(calibration_curve, "to_dict", None)
+    curve = curve_to_dict() if callable(curve_to_dict) else None
+    return {
+        "schema_version": 1,
+        "response_amplitude": "recompute_from_raw_wav",
+        "display_fr_curve_peak_normalized": True,
+        "sweep_meta": dict(sweep_meta),
+        "excitation": dict(excitation or {}),
+        "calibration": (
+            {
+                "calibration_id": str(calibration_id or ""),
+                "curve": curve,
+            }
+            if curve is not None
+            else None
+        ),
+        "capture_geometry": str(capture_geometry),
+        "ambient_duration_s": (
+            float(ambient_duration_s)
+            if ambient_duration_s is not None
+            else None
+        ),
+    }
+
+
 def _playback_id(raw: Mapping[str, Any]) -> str | None:
     playback = _mapping_value(raw.get("playback"))
     value = raw.get("playback_id") or playback.get("playback_id")
@@ -779,6 +821,16 @@ def _finalize_driver_repeat_set(
                     **payload,
                     "speaker_group_id": speaker_group_id,
                     "role": role,
+                    "analysis_input": driver_analysis_input_evidence(
+                        sweep_meta=_mapping_value(winner.get("sweep_meta")),
+                        excitation=_mapping_value(payload.get("excitation")),
+                        calibration_curve=analysis_kwargs.get("calibration"),
+                        calibration_id=(
+                            str(winner.get("calibration_id") or "") or None
+                        ),
+                        capture_geometry=final_geometry,
+                        ambient_duration_s=winner.get("ambient_duration_s"),
+                    ),
                 },
             )
     log_event(
@@ -1055,6 +1107,14 @@ def record_driver_capture(
             emit_lifecycle_event=False,
             **analysis_kwargs,
         )
+        analysis_input = driver_analysis_input_evidence(
+            sweep_meta=sweep_meta,
+            excitation=_mapping_value(provisional.get("excitation")),
+            calibration_curve=calibration_curve,
+            calibration_id=calibration_id,
+            capture_geometry=str(analysis_kwargs["capture_geometry"]),
+            ambient_duration_s=analysis_kwargs.get("ambient_duration_s"),
+        )
         artifact_path = None
         if bundle_dir is not None:
             from jasper.active_speaker import bundles as active_speaker_bundles
@@ -1067,6 +1127,7 @@ def record_driver_capture(
                     **provisional,
                     "speaker_group_id": group_id,
                     "role": role,
+                    "analysis_input": analysis_input,
                 },
             )
             if isinstance(appended, Mapping):

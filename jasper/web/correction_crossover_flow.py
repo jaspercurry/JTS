@@ -698,6 +698,7 @@ def build_crossover_relay_run_and_consume(
     validate_capture: Callable[[Any], None] | None = None,
     prepare_play: Callable[[], Any] | None = None,
     restore_play: Callable[[], Any] | None = None,
+    driver_locked_main_volume_db: Callable[[], float | None] | None = None,
     comparison_set: Mapping[str, Any] | None = None,
     applied_profile: Mapping[str, Any] | None = None,
     target_fingerprint: str = "",
@@ -789,6 +790,18 @@ def build_crossover_relay_run_and_consume(
                 if on_sweep_ready is not None:
                     await asyncio.to_thread(on_sweep_ready)
                 if kind == "driver":
+                    locked_main_volume_db = (
+                        driver_locked_main_volume_db()
+                        if driver_locked_main_volume_db is not None
+                        else None
+                    )
+                    if (
+                        driver_locked_main_volume_db is not None
+                        and locked_main_volume_db is None
+                    ):
+                        raise RuntimeError(
+                            "the geometry-scoped driver level lock is unavailable"
+                        )
                     return await backend.play_driver_capture_sweep(
                         {"speaker_group_id": group_id, "role": role},
                         camilla_factory=camilla_factory,
@@ -798,6 +811,7 @@ def build_crossover_relay_run_and_consume(
                             if isinstance(applied_profile, Mapping)
                             else None
                         ),
+                        locked_main_volume_db=locked_main_volume_db,
                     )
                 summed_play_raw = {"speaker_group_id": group_id}
                 for key in (

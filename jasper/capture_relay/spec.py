@@ -943,6 +943,7 @@ def build_crossover_sweep_spec(
     *,
     driver_label: str = "driver",
     driver_role: str = "driver",
+    driver_capture_geometry: str = "near_field",
     acknowledgement_binding: str = "",
     stimulus_duration_ms: int | None = None,
     pre_roll_ms: int = 800,
@@ -991,36 +992,59 @@ def build_crossover_sweep_spec(
         int(hard_timeout_ms),
     )
     from jasper.active_speaker.capture_geometry import (
+        DRIVER_CAPTURE_GEOMETRIES,
         DRIVER_PLACEMENT_POLICY_ID,
+        REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID,
         SUMMED_PLACEMENT_POLICY_ID,
         driver_placement_instruction,
         placement_acknowledgement_label,
+        reference_axis_driver_acknowledgement_label,
+        reference_axis_driver_placement_instruction,
         summed_acknowledgement_label,
         summed_placement_instruction,
     )
 
     seconds = round(stimulus_duration_ms / 1000)
     is_driver = str(driver_role or "").strip().lower() not in {"", "summed"}
+    geometry = str(driver_capture_geometry or "").strip().lower()
+    if is_driver and geometry not in DRIVER_CAPTURE_GEOMETRIES:
+        raise CaptureSpecError("driver capture geometry is unsupported")
     placement_instruction = (
-        driver_placement_instruction(driver_role)
+        (
+            reference_axis_driver_placement_instruction(driver_role)
+            if geometry == "reference_axis"
+            else driver_placement_instruction(driver_role)
+        )
         if is_driver
         else summed_placement_instruction()
     )
     button_label = (
-        f"I’ve positioned the mic — measure {driver_label}"
+        (
+            f"The mic is fixed on-axis — measure {driver_label}"
+            if geometry == "reference_axis"
+            else f"I’ve positioned the mic — measure {driver_label}"
+        )
         if is_driver
         else "The mic is fixed on-axis — measure the combined drivers"
     )
     acknowledgement = (
         CaptureAcknowledgement(
             id=(
-                DRIVER_PLACEMENT_POLICY_ID
+                (
+                    REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID
+                    if geometry == "reference_axis"
+                    else DRIVER_PLACEMENT_POLICY_ID
+                )
                 if is_driver
                 else SUMMED_PLACEMENT_POLICY_ID
             ),
             binding_id=acknowledgement_binding,
             label=(
-                placement_acknowledgement_label(driver_role)
+                (
+                    reference_axis_driver_acknowledgement_label(driver_role)
+                    if geometry == "reference_axis"
+                    else placement_acknowledgement_label(driver_role)
+                )
                 if is_driver
                 else summed_acknowledgement_label()
             ),

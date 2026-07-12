@@ -1040,6 +1040,87 @@ def test_driver_capture_sweep_uses_frozen_applied_preset_not_mutable_draft(
     assert mutable["crossover_regions"][0]["fc_hz"] == 4000.0
 
 
+def test_driver_capture_sweep_uses_explicit_geometry_lock_in_excitation(monkeypatch):
+    topology = _topology()
+    measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    applied = _applied_excitation_profile(topology=topology, gain_db=-9.0)
+    seen = {}
+
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
+
+    def excitation(*_args, **kwargs):
+        seen.update(kwargs)
+        return {"status": "ready", "commissioning_gain_db": -9.0}
+
+    async def capture_load(**_kwargs):
+        return {"load": {"status": "blocked", "issues": []}}
+
+    monkeypatch.setattr(web, "automatic_driver_excitation", excitation)
+    monkeypatch.setattr(
+        web,
+        "_load_driver_commissioning_config_for_level",
+        capture_load,
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+            applied_profile=applied,
+            locked_main_volume_db=-3.5,
+        )
+    )
+
+    assert payload["status"] == "blocked"
+    assert seen["locked_main_volume_db"] == -3.5
+
+
+@pytest.mark.parametrize("invalid_lock", (True, float("nan"), 0.1, "-3.5"))
+def test_driver_capture_sweep_refuses_invalid_explicit_geometry_lock(
+    monkeypatch, invalid_lock
+):
+    topology = _topology()
+    measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    applied = _applied_excitation_profile(topology=topology, gain_db=-9.0)
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
+    monkeypatch.setattr(
+        web,
+        "_load_driver_commissioning_config_for_level",
+        lambda **_kwargs: pytest.fail("an invalid lock must refuse before graph load"),
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+            applied_profile=applied,
+            locked_main_volume_db=invalid_lock,
+        )
+    )
+
+    assert payload["status"] == "refused"
+    assert payload["audio_emitted"] is False
+    assert payload["reason"] == "automatic_crossover_driver_level_invalid"
+
+
 def test_automatic_measurement_source_peak_is_one_shared_default():
     from jasper.active_speaker import driver_acoustics
     from jasper.audio_measurement.sweep import synchronized_swept_sine

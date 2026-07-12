@@ -50,19 +50,19 @@ def test_room_cap_keeps_attenuated_stimulus_inside_digital_envelope():
     from jasper.audio_measurement.excitation import (
         AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
     )
-    from jasper.correction.session import (
-        ROOM_LEVEL_CAP_BUMP_DB,
-        ROOM_LEVEL_CAP_CEIL_DB,
+    from jasper.audio_measurement.ramp import (
+        LISTENING_POSITION_CAP_BUMP_DB,
+        LISTENING_POSITION_CAP_CEIL_DB,
     )
 
     shared = MeasurementRamp()
     room = MeasurementRamp(
-        cap_bump_db=ROOM_LEVEL_CAP_BUMP_DB,
-        cap_ceil_db=ROOM_LEVEL_CAP_CEIL_DB,
+        cap_bump_db=LISTENING_POSITION_CAP_BUMP_DB,
+        cap_ceil_db=LISTENING_POSITION_CAP_CEIL_DB,
     )
 
     assert shared.cap_ceil_db == -3.0
-    assert ROOM_LEVEL_CAP_BUMP_DB == 15.0
+    assert LISTENING_POSITION_CAP_BUMP_DB == 15.0
     assert room.cap_ceil_db == 0.0
     assert AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS == -12.0
     assert (
@@ -327,6 +327,9 @@ def test_lock_store_is_per_geometry():
         MicGeometry.NEAR_FIELD_DRIVER.value,
         MicGeometry.LISTENING_POSITION.value,
     }
+    store.discard(MicGeometry.NEAR_FIELD_DRIVER.value)
+    assert store.get(MicGeometry.NEAR_FIELD_DRIVER.value) is None
+    assert store.get(MicGeometry.LISTENING_POSITION.value) is listen
 
 
 # --- drift check (raw band levels, uniform-shift rule) ------------------------
@@ -967,7 +970,7 @@ async def test_crossover_lease_restores_then_scopes_target_to_sweep_window():
     chain = FakeChain(gain_db=10.0, start_vol=-30.0)
     clock = Clock()
     outcome = await lease.run_level_match(
-        MicGeometry.NEAR_FIELD_DRIVER.value,
+        "near_field_driver:mono:woofer",
         get_main_volume_db=chain.get_vol,
         set_main_volume_db=chain.set_vol,
         play_continuous_tone=chain.tone,
@@ -992,9 +995,6 @@ async def test_crossover_lease_restores_then_scopes_target_to_sweep_window():
         "tone_frequency_hz": 250.0,
         "commissioning_gain_db": 0.0,
     }])
-    lease._outcomes["near_field_driver:mono:woofer"] = lease._outcomes.pop(
-        MicGeometry.NEAR_FIELD_DRIVER.value
-    )
     chain._vol = -27.0
     assert await lease.acquire_driver_sweep_volume(
         "mono", "woofer", chain.get_vol, chain.set_vol
@@ -1022,7 +1022,7 @@ async def test_crossover_lease_accepts_and_reasserts_bounded_low_lock():
     clock = Clock()
 
     outcome = await lease.run_level_match(
-        MicGeometry.NEAR_FIELD_DRIVER.value,
+        "near_field_driver:mono:woofer",
         get_main_volume_db=chain.get_vol,
         set_main_volume_db=chain.set_vol,
         play_continuous_tone=chain.tone,
@@ -1039,9 +1039,6 @@ async def test_crossover_lease_accepts_and_reasserts_bounded_low_lock():
     assert outcome.bounded_low_level is True
     assert outcome.ramp.restored is True
     assert chain._vol == pytest.approx(original)
-    lease._outcomes["near_field_driver:mono:woofer"] = lease._outcomes.pop(
-        MicGeometry.NEAR_FIELD_DRIVER.value
-    )
     assert await lease.acquire_driver_sweep_volume(
         "mono", "woofer", chain.get_vol, chain.set_vol
     ) is True
@@ -1076,7 +1073,7 @@ async def test_crossover_start_supplies_scheduler_ports(monkeypatch):
         return None
 
     await lease.run_level_match(
-        MicGeometry.NEAR_FIELD_DRIVER.value,
+        "near_field_driver:mono:woofer",
         get_main_volume_db=get_volume,
         set_main_volume_db=set_volume,
         play_continuous_tone=play_tone,
@@ -1086,7 +1083,7 @@ async def test_crossover_start_supplies_scheduler_ports(monkeypatch):
         noise_floor_dbfs=-60.0,
     )
 
-    assert seen["geometry"] == MicGeometry.NEAR_FIELD_DRIVER.value
+    assert seen["geometry"] == "near_field_driver:mono:woofer"
     assert callable(seen["clock"])
     assert seen["sleep"] is asyncio.sleep
 
