@@ -725,6 +725,11 @@ single transition stops `jasper-voice`, writes the selected
 recorder-owned bridge-output overrides to
 `/var/lib/jasper/wake_corpus_bridge.env`, which
 `jasper-aec-bridge.service` sources after `/etc/jasper/jasper.env`.
+Before stopping voice or changing that env file, the transition runs a
+bounded 1.5-second `systemctl is-active jasper-voice` probe. If
+launching that probe fails, it times out, or systemd does not return a stable
+`active`, `inactive`, or `failed` state, entry fails without mutating voice or
+bridge state instead of guessing that voice was inactive.
 For chip-AEC comparison sessions the same env file is also sourced by
 `jasper-outputd.service` and `jasper-aec-init.service`, because outputd
 must fan out the direct chip reference and aec-init must put the XVF3800
@@ -1835,7 +1840,8 @@ and DAC/reference validation status once that validation stream exists.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-07-09 (capture-plan single-source contract rechecked
+Last verified: 2026-07-12 (corpus-mode voice-state fail-closed transition and
+capture-plan single-source contract rechecked
 against `jasper/wake_corpus/bridge_session.py`,
 `jasper/wake_corpus/recording_backend.py`, and `jasper/cli/aec_bridge.py`;
 prior 2026-06-19 pass rechecked profile-selected chip-AEC wake legs,
