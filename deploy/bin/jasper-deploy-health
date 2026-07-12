@@ -15,6 +15,7 @@ core control/audio path running, progressing, and xrun-free?
 Stdlib-only by design. It must stay cheap enough to run while the box is under
 memory pressure, before we have evidence that the heavier Python stack is safe.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,10 +23,22 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 
-REQUIRED_ACTIVE_UNITS = (
+INSTALL_PROFILE_FILE = Path("/var/lib/jasper/install_profile")
+SOURCE_INTENT_FILE = Path("/var/lib/jasper/source_intent.env")
+FULL_INSTALL_PROFILE = "full"
+STREAMBOX_INSTALL_PROFILE = "streambox"
+LEGACY_STREAMBOX_INSTALL_PROFILES = frozenset({"endpoint", "satellite"})
+AIRPLAY_UNIT = "shairport-sync.service"
+AIRPLAY_INTENT_KEY = "JASPER_SOURCE_INTENT_SHAIRPORT_SYNC_SERVICE"
+SOURCE_INTENT_ENABLED = "enabled"
+SOURCE_INTENT_DISABLED = "disabled"
+MAX_SOURCE_INTENT_BYTES = 64 * 1024
+
+FULL_REQUIRED_ACTIVE_UNITS = (
     "nginx.service",
     "jasper-control.service",
     "jasper-fanin.service",
@@ -39,20 +52,63 @@ REQUIRED_ACTIVE_UNITS = (
     "bluealsa-aplay.service",
 )
 
+STREAMBOX_REQUIRED_ACTIVE_UNITS = tuple(
+    unit for unit in FULL_REQUIRED_ACTIVE_UNITS if unit != "jasper-input.service"
+)
+
+REQUIRED_ACTIVE_UNITS_BY_PROFILE = {
+    FULL_INSTALL_PROFILE: FULL_REQUIRED_ACTIVE_UNITS,
+    STREAMBOX_INSTALL_PROFILE: STREAMBOX_REQUIRED_ACTIVE_UNITS,
+}
+
 REQUIRED_ACTIVE_SOCKETS = (
     "jasper-web.socket",
     "jasper-system-web.socket",
 )
 
-OBSERVED_OPTIONAL_UNITS = (
-    "jasper-voice.service",
-    "jasper-aec-bridge.service",
-    "bt-agent.service",
-)
+OBSERVED_OPTIONAL_UNITS_BY_PROFILE = {
+    FULL_INSTALL_PROFILE: (
+        "jasper-voice.service",
+        "jasper-aec-bridge.service",
+        "bt-agent.service",
+    ),
+    # Voice and AEC are intentionally disabled by park_streambox_brain_units.
+    # Do not manufacture warnings for units this install profile cannot run.
+    STREAMBOX_INSTALL_PROFILE: ("bt-agent.service",),
+}
 
 FANIN_SOCKET = "/run/jasper-fanin/control.sock"
 OUTPUTD_SOCKET = "/run/jasper-outputd/control.sock"
 MAX_PROGRESS_AGE_MS = 2_000
+MAX_STATUS_RESPONSE_BYTES = 256 * 1024
+STATUS_RESPONSE_DEADLINE_SECONDS = 2.0
+STATUS_RECV_TIMEOUT_SECONDS = 1.0
+
+
+def _read_install_profile(path: Path | None = None) -> str:
+    """Read the canonical persisted profile without importing JTS.
+
+    This probe deliberately remains stdlib-only and runs under the system
+    Python during low-memory deploys. Missing/unreadable/empty markers keep
+    the pre-profile full-speaker fallback. Legacy field markers normalize to
+    streambox; any other non-empty token fails closed.
+    """
+
+    marker = INSTALL_PROFILE_FILE if path is None else path
+    try:
+        lines = marker.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return FULL_INSTALL_PROFILE
+    raw = lines[0].strip() if lines else ""
+    if not raw:
+        return FULL_INSTALL_PROFILE
+    if raw in LEGACY_STREAMBOX_INSTALL_PROFILES:
+        return STREAMBOX_INSTALL_PROFILE
+    if raw in REQUIRED_ACTIVE_UNITS_BY_PROFILE:
+        return raw
+    raise RuntimeError(
+        f"invalid install profile {raw!r} in {marker}; expected full or streambox"
+    )
 
 
 def _systemctl_is_active(unit: str) -> str:
@@ -65,16 +121,87 @@ def _systemctl_is_active(unit: str) -> str:
     return (proc.stdout or proc.stderr).strip() or f"rc={proc.returncode}"
 
 
+def _airplay_expected_active(path: Path | None = None) -> bool:
+    """Return the persisted AirPlay source expectation.
+
+    This mirrors the tiny read-only subset of :mod:`jasper.source_intent` that
+    a system-Python, stdlib-only deploy probe can safely use: the canonical
+    path, 64 KiB cap, last assignment wins, quotes are stripped, and absent
+    file/key means the shipped enabled default. An unreadable/oversized file or
+    malformed AirPlay value is ambiguous and fails the health check closed.
+    """
+
+    intent_file = SOURCE_INTENT_FILE if path is None else path
+    try:
+        with intent_file.open(encoding="utf-8") as file:
+            text = file.read(MAX_SOURCE_INTENT_BYTES + 1)
+    except FileNotFoundError:
+        return True
+    except UnicodeError as exc:
+        raise RuntimeError(f"cannot decode {intent_file} as UTF-8: {exc}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"cannot read {intent_file}: {exc}") from exc
+    if len(text) > MAX_SOURCE_INTENT_BYTES:
+        raise RuntimeError(
+            f"{intent_file} exceeds the {MAX_SOURCE_INTENT_BYTES}-byte cap"
+        )
+
+    value: str | None = None
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, candidate = stripped.partition("=")
+        if key.strip() == AIRPLAY_INTENT_KEY:
+            value = candidate.strip().strip("'\"")
+    if value is None:
+        return True
+    if value == SOURCE_INTENT_ENABLED:
+        return True
+    if value == SOURCE_INTENT_DISABLED:
+        return False
+    raise RuntimeError(
+        f"{AIRPLAY_INTENT_KEY} is {value!r}, expected enabled or disabled"
+    )
+
+
 def _status_json(path: str) -> dict[str, Any]:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(1.0)
+        deadline = time.monotonic() + STATUS_RESPONSE_DEADLINE_SECONDS
+        sock.settimeout(
+            min(STATUS_RECV_TIMEOUT_SECONDS, STATUS_RESPONSE_DEADLINE_SECONDS)
+        )
         sock.connect(path)
         sock.sendall(b"STATUS\n")
         chunks: list[bytes] = []
+        total_bytes = 0
         while True:
-            chunk = sock.recv(65536)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"{path} response exceeded the "
+                    f"{STATUS_RESPONSE_DEADLINE_SECONDS:g}s deadline"
+                )
+            recv_timeout = min(STATUS_RECV_TIMEOUT_SECONDS, remaining)
+            sock.settimeout(recv_timeout)
+            try:
+                chunk = sock.recv(
+                    min(65536, MAX_STATUS_RESPONSE_BYTES + 1 - total_bytes)
+                )
+            except (socket.timeout, TimeoutError) as exc:
+                if recv_timeout < STATUS_RECV_TIMEOUT_SECONDS:
+                    raise RuntimeError(
+                        f"{path} response exceeded the "
+                        f"{STATUS_RESPONSE_DEADLINE_SECONDS:g}s deadline"
+                    ) from exc
+                raise
             if not chunk:
                 break
+            total_bytes += len(chunk)
+            if total_bytes > MAX_STATUS_RESPONSE_BYTES:
+                raise RuntimeError(
+                    f"{path} response exceeds the {MAX_STATUS_RESPONSE_BYTES}-byte cap"
+                )
             chunks.append(chunk)
     payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
     if not isinstance(payload, dict):
@@ -88,28 +215,26 @@ def _nested_int(payload: dict[str, Any], path: tuple[str, ...]) -> int:
         if not isinstance(cur, dict):
             raise RuntimeError(".".join(path) + " is not present")
         cur = cur.get(key)
-    if not isinstance(cur, int):
-        raise RuntimeError(".".join(path) + f" is {cur!r}, not an int")
+    label = ".".join(path)
+    if isinstance(cur, bool) or not isinstance(cur, int) or cur < 0:
+        raise RuntimeError(label + f" is {cur!r}, not a nonnegative int")
     return cur
 
 
 def _progress_age_ms(payload: dict[str, Any]) -> int:
-    watchdog = payload.get("watchdog")
-    if not isinstance(watchdog, dict):
-        raise RuntimeError("watchdog status missing")
-    age = watchdog.get("last_progress_age_ms")
-    if not isinstance(age, int):
-        raise RuntimeError(f"watchdog.last_progress_age_ms is {age!r}")
-    return age
+    return _nested_int(payload, ("watchdog", "last_progress_age_ms"))
 
 
 def _fanin_xrun_counts(payload: dict[str, Any]) -> tuple[int, int]:
     output_xruns = _nested_int(payload, ("output", "xrun_count"))
-    input_xruns = sum(
-        int(inp.get("xrun_count", 0))
-        for inp in payload.get("inputs", [])
-        if isinstance(inp, dict)
-    )
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        raise RuntimeError("inputs is missing, malformed, or empty")
+    input_xruns = 0
+    for index, inp in enumerate(inputs):
+        if not isinstance(inp, dict):
+            raise RuntimeError(f"inputs.{index} is not an object")
+        input_xruns += _nested_int(inp, ("xrun_count",))
     return output_xruns, input_xruns
 
 
@@ -120,9 +245,40 @@ def _line(status: str, name: str, detail: str) -> None:
 def main() -> int:
     failures = 0
     warnings = 0
-    print("low-memory deploy health")
+    try:
+        profile = _read_install_profile()
+    except RuntimeError as exc:
+        print("low-memory deploy health")
+        _line("FAIL", "install profile", str(exc))
+        print("deploy health failed: 1 failure(s), 0 warning(s)")
+        return 1
 
-    for unit in REQUIRED_ACTIVE_UNITS:
+    print(f"low-memory deploy health (profile={profile})")
+
+    required_units = REQUIRED_ACTIVE_UNITS_BY_PROFILE[profile]
+    try:
+        airplay_expected = _airplay_expected_active()
+    except RuntimeError as exc:
+        failures += 1
+        _line("FAIL", "source intent", str(exc))
+        airplay_expected = None
+
+    for unit in required_units:
+        if unit == AIRPLAY_UNIT:
+            if airplay_expected is None:
+                continue
+            if not airplay_expected:
+                state = _systemctl_is_active(unit)
+                if state == "inactive":
+                    _line("OK", unit, "inactive (disabled by persisted source intent)")
+                else:
+                    failures += 1
+                    _line(
+                        "FAIL",
+                        unit,
+                        f"{state}; expected inactive from persisted source intent",
+                    )
+                continue
         state = _systemctl_is_active(unit)
         if state == "active":
             _line("OK", unit, state)
@@ -138,7 +294,7 @@ def main() -> int:
             failures += 1
             _line("FAIL", socket_unit, state)
 
-    for unit in OBSERVED_OPTIONAL_UNITS:
+    for unit in OBSERVED_OPTIONAL_UNITS_BY_PROFILE[profile]:
         state = _systemctl_is_active(unit)
         if state == "active":
             _line("OK", unit, state)
@@ -155,7 +311,11 @@ def main() -> int:
         output_xrun_delta = later_output_xruns - output_xruns
         input_xrun_delta = later_input_xruns - input_xruns
         age = _progress_age_ms(fanin_later)
-        if output_xrun_delta == 0 and input_xrun_delta == 0 and age <= MAX_PROGRESS_AGE_MS:
+        if (
+            output_xrun_delta == 0
+            and input_xrun_delta == 0
+            and age <= MAX_PROGRESS_AGE_MS
+        ):
             _line(
                 "OK",
                 "jasper-fanin STATUS",
@@ -200,8 +360,7 @@ def main() -> int:
             _line(
                 "OK",
                 "jasper-outputd STATUS",
-                "backend=alsa xruns=0/0 empty=0 eagain=0 "
-                f"progress_age_ms={age}",
+                f"backend=alsa xruns=0/0 empty=0 eagain=0 progress_age_ms={age}",
             )
         else:
             failures += 1
