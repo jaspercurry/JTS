@@ -97,6 +97,22 @@ The product is three tiers:
   (`QualityModel.null_cap_margin_db`, 10 dB). Both new fields default
   identically across `ROOM`/`DRIVER`/`RAMP`, so room correction (which does
   not call `snr_policy` yet) is unaffected.
+- `null_walk.py` is the shared decision foundation for active-driver and
+  sub-to-mains timing. Its signed coordinate names both possible delay targets
+  and maps either sign to a non-negative target-specific DSP operation. It
+  bounds an exhaustive search to ± half one crossover period, accepts only
+  50–100 µs grids, and selects only after *every* candidate has at least five
+  calibrated reverse-null captures from that exact crossover region, each
+  gated, above-floor, alignment-SNR-qualified, and with <2 dB null spread. Its
+  public capture input has no impulse-arrival field. The injected runner rejects
+  explicit apply/restore failure and reports a walk failure together with a
+  restore failure; subsystem adapters still own the actual DSP mutation and
+  capture transport. The exhaustive runner preflights and refuses above 25
+  candidates or beyond CamillaDSP's 20 ms delay ceiling before touching DSP.
+  Production
+  CamillaDSP/web/persistence wiring is not shipped yet, and low-frequency bass
+  walks require a separately reviewed adaptive scheduler before they are
+  executable.
 - The relay level target is reusable state, not a long-lived live gain. A
   successful ramp restores the original listening volume immediately. Room,
   verification, and active-crossover adapters reassert the target only inside

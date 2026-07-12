@@ -34,6 +34,10 @@ Modules:
   - :mod:`~jasper.audio_measurement.ramp` — the settle-based level-match
     ``RampController`` (muted-at-floor → audible gain ramp → audible-evidence
     confirmation) that drives main-volume-affecting playback.
+  - :mod:`~jasper.audio_measurement.null_walk` — the geometry-bounded,
+    timing-locked delay search contract shared by active-speaker and bass
+    alignment; it consumes repeated gated null depths, never browser arrival
+    times.
 
 Layer-specific logic — PEQ design, targets, correction strategy, the
 active-speaker verdicts, the web flows — stays in its owning package and
