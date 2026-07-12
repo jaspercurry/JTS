@@ -707,8 +707,6 @@ pub struct HostClock {
     /// Last value actually WRITTEN to the ctl (for the epsilon/cadence gate).
     last_written_ppm: f64,
     last_write_ms: Option<u64>,
-    /// The most recent RAW (unclamped) demand — drives L1 and L2 evidence.
-    raw_demand_ppm: f64,
     saturated: bool,
 
     // Ladder.
@@ -795,7 +793,6 @@ impl HostClock {
             commanded_ppm: 0.0,
             last_written_ppm: 0.0,
             last_write_ms: None,
-            raw_demand_ppm: 0.0,
             saturated: false,
             ladder: Ladder::Disabled,
             probe_phase: ProbePhase::AwaitLock,
@@ -1394,7 +1391,6 @@ impl HostClock {
         // COMMAND; the raw demand still drives L1/L2 evidence so a railed host
         // is visible.
         let raw = self.feed_forward_ppm + trim_ppm;
-        self.raw_demand_ppm = raw;
 
         // ---- L2 mid-stream demotion evidence --------------------------------
         // Saturated command AND the observable still points the WRONG way (the

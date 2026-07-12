@@ -685,7 +685,7 @@ baseline measures clock drift rather than the fill ramp; lock loss in any later
 sub-phase returns to await-lock (no demotion). `L2_FALLBACK` only re-attempts
 `PROBING` at the next idle boundary (stream stop / host disconnect) — it does
 not free-run a demonstrably non-compliant host mid-session. `L1_WARN` is a
-locked-but-watch state (unusually high sustained commanded ppm) with no
+locked-but-watch state (unusually high sustained raw, unclamped demand) with no
 functional difference from `L0_LOCKED` beyond the doctor/telemetry surfacing.
 
 ### Host-compliance persistence — prime at floor (DEFAULT-OFF, rides the decay flag)
