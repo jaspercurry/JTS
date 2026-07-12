@@ -279,11 +279,13 @@ in that HANDOFF are explicitly a costing record, not a roadmap.
   to +35 dB cleanly, putting loop gain firmly in AEC3's design
   window. Pink-noise sweep showed diminishing returns past +25 dB,
   but on music it's untested.
-- **Lower `JASPER_WAKE_THRESHOLD` from 0.5 → 0.4 or 0.3.** Pure UX
-  tradeoff knob — more wakes, some false positives. Easy to revert.
-  Now also tunable per-installation via the slider at
-  `http://jts.local/wake/` (PR #133); this item is about whether to
-  ship a lower *default*, separate from exposing the knob.
+- **Wake threshold `0.30` default — shipped 2026-05-08.** This is the
+  empirically tuned production value in `.env.example` and the matching
+  `Config` fallback; `tests/test_config.py::test_wake_threshold_default_matches_env_example`
+  pins them together. It remains tunable per installation via the slider at
+  `http://jts.local/wake/` (PR #133). Any future threshold experiment is
+  hardware/noise-profile tuning, not an open decision about the shipped
+  default.
 
 ### Tier 2 — engineering with real upside
 
