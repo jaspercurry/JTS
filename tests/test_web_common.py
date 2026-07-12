@@ -153,6 +153,48 @@ def test_send_see_other_urlencodes_special_characters_in_flash():
     assert "Saved%20100%25%3B%20ready." in cookie
 
 
+def test_redirect_with_legacy_msg_cleans_query_and_preserves_fragment():
+    h = _FakeHandler()
+    _common.redirect_with_legacy_msg(
+        h,
+        "./next?msg=%20Saved+now%20&tag=one&tag=two&empty=#details",
+    )
+
+    assert h._status == http.HTTPStatus.SEE_OTHER
+    assert h.header_values("Location") == [
+        "./next?tag=one&tag=two&empty=#details",
+    ]
+    assert "jts_flash=Saved%20now" in h.set_cookies()[0]
+
+
+def test_redirect_with_legacy_msg_uses_first_message_and_removes_all_messages():
+    h = _FakeHandler()
+    _common.redirect_with_legacy_msg(
+        h,
+        "./?msg=First&keep=yes&msg=Second",
+    )
+
+    assert h.header_values("Location") == ["./?keep=yes"]
+    assert "jts_flash=First" in h.set_cookies()[0]
+
+
+@pytest.mark.parametrize(
+    "location",
+    (
+        "./?msg=++&keep=yes&msg=Second#details",
+        "https://accounts.example/authorize?client_id=abc#consent",
+    ),
+)
+def test_redirect_with_legacy_msg_preserves_original_without_nonblank_message(
+    location: str,
+):
+    h = _FakeHandler()
+    _common.redirect_with_legacy_msg(h, location)
+
+    assert h.header_values("Location") == [location]
+    assert h.set_cookies() == []
+
+
 # ----------------------------------------------------------------------
 # CSRF: cookie minting + verification
 # ----------------------------------------------------------------------

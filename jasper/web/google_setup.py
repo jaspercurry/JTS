@@ -68,15 +68,15 @@ from ._common import (
     canonical_page,
     csrf_field_html,
     delete_env_file,
+    guard_mutating_request,
+    guard_read_request,
     read_env_file,
     read_form,
+    redirect_with_legacy_msg,
     reject_csrf,
     restart_voice_daemon,
     safe_back_href,
     send_html_response,
-    send_see_other,
-    guard_read_request,
-    guard_mutating_request,
     write_env_file,
     SECRET_ENV_MODE,
 )
@@ -770,25 +770,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def _redirect(self, location: str) -> None:
-            # Compat shim: hoists ?msg=… into a flash cookie so the
-            # browser lands on a clean URL without query pollution.
-            # Same pattern as spotify_setup; lets the ~25 existing
-            # `?msg=...` redirects work without per-callsite edits.
-            parsed = urllib.parse.urlparse(location)
-            if parsed.query:
-                qs = urllib.parse.parse_qs(
-                    parsed.query, keep_blank_values=True,
-                )
-                msgs = qs.pop("msg", None)
-                flash = (msgs[0] if msgs else "").strip()
-                if flash:
-                    clean_query = urllib.parse.urlencode(qs, doseq=True)
-                    clean = urllib.parse.urlunparse(
-                        parsed._replace(query=clean_query),
-                    )
-                    send_see_other(self, clean, flash=flash)
-                    return
-            send_see_other(self, location)
+            redirect_with_legacy_msg(self, location)
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
             send_html_response(self, body, status=status)

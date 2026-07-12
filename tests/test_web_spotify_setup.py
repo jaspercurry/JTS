@@ -317,6 +317,21 @@ def _handler_cls(client_id="", mode="bounce", registry_path="/tmp/no.json"):
     })
 
 
+def test_redirect_delegate_uses_shared_legacy_msg_helper(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        spotify_setup,
+        "redirect_with_legacy_msg",
+        lambda handler, location: calls.append((handler, location)),
+    )
+    handler_cls = _handler_cls()
+    handler = handler_cls.__new__(handler_cls)
+
+    handler._redirect("./?msg=Saved")
+
+    assert calls == [(handler, "./?msg=Saved")]
+
+
 def test_public_surface_is_stable():
     assert callable(spotify_setup.make_server)
     assert callable(spotify_setup.main)

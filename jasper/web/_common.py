@@ -1105,6 +1105,31 @@ def send_see_other(
     handler.end_headers()
 
 
+def redirect_with_legacy_msg(
+    handler: BaseHTTPRequestHandler,
+    location: str,
+) -> None:
+    """Redirect while translating a legacy ``?msg=...`` to a flash cookie.
+
+    Google and Spotify still have older call sites that encode their status
+    message in the redirect target.  Keep their compatibility behavior in one
+    place while new code calls ``send_see_other(..., flash=...)`` directly.
+    """
+    parsed = urllib.parse.urlparse(location)
+    if parsed.query:
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        messages = query.pop("msg", None)
+        flash = (messages[0] if messages else "").strip()
+        if flash:
+            clean_query = urllib.parse.urlencode(query, doseq=True)
+            clean_location = urllib.parse.urlunparse(
+                parsed._replace(query=clean_query),
+            )
+            send_see_other(handler, clean_location, flash=flash)
+            return
+    send_see_other(handler, location)
+
+
 def mask_secret(value: str) -> str:
     """Render a secret as `prefix…suffix` for display.
 
