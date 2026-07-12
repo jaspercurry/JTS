@@ -347,7 +347,7 @@ def test_refuse_on_existing_output_unless_force(corpus_dir: Path) -> None:
     db = corpus_dir / "wake-events.sqlite3"
     _insert_event(db, "20260523T120001Z-001")
     output = corpus_dir / "out"
-    output.mkdir()
+    assert extract.main([str(corpus_dir), str(output)]) == 0
     (output / "marker.txt").write_text("don't delete me")
 
     rc = extract.main([str(corpus_dir), str(output)])
@@ -359,6 +359,114 @@ def test_refuse_on_existing_output_unless_force(corpus_dir: Path) -> None:
     # marker.txt wiped, quadrant trees + manifest present
     assert not (output / "marker.txt").exists()
     assert (output / "manifest.csv").exists()
+
+
+def test_force_remove_guard_protects_source_and_host_roots(tmp_path: Path) -> None:
+    corpus = tmp_path / "workspace" / "corpus"
+    corpus.mkdir(parents=True)
+
+    for protected in (
+        Path("/"),
+        Path.home(),
+        Path.cwd(),
+        corpus,
+        corpus.parent,
+    ):
+        assert not extract._safe_to_remove_output(
+            protected,
+            corpus_dir=corpus,
+        )
+
+    assert not extract._safe_to_remove_output(corpus / "out", corpus_dir=corpus)
+    assert not extract._safe_to_remove_output(tmp_path / "other", corpus_dir=corpus)
+
+
+def test_force_refuses_to_remove_corpus_ancestor(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    corpus = workspace / "corpus"
+    store = WakeEventStore(corpus)
+    store.open()
+    store.close()
+    sibling = workspace / "keep-me.txt"
+    sibling.write_text("irreplaceable")
+
+    rc = extract.main([str(corpus), str(workspace), "--force"])
+
+    assert rc == 2
+    assert (corpus / "wake-events.sqlite3").is_file()
+    assert sibling.read_text() == "irreplaceable"
+
+
+def test_force_refuses_unowned_populated_directory(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus"
+    store = WakeEventStore(corpus)
+    store.open()
+    store.close()
+    unrelated = tmp_path / "tax-records"
+    unrelated.mkdir()
+    sentinel = unrelated / "irreplaceable.txt"
+    sentinel.write_text("keep")
+
+    rc = extract.main([str(corpus), str(unrelated), "--force"])
+
+    assert rc == 2
+    assert sentinel.read_text() == "keep"
+
+
+def test_force_refuses_lexical_ancestor_of_symlinked_corpus(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    actual_corpus = tmp_path / "external-corpus"
+    store = WakeEventStore(actual_corpus)
+    store.open()
+    store.close()
+    corpus_link = workspace / "latest"
+    corpus_link.symlink_to(actual_corpus, target_is_directory=True)
+    sentinel = workspace / "keep-me.txt"
+    sentinel.write_text("keep")
+
+    rc = extract.main([str(corpus_link), str(workspace), "--force"])
+
+    assert rc == 2
+    assert (actual_corpus / "wake-events.sqlite3").is_file()
+    assert sentinel.read_text() == "keep"
+
+
+def test_force_refuses_case_variant_corpus_ancestor(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source_store = WakeEventStore(source)
+    source_store.open()
+    source_store.close()
+    output = tmp_path / "OwnedOutput"
+    assert extract.main([str(source), str(output)]) == 0
+
+    corpus = output / "Corpus"
+    corpus_store = WakeEventStore(corpus)
+    corpus_store.open()
+    corpus_store.close()
+    case_variant_output = tmp_path / "ownedoutput"
+    try:
+        same_output = case_variant_output.samefile(output)
+    except FileNotFoundError:
+        same_output = False
+    if not same_output:
+        pytest.skip("temporary filesystem is case-sensitive")
+    case_variant_corpus = case_variant_output / "corpus"
+
+    assert not extract._safe_to_remove_output(
+        output,
+        corpus_dir=case_variant_corpus,
+    )
+    rc = extract.main([
+        str(case_variant_corpus),
+        str(output),
+        "--force",
+    ])
+
+    assert rc == 2
+    assert (corpus / "wake-events.sqlite3").is_file()
 
 
 def test_main_errors_on_missing_db(tmp_path: Path) -> None:

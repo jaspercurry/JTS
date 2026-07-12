@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import random
 import shutil
 import sqlite3
@@ -97,6 +98,67 @@ QUADRANTS = (
 # (The bridge env vars use "raw" for the "off" leg — JTS schema sticks
 # with "off" for column-name continuity, so this script does too.)
 LEGS = ("on", "off", "dtln")
+
+
+def _safe_to_remove_output(path: Path, *, corpus_dir: Path) -> bool:
+    """Return whether ``path`` is a prior extractor output safe to remove.
+
+    Check both lexical and resolved paths because the documented default
+    corpus is commonly a ``latest`` symlink.  A denylist is not sufficient
+    for recursive deletion: the output must also prove ownership through the
+    exact artifact shape this extractor writes.
+    """
+    lexical = Path(os.path.abspath(path.expanduser()))
+    corpus_lexical = Path(os.path.abspath(corpus_dir.expanduser()))
+    resolved = path.expanduser().resolve()
+    corpus_resolved = corpus_dir.expanduser().resolve()
+    protected = (
+        Path("/"),
+        Path.home(),
+        Path.cwd(),
+        corpus_lexical,
+        corpus_resolved,
+        *corpus_lexical.parents,
+        *corpus_resolved.parents,
+    )
+    if path.is_symlink() or any(
+        _same_existing_path(candidate, protected_path)
+        for candidate in (lexical, resolved)
+        for protected_path in protected
+    ):
+        return False
+    return _looks_like_extracted_corpus_output(resolved)
+
+
+def _same_existing_path(left: Path, right: Path) -> bool:
+    """Compare filesystem identity without trusting caller-supplied casing."""
+    try:
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
+def _looks_like_extracted_corpus_output(path: Path) -> bool:
+    manifest = path / "manifest.csv"
+    summary = path / "summary.txt"
+    if not manifest.is_file() or not summary.is_file():
+        return False
+    try:
+        with manifest.open(newline="") as f:
+            header = next(csv.reader(f))
+        with summary.open() as f:
+            summary_title = f.readline().rstrip("\n")
+    except (OSError, StopIteration):
+        return False
+    if header != list(_MANIFEST_FIELDNAMES):
+        return False
+    if summary_title != "Wake corpus extraction":
+        return False
+    return all(
+        (path / quadrant / split).is_dir()
+        for quadrant in QUADRANTS
+        for split in ("train", "eval")
+    )
 
 
 def quadrant_for(leg: str, music_active: int) -> str:
@@ -501,9 +563,10 @@ def main(argv: list[str] | None = None) -> int:
         "--force",
         action="store_true",
         help=(
-            "Wipe the output_dir before extracting. Without this, the "
-            "script refuses to overwrite an existing non-empty output_dir "
-            "to avoid mixing extractions from different DB snapshots."
+            "Wipe a safety-checked output_dir before extracting. Without "
+            "this, the script refuses to overwrite an existing non-empty "
+            "output_dir to avoid mixing extractions from different DB "
+            "snapshots."
         ),
     )
     args = parser.parse_args(argv)
@@ -530,6 +593,13 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"ERROR: {output_dir} is not empty. Re-run with --force "
                 "to wipe and re-extract, or pick a different output dir.",
+                file=sys.stderr,
+            )
+            return 2
+        if not _safe_to_remove_output(output_dir, corpus_dir=corpus_dir):
+            print(
+                f"ERROR: refusing to remove unsafe output directory: "
+                f"{output_dir}",
                 file=sys.stderr,
             )
             return 2
