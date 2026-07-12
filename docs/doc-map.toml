@@ -123,6 +123,7 @@ code = [
   "deploy/provenance.toml",
   "deploy/configure-bluez.sh",
   "deploy/nginx-jasper.conf",
+  "deploy/nginx-jasper-streambox.conf",
   "deploy/modules-load.d/**",
   "deploy/modprobe.d/**",
   ".github/dependabot.yml",

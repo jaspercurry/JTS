@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from jasper.web import wifi_setup
+
 
 _REPO = Path(__file__).resolve().parent.parent
 _INDEX_PATH = _REPO / "deploy" / "index.html"
@@ -562,6 +564,17 @@ def test_streambox_nginx_serves_hostname_safe_correction_proceed() -> None:
     catchall_block = _nginx_location_block(https_nginx, "location /")
     _assert_strong_no_cache(catchall_block)
     assert "return 302 http://$host$request_uri;" in catchall_block
+
+
+def test_both_nginx_profiles_allow_bounded_wifi_connect_rollback() -> None:
+    for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
+        nginx = path.read_text(encoding="utf-8")
+        wifi = _nginx_location_block(nginx, "location /wifi/")
+        assert "proxy_pass http://127.0.0.1:8775/;" in wifi
+        match = re.search(r"proxy_read_timeout (\d+)s;", wifi)
+        assert match
+        proxy_timeout = int(match.group(1))
+        assert proxy_timeout >= wifi_setup.CONNECT_NEW_TIMEOUT_CEILING + 20
 
 
 def test_nginx_serves_static_management_assets() -> None:
