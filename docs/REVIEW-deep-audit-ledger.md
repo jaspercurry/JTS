@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`04d60112`): 2026-07-12.
+Last reconciled against `main` (`b0f9bac4`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 386
-- **fixed**: 278
+- **open**: 384
+- **fixed**: 280
 - **in-progress**: 0
 - **mooted**: 12
 - **deferred**: 1
@@ -119,7 +119,7 @@ Last reconciled against `main` (`04d60112`): 2026-07-12.
 | DA-0178 | `jasper/audio_runtime_plan.py` :: _resolve_profile_floor_int / _resolve_output | should-fix | W3 | **open** | — |
 | DA-0179 | `jasper/audio_validation.py` :: write_artifact:663 / write_latest_pointer:69 | should-fix | W3 | **fixed** | both diagnostic publishers use one domain serializer and canonical atomic writer — #1360 |
 | DA-0180 | `jasper/cli/aec_bridge.py` :: _ref_thread (1095-1214) / _outputd_ref_udp_t | should-fix | W3 | **open** | — |
-| DA-0181 | `jasper/cli/aec_tune.py` :: main (--mic-device default) | should-fix | W3 | **open** | — |
+| DA-0181 | `jasper/cli/aec_tune.py` :: main (--mic-device default) | should-fix | W3 | **fixed** | registry-derived XVF capture identity and WAV-layout validation — #1412 |
 | DA-0182 | `jasper/cli/doctor/audio.py` :: _read_status_socket:978 | should-fix | W3 | **open** | — |
 | DA-0183 | `jasper/cli/wake_score.py` :: walk_corpus/parse_quadrant vs recording_back | should-fix | W3 | **fixed** | shared condition mapping restores ambient traversal and scoring — #1362 |
 | DA-0184 | `jasper/cli/xvf_firmware_update.py` :: _write_state | should-fix | W3 | **fixed** | firmware status uses canonical atomic writer with deterministic 0644 mode — #1363 |
@@ -186,7 +186,7 @@ Last reconciled against `main` (`04d60112`): 2026-07-12.
 | DA-0245 | `jasper/active_speaker/commission_wiring.py` :: resolve_commission_inputs:70 | should-fix | W4 | **fixed** | explicit-preset, ready-design, and blocked-fallback contract coverage — #1408 |
 | DA-0246 | `jasper/bluetooth/engine.py` :: _auto_stop_scan | should-fix | W4 | **fixed** | bounded fail-closed scan lifecycle and serialized shared-bus recovery — #1409 |
 | DA-0247 | `jasper/bluetooth/scan.py` :: DeviceObserver | should-fix | W4 | **fixed** | bounded device-observer subscriptions, stale-callback guards, and battery-task cleanup — #1405 |
-| DA-0248 | `jasper/cli/aec_tune.py` :: DELAY_FILE / main | should-fix | W4 | **open** | — |
+| DA-0248 | `jasper/cli/aec_tune.py` :: DELAY_FILE / main | should-fix | W4 | **fixed** | diagnostic-only tuning with bounded transactional cleanup and volatile rollback — #1412 |
 | DA-0249 | `jasper/cli/doctor/audio.py` :: check_loopback:263 / check_fanin_binary_inst | should-fix | W4 | **fixed** | hardware-free loopback and fan-in installation-check contracts — #1406 |
 | DA-0250 | `jasper/cli/doctor/satellites.py` :: check_dial_heartbeat | should-fix | W4 | **fixed** | exception, never-seen, recent, and long-idle activity contracts — #1410 |
 | DA-0251 | `jasper/peering/discovery.py` :: PeerDiscovery._handle_change | should-fix | W4 | **fixed** | fail-soft record parsing and FIFO identity-change bookkeeping — #1411 |
