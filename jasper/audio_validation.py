@@ -21,13 +21,13 @@ import re
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from .atomic_io import atomic_write_text
 from .audio_profile_state import (
     AecIntent,
     MicProbe,
@@ -669,28 +669,8 @@ def write_artifact(
     """Write one timestamped JSON artifact atomically and return its path."""
 
     directory_path = Path(directory)
-    directory_path.mkdir(parents=True, exist_ok=True)
     path = _artifact_path(directory_path, artifact)
-    body = (
-        json.dumps(artifact.to_dict(), allow_nan=False, indent=2, sort_keys=True)
-        + "\n"
-    )
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=str(directory_path),
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(body)
-        os.chmod(tmp_name, file_mode)
-        os.replace(tmp_name, path)
-    except (OSError, TypeError, ValueError):
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    _write_artifact_json(path, artifact, file_mode=file_mode)
     return path
 
 
@@ -703,29 +683,24 @@ def write_latest_pointer(
     """Atomically update the convenience latest pointer for status surfaces."""
 
     directory_path = Path(directory)
-    directory_path.mkdir(parents=True, exist_ok=True)
     path = directory_path / LATEST_POINTER_NAME
+    _write_artifact_json(path, artifact, file_mode=file_mode)
+    return path
+
+
+def _write_artifact_json(
+    path: Path,
+    artifact: ValidationArtifact,
+    *,
+    file_mode: int,
+) -> None:
+    """Serialize and atomically publish one validation artifact."""
+
     body = (
         json.dumps(artifact.to_dict(), allow_nan=False, indent=2, sort_keys=True)
         + "\n"
     )
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=str(directory_path),
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(body)
-        os.chmod(tmp_name, file_mode)
-        os.replace(tmp_name, path)
-    except (OSError, TypeError, ValueError):
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-    return path
+    atomic_write_text(path, body, mode=file_mode)
 
 
 def load_artifact(
