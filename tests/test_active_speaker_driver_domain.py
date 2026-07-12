@@ -138,11 +138,21 @@ def test_channel_select_picks_the_program_channel(channel, expected) -> None:
 @pytest.mark.parametrize("layout,way", [("mono", 2), ("stereo", 2), ("mono", 3), ("stereo", 3)])
 def test_driver_chain_matches_baseline(layout: str, way: int) -> None:
     preset = _preset(layout, way)
+    corrections = {
+        "woofer": {"gain_db": -1.25, "delay_ms": 0.15, "inverted": True},
+        "mid": {"gain_db": -2.0, "delay_ms": 0.3, "inverted": False},
+        "tweeter": {"gain_db": -2.75, "delay_ms": 0.45, "inverted": True},
+    }
     follower = yaml.safe_load(emit_active_speaker_driver_domain_config(
-        preset, playback_device=ACTIVE_PCM, program_channel="left"
+        preset,
+        playback_device=ACTIVE_PCM,
+        program_channel="left",
+        corrections=corrections,
     ))
     baseline = yaml.safe_load(emit_active_speaker_baseline_config(
-        preset, playback_device=ACTIVE_PCM
+        preset,
+        playback_device=ACTIVE_PCM,
+        corrections=corrections,
     ))
     # Drop the program-domain headroom the baseline carries (and the follower
     # must not) plus the follower's inter-speaker balance trim: the remaining
@@ -179,6 +189,36 @@ def test_rejects_stereo_outputd_playback_lane(device: str) -> None:
 def test_rejects_positive_correction_gain() -> None:
     with pytest.raises(ActiveSpeakerConfigError):
         _emit("mono", 2, "left", corrections={"woofer": {"gain_db": 3.0}})
+
+
+@pytest.mark.parametrize("emitter", ["baseline", "driver_domain"])
+@pytest.mark.parametrize(
+    "corrections",
+    [
+        {"woofer": {"gain_db": 0.01}},
+        {"woofer": {"delay_ms": -0.01}},
+        {"woofer": {"delay_ms": 20.01}},
+    ],
+)
+def test_both_emitters_share_correction_safety_gate(
+    emitter: str,
+    corrections: dict[str, dict[str, float | bool]],
+) -> None:
+    preset = _preset("mono", 2)
+    with pytest.raises(ActiveSpeakerConfigError):
+        if emitter == "baseline":
+            emit_active_speaker_baseline_config(
+                preset,
+                playback_device=ACTIVE_PCM,
+                corrections=corrections,
+            )
+        else:
+            emit_active_speaker_driver_domain_config(
+                preset,
+                playback_device=ACTIVE_PCM,
+                program_channel="left",
+                corrections=corrections,
+            )
 
 
 def test_chunksize_floored_to_loopback_minimum() -> None:
