@@ -925,7 +925,7 @@ forgotten:
 
 | CLI | Privileged operation today | Direction |
 |---|---|---|
-| `jasper-aec-tune` | Stops/starts services, adjusts Camilla volume, captures audio, writes `/var/lib/jasper/aec_delay.txt`, and talks to XVF hardware. | Leave sudo-only until the AEC root-helper boundary exists. |
+| `jasper-aec-tune` | Stops/restores the active XVF capture participants (`jasper-voice` and `jasper-aec-bridge`), optionally adjusts and verifies Camilla volume, and captures audio; service and Camilla operations are bounded. The default is diagnostic-only; explicit `--apply` retains the prior value, performs one guarded XVF write with readback, and rolls back on apply/readback failure. It never owns a state-file or on-chip persistence write. AEC reconcile/init overwrites a successful volatile value from the active profile. | Leave sudo-only until the AEC root-helper boundary exists. |
 | `jasper-wake-enroll` | Requires root so it can stop/start `jasper-voice` and bind/capture the same mic/UDP resources without fighting the daemon. | Later split could use the restart broker plus an `audio`/state-writer user, but this is operator-only and not first. |
 | `jasper-noise-capture` | Same stop/start and capture shape as wake enrollment, without active wake prompts. | Same direction as wake enrollment. |
 
@@ -1048,7 +1048,11 @@ the goal is closing *known* risk — that is already done by the phases above.
 Either way it is the **last** WS1 phase and **must follow** the doctor
 permissions check.
 
-Last verified: 2026-07-10 (light touch — noted that the coupling reconciler now
+Last verified: 2026-07-12 (light touch — rechecked the `jasper-aec-tune`
+operator-CLI row against its diagnostic-only default and explicit guarded,
+volatile XVF apply; removed the obsolete delay state-file ownership claim. No
+other privilege-separation content re-verified this pass.
+2026-07-10: noted that the coupling reconciler now
 writes `JASPER_USBSINK_AUDIO_STANDBY` unconditionally `1` (the usbsink daemon is
 standby-only since the aloop solo path was deleted 2026-07-10); the reconciler is
 still the single writer. No other privilege-separation content re-verified this
