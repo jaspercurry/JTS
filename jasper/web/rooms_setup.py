@@ -103,12 +103,14 @@ from ..multiroom.state import parse_grouping_response, read_grouping_state
 from ..peering import config as peering_config
 from ..log_event import log_event
 from ._common import (
+    JsonBodyError,
     begin_request,
     canonical_header,
     canonical_page,
     guard_read_request,
     guard_mutating_request,
     reject_csrf,
+    read_json_object,
     restart_voice_daemon,
     restart_systemd_units,
     send_html_response,
@@ -593,21 +595,17 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> tuple[dict | None, str |
     exactly one is non-None. Hard-caps at `_PEERING_BODY_LIMIT`. Mirrors
     wake_setup._read_json_body."""
     try:
-        length = int(handler.headers.get("Content-Length") or "0")
-    except ValueError:
-        return None, "invalid Content-Length"
-    if length < 0 or length > _PEERING_BODY_LIMIT:
-        return None, "invalid body length"
-    raw = handler.rfile.read(length) if length else b""
-    if not raw:
-        return {}, None
-    try:
-        parsed = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        return None, f"invalid JSON body: {e}"
-    if not isinstance(parsed, dict):
-        return None, "body must be a JSON object"
-    return parsed, None
+        return read_json_object(handler, max_bytes=_PEERING_BODY_LIMIT), None
+    except JsonBodyError as exc:
+        if exc.code == "invalid_content_length":
+            return None, "invalid Content-Length"
+        if exc.code in {"negative_content_length", "body_too_large"}:
+            return None, "invalid body length"
+        if exc.code == "non_object":
+            return None, "body must be a JSON object"
+        if exc.code in {"invalid_utf8", "invalid_json"} and exc.__cause__:
+            return None, f"invalid JSON body: {exc.__cause__}"
+        return None, "invalid JSON body"
 
 
 def _save_peering(handler: BaseHTTPRequestHandler) -> None:

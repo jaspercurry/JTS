@@ -167,6 +167,19 @@ class _FakeHandler:
         return [v for n, v in self.sent_headers if n.lower() == name.lower()]
 
 
+class _TrackingReader(BytesIO):
+    def __init__(self, body: bytes, *, fail: bool = False) -> None:
+        super().__init__(body)
+        self.fail = fail
+        self.read_calls: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_calls.append(size)
+        if self.fail:
+            raise OSError("request body read failed")
+        return super().read(size)
+
+
 def _patch_discovery(monkeypatch, *, speakers, grouping=None, airplay_fit=None,
                      self_name="JTS",
                      self_hostname="jts-living.local", self_room="living",
@@ -873,6 +886,167 @@ def test_post_peering_rejects_bad_csrf(monkeypatch, tmp_path):
                         csrf_ok=False, monkeypatch=monkeypatch)
     assert h.status == 403
     assert restarts == {"voice": 0, "control": 0}  # no write, no restart
+
+
+@pytest.mark.parametrize(
+    ("body", "content_length", "expected_error", "expected_reads"),
+    [
+        (b"{", 1, "invalid JSON body", [1]),
+        (b"\xff", 1, "invalid JSON body", [1]),
+        (b"[]", 2, "body must be a JSON object", [2]),
+        (b"{}", 3, "invalid JSON body", [3]),
+        (b"{}", "invalid", "invalid Content-Length", []),
+        (b"{}", -1, "invalid body length", []),
+        (b"{}", rooms_setup._PEERING_BODY_LIMIT + 1, "invalid body length", []),
+    ],
+)
+def test_post_peering_rejects_invalid_json_framing_without_mutation(
+    monkeypatch,
+    body,
+    content_length,
+    expected_error,
+    expected_reads,
+):
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        rooms_setup,
+        "write_env_file",
+        lambda *_a, **_k: pytest.fail("invalid request must not write config"),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "restart_voice_daemon",
+        lambda: pytest.fail("invalid request must not restart daemons"),
+    )
+    handler_cls = rooms_setup._make_handler()
+    handler = _FakeHandler("/peering")
+    handler.headers["Content-Length"] = str(content_length)
+    handler.rfile = _TrackingReader(body)
+
+    handler_cls.do_POST(handler)
+
+    assert handler.status == 400
+    payload = json.loads(handler.wfile.getvalue())
+    assert payload["ok"] is False
+    if expected_error == "invalid JSON body":
+        assert payload["error"].startswith(expected_error)
+    else:
+        assert payload["error"] == expected_error
+    assert handler.rfile.read_calls == expected_reads
+
+
+def test_post_peering_request_body_oserror_remains_distinct(monkeypatch):
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        rooms_setup,
+        "write_env_file",
+        lambda *_a, **_k: pytest.fail("failed read must not write config"),
+    )
+    handler_cls = rooms_setup._make_handler()
+    handler = _FakeHandler("/peering")
+    handler.headers["Content-Length"] = "2"
+    handler.rfile = _TrackingReader(b"{}", fail=True)
+
+    with pytest.raises(OSError, match="request body read failed"):
+        handler_cls.do_POST(handler)
+
+    assert handler.status is None
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (
+            "/bond",
+            b'{"members":[{"addr":"","role":"leader","channel":"left"}],'
+            b'"bond_id":"bond-1"}',
+        ),
+        ("/trim", b'{"target":"pair","balance_db":1.5}'),
+        ("/mains-highpass", b'{"enabled":true}'),
+    ],
+)
+def test_grouping_routes_reject_incomplete_json_before_state_or_control_mutation(
+    monkeypatch,
+    path,
+    body,
+):
+    """Every grouping route sharing the reader rejects a short request body.
+
+    The payloads are otherwise valid for their route, so the sentinels would
+    observe credential/state/control work if an incomplete body were accepted.
+    """
+    effects: list[str] = []
+
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        rooms_setup.household_credential,
+        "ensure",
+        lambda: effects.append("household_credential.ensure"),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "_fan_out_grouping",
+        lambda targets, **_k: (
+            effects.append("_fan_out_grouping")
+            or [(True, "HTTP 200")] * len(targets)
+        ),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "_set_pair_balance",
+        lambda *_a, **_k: effects.append("_set_pair_balance"),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "read_grouping_state",
+        lambda: effects.append("read_grouping_state") or {
+            "enabled": True,
+            "role": "leader",
+            "channel": "left",
+            "bond_id": "bond-1",
+            "leader_addr": "",
+            "subwoofer_present": True,
+            "roster": [{"addr": "192.168.1.9", "channel": "sub"}],
+        },
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "post_grouping_to_member",
+        lambda *_a, **_k: (
+            effects.append("post_grouping_to_member") or (True, "HTTP 200")
+        ),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "write_env_file",
+        lambda *_a, **_k: effects.append("write_env_file"),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "restart_voice_daemon",
+        lambda: effects.append("restart_voice_daemon"),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "restart_systemd_units",
+        lambda *_a: effects.append("restart_systemd_units"),
+    )
+
+    handler_cls = rooms_setup._make_handler()
+    handler = _FakeHandler(path)
+    declared_length = len(body) + 1
+    handler.headers["Content-Length"] = str(declared_length)
+    handler.rfile = _TrackingReader(body)
+
+    handler_cls.do_POST(handler)
+
+    assert handler.status == 400
+    assert json.loads(handler.wfile.getvalue()) == {
+        "ok": False,
+        "error": "invalid JSON body",
+    }
+    assert handler.rfile.read_calls == [declared_length]
+    assert effects == []
 
 
 def test_post_peering_enables_and_preserves_room(monkeypatch, tmp_path):

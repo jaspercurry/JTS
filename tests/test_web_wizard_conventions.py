@@ -44,10 +44,15 @@ _LEGACY_JSON_RESPONSE_ASSEMBLERS = {
 }
 
 _SHARED_JSON_OBJECT_READERS = {
-    "bluetooth_setup.py": "max_bytes=1_000_000",
-    "dial_setup.py": "max_bytes=1_000_000",
-    "chat_setup.py": "max_bytes=MAX_JSON_BYTES",
-    "balance_flow.py": "max_bytes=65_536",
+    "bluetooth_setup.py": ("_read_json", "max_bytes=1_000_000"),
+    "dial_setup.py": ("_read_json", "max_bytes=1_000_000"),
+    "chat_setup.py": ("_read_json", "max_bytes=MAX_JSON_BYTES"),
+    "balance_flow.py": ("_read_json", "max_bytes=65_536"),
+    "wake_setup.py": ("_read_json_body", "max_bytes=_LAYER_BODY_LIMIT"),
+    "rooms_setup.py": ("_read_json_body", "max_bytes=_PEERING_BODY_LIMIT"),
+    "wifi_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
+    "sources_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
+    "wake_corpus_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
 }
 
 
@@ -118,28 +123,33 @@ def test_migrated_local_object_responses_use_object_helper_not_byte_helper():
 
 
 def test_migrated_json_object_readers_use_shared_helper_and_local_caps():
-    for filename, cap_call in _SHARED_JSON_OBJECT_READERS.items():
+    for filename, (function_name, cap_call) in _SHARED_JSON_OBJECT_READERS.items():
         path = Path("jasper/web") / filename
         source = path.read_text(encoding="utf-8")
         functions = [
             node for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.FunctionDef) and node.name == "_read_json"
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
         ]
-        assert len(functions) == 1, f"expected one _read_json adapter in {path}"
+        assert len(functions) == 1, (
+            f"expected one {function_name} adapter in {path}"
+        )
         adapter = ast.get_source_segment(source, functions[0]) or ""
         assert "read_json_object" in adapter
         assert cap_call in adapter
-        assert "Content-Length" not in adapter
+        assert ".headers" not in adapter
         assert "json.loads" not in adapter
 
 
 def test_migrated_json_body_reads_remain_after_csrf_guard():
     direct_readers = {
-        "bluetooth_setup.py": "body = self._read_json()",
-        "dial_setup.py": "body = self._read_json()",
-        "chat_setup.py": "self._set_capture()",
+        "bluetooth_setup.py": ("guard_mutating_request", "body = self._read_json()"),
+        "dial_setup.py": ("guard_mutating_request", "body = self._read_json()"),
+        "chat_setup.py": ("guard_mutating_request", "self._set_capture()"),
+        "wifi_setup.py": ("guard_mutating_request", "body = self._read_json()"),
+        "sources_setup.py": ("guard_mutating_request", "body = self._read_json()"),
+        "wake_corpus_setup.py": ("self._check_csrf()", "body = self._read_json()"),
     }
-    for filename, body_read in direct_readers.items():
+    for filename, (guard, body_read) in direct_readers.items():
         path = Path("jasper/web") / filename
         source = path.read_text(encoding="utf-8")
         handlers = [
@@ -148,7 +158,7 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
         ]
         assert len(handlers) == 1, f"expected one do_POST in {path}"
         handler = ast.get_source_segment(source, handlers[0]) or ""
-        assert handler.index("guard_mutating_request") < handler.index(body_read)
+        assert handler.index(guard) < handler.index(body_read)
 
     correction_source = Path("jasper/web/correction_setup.py").read_text(
         encoding="utf-8",
@@ -164,6 +174,33 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
     assert correction_handler.index(
         "guard_mutating_request",
     ) < correction_handler.index("self._dispatch_balance(path)")
+
+    delegated_readers = {
+        "wake_setup.py": (
+            "self._handle_layer(",
+            "self._handle_profile()",
+            "self._handle_sensitivity()",
+        ),
+        "rooms_setup.py": (
+            "_save_bond(self)",
+            "_unbond(self)",
+            "_swap_channels(self)",
+            "_set_member_trim(self)",
+            "_set_mains_highpass(self)",
+            "_save_peering(self)",
+        ),
+    }
+    for filename, dispatches in delegated_readers.items():
+        path = Path("jasper/web") / filename
+        source = path.read_text(encoding="utf-8")
+        handlers = [
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef) and node.name == "do_POST"
+        ]
+        assert len(handlers) == 1, f"expected one do_POST in {path}"
+        handler = ast.get_source_segment(source, handlers[0]) or ""
+        for dispatch in dispatches:
+            assert handler.index("guard_mutating_request") < handler.index(dispatch)
 
 
 # --- Mutating-request chokepoint: every wizard POST/DELETE handler funnels

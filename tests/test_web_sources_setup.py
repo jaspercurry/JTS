@@ -499,6 +499,19 @@ def _body_json(inst) -> dict:
     return json.loads(inst.wfile.getvalue().decode("utf-8"))
 
 
+class _TrackingReader(io.BytesIO):
+    def __init__(self, body: bytes, *, fail: bool = False) -> None:
+        super().__init__(body)
+        self.fail = fail
+        self.read_calls: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_calls.append(size)
+        if self.fail:
+            raise OSError("request body read failed")
+        return super().read(size)
+
+
 def test_get_state_returns_snapshot(stub_backends):
     stub_backends(active={mod.AIRPLAY_UNIT}, usb_ready=True, bt=(True, False, False))
     h = _drive("GET", "/state")
@@ -582,6 +595,63 @@ def test_post_set_unknown_source_400(stub_backends, monkeypatch):
     )
     assert h.status == 400
     assert "unknown source" in _body_json(h)["error"]
+
+
+@pytest.mark.parametrize(
+    ("body", "content_length", "expected_reads"),
+    [
+        (b"{", 1, [1]),
+        (b"\xff", 1, [1]),
+        (b"[]", 2, [2]),
+        (b"{}", "invalid", []),
+        (b"{}", -1, []),
+        (b"{}", mod._JSON_BODY_LIMIT + 1, []),
+        (b'{"source":"airplay","enabled":true}', 36, [36]),
+    ],
+)
+def test_post_set_rejects_invalid_json_framing_without_applying(
+    stub_backends,
+    monkeypatch,
+    body,
+    content_length,
+    expected_reads,
+):
+    stub_backends()
+    monkeypatch.setattr(mod, "_apply", lambda *_a: pytest.fail("must not apply"))
+    handler = _make_inst(
+        "/set",
+        body=body,
+        cookies=f"{_common.CSRF_COOKIE_NAME}={CSRF}",
+        csrf_header=CSRF,
+    )
+    handler.headers.replace_header("Content-Length", str(content_length))
+    handler.rfile = _TrackingReader(body)
+
+    handler.do_POST()
+
+    assert handler.status == 400
+    assert _body_json(handler) == {"error": "unknown source ''"}
+    assert handler.rfile.read_calls == expected_reads
+
+
+def test_post_set_request_body_oserror_remains_distinct(
+    stub_backends,
+    monkeypatch,
+):
+    stub_backends()
+    monkeypatch.setattr(mod, "_apply", lambda *_a: pytest.fail("must not apply"))
+    handler = _make_inst(
+        "/set",
+        body=b"{}",
+        cookies=f"{_common.CSRF_COOKIE_NAME}={CSRF}",
+        csrf_header=CSRF,
+    )
+    handler.rfile = _TrackingReader(b"{}", fail=True)
+
+    with pytest.raises(OSError, match="request body read failed"):
+        handler.do_POST()
+
+    assert handler.status is None
 
 
 def test_post_unknown_path_is_404():
