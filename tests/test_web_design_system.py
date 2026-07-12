@@ -67,6 +67,13 @@ def test_app_css_carries_shared_primitives():
         assert marker in css, f"app.css missing shared primitive: {marker}"
 
 
+def test_home_assistant_css_uses_real_tokens_only():
+    css = (ROOT / "deploy/assets/home-assistant/home-assistant.css").read_text()
+    assert "var(--text-muted" not in css
+    assert "var(--space-" not in css
+    assert "color: var(--muted);" in css
+
+
 def test_app_css_does_not_force_global_svg_size():
     # The landing page sets `svg { width:16px; height:16px }`, which would
     # squash the sound page's full-width EQ graph. The shared sheet must
