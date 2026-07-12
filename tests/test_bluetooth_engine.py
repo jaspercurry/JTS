@@ -154,10 +154,16 @@ class _FakeScanProxy:
 
 class _FakeScanBus:
     def __init__(
-        self, adapter: _FakeAdapter, *, block_introspect: bool = False
+        self,
+        adapter: _FakeAdapter,
+        *,
+        block_introspect: bool = False,
+        device: BluetoothDevice | None = None,
     ) -> None:
         self.adapter = adapter
         self.proxy = _FakeScanProxy(adapter)
+        self.device_path = device.path if device is not None else None
+        self.device_proxy = _FakeProxy(device) if device is not None else None
         self.disconnected = False
         self.introspect_entered = asyncio.Event()
         self.release_introspect = asyncio.Event()
@@ -166,19 +172,25 @@ class _FakeScanBus:
 
     async def introspect(self, bus: str, path: str) -> object:
         assert bus == "org.bluez"
-        assert path == "/org/bluez/hci0"
+        assert path in {"/org/bluez/hci0", self.device_path}
         self.introspect_entered.set()
         await self.release_introspect.wait()
         return object()
+
+    async def connect(self) -> _FakeScanBus:
+        return self
 
     def get_proxy_object(
         self,
         bus: str,
         path: str,
         _intro: object,
-    ) -> _FakeScanProxy:
+    ) -> _FakeScanProxy | _FakeProxy:
         assert bus == "org.bluez"
-        assert path == "/org/bluez/hci0"
+        if path != "/org/bluez/hci0":
+            assert path == self.device_path
+            assert self.device_proxy is not None
+            return self.device_proxy
         return self.proxy
 
     def disconnect(self) -> None:
@@ -221,6 +233,31 @@ def _engine(reasons: list[str]) -> BluetoothEngine:
         ),
     )
     return engine
+
+
+def _shared_bus_engine(
+    adapter: _FakeAdapter,
+) -> tuple[BluetoothEngine, _FakeScanBus, list[str]]:
+    device = _wiim_device()
+    reasons: list[str] = []
+
+    async def reconcile(reason: str) -> object:
+        reasons.append(reason)
+        return object()
+
+    engine = BluetoothEngine(accessory_reconcile=reconcile)
+    bus = _FakeScanBus(adapter, device=device)
+    setattr(engine, "_bus", bus)
+    setattr(engine, "_observer", _FakeObserver(device))
+    setattr(
+        engine,
+        "_roles",
+        SimpleNamespace(
+            set=lambda *_args: None,
+            remove=lambda *_args: None,
+        ),
+    )
+    return engine, bus, reasons
 
 
 @pytest.mark.asyncio
@@ -318,7 +355,7 @@ async def test_scan_manual_stop_cancels_expiry_and_stops_bluez():
 
 @pytest.mark.asyncio
 async def test_scan_refresh_replaces_timer_without_stacking_stop_calls():
-    adapter = _FakeAdapter()
+    adapter = _FakeAdapter(block_stop=True)
     engine = _scan_engine(adapter)
 
     await engine.start_discovery(duration_s=60)
@@ -328,6 +365,8 @@ async def test_scan_refresh_replaces_timer_without_stacking_stop_calls():
     assert first_expiry is not None
     assert refreshed_expiry is not None
     assert refreshed_expiry is not first_expiry
+    await adapter.stop_entered.wait()
+    adapter.release_stop.set()
     await refreshed_expiry
     await asyncio.sleep(0)
 
@@ -470,6 +509,7 @@ async def test_scan_start_timeout_releases_bus_when_cleanup_times_out(
     assert adapter.discovering is False
     assert engine._scan_task is None
     assert engine._bus is None
+    assert engine._bus_recovery_required is True
     assert bus is not None and bus.disconnected is True
     assert "event=bluetooth.scan_start_cleanup_failed" in caplog.text
     assert "error_type=TimeoutError" in caplog.text
@@ -477,9 +517,162 @@ async def test_scan_start_timeout_releases_bus_when_cleanup_times_out(
 
 
 @pytest.mark.asyncio
+async def test_pair_recovers_shared_bus_after_auto_stop_failure(monkeypatch):
+    first_adapter = _FakeAdapter(block_stop=True)
+    engine, first_bus, reasons = _shared_bus_engine(first_adapter)
+    replacement_bus = _FakeScanBus(_FakeAdapter(), device=_wiim_device())
+    monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(
+        engine_module,
+        "MessageBus",
+        lambda *, bus_type: replacement_bus,
+    )
+
+    await engine.start_discovery(duration_s=0)
+    expiry = engine._scan_task
+    assert expiry is not None
+    await expiry
+    assert first_bus.disconnected is True
+    assert engine._bus is None
+
+    events = [
+        event
+        async for event in engine.pair(
+            "CA:AC:04:04:09:D7",
+            timeout_s=1.0,
+        )
+    ]
+
+    assert engine._bus is replacement_bus
+    assert engine._bus_recovery_required is False
+    assert any(event["stage"] == "ready" for event in events)
+    assert replacement_bus.device_proxy is not None
+    assert replacement_bus.device_proxy.device.paired is True
+    assert reasons == ["bluetooth-pair"]
+
+
+@pytest.mark.asyncio
+async def test_connect_recovers_shared_bus_after_scan_start_cleanup_failure(
+    monkeypatch,
+):
+    first_adapter = _FakeAdapter(
+        block_start=True,
+        accept_start_before_reply=True,
+        block_stop=True,
+    )
+    engine, first_bus, reasons = _shared_bus_engine(first_adapter)
+    replacement_bus = _FakeScanBus(_FakeAdapter(), device=_wiim_device())
+    monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(
+        engine_module,
+        "MessageBus",
+        lambda *, bus_type: replacement_bus,
+    )
+
+    with pytest.raises(asyncio.TimeoutError, match="StartDiscovery timed out"):
+        await engine.start_discovery(duration_s=60)
+
+    assert first_bus.disconnected is True
+    assert engine._bus is None
+    assert await engine.connect("CA:AC:04:04:09:D7") == (True, "connected")
+    assert engine._bus is replacement_bus
+    assert engine._bus_recovery_required is False
+    assert replacement_bus.device_proxy is not None
+    assert replacement_bus.device_proxy.device.connected is True
+    assert reasons == ["bluetooth-connect"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_device_operations_share_one_recovered_bus(monkeypatch):
+    replacement_bus = _FakeScanBus(_FakeAdapter(), device=_wiim_device())
+
+    class _BlockingConnector:
+        def __init__(self) -> None:
+            self.connect_calls = 0
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def connect(self):
+            self.connect_calls += 1
+            self.entered.set()
+            await self.release.wait()
+            return replacement_bus
+
+    engine, _first_bus, _reasons = _shared_bus_engine(_FakeAdapter())
+    engine._release_scan_owner_bus(engine._bus, reason="test")
+    connector = _BlockingConnector()
+    monkeypatch.setattr(
+        engine_module,
+        "MessageBus",
+        lambda *, bus_type: connector,
+    )
+
+    async def collect_pair_events() -> list[dict]:
+        return [
+            event
+            async for event in engine.pair(
+                "CA:AC:04:04:09:D7",
+                timeout_s=1.0,
+            )
+        ]
+
+    pair_task = asyncio.create_task(collect_pair_events())
+    connect_task = asyncio.create_task(engine.connect("CA:AC:04:04:09:D7"))
+    await connector.entered.wait()
+    await asyncio.sleep(0)
+    assert not pair_task.done()
+    assert not connect_task.done()
+
+    connector.release.set()
+    pair_events, connect_result = await asyncio.gather(pair_task, connect_task)
+
+    assert connector.connect_calls == 1
+    assert engine._bus is replacement_bus
+    assert engine._bus_recovery_required is False
+    assert any(event["stage"] == "ready" for event in pair_events)
+    assert connect_result == (True, "connected")
+
+
+@pytest.mark.asyncio
+async def test_scan_request_recovers_bus_after_fail_closed_release(monkeypatch):
+    first_adapter = _FakeAdapter(
+        block_start=True,
+        accept_start_before_reply=True,
+        block_stop=True,
+    )
+    engine = _scan_engine(first_adapter)
+    first_bus = engine._bus
+    replacement_adapter = _FakeAdapter()
+    replacement_bus = _FakeScanBus(replacement_adapter)
+    monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(
+        engine_module,
+        "MessageBus",
+        lambda *, bus_type: replacement_bus,
+    )
+
+    with pytest.raises(asyncio.TimeoutError, match="StartDiscovery timed out"):
+        await engine.start_discovery(duration_s=60)
+
+    assert first_bus is not None and first_bus.disconnected is True
+    assert engine._bus is None
+    await engine.start_discovery(duration_s=0)
+    expiry = engine._scan_task
+    assert expiry is not None
+    await expiry
+
+    assert engine._bus is replacement_bus
+    assert engine._bus_recovery_required is False
+    assert replacement_adapter.start_calls == 1
+    assert replacement_adapter.stop_calls == 1
+    assert replacement_adapter.discovering is False
+
+
+@pytest.mark.asyncio
 async def test_scan_auto_stop_timeout_logs_and_clears_timer(monkeypatch, caplog):
     adapter = _FakeAdapter(block_stop=True)
     engine = _scan_engine(adapter)
+    bus = engine._bus
     monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
     caplog.set_level(logging.WARNING, logger="jasper.bluetooth.engine")
 
@@ -489,39 +682,152 @@ async def test_scan_auto_stop_timeout_logs_and_clears_timer(monkeypatch, caplog)
     await expiry
 
     assert adapter.stop_calls == 1
-    assert adapter.discovering is True
+    assert adapter.discovering is False
     assert engine._scan_task is None
+    assert engine._bus is None
+    assert bus.disconnected is True
     assert "event=bluetooth.scan_auto_stop_failed" in caplog.text
     assert "error_type=TimeoutError" in caplog.text
     assert "BlueZ StopDiscovery timed out after 0.01s" in caplog.text
 
-    adapter.release_stop.set()
-    await engine.stop_discovery()
-    assert adapter.discovering is False
-
 
 @pytest.mark.asyncio
-async def test_scan_manual_stop_timeout_cancels_timer_and_propagates(
+async def test_scan_manual_stop_timeout_preserves_deadline_and_propagates(
     monkeypatch,
 ):
     adapter = _FakeAdapter(block_stop=True)
     engine = _scan_engine(adapter)
     monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
 
-    await engine.start_discovery(duration_s=60)
+    await engine.start_discovery(duration_s=0.05)
     expiry = engine._scan_task
     assert expiry is not None
     with pytest.raises(asyncio.TimeoutError, match="StopDiscovery timed out"):
         await engine.stop_discovery()
-    await asyncio.sleep(0)
-
-    assert expiry.done()
-    assert engine._scan_task is None
+    assert not expiry.done()
+    assert engine._scan_task is expiry
     assert adapter.discovering is True
 
     adapter.release_stop.set()
-    await engine.stop_discovery()
+    await expiry
     assert adapter.discovering is False
+    assert engine._scan_task is None
+
+
+@pytest.mark.asyncio
+async def test_scan_manual_stop_failure_without_deadline_releases_owner_bus(
+    monkeypatch,
+):
+    adapter = _FakeAdapter(block_stop=True)
+    adapter.discovering = True
+    engine = _scan_engine(adapter)
+    bus = engine._bus
+    monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
+
+    with pytest.raises(asyncio.TimeoutError, match="StopDiscovery timed out"):
+        await engine.stop_discovery()
+
+    assert engine._scan_task is None
+    assert engine._bus is None
+    assert engine._bus_recovery_required is True
+    assert bus is not None and bus.disconnected is True
+    assert adapter.discovering is False
+
+
+@pytest.mark.asyncio
+async def test_scan_recovery_failure_is_explicit_not_successful_noop(monkeypatch):
+    class _BrokenConnector:
+        async def connect(self):
+            raise OSError("system bus unavailable")
+
+    adapter = _FakeAdapter()
+    engine = _scan_engine(adapter)
+    engine._release_scan_owner_bus(engine._bus, reason="test")
+    monkeypatch.setattr(
+        engine_module,
+        "MessageBus",
+        lambda *, bus_type: _BrokenConnector(),
+    )
+
+    with pytest.raises(RuntimeError, match="BlueZ bus recovery failed"):
+        await engine.start_discovery(duration_s=60)
+
+    assert engine._bus is None
+    assert engine._bus_recovery_required is True
+    assert engine._scan_task is None
+
+
+@pytest.mark.asyncio
+async def test_device_operations_surface_shared_bus_recovery_failure(
+    monkeypatch,
+    caplog,
+):
+    class _BrokenConnector:
+        async def connect(self):
+            raise OSError("system bus unavailable")
+
+    engine, _bus, _reasons = _shared_bus_engine(_FakeAdapter())
+    engine._release_scan_owner_bus(engine._bus, reason="test")
+    monkeypatch.setattr(
+        engine_module,
+        "MessageBus",
+        lambda *, bus_type: _BrokenConnector(),
+    )
+    caplog.set_level(logging.WARNING, logger="jasper.bluetooth.engine")
+
+    pair_events = [
+        event
+        async for event in engine.pair(
+            "CA:AC:04:04:09:D7",
+            timeout_s=1.0,
+        )
+    ]
+    connect_result = await engine.connect("CA:AC:04:04:09:D7")
+    disconnect_result = await engine.disconnect("CA:AC:04:04:09:D7")
+
+    assert pair_events == [
+        {
+            "stage": "error",
+            "message": (
+                "Bluetooth controller recovery failed: "
+                "BlueZ bus recovery failed: system bus unavailable"
+            ),
+        }
+    ]
+    expected = (
+        False,
+        "Bluetooth controller recovery failed: "
+        "BlueZ bus recovery failed: system bus unavailable",
+    )
+    assert connect_result == expected
+    assert disconnect_result == expected
+    assert engine._bus is None
+    assert engine._bus_recovery_required is True
+    assert caplog.text.count("event=bluetooth.bus_recovery_failed") == 3
+
+
+@pytest.mark.asyncio
+async def test_scan_bus_recovery_has_a_fixed_timeout(monkeypatch):
+    class _BlockingConnector:
+        async def connect(self):
+            await asyncio.Event().wait()
+
+    adapter = _FakeAdapter()
+    engine = _scan_engine(adapter)
+    engine._release_scan_owner_bus(engine._bus, reason="test")
+    monkeypatch.setattr(engine_module, "SCAN_DBUS_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(
+        engine_module,
+        "MessageBus",
+        lambda *, bus_type: _BlockingConnector(),
+    )
+
+    with pytest.raises(asyncio.TimeoutError, match="bus recovery timed out"):
+        await engine.start_discovery(duration_s=60)
+
+    assert engine._bus is None
+    assert engine._bus_recovery_required is True
+    assert engine._scan_task is None
 
 
 @pytest.mark.asyncio
@@ -586,11 +892,46 @@ async def test_scan_auto_stop_logs_unexpected_bluez_failure(caplog):
     assert expiry is not None
     await expiry
 
-    assert adapter.discovering is True
+    assert adapter.discovering is False
     assert engine._scan_task is None
+    assert engine._bus is None
     assert "event=bluetooth.scan_auto_stop_failed" in caplog.text
     assert "error_type=DBusError" in caplog.text
     assert "controller I/O failure" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scan_start_accepts_only_exact_in_progress_error():
+    adapter = _FakeAdapter(
+        start_error=DBusError("org.bluez.Error.InProgress", "busy"),
+    )
+    engine = _scan_engine(adapter)
+
+    await engine.start_discovery(duration_s=0)
+    expiry = engine._scan_task
+    assert expiry is not None
+    await expiry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "detail"),
+    [
+        ("org.bluez.Error.Failed", "operation in progress"),
+        ("org.bluez.Error.NotReady", "In Progress"),
+    ],
+)
+async def test_scan_start_rejects_in_progress_message_on_other_error_type(
+    error_type: str,
+    detail: str,
+):
+    adapter = _FakeAdapter(start_error=DBusError(error_type, detail))
+    engine = _scan_engine(adapter)
+
+    with pytest.raises(DBusError, match=detail):
+        await engine.start_discovery(duration_s=60)
+
+    assert engine._scan_task is None
 
 
 @pytest.mark.asyncio

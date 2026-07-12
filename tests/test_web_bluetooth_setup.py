@@ -17,6 +17,7 @@ design system.
 The Bluetooth engine and its asyncio dispatcher are mocked -- these tests are
 hardware-free (no dbus / bluez).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -150,6 +151,7 @@ class _FakeDispatcher:
 
     def run(self, coro):
         import asyncio
+
         self.run_calls += 1
         return asyncio.run(coro)
 
@@ -159,8 +161,11 @@ class _FakeDispatcher:
 
 
 def _make_request(
-    path: str, body: bytes = b"", *,
-    cookies: str = "", csrf_header: str = "",
+    path: str,
+    body: bytes = b"",
+    *,
+    cookies: str = "",
+    csrf_header: str = "",
     content_length: str | None = None,
 ):
     """Instantiate the REAL handler class without running
@@ -274,7 +279,8 @@ def test_unexpected_pair_driver_failure_is_logged_once(monkeypatch, caplog):
     }
     assert q.get_nowait() is None
     records = [
-        record for record in caplog.records
+        record
+        for record in caplog.records
         if record.getMessage() == "event=bluetooth.pair_failed"
     ]
     assert len(records) == 1
@@ -284,7 +290,8 @@ def test_unexpected_pair_driver_failure_is_logged_once(monkeypatch, caplog):
 
 
 def test_expected_pair_error_event_is_not_logged_as_driver_failure(
-    monkeypatch, caplog,
+    monkeypatch,
+    caplog,
 ):
     monkeypatch.delenv("JASPER_LOG_JSON", raising=False)
 
@@ -346,8 +353,10 @@ def test_post_unknown_route_404s_without_revealing_csrf():
 def test_post_pair_response_route_is_gone():
     token = "r" * 64
     h = _make_request(
-        "/pair/AA:BB:CC:DD:EE:FF/respond", body=b'{"accept": true}',
-        cookies="jts_csrf=" + token, csrf_header=token,
+        "/pair/AA:BB:CC:DD:EE:FF/respond",
+        body=b'{"accept": true}',
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
     )
     h.do_POST()
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
@@ -366,14 +375,67 @@ def test_post_scan_start_drives_engine_with_valid_csrf(monkeypatch):
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
 
     h = _make_request(
-        "/scan", body=b'{"action": "start"}',
-        cookies="jts_csrf=" + token, csrf_header=token,
+        "/scan",
+        body=b'{"action": "start"}',
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
     )
     h.do_POST()
     assert h.status == 200
     assert ("start_discovery", bluetooth_setup.SCAN_DURATION_SEC) in fake.engine.calls
     payload = json.loads(h.wfile.getvalue().decode())
     assert payload["ok"] is True
+
+
+def test_second_scan_request_after_owner_bus_release_never_returns_false_200(
+    monkeypatch,
+):
+    class _FailClosedEngine:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.owner_bus_released = False
+
+        async def start_discovery(self, *, duration_s):
+            assert duration_s == bluetooth_setup.SCAN_DURATION_SEC
+            self.calls += 1
+            if self.calls == 1:
+                self.owner_bus_released = True
+                raise asyncio.TimeoutError("StartDiscovery timed out")
+            assert self.owner_bus_released is True
+            raise RuntimeError("BlueZ bus recovery failed: system bus unavailable")
+
+    class _FailClosedDispatcher:
+        def __init__(self) -> None:
+            self.engine = _FailClosedEngine()
+
+        def run(self, coro):
+            return asyncio.run(coro)
+
+    token = "b" * 64
+    dispatcher = _FailClosedDispatcher()
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", dispatcher)
+
+    first = _make_request(
+        "/scan",
+        body=b'{"action": "start"}',
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
+    )
+    first.do_POST()
+    second = _make_request(
+        "/scan",
+        body=b'{"action": "start"}',
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
+    )
+    second.do_POST()
+
+    assert first.status == int(http.HTTPStatus.BAD_GATEWAY)
+    assert second.status == int(http.HTTPStatus.BAD_GATEWAY)
+    assert json.loads(second.wfile.getvalue()) == {
+        "error": "BlueZ bus recovery failed: system bus unavailable",
+    }
+    assert dispatcher.engine.calls == 2
 
 
 @pytest.mark.parametrize("path", ("/power", "/discoverable"))
@@ -527,8 +589,10 @@ def test_post_connect_drives_engine(monkeypatch):
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
 
     h = _make_request(
-        "/connect", body=b'{"mac": "AA:BB:CC:DD:EE:FF"}',
-        cookies="jts_csrf=" + token, csrf_header=token,
+        "/connect",
+        body=b'{"mac": "AA:BB:CC:DD:EE:FF"}',
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
     )
     h.do_POST()
     assert h.status == 200
@@ -541,8 +605,10 @@ def test_post_forget_drives_engine(monkeypatch):
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
 
     h = _make_request(
-        "/forget", body=b'{"mac": "11:22:33:44:55:66"}',
-        cookies="jts_csrf=" + token, csrf_header=token,
+        "/forget",
+        body=b'{"mac": "11:22:33:44:55:66"}',
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
     )
     h.do_POST()
     assert h.status == 200
@@ -554,8 +620,10 @@ def test_post_bad_csrf_is_rejected(monkeypatch):
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
     # Header token differs from the cookie token -> double-submit fails.
     h = _make_request(
-        "/connect", body=b'{"mac": "x"}',
-        cookies="jts_csrf=" + "a" * 64, csrf_header="b" * 64,
+        "/connect",
+        body=b'{"mac": "x"}',
+        cookies="jts_csrf=" + "a" * 64,
+        csrf_header="b" * 64,
     )
     h.do_POST()
     assert h.status == int(http.HTTPStatus.FORBIDDEN)

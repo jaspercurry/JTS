@@ -19,6 +19,7 @@ authorization is owned by the always-on JTS no-code default agent.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import subprocess
 from collections.abc import Awaitable, Callable
@@ -40,6 +41,15 @@ logger = logging.getLogger(__name__)
 BLUEZ_BUS = "org.bluez"
 DEFAULT_ADAPTER = "hci0"
 SCAN_DBUS_TIMEOUT_SEC = 5.0
+SCAN_OPERATION_ERRORS = (
+    AttributeError,
+    DBusError,
+    EOFError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 AccessoryReconciler = Callable[[str], Awaitable[object]]
 ACCESSORY_RECONCILE_ERRORS = (
     DBusError,
@@ -90,6 +100,15 @@ class BluetoothEngine:
         self._roles = RoleStore()
         self._accessory_reconcile = accessory_reconcile or _default_accessory_reconcile
         self._closing = False
+        # Set only when this engine deliberately disconnects its discovery
+        # owner bus to prove an ambiguous scan terminal. The next operation
+        # that needs the shared engine bus may establish one bounded
+        # replacement; an engine that simply has not started yet remains a
+        # no-op for backwards compatibility.
+        self._bus_recovery_required = False
+        # Pair/connect requests can arrive together after a failed scan cleanup.
+        # Only one request may replace the shared long-lived bus.
+        self._bus_recovery_lock = asyncio.Lock()
         # Active scan auto-stop task. bluez auto-stops discovery when
         # the initiating bus client disconnects, so the engine owns
         # discovery on its long-lived bus. A short-lived adapter helper
@@ -111,6 +130,7 @@ class BluetoothEngine:
     async def start(self) -> None:
         self._closing = False
         self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        self._bus_recovery_required = False
         await self._observer.start()
 
     async def stop(self) -> None:
@@ -118,6 +138,7 @@ class BluetoothEngine:
         # transition. Its post-call check must not install a fresh timer while
         # stop() is queued behind it on the same lock.
         self._closing = True
+        scan_task: asyncio.Task | None = None
         async with self._scan_lock:
             scan_task = self._scan_task
             self._scan_task = None
@@ -126,10 +147,10 @@ class BluetoothEngine:
             bus = self._bus
             self._bus = None
             if bus is not None:
-                try:
+                with contextlib.suppress(Exception):
                     bus.disconnect()
-                except Exception:  # noqa: BLE001
-                    pass
+            self._bus_recovery_required = False
+        await self._await_cancelled_scan_task(scan_task)
         await self._observer.stop()
 
     # ------------- discovery (scan) -----------------
@@ -143,14 +164,16 @@ class BluetoothEngine:
         connection: bluez tracks discovery per-client and auto-stops
         when the originating bus disconnects, so a short-lived bus
         would cancel the scan within a millisecond of starting it."""
+        prior_task: asyncio.Task | None = None
         async with self._scan_lock:
+            await self._recover_bus_if_required()
             bus = self._bus
             if self._closing or bus is None:
                 return
             try:
                 await self._call_bluez_start_discovery()
             except DBusError as e:
-                if "in progress" not in str(e).lower():
+                if e.type != "org.bluez.Error.InProgress":
                     raise
 
             if self._closing or self._bus is not bus:
@@ -164,6 +187,7 @@ class BluetoothEngine:
             self._scan_task = asyncio.create_task(
                 self._auto_stop_scan(duration_s),
             )
+        await self._await_cancelled_scan_task(prior_task)
 
     async def _auto_stop_scan(self, duration_s: float) -> None:
         this_task = asyncio.current_task()
@@ -182,13 +206,20 @@ class BluetoothEngine:
                 # Drive the BlueZ call directly instead.
                 try:
                     await self._call_bluez_stop_discovery()
-                except Exception as e:  # noqa: BLE001
+                except SCAN_OPERATION_ERRORS as e:
                     log_event(
                         logger,
                         "bluetooth.scan_auto_stop_failed",
                         error_type=type(e).__name__,
                         error=str(e),
                         level=logging.WARNING,
+                    )
+                    # This expiry was the final deadline. If StopDiscovery is
+                    # ambiguous, disconnect the initiating client: BlueZ's
+                    # per-client ownership rule then proves discovery ended.
+                    self._release_scan_owner_bus(
+                        self._bus,
+                        reason="auto-stop-failed",
                     )
         finally:
             # Never let an older task erase a refreshed deadline.
@@ -198,12 +229,102 @@ class BluetoothEngine:
     async def stop_discovery(self) -> None:
         """External entry point. Cancels the auto-stop task (we're
         stopping early) and tells bluez to stop discovery."""
+        scan_task: asyncio.Task | None = None
         async with self._scan_lock:
             scan_task = self._scan_task
-            self._scan_task = None
+            try:
+                await self._call_bluez_stop_discovery()
+            except SCAN_OPERATION_ERRORS:
+                # Keep a live expiry armed when manual stop fails. If no live
+                # deadline exists, release the owner bus now so discovery
+                # cannot remain active indefinitely.
+                if scan_task is None or scan_task.done():
+                    self._release_scan_owner_bus(
+                        self._bus,
+                        reason="manual-stop-failed-without-deadline",
+                    )
+                raise
+            if self._scan_task is scan_task:
+                self._scan_task = None
             if scan_task is not None and not scan_task.done():
                 scan_task.cancel()
-            await self._call_bluez_stop_discovery()
+        await self._await_cancelled_scan_task(scan_task)
+
+    async def _await_cancelled_scan_task(
+        self,
+        task: asyncio.Task | None,
+    ) -> None:
+        """Drain an owned canceled timer without holding ``_scan_lock``."""
+
+        if task is None or task is asyncio.current_task():
+            return
+        await asyncio.gather(task, return_exceptions=True)
+
+    def _release_scan_owner_bus(
+        self,
+        bus: MessageBus | None,
+        *,
+        reason: str,
+    ) -> None:
+        """Fail closed by releasing BlueZ's per-client discovery owner."""
+
+        if bus is None or self._bus is not bus:
+            return
+        self._bus = None
+        self._bus_recovery_required = True
+        with contextlib.suppress(Exception):
+            disconnect = getattr(bus, "disconnect", None)
+            if callable(disconnect):
+                disconnect()
+        log_event(
+            logger,
+            "bluetooth.scan_owner_bus_released",
+            reason=reason,
+            level=logging.WARNING,
+        )
+
+    async def _recover_bus_if_required(self) -> None:
+        """Bound and serialize recovery after fail-closed bus release."""
+
+        if self._bus is not None or not self._bus_recovery_required:
+            return
+        async with self._bus_recovery_lock:
+            if self._bus is not None or not self._bus_recovery_required:
+                return
+            try:
+                bus = await asyncio.wait_for(
+                    MessageBus(bus_type=BusType.SYSTEM).connect(),
+                    timeout=SCAN_DBUS_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError as error:
+                timeout_failure = asyncio.TimeoutError(
+                    f"BlueZ bus recovery timed out after {SCAN_DBUS_TIMEOUT_SEC:g}s"
+                )
+                log_event(
+                    logger,
+                    "bluetooth.bus_recovery_failed",
+                    error_type=type(timeout_failure).__name__,
+                    error=str(timeout_failure),
+                    level=logging.WARNING,
+                )
+                raise timeout_failure from error
+            except SCAN_OPERATION_ERRORS as error:
+                recovery_failure = RuntimeError(f"BlueZ bus recovery failed: {error}")
+                log_event(
+                    logger,
+                    "bluetooth.bus_recovery_failed",
+                    error_type=type(error).__name__,
+                    error=str(error),
+                    level=logging.WARNING,
+                )
+                raise recovery_failure from error
+            if self._closing:
+                with contextlib.suppress(Exception):
+                    bus.disconnect()
+                return
+            self._bus = bus
+            self._bus_recovery_required = False
+            log_event(logger, "bluetooth.bus_recovered")
 
     async def _call_bluez_start_discovery(self) -> None:
         """Bound the complete BlueZ StartDiscovery exchange."""
@@ -240,7 +361,7 @@ class BluetoothEngine:
             # guarantee that discovery cannot continue without an auto-stop.
             try:
                 await self._call_bluez_stop_discovery()
-            except Exception as cleanup_error:  # noqa: BLE001
+            except SCAN_OPERATION_ERRORS as cleanup_error:
                 log_event(
                     logger,
                     "bluetooth.scan_start_cleanup_failed",
@@ -248,14 +369,10 @@ class BluetoothEngine:
                     error=str(cleanup_error),
                     level=logging.WARNING,
                 )
-                if self._bus is bus:
-                    self._bus = None
-                    try:
-                        disconnect = getattr(bus, "disconnect", None)
-                        if callable(disconnect):
-                            disconnect()
-                    except Exception:  # noqa: BLE001
-                        pass
+                self._release_scan_owner_bus(
+                    bus,
+                    reason="start-timeout-cleanup-failed",
+                )
             raise asyncio.TimeoutError(
                 f"BlueZ StartDiscovery timed out after {SCAN_DBUS_TIMEOUT_SEC:g}s"
             ) from start_error
@@ -308,7 +425,16 @@ class BluetoothEngine:
           {"stage": "ready", "detail": ...}     (terminal — success)
           {"stage": "error", "message": ...}    (terminal — failure)
         """
-        if self._bus is None:
+        try:
+            await self._recover_bus_if_required()
+        except SCAN_OPERATION_ERRORS as error:
+            yield {
+                "stage": "error",
+                "message": f"Bluetooth controller recovery failed: {error}",
+            }
+            return
+        bus = self._bus
+        if bus is None:
             yield {"stage": "error", "message": "bluetooth engine not started"}
             return
 
@@ -329,8 +455,8 @@ class BluetoothEngine:
         # the browser tab before the connect/handler stages finish. Doesn't
         # grant Connect — that's a separate call below.
         yield {"stage": "trusting"}
-        dev_intro = await self._bus.introspect(BLUEZ_BUS, dev.path)
-        dev_obj = self._bus.get_proxy_object(BLUEZ_BUS, dev.path, dev_intro)
+        dev_intro = await bus.introspect(BLUEZ_BUS, dev.path)
+        dev_obj = bus.get_proxy_object(BLUEZ_BUS, dev.path, dev_intro)
         dev_iface = dev_obj.get_interface("org.bluez.Device1")
         dev_props = dev_obj.get_interface(
             "org.freedesktop.DBus.Properties",
@@ -402,12 +528,17 @@ class BluetoothEngine:
 
     async def connect(self, mac: str) -> tuple[bool, str]:
         """Reconnect a paired device. Returns (ok, message)."""
+        try:
+            await self._recover_bus_if_required()
+        except SCAN_OPERATION_ERRORS as error:
+            return False, f"Bluetooth controller recovery failed: {error}"
+        bus = self._bus
         dev = self._observer.get_by_mac(mac)
-        if dev is None or self._bus is None:
+        if dev is None or bus is None:
             return False, "device not found"
         try:
-            intro = await self._bus.introspect(BLUEZ_BUS, dev.path)
-            iface = self._bus.get_proxy_object(
+            intro = await bus.introspect(BLUEZ_BUS, dev.path)
+            iface = bus.get_proxy_object(
                 BLUEZ_BUS,
                 dev.path,
                 intro,
@@ -420,12 +551,17 @@ class BluetoothEngine:
             return False, _format_dbus_error(e)
 
     async def disconnect(self, mac: str) -> tuple[bool, str]:
+        try:
+            await self._recover_bus_if_required()
+        except SCAN_OPERATION_ERRORS as error:
+            return False, f"Bluetooth controller recovery failed: {error}"
+        bus = self._bus
         dev = self._observer.get_by_mac(mac)
-        if dev is None or self._bus is None:
+        if dev is None or bus is None:
             return False, "device not found"
         try:
-            intro = await self._bus.introspect(BLUEZ_BUS, dev.path)
-            iface = self._bus.get_proxy_object(
+            intro = await bus.introspect(BLUEZ_BUS, dev.path)
+            iface = bus.get_proxy_object(
                 BLUEZ_BUS,
                 dev.path,
                 intro,
