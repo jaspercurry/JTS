@@ -10,7 +10,6 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -23,6 +22,7 @@ from ...audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
     mixer_control_groups_for as _dac_mixer_control_groups_for,
 )
+from ...camilla import CamillaController, CamillaUnavailable
 from ...camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     parse_camilla_devices_config,
@@ -275,15 +275,18 @@ def check_loopback() -> CheckResult:
 # check) was removed 2026-06-11; the gap is intentional.
 @doctor_check(order=79, group="audio", label="CamillaDSP websocket", needs_cfg=True, is_async=True)
 async def check_camilla_websocket(cfg: Config) -> CheckResult:
+    controller: CamillaController | None = None
     try:
-        from camilladsp import CamillaClient
-        client = CamillaClient(cfg.camilla_host, cfg.camilla_port)
-        await asyncio.to_thread(client.connect)
-        vol = await asyncio.to_thread(client.volume.main_volume)
+        controller = CamillaController(cfg.camilla_host, cfg.camilla_port)
+        vol = await controller.get_volume_db()
+        if vol is None:
+            raise CamillaUnavailable("main volume unavailable")
         try:
-            clipped = await asyncio.to_thread(client.status.clipped_samples)
+            clipped = await controller.get_clipped_samples()
             clipped_msg = f" clipped_samples={clipped}"
-        except (OSError, RuntimeError, TimeoutError, ValueError):
+        except (
+            CamillaUnavailable, OSError, RuntimeError, TimeoutError, ValueError,
+        ):
             clipped_msg = " clipped_samples=?"
         if float(vol) > DEFAULT_VOLUME_LIMIT_DB + 0.1:
             return CheckResult(
@@ -297,12 +300,18 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
             f"{cfg.camilla_host}:{cfg.camilla_port} volume={vol:.1f} dB"
             f"{clipped_msg}",
         )
-    except (ImportError, OSError, RuntimeError, TimeoutError, ValueError) as e:
+    except (
+        CamillaUnavailable, ImportError, OSError, RuntimeError,
+        TimeoutError, ValueError,
+    ) as e:
         return CheckResult(
             "CamillaDSP websocket", "fail",
             f"can't reach {cfg.camilla_host}:{cfg.camilla_port}: {e}. "
             f"Check `systemctl status jasper-camilla`.",
         )
+    finally:
+        if controller is not None:
+            await controller.close()
 
 def _jasper_voice_active() -> bool:
     """True if jasper-voice.service reports active. Cheap systemctl call."""

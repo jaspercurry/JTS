@@ -8,8 +8,10 @@ import asyncio
 import logging
 import math
 import os
+import threading
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from .camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from .log_event import log_event
@@ -31,6 +33,27 @@ logger = logging.getLogger(__name__)
 
 MIN_MAIN_VOLUME_DB = -150.0
 MAX_MAIN_VOLUME_DB = DEFAULT_VOLUME_LIMIT_DB
+
+# pycamilladsp's pinned websocket-client transport does not pass a timeout to
+# ``create_connection``. websocket-client copies its process-wide default onto
+# each new WebSocket's socket, so changing that default around connect is the
+# narrowest seam that bounds both the handshake/GetVersion exchange and every
+# later command/recv on that connection. The setting is global; serialize the
+# temporary override across every CamillaController instance and restore it on
+# every exit path.
+CAMILLA_OPERATION_TIMEOUT_S = 2.0
+CAMILLA_ATTEMPT_BUDGET_S = 5.0
+_WEBSOCKET_DEFAULT_TIMEOUT_LOCK = threading.Lock()
+
+_T = TypeVar("_T")
+
+
+@dataclass
+class _ThreadAttempt:
+    """Cancellation bridge for one synchronous pycamilladsp operation."""
+
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    started: threading.Event = field(default_factory=threading.Event)
 
 
 def _coerce_main_volume_db(db: float) -> float:
@@ -93,19 +116,195 @@ class CamillaController:
         self._client: CamillaClient | None = None
         self._lock = asyncio.Lock()
 
-    def _ensure(self) -> CamillaClient:
-        from camilladsp import CamillaClient  # lazy, see module top.
-
+    def _ensure(
+        self,
+        cancelled: threading.Event | None = None,
+    ) -> CamillaClient:
         if self._client is None:
+            from camilladsp import CamillaClient  # lazy, see module top.
+            import websocket
+
             client = CamillaClient(self._host, self._port)
-            client.connect()
+            # Publish before connect: cancellation must be able to reach the
+            # WebSocket while connect's GetVersion recv is in flight.
             self._client = client
+            try:
+                with _WEBSOCKET_DEFAULT_TIMEOUT_LOCK:
+                    if cancelled is not None and cancelled.is_set():
+                        raise asyncio.CancelledError
+                    previous_timeout = websocket.getdefaulttimeout()
+                    websocket.setdefaulttimeout(CAMILLA_OPERATION_TIMEOUT_S)
+                    try:
+                        client.connect()
+                    finally:
+                        websocket.setdefaulttimeout(previous_timeout)
+            except BaseException:  # noqa: BLE001
+                if self._client is client:
+                    self._client = None
+                raise
         return self._client
 
-    async def _call(self, fn):
+    def _invoke(
+        self,
+        fn: Callable[[CamillaClient], _T],
+        attempt: _ThreadAttempt,
+    ) -> _T:
+        """Run one operation wholly in a worker thread.
+
+        In particular, ``_ensure`` belongs here rather than in the event-loop
+        argument evaluation for ``asyncio.to_thread``: a cold websocket
+        handshake must never block the loop.
+        """
+        attempt.started.set()
+        if attempt.cancelled.is_set():
+            raise asyncio.CancelledError
+        client = self._ensure(attempt.cancelled)
+        if attempt.cancelled.is_set():
+            raise asyncio.CancelledError
+        return fn(client)
+
+    def _abort_active_websocket(self) -> None:
+        """Wake a pinned pycamilladsp worker blocked in send/recv.
+
+        ``disconnect()`` takes pycamilladsp's own query lock, so calling it
+        while another thread is blocked in ``recv`` can deadlock. The
+        underlying websocket-client ``abort`` method is explicitly designed
+        to wake a recv in another thread and does not take that lock.
+        """
+        client = self._client
+        websocket = getattr(client, "_ws", None)
+        abort = getattr(websocket, "abort", None)
+        if abort is not None:
+            try:
+                abort()
+            except Exception:  # noqa: BLE001
+                # The worker may have cleared/replaced _ws between the lookup
+                # and abort. Its fixed socket timeout remains the backstop.
+                pass
+
+    async def _run_attempt(
+        self,
+        fn: Callable[[CamillaClient], _T],
+    ) -> _T:
+        """Run, shield, and cancellation-drain one worker attempt."""
+        attempt = _ThreadAttempt()
+        worker = asyncio.create_task(asyncio.to_thread(self._invoke, fn, attempt))
+        loop = asyncio.get_running_loop()
+        budget: asyncio.Future[None] = loop.create_future()
+
+        def expire_budget() -> None:
+            if not budget.done():
+                budget.set_result(None)
+
+        budget_handle = loop.call_later(
+            CAMILLA_ATTEMPT_BUDGET_S,
+            expire_budget,
+        )
+
+        async def drain_worker() -> None:
+            """Drain despite repeated cancellation of this coroutine."""
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    if not worker.done():
+                        self._abort_active_websocket()
+                except BaseException:  # noqa: BLE001
+                    break
+            if worker.done() and not worker.cancelled():
+                # Retrieve a failed worker's exception to avoid an asyncio
+                # "exception was never retrieved" diagnostic.
+                try:
+                    worker.result()
+                except BaseException:  # noqa: BLE001
+                    pass
+
+        def stop_worker() -> None:
+            attempt.cancelled.set()
+            if attempt.started.is_set():
+                self._abort_active_websocket()
+            else:
+                # A to_thread coroutine still queued in asyncio's executor can
+                # be cancelled before it owns a thread. This avoids waiting for
+                # unrelated executor work merely to run the cancellation check.
+                worker.cancel()
+
+        try:
+            done, _pending = await asyncio.wait(
+                {worker, budget}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if worker in done:
+                return worker.result()
+
+            # A socket timeout bounds each individual recv. This watchdog
+            # initiates abort for a composite operation (cold connect plus
+            # multiple commands) at five seconds; the worker is then drained
+            # before the controller lock is released.
+            task = asyncio.current_task()
+            cancellations_before_drain = task.cancelling() if task else 0
+            stop_worker()
+            await drain_worker()
+            self._client = None
+            if task and task.cancelling() > cancellations_before_drain:
+                raise asyncio.CancelledError
+            log_event(
+                logger,
+                "camilla.operation_timeout",
+                level=logging.DEBUG,
+                host=self._host,
+                port=self._port,
+                budget_s=CAMILLA_ATTEMPT_BUDGET_S,
+            )
+            raise TimeoutError(
+                f"CamillaDSP operation exceeded {CAMILLA_ATTEMPT_BUDGET_S:.1f}s"
+            )
+        except asyncio.CancelledError as cancelled:
+            stop_worker()
+            log_event(
+                logger,
+                "camilla.operation_cancelled",
+                level=logging.DEBUG,
+                host=self._host,
+                port=self._port,
+            )
+
+            # asyncio cancellation does not stop a running thread. Keep the
+            # controller lock until that worker has exited; otherwise a later
+            # caller could overlap a mutation with the abandoned one.
+            await drain_worker()
+            self._client = None
+            raise cancelled
+        finally:
+            budget_handle.cancel()
+            budget.cancel()
+
+    async def close(self) -> None:
+        """Disconnect the cached client without reconnecting it.
+
+        Ephemeral probes use this for deterministic file-descriptor cleanup.
+        Long-running controllers intentionally keep their websocket cached.
+        """
+        async with self._lock:
+            if self._client is None:
+                return
+            try:
+                await self._run_attempt(lambda client: client.disconnect())
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    logger,
+                    "camilla.disconnect_failed",
+                    level=logging.DEBUG,
+                    host=self._host,
+                    port=self._port,
+                    error=type(exc).__name__,
+                )
+            finally:
+                self._client = None
+
+    async def _call(self, fn: Callable[[CamillaClient], _T]) -> _T:
         async with self._lock:
             try:
-                return await asyncio.to_thread(fn, self._ensure())
+                return await self._run_attempt(fn)
             except Exception as e:  # noqa: BLE001
                 # First-attempt failure is normal during a transient
                 # outage (e.g. camilla restart blip) — we always retry
@@ -117,12 +316,17 @@ class CamillaController:
                 # ("set_volume_db skipped", etc). Without this demote,
                 # a sustained camilla-down window floods the journal at
                 # ~4 Hz from old voice-side polling alone.
-                logger.debug(
-                    "camilla first attempt failed; retrying: %s", e,
+                log_event(
+                    logger,
+                    "camilla.operation_retry",
+                    level=logging.DEBUG,
+                    host=self._host,
+                    port=self._port,
+                    error=type(e).__name__,
                 )
                 self._client = None
                 try:
-                    return await asyncio.to_thread(fn, self._ensure())
+                    return await self._run_attempt(fn)
                 except Exception as e2:  # noqa: BLE001
                     self._client = None
                     raise CamillaUnavailable(str(e2)) from e2
@@ -231,6 +435,10 @@ class CamillaController:
             out: dict[str, Any] = {}
             try:
                 out["clipped_samples"] = int(c.status.clipped_samples())
+            except OSError:
+                # Transport loss must escape so _call reconnects once. Only
+                # command/version differences are optional in this snapshot.
+                raise
             except Exception:  # noqa: BLE001
                 pass
             for key, command, coerce in (
@@ -240,6 +448,8 @@ class CamillaController:
             ):
                 try:
                     value = c.query(command)
+                except OSError:
+                    raise
                 except Exception:  # noqa: BLE001
                     continue
                 try:
@@ -337,9 +547,7 @@ class CamillaController:
         self, path: str, *, best_effort: bool = False,
     ) -> bool:
         """Tell CamillaDSP to load the YAML at `path` and reload the
-        pipeline. Atomic on the CamillaDSP side — no audio dropout
-        across the swap (same property the Ducker relies on for
-        seamless main_volume changes mid-stream).
+        pipeline.
 
         The two-step `set_file_path` + `reload` is what camillagui-
         backend does and what every CamillaDSP downstream uses for
