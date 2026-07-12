@@ -57,6 +57,15 @@
 > Pi-side bound setup carries that calibration into later
 > driver legs without placing the raw serial in browser storage.
 >
+> The Pi poller has two bounded 120-second phases: the initial operator/page
+> wait must reach a validated `armed` event, then that event refreshes the
+> deadline exactly once for host playback and encrypted upload. Repeated
+> `armed` state cannot renew it. These Pi-side clocks are separate from the
+> relay's 900-second privacy TTL and the phone recorder's kind-specific 30- or
+> 45-second hard deadline. Timeout diagnostics distinguish “never armed” from
+> “armed but never uploaded” so `/status.relay` and structured logs preserve
+> the failed phase.
+>
 > **Crossover relay kind — LANDED (P7, 2026-07-03):** `POST
 > /correction/crossover/relay-capture` (the third `RelayCaptureKind` caller)
 > plays the driver/summed capture sweep on `armed` — reading the play payload's
