@@ -164,6 +164,26 @@ def _record_summed_kind(record: Mapping[str, Any]) -> str | None:
     return "reverse" if _truthy_flag(acoustic.get("expect_null")) else "in_phase"
 
 
+def _record_comparison_set_id(record: Mapping[str, Any]) -> str | None:
+    """Authoritative commissioning-run id carried by a capture record.
+
+    Modern relay captures bind their server-normalized placement proof to the
+    active comparison set.  That id is decision evidence (unlike the optional
+    forensic bundle reference), so paired in-phase/reverse captures may use it
+    to prove they came from the same fixed-position commissioning run.  Legacy
+    records have no proof and return ``None``; they retain the pre-existing
+    newest-per-polarity fallback within the legacy/unbound bucket.
+    """
+
+    proof = record.get("placement_proof")
+    if not isinstance(proof, Mapping):
+        return None
+    value = proof.get("comparison_set_id")
+    if not isinstance(value, str) or len(value) != 32:
+        return None
+    return value if all(ch in "0123456789abcdef" for ch in value) else None
+
+
 def _valid_region(value: Any) -> dict[str, Any] | None:
     """Validate a caller-supplied ``region`` block before persisting it.
 
@@ -516,16 +536,20 @@ def _latest_current_summed_records(
       listening check) still counts as in-phase-eligible, unchanged from
       prior behavior.
     * ``latest_pairs_by_group`` is ``{group_id: {region_key: {"in_phase":
-      rec|None, "reverse": rec|None}}}``, newest-per-kind, built only from
-      records that carry a real acoustic verdict (a kind) AND a resolvable
-      region — the record's own stamped ``region``, or, on a 2-way only, the
-      legacy fallback in ``_TWO_WAY_REGION_KEY``. A 3-way's region-less
-      legacy record has no unambiguous home and is left out of pairing
-      (though it can still be in-phase-eligible above).
+      rec|None, "reverse": rec|None}}}``, newest-per-kind within the newest
+      comparison set for that region, built only from records that carry a
+      real acoustic verdict (a kind) AND a resolvable region — the record's
+      own stamped ``region``, or, on a 2-way only, the legacy fallback in
+      ``_TWO_WAY_REGION_KEY``. This prevents a new in-phase capture from being
+      paired with an old reverse capture taken at a different placement/run.
+      Legacy records without comparison-set proof pair only with other legacy
+      records. A 3-way's region-less legacy record has no unambiguous home and
+      is left out of pairing (though it can still be in-phase-eligible above).
     """
     target_by_group = {target["speaker_group_id"]: target for target in targets}
     latest: dict[str, dict[str, Any]] = {}
     pairs: dict[str, dict[str, dict[str, dict[str, Any] | None]]] = {}
+    pair_comparison_sets: dict[str, dict[str, str | None]] = {}
     stale_count = 0
     for record in reversed(records):
         group_id = record.get("speaker_group_id")
@@ -542,6 +566,15 @@ def _latest_current_summed_records(
         if region_key is None and target.get("mode") == "active_2_way":
             region_key = _TWO_WAY_REGION_KEY
         if kind is not None and region_key is not None:
+            comparison_set_id = _record_comparison_set_id(record)
+            group_pair_sets = pair_comparison_sets.setdefault(group_id, {})
+            if region_key not in group_pair_sets:
+                # Records are walked newest-first. The first record for this
+                # region anchors the pair to its commissioning run; an older
+                # run may not fill the missing polarity slot.
+                group_pair_sets[region_key] = comparison_set_id
+            elif group_pair_sets[region_key] != comparison_set_id:
+                continue
             region_pairs = pairs.setdefault(group_id, {})
             slot = region_pairs.setdefault(
                 region_key, {"in_phase": None, "reverse": None}
