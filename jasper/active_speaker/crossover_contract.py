@@ -179,6 +179,26 @@ def summed_decision_evidence_state(
         return refused("summed_evidence_polarity_slot_mismatch")
     if not isinstance(acoustic.get("calibrated"), bool):
         return refused("summed_evidence_calibration_status_missing")
+    if acoustic.get("capture_geometry") != "reference_axis":
+        return refused("summed_evidence_geometry_invalid")
+    gating = acoustic.get("gating")
+    floor_value = gating.get("f_valid_floor_hz") if isinstance(gating, Mapping) else None
+    floor_hz = (
+        None
+        if isinstance(floor_value, bool)
+        else _finite_float(floor_value)
+        if isinstance(gating, Mapping)
+        else None
+    )
+    if (
+        not isinstance(gating, Mapping)
+        or gating.get("applied") is not True
+        or floor_hz is None
+        or floor_hz <= 0
+    ):
+        return refused("summed_evidence_validity_floor_unknown")
+    if acoustic.get("above_validity_floor") is not True:
+        return refused("summed_evidence_below_validity_floor")
     null_depth = _finite_float(acoustic.get("null_depth_db"))
     if null_depth is None or null_depth < 0:
         return refused("summed_evidence_null_depth_invalid")

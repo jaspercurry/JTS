@@ -240,6 +240,26 @@ def _log_capture_verdict_event(
     fields["group"] = speaker_group_id
     if role:
         fields["role"] = role
+    capture_geometry = acoustic.get("capture_geometry")
+    if capture_geometry in {"near_field", "reference_axis"}:
+        fields["capture_geometry"] = capture_geometry
+    if capture_geometry == "reference_axis":
+        gating = acoustic.get("gating")
+        floor_hz = (
+            _finite_float(gating.get("f_valid_floor_hz"))
+            if isinstance(gating, Mapping)
+            else None
+        )
+        fields["validity_floor_status"] = (
+            "known"
+            if (
+                isinstance(gating, Mapping)
+                and gating.get("applied") is True
+                and floor_hz is not None
+                and floor_hz > 0
+            )
+            else "unknown"
+        )
     verdict = result.get("verdict")
     if verdict is not None:
         fields["verdict"] = verdict
@@ -1153,6 +1173,51 @@ def _repeat_level_dbfs(acoustic: Mapping[str, Any]) -> float | None:
     return _finite_float(acoustic.get("observed_mic_dbfs"))
 
 
+_REFERENCE_BINDING_KEYS = (
+    "policy_id",
+    "comparison_set_id",
+    "comparison_set_fingerprint",
+    "target_fingerprint",
+    "speaker_group_id",
+    "role",
+)
+
+
+def _reference_axis_repeat_binding(
+    item: Mapping[str, Any], acoustic: Mapping[str, Any]
+) -> tuple[str, ...] | None:
+    """Return the immutable fixed-axis placement binding for one repeat.
+
+    ``None`` means the repeat is not reference-axis. An empty tuple marks an
+    explicitly reference-axis repeat without a complete server proof; callers
+    reject it before it can influence the aggregate median.
+    """
+
+    if acoustic.get("capture_geometry") != "reference_axis":
+        return None
+    proof = item.get("placement_proof")
+    if not isinstance(proof, Mapping):
+        return ()
+    from .capture_geometry import (
+        REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID,
+        placement_proof_shape_valid,
+    )
+
+    values = tuple(str(proof.get(key) or "") for key in _REFERENCE_BINDING_KEYS)
+    if (
+        not placement_proof_shape_valid(
+            proof,
+            policy_id=REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID,
+            speaker_group_id=str(proof.get("speaker_group_id") or ""),
+            role=str(proof.get("role") or ""),
+            target_fingerprint=str(proof.get("target_fingerprint") or ""),
+        )
+        or any(not value for value in values)
+    ):
+        return ()
+    return values
+
+
 def _repeat_reject_reason(
     *,
     verdict: Any,
@@ -1162,30 +1227,54 @@ def _repeat_reject_reason(
 ) -> str | None:
     """The outlier-rejection rule for one repeat.
 
-    Reads the lane A/B SNR-verdict (``acoustic["snr"]["verdict"]``) and
-    validity-floor (``acoustic["gating"]["above_validity_floor"]``) blocks
-    when present. Their absence — those blocks are Slice 0 sibling work
-    that may not have landed on every branch yet — is read as "no evidence
-    either way," not "insufficient": this rule degrades to level-outlier
-    detection only rather than rejecting every repeat purely because a
-    sibling block hasn't shipped. Once populated, an actual
-    ``"insufficient"``/``"unknown"`` SNR verdict or a ``False``
-    ``above_validity_floor`` rejects immediately, ahead of the level check.
+    Reads the lane A/B SNR and validity-floor evidence. Legacy/near-field
+    records without those sibling blocks retain level-outlier-only behavior.
+    A record explicitly marked ``capture_geometry=reference_axis`` is held to
+    the stronger Lane B contract: missing/ungateable validity evidence rejects
+    as ``validity_floor_unknown``. Known-below-floor and insufficient SNR
+    evidence also reject before the level check.
     """
 
-    if verdict in (None, VERDICT_UNUSABLE_CAPTURE):
-        return "unusable_capture"
-    if bool(acoustic.get("mic_clipping")):
-        return "clipping"
     gating = acoustic.get("gating")
-    if isinstance(gating, Mapping) and gating.get("above_validity_floor") is False:
-        return "below_validity_floor"
     overlap_entries = [
         entry
         for entry in acoustic.get("overlap_levels") or ()
         if isinstance(entry, Mapping)
     ]
+    if acoustic.get("capture_geometry") == "reference_axis":
+        floor_value = gating.get("f_valid_floor_hz") if isinstance(gating, Mapping) else None
+        floor_hz = (
+            None
+            if isinstance(floor_value, bool)
+            else _finite_float(floor_value)
+            if isinstance(gating, Mapping)
+            else None
+        )
+        floor_states = [
+            entry.get("above_validity_floor") for entry in overlap_entries
+        ]
+        if (
+            not isinstance(gating, Mapping)
+            or gating.get("applied") is not True
+            or floor_hz is None
+            or floor_hz <= 0
+            or any(state is None for state in floor_states)
+        ):
+            return "validity_floor_unknown"
+        if not overlap_entries:
+            return "no_usable_overlap"
+    if verdict in (None, VERDICT_UNUSABLE_CAPTURE):
+        return "unusable_capture"
+    if bool(acoustic.get("mic_clipping")):
+        return "clipping"
+    if isinstance(gating, Mapping) and gating.get("above_validity_floor") is False:
+        return "below_validity_floor"
     if overlap_entries:
+        floor_states = [
+            entry.get("above_validity_floor") for entry in overlap_entries
+        ]
+        if floor_states and all(state is False for state in floor_states):
+            return "below_validity_floor"
         # A woofer's unusable bottom octave or a 3-way mid's unusable lower
         # handoff must not veto a clean required overlap at the other edge.
         # ``usable`` is the analyzer-owned conjunction of bins, local SNR,
@@ -1246,6 +1335,8 @@ def aggregate_driver_repeats(
     per_repeat: list[dict[str, Any]] = []
     accepted_levels: list[float] = []
     accepted_indices: list[int] = []
+    reference_axis_binding: tuple[str, ...] | None = None
+    sequence_geometry: str | None = None
 
     for index, item in enumerate(repeats):
         acoustic = item.get("acoustic")
@@ -1255,12 +1346,26 @@ def aggregate_driver_repeats(
         running_median = (
             statistics.median(accepted_levels) if accepted_levels else None
         )
-        reason = _repeat_reject_reason(
-            verdict=verdict,
-            acoustic=acoustic,
-            level_dbfs=level_dbfs,
-            running_median=running_median,
-        )
+        binding = _reference_axis_repeat_binding(item, acoustic)
+        geometry = acoustic.get("capture_geometry")
+        reason: str | None
+        if geometry in {"near_field", "reference_axis"} and sequence_geometry is None:
+            sequence_geometry = str(geometry)
+        if geometry in {"near_field", "reference_axis"} and geometry != sequence_geometry:
+            reason = "capture_context_mismatch"
+        elif binding == ():
+            reason = "reference_axis_placement_unbound"
+        elif binding is not None and reference_axis_binding not in (None, binding):
+            reason = "capture_context_mismatch"
+        else:
+            reason = _repeat_reject_reason(
+                verdict=verdict,
+                acoustic=acoustic,
+                level_dbfs=level_dbfs,
+                running_median=running_median,
+            )
+        if binding and reference_axis_binding is None:
+            reference_axis_binding = binding
         accepted = reason is None
         snr = acoustic.get("snr")
         worst_relevant_raw = snr.get("worst_relevant") if isinstance(snr, Mapping) else None
@@ -1275,13 +1380,22 @@ def aggregate_driver_repeats(
             entry.get("above_validity_floor")
             for entry in acoustic.get("overlap_levels") or ()
             if isinstance(entry, Mapping)
-            and isinstance(entry.get("above_validity_floor"), bool)
+            and entry.get("above_validity_floor") in (True, False, None)
         ]
-        above_validity_floor = (
-            bool(gating["above_validity_floor"])
-            if isinstance(gating.get("above_validity_floor"), bool)
-            else (any(overlap_floor_evidence) if overlap_floor_evidence else True)
-        )
+        if isinstance(gating.get("above_validity_floor"), bool):
+            above_validity_floor: bool | None = bool(
+                gating["above_validity_floor"]
+            )
+        elif any(value is True for value in overlap_floor_evidence):
+            above_validity_floor = True
+        elif overlap_floor_evidence and all(
+            value is False for value in overlap_floor_evidence
+        ):
+            above_validity_floor = False
+        elif acoustic.get("capture_geometry") == "reference_axis":
+            above_validity_floor = None
+        else:
+            above_validity_floor = True
         per_repeat.append({
             "index": index,
             "attempt": int(item.get("attempt") or index + 1),

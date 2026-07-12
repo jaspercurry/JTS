@@ -331,6 +331,7 @@ def test_summed_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
             "speaker_group_id": "mono",
             "summed_test_id": "sum-1",
             "playback_id": "sum-1",
+            "capture_geometry": "reference_axis",
             "expect_null": True,
             "noise_floor_dbfs": -70.0,
             "noise_band_report": "not-a-list",  # invalid -> validated to None
@@ -350,11 +351,21 @@ def test_summed_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
     assert calls["kwargs"]["capture_geometry"] == "near_field"
 
 
-def test_driver_capture_threads_reference_axis_capture_geometry(monkeypatch, tmp_path):
-    """A client-supplied capture_geometry of "reference_axis" reaches
-    record_driver_acoustic_capture; an unrecognized value falls back to
-    near_field rather than propagating an arbitrary client string."""
-    topology = object()
+def test_driver_capture_geometry_comes_from_server_placement_policy(
+    monkeypatch, tmp_path
+):
+    """Browser geometry cannot opt into reference-axis analysis.
+
+    The future Lane B capture reaches that analyzer mode through the verified
+    placement proof while reusing this same record/repeat path.
+    """
+    from jasper.active_speaker.capture_geometry import (
+        REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID,
+        normalized_placement_proof,
+    )
+    from jasper.active_speaker.measurement import active_driver_targets
+
+    topology = _topology()
     wav_path = tmp_path / "driver.wav"
 
     monkeypatch.setattr(web_measurement, "load_output_topology", lambda: topology)
@@ -382,7 +393,11 @@ def test_driver_capture_threads_reference_axis_capture_geometry(monkeypatch, tmp
     monkeypatch.setattr(
         calibration_level, "load_calibration_level_state", lambda: {}
     )
-    monkeypatch.setattr(measurement, "load_measurement_state", lambda _t: {})
+    monkeypatch.setattr(
+        measurement,
+        "load_measurement_state",
+        lambda _t: {"active_comparison_set": _COMPARISON_SET},
+    )
     monkeypatch.setattr(
         measurement,
         "current_driver_floor_evidence",
@@ -397,6 +412,24 @@ def test_driver_capture_threads_reference_axis_capture_geometry(monkeypatch, tmp
 
     monkeypatch.setattr(capture, "record_driver_acoustic_capture", fake_record)
 
+    target = next(
+        value
+        for value in active_driver_targets(topology)
+        if value["target_id"] == "mono:woofer"
+    )
+    proof = normalized_placement_proof(
+        policy_id=REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID,
+        acknowledgement_binding="fixed-axis-acknowledgement",
+        relay_session_id="relay-fixed-axis",
+        capture_page={
+            "capture_protocol_version": 2,
+            "capture_page_build": "20260712.1",
+        },
+        speaker_group_id="mono",
+        role="woofer",
+        target_fingerprint=target["target_fingerprint"],
+        comparison_set=_COMPARISON_SET,
+    )
     backend.record_driver_capture(
         {
             "speaker_group_id": "mono",
@@ -409,12 +442,110 @@ def test_driver_capture_threads_reference_axis_capture_geometry(monkeypatch, tmp
         {
             "speaker_group_id": "mono",
             "role": "woofer",
-            "capture_geometry": "not_a_real_geometry",
         },
         b"wav",
+        placement_proof=proof,
     )
 
-    assert seen == ["reference_axis", "near_field"]
+    assert seen == ["near_field", "reference_axis"]
+
+
+def test_driver_capture_rejects_unknown_server_placement_policy():
+    with pytest.raises(ValueError, match="placement policy is unsupported"):
+        web_measurement._driver_capture_geometry({
+            "schema_version": 1,
+            "policy_id": "client_invented",
+            "accepted": True,
+            "confirmation_source": "relay_begin_capture",
+            "capture_protocol_version": 2,
+        })
+
+
+def test_driver_capture_rejects_incomplete_reference_axis_proof():
+    with pytest.raises(ValueError, match="placement proof is invalid"):
+        web_measurement._driver_capture_geometry({
+            "policy_id": "driver_reference_axis_v1",
+            "accepted": True,
+        })
+
+
+def test_summed_capture_geometry_requires_fixed_axis_proof_and_current_bindings():
+    from jasper.active_speaker.capture_geometry import (
+        SUMMED_PLACEMENT_POLICY_ID,
+        normalized_placement_proof,
+    )
+    from jasper.active_speaker.measurement import active_summed_targets
+
+    topology = _topology()
+    target = active_summed_targets(topology)[0]
+    proof = normalized_placement_proof(
+        policy_id=SUMMED_PLACEMENT_POLICY_ID,
+        acknowledgement_binding="summed-fixed-axis-acknowledgement",
+        relay_session_id="relay-summed-fixed-axis",
+        capture_page={
+            "capture_protocol_version": 2,
+            "capture_page_build": "20260712.1",
+        },
+        speaker_group_id="mono",
+        role="summed",
+        target_fingerprint=target["group_fingerprint"],
+        comparison_set=_COMPARISON_SET,
+    )
+
+    assert web_measurement._summed_capture_geometry(
+        proof,
+        _COMPARISON_SET,
+        speaker_group_id="mono",
+        target_fingerprint=target["group_fingerprint"],
+    ) == "reference_axis"
+    assert web_measurement._summed_capture_geometry(None) == "near_field"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("acknowledgement_binding_sha256", "bad"),
+        ("relay_session_id", ""),
+        ("capture_page_build", "unversioned"),
+        ("speaker_group_id", "another-group"),
+        ("role", "woofer"),
+        ("target_fingerprint", "f" * 64),
+        ("comparison_set_fingerprint", "e" * 64),
+    ),
+)
+def test_summed_capture_geometry_rejects_fabricated_or_stale_proof(
+    field: str,
+    value: str,
+):
+    from jasper.active_speaker.capture_geometry import (
+        SUMMED_PLACEMENT_POLICY_ID,
+        normalized_placement_proof,
+    )
+    from jasper.active_speaker.measurement import active_summed_targets
+
+    target = active_summed_targets(_topology())[0]
+    proof = normalized_placement_proof(
+        policy_id=SUMMED_PLACEMENT_POLICY_ID,
+        acknowledgement_binding="summed-fixed-axis-acknowledgement",
+        relay_session_id="relay-summed-fixed-axis",
+        capture_page={
+            "capture_protocol_version": 2,
+            "capture_page_build": "20260712.1",
+        },
+        speaker_group_id="mono",
+        role="summed",
+        target_fingerprint=target["group_fingerprint"],
+        comparison_set=_COMPARISON_SET,
+    )
+    proof[field] = value
+
+    with pytest.raises(ValueError, match="invalid or stale"):
+        web_measurement._summed_capture_geometry(
+            proof,
+            _COMPARISON_SET,
+            speaker_group_id="mono",
+            target_fingerprint=target["group_fingerprint"],
+        )
 
 
 @pytest.mark.parametrize(
@@ -437,11 +568,11 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
     topology = object()
     wav_path = tmp_path / "driver.wav"
     wav_path.write_bytes(b"wav")
-    comparison_set_id = "a" * 32
-    comparison_set = {
-        "comparison_set_id": comparison_set_id,
-        "fingerprint": "b" * 64,
-    }
+    comparison_set = dict(_COMPARISON_SET)
+    target_fingerprint = "c" * 64
+    placement_proof = _placement_proof(
+        "driver_same_distance_v1", "woofer", target_fingerprint
+    )
     admission_path = tmp_path / "repeat-admission.json"
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE", str(admission_path)
@@ -489,7 +620,9 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
         lambda *a, **k: (bundle_dir, "captures/driver.wav"),
     )
     monkeypatch.setattr(
-        web_measurement, "_driver_target_fingerprint", lambda *a, **k: "target-fp"
+        web_measurement,
+        "_driver_target_fingerprint",
+        lambda *a, **k: target_fingerprint,
     )
     repeat_events = []
     monkeypatch.setattr(
@@ -552,8 +685,9 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
                 "recorded": True,
                 "verdict": "present",
                 "outcome": "heard_correct_driver",
-                "acoustic": {
-                    "verdict": "present",
+                    "acoustic": {
+                        "verdict": "present",
+                        "capture_geometry": "near_field",
                     "observed_mic_dbfs": -30.0 + index / 10.0,
                     "mic_clipping": False,
                     "snr": {
@@ -605,7 +739,7 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
         reservation = repeat_admission.reserve(
             comparison_set,
             target_id="mono:woofer",
-            target_fingerprint="target-fp",
+            target_fingerprint=target_fingerprint,
             path=admission_path,
         )
         assert reservation["attempt"] == attempt
@@ -615,6 +749,7 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
                 "repeat_reservation": reservation,
             },
             b"wav",
+            placement_proof=placement_proof,
             repeat_store=store,
         )
 
@@ -632,7 +767,7 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
             repeat_admission.reserve(
                 comparison_set,
                 target_id="mono:woofer",
-                target_fingerprint="target-fp",
+                target_fingerprint=target_fingerprint,
                 path=admission_path,
             )
         attempts = [
@@ -713,6 +848,63 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
     assert all(entry["clipping"] is False for entry in attempts)
 
 
+@pytest.mark.parametrize("corruption", ("stale_target", "conflicting_geometry"))
+def test_driver_repeat_finalization_revalidates_winner_placement_context(
+    monkeypatch,
+    corruption: str,
+) -> None:
+    """A process-local winner is re-proved before admission becomes ready."""
+    import jasper.active_speaker.commissioning_capture as capture
+
+    target_fingerprint = "c" * 64
+    proof = _placement_proof(
+        "driver_same_distance_v1", "woofer", target_fingerprint
+    )
+    acoustic = {"capture_geometry": "near_field"}
+    if corruption == "stale_target":
+        proof["target_fingerprint"] = "f" * 64
+    else:
+        acoustic["capture_geometry"] = "reference_axis"
+    winner = {
+        "analysis_kwargs": {},
+        "preset": object(),
+        "placement_proof": proof,
+        "acoustic": acoustic,
+        "wav_path": "winner.wav",
+        "bundle_dir": None,
+    }
+    monkeypatch.setattr(
+        capture,
+        "record_driver_repeat_aggregate",
+        lambda **_kwargs: {
+            "accepted": 2,
+            "aggregate_repeat": winner,
+            "per_repeat": [],
+        },
+    )
+    monkeypatch.setattr(
+        capture,
+        "record_driver_acoustic_capture",
+        lambda *_args, **_kwargs: pytest.fail(
+            "invalid winner must be refused before durable measurement"
+        ),
+    )
+    store = SimpleNamespace(
+        repeat_session_key=lambda *_args: ("comparison", "target")
+    )
+
+    with pytest.raises(RuntimeError, match="placement|geometry"):
+        web_measurement._finalize_driver_repeat_set(
+            topology=object(),
+            comparison_set=_COMPARISON_SET,
+            speaker_group_id="mono",
+            role="woofer",
+            target_fingerprint=target_fingerprint,
+            reservation={"attempt": 3, "token": "reservation"},
+            admission_result={"accepted": True},
+            repeats=[{"bundle_dir": None}],
+            repeat_store=store,
+        )
 def test_repeat_capture_refuses_without_controlled_quiet_interval(monkeypatch, tmp_path):
     topology = object()
     wav_path = tmp_path / "driver.wav"
@@ -756,23 +948,27 @@ def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
         repeat_admission,
     )
 
-    comparison = {
-        "comparison_set_id": "a" * 32,
-        "fingerprint": "b" * 64,
-    }
+    comparison = dict(_COMPARISON_SET)
+    target_fingerprint = "c" * 64
+    placement_proof = _placement_proof(
+        "driver_same_distance_v1", "woofer", target_fingerprint
+    )
     admission_path = tmp_path / "repeat-admission.json"
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE", str(admission_path)
     )
     repeat_admission.activate(comparison, path=admission_path)
     store = backend.CrossoverLevelLease()
-    key = store.repeat_session_key(comparison["comparison_set_id"], "target-fp")
+    key = store.repeat_session_key(
+        comparison["comparison_set_id"], target_fingerprint
+    )
     wav_path = tmp_path / "accepted.wav"
     wav_path.write_bytes(b"wav")
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     acoustic = {
         "verdict": "present",
+        "capture_geometry": "near_field",
         "observed_mic_dbfs": -30.0,
         "mic_clipping": False,
         "snr": {
@@ -788,7 +984,7 @@ def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
         reservation = repeat_admission.reserve(
             comparison,
             target_id="mono:woofer",
-            target_fingerprint="target-fp",
+            target_fingerprint=target_fingerprint,
             path=admission_path,
         )
         store.append_driver_repeat(
@@ -804,7 +1000,7 @@ def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
                 "playback_id": f"play-{attempt}",
                 "test_level_dbfs": -12.0,
                 "excitation": {},
-                "placement_proof": {"accepted": True, "policy_id": "driver"},
+                "placement_proof": placement_proof,
                 "ambient_report": {},
                 "ambient_duration_s": 14.0,
                 "analysis_kwargs": {},
@@ -819,7 +1015,7 @@ def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
         repeat_admission.finish(
             comparison,
             target_id="mono:woofer",
-            target_fingerprint="target-fp",
+            target_fingerprint=target_fingerprint,
             token=reservation["token"],
             result={"accepted": True},
             status="active",
@@ -828,13 +1024,13 @@ def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
     third = repeat_admission.reserve(
         comparison,
         target_id="mono:woofer",
-        target_fingerprint="target-fp",
+        target_fingerprint=target_fingerprint,
         path=admission_path,
     )
     repeat_admission.finish(
         comparison,
         target_id="mono:woofer",
-        target_fingerprint="target-fp",
+        target_fingerprint=target_fingerprint,
         token=third["token"],
         result={"accepted": False, "reject_reason": "level_outlier"},
         status="active",
@@ -843,14 +1039,14 @@ def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
     fourth = repeat_admission.reserve(
         comparison,
         target_id="mono:woofer",
-        target_fingerprint="target-fp",
+        target_fingerprint=target_fingerprint,
         path=admission_path,
     )
     monkeypatch.setattr(web_measurement, "load_output_topology", lambda: object())
     monkeypatch.setattr(
         web_measurement,
         "_driver_target_fingerprint",
-        lambda *_args, **_kwargs: "target-fp",
+        lambda *_args, **_kwargs: target_fingerprint,
     )
     import jasper.active_speaker.measurement as measurement
 
@@ -894,7 +1090,7 @@ def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
         comparison_set=comparison,
         speaker_group_id="mono",
         role="woofer",
-        target_fingerprint="target-fp",
+        target_fingerprint=target_fingerprint,
         reservation=fourth,
         failure_type="CaptureAborted",
         repeat_store=store,
@@ -1487,7 +1683,7 @@ def test_automatic_candidate_requires_driver_evidence_not_summed_capture():
     assert "frequency and slope remain operator-owned" in readiness["detail"]
 
 
-def _placement_proof(policy: str, role: str) -> dict:
+def _placement_proof(policy: str, role: str, target_fingerprint: str) -> dict:
     return {
         "schema_version": 1,
         "policy_id": policy,
@@ -1499,32 +1695,38 @@ def _placement_proof(policy: str, role: str) -> dict:
         "capture_page_build": "20260711.1",
         "speaker_group_id": "mono",
         "role": role,
-        "target_fingerprint": "",
+        "target_fingerprint": target_fingerprint,
         "comparison_set_id": _COMPARISON_SET["comparison_set_id"],
         "comparison_set_fingerprint": _COMPARISON_SET["fingerprint"],
     }
 
 
 def _driver_acoustic(role: str) -> dict:
+    target_fingerprint = ("6" if role == "woofer" else "7") * 64
     return {
         "speaker_group_id": "mono",
         "role": role,
+        "target_fingerprint": target_fingerprint,
         "acoustic": {"verdict": "present"},
         "placement_proof": _placement_proof(
             "driver_same_distance_v1",
             role,
+            target_fingerprint,
         ),
     }
 
 
 def _summed_acoustic() -> dict:
+    group_fingerprint = "8" * 64
     return {
         "speaker_group_id": "mono",
+        "group_fingerprint": group_fingerprint,
         "validated": True,
         "acoustic": {"verdict": "blend_ok"},
         "placement_proof": _placement_proof(
             "summed_reference_axis_v1",
             "summed",
+            group_fingerprint,
         ),
     }
 

@@ -21,6 +21,7 @@ wire is exercised deterministically and hardware-free.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -157,6 +158,8 @@ def _driver_result(
     observed: float = -32.0,
     clipping: bool = False,
     snr: dict | None = None,
+    capture_geometry: str = "near_field",
+    gating: dict | None = None,
 ) -> DriverAcousticResult:
     return DriverAcousticResult(
         verdict=verdict,
@@ -170,6 +173,8 @@ def _driver_result(
         mic_clipping=clipping,
         quality={"failed": False, "rms_dbfs": observed},
         snr=snr,
+        capture_geometry=capture_geometry,
+        gating=gating,
     )
 
 
@@ -992,6 +997,26 @@ def _repeat(
     return {"verdict": verdict, "acoustic": acoustic, "artifact_path": artifact_path}
 
 
+def _reference_axis_proof(
+    *, comparison_hex: str = "a", relay_session_id: str = "relay-reference"
+) -> dict:
+    return {
+        "schema_version": 1,
+        "accepted": True,
+        "confirmation_source": "relay_begin_capture",
+        "acknowledgement_binding_sha256": "d" * 64,
+        "relay_session_id": relay_session_id,
+        "capture_protocol_version": 2,
+        "capture_page_build": "20260712.1",
+        "policy_id": "driver_reference_axis_v1",
+        "comparison_set_id": comparison_hex * 32,
+        "comparison_set_fingerprint": comparison_hex * 64,
+        "target_fingerprint": "c" * 64,
+        "speaker_group_id": "mono",
+        "role": "woofer",
+    }
+
+
 def test_aggregate_three_accepted_repeats_is_normal_confidence():
     repeats = [_repeat(-30.0), _repeat(-30.3), _repeat(-29.8)]
 
@@ -1107,6 +1132,145 @@ def test_aggregate_rejects_below_validity_floor_when_lane_a_block_present():
     assert result["accepted"] == 2
 
 
+def test_aggregate_rejects_reference_axis_when_validity_floor_is_unknown():
+    repeat = _repeat(-30.0)
+    repeat["acoustic"].update({
+        "capture_geometry": "reference_axis",
+        "gating": {
+            "applied": False,
+            "f_valid_floor_hz": None,
+            "exempt_reason": None,
+        },
+        "overlap_levels": [{
+            "fc_hz": 200.0,
+            "above_validity_floor": None,
+            "usable": False,
+        }],
+    })
+    repeat["placement_proof"] = _reference_axis_proof()
+
+    result = aggregate_driver_repeats([repeat])
+
+    assert result["accepted"] == 0
+    assert result["per_repeat"][0]["reject_reason"] == "validity_floor_unknown"
+    assert result["per_repeat"][0]["above_validity_floor"] is None
+
+
+@pytest.mark.parametrize("floor_hz", (None, True, 0.0, -1.0, float("nan")))
+def test_aggregate_rejects_reference_axis_without_finite_positive_floor(
+    floor_hz: float | None,
+) -> None:
+    repeat = _repeat(-30.0)
+    repeat["acoustic"].update({
+        "capture_geometry": "reference_axis",
+        "gating": {"applied": True, "f_valid_floor_hz": floor_hz},
+        "overlap_levels": [{
+            "fc_hz": 1000.0,
+            "above_validity_floor": True,
+            "usable": True,
+        }],
+    })
+    repeat["placement_proof"] = _reference_axis_proof()
+
+    result = aggregate_driver_repeats([repeat])
+
+    assert result["accepted"] == 0
+    assert result["per_repeat"][0]["reject_reason"] == "validity_floor_unknown"
+
+
+def test_aggregate_reference_axis_requires_bound_server_placement_proof():
+    repeat = _repeat(-30.0)
+    repeat["acoustic"].update({
+        "capture_geometry": "reference_axis",
+        "gating": {"applied": True, "f_valid_floor_hz": 150.0},
+        "overlap_levels": [{
+            "fc_hz": 1000.0,
+            "above_validity_floor": True,
+            "usable": True,
+        }],
+    })
+
+    result = aggregate_driver_repeats([repeat])
+
+    assert result["accepted"] == 0
+    assert (
+        result["per_repeat"][0]["reject_reason"]
+        == "reference_axis_placement_unbound"
+    )
+
+
+def test_aggregate_never_mixes_near_field_and_reference_axis_repeats():
+    near = _repeat(-30.0)
+    near["acoustic"]["capture_geometry"] = "near_field"
+    reference = _repeat(-30.1)
+    reference["acoustic"].update({
+        "capture_geometry": "reference_axis",
+        "gating": {"applied": True, "f_valid_floor_hz": 150.0},
+        "overlap_levels": [{
+            "fc_hz": 1000.0,
+            "above_validity_floor": True,
+            "usable": True,
+        }],
+    })
+    reference["placement_proof"] = _reference_axis_proof()
+
+    result = aggregate_driver_repeats([near, reference])
+
+    assert result["accepted"] == 1
+    assert result["per_repeat"][1]["reject_reason"] == "capture_context_mismatch"
+
+
+def test_aggregate_never_mixes_reference_axis_placement_bindings():
+    repeats = []
+    for comparison_hex, level in (("a", -30.0), ("b", -30.1)):
+        repeat = _repeat(level)
+        repeat["acoustic"].update({
+            "capture_geometry": "reference_axis",
+            "gating": {"applied": True, "f_valid_floor_hz": 150.0},
+            "overlap_levels": [{
+                "fc_hz": 1000.0,
+                "above_validity_floor": True,
+                "usable": True,
+            }],
+        })
+        repeat["placement_proof"] = _reference_axis_proof(
+            comparison_hex=comparison_hex
+        )
+        repeats.append(repeat)
+
+    result = aggregate_driver_repeats(repeats)
+
+    assert result["accepted"] == 1
+    assert result["per_repeat"][1]["reject_reason"] == "capture_context_mismatch"
+
+
+def test_aggregate_accepts_fresh_relay_binding_for_each_fixed_axis_repeat():
+    repeats = []
+    for index, level in enumerate((-30.0, -30.1, -29.9), start=1):
+        repeat = _repeat(level)
+        repeat["acoustic"].update({
+            "capture_geometry": "reference_axis",
+            "gating": {"applied": True, "f_valid_floor_hz": 150.0},
+            "overlap_levels": [{
+                "fc_hz": 1000.0,
+                "above_validity_floor": True,
+                "usable": True,
+            }],
+        })
+        repeat["placement_proof"] = _reference_axis_proof(
+            relay_session_id=f"relay-reference-{index}"
+        )
+        repeat["placement_proof"]["acknowledgement_binding_sha256"] = (
+            f"{index:x}" * 64
+        )
+        repeats.append(repeat)
+
+    result = aggregate_driver_repeats(repeats)
+
+    assert result["accepted"] == 3
+    assert all(item["reject_reason"] is None for item in result["per_repeat"])
+
+
 def test_aggregate_woofer_bad_bottom_band_keeps_good_required_overlap():
     repeat = _repeat(-30.0, snr_verdict="insufficient")
     repeat["acoustic"]["overlap_levels"] = [
@@ -1156,7 +1320,7 @@ def test_aggregate_reads_real_driver_overlap_validity_shape_with_partial_pass():
 
     result = aggregate_driver_repeats([_repeat(-30.0), below, partial])
 
-    assert result["per_repeat"][1]["reject_reason"] == "no_usable_overlap"
+    assert result["per_repeat"][1]["reject_reason"] == "below_validity_floor"
     assert result["per_repeat"][1]["above_validity_floor"] is False
     assert result["per_repeat"][2]["reject_reason"] is None
     assert result["per_repeat"][2]["above_validity_floor"] is True
@@ -1415,6 +1579,33 @@ def test_driver_capture_unusable_emits_exactly_one_rejected_event(
     assert _events(caplog, "correction.crossover_capture_accepted") == []
 
 
+def test_reference_axis_unknown_floor_is_observable_on_rejected_event(
+    tmp_path: Path, caplog,
+):
+    result = _driver_result(
+        "unusable_capture",
+        capture_geometry="reference_axis",
+        gating={"applied": False, "f_valid_floor_hz": None},
+    )
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        out = record_driver_acoustic_capture(
+            _topology(),
+            _two_way(),
+            speaker_group_id="mono",
+            role="woofer",
+            captured_wav=tmp_path / "cap.wav",
+            sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+            analyze=lambda *a, **k: result,
+            record=lambda *a, **k: pytest.fail("record must not run"),
+        )
+
+    assert out["recorded"] is False
+    rejected = _events(caplog, "correction.crossover_capture_rejected")
+    assert len(rejected) == 1
+    assert "capture_geometry=reference_axis" in rejected[0]
+    assert "validity_floor_status=unknown" in rejected[0]
+
+
 def test_summed_capture_accepted_emits_exactly_one_lifecycle_event(caplog):
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         out = record_summed_acoustic_capture(
@@ -1526,6 +1717,16 @@ def _capture_summed(
         normalized_placement_proof,
     )
 
+    # Automatic alignment evidence is a fixed-reference-axis capture with an
+    # applied, finite IR-gating floor. Individual refusal tests corrupt these
+    # fields after persistence to exercise the decision boundary explicitly.
+    result = replace(
+        result,
+        capture_geometry="reference_axis",
+        gating={"applied": True, "f_valid_floor_hz": 100.0},
+        above_validity_floor=True,
+    )
+
     topology = topology or _topology()
     state_path = state_path or (tmp_path / "measurements.json")
     state = load_measurement_state(topology, state_path=state_path)
@@ -1617,6 +1818,7 @@ def _capture_summed(
         expect_null=result.expect_null,
         excitation=_alignment_excitation(preset, topology),
         placement_proof=placement_proof,
+        capture_geometry="reference_axis",
         analyze=lambda *a, **k: result,
         record=lambda topology, raw, **kwargs: record_summed_validation(
             topology,
@@ -2049,6 +2251,10 @@ def _valid_alignment_pair(tmp_path: Path) -> tuple[ActiveSpeakerPreset, dict]:
         "excitation_graph_mismatch",
         "malformed_clipping",
         "missing_applied_graph",
+        "near_field_geometry",
+        "unknown_floor",
+        "boolean_floor",
+        "below_floor",
     ),
 )
 def test_build_proposal_rejects_unadmitted_summed_decision_evidence(
@@ -2100,6 +2306,24 @@ def test_build_proposal_rejects_unadmitted_summed_decision_evidence(
             record["acoustic"]["mic_clipping"] = "yes"
     elif corruption == "missing_applied_graph":
         pass
+    elif corruption == "near_field_geometry":
+        for record in pair.values():
+            record["acoustic"]["capture_geometry"] = "near_field"
+    elif corruption == "unknown_floor":
+        for record in pair.values():
+            record["acoustic"]["gating"] = {
+                "applied": True,
+                "f_valid_floor_hz": None,
+            }
+    elif corruption == "boolean_floor":
+        for record in pair.values():
+            record["acoustic"]["gating"] = {
+                "applied": True,
+                "f_valid_floor_hz": True,
+            }
+    elif corruption == "below_floor":
+        for record in pair.values():
+            record["acoustic"]["above_validity_floor"] = False
     else:
         current = dict(measurements["active_comparison_set"])
         current["comparison_set_id"] = "f" * 32
@@ -2158,6 +2382,18 @@ def test_build_proposal_rejects_unadmitted_summed_decision_evidence(
     elif corruption == "missing_applied_graph":
         assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
             "summed_evidence_applied_graph_missing"
+        )
+    elif corruption == "near_field_geometry":
+        assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
+            "summed_evidence_geometry_invalid"
+        )
+    elif corruption in {"unknown_floor", "boolean_floor"}:
+        assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
+            "summed_evidence_validity_floor_unknown"
+        )
+    elif corruption == "below_floor":
+        assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
+            "summed_evidence_below_validity_floor"
         )
 
 

@@ -831,6 +831,70 @@ def test_measurements_do_not_carry_across_output_topology_changes(
     }
 
 
+@pytest.mark.parametrize(
+    "record_order",
+    (("near_field", "reference_axis"), ("reference_axis", "near_field")),
+)
+def test_driver_latest_indexes_are_geometry_scoped_in_both_record_orders(
+    tmp_path: Path,
+    record_order: tuple[str, str],
+) -> None:
+    """A fixed-axis response can never shadow near-field level evidence."""
+    from jasper.active_speaker.capture_geometry import (
+        REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID,
+    )
+
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    created_at = {
+        "near_field": "2026-07-12T12:00:00Z",
+        "reference_axis": "2026-07-12T12:01:00Z",
+    }
+    for geometry in record_order:
+        raw = {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": "heard_correct_driver",
+            "observed_mic_dbfs": -42.0,
+            "playback_id": f"playback-{geometry}",
+            "acoustic": {
+                # The proof policy is authoritative when it says fixed-axis;
+                # this deliberately exercises a mismatched legacy analyzer
+                # stamp on the reference record.
+                "capture_geometry": "near_field",
+            },
+        }
+        if geometry == "reference_axis":
+            raw["placement_proof"] = {
+                "policy_id": REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID,
+            }
+        record_driver_measurement(
+            topology,
+            raw,
+            safe_session=_safe_session(
+                role="woofer",
+                output_index=0,
+                playback_id=f"playback-{geometry}",
+            ),
+            state_path=state_path,
+            now=created_at[geometry],
+        )
+
+    payload = load_measurement_state(topology, state_path=state_path)
+    assert payload["latest_by_target"]["mono:woofer"]["created_at"] == (
+        created_at["near_field"]
+    )
+    assert payload["latest_reference_axis_by_target"]["mono:woofer"][
+        "created_at"
+    ] == created_at["reference_axis"]
+    assert payload["summary"]["latest_driver_measurements"]["mono:woofer"][
+        "created_at"
+    ] == created_at["near_field"]
+    assert payload["summary"]["latest_reference_axis_driver_measurements"][
+        "mono:woofer"
+    ]["created_at"] == created_at["reference_axis"]
+
+
 def test_new_level_run_invalidates_prior_comparison_set(tmp_path: Path) -> None:
     state_path = tmp_path / "measurements.json"
     topology = _topology()
@@ -1047,6 +1111,15 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
     ]
     aggregate = aggregate_driver_repeats(repeats)
     assert aggregate["accepted"] == 3
+    # The Lane B floor verdict is tri-state. A rejected unknown fixed-axis
+    # attempt can coexist with accepted evidence and must remain ``null`` in
+    # the compact durable projection, never be rewritten as safely above.
+    aggregate["per_repeat"][0]["above_validity_floor"] = None
+    aggregate["per_repeat"][0]["accepted"] = False
+    aggregate["per_repeat"][0]["reject_reason"] = "validity_floor_unknown"
+    aggregate["accepted"] = 2
+    aggregate["rejected"] = 1
+    aggregate["confidence"] = "reduced"
     winner = aggregate["aggregate_repeat"]
     assert winner is not None
 
@@ -1069,9 +1142,10 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
 
     record = state["driver_measurements"][-1]
     assert record["repeats"]["repeat_group_id"] == aggregate["repeat_group_id"]
-    assert record["repeats"]["accepted"] == 3
-    assert record["repeats"]["confidence"] == "normal"
+    assert record["repeats"]["accepted"] == 2
+    assert record["repeats"]["confidence"] == "reduced"
     assert len(record["repeats"]["per_repeat"]) == 3
+    assert record["repeats"]["per_repeat"][0]["above_validity_floor"] is None
     assert "aggregate_repeat" not in record["repeats"]
     assert [entry["artifact_path"] for entry in record["repeats"]["per_repeat"]] == [
         "repeat_captures/r0.wav",

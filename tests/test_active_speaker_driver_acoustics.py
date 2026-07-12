@@ -114,6 +114,19 @@ def test_write_driver_sweep_wav_rejects_bad_channel(tmp_path):
         da.write_driver_sweep_wav(out, target_channel=0, channel_count=0)
 
 
+def test_driver_analysis_rejects_unknown_capture_geometry(tmp_path):
+    sig, meta = _reference_sweep()
+    path = _write_capture(tmp_path, "capture.wav", sig)
+
+    with pytest.raises(da.DriverAcousticsError, match="capture_geometry"):
+        da.analyze_driver_capture(
+            path,
+            meta,
+            passband_hz=(40.0, 400.0),
+            capture_geometry="browser_invented",
+        )
+
+
 # ---------- per-driver verdicts ---------------------------------------------
 
 
@@ -1093,6 +1106,44 @@ def test_reference_axis_driver_unusable_when_floor_above_passband_ceiling(
     assert result.overlap_levels[0]["usable"] is False
 
 
+def test_reference_axis_driver_refuses_when_validity_floor_is_unknown(
+    tmp_path, monkeypatch
+):
+    """An ungateable fixed-axis IR is unknown, never implicitly above floor."""
+
+    sig, meta = _reference_sweep()
+    ir = firwin(1023, 400, fs=SR).astype(np.float64)
+    path = _write_capture(tmp_path, "woofer.wav", fftconvolve(sig, ir))
+
+    from jasper.audio_measurement import gating as gating_mod
+
+    def ungateable(signal_ir, _sample_rate, **_kwargs):
+        return signal_ir, {
+            "schema_version": 1,
+            "direct_peak_ms": 5.0,
+            "first_reflection_ms": None,
+            "window_ms": None,
+            "window": "half_hann_tail",
+            "f_valid_floor_hz": None,
+            "floor_source": None,
+        }
+
+    monkeypatch.setattr(gating_mod, "gate_impulse_response", ungateable)
+    result = da.analyze_driver_capture(
+        path,
+        meta,
+        passband_hz=(40.0, 400.0),
+        overlap_fcs=(200.0,),
+        capture_geometry="reference_axis",
+    )
+
+    assert result.verdict == da.VERDICT_UNUSABLE_CAPTURE
+    assert result.capture_geometry == "reference_axis"
+    assert result.gating is not None and result.gating["applied"] is False
+    assert result.overlap_levels[0]["above_validity_floor"] is None
+    assert result.overlap_levels[0]["usable"] is False
+
+
 def test_reference_axis_summed_unusable_when_shoulder_below_floor(
     tmp_path, monkeypatch
 ):
@@ -1153,6 +1204,9 @@ def test_capture_geometry_reference_axis_calls_real_gating_module(tmp_path):
     )
     assert result.gating is not None
     assert result.gating["exempt_reason"] is None
-    assert result.gating["applied"] in (True, False)  # either is a valid outcome
+    assert result.gating["applied"] in (True, False)
     if result.gating["applied"]:
         assert result.gating["f_valid_floor_hz"] > 0
+    else:
+        assert result.verdict == da.VERDICT_UNUSABLE_CAPTURE
+        assert result.capture_geometry == "reference_axis"

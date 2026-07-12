@@ -584,6 +584,12 @@ def _state(*, calibrated, in_phase_null=None, reverse_null=None, group="mono"):
                 "crossover_fc_hz": 1600.0,
                 "calibrated": calibrated,
                 "mic_clipping": False,
+                "capture_geometry": "reference_axis",
+                "gating": {
+                    "applied": True,
+                    "f_valid_floor_hz": 100.0,
+                },
+                "above_validity_floor": True,
             },
         }
         state["latest_summed_pairs_by_group"][group] = {

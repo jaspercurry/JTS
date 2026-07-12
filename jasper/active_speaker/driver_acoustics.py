@@ -189,6 +189,10 @@ class DriverAcousticResult:
     # (the capture failed quality gating before deconvolution); otherwise always
     # populated, exempt (near-field) or applied (reference-axis).
     gating: dict[str, Any] | None = None
+    # Server-owned geometry derived from the verified placement policy. This
+    # lets repeat admission distinguish a legacy near-field record from a
+    # reference-axis record whose validity floor could not be established.
+    capture_geometry: str = "near_field"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -209,6 +213,7 @@ class DriverAcousticResult:
             "snr": self.snr,
             "ambient": self.ambient,
             "gating": self.gating,
+            "capture_geometry": self.capture_geometry,
         }
 
 
@@ -247,10 +252,11 @@ class SummedAcousticResult:
     # (near-field/exempt) or found no floor issue; False only when a
     # reference-axis capture's floor makes the null undecidable (paired with
     # verdict=unusable_capture — see analyze_summed_crossover).
-    above_validity_floor: bool = True
+    above_validity_floor: bool | None = True
     near_validity_floor: bool = False
     # SC-2 gating block — see DriverAcousticResult.gating.
     gating: dict[str, Any] | None = None
+    capture_geometry: str = "near_field"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -270,6 +276,7 @@ class SummedAcousticResult:
             "above_validity_floor": self.above_validity_floor,
             "near_validity_floor": self.near_validity_floor,
             "gating": self.gating,
+            "capture_geometry": self.capture_geometry,
         }
 
 
@@ -362,6 +369,11 @@ def _capture_to_magnitude(
     ``gating`` dict is always populated (exempt or applied) whenever an IR
     exists at all.
     """
+    if capture_geometry not in {"near_field", "reference_axis"}:
+        raise DriverAcousticsError(
+            f"unsupported capture_geometry: {capture_geometry!r}"
+        )
+
     import numpy as np
 
     from jasper.audio_measurement import (
@@ -615,6 +627,36 @@ def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
     )
 
 
+def _validity_floor(
+    capture_geometry: str,
+    gating_block: Mapping[str, Any] | None,
+) -> tuple[bool, float | None]:
+    """Return ``(known, floor_hz)`` for one analyzer-owned geometry.
+
+    Near-field is explicitly exempt and therefore known with no floor. A
+    reference-axis capture is known only when the IR gate produced a finite,
+    positive floor. ``applied=False`` on that geometry means the IR was
+    ungateable, not that the room suddenly became reflection-free.
+    """
+
+    if capture_geometry == "near_field":
+        return True, None
+    if (
+        not isinstance(gating_block, Mapping)
+        or gating_block.get("applied") is not True
+    ):
+        return False, None
+    value = gating_block.get("f_valid_floor_hz")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or float(value) <= 0
+    ):
+        return False, None
+    return True, float(value)
+
+
 def _band_mean_db(freqs, mag_db, lo_hz: float, hi_hz: float) -> float | None:
     import numpy as np
 
@@ -668,6 +710,7 @@ def _overlap_band_levels(
     mic_clipping: bool,
     snr_bands: Sequence[Mapping[str, Any]] | None = None,
     validity_floor_hz: float | None = None,
+    validity_floor_known: bool = True,
 ) -> tuple[dict[str, Any], ...]:
     """Mean deconvolved magnitude in a one-octave band centred on each Fc.
 
@@ -691,9 +734,11 @@ def _overlap_band_levels(
     A "reduced" verdict does NOT force ``usable=False``: it is a
     reduced-confidence result, not a refusal.
 
-    ``validity_floor_hz`` is ``None`` when gating did not apply (near-field
-    capture, or a reference-axis capture with no floor issue) — every entry
-    is then ``above_validity_floor=True``. When a floor applies, an entry
+    ``validity_floor_hz`` is ``None`` for a near-field capture, whose explicit
+    gating exemption makes ``validity_floor_known=True`` and every entry
+    ``above_validity_floor=True``. An ungateable reference-axis capture passes
+    ``validity_floor_known=False``: every entry records the tri-state
+    ``above_validity_floor=None`` and is unusable. When a floor applies, an entry
     with ``fc < validity_floor_hz`` is marked ``above_validity_floor=False``
     (and thereby unusable); ``near_validity_floor`` is the advisory
     ``[floor, NEAR_FLOOR_RATIO * floor)`` reduced-confidence band and does
@@ -740,8 +785,12 @@ def _overlap_band_levels(
                 # log-symmetric SNR averaging, and the [lo, hi] octave is the
                 # confidence neighbourhood that must hold enough bins.
                 level_db = float(np.interp(fc, freqs, mag_db))
-        above = floor is None or fc >= floor
-        near = floor is not None and floor <= fc < NEAR_FLOOR_RATIO * floor
+        above = None if not validity_floor_known else floor is None or fc >= floor
+        near = bool(
+            validity_floor_known
+            and floor is not None
+            and floor <= fc < NEAR_FLOOR_RATIO * floor
+        )
         usable = (
             capture_usable
             and not silent
@@ -749,7 +798,7 @@ def _overlap_band_levels(
             and in_range
             and bins >= OVERLAP_MIN_BINS
             and math.isfinite(level_db)
-            and above
+            and above is True
         )
         worst = snr_policy.worst_band_verdict(snr_bands, lo, hi) if snr_bands else None
         snr_verdict = worst["verdict"] if worst else "unknown"
@@ -831,6 +880,7 @@ def analyze_driver_capture(
     calibrated = calibration is not None
 
     if freqs is None:
+        validity_known = capture_geometry == "near_field"
         return DriverAcousticResult(
             verdict=VERDICT_UNUSABLE_CAPTURE,
             present=False,
@@ -846,22 +896,22 @@ def analyze_driver_capture(
                 None, None, overlap_fcs,
                 capture_usable=False, silent=silent, mic_clipping=mic_clipping,
                 validity_floor_hz=None,
+                validity_floor_known=validity_known,
             ),
             fr_curve=None,
             calibrated=calibrated,
             snr=None,
             gating=None,
+            capture_geometry=capture_geometry,
         )
 
-    floor_hz = None
-    if gating_block is not None and gating_block.get("applied"):
-        floor_hz = gating_block.get("f_valid_floor_hz")
+    validity_known, floor_hz = _validity_floor(capture_geometry, gating_block)
     eff_lo = max(ANALYSIS_LO_HZ, floor_hz) if floor_hz is not None else ANALYSIS_LO_HZ
 
     band_lo = max(lo, eff_lo)
     band_hi = min(hi, ANALYSIS_HI_HZ)
 
-    if floor_hz is not None and band_lo >= band_hi:
+    if not validity_known or (floor_hz is not None and band_lo >= band_hi):
         # The validity floor sits at/above this driver's own passband
         # ceiling: the reference-axis capture cannot decide anything about
         # this driver at all. Near-field splice (Slice 1) is the product fix
@@ -882,11 +932,13 @@ def analyze_driver_capture(
                 freqs, mag_db, overlap_fcs,
                 capture_usable=True, silent=silent, mic_clipping=mic_clipping,
                 validity_floor_hz=floor_hz,
+                validity_floor_known=validity_known,
             ),
             fr_curve=_downsample_curve(freqs, mag_db),
             calibrated=calibrated,
             ambient=paired_ambient,
             gating=gating_block,
+            capture_geometry=capture_geometry,
         )
 
     in_band = _band_mean_db(freqs, mag_db, band_lo, band_hi)
@@ -967,12 +1019,14 @@ def analyze_driver_capture(
             capture_usable=True, silent=silent, mic_clipping=mic_clipping,
             snr_bands=snr_bands,
             validity_floor_hz=floor_hz,
+            validity_floor_known=validity_known,
         ),
         fr_curve=_downsample_curve(freqs, mag_db),
         calibrated=calibrated,
         snr=snr_block,
         ambient=paired_ambient,
         gating=gating_block,
+        capture_geometry=capture_geometry,
     )
 
 
@@ -1061,15 +1115,33 @@ def analyze_summed_crossover(
             snr=None,
             null_depth_capped=False,
             gating=None,
-            above_validity_floor=True,
+            above_validity_floor=(
+                True if capture_geometry == "near_field" else None
+            ),
             near_validity_floor=False,
+            capture_geometry=capture_geometry,
         )
 
-    floor_hz = None
-    if gating_block is not None and gating_block.get("applied"):
-        floor_hz = gating_block.get("f_valid_floor_hz")
+    validity_known, floor_hz = _validity_floor(capture_geometry, gating_block)
 
     lower_shoulder_hz = crossover_fc_hz / 2.0
+    if not validity_known:
+        return SummedAcousticResult(
+            verdict=VERDICT_UNUSABLE_CAPTURE,
+            null_depth_db=float("nan"),
+            crossover_fc_hz=crossover_fc_hz,
+            observed_mic_dbfs=report.rms_dbfs,
+            mic_clipping=mic_clipping,
+            quality=quality_dict,
+            expect_null=expect_null,
+            fr_curve=None,
+            calibrated=calibrated,
+            ambient=paired_ambient,
+            gating=gating_block,
+            above_validity_floor=None,
+            near_validity_floor=False,
+            capture_geometry=capture_geometry,
+        )
     if floor_hz is not None:
         if crossover_fc_hz < floor_hz or lower_shoulder_hz < floor_hz:
             # The room prevented a low-frequency decision here (spec:
@@ -1089,6 +1161,7 @@ def analyze_summed_crossover(
                 gating=gating_block,
                 above_validity_floor=False,
                 near_validity_floor=False,
+                capture_geometry=capture_geometry,
             )
         from jasper.audio_measurement.gating import NEAR_FLOOR_RATIO
 
@@ -1165,4 +1238,5 @@ def analyze_summed_crossover(
         gating=gating_block,
         above_validity_floor=above_validity_floor,
         near_validity_floor=near_validity_floor,
+        capture_geometry=capture_geometry,
     )

@@ -417,15 +417,44 @@ def _summed_test_id(raw: Mapping[str, Any]) -> str | None:
     return str(value).strip() if value else None
 
 
-def _capture_geometry(raw: Mapping[str, Any]) -> str:
-    """Validate the SC-2 capture-geometry vocabulary from a browser request.
+def _driver_capture_geometry(
+    placement_proof: Mapping[str, Any] | None,
+    active_comparison_set: Mapping[str, Any] | None = None,
+    *,
+    speaker_group_id: str = "",
+    role: str = "",
+    target_fingerprint: str = "",
+) -> str:
+    """Return the analyzer geometry bound by server-owned placement proof."""
 
-    Defaults to ``"near_field"`` (today's shipped driver capture) for any
-    missing or unrecognized value, never propagating an arbitrary client
-    string into the analysis layer.
-    """
-    geo = raw.get("capture_geometry")
-    return geo if geo in ("near_field", "reference_axis") else "near_field"
+    from jasper.active_speaker.capture_geometry import driver_capture_geometry
+
+    return driver_capture_geometry(
+        placement_proof,
+        active_comparison_set,
+        speaker_group_id=speaker_group_id,
+        role=role,
+        target_fingerprint=target_fingerprint,
+    )
+
+
+def _summed_capture_geometry(
+    placement_proof: Mapping[str, Any] | None,
+    active_comparison_set: Mapping[str, Any] | None = None,
+    *,
+    speaker_group_id: str = "",
+    target_fingerprint: str = "",
+) -> str:
+    """Return summed geometry bound by the server-owned placement proof."""
+
+    from jasper.active_speaker.capture_geometry import summed_capture_geometry
+
+    return summed_capture_geometry(
+        placement_proof,
+        active_comparison_set,
+        speaker_group_id=speaker_group_id,
+        target_fingerprint=target_fingerprint,
+    )
 
 
 def status_payload() -> dict[str, Any]:
@@ -542,6 +571,15 @@ def _driver_target_fingerprint(
     return ""
 
 
+def _summed_target_fingerprint(topology: Any, *, group_id: str) -> str:
+    from jasper.active_speaker.measurement import active_summed_targets
+
+    for target in active_summed_targets(topology):
+        if target.get("speaker_group_id") == group_id:
+            return str(target.get("group_fingerprint") or "")
+    return ""
+
+
 def _finalize_driver_repeat_set(
     *,
     topology: Any,
@@ -590,6 +628,26 @@ def _finalize_driver_repeat_set(
     preset = winner["preset"]
     if not isinstance(analysis_kwargs, Mapping):
         raise RuntimeError("accepted crossover repeats lost finalization context")
+    winner_proof = winner.get("placement_proof")
+    winner_acoustic = _mapping_value(winner.get("acoustic"))
+    if not isinstance(winner_proof, Mapping):
+        raise RuntimeError("accepted crossover repeats lost their placement proof")
+    try:
+        final_geometry = _driver_capture_geometry(
+            winner_proof,
+            comparison_set,
+            speaker_group_id=speaker_group_id,
+            role=role,
+            target_fingerprint=target_fingerprint,
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "accepted crossover repeats have an invalid or stale placement proof"
+        ) from exc
+    if winner_acoustic.get("capture_geometry") != final_geometry:
+        raise RuntimeError(
+            "accepted crossover repeats have conflicting placement geometry"
+        )
     winner_path = Path(str(winner.get("wav_path") or ""))
     bundle_dir = (
         Path(str(winner["bundle_dir"])) if winner.get("bundle_dir") else None
@@ -861,6 +919,12 @@ def record_driver_capture(
             "run the driver level check again before measuring"
         )
     measurements = load_measurement_state(topology)
+    comparison_set = measurements.get("active_comparison_set")
+    target_fingerprint = (
+        _driver_target_fingerprint(topology, group_id=group_id, role=role)
+        if placement_proof is not None
+        else ""
+    )
     floor_evidence = current_driver_floor_evidence(
         topology,
         measurements,
@@ -938,7 +1002,13 @@ def record_driver_capture(
         calibration_level=load_calibration_level_state(),
         safe_session=None,
         durable_floor_confirmation=floor_evidence.get("confirmation"),
-        capture_geometry=_capture_geometry(raw),
+        capture_geometry=_driver_capture_geometry(
+            placement_proof,
+            comparison_set if isinstance(comparison_set, Mapping) else None,
+            speaker_group_id=group_id,
+            role=role,
+            target_fingerprint=target_fingerprint,
+        ),
     )
     if repeat_store is None:
         payload = record_driver_acoustic_capture(
@@ -949,16 +1019,16 @@ def record_driver_capture(
             **analysis_kwargs,
         )
     else:
-        comparison_set = measurements.get("active_comparison_set")
         if not isinstance(comparison_set, Mapping):
             raise ValueError(
                 "the crossover measurement context or repeat admission changed; "
                 "run the level check again"
             )
+        if not target_fingerprint:
+            target_fingerprint = _driver_target_fingerprint(
+                topology, group_id=group_id, role=role
+            )
         comparison_set_id = str(comparison_set.get("comparison_set_id") or "")
-        target_fingerprint = _driver_target_fingerprint(
-            topology, group_id=group_id, role=role
-        )
         reservation = raw.get("repeat_reservation")
         reservation = reservation if isinstance(reservation, Mapping) else {}
         reservation_token = str(reservation.get("token") or "")
@@ -1218,6 +1288,17 @@ def record_summed_capture(
         ambient_duration_s=raw.get("ambient_duration_s"),
     )
     group_id = str(raw.get("speaker_group_id") or "").strip()
+    from jasper.active_speaker.measurement import load_measurement_state
+
+    measurements = (
+        load_measurement_state(topology) if placement_proof is not None else {}
+    )
+    comparison_set = measurements.get("active_comparison_set")
+    target_fingerprint = (
+        _summed_target_fingerprint(topology, group_id=group_id)
+        if placement_proof is not None
+        else ""
+    )
     bundle_dir, capture_relpath = _resolve_bundle_for_capture(
         topology,
         kind="summed",
@@ -1263,7 +1344,12 @@ def record_summed_capture(
             else None
         ),
         calibration_level=load_calibration_level_state(),
-        capture_geometry=_capture_geometry(raw),
+        capture_geometry=_summed_capture_geometry(
+            placement_proof,
+            comparison_set if isinstance(comparison_set, Mapping) else None,
+            speaker_group_id=group_id,
+            target_fingerprint=target_fingerprint,
+        ),
         bundle_ref=bundle_ref,
     )
     payload["measurement_mode"] = measurement_mode
