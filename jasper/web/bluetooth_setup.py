@@ -55,6 +55,7 @@ from ..bluetooth.adapter import (
     state as adapter_state,
 )
 from ..bluetooth.engine import BluetoothEngine
+from ..log_event import log_event
 
 # Default scan duration when the user clicks Scan. Server-side
 # enforced — even if the user closes the tab the scan auto-stops.
@@ -489,6 +490,12 @@ def _start_pair_stream(mac: str) -> None:
             async for event in dispatcher.engine.pair(mac_u):
                 await q.put(event)
         except Exception as e:  # noqa: BLE001
+            log_event(
+                logger,
+                "bluetooth.pair_failed",
+                level=logging.ERROR,
+                exc_info=True,
+            )
             await q.put({"stage": "error", "message": str(e)})
         finally:
             await q.put(None)  # sentinel
