@@ -4364,9 +4364,9 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return result
 
 
-def _reset_accepts_target_config_path(reset_fn: Any) -> bool:
+def _accepts_target_config_path(fn: Any) -> bool:
     try:
-        params = inspect.signature(reset_fn).parameters
+        params = inspect.signature(fn).parameters
     except (TypeError, ValueError):
         return True
     if "target_config_path" in params:
@@ -4395,7 +4395,7 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         target = _resolve_reset_target(sess, cam)
         reset_kwargs = (
             {"target_config_path": target}
-            if _reset_accepts_target_config_path(sess.reset)
+            if _accepts_target_config_path(sess.reset)
             else {}
         )
         _run_async(sess.reset(_set, **reset_kwargs), timeout=15.0)
@@ -4481,7 +4481,7 @@ def _maybe_auto_revert(sess: Any) -> bool:
         target = _resolve_reset_target(sess, cam)
         revert_kwargs = (
             {"target_config_path": target}
-            if _auto_revert_accepts_target(sess.auto_revert)
+            if _accepts_target_config_path(sess.auto_revert)
             else {}
         )
         return bool(
@@ -4494,25 +4494,6 @@ def _maybe_auto_revert(sess: Any) -> bool:
         if getattr(sess, "auto_revert_outcome", None) is None:
             sess.auto_revert_outcome = {"result": "failed", "at": time.time()}
         return False
-
-
-def _auto_revert_accepts_target(revert_fn: Any) -> bool:
-    """True when ``auto_revert`` accepts a ``target_config_path`` kwarg.
-
-    Mirrors ``_reset_accepts_target_config_path`` so a duck-typed session
-    stand-in without the kwarg still works (the session falls back to its
-    captured pre-apply config).
-    """
-    try:
-        params = inspect.signature(revert_fn).parameters
-    except (TypeError, ValueError):
-        return True
-    if "target_config_path" in params:
-        return True
-    return any(
-        param.kind is inspect.Parameter.VAR_KEYWORD
-        for param in params.values()
-    )
 
 
 async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
