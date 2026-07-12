@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import math
 import os
 import time
@@ -23,11 +24,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
+from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
 from ._common import issue as _issue
 from .calibration_level import classify_mic_meter
 from .safe_playback import playback_target_signature
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 MEASUREMENT_STATE_KIND = "jts_active_speaker_measurements"
@@ -341,6 +345,17 @@ def start_active_comparison_set(
     persisted["updated_at"] = created_at
     out = _with_summary(topology, persisted)
     _write_state(path, out)
+    event_fields: dict[str, Any] = {}
+    # SC-4's commissioning-bundle writer stamps this later; absent today, so
+    # the field is simply omitted (design doc "Structured events": fields are
+    # included "when available, omit when not").
+    bundle_session_id = comparison_set.get("bundle_session_id")
+    if bundle_session_id:
+        event_fields["session"] = str(bundle_session_id)
+    event_fields["group"] = ",".join(sorted(_group_ids(topology)))
+    event_fields["calibration_id"] = comparison_set.get("calibration_id")
+    event_fields["comparison_set_fingerprint"] = comparison_set.get("fingerprint")
+    log_event(logger, "correction.crossover_session_started", **event_fields)
     return comparison_set
 
 
