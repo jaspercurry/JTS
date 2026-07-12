@@ -16,6 +16,7 @@ phone captures lives in ``test_active_speaker_baseline_profile.py``.
 """
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 
 from jasper.active_speaker.baseline_profile import (
@@ -75,9 +76,13 @@ def _measurements(*driver_specs) -> dict:
     comparison_set["fingerprint"] = comparison_set_fingerprint(comparison_set)
     latest: dict = {}
     for group, role, verdict, overlaps in driver_specs:
+        target_fingerprint = hashlib.sha256(
+            f"{group}:{role}".encode("utf-8")
+        ).hexdigest()
         latest[f"{group}:{role}"] = {
             "speaker_group_id": group,
             "role": role,
+            "target_fingerprint": target_fingerprint,
             "excitation": {
                 "schema_version": 1,
                 "scope": "sweep_plus_role_varying_commission_gain",
@@ -97,7 +102,7 @@ def _measurements(*driver_specs) -> dict:
                 "capture_page_build": "20260711.1",
                 "speaker_group_id": group,
                 "role": role,
-                "target_fingerprint": "",
+                "target_fingerprint": target_fingerprint,
                 "comparison_set_id": comparison_set["comparison_set_id"],
                 "comparison_set_fingerprint": comparison_set["fingerprint"],
             },

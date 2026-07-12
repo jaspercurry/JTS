@@ -176,6 +176,24 @@ The product is three tiers:
   them at reduced confidence; fewer than two refuses the set.
   This closes the prior live-hardware `acoustic.snr: null` path without making
   the probe's raw RMS an acoustic SNR verdict.
+- **Lane B fixed-axis admission contract (2026-07-12).** Driver analysis no
+  longer accepts `capture_geometry` from the browser. It derives near-field vs
+  reference-axis from a complete relay proof revalidated against the active
+  comparison set, physical target fingerprint, group, role, capture build, and
+  acknowledgement/session binding. Summed analysis uses the same proof seam;
+  browser geometry is never authoritative. The future LF far-field capture
+  enters the existing repeat admission, controlled
+  ambient, excitation ledger, placement proof, bundle, and measurement-state
+  path. Reference-axis IR gating is tri-state: a finite measured/search-bound
+  floor is known, a crossover below it is invalid, and an ungateable IR is
+  unknown. Unknown refuses the repeat and persists as JSON `null`; it is never
+  treated as implicitly above the floor. A fixed-axis repeat also requires one
+  complete immutable placement/comparison binding, and near-field/fixed-axis or
+  cross-binding repeats cannot share an aggregate. Automatic summed alignment
+  independently requires fixed-axis geometry, an applied finite validity floor,
+  and `above_validity_floor is True`. Measurement state keeps near-field and
+  fixed-axis latest-record indexes separate, so a later far-field capture cannot
+  replace the near-field evidence used for level trims.
 
 ### The gaps (worktree-confirmed)
 - ~~**Active-speaker measurement loop is built but UNWIRED.**~~ **CLOSED.**

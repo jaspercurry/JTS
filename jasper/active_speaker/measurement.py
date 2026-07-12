@@ -42,6 +42,7 @@ from jasper.output_topology import OutputTopology
 
 from ._common import issue as _issue, region_key as _region_key
 from .calibration_level import classify_mic_meter
+from .capture_geometry import REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID
 from .profile import ADJACENT_PAIRS_BY_WAY
 from .safe_playback import playback_target_signature
 
@@ -336,6 +337,7 @@ def _base_state(path: Path) -> dict[str, Any]:
         "summed_tests": [],
         "summed_validations": [],
         "latest_by_target": {},
+        "latest_reference_axis_by_target": {},
         "latest_summed_tests": {},
         "latest_summed_by_group": {},
         "latest_summed_pairs_by_group": {},
@@ -487,9 +489,21 @@ def _latest_by_key(
 def _latest_current_driver_records(
     records: list[dict[str, Any]],
     targets: list[dict[str, Any]],
-) -> tuple[dict[str, dict[str, Any]], int]:
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    int,
+]:
+    """Return current driver evidence in geometry-scoped latest indexes.
+
+    ``latest_by_target`` remains the near-field/legacy level-trim surface.
+    Fixed-axis captures are deliberately separate so recording one cannot
+    shadow the near-field response that baseline level matching consumes.
+    """
+
     target_by_id = {target["target_id"]: target for target in targets}
-    latest: dict[str, dict[str, Any]] = {}
+    latest_near_field: dict[str, dict[str, Any]] = {}
+    latest_reference_axis: dict[str, dict[str, Any]] = {}
     stale_count = 0
     for record in reversed(records):
         target_id = record.get("target_id")
@@ -497,10 +511,25 @@ def _latest_current_driver_records(
             continue
         target = target_by_id[target_id]
         if record.get("target_fingerprint") == target.get("target_fingerprint"):
-            latest.setdefault(target_id, record)
+            acoustic = record.get("acoustic")
+            acoustic_geometry = (
+                acoustic.get("capture_geometry")
+                if isinstance(acoustic, Mapping)
+                else None
+            )
+            proof = record.get("placement_proof")
+            proof_policy = (
+                proof.get("policy_id") if isinstance(proof, Mapping) else None
+            )
+            is_reference_axis = bool(
+                acoustic_geometry == "reference_axis"
+                or proof_policy == REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID
+            )
+            index = latest_reference_axis if is_reference_axis else latest_near_field
+            index.setdefault(target_id, record)
         else:
             stale_count += 1
-    return latest, stale_count
+    return latest_near_field, latest_reference_axis, stale_count
 
 
 def _latest_current_summed_records(
@@ -830,7 +859,11 @@ def current_driver_floor_evidence(
 def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any]:
     driver_targets = active_driver_targets(topology)
     summed_targets = active_summed_targets(topology)
-    latest_by_target, stale_driver_count = _latest_current_driver_records(
+    (
+        latest_by_target,
+        latest_reference_axis_by_target,
+        stale_driver_count,
+    ) = _latest_current_driver_records(
         state.get("driver_measurements", []),
         driver_targets,
     )
@@ -892,6 +925,9 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         "summed_validation_complete": summed_complete,
         "latest_driver_measurements": latest_by_target,
         "latest_driver_checks": latest_by_target,
+        "latest_reference_axis_driver_measurements": (
+            latest_reference_axis_by_target
+        ),
         "latest_summed_tests": latest_summed_tests_by_group,
         "latest_summed_validations": latest_summed_by_group,
         "latest_summed_pairs_by_group": latest_summed_pairs_by_group,
@@ -950,6 +986,9 @@ def _with_summary(topology: OutputTopology, state: dict[str, Any]) -> dict[str, 
     out.update({
         "status": status,
         "latest_by_target": summary["latest_driver_measurements"],
+        "latest_reference_axis_by_target": summary[
+            "latest_reference_axis_driver_measurements"
+        ],
         "latest_summed_tests": summary["latest_summed_tests"],
         "latest_summed_by_group": summary["latest_summed_validations"],
         "latest_summed_pairs_by_group": summary["latest_summed_pairs_by_group"],
@@ -1106,6 +1145,12 @@ def _repeat_bool(value: Any, field: str) -> bool:
     return value
 
 
+def _repeat_optional_bool(value: Any, field: str) -> bool | None:
+    if value is None:
+        return None
+    return _repeat_bool(value, field)
+
+
 def _repeat_artifact_path(value: Any) -> str | None:
     if value is None:
         return None
@@ -1172,7 +1217,7 @@ def _durable_repeat_summary(raw: Any) -> dict[str, Any] | None:
                 item["estimated_snr_db"], "per_repeat.estimated_snr_db"
             ),
             "clipping": _repeat_bool(item["clipping"], "per_repeat.clipping"),
-            "above_validity_floor": _repeat_bool(
+            "above_validity_floor": _repeat_optional_bool(
                 item["above_validity_floor"], "per_repeat.above_validity_floor"
             ),
             "level_dbfs": _repeat_number(
