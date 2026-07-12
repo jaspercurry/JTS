@@ -24,8 +24,13 @@ environment — same technique as ``tests/test_outputd_wiring.py``).
 """
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
+
+import pytest
+import yaml
+from yaml.nodes import MappingNode, ScalarNode
 
 from jasper.audio_io import TtsPlayout
 
@@ -110,9 +115,43 @@ def test_outputd_mixer_reexports_shared_tts_gain_helpers() -> None:
         )
 
 
-_VOLUME_LIMIT_PAT = re.compile(
-    r"^\s*volume_limit:\s*(-?\d+(?:\.\d+)?)\s*$", re.MULTILINE
-)
+def _single_mapping_value(node: MappingNode, key: str, *, label: str):
+    values = [
+        value_node
+        for key_node, value_node in node.value
+        if isinstance(key_node, ScalarNode) and key_node.value == key
+    ]
+    assert len(values) == 1, (
+        f"{label}: expected exactly one {key!r} key, found {len(values)}"
+    )
+    return values[0]
+
+
+def _static_devices_volume_limit(text: str, *, label: str) -> float:
+    root = yaml.compose(text, Loader=yaml.SafeLoader)
+    assert isinstance(root, MappingNode), f"{label}: root must be a YAML mapping"
+    devices = _single_mapping_value(root, "devices", label=label)
+    assert isinstance(devices, MappingNode), f"{label}: devices must be a mapping"
+    volume_limit = _single_mapping_value(
+        devices,
+        "volume_limit",
+        label=f"{label}: devices",
+    )
+    assert isinstance(volume_limit, ScalarNode), (
+        f"{label}: devices.volume_limit must be a scalar"
+    )
+    assert volume_limit.tag in {
+        "tag:yaml.org,2002:float",
+        "tag:yaml.org,2002:int",
+    }, f"{label}: devices.volume_limit must be a YAML number"
+    try:
+        value = float(volume_limit.value)
+    except ValueError as exc:
+        raise AssertionError(
+            f"{label}: devices.volume_limit must be numeric"
+        ) from exc
+    assert math.isfinite(value), f"{label}: devices.volume_limit must be finite"
+    return value
 
 
 def test_every_static_camilladsp_config_caps_volume_at_zero_db() -> None:
@@ -120,17 +159,31 @@ def test_every_static_camilladsp_config_caps_volume_at_zero_db() -> None:
     assert yamls, "deploy/camilladsp/*.yml not found (moved?)"
     for path in yamls:
         rel = path.relative_to(REPO)
-        values = _VOLUME_LIMIT_PAT.findall(path.read_text())
-        assert values, (
-            f"{rel}: no devices.volume_limit — every JTS CamillaDSP "
-            "config must carry the 0.0 safety ceiling "
-            "(docs/HANDOFF-volume.md, AGENTS.md renderer section)."
+        text = path.read_text()
+        value = _static_devices_volume_limit(text, label=str(rel))
+        assert value <= 0.0, (
+            f"{rel}: devices.volume_limit {value} is positive — the project "
+            "safety ceiling caps the main fader at full scale (0 dB)."
         )
-        for value in values:
-            assert float(value) <= 0.0, (
-                f"{rel}: volume_limit {value} is positive — the project "
-                "safety ceiling caps the main fader at full scale (0 dB)."
-            )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "filters:\n  volume_limit: 0.0\ndevices:\n  samplerate: 48000\n",
+        "devices:\n  volume_limit: 0.0\ndevices: {volume_limit: 9.0}\n",
+        'devices:\n  volume_limit: 0.0\n"devices":\n  volume_limit: 9.0\n',
+        "devices:\n  volume_limit: 0.0\n  volume_limit: 9.0\n",
+        "devices:\n  playback:\n    volume_limit: 0.0\n",
+        'devices:\n  volume_limit: "0.0"\n',
+        "devices:\n  volume_limit: .nan\n",
+    ],
+)
+def test_static_camilla_volume_limit_pin_rejects_ambiguous_ownership(
+    text: str,
+) -> None:
+    with pytest.raises(AssertionError):
+        _static_devices_volume_limit(text, label="synthetic.yml")
 
 
 # Wireless-sub low-pass corner: the bond-config range/default lives in Python

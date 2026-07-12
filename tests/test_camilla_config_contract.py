@@ -363,6 +363,34 @@ def test_parse_camilla_devices_config_extracts_clock_and_outputd_lanes() -> None
     }
 
 
+def test_parse_camilla_devices_config_rejects_ambiguous_volume_limit() -> None:
+    assert "volume_limit" not in parse_camilla_devices_config(
+        "devices:\n"
+        "  volume_limit: 0.0\n"
+        "  volume_limit: 9.0\n"
+    )
+    assert "volume_limit" not in parse_camilla_devices_config(
+        "devices:\n"
+        "  volume_limit: 0.0\n"
+        "devices: {volume_limit: 9.0}\n"
+    )
+    for value in ("nan", "inf", "-inf"):
+        assert "volume_limit" not in parse_camilla_devices_config(
+            f"devices:\n  volume_limit: {value}\n"
+        )
+
+
+def test_parse_camilla_devices_config_ignores_nested_volume_limit() -> None:
+    for nested_block in ("playback", "metadata"):
+        parsed = parse_camilla_devices_config(
+            "devices:\n"
+            f"  {nested_block}:\n"
+            "    volume_limit: 0.0\n"
+        )
+
+        assert "volume_limit" not in parsed
+
+
 # --- G8: snd-aloop rate_adjust + async-resampler oscillation guard ---
 # The MIRROR of the lean-lane File-capture guard. The documented failure is the
 # metastable AirPlay-dropout oscillation when a snd-aloop capture

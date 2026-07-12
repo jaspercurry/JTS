@@ -305,38 +305,6 @@ def test_ensure_state_dir_uses_voice_state_directory_mode(tmp_path):
     assert stat.S_IMODE(state_dir.stat().st_mode) == 0o750
 
 
-def _camilla_volume_limit_ok(config: str, tmp_path: Path) -> bool:
-    config_path = tmp_path / "config.yml"
-    config_path.write_text(config, encoding="utf-8")
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            "source "
-            + shlex.quote(str(_INSTALL_SH))
-            + " >/dev/null && camilla_config_has_safe_volume_limit "
-            + shlex.quote(str(config_path)),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    return result.returncode == 0
-
-
-def test_camilla_volume_limit_accepts_unquoted_non_positive_values(tmp_path):
-    assert _camilla_volume_limit_ok("devices:\n  volume_limit: 0.0\n", tmp_path)
-    assert _camilla_volume_limit_ok("volume_limit: -3.5 # dB\n", tmp_path)
-
-
-def test_camilla_volume_limit_rejects_quoted_commented_or_positive_values(
-    tmp_path,
-):
-    assert not _camilla_volume_limit_ok('volume_limit: "0.0"\n', tmp_path)
-    assert not _camilla_volume_limit_ok("# volume_limit: 0.0\n", tmp_path)
-    assert not _camilla_volume_limit_ok("volume_limit: 0.1\n", tmp_path)
-
-
 def test_optional_firmware_builds_are_install_opt_in():
     """ESP32 satellites are optional accessories. Base speaker installs
     should stage firmware source but avoid PlatformIO builds unless the
