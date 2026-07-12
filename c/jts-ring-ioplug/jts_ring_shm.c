@@ -38,7 +38,15 @@ static int unlink_owned_ring(const char *path) {
 #ifdef JTS_RING_TESTING
     const char *forced_errno = getenv("JTS_RING_TEST_UNLINK_ERRNO");
     if (forced_errno != NULL && forced_errno[0] != '\0') {
-        errno = (int)strtol(forced_errno, NULL, 10);
+        int injected_errno = (int)strtol(forced_errno, NULL, 10);
+        if (injected_errno == ENOENT) {
+            // Model a concurrent reclaimer winning between our attach timeout
+            // and unlink: the pathname is genuinely gone, then our syscall
+            // reports ENOENT. One-shot so the retry can create normally.
+            unsetenv("JTS_RING_TEST_UNLINK_ERRNO");
+            (void)unlink(path);
+        }
+        errno = injected_errno;
         return -1;
     }
 #endif
@@ -46,13 +54,65 @@ static int unlink_owned_ring(const char *path) {
 }
 
 #ifdef JTS_RING_TESTING
-static void test_pause_after_exclusive_create(void) {
-    const char *delay_us = getenv("JTS_RING_TEST_CREATE_DELAY_US");
-    if (delay_us == NULL || delay_us[0] == '\0') return;
-    unsigned long us = strtoul(delay_us, NULL, 10);
-    struct timespec ts = {.tv_sec = (time_t)(us / 1000000ul),
-                          .tv_nsec = (long)((us % 1000000ul) * 1000ul)};
-    nanosleep(&ts, NULL);
+typedef struct {
+    uint64_t dev;
+    uint64_t ino;
+    int64_t size;
+} test_inode_observation_t;
+
+static int test_fd_from_env(const char *name) {
+    const char *value = getenv(name);
+    if (value == NULL || value[0] == '\0') return -1;
+    char *end = NULL;
+    long fd = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || fd < 0 || fd > INT_MAX) return -1;
+    return (int)fd;
+}
+
+static void test_write_all(int fd, const void *data, size_t len) {
+    const uint8_t *cursor = (const uint8_t *)data;
+    while (len > 0) {
+        ssize_t n = write(fd, cursor, len);
+        if (n > 0) {
+            cursor += (size_t)n;
+            len -= (size_t)n;
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return;
+        }
+    }
+}
+
+static void test_report_inode(int report_fd, int ring_fd,
+                              const struct stat *known_stat) {
+    if (report_fd < 0) return;
+    struct stat st;
+    if (known_stat != NULL) {
+        st = *known_stat;
+    } else if (fstat(ring_fd, &st) < 0) {
+        return;
+    }
+    test_inode_observation_t observation = {
+        .dev = (uint64_t)st.st_dev,
+        .ino = (uint64_t)st.st_ino,
+        .size = (int64_t)st.st_size,
+    };
+    test_write_all(report_fd, &observation, sizeof(observation));
+}
+
+static void test_barrier_after_exclusive_create(int fd) {
+    int ready_fd = test_fd_from_env("JTS_RING_TEST_CREATOR_READY_FD");
+    int release_fd = test_fd_from_env("JTS_RING_TEST_CREATOR_RELEASE_FD");
+    if (ready_fd < 0 || release_fd < 0) return;
+    test_report_inode(ready_fd, fd, NULL);
+    char release = '\0';
+    while (read(release_fd, &release, 1) < 0 && errno == EINTR) {
+    }
+}
+
+static void test_report_size_wait(int fd, const struct stat *st) {
+    test_report_inode(test_fd_from_env("JTS_RING_TEST_SIZE_WAIT_FD"), fd, st);
 }
 #endif
 
@@ -285,6 +345,9 @@ static void magic_wait_sleep(void) {
 static ring_attach_result_t wait_for_mappable_size(int fd, uint64_t deadline,
                                                    size_t *actual,
                                                    const char **reason) {
+#ifdef JTS_RING_TESTING
+    int size_wait_reported = 0;
+#endif
     for (;;) {
         struct stat st;
         if (fstat(fd, &st) < 0) {
@@ -295,6 +358,12 @@ static ring_attach_result_t wait_for_mappable_size(int fd, uint64_t deadline,
             *actual = (size_t)st.st_size;
             return RING_ATTACH_VALID;
         }
+#ifdef JTS_RING_TESTING
+        if (!size_wait_reported) {
+            test_report_size_wait(fd, &st);
+            size_wait_reported = 1;
+        }
+#endif
         if (jts_ring_monotonic_ns() >= deadline) return RING_ATTACH_TORN;
         magic_wait_sleep();
     }
@@ -397,7 +466,7 @@ static int ring_mapping_open(const char *path, const jts_ring_geometry_t *expect
         int create_fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0660);
         if (create_fd >= 0) {
 #ifdef JTS_RING_TESTING
-            test_pause_after_exclusive_create();
+            test_barrier_after_exclusive_create(create_fd);
 #endif
             int rc = init_created_mapping(create_fd, expected, out);
             if (rc != 0) {

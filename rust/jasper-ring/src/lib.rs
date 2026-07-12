@@ -574,7 +574,7 @@ fn attach_or_create(path: &str, expected: Geometry) -> io::Result<RingMapping> {
                         format!("ring {path:?} has no valid magic and is not reclaimable"),
                     ));
                 }
-                if let Err(e) = std::fs::remove_file(path) {
+                if let Err(e) = remove_owned_ring(path) {
                     if e.kind() == io::ErrorKind::NotFound {
                         continue; // another reclaimer won; retry create
                     }
@@ -629,11 +629,22 @@ fn init_created(fd: RawFd, g: Geometry) -> io::Result<RingMapping> {
 /// function closes the fd itself: either explicitly before mmap ownership is
 /// established, or through `RingMapping::drop` afterward.
 fn attach_existing(fd: RawFd, expected: Geometry) -> Result<RingMapping, AttachError> {
+    attach_existing_with_size_wait_hook(fd, expected, |_, _| {})
+}
+
+fn attach_existing_with_size_wait_hook<F>(
+    fd: RawFd,
+    expected: Geometry,
+    mut on_size_wait: F,
+) -> Result<RingMapping, AttachError>
+where
+    F: FnMut(RawFd, &libc::stat),
+{
     // One bounded budget covers both the creator's ftruncate and magic publish.
     // A zero/small file is not immediately torn: an O_EXCL winner may simply be
     // between open and ftruncate.
     let deadline_ns = monotonic_ns() + MAGIC_WAIT_TIMEOUT_MS * 1_000_000;
-    let actual_size = match wait_for_mappable_size(fd, deadline_ns) {
+    let actual_size = match wait_for_mappable_size(fd, deadline_ns, &mut on_size_wait) {
         Ok(size) => size,
         Err(e) => {
             unsafe { libc::close(fd) };
@@ -746,7 +757,15 @@ fn magic_wait_sleep() {
     unsafe { libc::nanosleep(&ts, std::ptr::null_mut()) };
 }
 
-fn wait_for_mappable_size(fd: RawFd, deadline_ns: u64) -> Result<usize, AttachError> {
+fn wait_for_mappable_size<F>(
+    fd: RawFd,
+    deadline_ns: u64,
+    on_size_wait: &mut F,
+) -> Result<usize, AttachError>
+where
+    F: FnMut(RawFd, &libc::stat),
+{
+    let mut size_wait_reported = false;
     loop {
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(fd, &mut st) } < 0 {
@@ -754,6 +773,10 @@ fn wait_for_mappable_size(fd: RawFd, deadline_ns: u64) -> Result<usize, AttachEr
         }
         if st.st_size as u64 >= HEADER_BYTES as u64 {
             return Ok(st.st_size as usize);
+        }
+        if !size_wait_reported {
+            on_size_wait(fd, &st);
+            size_wait_reported = true;
         }
         if monotonic_ns() >= deadline_ns {
             return Err(AttachError::MagicInvalid);
@@ -827,10 +850,41 @@ fn ensure_parent_dir(path: &str) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    // Per-test-thread hooks avoid process-global env races under Rust's parallel
+    // test runner. Product builds compile both overrides out entirely.
+    static TEST_OWNED_RING_DIR: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_RECLAIM_ERRNO: std::cell::Cell<Option<i32>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn remove_owned_ring(path: &str) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(injected_errno) = TEST_RECLAIM_ERRNO.with(|slot| slot.replace(None)) {
+        if injected_errno == libc::ENOENT {
+            // Model another reclaimer winning before our unlink. The pathname
+            // is genuinely removed, then this attempt observes NotFound.
+            let _ = std::fs::remove_file(path);
+        }
+        return Err(io::Error::from_raw_os_error(injected_errno));
+    }
+    std::fs::remove_file(path)
+}
+
 /// The reader may only unlink-and-recreate a magic-invalid file directly under
 /// the owned `/dev/shm/jts-ring/` root — a narrow-path check mirroring outputd's
 /// `is_owned_runtime_pipe_path`. A nested or foreign path is never reclaimed.
 fn is_owned_ring_path(path: &str) -> bool {
+    #[cfg(test)]
+    if let Some(is_owned) = TEST_OWNED_RING_DIR.with(|root| {
+        root.borrow()
+            .as_ref()
+            .map(|root| std::path::Path::new(path).parent() == Some(root.as_path()))
+    }) {
+        return is_owned;
+    }
     std::path::Path::new(path).parent() == Some(std::path::Path::new("/dev/shm/jts-ring"))
 }
 
@@ -952,6 +1006,7 @@ impl Drop for TestRingWriter {
 mod tests {
     use super::*;
     use std::os::fd::IntoRawFd;
+    use std::os::unix::fs::MetadataExt;
     use std::sync::mpsc;
 
     fn tmp_ring_path(tag: &str) -> String {
@@ -985,6 +1040,35 @@ mod tests {
         if let Some(parent) = std::path::Path::new(path).parent() {
             let _ = std::fs::remove_dir(parent);
         }
+    }
+
+    struct OwnedReclaimTestGuard;
+
+    impl OwnedReclaimTestGuard {
+        fn arm(path: &str, reclaim_errno: i32) -> Self {
+            let parent = std::path::Path::new(path).parent().unwrap().to_path_buf();
+            TEST_OWNED_RING_DIR.with(|root| *root.borrow_mut() = Some(parent));
+            TEST_RECLAIM_ERRNO.with(|slot| slot.set(Some(reclaim_errno)));
+            Self
+        }
+    }
+
+    impl Drop for OwnedReclaimTestGuard {
+        fn drop(&mut self) {
+            TEST_RECLAIM_ERRNO.with(|slot| slot.set(None));
+            TEST_OWNED_RING_DIR.with(|root| *root.borrow_mut() = None);
+        }
+    }
+
+    fn create_full_size_torn_ring(path: &str, g: Geometry) -> std::fs::Metadata {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap();
+        file.set_len(g.file_size() as u64).unwrap();
+        file.metadata().unwrap()
     }
 
     #[test]
@@ -1186,18 +1270,22 @@ mod tests {
 
     #[test]
     fn attacher_waits_for_live_creator_before_ftruncate() {
-        // Hold a real O_EXCL-created inode at size zero while another thread is
-        // already attaching. Size<header is not proof of a torn creator: the
-        // attacher must stay on this inode until ftruncate+magic completes.
+        // Hold a real O_EXCL-created inode at size zero. A test hook inside the
+        // production size-wait loop reports the competitor fd's dev/inode/size
+        // and blocks. Only after this thread proves that the competitor opened
+        // the exact zero-size original inode does it initialize the creator and
+        // release the competitor. No sleep establishes the race ordering.
         let path = tmp_ring_path("pre-ftruncate-race");
         let g = proto_geometry();
-        let creator_fd = std::fs::OpenOptions::new()
+        let creator_file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .open(&path)
-            .unwrap()
-            .into_raw_fd();
+            .unwrap();
+        let creator_metadata = creator_file.metadata().unwrap();
+        assert_eq!(creator_metadata.len(), 0);
+        let creator_fd = creator_file.into_raw_fd();
         let attach_fd = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -1205,18 +1293,38 @@ mod tests {
             .unwrap()
             .into_raw_fd();
 
-        let (ready_tx, ready_rx) = mpsc::channel();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
         let attacher = std::thread::spawn(move || {
-            ready_tx.send(()).unwrap();
-            attach_existing(attach_fd, g)
+            attach_existing_with_size_wait_hook(attach_fd, g, move |_, st| {
+                entered_tx
+                    .send((st.st_dev as u64, st.st_ino, st.st_size))
+                    .unwrap();
+                release_rx.recv().unwrap();
+            })
         });
-        ready_rx.recv().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(25));
+        let (attach_dev, attach_ino, attach_size) = entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("competitor must report entry into the production size-wait loop");
+        assert_eq!(
+            attach_size, 0,
+            "competitor must observe the pre-ftruncate inode"
+        );
+        assert_eq!(attach_dev, creator_metadata.dev());
+        assert_eq!(attach_ino, creator_metadata.ino());
+
         let creator_map = init_created(creator_fd, g).unwrap();
+        release_tx
+            .send(())
+            .expect("release competitor after creator publishes magic");
         let attached_map = match attacher.join().unwrap() {
             Ok(map) => map,
             Err(_) => panic!("attacher must wait for the live creator"),
         };
+
+        let final_metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(final_metadata.dev(), creator_metadata.dev());
+        assert_eq!(final_metadata.ino(), creator_metadata.ino());
 
         // A shared atomic round-trip proves both mappings still name the O_EXCL
         // winner's inode rather than a split-brain replacement.
@@ -1231,6 +1339,53 @@ mod tests {
         );
         drop(attached_map);
         drop(creator_map);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn owned_reclaim_enoent_retries_after_concurrent_reclaimer() {
+        // The injected ENOENT removes the torn inode first, exactly as another
+        // reclaimer winning the race would. This opener must retry and create a
+        // valid replacement rather than failing like the EACCES case below.
+        let path = tmp_ring_path("reclaim-enoent");
+        let g = proto_geometry();
+        let torn_metadata = create_full_size_torn_ring(&path, g);
+        let _hooks = OwnedReclaimTestGuard::arm(&path, libc::ENOENT);
+
+        let reader = RingReader::create_or_attach(&path, g)
+            .expect("concurrent-reclaimer ENOENT must retry create/attach");
+        let replacement_metadata = std::fs::metadata(&path).unwrap();
+        assert_ne!(
+            (replacement_metadata.dev(), replacement_metadata.ino()),
+            (torn_metadata.dev(), torn_metadata.ino()),
+            "retry must map a replacement for the concurrently removed torn inode"
+        );
+        assert_eq!(
+            reader
+                .map
+                .header_atomic(layout::OFF_MAGIC_QWORD)
+                .load(Ordering::Acquire) as u32,
+            MAGIC
+        );
+        drop(reader);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn owned_reclaim_eacces_fails_closed_without_retry() {
+        let path = tmp_ring_path("reclaim-eacces");
+        let g = proto_geometry();
+        let torn_metadata = create_full_size_torn_ring(&path, g);
+        let _hooks = OwnedReclaimTestGuard::arm(&path, libc::EACCES);
+
+        let err = match RingReader::create_or_attach(&path, g) {
+            Ok(_) => panic!("permission-denied reclaim must fail closed"),
+            Err(err) => err,
+        };
+        assert_eq!(err.raw_os_error(), Some(libc::EACCES));
+        let preserved_metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(preserved_metadata.dev(), torn_metadata.dev());
+        assert_eq!(preserved_metadata.ino(), torn_metadata.ino());
         cleanup(&path);
     }
 
