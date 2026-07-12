@@ -146,6 +146,19 @@ def test_read_json_object_leaves_stream_oserror_distinct():
         _common.read_json_object(handler, max_bytes=64)
 
 
+def test_read_json_object_maps_decoder_recursion_failure(monkeypatch):
+    def fail_decode(_text: str):
+        raise RecursionError("JSON nesting exceeds decoder depth")
+
+    monkeypatch.setattr(_common.json, "loads", fail_decode)
+    with pytest.raises(_common.JsonBodyError) as exc_info:
+        _common.read_json_object(
+            _json_request(b"{}", content_length="2"),
+            max_bytes=64,
+        )
+    assert exc_info.value.code == "invalid_json"
+
+
 def test_read_json_object_requires_positive_cap():
     with pytest.raises(ValueError, match="max_bytes must be positive"):
         _common.read_json_object(_json_request(), max_bytes=0)

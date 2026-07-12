@@ -706,7 +706,7 @@ def read_json_object(
         raise JsonBodyError("invalid_utf8", "JSON body must be valid UTF-8") from exc
     try:
         parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
         raise JsonBodyError("invalid_json", "invalid JSON body") from exc
     if not isinstance(parsed, dict):
         raise JsonBodyError("non_object", "JSON body must be an object")

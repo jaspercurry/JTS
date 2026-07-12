@@ -344,6 +344,14 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     status=HTTPStatus.BAD_REQUEST,
                 )
                 return
+            mac = ""
+            if path in {"/pair", "/connect", "/disconnect", "/forget"}:
+                raw_mac = body.get("mac")
+                if isinstance(raw_mac, str):
+                    mac = raw_mac.strip()
+                if not mac:
+                    self._send_json({"error": "missing mac"}, status=400)
+                    return
             try:
                 if path == "/power":
                     on = body["on"]
@@ -384,10 +392,6 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     )
                     return
                 if path == "/pair":
-                    mac = (body.get("mac") or "").strip()
-                    if not mac:
-                        self._send_json({"error": "missing mac"}, status=400)
-                        return
                     # Pair is fully streaming — return ok now; the
                     # client opens /pair/<mac>/stream to consume events.
                     # Server-side: kick off the pair coroutine on the
@@ -397,7 +401,6 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     self._send_json({"ok": True})
                     return
                 if path == "/connect":
-                    mac = (body.get("mac") or "").strip()
                     ok, msg = _dispatch().run(
                         _dispatch().engine.connect(mac),
                     )
@@ -407,7 +410,6 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     self._send_json({"ok": True, "message": msg})
                     return
                 if path == "/disconnect":
-                    mac = (body.get("mac") or "").strip()
                     ok, msg = _dispatch().run(
                         _dispatch().engine.disconnect(mac),
                     )
@@ -417,7 +419,6 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     self._send_json({"ok": True, "message": msg})
                     return
                 if path == "/forget":
-                    mac = (body.get("mac") or "").strip()
                     ok, msg = _dispatch().run(
                         _dispatch().engine.forget(mac),
                     )

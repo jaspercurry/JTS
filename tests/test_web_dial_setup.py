@@ -153,7 +153,14 @@ def test_firmware_banner_escapes_path() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _drive(method: str, path: str, *, body: bytes = b"", headers: str = "") -> tuple[int, bytes]:
+def _drive(
+    method: str,
+    path: str,
+    *,
+    body: bytes = b"",
+    headers: str = "",
+    content_length: str | None = None,
+) -> tuple[int, bytes]:
     """Run one request through the handler and return (status, raw response).
 
     Builds a raw HTTP request, feeds it to a Handler whose socket I/O is
@@ -161,7 +168,9 @@ def _drive(method: str, path: str, *, body: bytes = b"", headers: str = "") -> t
     """
     handler_cls = dial_setup._make_handler()
     extra = headers
-    if body:
+    if content_length is not None:
+        extra += f"Content-Length: {content_length}\r\n"
+    elif body:
         extra += f"Content-Length: {len(body)}\r\n"
     raw = (
         f"{method} {path} HTTP/1.1\r\n"
@@ -254,6 +263,62 @@ def test_post_onboard_rejects_bad_port(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert status == 400
     assert b"invalid port" in resp
+    called.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("body", "content_length"),
+    (
+        (b"{", None),
+        (b"[]", None),
+        (b"{}", None),
+        (b'{"port":"/dev/ttyACM0"}', "not-a-number"),
+        (b"", "1000001"),
+        (b'{"port":"/dev/ttyACM0"}', "25"),
+    ),
+)
+def test_post_onboard_rejects_invalid_json_body_without_running_onboard(
+    monkeypatch: pytest.MonkeyPatch,
+    body: bytes,
+    content_length: str | None,
+) -> None:
+    monkeypatch.setattr(dial_setup, "guard_mutating_request", lambda h: True)
+    called = mock.Mock()
+    monkeypatch.setattr(dial_setup, "_run_onboard", called)
+
+    status, resp = _drive(
+        "POST",
+        "/onboard",
+        body=body,
+        content_length=content_length,
+        headers="Content-Type: application/json\r\n",
+    )
+
+    assert status == 400
+    assert b'{"ok": false, "error": "missing or invalid port"}' in resp
+    called.assert_not_called()
+
+
+def test_post_onboard_maps_stream_oserror_without_running_onboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_read(*_args, **_kwargs):
+        raise OSError("socket reset")
+
+    monkeypatch.setattr(dial_setup, "guard_mutating_request", lambda h: True)
+    monkeypatch.setattr(dial_setup, "read_json_object", fail_read)
+    called = mock.Mock()
+    monkeypatch.setattr(dial_setup, "_run_onboard", called)
+
+    status, resp = _drive(
+        "POST",
+        "/onboard",
+        body=b"x",
+        headers="Content-Type: application/json\r\n",
+    )
+
+    assert status == 400
+    assert b'{"ok": false, "error": "missing or invalid port"}' in resp
     called.assert_not_called()
 
 

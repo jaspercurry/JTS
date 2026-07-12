@@ -133,6 +133,20 @@ def test_chat_json_adapter_preserves_public_error_messages(
     assert handler._read_json() == expected
 
 
+def test_chat_json_adapter_leaves_stream_oserror_distinct():
+    class BrokenReader:
+        def read(self, _length):
+            raise OSError("socket reset")
+
+    handler_cls = chat_setup._make_handler()
+    handler = handler_cls.__new__(handler_cls)
+    handler.headers = {"Content-Length": "1"}
+    handler.rfile = BrokenReader()
+
+    with pytest.raises(OSError, match="socket reset"):
+        handler._read_json()
+
+
 @pytest.fixture
 def chat_server(tmp_path, monkeypatch):
     db_path = tmp_path / "conversation_history.db"
