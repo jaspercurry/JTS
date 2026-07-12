@@ -343,16 +343,6 @@ def handle_summed_capture_sweep(
     )
 
 
-def handle_driver_capture(
-    handler: Any,
-    wav_body: bytes,
-) -> tuple[dict[str, Any], HTTPStatus]:
-    from . import correction_crossover_backend as backend
-
-    payload = backend.record_driver_capture(_request_payload(handler), wav_body)
-    return payload, HTTPStatus.OK
-
-
 def handle_summed_capture(
     handler: Any,
     wav_body: bytes,
@@ -713,6 +703,7 @@ def build_crossover_relay_run_and_consume(
     target_fingerprint: str = "",
     current_comparison_set: Callable[[], Mapping[str, Any]] | None = None,
     validate_current_context: Callable[[], None] | None = None,
+    ambient_duration_s: float | None = None,
 ) -> Callable[[Any, Any], Any]:
     """Return the relay ``run_and_consume(client, pi_session)`` coroutine.
 
@@ -753,8 +744,19 @@ def build_crossover_relay_run_and_consume(
 
             frozen_driver_preset = ActiveSpeakerPreset.from_mapping(preset_raw)
 
-    async def _play() -> dict[str, Any]:
+    if ambient_duration_s is None:
+        from jasper.active_speaker.test_signal_plan import (
+            CROSSOVER_AMBIENT_DURATION_S,
+        )
+
+        ambient_duration_s = CROSSOVER_AMBIENT_DURATION_S
+    ambient_duration_s = max(0.0, float(ambient_duration_s))
+
+    async def _play(
+        on_sweep_ready: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         from jasper.correction import coordinator
+        import asyncio
 
         # Re-evaluate the mutual-exclusion probe NOW (at play time, not POST
         # time) — the play functions refuse with reason=measurement_in_progress
@@ -768,6 +770,13 @@ def build_crossover_relay_run_and_consume(
                             "could not reassert the locked crossover measurement level"
                         )
                 phase = blocking_phase() if blocking_phase is not None else None
+                # Household audio stays paused for the whole stored ambient
+                # prefix.  The probe has already locked a safe volume, but it
+                # contributes no SNR verdict; only this silent prefix vs the
+                # following deconvolved sweep does.
+                await asyncio.sleep(ambient_duration_s)
+                if on_sweep_ready is not None:
+                    await asyncio.to_thread(on_sweep_ready)
                 if kind == "driver":
                     return await backend.play_driver_capture_sweep(
                         {"speaker_group_id": group_id, "role": role},
@@ -875,12 +884,21 @@ def build_crossover_relay_run_and_consume(
                         comparison_set=comparison_set or {},
                     )
                 )
-                _post_phase(
-                    pi_session.session_id,
-                    pi_session.pull_token,
-                    "sweep_started",
+                if ambient_duration_s > 0:
+                    _post_phase(
+                        pi_session.session_id,
+                        pi_session.pull_token,
+                        "ambient_started",
+                        duration_s=ambient_duration_s,
+                    )
+                payload = run_async(
+                    _play(lambda: _post_phase(
+                        pi_session.session_id,
+                        pi_session.pull_token,
+                        "sweep_started",
+                    )),
+                    timeout=60.0,
                 )
-                payload = run_async(_play(), timeout=45.0)
                 if not capture_sweep_played(payload):
                     raise ValueError(playback_issue_text(
                         payload,
@@ -927,6 +945,7 @@ def build_crossover_relay_run_and_consume(
             "sweep_meta": played.get("sweep_meta"),
             "playback_id": played.get("playback_id"),
             "excitation": played.get("excitation"),
+            "ambient_duration_s": ambient_duration_s,
         }
         noise_floor = getattr(result, "noise_floor", None)
         if isinstance(noise_floor, Mapping):
@@ -942,6 +961,7 @@ def build_crossover_relay_run_and_consume(
             record_raw["test_level_dbfs"] = played.get("test_level_dbfs")
             record_kwargs: dict[str, Any] = {
                 "placement_proof": placement_proof,
+                "repeat_store": backend.level_lease(),
             }
             if frozen_driver_preset is not None:
                 record_kwargs["preset"] = frozen_driver_preset
@@ -966,6 +986,12 @@ def build_crossover_relay_run_and_consume(
             group_id=group_id,
             role=role or None,
             recorded=bool(record_payload.get("recorded")),
+            snr_verdict=((record_payload.get("acoustic") or {}).get("snr") or {}).get(
+                "verdict"
+            ),
+            repeat_attempts=(record_payload.get("repeat_progress") or {}).get(
+                "attempts"
+            ),
             excitation_source=(record_raw.get("excitation") or {}).get(
                 "gain_source"
             ),

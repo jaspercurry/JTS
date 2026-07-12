@@ -143,6 +143,18 @@ The product is three tiers:
 - `commissioning_capture.py` accepts a calibration flag and routes to the
   same analysis. Formalizing a "core" mostly *names* a dependency that's
   already there — that's why the refactor is low-risk.
+- **Active-crossover repeat + SNR controller (2026-07-12).** The protected
+  level probe now owns only a safe, non-clipping playback level. Each driver
+  measurement records a 13-second silent ambient prefix followed by a
+  role-sized ESS (woofer/subwoofer 12 s, midrange 8 s, tweeter 4 s), and
+  compares deconvolved sweep-band magnitude against ambient deconvolved with
+  the same reference. The normal path collects three exact-position repeats,
+  keeps their WAVs and acceptance evidence, and writes one durable driver
+  measurement only after the shared repeat aggregator accepts at least two;
+  one bounded fourth attempt is allowed. Repeat state is scoped by comparison
+  set plus immutable target fingerprint, so a new setup cannot inherit it.
+  This closes the prior live-hardware `acoustic.snr: null` path without making
+  the probe's raw RMS an acoustic SNR verdict.
 
 ### The gaps (worktree-confirmed)
 - ~~**Active-speaker measurement loop is built but UNWIRED.**~~ **CLOSED.**
@@ -414,6 +426,15 @@ one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
    baseline still re-proves the runtime_contract tweeter guard.
 5. **Serialization.** Commissioning excludes room correction / balance / sync
    cooperatively — see the closed measurement-window gap above.
+6. **Repeat/SNR admission (2026-07-12).** Relay driver capture is a server-owned
+   three-repeat sequence. Interim accepted repeats remain bundle evidence but
+   do not create a measurement record, so the envelope stays on the same driver
+   and advances its repeat count. The final record uses the repeat kernel's
+   median representative and aggregate spread. Its band SNR compares the
+   deconvolved sweep against the stored ambient prefix in the same calibration
+   domain; 25/20 dB magnitude pass/warn policy remains authoritative. Fewer
+   than two accepted captures after the bounded fourth attempt refuses the
+   driver and asks for a quieter room or an external-amplifier adjustment.
 
 Tests: `tests/test_active_speaker_level_match.py` (trim math + fail-closed),
 overlap-band cases in `tests/test_active_speaker_driver_acoustics.py`, and

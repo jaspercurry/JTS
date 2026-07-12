@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+import math
 import os
 import time
 import uuid
@@ -99,6 +100,54 @@ def _noise_band_report_value(value: Any) -> list[dict[str, Any]] | None:
             return None
         out.append({"band_id": band_id, "band_hz": [lo, hi], "level_dbfs": level})
     return out
+
+
+def _stored_ambient_report(
+    wav_path: Path,
+    sweep_meta: Mapping[str, Any],
+    *,
+    calibration: Any,
+    ambient_duration_s: Any,
+) -> dict[str, Any] | None:
+    """Build post-deconvolution band noise from the relay's silent prefix.
+
+    The relay orchestration pauses household audio and records a fixed silent
+    window before playing the sweep.  The full uploaded WAV is already copied
+    into every repeat/final bundle artifact, so the report identifies the
+    exact source window rather than duplicating private raw audio.
+    """
+
+    try:
+        duration = float(ambient_duration_s)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(duration) or duration <= 0:
+        return None
+    from jasper.audio_measurement import snr_policy
+    from jasper.audio_measurement import sweep as sweep_mod
+
+    samples, sample_rate = sweep_mod.read_wav_mono(wav_path)
+    ambient_count = int(round(duration * sample_rate))
+    if ambient_count <= 0 or len(samples) < ambient_count:
+        raise ValueError("crossover capture is missing its stored ambient window")
+    ambient = samples[:ambient_count]
+    report = snr_policy.deconvolved_ambient_report(
+        ambient,
+        sample_rate,
+        sweep_meta,
+        calibration=calibration,
+        capture_length_samples=len(samples),
+    )
+    raw_robust = snr_policy.ambient_band_report(ambient, sample_rate)
+    return {
+        **report,
+        "source": {
+            "kind": "capture_prefix",
+            "start_s": 0.0,
+            "end_s": round(duration, 3),
+        },
+        "raw_robust": raw_robust,
+    }
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -475,18 +524,48 @@ def _resolve_bundle_for_capture(
         return None, None
 
 
+def _analyze_only_record(*_args: Any, **_kwargs: Any) -> None:
+    """Injection used while a repeat is still provisional."""
+
+    return None
+
+
+def _driver_target_fingerprint(
+    topology: Any, *, group_id: str, role: str
+) -> str:
+    from jasper.active_speaker.measurement import active_driver_targets
+
+    target_id = f"{group_id}:{role}"
+    for target in active_driver_targets(topology):
+        if target.get("target_id") == target_id:
+            return str(target.get("target_fingerprint") or "")
+    return ""
+
+
 def record_driver_capture(
     raw: Mapping[str, Any],
     wav_bytes: bytes | None = None,
     *,
     placement_proof: Mapping[str, Any] | None = None,
     preset: Any = None,
+    repeat_store: Any = None,
 ) -> dict[str, Any]:
-    """Analyze one browser WAV and record per-driver acoustic evidence."""
+    """Analyze one browser WAV and record per-driver acoustic evidence.
+
+    When ``repeat_store`` is supplied, provisional attempts are analyzed and
+    bundled without touching durable measurement state.  Three accepted
+    stationary repeats finalize the median representative; one bounded fourth
+    attempt is automatic after a rejection, and fewer than two accepted
+    captures refuse the run.  The key is ``comparison_set_id`` plus immutable
+    target fingerprint, so attempts can never cross a level/profile context.
+    """
 
     from jasper.active_speaker.calibration_level import load_calibration_level_state
     from jasper.active_speaker.commissioning_capture import (
+        DEFAULT_REPEAT_TARGET,
+        aggregate_driver_repeats,
         record_driver_acoustic_capture,
+        record_driver_repeat_aggregate,
     )
     from jasper.active_speaker.measurement import (
         current_driver_floor_evidence,
@@ -495,9 +574,10 @@ def record_driver_capture(
     topology = load_output_topology()
     group_id = str(raw.get("speaker_group_id") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
+    measurements = load_measurement_state(topology)
     floor_evidence = current_driver_floor_evidence(
         topology,
-        load_measurement_state(topology),
+        measurements,
         speaker_group_id=group_id,
         role=role,
     )
@@ -521,6 +601,17 @@ def record_driver_capture(
     preset = capture_preset(topology, preset)
     wav_path = capture_wav_path(raw, kind="driver", wav_bytes=wav_bytes)
     calibration_curve, calibration_id, measurement_mode = capture_calibration(raw)
+    sweep_meta = capture_sweep_meta(raw)
+    ambient_report = _stored_ambient_report(
+        wav_path,
+        sweep_meta,
+        calibration=calibration_curve,
+        ambient_duration_s=raw.get("ambient_duration_s"),
+    )
+    if repeat_store is not None and ambient_report is None:
+        raise ValueError(
+            "crossover repeat capture requires a stored ambient window"
+        )
     bundle_dir, capture_relpath = _resolve_bundle_for_capture(
         topology,
         kind="driver",
@@ -533,30 +624,164 @@ def record_driver_capture(
         if bundle_dir is not None
         else None
     )
-    payload = record_driver_acoustic_capture(
-        topology,
-        preset,
+    analysis_kwargs: dict[str, Any] = dict(
         speaker_group_id=group_id,
         role=role,
         captured_wav=wav_path,
-        sweep_meta=capture_sweep_meta(raw),
+        sweep_meta=sweep_meta,
         playback_id=_playback_id(raw),
         test_level_dbfs=raw.get("test_level_dbfs"),
         excitation=_mapping_value(raw.get("excitation")),
-        placement_proof=placement_proof,
         has_mic_calibration=(
             bool(raw.get("has_mic_calibration")) or calibration_curve is not None
         ),
         calibration=calibration_curve,
         notes=raw.get("notes"),
         noise_floor_dbfs=raw.get("noise_floor_dbfs"),
-        noise_band_report=_noise_band_report_value(raw.get("noise_band_report")),
+        noise_band_report=(
+            ambient_report
+            if ambient_report is not None
+            else _noise_band_report_value(raw.get("noise_band_report"))
+        ),
+        ambient_report=ambient_report,
         calibration_level=load_calibration_level_state(),
         safe_session=None,
         durable_floor_confirmation=floor_evidence.get("confirmation"),
         capture_geometry=_capture_geometry(raw),
-        bundle_ref=bundle_ref,
     )
+    if repeat_store is None:
+        payload = record_driver_acoustic_capture(
+            topology,
+            preset,
+            placement_proof=placement_proof,
+            bundle_ref=bundle_ref,
+            **analysis_kwargs,
+        )
+    else:
+        comparison_set = measurements.get("active_comparison_set")
+        comparison_set_id = (
+            str(comparison_set.get("comparison_set_id") or "")
+            if isinstance(comparison_set, Mapping)
+            else ""
+        )
+        target_fingerprint = _driver_target_fingerprint(
+            topology, group_id=group_id, role=role
+        )
+        if not comparison_set_id or not target_fingerprint:
+            raise ValueError(
+                "the crossover measurement context changed; run the level check again"
+            )
+        key = repeat_store.repeat_session_key(
+            comparison_set_id, target_fingerprint
+        )
+        provisional = record_driver_acoustic_capture(
+            topology,
+            preset,
+            placement_proof=placement_proof,
+            bundle_ref=None,
+            record=_analyze_only_record,
+            emit_lifecycle_event=False,
+            **analysis_kwargs,
+        )
+        artifact_path = None
+        if bundle_dir is not None:
+            from jasper.active_speaker import bundles as active_speaker_bundles
+
+            appended = active_speaker_bundles.append_repeat_capture(
+                bundle_dir,
+                index=len(repeat_store.driver_repeats(key)),
+                wav_source_path=wav_path,
+                payload={
+                    **provisional,
+                    "speaker_group_id": group_id,
+                    "role": role,
+                },
+            )
+            if isinstance(appended, Mapping):
+                artifact_path = appended.get("artifact_path")
+        item = {
+            "verdict": provisional.get("verdict"),
+            "acoustic": provisional.get("acoustic"),
+            "artifact_path": artifact_path,
+            "wav_path": str(wav_path),
+            "sweep_meta": dict(sweep_meta),
+            "playback_id": _playback_id(raw),
+            "test_level_dbfs": raw.get("test_level_dbfs"),
+            "excitation": dict(_mapping_value(raw.get("excitation"))),
+            "placement_proof": (
+                dict(placement_proof) if isinstance(placement_proof, Mapping) else None
+            ),
+            "ambient_report": ambient_report,
+        }
+        repeats = repeat_store.append_driver_repeat(
+            key,
+            target_id=f"{group_id}:{role}",
+            item=item,
+        )
+        aggregate = aggregate_driver_repeats(
+            repeats, target=DEFAULT_REPEAT_TARGET
+        )
+        if aggregate["needed_recapture"]:
+            return {
+                "recorded": False,
+                "verdict": provisional.get("verdict"),
+                "acoustic": provisional.get("acoustic"),
+                "repeat_progress": {
+                    "attempts": len(repeats),
+                    "accepted": aggregate["accepted"],
+                    "target": DEFAULT_REPEAT_TARGET,
+                    "bounded_recapture": len(repeats) >= DEFAULT_REPEAT_TARGET,
+                },
+            }
+        aggregate = record_driver_repeat_aggregate(
+            speaker_group_id=group_id,
+            role=role,
+            repeats=repeats,
+            target=DEFAULT_REPEAT_TARGET,
+            session_id=bundle_dir.name if bundle_dir is not None else None,
+        )
+        winner = aggregate.get("aggregate_repeat")
+        if aggregate["accepted"] < 2 or not isinstance(winner, Mapping):
+            failure = {
+                "reason": "insufficient_accepted_repeats",
+                "attempts": len(repeats),
+                "accepted": aggregate["accepted"],
+                "target": DEFAULT_REPEAT_TARGET,
+                "per_repeat": aggregate["per_repeat"],
+            }
+            repeat_store.clear_driver_repeats(key)
+            repeat_store.record_repeat_failure(f"{group_id}:{role}", failure)
+            return {
+                "recorded": False,
+                "status": "refused",
+                "verdict": "insufficient_repeats",
+                "repeat_failure": failure,
+            }
+        winner_path = Path(str(winner.get("wav_path") or wav_path))
+        if bundle_dir is not None and winner.get("artifact_path"):
+            durable_winner = bundle_dir / str(winner["artifact_path"])
+            if durable_winner.is_file():
+                winner_path = durable_winner
+        final_kwargs = dict(analysis_kwargs)
+        final_kwargs.update({
+            "captured_wav": winner_path,
+            "sweep_meta": winner.get("sweep_meta") or sweep_meta,
+            "playback_id": winner.get("playback_id"),
+            "test_level_dbfs": winner.get("test_level_dbfs"),
+            "excitation": winner.get("excitation"),
+            "noise_band_report": winner.get("ambient_report"),
+            "ambient_report": winner.get("ambient_report"),
+        })
+        payload = record_driver_acoustic_capture(
+            topology,
+            preset,
+            placement_proof=winner.get("placement_proof"),
+            bundle_ref=bundle_ref,
+            repeats=aggregate,
+            **final_kwargs,
+        )
+        wav_path = winner_path
+        repeat_store.clear_driver_repeats(key)
     payload["measurement_mode"] = measurement_mode
     payload["calibration_id"] = calibration_id
     if bundle_dir is not None:
@@ -586,6 +811,9 @@ def record_driver_capture(
         placement_policy=(payload.get("placement_proof") or {}).get("policy_id"),
         floor_evidence_source=floor_evidence.get("source"),
         bundle_session=bundle_dir.name if bundle_dir is not None else None,
+        repeats_accepted=_mapping_value(
+            (payload.get("measurement") or {}).get("repeats")
+        ).get("accepted"),
     )
     return payload
 
@@ -607,6 +835,13 @@ def record_summed_capture(
     preset = capture_preset(topology)
     wav_path = capture_wav_path(raw, kind="summed", wav_bytes=wav_bytes)
     calibration_curve, calibration_id, measurement_mode = capture_calibration(raw)
+    sweep_meta = capture_sweep_meta(raw)
+    ambient_report = _stored_ambient_report(
+        wav_path,
+        sweep_meta,
+        calibration=calibration_curve,
+        ambient_duration_s=raw.get("ambient_duration_s"),
+    )
     group_id = str(raw.get("speaker_group_id") or "").strip()
     bundle_dir, capture_relpath = _resolve_bundle_for_capture(
         topology,
@@ -625,7 +860,7 @@ def record_summed_capture(
         preset,
         speaker_group_id=group_id,
         captured_wav=wav_path,
-        sweep_meta=capture_sweep_meta(raw),
+        sweep_meta=sweep_meta,
         crossover_fc_hz=raw.get("crossover_fc_hz"),
         summed_test_id=_summed_test_id(raw),
         playback_id=_playback_id(raw),
@@ -641,7 +876,12 @@ def record_summed_capture(
         calibration=calibration_curve,
         notes=raw.get("notes"),
         noise_floor_dbfs=raw.get("noise_floor_dbfs"),
-        noise_band_report=_noise_band_report_value(raw.get("noise_band_report")),
+        noise_band_report=(
+            ambient_report
+            if ambient_report is not None
+            else _noise_band_report_value(raw.get("noise_band_report"))
+        ),
+        ambient_report=ambient_report,
         calibration_level=load_calibration_level_state(),
         capture_geometry=_capture_geometry(raw),
         bundle_ref=bundle_ref,

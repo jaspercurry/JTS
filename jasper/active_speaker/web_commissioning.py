@@ -381,8 +381,16 @@ def _combined_speech_stimulus_wav_path() -> tuple[Path, dict[str, Any]]:
     return ensure_combined_speech_stimulus()
 
 
-def _measurement_sweep_wav_path() -> tuple[Path, dict[str, Any]]:
-    """Return the cached swept-sine WAV + metadata used by acoustic capture."""
+def _measurement_sweep_wav_path(
+    duration_s: float | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Return the cached swept-sine WAV + metadata used by acoustic capture.
+
+    ``duration_s`` is supplied by the protected driver signal plan.  Leaving it
+    unset preserves the historical shared default for compatibility callers.
+    The cache filename already includes the realized duration, so role-specific
+    sweeps cannot collide.
+    """
 
     from jasper.active_speaker import driver_acoustics as acoustic
     from jasper.audio_measurement import sweep as sweep_mod
@@ -394,7 +402,9 @@ def _measurement_sweep_wav_path() -> tuple[Path, dict[str, Any]]:
     signal, meta = sweep_mod.synchronized_swept_sine(
         f1=acoustic.DEFAULT_F1_HZ,
         f2=acoustic.DEFAULT_F2_HZ,
-        duration_approx_s=acoustic.DEFAULT_DURATION_S,
+        duration_approx_s=(
+            duration_s if duration_s is not None else acoustic.DEFAULT_DURATION_S
+        ),
         sample_rate=acoustic.DEFAULT_SAMPLE_RATE,
         amplitude_dbfs=acoustic.DEFAULT_AMPLITUDE_DBFS,
     )
@@ -1918,6 +1928,7 @@ async def _play_capture_sweep(
     camilla_factory: CamillaFactory,
     planned_excitation: dict[str, Any] | None = None,
     rollback_capture_config: Callable[[], Any] | None = None,
+    sweep_duration_s: float | None = None,
 ) -> dict[str, Any]:
     from jasper.correction.playback import play_sweep
 
@@ -1926,7 +1937,10 @@ async def _play_capture_sweep(
     rollback: dict[str, Any] | None = None
     rollback_issue: dict[str, str] | None = None
     try:
-        wav_path, sweep_meta = _measurement_sweep_wav_path()
+        if sweep_duration_s is None:
+            wav_path, sweep_meta = _measurement_sweep_wav_path()
+        else:
+            wav_path, sweep_meta = _measurement_sweep_wav_path(sweep_duration_s)
         excitation = (
             _played_excitation_ledger(planned_excitation, sweep_meta)
             if isinstance(planned_excitation, dict)
@@ -2161,6 +2175,8 @@ async def play_driver_capture_sweep(
             camilla_factory=camilla_factory,
         )
 
+    from jasper.active_speaker.test_signal_plan import driver_sweep_duration_s
+
     playback = await _play_capture_sweep(
         backend=DRIVER_CAPTURE_SWEEP_BACKEND,
         target={"speaker_group_id": speaker_group_id, "role": role},
@@ -2170,6 +2186,7 @@ async def play_driver_capture_sweep(
         camilla_factory=camilla_factory,
         planned_excitation=planned_excitation,
         rollback_capture_config=_restore_entry_graph,
+        sweep_duration_s=driver_sweep_duration_s(role),
     )
     playback["floor_confirmation"] = latest.get("floor_confirmation")
     log_event(
@@ -2277,6 +2294,8 @@ async def play_summed_capture_sweep(
             camilla_factory=camilla_factory,
         )
 
+    from jasper.active_speaker.test_signal_plan import SUMMED_SWEEP_DURATION_S
+
     playback = await _play_capture_sweep(
         backend=SUMMED_CAPTURE_SWEEP_BACKEND,
         target={"speaker_group_id": speaker_group_id, "role": "summed"},
@@ -2286,6 +2305,7 @@ async def play_summed_capture_sweep(
         camilla_factory=camilla_factory,
         planned_excitation=planned_excitation,
         rollback_capture_config=_rollback,
+        sweep_duration_s=SUMMED_SWEEP_DURATION_S,
     )
     playback["summed_test_id"] = str(summed_test_id)
     log_event(

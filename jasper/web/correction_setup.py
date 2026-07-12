@@ -190,7 +190,6 @@ _POST_ROUTES = frozenset({
     "/crossover/summed-test",
     "/crossover/driver-capture-sweep",
     "/crossover/summed-capture-sweep",
-    "/crossover/driver-capture",
     "/crossover/summed-capture",
     "/crossover/level-match",
     "/crossover/relay-capture",
@@ -3648,12 +3647,28 @@ def _handle_crossover_relay_capture(
         capture_origin: str,
         return_url: str,
     ) -> RelayCapture:
+        from jasper.active_speaker.test_signal_plan import (
+            CROSSOVER_AMBIENT_DURATION_S,
+            SUMMED_SWEEP_DURATION_S,
+            driver_sweep_duration_s,
+        )
+
+        sweep_duration_s = (
+            driver_sweep_duration_s(str(raw.get("role") or ""))
+            if kind_id == "driver"
+            else SUMMED_SWEEP_DURATION_S
+        )
         return correction_adapter.open_capture(
             client,
             build_crossover_sweep_spec(
                 driver_label=driver_label,
                 driver_role=str(raw.get("role") or "summed"),
                 acknowledgement_binding=acknowledgement_binding,
+                stimulus_duration_ms=int(round(sweep_duration_s * 1000)),
+                ambient_duration_ms=int(
+                    round(CROSSOVER_AMBIENT_DURATION_S * 1000)
+                ),
+                hard_timeout_ms=45000,
             ),
             relay_base=base,
             capture_origin=capture_origin,
@@ -4690,7 +4705,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
             try:
                 if path in {
-                    "/crossover/driver-capture",
                     "/crossover/summed-capture",
                 }:
                     try:
@@ -4704,16 +4718,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             status=HTTPStatus.BAD_REQUEST,
                         )
                         return
-                    if path == "/crossover/driver-capture":
-                        payload, status = correction_crossover_flow.handle_driver_capture(
-                            self,
-                            body,
-                        )
-                    else:
-                        payload, status = correction_crossover_flow.handle_summed_capture(
-                            self,
-                            body,
-                        )
+                    payload, status = correction_crossover_flow.handle_summed_capture(
+                        self,
+                        body,
+                    )
                     self._send_json(payload, status=int(status))
                     return
 

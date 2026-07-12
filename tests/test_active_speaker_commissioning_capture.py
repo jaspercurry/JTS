@@ -1236,11 +1236,13 @@ def test_driver_capture_accepted_surfaces_snr_and_floor_when_present(
 def test_driver_capture_accepted_includes_session_when_bundle_known(
     tmp_path: Path, caplog,
 ):
-    # SC-4's bundle writer (a later lane) is expected to stamp a top-level
-    # bundle_session_id on the persisted measurement state; this fake proves
-    # the event picks it up without depending on that lane's code.
+    # Real persisted shape: the bundle session belongs to the active comparison
+    # set, not a fabricated top-level measurement-state key.
     def spy_record(*_args, **_kwargs):
-        return {"driver_measurements": [], "bundle_session_id": "sess-abc123"}
+        return {
+            "driver_measurements": [],
+            "active_comparison_set": {"bundle_session_id": "sess-abc123"},
+        }
 
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         out = record_driver_acoustic_capture(

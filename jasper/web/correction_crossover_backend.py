@@ -54,6 +54,11 @@ class CrossoverLevelLease:
         self.noise_floor_db = None
         self.mic_calibration = None
         self.input_device = None
+        # Interim fixed-position repeats are process-local and scoped by both
+        # the immutable comparison set and driver target.  Nothing from one
+        # level/profile context can be paired with another.
+        self._repeat_sessions: dict[tuple[str, str], dict[str, Any]] = {}
+        self._repeat_failures: dict[str, dict[str, Any]] = {}
 
     def configure_targets(self, targets: Sequence[Mapping[str, Any]]) -> None:
         """Freeze one complete, protected per-driver level plan."""
@@ -139,6 +144,8 @@ class CrossoverLevelLease:
         self.mic_calibration = None
         self.input_device = None
         self.relay_setup_binding = None
+        self._repeat_sessions = {}
+        self._repeat_failures = {}
         log_event(
             logger,
             "correction.crossover_level_context_invalidated",
@@ -344,6 +351,61 @@ class CrossoverLevelLease:
             }
         return locks
 
+    @staticmethod
+    def repeat_session_key(
+        comparison_set_id: str, target_fingerprint: str
+    ) -> tuple[str, str]:
+        return str(comparison_set_id), str(target_fingerprint)
+
+    def append_driver_repeat(
+        self,
+        key: tuple[str, str],
+        *,
+        target_id: str,
+        item: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        session = self._repeat_sessions.setdefault(
+            key,
+            {"target_id": target_id, "items": []},
+        )
+        if session.get("target_id") != target_id:
+            raise RuntimeError("crossover repeat target changed during capture")
+        session["items"].append(dict(item))
+        self._repeat_failures.pop(target_id, None)
+        return list(session["items"])
+
+    def driver_repeats(self, key: tuple[str, str]) -> list[dict[str, Any]]:
+        session = self._repeat_sessions.get(key) or {}
+        return list(session.get("items") or [])
+
+    def clear_driver_repeats(self, key: tuple[str, str]) -> None:
+        self._repeat_sessions.pop(key, None)
+
+    def record_repeat_failure(
+        self, target_id: str, payload: Mapping[str, Any]
+    ) -> None:
+        self._repeat_failures[target_id] = dict(payload)
+
+    def repeat_snapshot(self) -> dict[str, Any]:
+        from jasper.active_speaker.commissioning_capture import (
+            DEFAULT_REPEAT_TARGET,
+            aggregate_driver_repeats,
+        )
+
+        targets: dict[str, Any] = {}
+        for (comparison_set_id, target_fingerprint), session in self._repeat_sessions.items():
+            items = list(session.get("items") or [])
+            aggregate = aggregate_driver_repeats(items, target=DEFAULT_REPEAT_TARGET)
+            targets[str(session.get("target_id") or "")] = {
+                "comparison_set_id": comparison_set_id,
+                "target_fingerprint": target_fingerprint,
+                "attempts": len(items),
+                "accepted": aggregate["accepted"],
+                "target": DEFAULT_REPEAT_TARGET,
+                "needed_recapture": aggregate["needed_recapture"],
+            }
+        return {"targets": targets, "failures": dict(self._repeat_failures)}
+
     def level_match_snapshot(
         self, *, current_context_id: str | None = None
     ) -> dict[str, Any]:
@@ -364,6 +426,7 @@ class CrossoverLevelLease:
             "missing_targets": missing,
             "next_target": self._targets.get(missing[0]) if missing else None,
             "ready": bool(self._targets) and not missing and context_valid,
+            "repeats": self.repeat_snapshot(),
         }
 
 
@@ -620,6 +683,7 @@ def record_driver_capture(
     *,
     placement_proof: Mapping[str, Any] | None = None,
     preset: Any = None,
+    repeat_store: Any = None,
 ) -> dict[str, Any]:
     """Analyze one secure browser WAV and record per-driver evidence."""
 
@@ -628,6 +692,7 @@ def record_driver_capture(
         wav_bytes,
         placement_proof=placement_proof,
         preset=preset,
+        repeat_store=repeat_store,
     )
     log_event(
         logger,

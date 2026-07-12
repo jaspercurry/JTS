@@ -609,6 +609,18 @@ def test_automatic_driver_sweep_restores_exact_entry_graph(
     assert second_restore["status"] == "already_restored"
 
 
+def test_measurement_sweep_cache_is_duration_specific(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SWEEP_DIR", str(tmp_path))
+
+    woofer_path, woofer_meta = web._measurement_sweep_wav_path(12.0)
+    tweeter_path, tweeter_meta = web._measurement_sweep_wav_path(4.0)
+
+    assert 12.0 <= woofer_meta["duration_s"] < 13.0
+    assert 4.0 <= tweeter_meta["duration_s"] < 5.0
+    assert woofer_meta["duration_s"] > tweeter_meta["duration_s"]
+    assert woofer_path != tweeter_path
+
+
 def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch):
     entry_path = "/var/lib/camilladsp/configs/sound_current.yml"
 

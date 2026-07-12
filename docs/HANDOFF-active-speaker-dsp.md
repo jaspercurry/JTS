@@ -144,7 +144,8 @@
 > + `/summed-capture` mic routes were a verbatim duplicate of the
 > `web_measurement` capture path that nothing reached after the move to
 > `/correction/`; they were deleted — Codex-week review C4a-1. `/sound/` is plain
-> HTTP and cannot `getUserMedia`.) As of P7 (2026-07-03) those same driver/summed
+> HTTP and cannot `getUserMedia`.) As of P7 (2026-07-03), extended by the
+> repeat/SNR controller on 2026-07-12, those same driver/summed
 > captures can also ride the **phone-mic relay transport**:
 > `POST /correction/crossover/relay-capture` (the third `RelayCaptureKind`
 > caller) plays the same capture sweep on `armed` and feeds the verified WAV into
@@ -154,15 +155,23 @@
 > play payload's real shape (`status` + nested `playback.audio_emitted`,
 > top-level `test_level_dbfs`/`sweep_meta`) and refuses while room/balance/sync
 > is active (server-computed at POST, re-checked when the phone arms). The
-> `crossover_sweep` capture spec's stimulus length derives from
-> `driver_acoustics.DEFAULT_DURATION_S` (one sweep definition; the deconv
+> `crossover_sweep` capture spec's stimulus length derives from the protected
+> per-driver signal plan (12 s woofer/subwoofer, 8 s midrange, 4 s tweeter;
+> one sweep definition; the deconv
 > reference is always regenerated from the played `sweep_meta`, so the phone is a
-> pure recorder), with the phone's hard recording deadline floored at 30 s (the
-> `room_sweep` `hard_timeout_ms` contract — the Pi's `sweep_complete` event is
-> the normal stop). `GET /correction/crossover/envelope`
+> pure recorder). Each driver recording begins with a 13-second silent ambient
+> prefix; the phone's hard deadline is 45 s and the Pi's `sweep_complete` event
+> remains the normal stop. The safe probe owns only non-clipping level. The
+> deconvolved per-band sweep-versus-ambient verdict and the server-owned
+> three-repeat aggregator own evidence admission; one bounded fourth attempt is
+> allowed, and a durable measurement is written only after at least two repeats
+> pass. The former raw-WAV `/crossover/driver-capture` route was deleted because
+> it had no product caller and could not satisfy either contract; relay capture
+> is the single driver-evidence ingress. `GET /correction/crossover/envelope`
 > (`active_speaker/crossover_envelope.py`) is a pure sequential screen envelope:
 > protected speaker setup → mic/calibration + one automatic near-field level per
-> driver → each driver sweep → apply matched attenuation trims → Room. The
+> driver → each driver's stationary repeat sequence → apply matched attenuation
+> trims → Room. The
 > browser has no second measurement
 > state machine or local recorder; passive
 > (`full_range_passive`) speakers get `active=False` (no driver/summed targets),

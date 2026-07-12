@@ -25,6 +25,40 @@ SUBWOOFER_SUBSONIC_FLOOR_HZ = 25.0
 MIN_DRIVER_TEST_FREQUENCY_HZ = 20.0
 MAX_DRIVER_TEST_FREQUENCY_HZ = 20_000.0
 
+# Sweep duration is part of the protected stimulus contract, not presentation
+# policy.  Longer LF sweeps buy processing gain where domestic ambient noise is
+# highest; a tweeter stays deliberately short to bound thermal exposure.
+DRIVER_SWEEP_DURATIONS_S = {
+    "subwoofer": 12.0,
+    "woofer": 12.0,
+    "mid": 8.0,
+    "tweeter": 4.0,
+}
+DEFAULT_DRIVER_SWEEP_DURATION_S = 6.0
+MAX_TWEETER_SWEEP_DURATION_S = 4.0
+SUMMED_SWEEP_DURATION_S = 8.0
+# One fixed ambient window covers the longest protected driver sweep, allowing
+# noise to be deconvolved through the exact same reference without padding or
+# repetition.  It is captured before every relay sweep at the same geometry.
+CROSSOVER_AMBIENT_DURATION_S = max(DRIVER_SWEEP_DURATIONS_S.values()) + 1.0
+
+
+def driver_sweep_duration_s(role: str) -> float:
+    """Return the protected measurement-sweep duration for ``role``.
+
+    This is intentionally colocated with the driver-safe frequency planner:
+    relay/UI code must not invent a second duration table.  The explicit
+    tweeter clamp is defense in depth if the table is edited later.
+    """
+
+    role_id = str(role or "").strip().lower()
+    duration = DRIVER_SWEEP_DURATIONS_S.get(
+        role_id, DEFAULT_DRIVER_SWEEP_DURATION_S
+    )
+    if role_id == "tweeter":
+        duration = min(duration, MAX_TWEETER_SWEEP_DURATION_S)
+    return float(duration)
+
 
 def protective_tweeter_highpass_frequency_hz(
     preset: ActiveSpeakerPreset,

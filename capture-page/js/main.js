@@ -324,7 +324,7 @@ function renderLevelRampComplete(ctx, ramp) {
     locked: {
       heading: "Level matched",
       note: "The speaker locked a safe measurement level. Return to the speaker to continue.",
-      status: "Level matched — ready for the measurement sweep.",
+      status: "Level matched — return to the speaker for the next step.",
       kind: "done",
     },
     maxed_out: {
@@ -484,6 +484,17 @@ function renderCalibration(screenEl, ctx) {
         model.label
       ))
     : [];
+  if (String((setupState.calibration || {}).mode || "none") === "none") {
+    const selected = setupInputs.find((input) => input.deviceId === selectedDeviceId);
+    const label = String((selected && selected.label) || "").toLowerCase();
+    if (label.includes("umik-2") || label.includes("umik 2")) {
+      setupState.calibration = {
+        mode: "serial",
+        model: "minidsp_umik2",
+        serial: "",
+      };
+    }
+  }
   const mode = el("select", { id: "calibration-mode" }, [
     el("option", { value: "none", text: "No calibration / phone built-in mic" }),
     el("option", { value: "serial", text: "Known measurement mic serial" }),

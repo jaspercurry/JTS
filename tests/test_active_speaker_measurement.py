@@ -900,7 +900,7 @@ def test_new_level_run_invalidates_prior_comparison_set(tmp_path: Path) -> None:
 
 
 def test_start_active_comparison_set_stamps_bundle_session_id(
-    tmp_path: Path,
+    tmp_path: Path, caplog,
 ) -> None:
     """bundle_session_id joins a comparison set to a durable commissioning
     bundle (jasper.active_speaker.bundles) without becoming part of the
@@ -927,23 +927,29 @@ def test_start_active_comparison_set_stamps_bundle_session_id(
         for target in active_driver_targets(topology)
     }
 
-    with_bundle = start_active_comparison_set(
-        topology,
-        profile_context_id="protected-profile",
-        setup_sha256="a" * 64,
-        device_sha256="b" * 64,
-        calibration_id="",
-        driver_level_locks=driver_level_locks,
-        bundle_session_id="abc123def456",
-        state_path=state_path,
-        now="2026-07-11T12:00:00Z",
-    )
+    with caplog.at_level(logging.INFO, logger="jasper.active_speaker.measurement"):
+        with_bundle = start_active_comparison_set(
+            topology,
+            profile_context_id="protected-profile",
+            setup_sha256="a" * 64,
+            device_sha256="b" * 64,
+            calibration_id="",
+            driver_level_locks=driver_level_locks,
+            bundle_session_id="abc123def456",
+            state_path=state_path,
+            now="2026-07-11T12:00:00Z",
+        )
 
     assert with_bundle["bundle_session_id"] == "abc123def456"
     assert comparison_set_valid(with_bundle) is True
     assert load_measurement_state(topology, state_path=state_path)[
         "active_comparison_set"
     ] == with_bundle
+    assert any(
+        "event=correction.crossover_session_started" in record.getMessage()
+        and "session=abc123def456" in record.getMessage()
+        for record in caplog.records
+    )
 
     # bundle_session_id sits outside _COMPARISON_SET_CORE_KEYS: changing it
     # (or removing it) on the SAME comparison set must not move the

@@ -606,7 +606,7 @@ def analyze_driver_capture(
     overlap_fcs: Sequence[float] = (),
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
-    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     capture_geometry: str = "near_field",
 ) -> DriverAcousticResult:
     """Classify whether a driver is producing sound in its expected band.
@@ -624,9 +624,10 @@ def analyze_driver_capture(
     refine the datasheet sensitivity trim with a MEASURED level match. Magnitude
     only — never used to authorise a phase or delay decision.
 
-    ``noise_band_report`` is an optional band-specific ambient-noise report
-    (the correction-shape ``[{band_id, band_hz, level_dbfs}, ...]`` list —
-    see :func:`jasper.audio_measurement.snr_policy.band_levels_dbfs`). When
+    ``noise_band_report`` is an optional band-specific ambient-noise report:
+    either the legacy correction-shape
+    ``[{band_id, band_hz, level_dbfs}, ...]`` list, or a domain-tagged
+    ``{domain, method, bands}`` report from the stored ambient prefix. When
     supplied, the SC-1 magnitude-class SNR verdict block
     (:func:`jasper.audio_measurement.snr_policy.band_snr_verdicts`) is
     computed and stored on the result's ``snr`` field, scoped to
@@ -751,13 +752,23 @@ def analyze_driver_capture(
     if noise_band_report:
         from jasper.audio_measurement import snr_policy
 
+        noise_domain, noise_bands = snr_policy.unwrap_noise_report(
+            noise_band_report
+        )
+        if noise_domain == "deconvolved":
+            capture_bands = snr_policy.magnitude_band_levels(freqs, mag_db)
+            band_method = "deconvolved_band_difference"
+        else:
+            capture_bands = _capture_band_levels(captured_wav)
+            band_method = "fft_band_power_difference"
         snr_block = snr_policy.band_snr_verdicts(
             decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
-            capture_bands=_capture_band_levels(captured_wav),
-            noise_bands=noise_band_report,
+            capture_bands=capture_bands,
+            noise_bands=noise_bands,
             noise_floor_dbfs_scalar=None,
             relevant_hz=(band_lo, band_hi),
             model=DRIVER,
+            band_method=band_method,
         )
         snr_bands = snr_block.get("bands")
 
@@ -794,7 +805,7 @@ def analyze_summed_crossover(
     expect_null: bool = False,
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
-    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     noise_floor_dbfs: float | None = None,
     capture_geometry: str = "near_field",
 ) -> SummedAcousticResult:
@@ -925,16 +936,26 @@ def analyze_summed_crossover(
     if noise_band_report or noise_floor_dbfs is not None:
         from jasper.audio_measurement import snr_policy
 
+        noise_domain, noise_bands = snr_policy.unwrap_noise_report(
+            noise_band_report
+        )
+        if noise_domain == "deconvolved":
+            capture_bands = snr_policy.magnitude_band_levels(freqs, mag_db)
+            band_method = "deconvolved_band_difference"
+        else:
+            capture_bands = _capture_band_levels(captured_wav)
+            band_method = "fft_band_power_difference"
         snr_block = snr_policy.band_snr_verdicts(
             decision_class=snr_policy.DECISION_CLASS_ALIGNMENT,
-            capture_bands=_capture_band_levels(captured_wav),
-            noise_bands=noise_band_report,
+            capture_bands=capture_bands,
+            noise_bands=noise_bands,
             noise_floor_dbfs_scalar=noise_floor_dbfs,
             relevant_hz=(
                 max(crossover_fc_hz / 2.0, ANALYSIS_LO_HZ),
                 min(crossover_fc_hz * 2.0, ANALYSIS_HI_HZ),
             ),
             model=DRIVER,
+            band_method=band_method,
         )
         reported_null_depth, null_depth_capped = snr_policy.cap_null_depth_db(
             null_depth, snr_block.get("worst_relevant"), DRIVER.null_cap_margin_db,

@@ -37,6 +37,18 @@
 > records a passive noise-floor window before the Pi plays anything, and the Pi
 > publishes `sweep_complete` so the phone stops from real sweep progress rather
 > than a fixed timer.
+> The crossover kind additionally records a 13-second silent ambient prefix
+> before every role-sized ESS and carries the entire raw WAV back to the Pi.
+> The Pi deconvolves both the sweep and stored ambient with the same reference,
+> applies the same calibration domain, and admits driver evidence through the
+> three-repeat kernel (one bounded fourth try; at least two accepted). The
+> protected level ramp therefore sets playback headroom only and never supplies
+> the acoustic SNR verdict. The capture page defaults a newly selected UMIK-2
+> to the correct miniDSP UMIK-2 vendor-serial calibration mode instead of “No
+> calibration.” Browser device labels do not reliably expose the serial, so the
+> operator still enters it once; after validation, the existing
+> Pi-side bound setup carries that calibration into later
+> driver legs without placing the raw serial in browser storage.
 >
 > **Crossover relay kind — LANDED (P7, 2026-07-03):** `POST
 > /correction/crossover/relay-capture` (the third `RelayCaptureKind` caller)
@@ -670,7 +682,10 @@ pairing proof, not a guess based on the Pages dashboard.
 
 ---
 
-Last updated: 2026-07-11 — capture specs are now MAC-bound to their fragment
+Last updated: 2026-07-12 — active-crossover capture now uses role-sized sweeps,
+a stored ambient prefix, deconvolved per-band SNR, and the server-owned
+three-repeat admission loop; selecting a UMIK-2 now defaults to its vendor
+serial calibration mode without persisting the raw serial. Capture specs are MAC-bound to their fragment
 links and protocol-v2 phone events are authenticated end to end before any
 correctness-critical field can reach playback; protocol 1 remains compatible
 but cannot satisfy v2 evidence. The level stage now preflights and freezes microphone,

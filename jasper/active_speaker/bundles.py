@@ -639,8 +639,20 @@ def append_capture(
 
     info = _read_info(bundle_dir)
     list_key = "captures" if kind == "driver" else "summed_captures"
+    placement = dict(info.get("placement") or {})
+    placement_proof = payload.get("placement_proof")
+    if (
+        isinstance(placement_proof, Mapping)
+        and placement_proof.get("accepted") is True
+        and placement_proof.get("policy_id") == placement.get("policy_id")
+    ):
+        # The acknowledgement is server-normalized after the relay verifies
+        # the operator's checked box.  This repairs the former dead literal:
+        # an opened bundle starts false and flips only on real accepted proof.
+        placement["acknowledged"] = True
     _write_info(bundle_dir, {
         **info,
+        "placement": placement,
         list_key: [*(info.get(list_key) or []), entry],
         "updated_at": time.time(),
     })

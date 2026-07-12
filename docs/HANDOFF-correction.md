@@ -135,12 +135,19 @@
   `playback_id`), and measurement mutual-exclusion is
   server-computed twice: refused at POST while room/balance/sync is
   active, re-checked when the phone arms (never client-supplied). The
+  obsolete raw-WAV `POST /crossover/driver-capture` route was deleted when
+  the repeat controller landed: it had no product caller and could provide
+  neither the relay's stored ambient prefix nor its server-owned repeat
+  sequence. Driver evidence has one production ingress; the direct summed
+  diagnostic route remains separate.
   `crossover_sweep` capture spec's stimulus length derives from the
-  kernel-side `driver_acoustics.DEFAULT_DURATION_S` (one sweep
-  definition — the phone copy matches the sweep the Pi plays; the
+  kernel-side per-driver signal plan (12 s woofer/subwoofer, 8 s midrange,
+  4 s tweeter; one sweep definition — the phone copy matches the sweep the Pi plays; the
   deconv reference always regenerated from the played `sweep_meta`, so
-  the phone is a pure recorder), and its `duration_ms` — the phone's
-  hard recording deadline — is floored at 30 s like `room_sweep`'s
+  phone is a pure recorder). Driver recordings begin with a 13-second silent
+  ambient window and their hard deadline is 45 s; the phone's
+  `duration_ms` remains only a backstop because normal completion follows the
+  Pi's `sweep_complete` event. The generic builder retains the 30 s floor like `room_sweep`'s
   `hard_timeout_ms` (the normal stop is the Pi's `sweep_complete` relay
   event; the deadline is only the backstop). The same pass fixed the
   pre-existing **sync** relay bugs of that class: `sync_flow.
@@ -192,7 +199,8 @@
   starting or awaiting the phone, so graph apply cannot race measurement
   playback or its rollback. The
   public page release that
-  implements this contract is `capture_page_build=20260711.4`, supporting
+  implements this contract, including the UMIK-2 calibration default, is
+  `capture_page_build=20260712.1`, supporting
   protocols 1 and 2; publish it
   before deploying a Pi that emits v2 specs.
   Relay room level setup temporarily suspends the local browser's 120-second

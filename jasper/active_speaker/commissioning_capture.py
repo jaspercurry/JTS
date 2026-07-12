@@ -205,25 +205,18 @@ def region_for_fc(
 def _bundle_session_id(measurement: Any) -> str | None:
     """Best-effort bundle session id from a just-recorded measurement.
 
-    FORWARD-WIRED(active-crossover): bundle_session_id has no producer on
-    main yet (lanes A/B/D); when the producing lane lands, verify the real
-    key path matches, drive one real-shape (non-fabricated) test through
-    this site, then delete this marker.
-
-    The commissioning-bundle writer (SC-4) is separate, later work and does
-    not stamp a bundle reference onto records yet, so this reads the single
-    most likely shape -- a per-record ``bundle_session_id`` on the just-
-    recorded measurement (distinct from the top-level-state assumption
-    `start_active_comparison_set` reads in measurement.py) -- meaning the
-    lifecycle event's ``session`` field starts populating itself the moment
-    that lands, without a further edit here. Absent today: the event's
-    ``session`` field is simply omitted
-    (docs/active-crossover-information-design.md "Structured events": fields
-    are included "when available, omit when not").
+    ``record_driver_measurement`` returns the whole persisted state. The
+    durable session is owned by its active comparison set; a direct key remains
+    a legacy fallback for older/fabricated callers.
     """
     if not isinstance(measurement, Mapping):
         return None
-    session_id = measurement.get("bundle_session_id")
+    comparison_set = measurement.get("active_comparison_set")
+    session_id = (
+        comparison_set.get("bundle_session_id")
+        if isinstance(comparison_set, Mapping)
+        else None
+    ) or measurement.get("bundle_session_id")
     return str(session_id) if session_id else None
 
 
@@ -254,11 +247,6 @@ def _log_capture_verdict_event(
         fields["verdict"] = verdict
     if result.get("recorded"):
         fields["outcome"] = result.get("outcome")
-        # FORWARD-WIRED(active-crossover): acoustic['snr']['worst_relevant']
-        # ['estimated_snr_db'] and acoustic['gating']['f_valid_floor_hz']
-        # have no producer on main yet (lanes A/B); when the producing lane
-        # lands, verify the real key path matches, drive one real-shape
-        # (non-fabricated) test through this site, then delete this marker.
         snr_block = acoustic.get("snr")
         worst_relevant = (
             snr_block.get("worst_relevant") if isinstance(snr_block, Mapping) else None
@@ -296,7 +284,8 @@ def record_driver_acoustic_capture(
     sweep_meta: Mapping[str, Any],
     playback_id: str | None = None,
     noise_floor_dbfs: float | None = None,
-    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    ambient_report: Mapping[str, Any] | None = None,
     test_level_dbfs: float | None = None,
     excitation: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
@@ -310,6 +299,8 @@ def record_driver_acoustic_capture(
     state_path: str | Path | None = None,
     now: str | None = None,
     capture_geometry: str = "near_field",
+    repeats: Mapping[str, Any] | None = None,
+    emit_lifecycle_event: bool = True,
     analyze: Callable[..., DriverAcousticResult] = analyze_driver_capture,
     record: Callable[..., dict[str, Any]] = record_driver_measurement,
 ) -> dict[str, Any]:
@@ -330,8 +321,8 @@ def record_driver_acoustic_capture(
     confirmation still records the acoustic evidence but leaves ``captured``
     False — the acoustic verdict never bypasses the operator floor gate.
 
-    ``noise_band_report`` (the correction-shape band-level list — see
-    ``jasper.audio_measurement.snr_policy.band_levels_dbfs``) is threaded to
+    ``noise_band_report`` (the legacy correction-shape band-level list or the
+    domain-tagged stored-ambient report) is threaded to
     ``analyze`` so the SC-1 magnitude-class SNR block
     (``DriverAcousticResult.snr``) can be computed; it is independent of the
     pre-existing scalar ``noise_floor_dbfs`` bolt-on below.
@@ -357,6 +348,8 @@ def record_driver_acoustic_capture(
         capture_geometry=capture_geometry,
     )
     acoustic = result.to_dict()
+    if isinstance(ambient_report, Mapping):
+        acoustic["ambient"] = dict(ambient_report)
     normalized_noise_floor = _finite_float(noise_floor_dbfs)
     if normalized_noise_floor is not None:
         acoustic["noise_floor_dbfs"] = normalized_noise_floor
@@ -374,9 +367,10 @@ def record_driver_acoustic_capture(
             "acoustic": acoustic,
             "measurement": None,
         }
-        _log_capture_verdict_event(
-            rejected, speaker_group_id=speaker_group_id, role=role,
-        )
+        if emit_lifecycle_event:
+            _log_capture_verdict_event(
+                rejected, speaker_group_id=speaker_group_id, role=role,
+            )
         return rejected
     sweep_peak_dbfs = _finite_float(sweep_meta.get("amplitude_dbfs"))
     commissioning_gain_db = _finite_float(test_level_dbfs)
@@ -458,6 +452,7 @@ def record_driver_acoustic_capture(
         "test_level_dbfs": test_level_dbfs,
         "excitation": excitation_ledger,
         "placement_proof": dict(placement_proof) if placement_proof else None,
+        "repeats": dict(repeats) if isinstance(repeats, Mapping) else None,
         "notes": notes,
     }
     measurement = record(
@@ -481,7 +476,10 @@ def record_driver_acoustic_capture(
         "placement_proof": dict(placement_proof) if placement_proof else None,
         "measurement": measurement,
     }
-    _log_capture_verdict_event(accepted, speaker_group_id=speaker_group_id, role=role)
+    if emit_lifecycle_event:
+        _log_capture_verdict_event(
+            accepted, speaker_group_id=speaker_group_id, role=role
+        )
     return accepted
 
 
@@ -497,7 +495,8 @@ def record_summed_acoustic_capture(
     summed_test_id: str | None = None,
     playback_id: str | None = None,
     noise_floor_dbfs: float | None = None,
-    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    ambient_report: Mapping[str, Any] | None = None,
     excitation: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
     polarity: str | None = None,
@@ -580,6 +579,8 @@ def record_summed_acoustic_capture(
         capture_geometry=capture_geometry,
     )
     acoustic = result.to_dict()
+    if isinstance(ambient_report, Mapping):
+        acoustic["ambient"] = dict(ambient_report)
     normalized_noise_floor = _finite_float(noise_floor_dbfs)
     if normalized_noise_floor is not None:
         acoustic["noise_floor_dbfs"] = normalized_noise_floor
@@ -1266,9 +1267,8 @@ def record_driver_repeat_aggregate(
 
     Logs ``correction.crossover_repeats_aggregated`` (SC-5) via
     :func:`jasper.log_event.log_event`. A pure evidence step: it does not
-    itself call ``record_driver_measurement`` — the caller (a future
-    web/orchestration layer; the capture-loop UI is not part of this
-    change) takes the returned ``aggregate_repeat`` and records it exactly
+    itself call ``record_driver_measurement`` — the web orchestration layer
+    takes the returned ``aggregate_repeat`` and records it exactly
     as a single-capture result, attaching this function's return value
     under the record's ``repeats`` key so the durable record and the
     bundle both carry the full repeat history.

@@ -346,6 +346,7 @@ def test_append_capture_appends_compact_entry_with_driver_role(
     bundle_dir = Path(info["bundle_dir"])
     wav = _write_wav(tmp_path / "src.wav")
     payload = _driver_payload(group="mono", role="woofer")
+    payload["placement_proof"]["accepted"] = True
 
     entry = bundles.append_capture(
         bundle_dir, kind="driver", wav_source_path=wav, payload=payload
@@ -362,6 +363,32 @@ def test_append_capture_appends_compact_entry_with_driver_role(
     assert entry["excitation"] == payload["excitation"]
     assert entry["placement_ack"] == payload["placement_proof"]
     assert entry["measurement_id"] == "meas-1"
+    assert reloaded["placement"]["acknowledged"] is True
+
+
+def test_append_capture_does_not_acknowledge_unaccepted_or_wrong_policy_proof(
+    tmp_path: Path,
+) -> None:
+    for suffix, accepted, policy in (
+        ("unaccepted", False, "driver_same_distance_v1"),
+        ("wrong-policy", True, "summed_listening_position_v1"),
+    ):
+        root = tmp_path / suffix
+        info = _open(root)
+        bundle_dir = Path(info["bundle_dir"])
+        payload = _driver_payload(group="mono", role="woofer")
+        payload["placement_proof"].update({
+            "accepted": accepted,
+            "policy_id": policy,
+        })
+        bundles.append_capture(
+            bundle_dir,
+            kind="driver",
+            wav_source_path=_write_wav(root / "src.wav"),
+            payload=payload,
+        )
+
+        assert bundles._read_info(bundle_dir)["placement"]["acknowledged"] is False
 
 
 def test_append_capture_summed_kind_omits_role_and_carries_fc(

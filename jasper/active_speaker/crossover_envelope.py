@@ -395,14 +395,50 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
 
         target = missing_drivers[0]
         role = str(target.get("role") or "driver")
+        target_id = f"{target.get('speaker_group_id') or ''}:{role}"
+        repeat_state = _mapping(
+            _mapping(_mapping(status.get("level_match")).get("repeats")).get(
+                "targets"
+            )
+        )
+        repeat = _mapping(repeat_state.get(target_id))
+        repeat_failures = _mapping(
+            _mapping(_mapping(status.get("level_match")).get("repeats")).get(
+                "failures"
+            )
+        )
+        repeat_failure = _mapping(repeat_failures.get(target_id))
+        if repeat_failure:
+            nudges.append({
+                "code": "driver_repeat_capture_refused",
+                "severity": "warn",
+                "text": (
+                    "Too few repeat sweeps cleared the per-band SNR and clipping "
+                    "checks. Quiet the room or raise the external amplifier within "
+                    "the safe level, then measure again."
+                ),
+            })
+        attempts = int(repeat.get("attempts") or 0)
+        accepted = int(repeat.get("accepted") or 0)
+        repeat_target = int(repeat.get("target") or 3)
+        repeat_copy = (
+            f" Repeat {attempts + 1}; {accepted} of {repeat_target} accepted so far."
+            if attempts
+            else f" JTS takes {repeat_target} stationary repeats."
+        )
         screen = "driver"
         verdict = (
             f"Measure the {role}. {driver_placement_instruction(role)} "
             "JTS will use the safe protected path and saved level."
+            f"{repeat_copy}"
         )
         action = {
             "id": "measure_driver",
-            "label": f"Position the mic, then measure {role}",
+            "label": (
+                f"Measure {role} — repeat {attempts + 1}"
+                if attempts
+                else f"Position the mic, then measure {role}"
+            ),
             "endpoint": "/correction/crossover/relay-capture",
             "body": {
                 "kind": "driver",

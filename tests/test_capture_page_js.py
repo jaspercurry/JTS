@@ -90,9 +90,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260711.4",
+        "capture_page_build": "20260712.1",
     }
-    assert "main.js?v=20260711-4" in index_html
+    assert "main.js?v=20260712-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -247,3 +247,22 @@ def test_capture_page_rejects_oversize_calibration_and_unproven_agc():
     assert "capture.settings.autoGainControl !== false" in main_js
     assert 'reason: "agc_not_proven_off"' in main_js
     assert "JTS will not play the level tone" in main_js
+
+
+def test_capture_page_defaults_umik2_calibration_without_persisting_serial():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert 'label.includes("umik-2") || label.includes("umik 2")' in main_js
+    assert 'mode: "serial"' in main_js
+    assert 'model: "minidsp_umik2"' in main_js
+    assert 'serial: ""' in main_js
+    assert "if (!setupState.calibration.serial)" in main_js
+    assert "Enter the microphone serial number." in main_js
+    assert "sessionStorage" not in main_js
+
+
+def test_capture_page_level_completion_does_not_promise_wrong_next_step():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "ready for the measurement sweep" not in main_js
+    assert "Level matched — return to the speaker for the next step." in main_js

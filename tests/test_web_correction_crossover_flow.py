@@ -20,7 +20,7 @@ from jasper.web import correction_crossover_flow as flow
 def test_request_payload_parses_capture_query():
     handler = SimpleNamespace(
         path=(
-            "/crossover/driver-capture?speaker_group_id=mono&role=woofer"
+            "/crossover/summed-capture?speaker_group_id=mono&role=woofer"
             "&playback_id=abc&test_level_dbfs=-42.5"
             "&has_mic_calibration=true&expect_null=0"
             "&placement_proof=client-forged"
@@ -412,6 +412,252 @@ def test_driver_capture_threads_reference_axis_capture_geometry(monkeypatch, tmp
     )
 
     assert seen == ["reference_axis", "near_field"]
+
+
+def test_driver_capture_wires_three_repeats_before_one_durable_record(
+    monkeypatch, tmp_path
+):
+    topology = object()
+    wav_path = tmp_path / "driver.wav"
+    wav_path.write_bytes(b"wav")
+    comparison_set_id = "a" * 32
+    monkeypatch.setattr(web_measurement, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web_measurement, "capture_preset", lambda _topology, supplied=None: supplied
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_wav_path",
+        lambda raw, kind, wav_bytes=None: wav_path,
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_sweep_meta",
+        lambda raw: {
+            "sample_rate": 48000,
+            "n_samples": 48000,
+            "f1": 20.0,
+            "f2": 12000.0,
+            "duration_s": 1.0,
+            "amplitude_dbfs": -12.0,
+        },
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_calibration",
+        lambda raw: (None, None, {"mode": "magnitude_only"}),
+    )
+    ambient = {
+        "schema_version": 1,
+        "domain": "deconvolved",
+        "method": "deconvolved_band_difference",
+        "bands": [],
+    }
+    monkeypatch.setattr(
+        web_measurement, "_stored_ambient_report", lambda *a, **k: ambient
+    )
+    monkeypatch.setattr(
+        web_measurement, "_resolve_bundle_for_capture", lambda *a, **k: (None, None)
+    )
+    monkeypatch.setattr(
+        web_measurement, "_driver_target_fingerprint", lambda *a, **k: "target-fp"
+    )
+
+    import jasper.active_speaker.calibration_level as calibration_level
+    import jasper.active_speaker.commissioning_capture as capture
+    import jasper.active_speaker.measurement as measurement
+
+    monkeypatch.setattr(calibration_level, "load_calibration_level_state", lambda: {})
+    monkeypatch.setattr(
+        measurement,
+        "load_measurement_state",
+        lambda _topology: {
+            "active_comparison_set": {"comparison_set_id": comparison_set_id}
+        },
+    )
+    monkeypatch.setattr(
+        measurement,
+        "current_driver_floor_evidence",
+        lambda *_a, **_k: {
+            "valid": True,
+            "source": "durable_current_driver_measurement",
+            "confirmation": {},
+        },
+    )
+
+    calls = []
+
+    def fake_record(*_args, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("record") is not None:
+            index = sum(1 for call in calls if call.get("record") is not None)
+            return {
+                "recorded": True,
+                "verdict": "present",
+                "outcome": "heard_correct_driver",
+                "acoustic": {
+                    "verdict": "present",
+                    "observed_mic_dbfs": -30.0 + index / 10.0,
+                    "mic_clipping": False,
+                    "snr": {
+                        "verdict": "ok",
+                        "worst_relevant": {
+                            "band_id": "mid",
+                            "estimated_snr_db": 31.0,
+                            "verdict": "ok",
+                        },
+                    },
+                },
+                "excitation": {},
+                "placement_proof": kwargs.get("placement_proof"),
+            }
+        repeats = kwargs["repeats"]
+        return {
+            "recorded": True,
+            "verdict": "present",
+            "acoustic": {"verdict": "present", "snr": {"verdict": "ok"}},
+            "measurement": {"repeats": repeats},
+            "placement_proof": kwargs.get("placement_proof"),
+        }
+
+    monkeypatch.setattr(capture, "record_driver_acoustic_capture", fake_record)
+    store = backend.CrossoverLevelLease()
+    raw = {
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "playback_id": "play",
+        "ambient_duration_s": 12.0,
+    }
+
+    first = backend.record_driver_capture(raw, b"wav", repeat_store=store)
+    second = backend.record_driver_capture(raw, b"wav", repeat_store=store)
+    third = backend.record_driver_capture(raw, b"wav", repeat_store=store)
+
+    assert first["repeat_progress"] == {
+        "attempts": 1,
+        "accepted": 1,
+        "target": 3,
+        "bounded_recapture": False,
+    }
+    assert second["repeat_progress"]["attempts"] == 2
+    assert third["recorded"] is True
+    assert third["measurement"]["repeats"]["accepted"] == 3
+    assert third["acoustic"]["snr"] is not None
+    assert len([call for call in calls if call.get("record") is not None]) == 3
+    assert all(
+        call.get("emit_lifecycle_event") is False
+        for call in calls
+        if call.get("record") is not None
+    )
+    assert len([call for call in calls if call.get("repeats") is not None]) == 1
+    assert store.repeat_snapshot()["targets"] == {}
+
+
+def test_repeat_capture_refuses_without_stored_ambient(monkeypatch, tmp_path):
+    topology = object()
+    wav_path = tmp_path / "driver.wav"
+    wav_path.write_bytes(b"wav")
+    monkeypatch.setattr(web_measurement, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_wav_path",
+        lambda raw, kind, wav_bytes=None: wav_path,
+    )
+    monkeypatch.setattr(web_measurement, "capture_preset", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_calibration",
+        lambda _raw: (None, None, {}),
+    )
+    monkeypatch.setattr(web_measurement, "capture_sweep_meta", lambda _raw: {})
+
+    import jasper.active_speaker.measurement as measurement
+
+    monkeypatch.setattr(measurement, "load_measurement_state", lambda _topology: {})
+    monkeypatch.setattr(
+        measurement,
+        "current_driver_floor_evidence",
+        lambda *_a, **_k: {"valid": True, "confirmation": None},
+    )
+    with pytest.raises(ValueError, match="stored ambient"):
+        web_measurement.record_driver_capture(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            b"wav",
+            repeat_store=backend.CrossoverLevelLease(),
+        )
+
+
+def test_repeat_store_never_pairs_attempts_across_comparison_sets():
+    store = backend.CrossoverLevelLease()
+    acoustic = {
+        "verdict": "present",
+        "observed_mic_dbfs": -30.0,
+        "mic_clipping": False,
+        "snr": {"verdict": "ok"},
+    }
+    item = {"verdict": "present", "acoustic": acoustic}
+
+    store.append_driver_repeat(
+        store.repeat_session_key("a" * 32, "driver-fp"),
+        target_id="mono:woofer",
+        item=item,
+    )
+    store.append_driver_repeat(
+        store.repeat_session_key("b" * 32, "driver-fp"),
+        target_id="mono:woofer:new-context",
+        item=item,
+    )
+
+    snapshot = store.repeat_snapshot()["targets"]
+    assert snapshot["mono:woofer"]["attempts"] == 1
+    assert snapshot["mono:woofer:new-context"]["attempts"] == 1
+    assert snapshot["mono:woofer"]["comparison_set_id"] != snapshot[
+        "mono:woofer:new-context"
+    ]["comparison_set_id"]
+
+
+def test_stored_ambient_prefix_produces_deconvolved_band_report(tmp_path):
+    import wave
+
+    import numpy as np
+    from jasper.audio_measurement import sweep
+
+    sample_rate = 48000
+    rng = np.random.default_rng(7)
+    samples = np.clip(
+        rng.normal(0.0, 0.001, sample_rate * 2), -1.0, 1.0
+    )
+    wav_path = tmp_path / "capture.wav"
+    with wave.open(str(wav_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes((samples * 32767.0).astype("<i2").tobytes())
+    _reference, meta = sweep.synchronized_swept_sine(
+        f1=20.0,
+        f2=12000.0,
+        duration_approx_s=1.0,
+        sample_rate=sample_rate,
+        amplitude_dbfs=-12.0,
+    )
+
+    report = web_measurement._stored_ambient_report(
+        wav_path,
+        meta.to_dict(),
+        calibration=None,
+        ambient_duration_s=2.0,
+    )
+
+    assert report is not None
+    assert report["domain"] == "deconvolved"
+    assert report["method"] == "deconvolved_band_difference"
+    assert report["source"] == {
+        "kind": "capture_prefix",
+        "start_s": 0.0,
+        "end_s": 2.0,
+    }
+    assert report["raw_robust"]["method"] == "one_second_p95"
+    assert report["bands"]
 
 
 def _stub_driver_capture_collaborators(monkeypatch, wav_path: Path) -> None:
@@ -1470,6 +1716,29 @@ def test_applied_automatic_profile_can_run_a_fresh_sequential_retune():
     assert env["next_action"]["label"] == "Apply updated driver levels"
 
 
+def test_crossover_envelope_surfaces_server_owned_repeat_progress():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["level_match"]["repeats"] = {
+        "targets": {
+            "mono:woofer": {
+                "attempts": 2,
+                "accepted": 2,
+                "target": 3,
+            }
+        },
+        "failures": {},
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "driver"
+    assert "Repeat 3; 2 of 3 accepted" in env["verdict_text"]
+    assert env["next_action"]["label"] == "Measure woofer — repeat 3"
+
+
 @pytest.mark.parametrize("applied_owner", ["manual", "automatic"])
 def test_applied_profile_keeps_partial_driver_retune_active(applied_owner):
     """The old applied result must not hide the next driver between relays."""
@@ -1675,6 +1944,7 @@ def _relay_contract() -> dict:
     return {
         "comparison_set": _COMPARISON_SET,
         "target_fingerprint": "",
+        "ambient_duration_s": 0.0,
     }
 
 
@@ -1876,11 +2146,14 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
 
     record_calls = {}
 
-    def fake_record_driver(raw, wav_bytes, *, placement_proof, preset=None):
+    def fake_record_driver(
+        raw, wav_bytes, *, placement_proof, preset=None, repeat_store=None
+    ):
         record_calls["raw"] = raw
         record_calls["wav"] = wav_bytes
         record_calls["placement_proof"] = placement_proof
         record_calls["preset"] = preset
+        record_calls["repeat_store"] = repeat_store
         return {"recorded": True}
 
     monkeypatch.setattr(be, "record_driver_capture", fake_record_driver)
@@ -2022,7 +2295,7 @@ async def test_crossover_gain_is_scoped_to_the_measurement_window(monkeypatch):
     monkeypatch.setattr(
         be,
         "record_driver_capture",
-        lambda _raw, _wav, *, placement_proof: {"recorded": True},
+        lambda _raw, _wav, *, placement_proof, repeat_store=None: {"recorded": True},
     )
 
     run_and_consume = flow.build_crossover_relay_run_and_consume(
