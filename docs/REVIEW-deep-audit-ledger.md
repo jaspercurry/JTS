@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`44b4579f`): 2026-07-12.
+Last reconciled against `main` (`1b44516b`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 496
-- **fixed**: 170
+- **open**: 495
+- **fixed**: 171
 - **in-progress**: 1
 - **mooted**: 9
 - **deferred**: 1
@@ -40,7 +40,7 @@ Last reconciled against `main` (`44b4579f`): 2026-07-12.
 | DA-0003 | `jasper/route_latency/pairing.py` :: pair_events | should-fix | W5 | **open** | — |
 | DA-0004 | `LICENSE` :: :138 (§6 Trademarks), :165 (§9 Accepting War | should-fix | W5 | **open** | — |
 | DA-0005 | `capture-page/js/main.js` :: boot():604-616 | should-fix | W5 | **open** | — |
-| DA-0007 | `deploy/systemd/jasper-usbsink.service` :: Slice=jts-audio.slice membership | should-fix | W5 | **in-progress** | doctor now derives and checks every protected audio/mic unit; canonical adversarial review passed, publication pending |
+| DA-0007 | `deploy/systemd/jasper-usbsink.service` :: Slice=jts-audio.slice membership | should-fix | W5 | **fixed** | doctor derives and checks every protected audio/mic unit — #1287 |
 | DA-0008 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored | should-fix | W5 | **open** | — |
 | DA-0009 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored / improvConnect | should-fix | W5 | **open** | — |
 | DA-0011 | `jasper/audio_runtime_plan.py` :: _route_policy_errors | should-fix | W5 | **fixed** | coherent shm-ring plans preserve computed capture/playback mismatches — #1286 |
@@ -84,7 +84,7 @@ Last reconciled against `main` (`44b4579f`): 2026-07-12.
 | DA-0067 | `jasper/wake_corpus/bridge_session.py` :: enable_bridge_outputs_for_session:1173 | should-fix | W1 | **open** | — |
 | DA-0068 | `jasper/web/sound_setup.py` :: _active_speaker_arm_payload | should-fix | W1 | **open** | — |
 | DA-0069 | `multiroom-spike/stats-flac-300ms.json` :: multiroom-spike/ (6 files) | should-fix | W1 | **open** | — |
-| DA-0070 | `rust/jasper-host-clock/src/lib.rs` :: HostClock::raw_demand_ppm | should-fix | W1 | **open** | — |
+| DA-0070 | `rust/jasper-host-clock/src/lib.rs` :: HostClock::raw_demand_ppm | should-fix | W1 | **in-progress** | inert persistent field removed while raw local demand still drives L1/L2; canonical adversarial review passed, publication pending |
 | DA-0071 | `rust/jasper-outputd/src/core.rs` :: OutputCore::add_reference_consumer / drain_r | should-fix | W1 | **open** | — |
 | DA-0072 | `rust/jasper-outputd/src/reference.rs` :: ReferenceFanout::add_consumer/drain_consumer | should-fix | W1 | **open** | — |
 | DA-0073 | `scripts/aec-probe-usb-delay.sh` :: module:1-440 | should-fix | W1 | **open** | — |
