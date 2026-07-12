@@ -159,6 +159,7 @@ def record_driver_acoustic_capture(
     durable_floor_confirmation: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
     now: str | None = None,
+    capture_geometry: str = "near_field",
     analyze: Callable[..., DriverAcousticResult] = analyze_driver_capture,
     record: Callable[..., dict[str, Any]] = record_driver_measurement,
 ) -> dict[str, Any]:
@@ -184,6 +185,10 @@ def record_driver_acoustic_capture(
     ``analyze`` so the SC-1 magnitude-class SNR block
     (``DriverAcousticResult.snr``) can be computed; it is independent of the
     pre-existing scalar ``noise_floor_dbfs`` bolt-on below.
+    ``capture_geometry`` (``"near_field"`` default, or ``"reference_axis"``)
+    passes straight through to ``analyze`` — see
+    :func:`jasper.active_speaker.driver_acoustics.analyze_driver_capture`'s
+    IR-gating / low-frequency validity-floor behavior.
     """
     passband = driver_passband_hz(preset, role)
     result = analyze(
@@ -194,6 +199,7 @@ def record_driver_acoustic_capture(
         has_mic_calibration=has_mic_calibration,
         calibration=calibration,
         noise_band_report=noise_band_report,
+        capture_geometry=capture_geometry,
     )
     acoustic = result.to_dict()
     normalized_noise_floor = _finite_float(noise_floor_dbfs)
@@ -342,6 +348,7 @@ def record_summed_acoustic_capture(
     calibration_level: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
     now: str | None = None,
+    capture_geometry: str = "near_field",
     analyze: Callable[..., SummedAcousticResult] = analyze_summed_crossover,
     record: Callable[..., dict[str, Any]] = record_summed_validation,
 ) -> dict[str, Any]:
@@ -358,6 +365,13 @@ def record_summed_acoustic_capture(
     persisted ``acoustic`` dict's scalar ``noise_floor_dbfs``/
     ``signal_over_noise_db`` keys below, unchanged from before this SNR block
     existed.
+    ``unusable_capture`` — or a preset with no crossover — records nothing
+    (which includes a reference-axis capture whose crossover Fc or lower
+    shoulder sits below the IR-gating validity floor — see
+    :func:`jasper.active_speaker.driver_acoustics.analyze_summed_crossover`).
+
+    ``capture_geometry`` (``"near_field"`` default, or ``"reference_axis"``)
+    passes straight through to ``analyze``.
     """
     fc = (
         float(crossover_fc_hz)
@@ -388,6 +402,7 @@ def record_summed_acoustic_capture(
         calibration=calibration,
         noise_band_report=noise_band_report,
         noise_floor_dbfs=noise_floor_dbfs,
+        capture_geometry=capture_geometry,
     )
     acoustic = result.to_dict()
     normalized_noise_floor = _finite_float(noise_floor_dbfs)

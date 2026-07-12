@@ -142,18 +142,21 @@ def _capture_driver(
     role: str = "woofer",
     output_index: int = 0,
     noise_band_report=None,
+    capture_geometry: str = "near_field",
 ):
     seen: dict = {}
 
     def fake_analyze(
         wav, meta, *, passband_hz, overlap_fcs=(), has_mic_calibration,
         calibration=None, noise_band_report=None,
+        capture_geometry="near_field",
     ):
         seen["passband_hz"] = passband_hz
         seen["overlap_fcs"] = tuple(overlap_fcs)
         seen["wav"] = wav
         seen["calibration"] = calibration
         seen["noise_band_report"] = noise_band_report
+        seen["capture_geometry"] = capture_geometry
         return result
 
     out = record_driver_acoustic_capture(
@@ -168,6 +171,7 @@ def _capture_driver(
             role=role, output_index=output_index, playback_id="pb1"
         ),
         state_path=tmp_path / "measurements.json",
+        capture_geometry=capture_geometry,
         analyze=fake_analyze,
         noise_band_report=noise_band_report,
     )
@@ -229,6 +233,23 @@ def test_driver_capture_without_noise_band_report_passes_none(tmp_path: Path):
     assert seen["noise_band_report"] is None
     record = out["measurement"]["driver_measurements"][-1]
     assert record["acoustic"]["snr"] is None
+def test_driver_capture_defaults_capture_geometry_to_near_field(tmp_path: Path):
+    _out, seen = _capture_driver(tmp_path, _driver_result("present", present=True))
+    assert seen["capture_geometry"] == "near_field"
+
+
+def test_driver_capture_threads_capture_geometry_to_analyze(tmp_path: Path):
+    out, seen = _capture_driver(
+        tmp_path,
+        _driver_result("present", present=True),
+        capture_geometry="reference_axis",
+    )
+    assert seen["capture_geometry"] == "reference_axis"
+    assert out["recorded"] is True
+    record = out["measurement"]["driver_measurements"][-1]
+    # The gating block rides the acoustic dict opaquely — always a key on
+    # the persisted record (None when the injected result carries none).
+    assert "gating" in record["acoustic"]
 
 
 def test_out_of_band_records_heard_wrong_driver_not_captured(tmp_path: Path):
@@ -455,7 +476,7 @@ def test_summed_capture_threads_noise_band_report_into_analyzer_and_record():
     def fake_analyze(
         wav, meta, *, crossover_fc_hz, null_threshold_db, expect_null,
         has_mic_calibration, calibration=None, noise_band_report=None,
-        noise_floor_dbfs=None,
+        noise_floor_dbfs=None, capture_geometry="near_field",
     ):
         seen["noise_band_report"] = noise_band_report
         seen["noise_floor_dbfs"] = noise_floor_dbfs
@@ -488,6 +509,83 @@ def test_summed_capture_threads_noise_band_report_into_analyzer_and_record():
     # The pre-existing scalar bolt-on is unaffected by the new SC-1 wiring.
     assert out["acoustic"]["noise_floor_dbfs"] == -70.0
     assert out["acoustic"]["signal_over_noise_db"] == pytest.approx(-34.0 - -70.0)
+
+
+def test_summed_capture_threads_capture_geometry_to_analyze():
+    seen: dict = {}
+
+    def fake_analyze(
+        wav, meta, *, crossover_fc_hz, null_threshold_db, expect_null,
+        has_mic_calibration, calibration=None, capture_geometry="near_field",
+        noise_band_report=None, noise_floor_dbfs=None,
+    ):
+        seen["capture_geometry"] = capture_geometry
+        return _summed_result("blend_ok")
+
+    out = record_summed_acoustic_capture(
+        _topology(),
+        _two_way(),
+        speaker_group_id="mono",
+        captured_wav="cap.wav",
+        sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+        capture_geometry="reference_axis",
+        analyze=fake_analyze,
+        record=lambda topology, raw, **kw: {"summed_validations": [dict(raw)]},
+    )
+    assert seen["capture_geometry"] == "reference_axis"
+    assert out["recorded"] is True
+
+
+def test_summed_capture_below_validity_floor_records_nothing():
+    """A reference-axis summed capture whose crossover Fc (or its lower
+    shoulder) sits below the IR-gating validity floor comes back as
+    unusable_capture with the gating block populated
+    (driver_acoustics.analyze_summed_crossover's own contract, pinned in
+    test_active_speaker_driver_acoustics.py); this pins that the wire here
+    still records nothing for it, same as any other unusable_capture."""
+    calls = {"n": 0}
+
+    def spy_record(*a, **k):
+        calls["n"] += 1
+        return {}
+
+    gated_below_floor = SummedAcousticResult(
+        verdict="unusable_capture",
+        null_depth_db=float("nan"),
+        crossover_fc_hz=200.0,
+        observed_mic_dbfs=-34.0,
+        mic_clipping=False,
+        quality={"failed": False, "rms_dbfs": -34.0},
+        gating={
+            "schema_version": 1,
+            "applied": True,
+            "exempt_reason": None,
+            "direct_peak_ms": 5.0,
+            "first_reflection_ms": 8.5,
+            "window_ms": 6.67,
+            "window": "half_hann_tail",
+            "f_valid_floor_hz": 150.0,
+            "floor_source": "measured_reflection",
+        },
+        above_validity_floor=False,
+    )
+
+    out = record_summed_acoustic_capture(
+        _topology(),
+        _two_way(),
+        speaker_group_id="mono",
+        captured_wav="cap.wav",
+        sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+        crossover_fc_hz=200.0,
+        capture_geometry="reference_axis",
+        analyze=lambda *a, **k: gated_below_floor,
+        record=spy_record,
+    )
+    assert out["recorded"] is False
+    assert out["skipped_reason"] == "unusable_capture"
+    assert calls["n"] == 0
+    assert out["acoustic"]["gating"]["applied"] is True
+    assert out["acoustic"]["above_validity_floor"] is False
 
 
 def test_summed_capture_persists_verified_full_graph_excitation():

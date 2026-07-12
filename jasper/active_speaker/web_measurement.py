@@ -368,6 +368,17 @@ def _summed_test_id(raw: Mapping[str, Any]) -> str | None:
     return str(value).strip() if value else None
 
 
+def _capture_geometry(raw: Mapping[str, Any]) -> str:
+    """Validate the SC-2 capture-geometry vocabulary from a browser request.
+
+    Defaults to ``"near_field"`` (today's shipped driver capture) for any
+    missing or unrecognized value, never propagating an arbitrary client
+    string into the analysis layer.
+    """
+    geo = raw.get("capture_geometry")
+    return geo if geo in ("near_field", "reference_axis") else "near_field"
+
+
 def status_payload() -> dict[str, Any]:
     """Return active-crossover targets plus saved measurement evidence."""
 
@@ -461,6 +472,7 @@ def record_driver_capture(
         calibration_level=load_calibration_level_state(),
         safe_session=None,
         durable_floor_confirmation=floor_evidence.get("confirmation"),
+        capture_geometry=_capture_geometry(raw),
     )
     payload["measurement_mode"] = measurement_mode
     payload["calibration_id"] = calibration_id
@@ -525,6 +537,7 @@ def record_summed_capture(
         noise_floor_dbfs=raw.get("noise_floor_dbfs"),
         noise_band_report=_noise_band_report_value(raw.get("noise_band_report")),
         calibration_level=load_calibration_level_state(),
+        capture_geometry=_capture_geometry(raw),
     )
     payload["measurement_mode"] = measurement_mode
     payload["calibration_id"] = calibration_id
