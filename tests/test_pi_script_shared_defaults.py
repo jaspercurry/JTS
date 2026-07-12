@@ -65,6 +65,9 @@ def script_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
                 exit 23
             fi
             case "$*" in
+                *"/opt/jasper/.venv/bin/python - 3.1"*)
+                    printf 'catalog-default.test\n'
+                    ;;
                 *"from jasper.wake_models import by_key"*)
                     printf '/tmp/jarvis-v2.onnx|1\n'
                     ;;

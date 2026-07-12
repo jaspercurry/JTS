@@ -60,6 +60,15 @@ reads the installed Pi runtime catalog for provider IDs, key env vars,
 and model env vars; `jasper-doctor` derives the active provider key
 check from the same catalog and verifies the generated
 `voice_provider_ids` file is present and in sync.
+As of 2026-07-12, `scripts/switch-gemini-model.sh` follows the same
+boundary: its stable `3.1` / `2.5` operator aliases resolve to model IDs
+from the installed Gemini catalog entry. It requires `3.1` to be the
+unique tested default and `2.5` to be the unique non-default fallback,
+and refuses to edit the effective wizard-owned selector file or restart
+voice when that catalog contract is missing, ambiguous, or malformed. A
+successful switch atomically updates `/var/lib/jasper/voice_provider.env`,
+restarts `jasper-voice`, and verifies the selected model in the new daemon's
+process environment.
 
 Display/aggregation surfaces that are not `jasper-voice` (e.g.
 `jasper-control`'s `/state` and the `/system/` dashboard) read the
@@ -605,8 +614,9 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
-Last verified: 2026-07-06 (spend-cap section: added the household-spend note —
-the cap + `/voice` card now sum the voice ledger and the P6 tuning ledger via
+Last verified: 2026-07-12 (Gemini switcher catalog/effective-owner contract;
+prior 2026-07-06 pass verified that the cap + `/voice` card sum the voice ledger
+and the P6 tuning ledger via
 `usage.py`'s `household_usage_reader`, verified against `jasper/usage.py`,
 `jasper/voice/daemon_main.py`, and `jasper/web/voice_setup.py`; canonical
 definition lives in HANDOFF-calibration-agent.md. Prior pass 2026-06-30:

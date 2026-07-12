@@ -1839,9 +1839,11 @@ bash scripts/switch-gemini-model.sh 3.1    # → gemini-3.1-flash-live-preview
 bash scripts/switch-gemini-model.sh 2.5    # → gemini-2.5-flash-native-audio-preview-12-2025
 ```
 
-The script flips `JASPER_GEMINI_MODEL` in `/etc/jasper/jasper.env`
-and restarts `jasper-voice`. No code changes needed because the
-daemon treats the model as opaque-string config.
+The script resolves those aliases from the catalog installed on the Pi,
+atomically flips `JASPER_GEMINI_MODEL` in the later-precedence
+`/var/lib/jasper/voice_provider.env`, restarts `jasper-voice`, and verifies
+the new daemon's effective process environment. No code changes are needed
+because the daemon treats the model as opaque-string config.
 
 **Symptoms that mean "Gemini Live is silently broken, switch to 2.5"**:
 
