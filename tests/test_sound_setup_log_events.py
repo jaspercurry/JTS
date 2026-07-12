@@ -36,8 +36,8 @@ def _sound_event_calls() -> list[ast.Call]:
 def test_sound_setup_migrates_the_complete_event_vocabulary():
     calls = _sound_event_calls()
 
-    assert len(calls) == 92
-    assert len({call.args[1].value for call in calls}) == 37
+    assert len(calls) == 93
+    assert len({call.args[1].value for call in calls}) == 38
 
     levels: Counter[str] = Counter()
     for call in calls:
@@ -56,7 +56,7 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
         else:
             assert "exc_info" not in keywords
 
-    assert levels == {"INFO": 54, "WARNING": 10, "ERROR": 28}
+    assert levels == {"INFO": 54, "WARNING": 10, "ERROR": 29}
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():

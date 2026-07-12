@@ -4616,6 +4616,7 @@ def _make_handler(
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
+            self._json_response_started = True
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
@@ -4625,6 +4626,8 @@ def _make_handler(
 
         def _read_json(self, *, max_bytes: int = MAX_JSON_BYTES) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length") or "0")
+            if length < 0:
+                raise ValueError("invalid Content-Length")
             if length > max_bytes:
                 raise ValueError("request body too large")
             if not length:
@@ -4889,6 +4892,7 @@ def _make_handler(
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
+            self._json_response_started = False
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
             if path not in {
                 "/apply",
@@ -5383,6 +5387,19 @@ def _make_handler(
                 profile = SoundProfile.from_mapping(raw_profile)
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
                 self._send_json({"error": str(e)}, status=400)
+                return
+            except (OSError, RuntimeError) as e:
+                if self._json_response_started:
+                    raise
+                log_event(
+                    logger,
+                    "sound.post_dispatch_failed",
+                    path=path,
+                    error_type=type(e).__name__,
+                    level=logging.ERROR,
+                    exc_info=True,
+                )
+                self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/preview":
                 self._send_json(_state_payload(profile))

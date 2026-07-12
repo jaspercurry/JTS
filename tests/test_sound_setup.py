@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import shutil
@@ -310,6 +311,209 @@ def _start_sound_server(tmp_path: Path):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+class _ReadTrackingBytesIO(io.BytesIO):
+    def __init__(self, initial_bytes: bytes) -> None:
+        super().__init__(initial_bytes)
+        self.read_calls: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_calls.append(size)
+        return super().read(size)
+
+
+class _BrokenPipeBytesIO(io.BytesIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.write_calls = 0
+
+    def write(self, data: bytes) -> int:
+        self.write_calls += 1
+        raise BrokenPipeError("synthetic client disconnect")
+
+
+def _drive_raw_sound_post(
+    tmp_path: Path,
+    *,
+    path: str,
+    content_length: int,
+    body: bytes = b"must-not-be-read",
+    response_sink: io.BytesIO | None = None,
+) -> tuple[bytes, list[int]]:
+    """Drive the real sound Handler with an otherwise-valid raw POST."""
+
+    handler_cls = sound_setup._make_handler(
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "sound_profiles.json",
+        config_dir=tmp_path / "configs",
+        camilla_factory=lambda: None,
+    )
+    raw = (
+        f"POST {path} HTTP/1.1\r\n".encode()
+        + b"Host: jts.local\r\n"
+        + f"Content-Length: {content_length}\r\n".encode()
+        + b"\r\n"
+        + body
+    )
+    rfile = _ReadTrackingBytesIO(raw)
+    wfile = response_sink if response_sink is not None else io.BytesIO()
+    handler = handler_cls.__new__(handler_cls)
+    handler.rfile = rfile
+    handler.wfile = wfile
+    handler.client_address = ("127.0.0.1", 0)
+    handler.server = None
+    handler.raw_requestline = rfile.readline()
+    assert handler.parse_request() is True
+    handler.protocol_version = "HTTP/1.1"
+    handler.do_POST()
+    return wfile.getvalue(), rfile.read_calls
+
+
+@pytest.mark.parametrize(
+    ("error", "error_type"),
+    [
+        (OSError("commission abort I/O failed"), "OSError"),
+        (RuntimeError("commission abort runtime failed"), "RuntimeError"),
+    ],
+)
+def test_commission_ramp_abort_http_contains_secondary_failures(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    error,
+    error_type,
+):
+    async def fail_abort(*, camilla_factory):
+        raise error
+
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_commission_ramp_abort_payload",
+        fail_abort,
+    )
+    caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        response = json_post_with_csrf(
+            base,
+            "/active-speaker/commission-ramp-abort",
+            {},
+            expect_status=502,
+        )
+        assert response.headers.get_content_type() == "application/json"
+        payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert payload == {"error": str(error)}
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("event=sound.post_dispatch_failed")
+    ]
+    assert len(records) == 1
+    assert records[0].getMessage() == (
+        "event=sound.post_dispatch_failed "
+        "path=/active-speaker/commission-ramp-abort "
+        f"error_type={error_type}"
+    )
+    assert records[0].exc_info is not None
+    assert records[0].exc_info[0] is type(error)
+
+
+def test_sound_post_does_not_secondary_send_after_response_write_failure(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"ok": True})
+    response_sink = _BrokenPipeBytesIO()
+    caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
+
+    with pytest.raises(BrokenPipeError, match="synthetic client disconnect"):
+        _drive_raw_sound_post(
+            tmp_path,
+            path="/active-speaker/stop",
+            content_length=0,
+            body=b"",
+            response_sink=response_sink,
+        )
+
+    assert response_sink.write_calls == 1
+    assert not any(
+        record.getMessage().startswith("event=sound.post_dispatch_failed")
+        for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    ("content_length", "expected_error"),
+    [
+        (-1, "invalid Content-Length"),
+        (sound_setup.MAX_JSON_BYTES + 1, "request body too large"),
+    ],
+)
+def test_sound_post_rejects_invalid_body_length_before_read(
+    tmp_path,
+    monkeypatch,
+    content_length,
+    expected_error,
+):
+    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
+
+    response, read_calls = _drive_raw_sound_post(
+        tmp_path,
+        path="/active-speaker/commission-ramp-abort",
+        content_length=content_length,
+    )
+
+    assert b" 400 " in response.split(b"\r\n", 1)[0]
+    assert json.loads(response.split(b"\r\n\r\n", 1)[1]) == {
+        "error": expected_error,
+    }
+    assert read_calls == []
+
+
+def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypatch):
+    def fail_if_guarded(_handler):
+        raise AssertionError("unknown route must return before the CSRF guard")
+
+    monkeypatch.setattr(sound_setup, "guard_mutating_request", fail_if_guarded)
+
+    response, read_calls = _drive_raw_sound_post(
+        tmp_path,
+        path="/not-a-sound-route",
+        content_length=-1,
+    )
+
+    assert b" 404 " in response.split(b"\r\n", 1)[0]
+    assert read_calls == []
+
+
+def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
+    guard_calls = []
+
+    def reject(_handler):
+        guard_calls.append("guard")
+        return False
+
+    monkeypatch.setattr(sound_setup, "guard_mutating_request", reject)
+
+    response, read_calls = _drive_raw_sound_post(
+        tmp_path,
+        path="/active-speaker/commission-ramp-abort",
+        content_length=-1,
+    )
+
+    assert b" 403 " in response.split(b"\r\n", 1)[0]
+    assert guard_calls == ["guard"]
+    assert read_calls == []
 
 
 def test_index_html_renders_canonical_sound_page():
