@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Adapter-level bluez ops: power, pairing window, scan.
+"""Adapter-level bluez ops: power, pairing window, and device removal.
 
 Thin async wrappers around `org.bluez.Adapter1`. The web layer owns
 the policy ("pairing mode defaults off; auto-off after 5 min when on");
@@ -168,34 +168,6 @@ async def set_discoverable(
                 raise
         else:
             await _close_pairing_window(props)
-    finally:
-        bus.disconnect()
-
-
-async def start_discovery(adapter: str = DEFAULT_ADAPTER) -> None:
-    """Start scanning for nearby devices. Idempotent — if discovery
-    is already running (e.g. a stale bluetoothctl somewhere), the
-    InProgress error is swallowed."""
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    try:
-        a, _ = await _adapter(bus, adapter)
-        try:
-            await a.call_start_discovery()
-        except DBusError as e:
-            if "in progress" not in str(e).lower():
-                raise
-    finally:
-        bus.disconnect()
-
-
-async def stop_discovery(adapter: str = DEFAULT_ADAPTER) -> None:
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    try:
-        a, _ = await _adapter(bus, adapter)
-        try:
-            await a.call_stop_discovery()
-        except DBusError:
-            pass
     finally:
         bus.disconnect()
 

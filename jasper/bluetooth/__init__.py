@@ -11,12 +11,12 @@ about HID vs A2DP vs GATT, just drives the bluez state machine.
 
 Module layout:
   - models.py       BluetoothDevice dataclass; one row in the scan list
-  - adapter.py      adapter-level ops (Powered, pairing window, scan)
+  - adapter.py      short-lived adapter ops (Powered, pairing window, removal)
   - agent.py        DBus org.bluez.Agent1 with NoInputNoOutput capability;
                     accepts no-code pairing and rejects code-based flows
   - no_code_agent.py
                     systemd entrypoint for the always-on default agent
-  - engine.py       pair state machine; async generator of status events
+  - engine.py       long-lived discovery owner, pair state machine, status events
   - scan.py         live ObjectManager observer + event stream
   - roles.py        /var/lib/jasper/bt_roles.json — minimal persistence
                     of {mac: handler_id} so a re-connecting device gets
