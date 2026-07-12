@@ -69,6 +69,55 @@ def _topology(
     })
 
 
+def _three_way_topology() -> OutputTopology:
+    """A mono 3-way matching ``tests.test_active_speaker_profile``'s
+    ``_three_way_preset(layout="mono")``: woofer=output 0, mid=output 1,
+    tweeter=output 2, crossovers at 350 Hz (woofer/mid) and 2500 Hz
+    (mid/tweeter)."""
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench_mono_3way",
+        "name": "Bench mono 3-way",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": [
+            {
+                "id": "mono",
+                "label": "Mono cabinet",
+                "kind": "mono",
+                "mode": "active_3_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "mid",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 2,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "software_guard_requested",
+                    },
+                ],
+            }
+        ],
+        "routing": {"mono_group_id": "mono"},
+    })
+
+
 def _safe_session(
     *,
     role: str,
@@ -1140,3 +1189,289 @@ def test_start_active_comparison_set_raises_before_persisting_emits_no_event(
         r.getMessage().startswith("event=correction.crossover_session_started")
         for r in caplog.records
     )
+
+
+# --- Paired summed evidence (lane E, Slice 2: "Retain both normal- and
+# reverse-polarity summed evidence per crossover region") --------------------
+
+
+def _summed_acoustic(
+    *,
+    null_depth_db: float,
+    expect_null: bool,
+    calibrated: bool = True,
+) -> dict:
+    return {
+        "verdict": "blend_ok",
+        "null_depth_db": null_depth_db,
+        "expect_null": expect_null,
+        "calibrated": calibrated,
+    }
+
+
+def test_reverse_capture_does_not_overwrite_in_phase_latest(tmp_path: Path) -> None:
+    """The overwrite-bug regression this lane fixes: before pairing existed,
+    ``latest_summed_by_group`` kept only ONE record per group regardless of
+    polarity, so a reverse-polarity capture recorded after an in-phase one
+    silently replaced it (both can read outcome='blend_ok'/validated=True --
+    a formed reverse null IS the pass for a reverse capture). Both are now
+    retained distinctly in latest_summed_pairs_by_group, while
+    latest_summed_by_group / latest_summed_validations keep resolving to the
+    IN-PHASE record specifically."""
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+
+    in_phase = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40,
+            "summed_test_id": "summed-playback-1",
+            "polarity": "normal",
+            "delay_ms": 0.0,
+            "acoustic": _summed_acoustic(null_depth_db=2.0, expect_null=False),
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+        now="2026-07-11T12:00:00Z",
+    )
+    in_phase_record = in_phase["summed_validations"][-1]
+    assert in_phase_record["validated"] is True
+
+    reverse = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -55,
+            "summed_test_id": "summed-playback-1",
+            "polarity": "normal",
+            "delay_ms": 0.0,
+            "acoustic": _summed_acoustic(null_depth_db=22.0, expect_null=True),
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+        now="2026-07-11T12:01:00Z",
+    )
+    reverse_record = reverse["summed_validations"][-1]
+    # Same shape as the bug this pins: both read validated=True.
+    assert reverse_record["validated"] is True
+
+    # The fix: latest_summed_by_group (== summary's latest_summed_validations,
+    # the SAME object) still resolves to the IN-PHASE record.
+    assert (
+        reverse["latest_summed_by_group"]["mono"]["validation_id"]
+        == in_phase_record["validation_id"]
+    )
+    assert (
+        reverse["summary"]["latest_summed_validations"]["mono"]["validation_id"]
+        == in_phase_record["validation_id"]
+    )
+
+    # Both polarities are retained, distinctly, in the paired evidence (2-way
+    # legacy-fallback region key, since neither raw dict stamped "region").
+    pair = reverse["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair["in_phase"]["validation_id"] == in_phase_record["validation_id"]
+    assert pair["reverse"]["validation_id"] == reverse_record["validation_id"]
+
+    # Reloading from disk re-derives the same (fresh-computed, not stored)
+    # summary shape.
+    reloaded = load_measurement_state(topology, state_path=state_path)
+    assert (
+        reloaded["latest_summed_by_group"]["mono"]["validation_id"]
+        == in_phase_record["validation_id"]
+    )
+    reloaded_pair = reloaded["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert reloaded_pair["reverse"]["validation_id"] == reverse_record["validation_id"]
+
+
+def test_in_phase_capture_after_reverse_does_not_lose_the_reverse_pair_slot(
+    tmp_path: Path,
+) -> None:
+    """Symmetric to the above: capturing in-phase AFTER reverse must not
+    clear the already-recorded reverse evidence out of the pair."""
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+
+    reverse = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -55,
+            "summed_test_id": "summed-playback-1",
+            "acoustic": _summed_acoustic(null_depth_db=22.0, expect_null=True),
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+        now="2026-07-11T12:00:00Z",
+    )
+    reverse_record = reverse["summed_validations"][-1]
+    # Before an in-phase capture exists at all, latest_summed_by_group has
+    # nothing usable for this group yet -- a reverse-only capture never
+    # counts as the flat "latest" slot.
+    assert "mono" not in reverse["latest_summed_by_group"]
+
+    in_phase = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40,
+            "summed_test_id": "summed-playback-1",
+            "acoustic": _summed_acoustic(null_depth_db=2.0, expect_null=False),
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+        now="2026-07-11T12:01:00Z",
+    )
+    in_phase_record = in_phase["summed_validations"][-1]
+
+    assert (
+        in_phase["latest_summed_by_group"]["mono"]["validation_id"]
+        == in_phase_record["validation_id"]
+    )
+    pair = in_phase["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair["in_phase"]["validation_id"] == in_phase_record["validation_id"]
+    assert pair["reverse"]["validation_id"] == reverse_record["validation_id"]
+
+
+def test_summed_validation_persists_valid_region(tmp_path: Path) -> None:
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+
+    state = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40,
+            "summed_test_id": "summed-playback-1",
+            "acoustic": _summed_acoustic(null_depth_db=2.0, expect_null=False),
+            "region": {
+                "lower_role": "woofer",
+                "upper_role": "tweeter",
+                "fc_hz": 1600.0,
+            },
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+    )
+
+    record = state["summed_validations"][-1]
+    assert record["region"] == {
+        "lower_role": "woofer",
+        "upper_role": "tweeter",
+        "fc_hz": 1600.0,
+    }
+    pair = state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair["in_phase"]["region"] == record["region"]
+
+
+@pytest.mark.parametrize(
+    "malformed_region",
+    [
+        None,
+        {},
+        "not a mapping",
+        {"lower_role": "woofer"},  # missing upper_role/fc_hz
+        {"lower_role": "woofer", "upper_role": "tweeter", "fc_hz": 0},  # non-positive
+        {"lower_role": "woofer", "upper_role": "tweeter", "fc_hz": "nan"},
+        {"lower_role": "", "upper_role": "tweeter", "fc_hz": 1600.0},  # empty role
+        {"lower_role": "woofer", "upper_role": 5, "fc_hz": 1600.0},  # non-string role
+    ],
+)
+def test_summed_validation_rejects_malformed_region(
+    tmp_path: Path, malformed_region,
+) -> None:
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+
+    state = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40,
+            "summed_test_id": "summed-playback-1",
+            "acoustic": _summed_acoustic(null_depth_db=2.0, expect_null=False),
+            "region": malformed_region,
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+    )
+
+    record = state["summed_validations"][-1]
+    assert record["region"] is None
+    # Still pairs -- via the 2-way legacy fallback, since a malformed region
+    # is treated exactly like an absent one.
+    pair = state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair["in_phase"]["validation_id"] == record["validation_id"]
+
+
+def test_legacy_region_less_record_on_three_way_stays_out_of_pairs(
+    tmp_path: Path,
+) -> None:
+    """A region-less record (no ``region`` stamped -- e.g. saved before this
+    migration) has no unambiguous home on a 3-way (two candidate regions), so
+    it is excluded from latest_summed_pairs_by_group entirely. It still
+    counts toward latest_summed_by_group candidacy when in-phase, unchanged
+    from prior behavior."""
+    topology = _three_way_topology()
+    state_path = tmp_path / "measurements.json"
+    state = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40,
+            "acoustic": _summed_acoustic(null_depth_db=2.0, expect_null=False),
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+    )
+
+    record = state["summed_validations"][-1]
+    assert record["region"] is None
+    assert state["latest_summed_by_group"]["mono"]["validation_id"] == (
+        record["validation_id"]
+    )
+    # No region key can be inferred on a 3-way -- no pairs entry at all.
+    assert state["latest_summed_pairs_by_group"].get("mono", {}) == {}
+
+
+def test_operator_only_record_counts_as_in_phase_but_never_pairs(
+    tmp_path: Path,
+) -> None:
+    """A pure operator-listening-check record (no acoustic block at all) has
+    no polarity kind: it stays eligible for latest_summed_by_group (a
+    validated blend with no null evidence, unchanged from before pairing
+    existed) but can never contribute to a region's in-phase/reverse pair."""
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+
+    state = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "summed_test_id": "summed-playback-1",
+            "operator_listening_check": True,
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+    )
+
+    record = state["summed_validations"][-1]
+    assert record["acoustic"] is None
+    assert record["validated"] is True
+    assert state["latest_summed_by_group"]["mono"]["validation_id"] == (
+        record["validation_id"]
+    )
+    assert state["latest_summed_pairs_by_group"].get("mono", {}) == {}

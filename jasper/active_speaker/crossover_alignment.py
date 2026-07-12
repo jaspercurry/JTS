@@ -131,8 +131,11 @@ class CrossoverAlignmentProposal:
     is ``phase_aware`` (a calibrated mic). All values are PROPOSALS — the caller
     previews the resulting baseline (which re-proves the runtime_contract tweeter
     guard + the 0 dB ceiling) and the human confirms before anything is applied.
-    Covers ONE crossover (the primary / lowest); a 3-way's upper crossover needs
-    its own summed-null capture and is out of scope for this increment.
+    Each instance covers ONE crossover region — its own summed-null evidence,
+    own margin, own gates. A 3-way has two regions and therefore two of these;
+    ``commissioning_capture.build_crossover_alignment_proposal`` is the caller
+    that iterates every region and builds one proposal per region, not this
+    dataclass or :func:`propose_crossover_alignment`.
     """
 
     authorized: bool

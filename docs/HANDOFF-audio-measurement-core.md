@@ -460,11 +460,28 @@ can never authorize a phase decision:
    ceiling holds.
 
 Scope held: NO per-driver post-split EQ, NO listening-position room correction —
-near-field crossover calibration only. The proposal covers ONE crossover (the
-primary / lowest); a 3-way's upper crossover needs its own summed-null capture and
-is out of scope. Multi-group (stereo-pair) polarity/delay *emission* is also
-deferred (`group_specific_delay_not_applied`); the proposal computes for one group,
-so a mono/single-group speaker (jts3's `active_mono_2way`) gets the full refinement.
+near-field crossover calibration only. Multi-group (stereo-pair) polarity/delay
+*emission* is also deferred (`group_specific_delay_not_applied`); the proposal
+computes for one group, so a mono/single-group speaker (jts3's
+`active_mono_2way`) gets the full refinement.
+
+**Update, 2026-07-12 (Slice 2 — every crossover region, not only the
+lowest).** `build_crossover_alignment_proposal` used to cover ONE crossover
+(the primary / lowest); a 3-way's upper crossover needed its own summed-null
+capture and was explicitly out of scope. `measurement.py` now retains BOTH
+in-phase and reverse-polarity summed evidence per crossover region (region
+identity is stamped at record time — a fix in its own right, since a single
+latest-record-per-group slot let a reverse capture silently overwrite the
+in-phase evidence used by the room-correction blend gate and the automatic
+delay/polarity tier). `build_crossover_alignment_proposal` iterates every
+region sorted by fc and returns a `proposals` list (one `{region, proposal}`
+entry each, independently phase_aware-gated on its own contributing
+captures' calibration); the top-level `mode`/`proposal` keys stay the lowest
+region's, for callers that only know about a single crossover. The proposer
+itself (`propose_crossover_alignment`) is unchanged — this is wiring
+persisted paired evidence around it. See
+[active-crossover-information-design.md](active-crossover-information-design.md)
+"Slice 2: automatic alignment".
 
 Tests: `tests/test_active_speaker_crossover_alignment.py` (cal-curve application via
 the null-depth shift, the phase_aware gate at both layers, the relative-margin

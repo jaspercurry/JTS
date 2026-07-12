@@ -1393,6 +1393,32 @@ Delay alignment is measured, not guessed.
 > `False` is reserved for a confirmed-insufficient REAL per-band reading —
 > every existing margin/blend proposal stays unchanged until a caller
 > supplies one.
+>
+> **Update, 2026-07-12 (Slice 2 — paired summed evidence + multi-region
+> proposals).** `measurement.py` retained only ONE summed record per group
+> regardless of polarity, so a reverse-polarity capture (`acoustic.
+> expect_null=True`) recorded after an in-phase blend check could silently
+> overwrite it — both can read `validated=True`/`verdict="blend_ok"`, since a
+> formed reverse null IS the pass for a reverse capture. `latest_summed_by_
+> group` / `latest_summed_validations` are now specifically the latest
+> IN-PHASE record per group; a new `latest_summed_pairs_by_group` retains
+> BOTH polarities, keyed per crossover region (`"<lower_role>:<upper_role>"`),
+> resolved from a `region` block `commissioning_capture.
+> record_summed_acoustic_capture` stamps at record time. `_summed_alignment_
+> snr` now takes the pair (in-phase + reverse) and combines conservatively
+> (either side's confirmed-insufficient SNR or capped null degrades the
+> region). `build_crossover_alignment_proposal` iterates every crossover
+> region sorted by fc — not only the lowest — and returns `{status,
+> speaker_group_id, mode, proposals, proposal}`; `proposals` is one
+> `{region, proposal}` entry per region (each independently phase_aware-
+> gated on ITS OWN contributing captures' calibration), and the top-level
+> `mode`/`proposal` stay the lowest region's dict for backward compatibility.
+> `jasper.active_speaker.crossover_alignment.propose_crossover_alignment`
+> itself is unchanged — this is wiring persisted paired evidence around the
+> already-shipped proposer, per
+> [active-crossover-information-design.md](active-crossover-information-design.md)
+> "Slice 2: automatic alignment". The delay *walk* (a measured value) and
+> post-apply verification remain separate, not-yet-built pieces of Slice 2.
 
 ## CamillaDSP Profile Architecture
 

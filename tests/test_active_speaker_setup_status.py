@@ -15,6 +15,10 @@ from jasper.active_speaker.baseline_profile import build_baseline_profile_candid
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.measurement import (
     active_driver_targets,
+    load_measurement_state,
+    record_driver_measurement,
+    record_summed_test_artifact,
+    record_summed_validation,
     start_active_comparison_set,
 )
 from jasper.output_topology import (
@@ -27,6 +31,7 @@ from tests.test_active_speaker_baseline_profile import (
     _draft,
     _dual_apple_topology,
     _measurements,
+    _safe_session,
     _valid_config,
 )
 
@@ -1014,3 +1019,112 @@ def test_commissioning_summary_is_fail_soft_never_raises() -> None:
     # Degrades to the safest phase rather than propagating the exception.
     assert result["phase"] == "idle"
     assert result["room_correction_allowed"] is False
+
+
+# --- Overwrite-bug regression (lane E, Slice 2 paired summed evidence) ------
+
+
+def test_usable_summed_acoustic_gate_unaffected_by_later_reverse_capture(
+    tmp_path: Path,
+) -> None:
+    """setup_status._usable_summed_acoustic is the room-correction blend gate
+    -- it reads summary.latest_summed_validations, which measurement.py now
+    defines as the latest IN-PHASE record per group specifically. Before
+    that fix, latest_summed_validations kept whichever summed record was
+    captured most recently regardless of polarity, so a reverse-polarity
+    capture recorded AFTER a validated in-phase blend check -- which can
+    ALSO read validated=True/verdict='blend_ok' (a formed reverse null IS
+    the pass for a reverse capture) -- silently shadowed the in-phase
+    evidence this gate needs. This pins the fix at the real consumer, through
+    real persistence (not a hand-built measurements dict)."""
+    topology = _active_topology()
+    state_path = tmp_path / "measurements.json"
+    for role in ("woofer", "tweeter"):
+        output_index = 0 if role == "woofer" else 1
+        playback_id = f"playback-{role}"
+        record_driver_measurement(
+            topology,
+            {
+                "speaker_group_id": "mono",
+                "role": role,
+                "outcome": "heard_correct_driver",
+                "observed_mic_dbfs": -42.0,
+                "playback_id": playback_id,
+            },
+            safe_session=_safe_session(
+                role=role, output_index=output_index, playback_id=playback_id,
+            ),
+            state_path=state_path,
+            now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
+        )
+    record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "completed",
+                "backend": "aplay",
+                "playback_id": "summed-playback-audible",
+                "audio_emitted": True,
+                "artifact": {
+                    "wav_basename": "tone.wav",
+                    "metadata_basename": "tone.json",
+                    "target_output_indices": [0, 1],
+                    "channel_count": 2,
+                },
+                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
+            },
+        },
+        state_path=state_path,
+        now="2026-06-14T12:02:30Z",
+    )
+    record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40.0,
+            "summed_test_id": "summed-playback-audible",
+            "acoustic": {
+                "verdict": "blend_ok",
+                "null_depth_db": 2.0,
+                "expect_null": False,
+                "calibrated": True,
+            },
+        },
+        state_path=state_path,
+        now="2026-06-14T12:03:00Z",
+    )
+
+    before = load_measurement_state(topology, state_path=state_path)
+    before_record = before["summary"]["latest_summed_validations"]["mono"]
+    assert setup_mod._usable_summed_acoustic(before_record) is True
+
+    # A reverse-polarity capture, taken afterward, forms the expected null
+    # (verdict=blend_ok, validated=True -- the pass case for a reverse
+    # capture, indistinguishable from an in-phase pass by outcome alone).
+    record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -55.0,
+            "summed_test_id": "summed-playback-audible",
+            "acoustic": {
+                "verdict": "blend_ok",
+                "null_depth_db": 22.0,
+                "expect_null": True,
+                "calibrated": True,
+            },
+        },
+        state_path=state_path,
+        now="2026-06-14T12:04:00Z",
+    )
+
+    after = load_measurement_state(topology, state_path=state_path)
+    after_record = after["summary"]["latest_summed_validations"]["mono"]
+    # Still the in-phase record -- the gate is unaffected by the reverse
+    # capture.
+    assert after_record["acoustic"]["expect_null"] is False
+    assert after_record["acoustic"]["null_depth_db"] == 2.0
+    assert setup_mod._usable_summed_acoustic(after_record) is True
