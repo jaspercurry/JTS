@@ -124,6 +124,22 @@ last failure code — for the household/operator summary described in the design
 doc's "Runtime surface"; detailed curves and bundle paths stay out of `/state`
 by design.
 
+**Forward-wired fields.** A handful of the fields above have no producer on
+`main` yet, because the lanes that write them (per
+`docs/active-crossover-information-design.md`'s parallel-lane plan) land
+after this one: `session` / `session_id` come from lane D's
+`bundle_session_id` (the top-level measurement-state key; the per-capture
+event reader additionally expects a copy stamped onto the individual
+record), and `snr_db` / `floor_hz` / `last_capture.snr_db` come from lanes
+A/B's `acoustic.snr.worst_relevant.estimated_snr_db` and
+`acoustic.gating.f_valid_floor_hz`. Every read site is marked
+`FORWARD-WIRED(active-crossover)` in a comment/docstring; until the
+producing lane lands, the value is simply absent and CI stays green on
+fabricated-empty inputs only. When a producing lane merges, run
+`git grep 'FORWARD-WIRED(active-crossover)'`, re-verify each hit against the
+real key shape, drive one real-shape test through that site, then delete
+the marker.
+
 **Remaining migration — 14 deferred active-zone files.** The migration is
 complete across the codebase *except* a small set of files an in-flight
 work-stream owns; those were left hand-written to avoid churning a parallel

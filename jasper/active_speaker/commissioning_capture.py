@@ -169,12 +169,19 @@ def primary_crossover_fc_hz(preset: ActiveSpeakerPreset) -> float | None:
 def _bundle_session_id(measurement: Any) -> str | None:
     """Best-effort bundle session id from a just-recorded measurement.
 
+    FORWARD-WIRED(active-crossover): bundle_session_id has no producer on
+    main yet (lanes A/B/D); when the producing lane lands, verify the real
+    key path matches, drive one real-shape (non-fabricated) test through
+    this site, then delete this marker.
+
     The commissioning-bundle writer (SC-4) is separate, later work and does
     not stamp a bundle reference onto records yet, so this reads the single
-    most likely shape -- a top-level ``bundle_session_id`` on the persisted
-    measurement state -- meaning the lifecycle event's ``session`` field
-    starts populating itself the moment that lands, without a further edit
-    here. Absent today: the event's ``session`` field is simply omitted
+    most likely shape -- a per-record ``bundle_session_id`` on the just-
+    recorded measurement (distinct from the top-level-state assumption
+    `start_active_comparison_set` reads in measurement.py) -- meaning the
+    lifecycle event's ``session`` field starts populating itself the moment
+    that lands, without a further edit here. Absent today: the event's
+    ``session`` field is simply omitted
     (docs/active-crossover-information-design.md "Structured events": fields
     are included "when available, omit when not").
     """
@@ -211,6 +218,11 @@ def _log_capture_verdict_event(
         fields["verdict"] = verdict
     if result.get("recorded"):
         fields["outcome"] = result.get("outcome")
+        # FORWARD-WIRED(active-crossover): acoustic['snr']['worst_relevant']
+        # ['estimated_snr_db'] and acoustic['gating']['f_valid_floor_hz']
+        # have no producer on main yet (lanes A/B); when the producing lane
+        # lands, verify the real key path matches, drive one real-shape
+        # (non-fabricated) test through this site, then delete this marker.
         snr_block = acoustic.get("snr")
         worst_relevant = (
             snr_block.get("worst_relevant") if isinstance(snr_block, Mapping) else None
