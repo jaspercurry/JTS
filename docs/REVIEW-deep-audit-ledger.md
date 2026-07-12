@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`0e7a9ec9`): 2026-07-12.
+Last reconciled against `main` (`d52fd099`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 487
-- **fixed**: 180
+- **open**: 485
+- **fixed**: 182
 - **in-progress**: 0
 - **mooted**: 9
 - **deferred**: 1
@@ -48,10 +48,10 @@ Last reconciled against `main` (`0e7a9ec9`): 2026-07-12.
 | DA-0013 | `jasper/cli/xvf_firmware_update.py` :: update | should-fix | W5 | **fixed** | bounded download + pre-flash budget + recovery/unit deadline contract — #1285 |
 | DA-0014 | `jasper/control/server.py` :: _make_handler / class Handler | should-fix | W5 | **open** | — |
 | DA-0018 | `jasper/multiroom/reconcile.py` :: _ensure_unit_active:1226-1274 | should-fix | W5 | **fixed** | shared reset-failed helper + start OSError containment; recovery probes now fail closed — #1299 |
-| DA-0023 | `jasper/voice/gemini_session.py` :: _open_session / _receive_loop | should-fix | W5 | **open** | — |
+| DA-0023 | `jasper/voice/gemini_session.py` :: _open_session / _receive_loop | should-fix | W5 | **fixed** | obsolete object-identity INFO probes removed; concise lifecycle timing retained — #1302 |
 | DA-0025 | `jasper/wake_corpus/bridge_session.py` :: voice_daemon_active:2107 | should-fix | W5 | **open** | — |
 | DA-0026 | `jasper/wake_events.py` :: _STAGE_TO_COLUMN | should-fix | W5 | **open** | — |
-| DA-0028 | `jasper/web/bluetooth_setup.py` :: _start_pair_stream / _drive | should-fix | W5 | **open** | — |
+| DA-0028 | `jasper/web/bluetooth_setup.py` :: _start_pair_stream / _drive | should-fix | W5 | **fixed** | unexpected pair-driver failures now emit one structured error with traceback — #1301 |
 | DA-0031 | `jasper/web/rooms_setup.py` :: _self_addresses / _lan_target / _post_groupi | should-fix | W5 | **open** | — |
 | DA-0032 | `jasper/web/sound_setup.py` :: :177 | should-fix | W5 | **open** | — |
 | DA-0033 | `jasper/web/sound_setup.py` :: Handler.do_POST | should-fix | W5 | **open** | — |
