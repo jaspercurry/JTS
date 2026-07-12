@@ -186,6 +186,7 @@ def test_force_remove_guard_only_allows_tool_owned_outputs(tmp_path: Path) -> No
     training = tmp_path / "training"
     assert smoke._safe_to_remove_output(training / "livekit-smoke", training_workdir=training)
     assert not smoke._safe_to_remove_output(training, training_workdir=training)
+    assert not smoke._safe_to_remove_output(tmp_path, training_workdir=training)
     assert not smoke._safe_to_remove_output(tmp_path / "custom", training_workdir=training)
     assert not smoke._safe_to_remove_output(Path.cwd(), training_workdir=training)
 
@@ -193,12 +194,25 @@ def test_force_remove_guard_only_allows_tool_owned_outputs(tmp_path: Path) -> No
     custom.mkdir()
     (custom / "livekit_smoke.json").write_text(json.dumps({
         "schema_version": smoke.SCHEMA_VERSION,
+        "tool": "prepare-wake-livekit-smoke",
+        "output_dir": str(custom),
         "artifacts": {
             "summary": "livekit_smoke.json",
             "config": "livekit_smoke_config.yaml",
         },
     }))
     assert smoke._safe_to_remove_output(custom, training_workdir=training)
+
+    copied = tmp_path / "copied"
+    copied.mkdir()
+    (copied / "livekit_smoke.json").write_bytes(
+        (custom / "livekit_smoke.json").read_bytes()
+    )
+    assert not smoke._safe_to_remove_output(copied, training_workdir=training)
+
+    alias = tmp_path / "alias"
+    alias.symlink_to(custom, target_is_directory=True)
+    assert not smoke._safe_to_remove_output(alias, training_workdir=training)
 
 
 def test_cli_refuses_unsafe_force_path(tmp_path: Path, capsys) -> None:
@@ -212,3 +226,43 @@ def test_cli_refuses_unsafe_force_path(tmp_path: Path, capsys) -> None:
 
     assert rc == 2
     assert "refusing to remove unsafe output directory" in capsys.readouterr().err
+
+
+def test_livekit_marker_predicate_rejects_wrong_contract() -> None:
+    valid = {
+        "schema_version": smoke.SCHEMA_VERSION,
+        "tool": "prepare-wake-livekit-smoke",
+        "artifacts": {
+            "summary": "livekit_smoke.json",
+            "config": "livekit_smoke_config.yaml",
+        },
+    }
+    assert smoke._looks_like_livekit_smoke_output(valid)
+    for invalid in (
+        {**valid, "schema_version": 2},
+        {**valid, "tool": "other-tool"},
+        {**valid, "artifacts": {"summary": "livekit_smoke.json"}},
+    ):
+        assert not smoke._looks_like_livekit_smoke_output(invalid)
+
+
+def test_cli_force_symlink_refusal_never_calls_rmtree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    training = tmp_path / "training"
+    _write_training_workdir(training)
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "keep.txt").write_text("keep\n")
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+
+    def unexpected_rmtree(_path: Path) -> None:
+        raise AssertionError("rmtree must not run for a final symlink")
+
+    monkeypatch.setattr(smoke.shutil, "rmtree", unexpected_rmtree)
+    rc = smoke.main([str(training), str(alias), "--force"])
+
+    assert rc == 2
+    assert (target / "keep.txt").read_text() == "keep\n"

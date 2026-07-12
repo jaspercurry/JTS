@@ -288,6 +288,11 @@ Current implementation state:
   `--negative-corpus-dir` or `--negative-bundle-dir`. Operators can pass
   `--allow-placeholder-negatives` for mechanics-only smoke tests, but that is
   explicitly not model-quality evidence.
+- `--force` on the Phase 0 runner, training-workdir prep, and LiveKit smoke
+  prep replaces only each tool's standard owned output tree or a custom
+  directory with that tool's valid, self-bound manifest. Protected paths and
+  their ancestors, final symlinks, malformed manifests, and copied manifests
+  whose recorded `output_dir` does not resolve to the candidate are refused.
 - The next Phase 0 slice should run this runner off-Pi with real positive
   features plus real negative feature banks, then compare the exported ONNX
   against the incumbent on held-out JTS audio.
@@ -481,7 +486,9 @@ should be promoted into clear modules before building UX.
 - openWakeWord repo:
   <https://github.com/dscripka/openWakeWord>
 
-Last verified: 2026-06-10 (updated after adding the corpus-bundle exporter,
+Last verified: 2026-07-12 (updated after adding shared fail-closed `--force`
+output-ownership checks for the Phase 0 runner, training-workdir prep, and
+LiveKit smoke prep; previously added the corpus-bundle exporter,
 openWakeWord-compatible positive and negative feature-bank builders,
 training-workdir real-positive injection prep, and LiveKit train/export/eval
 smoke harness; quality evaluation, registry, and deployment stages remain

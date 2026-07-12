@@ -262,6 +262,7 @@ def test_force_remove_guard_only_allows_tool_owned_outputs(tmp_path: Path) -> No
         feature_bank_dir=feature_bank,
     )
     assert not prep._safe_to_remove_output(feature_bank, feature_bank_dir=feature_bank)
+    assert not prep._safe_to_remove_output(tmp_path, feature_bank_dir=feature_bank)
     assert not prep._safe_to_remove_output(tmp_path / "custom", feature_bank_dir=feature_bank)
     assert not prep._safe_to_remove_output(Path.cwd(), feature_bank_dir=feature_bank)
 
@@ -269,12 +270,25 @@ def test_force_remove_guard_only_allows_tool_owned_outputs(tmp_path: Path) -> No
     custom.mkdir()
     (custom / "training_workdir.json").write_text(json.dumps({
         "schema_version": prep.SCHEMA_VERSION,
+        "tool": "prepare-wake-training-workdir",
+        "output_dir": str(custom),
         "artifacts": {
             "summary": "training_workdir.json",
             "real_positive_manifest": "real_positive_manifest.jsonl",
         },
     }))
     assert prep._safe_to_remove_output(custom, feature_bank_dir=feature_bank)
+
+    copied = tmp_path / "copied"
+    copied.mkdir()
+    (copied / "training_workdir.json").write_bytes(
+        (custom / "training_workdir.json").read_bytes()
+    )
+    assert not prep._safe_to_remove_output(copied, feature_bank_dir=feature_bank)
+
+    alias = tmp_path / "alias"
+    alias.symlink_to(custom, target_is_directory=True)
+    assert not prep._safe_to_remove_output(alias, feature_bank_dir=feature_bank)
 
 
 def test_cli_refuses_unsafe_force_path(tmp_path: Path, capsys) -> None:
@@ -288,3 +302,43 @@ def test_cli_refuses_unsafe_force_path(tmp_path: Path, capsys) -> None:
 
     assert rc == 2
     assert "refusing to remove unsafe output directory" in capsys.readouterr().err
+
+
+def test_training_workdir_marker_predicate_rejects_wrong_contract() -> None:
+    valid = {
+        "schema_version": prep.SCHEMA_VERSION,
+        "tool": "prepare-wake-training-workdir",
+        "artifacts": {
+            "summary": "training_workdir.json",
+            "real_positive_manifest": "real_positive_manifest.jsonl",
+        },
+    }
+    assert prep._looks_like_training_workdir_output(valid)
+    for invalid in (
+        {**valid, "schema_version": 2},
+        {**valid, "tool": "other-tool"},
+        {**valid, "artifacts": {"summary": "training_workdir.json"}},
+    ):
+        assert not prep._looks_like_training_workdir_output(invalid)
+
+
+def test_cli_force_symlink_refusal_never_calls_rmtree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    feature_bank = tmp_path / "feature-bank"
+    _write_feature_bank(feature_bank)
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "keep.txt").write_text("keep\n")
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+
+    def unexpected_rmtree(_path: Path) -> None:
+        raise AssertionError("rmtree must not run for a final symlink")
+
+    monkeypatch.setattr(prep.shutil, "rmtree", unexpected_rmtree)
+    rc = prep.main([str(feature_bank), str(alias), "--force"])
+
+    assert rc == 2
+    assert (target / "keep.txt").read_text() == "keep\n"
