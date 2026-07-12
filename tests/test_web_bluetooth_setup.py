@@ -19,8 +19,10 @@ hardware-free (no dbus / bluez).
 """
 from __future__ import annotations
 
+import asyncio
 import http
 import json
+import logging
 from email.message import Message
 from io import BytesIO
 
@@ -205,6 +207,82 @@ def test_public_surface_is_stable():
     assert callable(bluetooth_setup.main)
     assert callable(bluetooth_setup._landing_html)
     assert callable(bluetooth_setup._make_handler)
+
+
+def test_unexpected_pair_driver_failure_is_logged_once(monkeypatch, caplog):
+    monkeypatch.delenv("JASPER_LOG_JSON", raising=False)
+
+    class _PairEngine:
+        async def pair(self, _mac):
+            yield {"stage": "pairing"}
+            raise RuntimeError("synthetic-pair-crash")
+
+    class _PairDispatcher:
+        _loop = object()
+        engine = _PairEngine()
+
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", _PairDispatcher())
+    monkeypatch.setattr(
+        bluetooth_setup.asyncio,
+        "run_coroutine_threadsafe",
+        lambda coro, _loop: asyncio.run(coro),
+    )
+    mac = "AA:BB:CC:DD:EE:FF"
+
+    with caplog.at_level(logging.ERROR, logger=bluetooth_setup.__name__):
+        bluetooth_setup._start_pair_stream(mac)
+
+    q = bluetooth_setup._PAIR_STREAMS.pop(mac)
+    assert q.get_nowait() == {"stage": "pairing"}
+    assert q.get_nowait() == {
+        "stage": "error",
+        "message": "synthetic-pair-crash",
+    }
+    assert q.get_nowait() is None
+    records = [
+        record for record in caplog.records
+        if record.getMessage() == "event=bluetooth.pair_failed"
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info is not None
+    assert isinstance(records[0].exc_info[1], RuntimeError)
+
+
+def test_expected_pair_error_event_is_not_logged_as_driver_failure(
+    monkeypatch, caplog,
+):
+    monkeypatch.delenv("JASPER_LOG_JSON", raising=False)
+
+    class _PairEngine:
+        async def pair(self, _mac):
+            yield {"stage": "error", "message": "pairing rejected"}
+
+    class _PairDispatcher:
+        _loop = object()
+        engine = _PairEngine()
+
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", _PairDispatcher())
+    monkeypatch.setattr(
+        bluetooth_setup.asyncio,
+        "run_coroutine_threadsafe",
+        lambda coro, _loop: asyncio.run(coro),
+    )
+    mac = "11:22:33:44:55:66"
+
+    with caplog.at_level(logging.ERROR, logger=bluetooth_setup.__name__):
+        bluetooth_setup._start_pair_stream(mac)
+
+    q = bluetooth_setup._PAIR_STREAMS.pop(mac)
+    assert q.get_nowait() == {
+        "stage": "error",
+        "message": "pairing rejected",
+    }
+    assert q.get_nowait() is None
+    assert not any(
+        record.getMessage() == "event=bluetooth.pair_failed"
+        for record in caplog.records
+    )
 
 
 def test_get_root_renders_canonical_page():
