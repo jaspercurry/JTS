@@ -9,6 +9,19 @@ one measured result per driver and one summed crossover validation per active
 speaker group. It does not play tones, capture audio, load CamillaDSP, or infer
 acoustic truth from thin evidence. It stores what the UI and operator observed
 so the baseline compiler can decide whether it has enough evidence to proceed.
+
+**Paired summed evidence (Slice 2).** A summed crossover region can be
+measured twice at the same fixed position — once in-phase (a correct
+crossover sums flat) and once with one driver deliberately reversed (a
+correct crossover then cancels deeply). Both readings are real, distinct
+evidence, but `record_summed_validation` -> `_summarise` used to keep only
+ONE "latest" record per group regardless of polarity, so a reverse-polarity
+capture recorded after an in-phase one silently overwrote it (and vice
+versa) in every downstream summary field. `latest_summed_by_group` /
+`latest_summed_validations` are now defined as the latest IN-PHASE record
+per group specifically (see `_latest_current_summed_records`); paired
+evidence — both polarities, keyed by crossover region — lives alongside it
+in `latest_summed_pairs_by_group`.
 """
 
 from __future__ import annotations
@@ -27,8 +40,9 @@ from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
-from ._common import issue as _issue
+from ._common import issue as _issue, region_key as _region_key
 from .calibration_level import classify_mic_meter
+from .profile import ADJACENT_PAIRS_BY_WAY
 from .safe_playback import playback_target_signature
 
 logger = logging.getLogger(__name__)
@@ -99,6 +113,78 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
 
 def _target_id(group_id: str, role: str) -> str:
     return f"{group_id}:{role}"
+
+
+# A 2-way group's single crossover region is always woofer<->tweeter — the
+# fixed, installation-independent vocabulary in
+# jasper.active_speaker.profile.ADJACENT_PAIRS_BY_WAY[2] (a 2-way ALWAYS has
+# exactly these two roles and exactly one region joining them). A summed
+# record saved before region identity existed — or by a caller that never
+# stamped one — resolves unambiguously into this one pair on a 2-way; see
+# `_latest_current_summed_records`. A 3-way has two regions and no way to
+# guess which one an unstamped record belongs to, so it is left out of
+# pairing entirely in that case.
+_TWO_WAY_REGION_KEY = _region_key(*ADJACENT_PAIRS_BY_WAY[2][0])
+
+
+def _record_region_key(record: Mapping[str, Any]) -> str | None:
+    """The paired-evidence key ``record`` belongs under, from its own stamp.
+
+    Reads the ``region`` block ``commissioning_capture.record_summed_acoustic_
+    capture`` stamps at record time (``{"lower_role", "upper_role", "fc_hz"}``,
+    validated in `record_summed_validation`). ``None`` when the record has no
+    resolvable region of its own — the caller decides whether a 2-way legacy
+    fallback applies (see `_TWO_WAY_REGION_KEY`).
+    """
+    region = record.get("region")
+    if not isinstance(region, Mapping):
+        return None
+    lower_role = region.get("lower_role")
+    upper_role = region.get("upper_role")
+    if (
+        isinstance(lower_role, str) and lower_role
+        and isinstance(upper_role, str) and upper_role
+    ):
+        return _region_key(lower_role, upper_role)
+    return None
+
+
+def _record_summed_kind(record: Mapping[str, Any]) -> str | None:
+    """``"in_phase"`` / ``"reverse"`` / ``None`` (no acoustic verdict at all).
+
+    A record with no ``acoustic`` block (the pure operator-listening-check
+    path — no mic-backed verdict) has no polarity kind: it still counts
+    toward ``latest_summed_by_group`` candidacy (a validated blend with no
+    null evidence, same as before this pairing existed) but can never
+    contribute to a region's in-phase/reverse pair.
+    """
+    acoustic = record.get("acoustic")
+    if not isinstance(acoustic, Mapping):
+        return None
+    return "reverse" if _truthy_flag(acoustic.get("expect_null")) else "in_phase"
+
+
+def _valid_region(value: Any) -> dict[str, Any] | None:
+    """Validate a caller-supplied ``region`` block before persisting it.
+
+    ``value`` is ``commissioning_capture.record_summed_acoustic_capture``'s
+    ``{"lower_role", "upper_role", "fc_hz"}`` stamp — two non-empty role
+    strings and a finite, positive ``fc_hz``. Anything else (missing,
+    malformed, unresolvable-fc ``None``) persists as ``None`` rather than a
+    half-formed region a pair reader could misfile.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    lower_role = value.get("lower_role")
+    upper_role = value.get("upper_role")
+    fc_hz = _finite_float(value.get("fc_hz"))
+    if (
+        isinstance(lower_role, str) and lower_role
+        and isinstance(upper_role, str) and upper_role
+        and fc_hz is not None and fc_hz > 0
+    ):
+        return {"lower_role": lower_role, "upper_role": upper_role, "fc_hz": fc_hz}
+    return None
 
 
 def _active_groups(topology: OutputTopology) -> list[Any]:
@@ -226,6 +312,7 @@ def _base_state(path: Path) -> dict[str, Any]:
         "latest_by_target": {},
         "latest_summed_tests": {},
         "latest_summed_by_group": {},
+        "latest_summed_pairs_by_group": {},
         "active_comparison_set": None,
         "summary": {},
         "issues": [],
@@ -402,20 +489,66 @@ def _latest_current_driver_records(
 def _latest_current_summed_records(
     records: list[dict[str, Any]],
     targets: list[dict[str, Any]],
-) -> tuple[dict[str, dict[str, Any]], int]:
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, dict[str, dict[str, Any] | None]]],
+    int,
+]:
+    """Latest current summed evidence, both flat (in-phase) and paired.
+
+    Returns ``(latest_in_phase_by_group, latest_pairs_by_group, stale_count)``:
+
+    * ``latest_in_phase_by_group`` is what every existing consumer reads as
+      ``latest_summed_by_group`` / ``latest_summed_validations`` — the setup
+      readiness blend gate (``setup_status._usable_summed_acoustic``), the
+      automatic-candidate readiness check (``crossover_contract.
+      automatic_candidate_readiness``), the automatic tuning tier's delay/
+      polarity refinement (``baseline_profile._derive_corrections``), and the
+      ``validated_groups`` completion check in ``_summarise`` below. All of
+      those intend "does the crossover blend cleanly in phase?" — a reverse-
+      polarity capture (``acoustic.expect_null`` true) answers a DIFFERENT
+      question ("does it null when deliberately inverted?") and must not
+      silently replace the in-phase answer just because it was captured more
+      recently. Before this pairing existed, both kinds shared one
+      latest-wins slot, so a reverse capture recorded after an in-phase one
+      (or vice versa) silently overwrote it everywhere at once — this is the
+      fix. A record with no ``acoustic`` block at all (pure operator
+      listening check) still counts as in-phase-eligible, unchanged from
+      prior behavior.
+    * ``latest_pairs_by_group`` is ``{group_id: {region_key: {"in_phase":
+      rec|None, "reverse": rec|None}}}``, newest-per-kind, built only from
+      records that carry a real acoustic verdict (a kind) AND a resolvable
+      region — the record's own stamped ``region``, or, on a 2-way only, the
+      legacy fallback in ``_TWO_WAY_REGION_KEY``. A 3-way's region-less
+      legacy record has no unambiguous home and is left out of pairing
+      (though it can still be in-phase-eligible above).
+    """
     target_by_group = {target["speaker_group_id"]: target for target in targets}
     latest: dict[str, dict[str, Any]] = {}
+    pairs: dict[str, dict[str, dict[str, dict[str, Any] | None]]] = {}
     stale_count = 0
     for record in reversed(records):
         group_id = record.get("speaker_group_id")
         if not isinstance(group_id, str) or group_id not in target_by_group:
             continue
         target = target_by_group[group_id]
-        if record.get("group_fingerprint") == target.get("group_fingerprint"):
-            latest.setdefault(group_id, record)
-        else:
+        if record.get("group_fingerprint") != target.get("group_fingerprint"):
             stale_count += 1
-    return latest, stale_count
+            continue
+        kind = _record_summed_kind(record)
+        if kind != "reverse":
+            latest.setdefault(group_id, record)
+        region_key = _record_region_key(record)
+        if region_key is None and target.get("mode") == "active_2_way":
+            region_key = _TWO_WAY_REGION_KEY
+        if kind is not None and region_key is not None:
+            region_pairs = pairs.setdefault(group_id, {})
+            slot = region_pairs.setdefault(
+                region_key, {"in_phase": None, "reverse": None}
+            )
+            if slot[kind] is None:
+                slot[kind] = record
+    return latest, pairs, stale_count
 
 
 def _latest_current_summed_tests(
@@ -658,9 +791,11 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         state.get("driver_measurements", []),
         driver_targets,
     )
-    latest_summed_by_group, stale_summed_count = _latest_current_summed_records(
-        state.get("summed_validations", []),
-        summed_targets,
+    latest_summed_by_group, latest_summed_pairs_by_group, stale_summed_count = (
+        _latest_current_summed_records(
+            state.get("summed_validations", []),
+            summed_targets,
+        )
     )
     latest_summed_tests_by_group, stale_summed_test_count = (
         _latest_current_summed_tests(
@@ -716,6 +851,7 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         "latest_driver_checks": latest_by_target,
         "latest_summed_tests": latest_summed_tests_by_group,
         "latest_summed_validations": latest_summed_by_group,
+        "latest_summed_pairs_by_group": latest_summed_pairs_by_group,
         "stale_driver_record_count": stale_driver_count,
         "stale_summed_test_record_count": stale_summed_test_count,
         "stale_summed_record_count": stale_summed_count,
@@ -773,6 +909,7 @@ def _with_summary(topology: OutputTopology, state: dict[str, Any]) -> dict[str, 
         "latest_by_target": summary["latest_driver_measurements"],
         "latest_summed_tests": summary["latest_summed_tests"],
         "latest_summed_by_group": summary["latest_summed_validations"],
+        "latest_summed_pairs_by_group": summary["latest_summed_pairs_by_group"],
         "summary": summary,
         "issues": issues,
         "permissions": {
@@ -1120,6 +1257,15 @@ def record_summed_validation(
     ``bundle_ref``, when supplied, is stored verbatim on the record as
     ``bundle`` — the same ``{session_id, artifact_path}`` join key
     :func:`record_driver_measurement` stores. See its docstring.
+
+    ``raw["region"]``, when supplied, is the crossover region this capture
+    belongs to (``{"lower_role", "upper_role", "fc_hz"}`` —
+    ``commissioning_capture.record_summed_acoustic_capture`` resolves it from
+    the preset at the analyzed fc). Validated through :func:`_valid_region`
+    and stored verbatim as ``region``, or ``None`` when absent or malformed —
+    never a half-formed region a pair reader could misfile. See
+    :func:`_latest_current_summed_records` for how region + polarity
+    (``acoustic.expect_null``) combine into paired evidence.
     """
 
     path = measurement_state_path(state_path)
@@ -1248,6 +1394,7 @@ def record_summed_validation(
         "notes": _text(raw.get("notes"), max_chars=1000),
         "issues": issues,
         "bundle": dict(bundle_ref) if isinstance(bundle_ref, Mapping) else None,
+        "region": _valid_region(raw.get("region")),
     }
     persisted = _normalise_state(state, path)
     persisted["summed_validations"] = [

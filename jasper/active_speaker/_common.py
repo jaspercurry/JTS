@@ -45,3 +45,16 @@ def gate(gate_id: str, *, label: str, passed: bool, message: str) -> dict[str, A
         "passed": bool(passed),
         "message": message,
     }
+
+
+def region_key(lower_role: str, upper_role: str) -> str:
+    """The join key one crossover region's paired evidence is grouped under.
+
+    Shared between ``measurement.py`` (writes ``latest_summed_pairs_by_group``
+    keyed by this) and ``commissioning_capture.py`` (reads it back to resolve
+    a region's paired in-phase/reverse evidence) — the two sides must agree
+    on the exact format, so it lives here once rather than as a duplicated
+    f-string.
+    """
+
+    return f"{lower_role}:{upper_role}"
