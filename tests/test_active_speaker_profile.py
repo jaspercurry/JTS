@@ -206,6 +206,53 @@ def test_driver_polarity_must_be_consistent_across_regions():
         ActiveSpeakerPreset.from_mapping(raw)
 
 
+def test_crossover_region_delay_ms_round_trips():
+    raw = _two_way_preset()
+    raw["crossover_regions"][0]["delay_ms"] = 0.35
+
+    preset = ActiveSpeakerPreset.from_mapping(raw)
+
+    assert preset.crossover_regions[0].delay_ms == 0.35
+    assert preset.to_dict()["crossover_regions"][0]["delay_ms"] == 0.35
+    assert ActiveSpeakerPreset.from_mapping(preset.to_dict()) == preset
+    # Byte-identical for a legacy fixture with no persisted delay: the key is
+    # omitted entirely rather than emitted as null.
+    legacy = ActiveSpeakerPreset.from_mapping(_two_way_preset())
+    assert legacy.crossover_regions[0].delay_ms is None
+    assert "delay_ms" not in legacy.to_dict()["crossover_regions"][0]
+
+
+def test_crossover_region_delay_ms_must_be_in_range():
+    raw = _two_way_preset()
+    raw["crossover_regions"][0]["delay_ms"] = 25.0
+
+    with pytest.raises(ActiveSpeakerConfigError, match="delay_ms must be between"):
+        ActiveSpeakerPreset.from_mapping(raw)
+
+    raw = _two_way_preset()
+    raw["crossover_regions"][0]["delay_ms"] = -0.1
+
+    with pytest.raises(ActiveSpeakerConfigError, match="delay_ms must be between"):
+        ActiveSpeakerPreset.from_mapping(raw)
+
+
+def test_crossover_region_delay_ms_requires_delay_target_driver():
+    raw = _two_way_preset()
+    raw["crossover_regions"][0]["delay_ms"] = 0.2
+    raw["crossover_regions"][0]["delay_target_driver"] = None
+
+    with pytest.raises(ActiveSpeakerConfigError, match="delay_target_driver is required"):
+        ActiveSpeakerPreset.from_mapping(raw)
+
+
+def test_crossover_region_delay_target_driver_must_be_one_of_the_pair():
+    raw = _two_way_preset()
+    raw["crossover_regions"][0]["delay_target_driver"] = "mid"
+
+    with pytest.raises(ActiveSpeakerConfigError, match="delay_target_driver must be one of"):
+        ActiveSpeakerPreset.from_mapping(raw)
+
+
 def test_safety_envelope_requires_physical_tweeter_protection_for_now():
     raw = _two_way_preset()
     raw["safety"]["require_physical_tweeter_protection"] = False
