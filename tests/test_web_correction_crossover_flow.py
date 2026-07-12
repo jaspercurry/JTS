@@ -91,6 +91,11 @@ def test_noise_band_report_value_rejects_malformed_input(raw):
 
 
 def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_path):
+    # Hygiene: scope the commissioning-bundle sessions dir to tmp_path so this
+    # test can never touch the real /var/lib path when the suite runs as root.
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions")
+    )
     calls = {}
     topology = object()
     frozen_preset = object()
@@ -190,8 +195,13 @@ def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
 
 
 def test_driver_capture_rejects_post_play_topology_change_even_with_old_session(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ):
+    # Hygiene: scope the commissioning-bundle sessions dir to tmp_path so this
+    # test can never touch the real /var/lib path when the suite runs as root.
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions")
+    )
     from jasper.active_speaker.measurement import active_driver_targets
     from tests.test_active_speaker_measurement import _topology
 
@@ -261,6 +271,11 @@ def test_driver_capture_rejects_post_play_topology_change_even_with_old_session(
 
 
 def test_summed_capture_records_through_active_speaker_layer(monkeypatch, tmp_path):
+    # Hygiene: scope the commissioning-bundle sessions dir to tmp_path so this
+    # test can never touch the real /var/lib path when the suite runs as root.
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions")
+    )
     calls = {}
     topology = object()
     preset = object()
@@ -397,6 +412,191 @@ def test_driver_capture_threads_reference_axis_capture_geometry(monkeypatch, tmp
     )
 
     assert seen == ["reference_axis", "near_field"]
+
+
+def _stub_driver_capture_collaborators(monkeypatch, wav_path: Path) -> None:
+    """Shared fakes for the two commissioning-bundle glue tests below.
+
+    Mirrors test_driver_capture_records_through_active_speaker_layer's setup
+    (capture_preset/capture_sweep_meta/capture_calibration/calibration_level/
+    current_driver_floor_evidence), but leaves load_output_topology and
+    load_measurement_state to each caller since those two are what
+    distinguish the lazily-opened-bundle case from the reused-bundle case.
+    """
+
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_preset",
+        lambda _topology, supplied=None: supplied,
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_wav_path",
+        lambda raw, kind, wav_bytes=None: wav_path,
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_sweep_meta",
+        lambda raw: {"sample_rate": 48000, "n_samples": 1},
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_calibration",
+        lambda raw: ("curve", "cal-1", {"mode": "phase_aware"}),
+    )
+
+    import jasper.active_speaker.calibration_level as calibration_level
+    import jasper.active_speaker.measurement as measurement
+
+    monkeypatch.setattr(
+        calibration_level,
+        "load_calibration_level_state",
+        lambda: {"level": "ok"},
+    )
+    confirmation = {
+        "accepted": True,
+        "playback_id": "play-1",
+        "target": {"speaker_group_id": "mono", "role": "woofer", "output_index": 0},
+    }
+    monkeypatch.setattr(
+        measurement,
+        "current_driver_floor_evidence",
+        lambda *_args, **_kwargs: {
+            "valid": True,
+            "source": "durable_current_driver_measurement",
+            "confirmation": confirmation,
+        },
+    )
+
+
+def test_driver_capture_appends_into_lazily_opened_bundle(monkeypatch, tmp_path):
+    """No comparison set has stamped a bundle_session_id yet (a fresh
+    measurement state): record_driver_capture must lazily open a new
+    commissioning bundle via _resolve_bundle_for_capture and thread its
+    bundle_ref through to both record_driver_acoustic_capture and the
+    durable info.json/artifact-manifest evidence on disk."""
+
+    import json
+
+    from jasper.correction.bundles import read_artifact_manifest
+    from tests.test_active_speaker_measurement import _topology
+
+    sessions = tmp_path / "sessions"
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(sessions))
+
+    topology = _topology()
+    monkeypatch.setattr(web_measurement, "load_output_topology", lambda: topology)
+
+    wav_path = tmp_path / "driver.wav"
+    wav_path.write_bytes(b"\x00" * 64)
+    _stub_driver_capture_collaborators(monkeypatch, wav_path)
+
+    import jasper.active_speaker.commissioning_capture as capture
+    import jasper.active_speaker.measurement as measurement
+
+    # No stamped bundle_session_id -- forces the lazy-open path.
+    monkeypatch.setattr(measurement, "load_measurement_state", lambda _t: {})
+
+    seen_kwargs: dict = {}
+
+    def fake_record(*_args, **kwargs):
+        seen_kwargs.update(kwargs)
+        return {"recorded": True}
+
+    monkeypatch.setattr(capture, "record_driver_acoustic_capture", fake_record)
+
+    payload = backend.record_driver_capture(
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "playback_id": "play-1",
+            "has_mic_calibration": True,
+        },
+        b"wav",
+    )
+
+    assert payload["recorded"] is True
+
+    bundle_dirs = [p for p in sessions.iterdir() if p.is_dir()]
+    assert len(bundle_dirs) == 1
+    bundle_dir = bundle_dirs[0]
+    assert (bundle_dir / "info.json").is_file()
+
+    bundle_ref = seen_kwargs.get("bundle_ref")
+    assert isinstance(bundle_ref, dict)
+    assert bundle_ref["session_id"] == bundle_dir.name
+
+    dest = bundle_dir / bundle_ref["artifact_path"]
+    assert dest.is_file()
+    assert dest.read_bytes() == wav_path.read_bytes()
+
+    manifest = read_artifact_manifest(bundle_dir)
+    manifest_paths = {entry["path"] for entry in manifest["artifacts"]}
+    assert bundle_ref["artifact_path"] in manifest_paths
+
+    info = json.loads((bundle_dir / "info.json").read_text())
+    assert len(info["captures"]) == 1
+    capture_entry = info["captures"][0]
+    assert capture_entry["group"] == "mono"
+    assert capture_entry["role"] == "woofer"
+
+
+def test_driver_capture_reuses_stamped_session_bundle(monkeypatch, tmp_path):
+    """A comparison set already stamped a bundle_session_id (the normal case
+    once start_active_comparison_set has run): record_driver_capture must
+    append into THAT bundle rather than lazily opening a second one."""
+
+    from jasper.active_speaker import bundles as active_speaker_bundles
+    from tests.test_active_speaker_measurement import _topology
+
+    sessions = tmp_path / "sessions"
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(sessions))
+    sessions.mkdir(parents=True, exist_ok=True)
+
+    topology = _topology()
+    info = active_speaker_bundles.open_bundle(
+        topology, calibration_id="cal-1", sessions_dir=sessions
+    )
+    assert info is not None
+
+    monkeypatch.setattr(web_measurement, "load_output_topology", lambda: topology)
+
+    wav_path = tmp_path / "driver.wav"
+    wav_path.write_bytes(b"\x00" * 64)
+    _stub_driver_capture_collaborators(monkeypatch, wav_path)
+
+    import jasper.active_speaker.commissioning_capture as capture
+    import jasper.active_speaker.measurement as measurement
+
+    monkeypatch.setattr(
+        measurement,
+        "load_measurement_state",
+        lambda _t: {
+            "active_comparison_set": {"bundle_session_id": info["session_id"]},
+        },
+    )
+    monkeypatch.setattr(
+        capture, "record_driver_acoustic_capture", lambda *_a, **_k: {"recorded": True}
+    )
+
+    payload = backend.record_driver_capture(
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "playback_id": "play-1",
+            "has_mic_calibration": True,
+        },
+        b"wav",
+    )
+
+    assert payload["recorded"] is True
+
+    bundle_dirs = [p for p in sessions.iterdir() if p.is_dir()]
+    assert len(bundle_dirs) == 1
+    assert bundle_dirs[0].name == info["session_id"]
+
+    bundle_dir = Path(info["bundle_dir"])
+    assert list(bundle_dir.glob("captures/*.wav"))
 
 
 def test_backend_status_includes_active_speaker_commission_state(monkeypatch):

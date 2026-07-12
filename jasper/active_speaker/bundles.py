@@ -89,10 +89,10 @@ SESSIONS_MAX_BYTES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BYTES"
 DEFAULT_SESSIONS_MAX_BUNDLES = 12
 SESSIONS_MAX_BUNDLES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BUNDLES"
 
-# Mirrors web_measurement.CAPTURE_FILE_MODE. Directories are left at whatever
-# mode the writing daemon's umask yields (mirroring
-# web_measurement.capture_root(), which does the same) rather than forcing an
-# explicit directory mode here.
+# Mirrors web_measurement.CAPTURE_FILE_MODE. Bundle directories and capture
+# subdirectories are explicitly chmod'd 0o750 (umask-proof; group keeps
+# traverse/read under the /var/lib/jasper group model) in open_bundle() and
+# _copy_wav_into_bundle(). Files stay at this mode.
 BUNDLE_FILE_MODE = 0o640
 
 _VALID_STATES = frozenset({"open", "proposal_ready", "applied", "failed", "abandoned"})
@@ -429,6 +429,8 @@ def open_bundle(
         "rollback_target": None,
         "verification": None,
     }
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(bundle_dir, 0o750)
     _write_info(bundle_dir, info)
     result = {**info, "bundle_dir": str(bundle_dir)}
     enforce_retention(root)
@@ -505,7 +507,18 @@ def _guarded_capture_source(bundle_dir: Path, wav_source_path: Path | str, *, op
     bundle at all — never a partial write from a missing/oversized source.
     """
 
-    source = Path(wav_source_path)
+    try:
+        source = Path(wav_source_path)
+    except TypeError:
+        log_event(
+            logger,
+            "active_speaker.bundle_write_failed",
+            level=logging.WARNING,
+            session=bundle_dir.name,
+            op=op,
+            error="capture wav source is not a filesystem path",
+        )
+        return None
     try:
         source_size = source.stat().st_size
     except OSError:
@@ -533,6 +546,7 @@ def _copy_wav_into_bundle(bundle_dir: Path, source: Path, rel_path: str) -> None
 
     dest = bundle_dir / rel_path
     dest.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(dest.parent, 0o750)
     tmp = dest.with_name(f".{dest.name}.tmp")
     try:
         shutil.copy2(source, tmp)

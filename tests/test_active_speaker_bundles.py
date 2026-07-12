@@ -163,6 +163,10 @@ def test_open_bundle_writes_every_required_info_field(tmp_path: Path) -> None:
     on_disk = bundles._read_info(Path(info["bundle_dir"]))
     assert on_disk["session_id"] == info["session_id"]
 
+    # Umask-proof: the bundle dir is explicitly chmod'd 0o750, not left at
+    # whatever mode the writing daemon's umask happens to yield.
+    assert Path(info["bundle_dir"]).stat().st_mode & 0o777 == 0o750
+
 
 def test_open_bundle_info_json_is_a_manifest_artifact(tmp_path: Path) -> None:
     info = _open(tmp_path, calibration_id="")
@@ -317,6 +321,9 @@ def test_append_capture_records_wav_and_json_with_dependencies(
     json_path = bundle_dir / entry["capture_json_path"]
     assert json_path.is_file()
 
+    # Umask-proof: the captures/ subdir is explicitly chmod'd 0o750.
+    assert wav_path.parent.stat().st_mode & 0o777 == 0o750
+
     manifest = read_artifact_manifest(bundle_dir)
     by_path = {a["path"]: a for a in manifest["artifacts"]}
     assert entry["artifact_path"] in by_path
@@ -463,6 +470,45 @@ def test_append_capture_rejects_oversized_source(tmp_path: Path, caplog) -> None
 
     assert entry is None
     assert "event=active_speaker.bundle_write_failed" in caplog.text
+
+
+def test_max_capture_wav_bytes_matches_web_measurement_cap() -> None:
+    """bundles.py hand-mirrors web_measurement's browser-capture-store cap
+    (a bundle copy is never larger than the capture it was made from). This
+    is a mirror-drift pin: it catches the two constants silently diverging,
+    not a functional dependency (bundles.py does not import web_measurement
+    at module load, to stay light and cycle-free)."""
+
+    from jasper.active_speaker import web_measurement
+
+    assert bundles.MAX_CAPTURE_WAV_BYTES == web_measurement.MAX_CAPTURE_WAV_BYTES
+
+
+def test_append_capture_rejects_source_that_is_not_a_filesystem_path(
+    tmp_path: Path, caplog
+) -> None:
+    """A wav_source_path that Path() itself cannot construct (e.g. a caller
+    bug passing None) must fail soft exactly like the missing/oversized
+    guard, never raise TypeError out of append_capture."""
+
+    info = _open(tmp_path)
+    bundle_dir = Path(info["bundle_dir"])
+
+    with caplog.at_level(logging.WARNING):
+        entry = bundles.append_capture(
+            bundle_dir,
+            kind="driver",
+            wav_source_path=None,
+            relative_path="captures/x.wav",
+            payload={},
+        )
+
+    assert entry is None
+    assert "event=active_speaker.bundle_write_failed" in caplog.text
+    assert "op=append_capture" in caplog.text
+    manifest = read_artifact_manifest(bundle_dir)
+    assert not any(a["path"] == "captures/x.wav" for a in manifest["artifacts"])
+    assert not (bundle_dir / "captures" / "x.wav").exists()
 
 
 def test_append_capture_rejects_unsupported_kind(tmp_path: Path) -> None:
