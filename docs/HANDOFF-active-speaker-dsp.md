@@ -1335,6 +1335,24 @@ Delay alignment is measured, not guessed.
 > phase-aware summation" above). The delay value comes from the timing-locked
 > reverse-polarity null **walk**, the documented follow-up; L2 ships the polarity
 > proposal + the in-phase-null delay *status* that flags when to run it.
+>
+> **Update, 2026-07-11 (crossover-builder Slice 0 — alignment-SNR gate).**
+> `propose_crossover_alignment` gained a SECOND gate on top of the
+> `phase_aware` calibrated-mic gate above: `alignment_snr_ok` (derived by
+> `commissioning_capture.build_crossover_alignment_proposal` from the summed
+> capture's per-band SNR verdict — see
+> [active-crossover-information-design.md](active-crossover-information-design.md)
+> "Level control and SNR") and `null_depth_capped` (a measured null deeper
+> than the overlap-band SNR can prove, per
+> `jasper.audio_measurement.snr_policy.cap_null_depth_db`). Either
+> condition, when it fires, forces `keep`/`invert` down to `review` and
+> `delay_status` down from `aligned` to `unknown` — a calibrated mic alone is
+> the phase_aware gate's promise, not a promise that the overlap band had
+> enough SNR to trust a specific null depth. Both new parameters default to
+> "no evidence" (`None`/`False`) and DELIBERATELY do not degrade at their
+> default, since no caller yet supplies the ambient-noise evidence that
+> would produce a real verdict (that capture flow is a later slice) — every
+> existing margin/blend proposal is unchanged until it does.
 
 ## CamillaDSP Profile Architecture
 
