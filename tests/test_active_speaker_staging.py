@@ -487,6 +487,98 @@ def test_compile_preset_from_crossover_preview_stereo_delay_mismatch_blocks() ->
     }
 
 
+# --- Manual /sound/ form entry path, end to end ------------------------------
+#
+# The tests above hand-mutate an already-built preview dict, which never
+# exercises _normalise_candidate's validation or crossover_preview's
+# between_roles realignment. These two start from a manual_settings candidate
+# shaped exactly like jasper/active_speaker/design_draft.py's manualSettingsPayload
+# (deploy/assets/sound-profile/js/main.js) sends, and follow it through the
+# real chain: build_design_draft -> build_crossover_preview ->
+# compile_preset_from_crossover_preview.
+
+
+def test_compile_preset_from_crossover_preview_manual_settings_end_to_end_sets_polarity_and_delay() -> None:
+    topology = _topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_driver_research(frequency_hz=2500, way_count=2),
+        manual_settings={
+            "drivers": [],
+            "crossover_candidates": [{
+                "between_roles": ["woofer", "tweeter"],
+                "frequency_hz": 2500,
+                "filter_type": "Linkwitz-Riley",
+                "slope_db_per_octave": 24,
+                "confidence": "medium",
+                "lower_polarity": "non-inverted",
+                "upper_polarity": "inverted",
+                "delay_ms": 0.15,
+                "delay_target_role": "tweeter",
+            }],
+        },
+        created_at="2026-07-11T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-07-11T12:00:05Z")
+
+    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+        topology, preview
+    )
+
+    assert preset is not None, issues
+    region = preset.crossover_regions[0]
+    assert region.lower_polarity == "non-inverted"
+    assert region.upper_polarity == "inverted"
+    assert region.delay_ms == 0.15
+    assert region.delay_target_driver == "tweeter"
+
+
+def test_compile_preset_from_crossover_preview_manual_settings_reversed_between_roles_realigns_end_to_end() -> None:
+    # The candidate declares its pair as [tweeter, woofer] -- reversed from
+    # this topology's own (lower_role, upper_role)=(woofer, tweeter). The same
+    # PHYSICAL role (tweeter) must end up inverted/delayed regardless of which
+    # order the candidate (or a reversed research import) listed the pair in.
+    topology = _topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_driver_research(frequency_hz=2500, way_count=2),
+        manual_settings={
+            "drivers": [],
+            "crossover_candidates": [{
+                "between_roles": ["tweeter", "woofer"],
+                "frequency_hz": 2500,
+                "filter_type": "Linkwitz-Riley",
+                "slope_db_per_octave": 24,
+                "confidence": "medium",
+                # Describes the candidate's OWN between_roles[0]=tweeter.
+                "lower_polarity": "inverted",
+                # Describes the candidate's OWN between_roles[1]=woofer.
+                "upper_polarity": "non-inverted",
+                "delay_ms": 0.15,
+                "delay_target_role": "tweeter",
+            }],
+        },
+        created_at="2026-07-11T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-07-11T12:00:05Z")
+
+    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+        topology, preview
+    )
+
+    assert preset is not None, issues
+    region = preset.crossover_regions[0]
+    assert region.lower_driver == "woofer"
+    assert region.upper_driver == "tweeter"
+    # Realigned to THIS function's (lower=woofer, upper=tweeter) convention:
+    # tweeter is the physical role the candidate inverted/delayed, so it must
+    # land on upper_polarity/delay here, not lower_polarity.
+    assert region.lower_polarity == "non-inverted"
+    assert region.upper_polarity == "inverted"
+    assert region.delay_ms == 0.15
+    assert region.delay_target_driver == "tweeter"
+
+
 def test_stage_protected_startup_config_blocks_unready_crossover_preview(
     tmp_path: Path,
 ) -> None:

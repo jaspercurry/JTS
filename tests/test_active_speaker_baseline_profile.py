@@ -14,7 +14,10 @@ import pytest
 import yaml as yaml_lib
 
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
-from jasper.active_speaker import emit_active_speaker_baseline_config
+from jasper.active_speaker import (
+    compile_preset_from_crossover_preview,
+    emit_active_speaker_baseline_config,
+)
 from jasper.active_speaker.baseline_profile import (
     PROVENANCE_MANUAL,
     PROVENANCE_MEASURED,
@@ -2548,6 +2551,47 @@ def test_derive_corrections_manual_tier_sets_polarity_and_delay_from_region():
     # "non-inverted" is indistinguishable from the schema default, so an
     # untouched role makes no provenance claim (mirrors gain's "none").
     assert "woofer" not in meta["corrections_provenance"]
+
+
+def test_derive_corrections_manual_tier_sets_polarity_and_delay_via_manual_settings_entry_path():
+    """Extends the test above (which hand-builds a CrossoverRegion in
+    isolation) to the actual entry path a /sound/ manual-form submission
+    takes: a manual_settings candidate -- auto-tagged source="manual_settings"
+    by normalise_manual_settings, exactly like manualSettingsPayload() in
+    deploy/assets/sound-profile/js/main.js sends -- through
+    build_design_draft -> build_crossover_preview ->
+    compile_preset_from_crossover_preview, and only THEN into
+    _derive_corrections."""
+    topology = _topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research(),
+        manual_settings={
+            "drivers": [],
+            "crossover_candidates": [{
+                "between_roles": ["woofer", "tweeter"],
+                "frequency_hz": 2500,
+                "filter_type": "Linkwitz-Riley",
+                "slope_db_per_octave": 24,
+                "confidence": "medium",
+                "upper_polarity": "inverted",
+                "delay_ms": 0.35,
+                "delay_target_role": "tweeter",
+            }],
+        },
+        created_at="2026-07-11T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-07-11T12:00:05Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    corrections, _issues, meta = _derive_corrections(preset, preview, {})
+
+    assert corrections["tweeter"]["inverted"] is True
+    assert corrections["tweeter"]["delay_ms"] == 0.35
+    assert corrections["woofer"]["inverted"] is False
+    assert meta["corrections_provenance"]["tweeter"]["inverted"] == PROVENANCE_MANUAL
+    assert meta["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MANUAL
 
 
 def test_derive_corrections_both_sides_inverted_is_schema_legal():
