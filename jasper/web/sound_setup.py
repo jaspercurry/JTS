@@ -87,6 +87,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
     channel_identity_report,
@@ -360,18 +361,17 @@ def _save_output_topology_payload(
         save_output_topology(topology)
         saved_revision = _output_topology_revision()
     evaluation = topology.evaluation()
-    logger.info(
-        "event=sound.output_topology_save topology_id=%s status=%s "
-        "device_id=%s groups=%d assigned_outputs=%d blockers=%d warnings=%d "
-        "software_guards_requested=%s",
-        topology.topology_id,
-        evaluation["status"],
-        topology.hardware.device_id,
-        len(topology.speaker_groups),
-        evaluation["assigned_output_count"],
-        len(evaluation["blockers"]),
-        len(evaluation["warnings"]),
-        guards_changed,
+    log_event(
+        logger,
+        "sound.output_topology_save",
+        topology_id=topology.topology_id,
+        status=evaluation["status"],
+        device_id=topology.hardware.device_id,
+        groups=len(topology.speaker_groups),
+        assigned_outputs=evaluation["assigned_output_count"],
+        blockers=len(evaluation["blockers"]),
+        warnings=len(evaluation["warnings"]),
+        software_guards_requested=str(guards_changed),
     )
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
@@ -446,18 +446,17 @@ def _active_speaker_channel_identity_save_payload(
     save_output_topology(updated)
     report = channel_identity_report(updated)
     evaluation = updated.evaluation()
-    logger.info(
-        "event=sound.active_speaker_channel_identity action=%s "
-        "topology_id=%s group_id=%s role=%s status=%s verified=%d/%d "
-        "blockers=%d",
-        "mark_verified" if verified else "clear_verified",
-        updated.topology_id,
-        speaker_group_id,
-        role,
-        report.get("status"),
-        report.get("verified_channel_count"),
-        report.get("assigned_channel_count"),
-        len(evaluation.get("blockers") or []),
+    log_event(
+        logger,
+        "sound.active_speaker_channel_identity",
+        action="mark_verified" if verified else "clear_verified",
+        topology_id=updated.topology_id,
+        group_id=speaker_group_id,
+        role=role,
+        status=str(report.get("status")),
+        verified="%d/%d"
+        % (report.get("verified_channel_count"), report.get("assigned_channel_count")),
+        blockers=len(evaluation.get("blockers") or []),
     )
     return {
         "output_topology": updated.to_dict(include_evaluation=True),
@@ -496,16 +495,15 @@ def _active_speaker_channel_protection_save_payload(
     save_output_topology(updated)
     report = channel_identity_report(updated)
     evaluation = updated.evaluation()
-    logger.info(
-        "event=sound.active_speaker_channel_protection "
-        "topology_id=%s group_id=%s role=%s protection_status=%s "
-        "status=%s blockers=%d",
-        updated.topology_id,
-        speaker_group_id,
-        role,
-        protection_status,
-        report.get("status"),
-        len(evaluation.get("blockers") or []),
+    log_event(
+        logger,
+        "sound.active_speaker_channel_protection",
+        topology_id=updated.topology_id,
+        group_id=speaker_group_id,
+        role=role,
+        protection_status=protection_status,
+        status=str(report.get("status")),
+        blockers=len(evaluation.get("blockers") or []),
     )
     return {
         "output_topology": updated.to_dict(include_evaluation=True),
@@ -528,14 +526,16 @@ def _log_live_draft_unavailable(
     if now - last < LIVE_DRAFT_UNAVAILABLE_LOG_INTERVAL_SEC:
         return
     _live_draft_unavailable_log_at[reason] = now
-    logger.warning(
-        "event=sound.live_draft result=unavailable reason=%s "
-        "output_trim=%.1f room_peqs=%d sound_filters=%d err=%r",
-        reason,
-        output_trim_db,
-        room_peq_count,
-        sound_filter_count,
-        error,
+    log_event(
+        logger,
+        "sound.live_draft",
+        level=logging.WARNING,
+        result="unavailable",
+        reason=reason,
+        output_trim=f"{output_trim_db:.1f}",
+        room_peqs=room_peq_count,
+        sound_filters=sound_filter_count,
+        err=repr(error),
     )
 
 
@@ -557,20 +557,22 @@ async def _apply_profile(
         persist_profile=True,
         output_trim_db=_output_trim(profile, settings),
     )
-    logger.info(
-        "event=sound.apply enabled=%s curve=%s "
-        "simple=%.1f/%.1f/%.1f/%.1f/%.1f bands=%d room_peqs=%d config=%s op_id=%s",
-        stamped.enabled,
-        stamped.curve_id,
-        stamped.simple_eq.sub_bass_db,
-        stamped.simple_eq.bass_db,
-        stamped.simple_eq.mid_db,
-        stamped.simple_eq.presence_db,
-        stamped.simple_eq.treble_db,
-        len(stamped.parametric_bands),
-        apply_state.room_peq_count or 0,
-        out_path,
-        apply_state.op_id,
+    log_event(
+        logger,
+        "sound.apply",
+        enabled=str(stamped.enabled),
+        curve=stamped.curve_id,
+        simple=(
+            f"{stamped.simple_eq.sub_bass_db:.1f}/"
+            f"{stamped.simple_eq.bass_db:.1f}/"
+            f"{stamped.simple_eq.mid_db:.1f}/"
+            f"{stamped.simple_eq.presence_db:.1f}/"
+            f"{stamped.simple_eq.treble_db:.1f}"
+        ),
+        bands=len(stamped.parametric_bands),
+        room_peqs=apply_state.room_peq_count or 0,
+        config=out_path,
+        op_id=apply_state.op_id,
     )
     payload = _state_payload(
         stamped,
@@ -622,12 +624,12 @@ async def _apply_settings(
     a setting the backend already kept -- no silent failure either way.
     """
     save_sound_settings(settings)
-    logger.info(
-        "event=sound.settings headroom_trim=%.1f match_loudness=%s "
-        "volume_floor_db=%.1f",
-        settings.headroom_trim_db,
-        settings.match_loudness,
-        settings.volume_floor_db,
+    log_event(
+        logger,
+        "sound.settings",
+        headroom_trim=f"{settings.headroom_trim_db:.1f}",
+        match_loudness=str(settings.match_loudness),
+        volume_floor_db=f"{settings.volume_floor_db:.1f}",
     )
     profile = load_profile(profile_path)
     payload = _state_payload(
@@ -862,8 +864,13 @@ class _LoopingVolumeFloorTone:
                 except OSError as exc:
                     finish_reason = "error"
                     self._set_error(str(exc))
-                    logger.exception(
-                        "event=sound.volume_floor_tone action=play result=error"
+                    log_event(
+                        logger,
+                        "sound.volume_floor_tone",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        action="play",
+                        result="error",
                     )
                     break
 
@@ -897,9 +904,13 @@ class _LoopingVolumeFloorTone:
                 if rc not in (0, None):
                     finish_reason = "error"
                     self._set_error(f"aplay exited with rc={rc}")
-                    logger.warning(
-                        "event=sound.volume_floor_tone action=play result=error rc=%s",
-                        rc,
+                    log_event(
+                        logger,
+                        "sound.volume_floor_tone",
+                        level=logging.WARNING,
+                        action="play",
+                        result="error",
+                        rc=rc,
                     )
                     break
                 # Natural EOF of the short cached WAV: immediately loop it.
@@ -931,10 +942,12 @@ class _VolumeFloorToneSession:
         camilla_factory: Callable[[], Any],
         runner_factory: Callable[..., Any] | None = None,
     ) -> dict[str, Any]:
-        settings = SoundSettings.from_mapping({
-            **load_sound_settings().to_dict(),
-            "volume_floor_db": raw.get("volume_floor_db"),
-        })
+        settings = SoundSettings.from_mapping(
+            {
+                **load_sound_settings().to_dict(),
+                "volume_floor_db": raw.get("volume_floor_db"),
+            }
+        )
         floor_db = settings.volume_floor_db
         await self._stop_if_finished(camilla_factory=camilla_factory)
 
@@ -1058,10 +1071,12 @@ class _VolumeFloorToneSession:
                 )
                 raise RuntimeError(str(error))
 
-        logger.info(
-            "event=sound.volume_floor_tone action=%s floor_db=%.1f result=ok",
-            action,
-            floor_db,
+        log_event(
+            logger,
+            "sound.volume_floor_tone",
+            action=action,
+            floor_db=f"{floor_db:.1f}",
+            result="ok",
         )
         return {
             "ok": True,
@@ -1116,10 +1131,12 @@ class _VolumeFloorToneSession:
             finally:
                 self._camilla_op_lock.release()
         status = "stopped" if runner is not None or starting else "idle"
-        logger.info(
-            "event=sound.volume_floor_tone action=stop reason=%s status=%s",
-            reason,
-            status,
+        log_event(
+            logger,
+            "sound.volume_floor_tone",
+            action="stop",
+            reason=reason,
+            status=status,
         )
         payload = {"ok": True, "active": False, "status": status, "reason": reason}
         if floor_db is not None:
@@ -1162,10 +1179,14 @@ class _VolumeFloorToneSession:
                 )
             )
         except (OSError, RuntimeError):
-            logger.exception(
-                "event=sound.volume_floor_tone action=restore result=error "
-                "reason=%s",
-                reason,
+            log_event(
+                logger,
+                "sound.volume_floor_tone",
+                level=logging.ERROR,
+                exc_info=True,
+                action="restore",
+                result="error",
+                reason=reason,
             )
 
     async def _restore_after_runner_finish(
@@ -1187,10 +1208,13 @@ class _VolumeFloorToneSession:
                 )
             finally:
                 self._camilla_op_lock.release()
-        logger.warning(
-            "event=sound.volume_floor_tone action=restore reason=%s floor_db=%s",
-            reason,
-            "" if floor_db is None else f"{floor_db:.1f}",
+        log_event(
+            logger,
+            "sound.volume_floor_tone",
+            level=logging.WARNING,
+            action="restore",
+            reason=reason,
+            floor_db="" if floor_db is None else f"{floor_db:.1f}",
         )
 
     async def _restore_snapshot(
@@ -1272,17 +1296,17 @@ async def _audition_profile(
         audition=True,
         output_trim_db=output_trim_db,
     )
-    logger.info(
-        "event=sound.audition mode=%s enabled=%s curve=%s bands=%d "
-        "output_trim=%.1f room_peqs=%d config=%s op_id=%s",
-        audition_mode,
-        loaded.enabled,
-        loaded.curve_id,
-        len(loaded.parametric_bands),
-        output_trim_db,
-        apply_state.room_peq_count or 0,
-        out_path,
-        apply_state.op_id,
+    log_event(
+        logger,
+        "sound.audition",
+        mode=audition_mode,
+        enabled=str(loaded.enabled),
+        curve=loaded.curve_id,
+        bands=len(loaded.parametric_bands),
+        output_trim=f"{output_trim_db:.1f}",
+        room_peqs=apply_state.room_peq_count or 0,
+        config=out_path,
+        op_id=apply_state.op_id,
     )
     saved = load_profile(profile_path)
     payload = _state_payload(
@@ -1421,11 +1445,12 @@ async def _live_draft_profile(
     async with dsp_writer_lock(config_path):
         current_epoch = dsp_write_epoch()
         if expected_dsp_write_epoch != current_epoch:
-            logger.info(
-                "event=sound.live_draft result=stale expected_epoch=%s "
-                "current_epoch=%s",
-                expected_dsp_write_epoch,
-                current_epoch,
+            log_event(
+                logger,
+                "sound.live_draft",
+                result="stale",
+                expected_epoch=str(expected_dsp_write_epoch),
+                current_epoch=str(current_epoch),
             )
             return _live_payload(
                 status="stale",
@@ -1464,14 +1489,15 @@ async def _live_draft_profile(
                 active_config_path=current_path,
             )
 
-        logger.info(
-            "event=sound.live_draft result=live output_trim=%.1f "
-            "room_peqs=%d sound_filters=%d active_anchor=%s epoch=%s",
-            output_trim_db,
-            result.room_peq_count,
-            sound_filter_count,
-            current_path,
-            current_epoch,
+        log_event(
+            logger,
+            "sound.live_draft",
+            result="live",
+            output_trim=f"{output_trim_db:.1f}",
+            room_peqs=result.room_peq_count,
+            sound_filters=sound_filter_count,
+            active_anchor=str(current_path),
+            epoch=str(current_epoch),
         )
         return _live_payload(
             status="live",
@@ -1529,7 +1555,8 @@ def _follower_sound_html(csrf_token: str = "") -> bytes:
         '<a class="btn btn--primary" href="'
         + html.escape(leader_sound_url)
         + '">Open leader sound</a>'
-        if leader_sound_url else ""
+        if leader_sound_url
+        else ""
     )
     follower_island = json_island("sound-follower-data", {"follower": True})
     body = f"""
@@ -1561,7 +1588,9 @@ def _follower_sound_html(csrf_token: str = "") -> bytes:
 <script type="module" src="/assets/sound-profile/js/main.js"></script>
 """
     return canonical_page(
-        "Sound profile", body, csrf_token=csrf_token,
+        "Sound profile",
+        body,
+        csrf_token=csrf_token,
         page_css_href="/assets/sound-profile/sound.css",
     )
 
@@ -1608,7 +1637,9 @@ def _index_html(csrf_token: str = "") -> bytes:
 """
     )
     return canonical_page(
-        "Sound profile", body, csrf_token=csrf_token,
+        "Sound profile",
+        body,
+        csrf_token=csrf_token,
         page_css_href="/assets/sound-profile/sound.css",
     )
 
@@ -1622,13 +1653,13 @@ def _active_speaker_environment_payload() -> dict[str, Any]:
     report = probe_active_speaker_environment(
         path_safety_evidence_path=evidence_path or None,
     )
-    logger.info(
-        "event=sound.active_speaker_environment status=%s load_gate=%s "
-        "blockers=%d safe_playback=%s",
-        report.get("status"),
-        report.get("load_gate"),
-        int(report.get("blocker_count") or 0),
-        bool(report.get("safe_playback", {}).get("playback_allowed")),
+    log_event(
+        logger,
+        "sound.active_speaker_environment",
+        status=str(report.get("status")),
+        load_gate=str(report.get("load_gate")),
+        blockers=int(report.get("blocker_count") or 0),
+        safe_playback=str(bool(report.get("safe_playback", {}).get("playback_allowed"))),
     )
     return report
 
@@ -1672,18 +1703,19 @@ def _active_speaker_stage_config_payload(raw: dict[str, Any]) -> dict[str, Any]:
         playback_device=playback_device,
     )
     blocker_count = sum(
-        1 for issue in payload.get("issues") or []
+        1
+        for issue in payload.get("issues") or []
         if isinstance(issue, dict) and issue.get("severity") == "blocker"
     )
-    logger.info(
-        "event=sound.active_speaker_stage_config status=%s topology_id=%s "
-        "preset_id=%s preview_status=%s config=%s blockers=%d",
-        payload.get("status"),
-        payload.get("topology", {}).get("topology_id"),
-        payload.get("preset", {}).get("preset_id"),
-        crossover_preview.get("status"),
-        payload.get("config", {}).get("basename"),
-        blocker_count,
+    log_event(
+        logger,
+        "sound.active_speaker_stage_config",
+        status=str(payload.get("status")),
+        topology_id=str(payload.get("topology", {}).get("topology_id")),
+        preset_id=str(payload.get("preset", {}).get("preset_id")),
+        preview_status=str(crossover_preview.get("status")),
+        config=str(payload.get("config", {}).get("basename")),
+        blockers=blocker_count,
     )
     return payload
 
@@ -1763,17 +1795,16 @@ def _active_speaker_calibration_level_payload(
         observed_mic_dbfs=raw.get("observed_mic_dbfs"),
         mic_clipping=bool(raw.get("mic_clipping")),
     )
-    logger.info(
-        "event=sound.active_speaker_calibration_level action=%s "
-        "level_dbfs=%s prior_level_dbfs=%s delta_db=%s mic_status=%s "
-        "mic_recommendation=%s issues=%d",
-        payload.get("last_action"),
-        payload.get("test_signal", {}).get("requested_level_dbfs"),
-        payload.get("prior_level_dbfs"),
-        payload.get("applied_delta_db"),
-        payload.get("mic_meter", {}).get("status"),
-        payload.get("mic_meter", {}).get("recommendation"),
-        len(payload.get("issues") or []),
+    log_event(
+        logger,
+        "sound.active_speaker_calibration_level",
+        action=str(payload.get("last_action")),
+        level_dbfs=str(payload.get("test_signal", {}).get("requested_level_dbfs")),
+        prior_level_dbfs=str(payload.get("prior_level_dbfs")),
+        delta_db=str(payload.get("applied_delta_db")),
+        mic_status=str(payload.get("mic_meter", {}).get("status")),
+        mic_recommendation=str(payload.get("mic_meter", {}).get("recommendation")),
+        issues=len(payload.get("issues") or []),
     )
     return payload
 
@@ -1785,13 +1816,14 @@ def _active_speaker_arm_payload() -> dict[str, Any]:
 
     environment_report = _active_speaker_environment_payload()
     state = arm_safe_playback_session(environment_report)
-    logger.info(
-        "event=sound.active_speaker_safe_playback action=arm status=%s "
-        "session_id=%s load_gate=%s blockers=%d",
-        state.get("status"),
-        state.get("session_id"),
-        state.get("environment", {}).get("load_gate"),
-        len(state.get("issues") or []),
+    log_event(
+        logger,
+        "sound.active_speaker_safe_playback",
+        action="arm",
+        status=str(state.get("status")),
+        session_id=str(state.get("session_id")),
+        load_gate=str(state.get("environment", {}).get("load_gate")),
+        blockers=len(state.get("issues") or []),
     )
     return state
 
@@ -1808,23 +1840,27 @@ def _active_speaker_stop_payload() -> dict[str, Any]:
     try:
         state["calibration_level"] = update_calibration_level_state(action="stop")
     except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "event=sound.active_speaker_calibration_level action=stop_reset "
-            "result=error error=%s",
-            type(e).__name__,
+        log_event(
+            logger,
+            "sound.active_speaker_calibration_level",
+            level=logging.WARNING,
+            action="stop_reset",
+            result="error",
+            error=type(e).__name__,
         )
         state["calibration_level"] = {
             "status": "reset_failed",
             "error": str(e),
         }
-    logger.info(
-        "event=sound.active_speaker_safe_playback action=stop status=%s "
-        "session_id=%s playback_status=%s audio_emitted=%s level_status=%s",
-        state.get("status"),
-        state.get("session_id"),
-        playback.get("status"),
-        bool(playback.get("audio_emitted")),
-        state.get("calibration_level", {}).get("status"),
+    log_event(
+        logger,
+        "sound.active_speaker_safe_playback",
+        action="stop",
+        status=str(state.get("status")),
+        session_id=str(state.get("session_id")),
+        playback_status=str(playback.get("status")),
+        audio_emitted=str(bool(playback.get("audio_emitted"))),
+        level_status=str(state.get("calibration_level", {}).get("status")),
     )
     return state
 
@@ -1856,14 +1892,14 @@ def _active_speaker_bringup_preflight_payload() -> dict[str, Any]:
         tone_backend=_active_speaker_tone_backend_status(topology),
         stop_control_available=True,
     )
-    logger.info(
-        "event=sound.active_speaker_bringup_preflight status=%s "
-        "manual_available=%s guided_available=%s microphone=%s guard=%s",
-        payload.get("status"),
-        bool(payload.get("manual_bringup_available")),
-        bool(payload.get("guided_calibration_available")),
-        payload.get("microphone", {}).get("status"),
-        payload.get("software_guard", {}).get("status"),
+    log_event(
+        logger,
+        "sound.active_speaker_bringup_preflight",
+        status=str(payload.get("status")),
+        manual_available=str(bool(payload.get("manual_bringup_available"))),
+        guided_available=str(bool(payload.get("guided_calibration_available"))),
+        microphone=str(payload.get("microphone", {}).get("status")),
+        guard=str(payload.get("software_guard", {}).get("status")),
     )
     return payload
 
@@ -1884,12 +1920,12 @@ def _active_speaker_startup_load_payload() -> dict[str, Any]:
             path_safety_evidence_path=_active_speaker_path_safety_evidence_path(),
         ),
     }
-    logger.info(
-        "event=sound.active_speaker_startup_load status=%s preflight=%s "
-        "rollback_available=%s",
-        payload["state"].get("status"),
-        payload["preflight"].get("status"),
-        bool(payload["state"].get("rollback_available")),
+    log_event(
+        logger,
+        "sound.active_speaker_startup_load",
+        status=str(payload["state"].get("status")),
+        preflight=str(payload["preflight"].get("status")),
+        rollback_available=str(bool(payload["state"].get("rollback_available"))),
     )
     return payload
 
@@ -1900,12 +1936,12 @@ def _active_speaker_design_draft_payload() -> dict[str, Any]:
     from jasper.active_speaker.design_draft import load_design_draft
 
     payload = load_design_draft()
-    logger.info(
-        "event=sound.active_speaker_design_draft status=%s driver_count=%s "
-        "candidate_count=%s",
-        payload.get("status"),
-        (payload.get("summary") or {}).get("driver_count"),
-        (payload.get("summary") or {}).get("crossover_candidate_count"),
+    log_event(
+        logger,
+        "sound.active_speaker_design_draft",
+        status=str(payload.get("status")),
+        driver_count=str((payload.get("summary") or {}).get("driver_count")),
+        candidate_count=str((payload.get("summary") or {}).get("crossover_candidate_count")),
     )
     return payload
 
@@ -1926,17 +1962,18 @@ def _active_speaker_design_draft_save_payload(raw: dict[str, Any]) -> dict[str, 
         manual_settings=raw.get("manual_settings"),
         operator_inputs=raw.get("operator_inputs"),
     )
-    logger.info(
-        "event=sound.active_speaker_design_draft_save status=%s "
-        "topology_id=%s driver_count=%s candidate_count=%s "
-        "manual_driver_count=%s manual_candidate_count=%s issues=%d",
-        payload.get("status"),
-        topology.topology_id,
-        (payload.get("summary") or {}).get("driver_count"),
-        (payload.get("summary") or {}).get("crossover_candidate_count"),
-        (payload.get("summary") or {}).get("manual_driver_count"),
-        (payload.get("summary") or {}).get("manual_crossover_candidate_count"),
-        len(payload.get("issues") or []),
+    log_event(
+        logger,
+        "sound.active_speaker_design_draft_save",
+        status=str(payload.get("status")),
+        topology_id=topology.topology_id,
+        driver_count=str((payload.get("summary") or {}).get("driver_count")),
+        candidate_count=str((payload.get("summary") or {}).get("crossover_candidate_count")),
+        manual_driver_count=str((payload.get("summary") or {}).get("manual_driver_count")),
+        manual_candidate_count=str((payload.get("summary") or {}).get(
+            "manual_crossover_candidate_count"
+        )),
+        issues=len(payload.get("issues") or []),
     )
     return payload
 
@@ -1948,12 +1985,14 @@ def _active_speaker_crossover_preview_payload() -> dict[str, Any]:
     from jasper.active_speaker.design_draft import load_design_draft
 
     payload = load_crossover_preview(current_design_draft=load_design_draft())
-    logger.info(
-        "event=sound.active_speaker_crossover_preview status=%s "
-        "active_crossover_count=%s blocker_count=%s",
-        payload.get("status"),
-        (payload.get("summary") or {}).get("active_crossover_count"),
-        (payload.get("summary") or {}).get("blocker_count"),
+    log_event(
+        logger,
+        "sound.active_speaker_crossover_preview",
+        status=str(payload.get("status")),
+        active_crossover_count=str((payload.get("summary") or {}).get(
+            "active_crossover_count"
+        )),
+        blocker_count=str((payload.get("summary") or {}).get("blocker_count")),
     )
     return payload
 
@@ -1976,13 +2015,15 @@ def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
             operator_inputs=draft.get("operator_inputs"),
         )
     payload = save_crossover_preview(draft)
-    logger.info(
-        "event=sound.active_speaker_crossover_preview_save status=%s "
-        "topology_id=%s active_crossover_count=%s blocker_count=%s",
-        payload.get("status"),
-        (payload.get("source") or {}).get("topology_id"),
-        (payload.get("summary") or {}).get("active_crossover_count"),
-        (payload.get("summary") or {}).get("blocker_count"),
+    log_event(
+        logger,
+        "sound.active_speaker_crossover_preview_save",
+        status=str(payload.get("status")),
+        topology_id=str((payload.get("source") or {}).get("topology_id")),
+        active_crossover_count=str((payload.get("summary") or {}).get(
+            "active_crossover_count"
+        )),
+        blocker_count=str((payload.get("summary") or {}).get("blocker_count")),
     )
     return payload
 
@@ -2017,10 +2058,13 @@ async def _active_speaker_check_path_safety_payload(
         )
     except Exception as exc:  # noqa: BLE001
         current_config_error = type(exc).__name__
-        logger.warning(
-            "event=sound.active_speaker_path_safety action=current_config "
-            "result=error error=%s",
-            current_config_error,
+        log_event(
+            logger,
+            "sound.active_speaker_path_safety",
+            level=logging.WARNING,
+            action="current_config",
+            result="error",
+            error=current_config_error,
         )
     evidence = build_startup_load_path_safety_evidence(
         topology,
@@ -2040,13 +2084,14 @@ async def _active_speaker_check_path_safety_payload(
         current_config_path=current_config_path,
         require_physical_identity=require_physical_identity,
     )
-    logger.info(
-        "event=sound.active_speaker_path_safety action=check status=%s "
-        "load_gate=%s path=%s blockers=%d",
-        report.get("status"),
-        report.get("load_gate"),
-        target,
-        int(report.get("blocker_count") or 0),
+    log_event(
+        logger,
+        "sound.active_speaker_path_safety",
+        action="check",
+        status=str(report.get("status")),
+        load_gate=str(report.get("load_gate")),
+        path=target,
+        blockers=int(report.get("blocker_count") or 0),
     )
     return {
         "artifact_schema_version": 1,
@@ -2079,12 +2124,13 @@ async def _active_speaker_load_startup_config_payload(
         path_safety_evidence_path=_active_speaker_path_safety_evidence_path(),
         require_physical_identity=require_physical_identity,
     )
-    logger.info(
-        "event=sound.active_speaker_startup_load action=load status=%s "
-        "preflight=%s rollback_available=%s",
-        payload.get("load", {}).get("status"),
-        payload.get("preflight", {}).get("status"),
-        bool(payload.get("load", {}).get("rollback_available")),
+    log_event(
+        logger,
+        "sound.active_speaker_startup_load",
+        action="load",
+        status=str(payload.get("load", {}).get("status")),
+        preflight=str(payload.get("preflight", {}).get("status")),
+        rollback_available=str(bool(payload.get("load", {}).get("rollback_available"))),
     )
     return payload
 
@@ -2102,11 +2148,12 @@ async def _active_speaker_rollback_startup_config_payload(
         load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
         get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
     )
-    logger.info(
-        "event=sound.active_speaker_startup_load action=rollback status=%s "
-        "active=%s",
-        payload.get("rollback", {}).get("status"),
-        payload.get("rollback", {}).get("active_config_path"),
+    log_event(
+        logger,
+        "sound.active_speaker_startup_load",
+        action="rollback",
+        status=str(payload.get("rollback", {}).get("status")),
+        active=str(payload.get("rollback", {}).get("active_config_path")),
     )
     return payload
 
@@ -2156,24 +2203,29 @@ def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
     try:
         payload = _commission_tone_mux_command("AUTO")
     except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError) as exc:
-        logger.warning(
-            "event=sound.active_speaker_source_auto action=restore reason=%s "
-            "status=failed error=%s",
-            reason,
-            exc,
+        log_event(
+            logger,
+            "sound.active_speaker_source_auto",
+            level=logging.WARNING,
+            action="restore",
+            reason=reason,
+            status="failed",
+            error=exc,
         )
         return {
             "status": "failed",
             "reason": reason,
             "error": str(exc),
         }
-    logger.info(
-        "event=sound.active_speaker_source_auto action=restore reason=%s "
-        "status=ok mode=%s active_source=%s test_source=%s",
-        reason,
-        payload.get("mode"),
-        payload.get("active_source"),
-        payload.get("test_source"),
+    log_event(
+        logger,
+        "sound.active_speaker_source_auto",
+        action="restore",
+        reason=reason,
+        status="ok",
+        mode=str(payload.get("mode")),
+        active_source=str(payload.get("active_source")),
+        test_source=str(payload.get("test_source")),
     )
     return {
         "status": "ok",
@@ -2215,10 +2267,12 @@ def _active_speaker_stop_commission_tone(*, reason: str) -> dict[str, Any]:
     with _COMMISSION_TONE_LOCK:
         payload = _stop_commission_tone_locked(reason=reason)
     payload["fanin_gate"] = _commission_tone_release_fanin_lane(reason=reason)
-    logger.info(
-        "event=sound.active_speaker_commission_tone action=stop reason=%s status=%s",
-        reason,
-        payload.get("status"),
+    log_event(
+        logger,
+        "sound.active_speaker_commission_tone",
+        action="stop",
+        reason=reason,
+        status=str(payload.get("status")),
     )
     return payload
 
@@ -2338,9 +2392,7 @@ def _active_summed_test_snapshot() -> dict[str, Any]:
         }
 
 
-def _attach_active_summed_test(
-    view: dict[str, Any], snapshot: dict[str, Any]
-) -> None:
+def _attach_active_summed_test(view: dict[str, Any], snapshot: dict[str, Any]) -> None:
     """Fold the live summed-test snapshot into the commissioning view.
 
     Attaches a top-level ``active_summed_test`` block and, when active, marks the
@@ -2394,17 +2446,18 @@ def _summed_test_stopped_playback(
 ) -> dict[str, Any]:
     confirmed = reason in SUMMED_TEST_CONFIRM_STOP_REASONS
     out = dict(playback)
-    out.update({
-        "status": "completed" if confirmed else "stopped",
-        "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
-        "audio_emitted": bool(confirmed),
-        "confirmable": bool(confirmed),
-        "stop_reason": reason,
-        "issues": [
-            issue for issue in playback.get("issues", [])
-            if isinstance(issue, dict)
-        ],
-    })
+    out.update(
+        {
+            "status": "completed" if confirmed else "stopped",
+            "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
+            "audio_emitted": bool(confirmed),
+            "confirmable": bool(confirmed),
+            "stop_reason": reason,
+            "issues": [
+                issue for issue in playback.get("issues", []) if isinstance(issue, dict)
+            ],
+        }
+    )
     if commissioning_load is not None:
         out["commissioning_load"] = commissioning_load
     if fanin_gate is not None:
@@ -2450,10 +2503,12 @@ def _stop_summed_test_tone_locked(*, reason: str) -> dict[str, Any]:
 def _active_speaker_stop_summed_test_tone(*, reason: str) -> dict[str, Any]:
     with _SUMMED_TEST_TONE_LOCK:
         payload = _stop_summed_test_tone_locked(reason=reason)
-    logger.info(
-        "event=sound.active_speaker_summed_test action=stop reason=%s status=%s",
-        reason,
-        payload.get("status"),
+    log_event(
+        logger,
+        "sound.active_speaker_summed_test",
+        action="stop",
+        reason=reason,
+        status=str(payload.get("status")),
     )
     return payload
 
@@ -2511,9 +2566,7 @@ async def _active_speaker_summed_test_level_payload(
         reconcile_output_hardware=False,
     )
     load_state = (
-        load_payload.get("load")
-        if isinstance(load_payload.get("load"), dict)
-        else {}
+        load_payload.get("load") if isinstance(load_payload.get("load"), dict) else {}
     )
     loaded = load_state.get("status") == "loaded"
     status = "loaded" if loaded else "failed"
@@ -2522,13 +2575,14 @@ async def _active_speaker_summed_test_level_payload(
             if _SUMMED_TEST_TONE_SESSION is session:
                 session["level_dbfs"] = level_dbfs
                 session["load_payload"] = load_payload
-    logger.info(
-        "event=sound.active_speaker_summed_test action=level status=%s "
-        "group_id=%s playback_id=%s level_dbfs=%s",
-        status,
-        speaker_group_id,
-        playback_id,
-        level_dbfs,
+    log_event(
+        logger,
+        "sound.active_speaker_summed_test",
+        action="level",
+        status=status,
+        group_id=speaker_group_id,
+        playback_id=playback_id,
+        level_dbfs=str(level_dbfs),
     )
     return {
         "status": status,
@@ -2564,15 +2618,20 @@ async def _active_speaker_play_commission_tone(
     )
     frequency_hz = signal_plan.get("frequency_hz")
     if signal_plan.get("status") != "ready" or frequency_hz is None:
-        logger.warning(
-            "event=sound.active_speaker_commission_tone action=plan status=blocked "
-            "group=%s role=%s issues=%s",
-            group_id,
-            role,
-            ",".join(
-                str(issue.get("code"))
-                for issue in signal_plan.get("issues", [])
-                if isinstance(issue, dict)
+        log_event(
+            logger,
+            "sound.active_speaker_commission_tone",
+            level=logging.WARNING,
+            action="plan",
+            status="blocked",
+            group=group_id,
+            role=role,
+            issues=",".join(
+                (
+                    str(issue.get("code"))
+                    for issue in signal_plan.get("issues", [])
+                    if isinstance(issue, dict)
+                )
             ),
         )
         return _commission_tone_payload(
@@ -2585,12 +2644,15 @@ async def _active_speaker_play_commission_tone(
             group_id=group_id,
             audio_emitted=False,
             issues=[
-                issue for issue in signal_plan.get("issues", [])
+                issue
+                for issue in signal_plan.get("issues", [])
                 if isinstance(issue, dict)
             ],
             signal_plan=signal_plan,
         )
-    target_key = _commission_tone_target_key(role=role, group_id=group_id, target=target)
+    target_key = _commission_tone_target_key(
+        role=role, group_id=group_id, target=target
+    )
     try:
         wav_path = _commission_tone_wav_path(frequency_hz=frequency_hz)
     except Exception as exc:  # noqa: BLE001 - fail closed; the ramp will re-mute.
@@ -2629,7 +2691,9 @@ async def _active_speaker_play_commission_tone(
             session = _COMMISSION_TONE_SESSION
             if session and session.get("process") is not None:
                 proc = session["process"]
-                elapsed = time.monotonic() - float(session.get("started_monotonic", 0.0))
+                elapsed = time.monotonic() - float(
+                    session.get("started_monotonic", 0.0)
+                )
                 remaining = COMMISSION_TONE_DURATION_S - elapsed
                 if (
                     session.get("target_key") == target_key
@@ -2663,7 +2727,9 @@ async def _active_speaker_play_commission_tone(
                 stderr=subprocess.DEVNULL,
             )
             if proc.poll() is not None:
-                raise RuntimeError(f"aplay exited immediately with rc={proc.returncode}")
+                raise RuntimeError(
+                    f"aplay exited immediately with rc={proc.returncode}"
+                )
             started_proc = proc
             _COMMISSION_TONE_SESSION = {
                 "process": proc,
@@ -2717,15 +2783,16 @@ async def _active_speaker_play_commission_tone(
                 signal_plan=signal_plan,
             )
 
-    logger.info(
-        "event=sound.active_speaker_commission_tone action=start group=%s role=%s "
-        "frequency_hz=%.1f duration_s=%.1f highpass_hz=%s lowpass_hz=%s",
-        group_id,
-        role,
-        frequency_hz,
-        COMMISSION_TONE_DURATION_S,
-        (signal_plan.get("allowed_band") or {}).get("highpass_hz"),
-        (signal_plan.get("allowed_band") or {}).get("lowpass_hz"),
+    log_event(
+        logger,
+        "sound.active_speaker_commission_tone",
+        action="start",
+        group=group_id,
+        role=role,
+        frequency_hz=f"{frequency_hz:.1f}",
+        duration_s=f"{COMMISSION_TONE_DURATION_S:.1f}",
+        highpass_hz=str((signal_plan.get("allowed_band") or {}).get("highpass_hz")),
+        lowpass_hz=str((signal_plan.get("allowed_band") or {}).get("lowpass_hz")),
     )
     return _commission_tone_payload(
         status="completed",
@@ -2887,14 +2954,19 @@ async def _active_speaker_play_summed_commission_tone(
         }
         _SUMMED_TEST_TONE_SESSION = session
     if reclaimed is not None:
-        logger.info(
-            "event=sound.active_speaker_summed_test action=reclaim_prior_session "
-            "reason=%s prior_playback_id=%s",
-            reclaimed[0],
-            reclaimed[1],
+        log_event(
+            logger,
+            "sound.active_speaker_summed_test",
+            action="reclaim_prior_session",
+            reason=reclaimed[0],
+            prior_playback_id=reclaimed[1],
         )
 
-    tone = artifact_playback.get("tone") if isinstance(artifact_playback.get("tone"), dict) else {}
+    tone = (
+        artifact_playback.get("tone")
+        if isinstance(artifact_playback.get("tone"), dict)
+        else {}
+    )
     try:
         level_dbfs = float(tone.get("level_dbfs"))
     except (TypeError, ValueError):
@@ -2921,21 +2993,22 @@ async def _active_speaker_play_summed_commission_tone(
         camilla_factory=camilla_factory,
     )
     load_state = (
-        load_payload.get("load")
-        if isinstance(load_payload.get("load"), dict)
-        else {}
+        load_payload.get("load") if isinstance(load_payload.get("load"), dict) else {}
     )
     if load_state.get("status") != "loaded":
         with _SUMMED_TEST_TONE_LOCK:
             if _SUMMED_TEST_TONE_SESSION is session:
                 _SUMMED_TEST_TONE_SESSION = None
         load_issues = [
-            issue for issue in load_state.get("issues", [])
-            if isinstance(issue, dict)
+            issue for issue in load_state.get("issues", []) if isinstance(issue, dict)
         ]
-        issue = load_issues[0] if load_issues else _commission_setup_issue(
-            "summed_commission_load_failed",
-            "could not open the combined active-speaker test path",
+        issue = (
+            load_issues[0]
+            if load_issues
+            else _commission_setup_issue(
+                "summed_commission_load_failed",
+                "could not open the combined active-speaker test path",
+            )
         )
         return _summed_playback_with_issue(
             artifact_playback,
@@ -2976,10 +3049,12 @@ async def _active_speaker_play_summed_commission_tone(
                         artifact_playback,
                         session,
                     )
-                    current_playback.update({
-                        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
-                        "stimulus": stimulus,
-                    })
+                    current_playback.update(
+                        {
+                            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                            "stimulus": stimulus,
+                        }
+                    )
                     playback_result = _summed_test_stopped_playback(
                         current_playback,
                         commissioning_load=current_playback.get(
@@ -3002,10 +3077,12 @@ async def _active_speaker_play_summed_commission_tone(
                         artifact_playback,
                         session,
                     )
-                    current_playback.update({
-                        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
-                        "stimulus": stimulus,
-                    })
+                    current_playback.update(
+                        {
+                            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                            "stimulus": stimulus,
+                        }
+                    )
                     playback_result = _summed_test_stopped_playback(
                         current_playback,
                         commissioning_load=current_playback.get(
@@ -3055,17 +3132,21 @@ async def _active_speaker_play_summed_commission_tone(
                                 pass
                         except (OSError, ProcessLookupError):
                             pass
-                        raise TimeoutError("aplay timed out during combined speaker test")
+                        raise TimeoutError(
+                            "aplay timed out during combined speaker test"
+                        )
                     await asyncio.sleep(0.03)
                 if watchdog_expired:
                     current_playback = _summed_test_playback_at_session_level(
                         artifact_playback,
                         session,
                     )
-                    current_playback.update({
-                        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
-                        "stimulus": stimulus,
-                    })
+                    current_playback.update(
+                        {
+                            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                            "stimulus": stimulus,
+                        }
+                    )
                     playback_result = _summed_test_stopped_playback(
                         current_playback,
                         commissioning_load=current_playback.get(
@@ -3081,10 +3162,12 @@ async def _active_speaker_play_summed_commission_tone(
                         artifact_playback,
                         session,
                     )
-                    current_playback.update({
-                        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
-                        "stimulus": stimulus,
-                    })
+                    current_playback.update(
+                        {
+                            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                            "stimulus": stimulus,
+                        }
+                    )
                     playback_result = _summed_test_stopped_playback(
                         current_playback,
                         commissioning_load=current_playback.get(
@@ -3135,10 +3218,13 @@ async def _active_speaker_play_summed_commission_tone(
                     camilla_factory=camilla_factory,
                 )
             except Exception as exc:  # noqa: BLE001 - surface but do not mask playback.
-                logger.warning(
-                    "event=sound.active_speaker_summed_test action=rollback "
-                    "status=failed error=%s",
-                    exc,
+                log_event(
+                    logger,
+                    "sound.active_speaker_summed_test",
+                    level=logging.WARNING,
+                    action="rollback",
+                    status="failed",
+                    error=exc,
                 )
                 rollback_issue = _commission_setup_issue(
                     "summed_commission_rollback_failed",
@@ -3155,7 +3241,11 @@ async def _active_speaker_play_summed_commission_tone(
         playback_result["status"] = "failed"
         playback_result["confirmable"] = False
         playback_result["issues"] = [
-            *(playback_result.get("issues") if isinstance(playback_result.get("issues"), list) else []),
+            *(
+                playback_result.get("issues")
+                if isinstance(playback_result.get("issues"), list)
+                else []
+            ),
             rollback_issue,
         ]
     return playback_result
@@ -3209,11 +3299,14 @@ async def _active_speaker_ensure_commission_startup_anchor(
     if _config_paths_match(current_config_path, staged_path) and staged_matches:
         return {"status": "already_loaded", "staged_config_path": staged_path}
     if _config_paths_match(current_config_path, staged_path):
-        logger.info(
-            "event=sound.active_speaker_commission action=startup_anchor "
-            "group=%s role=%s status=refresh_required reason=staged_topology_mismatch",
-            group,
-            role,
+        log_event(
+            logger,
+            "sound.active_speaker_commission",
+            action="startup_anchor",
+            group=group,
+            role=role,
+            status="refresh_required",
+            reason="staged_topology_mismatch",
         )
 
     preview = _active_speaker_crossover_preview_save_payload()
@@ -3257,13 +3350,9 @@ async def _active_speaker_ensure_commission_startup_anchor(
         require_physical_identity=require_physical_identity,
     )
     load_state = (
-        startup_load.get("load")
-        if isinstance(startup_load.get("load"), dict)
-        else {}
+        startup_load.get("load") if isinstance(startup_load.get("load"), dict) else {}
     )
-    if load_state.get("status") != "loaded" or not load_state.get(
-        "rollback_available"
-    ):
+    if load_state.get("status") != "loaded" or not load_state.get("rollback_available"):
         issue = _commission_setup_issue(
             "commission_startup_anchor_load_failed",
             "could not load the silent active-speaker setup before driver testing",
@@ -3367,12 +3456,15 @@ async def _active_speaker_commission_load_payload(
     # check is the exclusion (see jasper.web.active_speaker_flow).
     blocking = blocking_measurement_phase()
     if blocking is not None:
-        logger.info(
-            "event=sound.active_speaker_commission action=load result=refused "
-            "reason=measurement_in_progress group=%s role=%s blocking=%s",
-            group,
-            role,
-            blocking,
+        log_event(
+            logger,
+            "sound.active_speaker_commission",
+            action="load",
+            result="refused",
+            reason="measurement_in_progress",
+            group=group,
+            role=role,
+            blocking=blocking,
         )
         return {
             "status": "refused",
@@ -3428,16 +3520,15 @@ async def _active_speaker_commission_load_payload(
         load_output_topology()
     )
     if guards_changed:
-        logger.info(
-            "event=sound.active_speaker_commission action=request_software_guards "
-            "group=%s role=%s",
-            group,
-            role,
+        log_event(
+            logger,
+            "sound.active_speaker_commission",
+            action="request_software_guards",
+            group=group,
+            role=role,
         )
     staged = load_staged_startup_config()
-    current_config_path, current_config_error = (
-        await read_current_config_path(cam)
-    )
+    current_config_path, current_config_error = await read_current_config_path(cam)
     startup_setup = await _active_speaker_ensure_commission_startup_anchor(
         group=group,
         role=role,
@@ -3447,19 +3538,19 @@ async def _active_speaker_commission_load_payload(
         require_physical_identity=require_physical_identity,
     )
     if startup_setup.get("status") == "blocked":
-        logger.info(
-            "event=sound.active_speaker_commission action=startup_anchor "
-            "group=%s role=%s status=blocked",
-            group,
-            role,
+        log_event(
+            logger,
+            "sound.active_speaker_commission",
+            action="startup_anchor",
+            group=group,
+            role=role,
+            status="blocked",
         )
         return startup_setup
 
     staged = load_staged_startup_config()
     preset, crossover_preview = resolve_commission_inputs()
-    current_config_path, current_config_error = (
-        await read_current_config_path(cam)
-    )
+    current_config_path, current_config_error = await read_current_config_path(cam)
     evidence_path = write_commission_path_safety(
         topology,
         staged,
@@ -3467,9 +3558,7 @@ async def _active_speaker_commission_load_payload(
         current_config_error,
         require_physical_identity=require_physical_identity,
     )
-    load_config, read_running_config, get_current_config_path = (
-        commission_seams(cam)
-    )
+    load_config, read_running_config, get_current_config_path = commission_seams(cam)
     payload = await load_driver_commissioning_config(
         topology,
         speaker_group_id=group,
@@ -3483,11 +3572,13 @@ async def _active_speaker_commission_load_payload(
         path_safety_evidence_path=evidence_path,
         require_physical_identity=require_physical_identity,
     )
-    logger.info(
-        "event=sound.active_speaker_commission action=load group=%s role=%s status=%s",
-        group,
-        role,
-        (payload.get("load") or {}).get("status"),
+    log_event(
+        logger,
+        "sound.active_speaker_commission",
+        action="load",
+        group=group,
+        role=role,
+        status=str((payload.get("load") or {}).get("status")),
     )
     payload["startup_setup"] = startup_setup
     if (payload.get("load") or {}).get("status") == "loaded":
@@ -3518,9 +3609,11 @@ async def _active_speaker_commission_rollback_payload(
     payload = await rollback_driver_commissioning_config(load_config=load_config)
     payload["safe_playback"] = stop_safe_playback_session(reason="commission_rollback")
     payload["tone_stop"] = tone_stop
-    logger.info(
-        "event=sound.active_speaker_commission action=rollback status=%s",
-        (payload.get("rollback") or {}).get("status"),
+    log_event(
+        logger,
+        "sound.active_speaker_commission",
+        action="rollback",
+        status=str((payload.get("rollback") or {}).get("status")),
     )
     return payload
 
@@ -3543,9 +3636,7 @@ async def _active_speaker_commission_ramp_step_payload(
     staged = load_staged_startup_config()
     preset, crossover_preview = resolve_commission_inputs()
     cam = camilla_factory()
-    current_config_path, current_config_error = (
-        await read_current_config_path(cam)
-    )
+    current_config_path, current_config_error = await read_current_config_path(cam)
     evidence_path = write_commission_path_safety(
         topology,
         staged,
@@ -3553,9 +3644,7 @@ async def _active_speaker_commission_ramp_step_payload(
         current_config_error,
         require_physical_identity=require_physical_identity,
     )
-    load_config, read_running_config, get_current_config_path = (
-        commission_seams(cam)
-    )
+    load_config, read_running_config, get_current_config_path = commission_seams(cam)
 
     async def _play_commission_tone(**kwargs: Any) -> dict[str, Any]:
         return await _active_speaker_play_commission_tone(
@@ -3596,13 +3685,14 @@ async def _active_speaker_commission_ramp_step_payload(
         confirmed_roles=confirmed_roles,
         role_order_confirmed_roles=role_order_confirmed_roles,
     )
-    logger.info(
-        "event=sound.active_speaker_commission action=ramp_step group=%s role=%s "
-        "status=%s next_db=%s",
-        group,
-        role,
-        payload.get("status"),
-        payload.get("next_gain_db"),
+    log_event(
+        logger,
+        "sound.active_speaker_commission",
+        action="ramp_step",
+        group=group,
+        role=role,
+        status=str(payload.get("status")),
+        next_db=str(payload.get("next_gain_db")),
     )
     return payload
 
@@ -3676,7 +3766,11 @@ async def _active_speaker_commission_ramp_ack_payload(
             payload["status"] = "failed"
             payload["reason"] = "driver_target_identity_save_failed"
             payload["issues"] = [
-                *(payload.get("issues") if isinstance(payload.get("issues"), list) else []),
+                *(
+                    payload.get("issues")
+                    if isinstance(payload.get("issues"), list)
+                    else []
+                ),
                 _commission_setup_issue(
                     "driver_target_identity_save_failed",
                     (
@@ -3685,12 +3779,15 @@ async def _active_speaker_commission_ramp_ack_payload(
                     ),
                 ),
             ]
-            logger.warning(
-                "event=sound.active_speaker_commission action=promote_identity "
-                "status=failed group=%s role=%s error=%s",
-                group_id,
-                role,
-                exc,
+            log_event(
+                logger,
+                "sound.active_speaker_commission",
+                level=logging.WARNING,
+                action="promote_identity",
+                status="failed",
+                group=group_id,
+                role=role,
+                error=exc,
             )
     if should_record_driver_evidence and isinstance(acknowledged_step, dict):
         if not confirm_output_identity or identity_promoted:
@@ -3710,13 +3807,14 @@ async def _active_speaker_commission_ramp_ack_payload(
             payload["measurements"] = measurements
     if tone_stop is not None:
         payload["tone_stop"] = tone_stop
-    logger.info(
-        "event=sound.active_speaker_commission action=ramp_ack outcome=%s "
-        "status=%s identity_promoted=%s measurement_status=%s",
-        outcome,
-        payload.get("status"),
-        identity_promoted,
-        (payload.get("measurements") or {}).get("status"),
+    log_event(
+        logger,
+        "sound.active_speaker_commission",
+        action="ramp_ack",
+        outcome=outcome,
+        status=str(payload.get("status")),
+        identity_promoted=str(identity_promoted),
+        measurement_status=str((payload.get("measurements") or {}).get("status")),
     )
     return payload
 
@@ -3734,9 +3832,11 @@ async def _active_speaker_commission_ramp_abort_payload(
     load_config, _, _ = commission_seams(cam)
     payload = await abort_ramp(load_config=load_config)
     payload["tone_stop"] = tone_stop
-    logger.info(
-        "event=sound.active_speaker_commission action=ramp_abort status=%s",
-        payload.get("status"),
+    log_event(
+        logger,
+        "sound.active_speaker_commission",
+        action="ramp_abort",
+        status=str(payload.get("status")),
     )
     return payload
 
@@ -3848,12 +3948,12 @@ async def _active_speaker_commissioning_view_payload(
     view = load_commissioning_view(commission=commission)
     active_summed_test = _active_summed_test_snapshot()
     _attach_active_summed_test(view, active_summed_test)
-    logger.info(
-        "event=sound.active_speaker_commissioning_view status=%s next_action=%s "
-        "summed_test_active=%s",
-        view.get("status"),
-        (view.get("next_action") or {}).get("id"),
-        active_summed_test.get("active"),
+    log_event(
+        logger,
+        "sound.active_speaker_commissioning_view",
+        status=str(view.get("status")),
+        next_action=str((view.get("next_action") or {}).get("id")),
+        summed_test_active=str(active_summed_test.get("active")),
     )
     return view
 
@@ -3866,14 +3966,17 @@ def _active_speaker_measurements_payload() -> dict[str, Any]:
     topology = load_output_topology()
     payload = load_measurement_state(topology)
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-    logger.info(
-        "event=sound.active_speaker_measurements status=%s drivers=%s/%s "
-        "summed=%s/%s",
-        payload.get("status"),
-        summary.get("captured_driver_count"),
-        summary.get("required_driver_count"),
-        summary.get("validated_summed_group_count"),
-        summary.get("required_summed_group_count"),
+    log_event(
+        logger,
+        "sound.active_speaker_measurements",
+        status=str(payload.get("status")),
+        drivers="%s/%s"
+        % (summary.get("captured_driver_count"), summary.get("required_driver_count")),
+        summed="%s/%s"
+        % (
+            summary.get("validated_summed_group_count"),
+            summary.get("required_summed_group_count"),
+        ),
     )
     return payload
 
@@ -3920,22 +4023,22 @@ def _active_speaker_driver_measurement_payload(raw: dict[str, Any]) -> dict[str,
         safe_session=load_safe_playback_state(),
     )
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-    logger.info(
-        "event=sound.active_speaker_driver_measurement status=%s "
-        "group_id=%s role=%s outcome=%s captured=%s drivers=%s/%s",
-        payload.get("status"),
-        raw.get("speaker_group_id"),
-        raw.get("role"),
-        raw.get("outcome"),
-        bool(
+    log_event(
+        logger,
+        "sound.active_speaker_driver_measurement",
+        status=str(payload.get("status")),
+        group_id=str(raw.get("speaker_group_id")),
+        role=str(raw.get("role")),
+        outcome=str(raw.get("outcome")),
+        captured=str(bool(
             (summary.get("latest_driver_measurements") or {})
             .get(f"{raw.get('speaker_group_id')}:{raw.get('role')}", {})
             .get("captured")
         )
         if isinstance(summary.get("latest_driver_measurements"), dict)
-        else False,
-        summary.get("captured_driver_count"),
-        summary.get("required_driver_count"),
+        else False),
+        drivers="%s/%s"
+        % (summary.get("captured_driver_count"), summary.get("required_driver_count")),
     )
     return payload
 
@@ -3949,9 +4052,7 @@ def _active_speaker_crossover_frequency_for_group(
         if not isinstance(group, dict) or group.get("group_id") != speaker_group_id:
             continue
         crossovers = (
-            group.get("crossovers")
-            if isinstance(group.get("crossovers"), list)
-            else []
+            group.get("crossovers") if isinstance(group.get("crossovers"), list) else []
         )
         for crossover in crossovers:
             if not isinstance(crossover, dict):
@@ -4107,9 +4208,7 @@ async def _active_speaker_summed_test_payload(
         ),
         requested_duration_ms=raw.get("duration_ms"),
         playback_allowed=(
-            wants_audio
-            and safe_session.get("status") == "armed"
-            and protected_loaded
+            wants_audio and safe_session.get("status") == "armed" and protected_loaded
         ),
         safe_session_id=safe_session.get("session_id"),
         protected_startup_loaded=protected_loaded,
@@ -4167,7 +4266,9 @@ async def _active_speaker_summed_test_payload(
             backend=None,
             allow_audio=False,
         )
-    playback_tone = playback.get("tone") if isinstance(playback.get("tone"), dict) else {}
+    playback_tone = (
+        playback.get("tone") if isinstance(playback.get("tone"), dict) else {}
+    )
     playback_level = playback_tone.get("level_dbfs")
     if playback_level is not None:
         calibration_level = calibration_level_payload(
@@ -4182,18 +4283,17 @@ async def _active_speaker_summed_test_payload(
             "plan": plan,
         },
     )
-    logger.info(
-        "event=sound.active_speaker_summed_test status=%s group_id=%s "
-        "level_dbfs=%s requested_level_dbfs=%s audio_requested=%s audio_emitted=%s blockers=%d "
-        "artifact=%s",
-        playback.get("status"),
-        speaker_group_id,
-        playback.get("tone", {}).get("level_dbfs"),
-        requested_level,
-        wants_audio,
-        bool(playback.get("audio_emitted")),
-        len(playback.get("issues") or []),
-        (playback.get("artifact") or {}).get("wav_basename"),
+    log_event(
+        logger,
+        "sound.active_speaker_summed_test",
+        status=str(playback.get("status")),
+        group_id=speaker_group_id,
+        level_dbfs=str(playback.get("tone", {}).get("level_dbfs")),
+        requested_level_dbfs=str(requested_level),
+        audio_requested=str(wants_audio),
+        audio_emitted=str(bool(playback.get("audio_emitted"))),
+        blockers=len(playback.get("issues") or []),
+        artifact=str((playback.get("artifact") or {}).get("wav_basename")),
     )
     return {
         "plan": plan,
@@ -4227,21 +4327,24 @@ def _active_speaker_summed_validation_payload(raw: dict[str, Any]) -> dict[str, 
         driver_target_proof_complete=driver_target_proof.get("complete") is True,
     )
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-    logger.info(
-        "event=sound.active_speaker_summed_validation status=%s "
-        "group_id=%s outcome=%s validated=%s summed=%s/%s",
-        payload.get("status"),
-        raw.get("speaker_group_id"),
-        raw.get("outcome"),
-        bool(
+    log_event(
+        logger,
+        "sound.active_speaker_summed_validation",
+        status=str(payload.get("status")),
+        group_id=str(raw.get("speaker_group_id")),
+        outcome=str(raw.get("outcome")),
+        validated=str(bool(
             (summary.get("latest_summed_validations") or {})
             .get(str(raw.get("speaker_group_id") or ""), {})
             .get("validated")
         )
         if isinstance(summary.get("latest_summed_validations"), dict)
-        else False,
-        summary.get("validated_summed_group_count"),
-        summary.get("required_summed_group_count"),
+        else False),
+        summed="%s/%s"
+        % (
+            summary.get("validated_summed_group_count"),
+            summary.get("required_summed_group_count"),
+        ),
     )
     return payload
 
@@ -4327,15 +4430,17 @@ def _active_speaker_crossover_alignment_payload(
     result["curves"] = _active_speaker_alignment_curves(
         measurements, result.get("speaker_group_id")
     )
-    proposal = result.get("proposal") if isinstance(result.get("proposal"), dict) else {}
-    logger.info(
-        "event=sound.active_speaker_crossover_alignment status=%s mode=%s "
-        "authorized=%s polarity_action=%s delay_status=%s",
-        result.get("status"),
-        (result.get("mode") or {}).get("mode"),
-        proposal.get("authorized"),
-        proposal.get("polarity_action"),
-        proposal.get("delay_status"),
+    proposal = (
+        result.get("proposal") if isinstance(result.get("proposal"), dict) else {}
+    )
+    log_event(
+        logger,
+        "sound.active_speaker_crossover_alignment",
+        status=str(result.get("status")),
+        mode=str((result.get("mode") or {}).get("mode")),
+        authorized=str(proposal.get("authorized")),
+        polarity_action=str(proposal.get("polarity_action")),
+        delay_status=str(proposal.get("delay_status")),
     )
     return result
 
@@ -4364,14 +4469,14 @@ def _active_speaker_baseline_profile_payload(
         measurements=measurements,
         write=write,
     )
-    logger.info(
-        "event=sound.active_speaker_baseline_profile action=%s status=%s "
-        "may_apply=%s issue_count=%d config=%s",
-        "compile" if write else "status",
-        payload.get("status"),
-        bool((payload.get("permissions") or {}).get("may_apply")),
-        len(payload.get("issues") or []),
-        (payload.get("config") or {}).get("basename"),
+    log_event(
+        logger,
+        "sound.active_speaker_baseline_profile",
+        action="compile" if write else "status",
+        status=str(payload.get("status")),
+        may_apply=str(bool((payload.get("permissions") or {}).get("may_apply"))),
+        issue_count=len(payload.get("issues") or []),
+        config=str((payload.get("config") or {}).get("basename")),
     )
     return payload
 
@@ -4404,13 +4509,14 @@ async def _active_speaker_baseline_profile_apply_payload(
         payload["source_selection_restore"] = _active_speaker_restore_auto_source(
             reason="baseline_apply",
         )
-    logger.info(
-        "event=sound.active_speaker_baseline_profile action=apply status=%s "
-        "apply_result=%s issue_count=%d source_restore=%s",
-        payload.get("status"),
-        (payload.get("apply") or {}).get("result"),
-        len(payload.get("issues") or []),
-        (payload.get("source_selection_restore") or {}).get("status"),
+    log_event(
+        logger,
+        "sound.active_speaker_baseline_profile",
+        action="apply",
+        status=str(payload.get("status")),
+        apply_result=str((payload.get("apply") or {}).get("result")),
+        issue_count=len(payload.get("issues") or []),
+        source_restore=str((payload.get("source_selection_restore") or {}).get("status")),
     )
     return payload
 
@@ -4472,38 +4578,24 @@ async def _active_speaker_finish_commissioning_payload(
         "summed_test": summed_stop,
         "ramp": commissioning_cleanup,
     }
-    profile = (
-        payload.get("profile")
-        if isinstance(payload.get("profile"), dict)
-        else {}
-    )
-    apply_state = (
-        payload.get("apply")
-        if isinstance(payload.get("apply"), dict)
-        else {}
-    )
-    config = (
-        profile.get("config")
-        if isinstance(profile.get("config"), dict)
-        else {}
-    )
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
+    apply_state = payload.get("apply") if isinstance(payload.get("apply"), dict) else {}
+    config = profile.get("config") if isinstance(profile.get("config"), dict) else {}
     active_config_path = apply_state.get("active_config_path") or config.get("path")
     payload["output_safety"] = _active_speaker_output_safety_from_config_path(
         active_config_path
         if isinstance(active_config_path, (str, os.PathLike))
         else None
     )
-    logger.info(
-        "event=sound.active_speaker_finish_commissioning status=%s "
-        "apply_result=%s safety_muted=%s issue_count=%d",
-        payload.get("status"),
-        (
-            (payload.get("apply") or {}).get("result")
-            if isinstance(payload.get("apply"), dict)
-            else None
-        ),
-        (payload.get("output_safety") or {}).get("safety_muted"),
-        len(payload.get("issues") or []),
+    log_event(
+        logger,
+        "sound.active_speaker_finish_commissioning",
+        status=str(payload.get("status")),
+        apply_result=str((payload.get("apply") or {}).get("result")
+        if isinstance(payload.get("apply"), dict)
+        else None),
+        safety_muted=str((payload.get("output_safety") or {}).get("safety_muted")),
+        issue_count=len(payload.get("issues") or []),
     )
     return payload
 
@@ -4581,15 +4673,25 @@ def _make_handler(
                 try:
                     self._send_json(_output_topology_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception("event=sound.output_topology result=error")
+                    log_event(
+                        logger,
+                        "sound.output_topology",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
+                    )
                     self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/design-draft":
                 try:
                     self._send_json(_active_speaker_design_draft_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_design_draft result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_design_draft",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4597,8 +4699,12 @@ def _make_handler(
                 try:
                     self._send_json(_active_speaker_crossover_preview_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_crossover_preview result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_crossover_preview",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4606,8 +4712,12 @@ def _make_handler(
                 try:
                     self._send_json(_active_speaker_measurements_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_measurements result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_measurements",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4619,14 +4729,18 @@ def _make_handler(
                     self._send_json(
                         _active_speaker_crossover_alignment_payload(
                             requested_mode=(query.get("measurement_mode") or [None])[0],
-                            speaker_group_id=(
-                                query.get("speaker_group_id") or [None]
-                            )[0],
+                            speaker_group_id=(query.get("speaker_group_id") or [None])[
+                                0
+                            ],
                         )
                     )
                 except (ValueError, OSError, KeyError) as e:
-                    logger.exception(
-                        "event=sound.active_speaker_crossover_alignment result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_crossover_alignment",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4634,8 +4748,12 @@ def _make_handler(
                 try:
                     self._send_json(_active_speaker_baseline_profile_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_baseline_profile result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_baseline_profile",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4643,8 +4761,12 @@ def _make_handler(
                 try:
                     self._send_json(_active_speaker_environment_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_environment result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_environment",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4652,8 +4774,12 @@ def _make_handler(
                 try:
                     self._send_json(_active_speaker_safe_playback_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_safe_playback result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_safe_playback",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4661,8 +4787,12 @@ def _make_handler(
                 try:
                     self._send_json(_active_speaker_calibration_level_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_calibration_level result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_calibration_level",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4670,8 +4800,12 @@ def _make_handler(
                 try:
                     self._send_json(_active_speaker_bringup_preflight_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_bringup_preflight result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_bringup_preflight",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4679,8 +4813,12 @@ def _make_handler(
                 try:
                     self._send_json(_active_speaker_startup_load_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_startup_load result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_startup_load",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4694,8 +4832,12 @@ def _make_handler(
                         )
                     )
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_commission result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_commission",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4709,8 +4851,12 @@ def _make_handler(
                         )
                     )
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_commissioning_view result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_commissioning_view",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4718,8 +4864,12 @@ def _make_handler(
                 try:
                     self._send_json(_active_speaker_staged_config_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_staged_config result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_staged_config",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4727,8 +4877,12 @@ def _make_handler(
                 try:
                     self._send_json(_active_speaker_channel_identity_payload())
                 except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_channel_identity result=error"
+                    log_event(
+                        logger,
+                        "sound.active_speaker_channel_identity",
+                        level=logging.ERROR,
+                        exc_info=True,
+                        result="error",
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -4779,9 +4933,10 @@ def _make_handler(
                 reject_csrf(self)
                 return
             if path in _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS and bonded_follower_active():
-                logger.info(
-                    "event=sound.follower_content_dsp_blocked path=%s",
-                    path,
+                log_event(
+                    logger,
+                    "sound.follower_content_dsp_blocked",
+                    path=path,
                 )
                 self._send_json(
                     {
@@ -4807,10 +4962,13 @@ def _make_handler(
                             _active_speaker_channel_identity_save_payload(raw)
                         )
                     except OSError as e:
-                        logger.exception(
-                            "event=sound.active_speaker_channel_identity "
-                            "result=error error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.active_speaker_channel_identity",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
@@ -4820,10 +4978,13 @@ def _make_handler(
                             _active_speaker_channel_protection_save_payload(raw)
                         )
                     except OSError as e:
-                        logger.exception(
-                            "event=sound.active_speaker_channel_protection "
-                            "result=error error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.active_speaker_channel_protection",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
@@ -4834,21 +4995,29 @@ def _make_handler(
                     try:
                         self._send_json(_active_speaker_design_draft_save_payload(raw))
                     except OSError as e:
-                        logger.exception(
-                            "event=sound.active_speaker_design_draft_save "
-                            "result=error error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.active_speaker_design_draft_save",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/crossover-preview":
                     try:
-                        self._send_json(_active_speaker_crossover_preview_save_payload())
+                        self._send_json(
+                            _active_speaker_crossover_preview_save_payload()
+                        )
                     except OSError as e:
-                        logger.exception(
-                            "event=sound.active_speaker_crossover_preview_save "
-                            "result=error error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.active_speaker_crossover_preview_save",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
@@ -4856,10 +5025,13 @@ def _make_handler(
                     try:
                         self._send_json(_active_speaker_driver_measurement_payload(raw))
                     except OSError as e:
-                        logger.exception(
-                            "event=sound.active_speaker_driver_measurement "
-                            "result=error error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.active_speaker_driver_measurement",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
@@ -4874,10 +5046,13 @@ def _make_handler(
                             )
                         )
                     except OSError as e:
-                        logger.exception(
-                            "event=sound.active_speaker_summed_test "
-                            "result=error error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.active_speaker_summed_test",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
@@ -4892,44 +5067,53 @@ def _make_handler(
                             )
                         )
                     except OSError as e:
-                        logger.exception(
-                            "event=sound.active_speaker_summed_test_level "
-                            "result=error error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.active_speaker_summed_test_level",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/summed-test/stop":
                     reason = str(raw.get("reason") or "operator_stop")
-                    self._send_json(_active_speaker_stop_summed_test_tone(reason=reason))
+                    self._send_json(
+                        _active_speaker_stop_summed_test_tone(reason=reason)
+                    )
                     return
                 if path == "/active-speaker/summed-validation":
                     try:
-                        conflict = (
-                            _active_speaker_summed_validation_active_conflict(raw)
+                        conflict = _active_speaker_summed_validation_active_conflict(
+                            raw
                         )
                         if conflict is not None:
-                            logger.info(
-                                "event=sound.active_speaker_summed_validation "
-                                "status=blocked reason=active_summed_test_running "
-                                "group_id=%s active_playback_id=%s",
-                                conflict.get("speaker_group_id"),
-                                (
+                            log_event(
+                                logger,
+                                "sound.active_speaker_summed_validation",
+                                status="blocked",
+                                reason="active_summed_test_running",
+                                group_id=str(conflict.get("speaker_group_id")),
+                                active_playback_id=str((
                                     conflict.get("active_summed_test", {})
                                     if isinstance(
                                         conflict.get("active_summed_test"), dict
                                     )
                                     else {}
-                                ).get("playback_id"),
+                                ).get("playback_id")),
                             )
                             self._send_json(conflict, status=HTTPStatus.CONFLICT)
                             return
                         self._send_json(_active_speaker_summed_validation_payload(raw))
                     except OSError as e:
-                        logger.exception(
-                            "event=sound.active_speaker_summed_validation "
-                            "result=error error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.active_speaker_summed_validation",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
@@ -4939,10 +5123,13 @@ def _make_handler(
                             _active_speaker_baseline_profile_payload(write=True)
                         )
                     except OSError as e:
-                        logger.exception(
-                            "event=sound.active_speaker_baseline_profile "
-                            "result=error error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.active_speaker_baseline_profile",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
@@ -5042,19 +5229,24 @@ def _make_handler(
                             _save_output_topology_payload(raw, require_revision=True)
                         )
                     except OutputTopologyRevisionConflict as e:
-                        logger.warning(
-                            "event=sound.output_topology_save result=conflict "
-                            "error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.output_topology_save",
+                            level=logging.WARNING,
+                            result="conflict",
+                            error=type(e).__name__,
                         )
                         payload = _output_topology_payload()
                         payload["error"] = str(e)
                         self._send_json(payload, status=HTTPStatus.CONFLICT)
                     except OSError as e:
-                        logger.exception(
-                            "event=sound.output_topology_save result=error "
-                            "error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.output_topology_save",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
@@ -5062,10 +5254,13 @@ def _make_handler(
                     try:
                         self._send_json(_reset_output_topology_payload())
                     except (OSError, RuntimeError, ValueError) as e:
-                        logger.exception(
-                            "event=sound.output_topology_reset result=error "
-                            "error=%s",
-                            type(e).__name__,
+                        log_event(
+                            logger,
+                            "sound.output_topology_reset",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
@@ -5126,13 +5321,13 @@ def _make_handler(
                                 profile_id=requested_id,
                             )
                             action = "update" if requested_id == entry.id else "create"
-                            logger.info(
-                                "event=sound.profile_library action=%s "
-                                "profile_id=%s curve=%s bands=%d",
-                                action,
-                                entry.id,
-                                entry.profile.curve_id,
-                                len(entry.profile.parametric_bands),
+                            log_event(
+                                logger,
+                                "sound.profile_library",
+                                action=action,
+                                profile_id=entry.id,
+                                curve=entry.profile.curve_id,
+                                bands=len(entry.profile.parametric_bands),
                             )
                             payload = _state_payload(
                                 load_profile(profile_path),
@@ -5146,12 +5341,13 @@ def _make_handler(
                                 name=str(raw.get("name") or ""),
                                 path=library_path,
                             )
-                            logger.info(
-                                "event=sound.profile_library action=rename "
-                                "profile_id=%s curve=%s bands=%d",
-                                entry.id,
-                                entry.profile.curve_id,
-                                len(entry.profile.parametric_bands),
+                            log_event(
+                                logger,
+                                "sound.profile_library",
+                                action="rename",
+                                profile_id=entry.id,
+                                curve=entry.profile.curve_id,
+                                bands=len(entry.profile.parametric_bands),
                             )
                             payload = _state_payload(
                                 load_profile(profile_path),
@@ -5162,9 +5358,11 @@ def _make_handler(
                         else:
                             deleted_id = str(raw.get("id") or "")
                             delete_named_profile(deleted_id, path=library_path)
-                            logger.info(
-                                "event=sound.profile_library action=delete profile_id=%s",
-                                deleted_id,
+                            log_event(
+                                logger,
+                                "sound.profile_library",
+                                action="delete",
+                                profile_id=deleted_id,
                             )
                             payload = _state_payload(
                                 load_profile(profile_path),
@@ -5244,10 +5442,11 @@ def _make_handler(
                     # reason_code/message from the body, and a 4xx would be
                     # swallowed by its `if (!resp.ok) throw` into a generic
                     # error — losing the honest reason.
-                    logger.info(
-                        "event=sound.eq_blocked path=%s reason=%s",
-                        path,
-                        refusal.reason_code,
+                    log_event(
+                        logger,
+                        "sound.eq_blocked",
+                        path=path,
+                        reason=refusal.reason_code,
                     )
                     self._send_json(refusal.to_payload())
                     return

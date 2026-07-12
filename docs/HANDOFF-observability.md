@@ -8,7 +8,7 @@ top of that resilience ladder and does not restate it.
 
 > **Status: current-state reference + approved design.** The
 > "Current state" section is operational truth (verified
-> 2026-06-04). Tier A/B/C are built; Tier D was removed in review.
+> 2026-07-12). Tier A/B/C are built; Tier D was removed in review.
 > New observability work should preserve the three-plane boundary
 > below: cheap production truth, temporary debug verbosity, and
 > explicit bounded diagnostic artifacts.
@@ -17,7 +17,7 @@ top of that resilience ladder and does not restate it.
 
 ## Current state (operational truth)
 
-**Three-plane boundary (load-bearing, verified 2026-06-04).**
+**Three-plane boundary (load-bearing, verified 2026-07-12).**
 JTS intentionally separates:
 
 1. **Production health:** always-on, cheap, fixed-shape truth:
@@ -140,22 +140,22 @@ fabricated-empty inputs only. When a producing lane merges, run
 real key shape, drive one real-shape test through that site, then delete
 the marker.
 
-**Remaining migration — 14 deferred active-zone files.** The migration is
+**Remaining migration — 13 deferred active-zone files.** The migration is
 complete across the codebase *except* a small set of files an in-flight
 work-stream owns; those were left hand-written to avoid churning a parallel
 session's edits. **The authoritative, machine-checked list of what's left is
 `DEFERRED_ACTIVE_ZONE` in
 [`tests/test_log_event_conventions.py`](../tests/test_log_event_conventions.py)**
 — a staleness test fails CI if any listed file no longer has a hand-written
-`event=` line, so the list cannot silently rot. As of 2026-06-16 it is two
+`event=` line, so the list cannot silently rot. As of 2026-07-12 it is two
 clusters:
 
 - **Active-crossover / sound UI work-stream** —
   `jasper/active_speaker/{camilla_yaml,playback,staging,startup_load}.py`,
-  `jasper/web/sound_setup.py` (the largest single file, ~69 lines),
-  `jasper/output_topology.py`, and `jasper/sound/camilla_yaml.py`. Deferred
-  because the active-crossover sound UI is being edited in another session;
-  migrating these now would collide with that work.
+  `jasper/output_topology.py`, and `jasper/sound/camilla_yaml.py`.
+  `jasper/web/sound_setup.py` completed its 92-site / 37-event-name migration;
+  the conventions guard now pins both zero violations and no replacement
+  active-zone exemption for that file.
 - **LLM tool surfaces** —
   `jasper/tools/{__init__,audio,bus,citibike,diagnostic,home_assistant,packs}.py`.
   Deferred with the rest of `jasper/tools/` (the voice-tool surface) to keep
@@ -165,8 +165,10 @@ clusters:
 
 **To finish a deferred file:** migrate its `logger.<level>("event=…")` calls
 to `log_event(…)` using the fidelity rules above (byte-identical for clean
-values; `%r`→`repr()`; precision specs→pre-rendered f-strings; trailing
-prose→a `note=` field; a field named `level`→the `fields=` mapping), then
+values; a legacy `%s` that can receive a bool or `None`→`str()` so its spelling
+stays `True` / `False` / `None`; `%r`→`repr()`; precision specs→pre-rendered
+f-strings; trailing prose→a `note=` field; a field named `level`→the `fields=`
+mapping), then
 **delete that file's entry from `DEFERRED_ACTIVE_ZONE`** so the guard starts
 enforcing it. The owning work-stream lands first; this is a clean follow-up,
 not a blocker.
@@ -526,9 +528,8 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-06-26 (Camilla/snapclient per-unit journal rate limits and
-`fetch-pi-logs.sh` noise-summary + monotonic timeline artifacts rechecked against current code;
-`jasper-accessory-reconcile` and `jasper-wiim-remote-mic` added to the
-accessory logging inventory; reconciler success/failure/systemctl events
-now use stable `event=` logs; resilience `/state`, supervisor doctor
-surface, and multiroom cascade timeline last rechecked 2026-06-24)
+Last verified: 2026-07-12 (full operational pass; the 13-file deferred
+inventory was cross-checked against the machine-enforced allowlist, including
+the completed 92-site / 37-name `sound_setup.py` migration; debug, flight
+recorder, journald, resilience `/state`, and bounded-diagnostics claims were
+re-read against their current owners)

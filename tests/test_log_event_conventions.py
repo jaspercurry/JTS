@@ -62,7 +62,6 @@ DEFERRED_ACTIVE_ZONE: dict[str, set[str]] = {
     "jasper/active_speaker/playback.py": {"*"},
     "jasper/active_speaker/staging.py": {"*"},
     "jasper/active_speaker/startup_load.py": {"*"},
-    "jasper/web/sound_setup.py": {"*"},
     "jasper/output_topology.py": {"*"},
     "jasper/sound/camilla_yaml.py": {"*"},
     "jasper/tools/__init__.py": {"*"},
@@ -81,7 +80,6 @@ DEFERRED_ACTIVE_ZONE: dict[str, set[str]] = {
 _ACTIVE_ZONE_PREFIXES = (
     "jasper/active_speaker/",
     "jasper/tools/",
-    "jasper/web/sound_setup.py",
     "jasper/sound/",
     "jasper/output_topology.py",
 )
@@ -226,6 +224,21 @@ def test_deferred_entries_are_active_zone_only():
         f"(prefixes {_ACTIVE_ZONE_PREFIXES}); these are not: {misplaced}. "
         "A non-active-zone file should be migrated to log_event, not deferred."
     )
+
+
+def test_sound_setup_migration_has_no_exemption_or_backdoor_prefix():
+    """The completed sound-page migration stays enforced without a re-deferral."""
+    rel_path = "jasper/web/sound_setup.py"
+
+    assert _violations_in(ROOT / rel_path) == []
+    assert rel_path not in DEFERRED_ACTIVE_ZONE
+    assert rel_path not in ALLOWLIST
+    assert not any(rel_path.startswith(prefix) for prefix in _ACTIVE_ZONE_PREFIXES)
+
+
+def test_deferred_inventory_matches_documented_count():
+    """HANDOFF-observability keeps the human inventory synchronized."""
+    assert len(DEFERRED_ACTIVE_ZONE) == 13
 
 
 def test_detector_catches_both_logging_forms(tmp_path):
