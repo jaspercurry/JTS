@@ -100,6 +100,18 @@ _CONNECT_TIMEOUT = 45
 # it up in 5-8 s. 20 s is the ceiling before we admit defeat.
 _ROLLBACK_WAIT = 20
 _ROLLBACK_TIMEOUT = 30
+_CONNECT_PREFLIGHT_TIMEOUT_CEILING = 25
+_CONNECT_CLEANUP_TIMEOUT = 10
+# Worst serialized POST /connect outer-timeout budget: _current_wifi plus
+# _profile_exists can issue five 5 s reads; a scan-cache miss can drive two
+# connect attempts; failed new-profile cleanup gets 10 s; rollback gets 30 s.
+# nginx must exceed this ceiling with response/NetworkManager scheduling room.
+CONNECT_NEW_TIMEOUT_CEILING = (
+    _CONNECT_PREFLIGHT_TIMEOUT_CEILING
+    + (2 * _CONNECT_TIMEOUT)
+    + _CONNECT_CLEANUP_TIMEOUT
+    + _ROLLBACK_TIMEOUT
+)
 _SCAN_HEALTH_JOURNAL_LINES = 120
 _SCAN_REPAIR_IFACE = os.environ.get("JASPER_WIFI_SCAN_REPAIR_IFACE", "wlan0")
 _SCAN_REPAIR_UNIT = os.environ.get(
@@ -1076,7 +1088,7 @@ def connect_new(
     if not existed_before:
         _run_nmcli(
             ["nmcli", "connection", "delete", ssid],
-            timeout=10, log_argv=False,
+            timeout=_CONNECT_CLEANUP_TIMEOUT, log_argv=False,
         )
 
     # Rollback: restore the previously-active profile if there was one.

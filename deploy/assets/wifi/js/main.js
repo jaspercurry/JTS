@@ -296,7 +296,8 @@ function connectRiskWarningHtml() {
       ' You\'re reaching this page over Wi-Fi and the Pi has no ' +
       'Ethernet fallback. If the new network fails, the Pi will try ' +
       'to reconnect to ' + escapeHtml(state.current.ssid) +
-      ' automatically (90s timeout). If that also fails you\'ll need ' +
+      ' automatically. The full switch and recovery attempt can take ' +
+      'up to 3 minutes. If that also fails you\'ll need ' +
       'physical access to recover.</div>'
     : (state.current
         ? '<div class="warn">Switching from ' +
@@ -389,7 +390,7 @@ async function submitConnect(ssid, secured) {
     '<div class="panel"><div><span class="spinner"></span> ' +
     'Connecting to ' + escapeHtml(ssid) + '… ' +
     '<span class="hint">' +
-    '(up to 90s including rollback)</span></div></div>';
+    '(up to 3 minutes including rollback)</span></div></div>';
   try {
     const r = await fetch('./connect', {
       method: 'POST',
@@ -473,7 +474,7 @@ async function submitManualConnect() {
   result.innerHTML =
     '<div><span class="spinner"></span> Connecting to ' +
     escapeHtml(ssid) + '… <span class="hint">' +
-    '(up to 90s including rollback)</span></div>';
+    '(up to 3 minutes including rollback)</span></div>';
   try {
     const r = await fetch('./connect', {
       method: 'POST',

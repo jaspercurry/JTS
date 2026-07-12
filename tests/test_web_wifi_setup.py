@@ -21,6 +21,7 @@ import logging
 import subprocess
 from email.message import Message
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 
@@ -180,6 +181,46 @@ def test_connect_new_rolls_back_on_failure(monkeypatch):
     assert any("connection" in c[1] and "up" in c[1] and "HomeNet" in c[1]
                for c in calls if c[0] == "run")
     assert "HomeNet" in msg
+
+
+def test_connect_new_worst_path_matches_declared_timeout_ceiling(monkeypatch):
+    """Drive the real serialized fail path without sleeping: current-profile
+    reads, profile lookup, visible + hidden attempts, cleanup, and rollback."""
+    timeouts: list[int] = []
+
+    def fake_run(cmd, *, timeout=10, log_argv=True):
+        timeouts.append(timeout)
+        if cmd[-3:] == ["connection", "show", "--active"]:
+            return _completed(cmd, stdout="Home:uuid:wifi:wlan0\n")
+        return _completed(cmd, returncode=1, stderr="failed")
+
+    def fake_secret(cmd, *, timeout=10):
+        timeouts.append(timeout)
+        return _completed(
+            cmd,
+            returncode=4,
+            stderr="Error: No network with SSID 'MissingNet' found.",
+        )
+
+    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
+    monkeypatch.setattr(wifi_setup, "_run_nmcli_secret", fake_secret)
+
+    ok, _ = wifi_setup.connect_new("MissingNet", "secretpw")
+
+    assert ok is False
+    assert timeouts == [5, 5, 5, 5, 5, 45, 45, 10, 30]
+    assert sum(timeouts) == wifi_setup.CONNECT_NEW_TIMEOUT_CEILING
+
+
+def test_wifi_ui_copy_matches_three_minute_proxy_contract() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/assets/wifi/js/main.js"
+    ).read_text()
+    assert "90s" not in source
+    assert source.count("up to 3 minutes including rollback") == 2
+    assert "full switch and recovery attempt can take " in source
+    assert "up to 3 minutes" in source
 
 
 def test_readable_nmcli_error_scrubs_echoed_psk():
