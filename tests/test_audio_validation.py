@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import math
+import stat
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -84,6 +85,32 @@ def test_latest_pointer_is_convenience_not_timestamped_record(tmp_path):
     assert durable_path.name != "latest.json"
     assert latest_path.name == "latest.json"
     assert latest.artifact == artifact
+
+
+@pytest.mark.parametrize("writer", [write_artifact, write_latest_pointer])
+@pytest.mark.parametrize(
+    ("expected_mode", "writer_kwargs"),
+    [
+        (0o644, {}),
+        (0o640, {"file_mode": 0o640}),
+    ],
+)
+def test_artifact_writers_preserve_exact_content_and_mode(
+    tmp_path,
+    writer,
+    expected_mode,
+    writer_kwargs,
+):
+    artifact = _artifact(notes=("direct fanout lab pass",))
+    expected_body = (
+        json.dumps(artifact.to_dict(), allow_nan=False, indent=2, sort_keys=True)
+        + "\n"
+    )
+
+    path = writer(artifact, directory=tmp_path, **writer_kwargs)
+
+    assert path.read_text(encoding="utf-8") == expected_body
+    assert stat.S_IMODE(path.stat().st_mode) == expected_mode
 
 
 def test_write_artifact_sanitizes_filename_components(tmp_path):
