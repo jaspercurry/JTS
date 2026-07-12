@@ -282,8 +282,24 @@ def _mixer_sources(
     raise ActiveSpeakerConfigError(f"unsupported layout {layout!r}")
 
 
-def _emit_split_mixer(preset: ActiveSpeakerPreset) -> str:
-    polarity = _role_polarity(preset)
+def _emit_split_mixer(
+    preset: ActiveSpeakerPreset,
+    *,
+    apply_region_polarity: bool = True,
+) -> str:
+    # Always run the cross-region polarity reduction — it is also the
+    # consistency guard (a role inverted in one region but not another raises).
+    # Only its result is optionally suppressed as the mixer's inversion source:
+    # the baseline/driver-domain emitters carry polarity through ``corrections``
+    # (a per-driver Gain filter, see ``_emit_baseline_driver_definitions``)
+    # instead, so the mixer must stay a no-op inverter there or the two would
+    # cancel each other out (double inversion == net non-inverted).
+    region_polarity = _role_polarity(preset)
+    polarity = (
+        region_polarity
+        if apply_region_polarity
+        else {role: False for role in region_polarity}
+    )
     outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
     output_count = _output_count(preset)
     # Active-speaker policy: build the (dest -> L/R-sum sources) map from
@@ -1571,7 +1587,10 @@ def emit_active_speaker_baseline_config(
         preference_filters=active_preference_filters,
         output_trim_db=output_trim_db,
     )
-    mixer_yaml = _emit_split_mixer(preset)
+    # apply_region_polarity=False: this graph carries polarity through
+    # ``safe_corrections`` (a per-driver Gain filter below), so the mixer must
+    # stay a no-op inverter — see the docstring on _emit_split_mixer.
+    mixer_yaml = _emit_split_mixer(preset, apply_region_polarity=False)
     pipeline_yaml = _emit_baseline_pipeline(
         preset,
         room_peq_names=[_room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
@@ -1792,9 +1811,12 @@ def emit_active_speaker_driver_domain_config(
     filter_lines.extend(emit_gain_filter("pair_balance_trim", -pair_trim_db))
     filter_yaml = "\n".join(filter_lines)
     # channel_select FIRST (inter-speaker pick), then the intra-speaker split.
+    # apply_region_polarity=False: this graph carries polarity through
+    # ``safe_corrections`` (a per-driver Gain filter above), so the mixer must
+    # stay a no-op inverter — see the docstring on _emit_split_mixer.
     mixer_yaml = "\n".join((
         emit_channel_select_mixer(program_channel),
-        _emit_split_mixer(preset),
+        _emit_split_mixer(preset, apply_region_polarity=False),
     ))
     pipeline_yaml = _emit_driver_domain_pipeline(
         preset, pair_trim_db=pair_trim_db,
