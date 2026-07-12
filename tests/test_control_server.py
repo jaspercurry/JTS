@@ -2574,6 +2574,43 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert any(p["id"] == "nyc" for p in body["transit"]["packs"])
 
 
+def test_state_active_speaker_commissioning_block_passes_through(
+    server_with_coordinator, monkeypatch,
+):
+    """active_speaker_setup.commissioning (setup_status.commissioning_summary)
+    rides straight through _get_state's existing active_speaker_setup
+    pass-through -- jasper/control/state_aggregate.py needs no structural
+    change for it (docs/active-crossover-information-design.md "Runtime
+    surface"). This guards against a future refactor that starts filtering
+    keys out of that pass-through.
+    """
+    base, _ = server_with_coordinator
+    from jasper.control import state_aggregate
+
+    fake_commissioning = {
+        "phase": "measuring",
+        "session_id": None,
+        "session_fingerprint": "f" * 64,
+        "applied_profile_fingerprint": None,
+        "last_capture": None,
+        "last_failure_code": None,
+        "room_correction_allowed": False,
+    }
+    monkeypatch.setattr(
+        state_aggregate,
+        "read_active_speaker_setup_status",
+        lambda **kwargs: {  # noqa: ARG005
+            "active": True,
+            "commissioning": fake_commissioning,
+        },
+    )
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["active_speaker_setup"]["commissioning"] == fake_commissioning
+
+
 def test_state_aec_probe_failure_is_fail_soft(
     server_with_coordinator, monkeypatch,
 ):

@@ -6,12 +6,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import jasper.active_speaker.setup_status as setup_mod
 from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
 from jasper.active_speaker.crossover_preview import build_crossover_preview
+from jasper.active_speaker.measurement import (
+    active_driver_targets,
+    start_active_comparison_set,
+)
 from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
@@ -256,6 +261,12 @@ def test_passive_speaker_is_ready_without_active_baseline(
     assert status["grouping_allowed"] is True
     assert status["room_correction_allowed"] is True
     assert status["acoustic_commissioning"]["status"] == "not_required"
+    # A passive speaker has no commissioning session, but the "commissioning"
+    # block is still present with a well-defined idle shape, and its
+    # room_correction_allowed mirrors the top-level value exactly (design doc
+    # "Runtime surface").
+    assert status["commissioning"]["phase"] == "idle"
+    assert status["commissioning"]["room_correction_allowed"] is True
 
 
 def test_active_speaker_blocks_volume_and_grouping_until_baseline_is_applied(
@@ -319,6 +330,14 @@ def test_active_speaker_allows_volume_and_grouping_after_applied_baseline(
     assert status["safety_muted"] is False
     assert status["reason"] is None
     assert status["room_correction_allowed"] is False
+    # Phase-derivation table (design doc "Structured events"): a profile whose
+    # status is "applied" (not apply_failed, may_apply already false) with no
+    # open comparison set falls through every specific branch to idle.
+    assert status["commissioning"]["phase"] == "idle"
+    assert status["commissioning"]["room_correction_allowed"] is False
+    # No applied_profile was resolvable in this fixture (no state on disk),
+    # so there is no fingerprint to surface.
+    assert status["commissioning"]["applied_profile_fingerprint"] is None
 
 
 def test_active_speaker_allows_room_correction_only_after_acoustic_commissioning(
@@ -363,6 +382,17 @@ def test_active_speaker_allows_room_correction_only_after_acoustic_commissioning
         "required": 1,
         "usable": 1,
     }
+    # room_correction_allowed mirrors acoustic_commissioning.allowed exactly
+    # in the wired /state payload (design doc "Runtime surface"), and the
+    # applied profile's source fingerprint is surfaced for correlation.
+    assert status["commissioning"]["room_correction_allowed"] is True
+    assert status["commissioning"]["room_correction_allowed"] == (
+        status["acoustic_commissioning"]["allowed"]
+    )
+    assert status["commissioning"]["applied_profile_fingerprint"] == "source-fp"
+    # status="applied" with may_apply already false and no open comparison
+    # set falls through every specific phase branch to idle.
+    assert status["commissioning"]["phase"] == "idle"
 
 
 def test_applied_manual_snapshot_allows_room_without_phone_measurements(
@@ -724,6 +754,10 @@ def test_unreadable_topology_fails_closed(
     assert "output_topology_unreadable" in {
         issue["code"] for issue in status["issues"]
     }
+    # No topology was ever readable, so commissioning degrades to its fail-soft
+    # idle default; room_correction_allowed still mirrors the top-level value.
+    assert status["commissioning"]["phase"] == "idle"
+    assert status["commissioning"]["room_correction_allowed"] is False
 
 
 def test_unreadable_baseline_profile_fails_closed(
@@ -737,6 +771,12 @@ def test_unreadable_baseline_profile_fails_closed(
         raise ValueError("baseline candidate could not be derived")
 
     monkeypatch.setattr(setup_mod, "build_baseline_profile_candidate", _raise)
+    # Deterministic measurement state so the commissioning-phase assertion
+    # below isn't at the mercy of whatever (if anything) is on disk at the
+    # real default measurements path.
+    monkeypatch.setattr(
+        setup_mod, "load_measurement_state", lambda _topology: {"summary": {}},
+    )
 
     status = setup_mod.read_active_speaker_setup_status(
         active_config_path=str(config_path),
@@ -748,3 +788,175 @@ def test_unreadable_baseline_profile_fails_closed(
     assert "active_baseline_profile_unreadable" in {
         issue["code"] for issue in status["issues"]
     }
+    # profile is None after the caught exception (never apply_failed, never
+    # may_apply); with no active comparison set either, phase falls to idle.
+    assert status["commissioning"]["phase"] == "idle"
+    assert status["commissioning"]["applied_profile_fingerprint"] is None
+
+
+# --- commissioning_summary (lane E, docs/active-crossover-information-design.md
+# "Runtime surface") — standalone phase-derivation table ---------------------
+#
+# These call commissioning_summary directly (not through
+# read_active_speaker_setup_status) with hand-built inputs, per state fixture,
+# to pin the phase-derivation priority order independent of whether today's
+# candidate-building code path can organically produce every input shape.
+
+
+def test_commissioning_summary_idle_with_no_evidence() -> None:
+    result = setup_mod.commissioning_summary(
+        SimpleNamespace(topology_id="bench_mono"),
+        profile=None,
+        applied_profile=None,
+        measurements=None,
+    )
+    assert result == {
+        "phase": "idle",
+        "session_id": None,
+        "session_fingerprint": None,
+        "applied_profile_fingerprint": None,
+        "last_capture": None,
+        "last_failure_code": None,
+        "room_correction_allowed": False,
+    }
+
+
+def test_commissioning_summary_measuring_with_open_comparison_set(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology()
+    driver_level_locks = {
+        target["target_id"]: {
+            "target_id": target["target_id"],
+            "speaker_group_id": target["speaker_group_id"],
+            "role": target["role"],
+            "tone_frequency_hz": 250.0 if target["role"] == "woofer" else 6250.0,
+            "tone_peak_dbfs": -12.0,
+            "commissioning_gain_db": 0.0,
+            "locked_main_volume_db": -12.0,
+        }
+        for target in active_driver_targets(topology)
+    }
+    comparison_set = start_active_comparison_set(
+        topology,
+        profile_context_id="ctx",
+        setup_sha256="a" * 64,
+        device_sha256="b" * 64,
+        calibration_id="",
+        driver_level_locks=driver_level_locks,
+        state_path=tmp_path / "measurements.json",
+        now="2026-07-11T12:00:00Z",
+    )
+
+    result = setup_mod.commissioning_summary(
+        topology,
+        profile=None,
+        applied_profile=None,
+        measurements={"active_comparison_set": comparison_set},
+    )
+
+    assert result["phase"] == "measuring"
+    assert result["session_fingerprint"] == comparison_set["fingerprint"]
+
+
+def test_commissioning_summary_proposal_ready_when_may_apply() -> None:
+    result = setup_mod.commissioning_summary(
+        SimpleNamespace(topology_id="bench_mono"),
+        profile={"status": "ready_to_apply", "permissions": {"may_apply": True}},
+        applied_profile=None,
+        measurements=None,
+    )
+    assert result["phase"] == "proposal_ready"
+
+
+def test_commissioning_summary_failed_surfaces_first_blocker_code() -> None:
+    result = setup_mod.commissioning_summary(
+        SimpleNamespace(topology_id="bench_mono"),
+        profile={
+            "status": "apply_failed",
+            "issues": [
+                {
+                    "severity": "warning",
+                    "code": "some_warning",
+                    "message": "not the one",
+                },
+                {
+                    "severity": "blocker",
+                    "code": "baseline_profile_apply_failed",
+                    "message": "camilladsp rejected the candidate",
+                },
+            ],
+        },
+        applied_profile=None,
+        measurements=None,
+    )
+    assert result["phase"] == "failed"
+    assert result["last_failure_code"] == "baseline_profile_apply_failed"
+
+
+def test_commissioning_summary_last_capture_surfaces_worst_relevant_band() -> None:
+    # The newest record (by created_at) across BOTH maps wins, regardless of
+    # which map it came from.
+    measurements = {
+        "latest_by_target": {
+            "mono:woofer": {
+                "created_at": "2026-07-11T10:00:00Z",
+                "mic_clipping": False,
+                "acoustic": {
+                    "verdict": "present",
+                    "snr": {"worst_relevant": {"estimated_snr_db": 22.5}},
+                },
+            },
+        },
+        "latest_summed_by_group": {
+            "mono": {
+                "created_at": "2026-07-11T11:00:00Z",
+                "mic_clipping": True,
+                "acoustic": {
+                    "verdict": "blend_ok",
+                    "snr": {"worst_relevant": {"estimated_snr_db": 18.0}},
+                },
+            },
+        },
+    }
+
+    result = setup_mod.commissioning_summary(
+        SimpleNamespace(topology_id="bench_mono"),
+        profile=None,
+        applied_profile=None,
+        measurements=measurements,
+    )
+
+    assert result["last_capture"] == {
+        "snr_db": 18.0,
+        "verdict": "blend_ok",
+        "clipping": True,
+        "at": "2026-07-11T11:00:00Z",
+    }
+
+
+def test_commissioning_summary_last_capture_none_without_any_record() -> None:
+    result = setup_mod.commissioning_summary(
+        SimpleNamespace(topology_id="bench_mono"),
+        profile=None,
+        applied_profile=None,
+        measurements={"latest_by_target": {}, "latest_summed_by_group": {}},
+    )
+    assert result["last_capture"] is None
+
+
+def test_commissioning_summary_is_fail_soft_never_raises() -> None:
+    class _ExplodesOnGet(dict):
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError("boom: unreadable measurement state")
+
+    result = setup_mod.commissioning_summary(
+        SimpleNamespace(topology_id="bench_mono"),
+        profile=_ExplodesOnGet(),
+        applied_profile=None,
+        measurements=None,
+    )
+
+    # Degrades to the safest phase rather than propagating the exception.
+    assert result["phase"] == "idle"
+    assert result["room_correction_allowed"] is False
