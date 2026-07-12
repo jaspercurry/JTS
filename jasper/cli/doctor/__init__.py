@@ -57,6 +57,7 @@ from ...install_profile import (
     read_install_profile,
 )
 from ...speaker_name import runtime_name as _speaker_runtime_name
+from ...spotify_oauth import default_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
 
 from ._registry import doctor_check, registered_checks
@@ -1040,10 +1041,7 @@ def _local_audio_config_from_env() -> SimpleNamespace:
     the full voice Config into small-device profiles.
     """
     hostname = os.environ.get("JASPER_HOSTNAME", "jts.local") or "jts.local"
-    spotify_redirect_default = (
-        "https://jaspercurry.github.io/spotify-oauth-callback/"
-        f"?host={hostname}"
-    )
+    spotify_redirect_default = default_spotify_redirect_uri(hostname)
     spotify_client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
     return SimpleNamespace(
         usage_db=os.environ.get("JASPER_USAGE_DB", DEFAULT_USAGE_DB),

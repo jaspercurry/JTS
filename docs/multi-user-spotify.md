@@ -109,16 +109,16 @@ GitHub Pages or any other third party.
 
 ### CSRF state
 
-Each `/start` generates a fresh random nonce, stashed server-side in
-a 10-minute pending-flows map keyed to the account name. The nonce
-is sent as Spotify's `state` parameter. On callback, the nonce is
-looked up to recover the account name; unknown or expired nonces are
-rejected. This protects against cross-site request forgery on the
-callback endpoint.
+Each `/start` generates a fresh random nonce and uses it as the key in
+a server-side 10-minute pending-flows map. Its value holds the account
+name and PKCE verifier/challenge pair. The nonce is sent as Spotify's
+`state` parameter. On callback, it recovers that pending flow; unknown
+or expired nonces are rejected. This protects against cross-site
+request forgery on the callback endpoint.
 
-The PKCE code verifier itself lives in the per-account spotipy cache
-file between `/start` and the callback — spotipy writes it during
-`get_authorize_url()` and reads it during `get_access_token(code)`.
+The PKCE pair remains in memory between `/start` and the callback.
+Spotipy's per-account token cache does not persist it, so the callback
+restores both values on a fresh `SpotifyPKCE` instance before exchange.
 
 ## Setup, end-to-end
 
@@ -160,12 +160,12 @@ device" form to fill in.
 
 ### 3. No manual restart needed
 
-The wizard's OAuth-callback handler restarts `jasper-voice` for you
-on every successful link — including the very first. The daemon's
-router also rebuilds itself lazily on the next voice command if its
-clients dict is empty (see "Refresh-token revocation & recovery"
-below), so even an out-of-band re-link (e.g., manual cache file
-edit) recovers without intervention.
+The wizard's OAuth-callback handler restarts `jasper-voice`,
+`jasper-control`, and `jasper-mux` for you on every successful link —
+including the very first. The daemon's router also rebuilds itself
+lazily on the next voice command if its clients dict is empty (see
+"Refresh-token revocation & recovery" below), so even an out-of-band
+re-link (e.g., manual cache file edit) recovers without intervention.
 
 ## Refresh-token revocation & recovery
 
@@ -457,4 +457,5 @@ deploy/nginx-jasper.conf              /spotify/ + /voice/ + /dial/ proxy (HTTP o
 deploy/jasper-web.service             systemd unit for jasper-web
 ```
 
-Last verified: 2026-07-11
+Last verified: 2026-07-12 (OAuth pending-flow ownership and successful-link
+consumer restarts checked against `jasper/web/spotify_setup.py`.)
