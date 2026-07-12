@@ -82,6 +82,7 @@ fi
 mkdir -p "$OUT_LOCAL"
 
 LOCAL_PY="$REPO_ROOT/scripts/_offline_wake_count.py"
+LOCAL_METRICS="$REPO_ROOT/scripts/_wake_audio_metrics.py"
 # Template path for the cross-correlation utterance finder. Prefer the
 # per-phrase subdirectory (logs/wake-test-track/<slug>/<slug>.wav) if
 # present; fall back to the legacy flat path (logs/wake-test-track/<slug>.wav)
@@ -94,7 +95,12 @@ if [[ ! -f "$LOCAL_PY" ]]; then
     echo "ERROR: $LOCAL_PY missing" >&2
     exit 1
 fi
+if [[ ! -f "$LOCAL_METRICS" ]]; then
+    echo "ERROR: $LOCAL_METRICS missing" >&2
+    exit 1
+fi
 scp -q "$LOCAL_PY" "${PI_USER}@${PI_HOST}:/tmp/_offline_wake_count.py"
+scp -q "$LOCAL_METRICS" "${PI_USER}@${PI_HOST}:/tmp/_wake_audio_metrics.py"
 
 # Copy the wake-test template too if we have one — enables the
 # template-based per-utterance metadata mode (sees silent misses).

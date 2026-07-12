@@ -36,6 +36,13 @@ import numpy as np
 from jasper import wake_legs
 from jasper.aec_sweep import AEC3_SWEEP_VARIANTS
 
+try:
+    from _wake_audio_metrics import rms_amplitude
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_audio_metrics":
+        raise
+    from scripts._wake_audio_metrics import rms_amplitude
+
 
 SAMPLE_RATE_HZ = 16000
 CHANNELS = 1
@@ -109,7 +116,7 @@ def _load_wav(path: Path) -> WavStats:
         raw = w.readframes(frames)
     if sample_width == 2:
         data = np.frombuffer(raw, dtype=np.int16)
-        rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2))) if data.size else 0.0
+        rms = rms_amplitude(data)
         peak = int(np.max(np.abs(data.astype(np.int32)))) if data.size else 0
     else:
         rms = 0.0

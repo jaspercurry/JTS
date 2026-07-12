@@ -50,6 +50,13 @@ from typing import Any, Iterable
 
 import numpy as np
 
+try:
+    from _wake_audio_metrics import rms_amplitude as _rms
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_audio_metrics":
+        raise
+    from scripts._wake_audio_metrics import rms_amplitude as _rms
+
 
 _cvm_stub = _types.ModuleType("openwakeword.custom_verifier_model")
 _cvm_stub.train_custom_verifier = None
@@ -88,9 +95,7 @@ class ClipLeg:
 
 
 def _dbfs_from_rms(samples: np.ndarray) -> float:
-    if samples.size == 0:
-        return -100.0
-    rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+    rms = _rms(samples)
     if rms <= 0.0:
         return -100.0
     return 20.0 * math.log10(rms / 32768.0)
@@ -151,12 +156,6 @@ def shift_samples(samples: np.ndarray, offset_samples: int) -> np.ndarray:
     else:
         out[:offset_samples] = samples[-offset_samples:]
     return out
-
-
-def _rms(samples: np.ndarray) -> float:
-    if samples.size == 0:
-        return 0.0
-    return float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
 
 
 def _match_pair_rms(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
