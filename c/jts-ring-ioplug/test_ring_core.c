@@ -101,15 +101,32 @@ static int read_bytes_bounded(int fd, void *out, size_t len) {
     return 0;
 }
 
-static void report_fd_identity(int report_fd, int ring_fd) {
+static int write_bytes(int fd, const void *data, size_t len) {
+    const uint8_t *cursor = (const uint8_t *)data;
+    size_t remaining = len;
+    while (remaining > 0) {
+        ssize_t n = write(fd, cursor, remaining);
+        if (n > 0) {
+            cursor += (size_t)n;
+            remaining -= (size_t)n;
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int report_fd_identity(int report_fd, int ring_fd) {
     struct stat st;
-    if (fstat(ring_fd, &st) < 0) return;
+    if (fstat(ring_fd, &st) < 0) return -1;
     test_inode_observation_t observed = {
         .dev = (uint64_t)st.st_dev,
         .ino = (uint64_t)st.st_ino,
         .size = (int64_t)st.st_size,
     };
-    (void)write(report_fd, &observed, sizeof(observed));
+    return write_bytes(report_fd, &observed, sizeof(observed));
 }
 
 static void cleanup_owned_test_locks(void) {
@@ -134,9 +151,11 @@ static void remember_test_path(const char *path) {
 static void cleanup_all_test_paths(void) {
     for (size_t i = 0; i < g_test_path_count; i++) {
         (void)unlink(g_test_paths[i]);
-        char lock_path[576];
-        snprintf(lock_path, sizeof(lock_path), "%s%s", g_test_paths[i],
-                 JTS_RING_OPEN_LOCK_SUFFIX);
+        char lock_path[sizeof(g_test_paths[0]) + sizeof(JTS_RING_OPEN_LOCK_SUFFIX)];
+        size_t path_len = strlen(g_test_paths[i]);
+        memcpy(lock_path, g_test_paths[i], path_len);
+        memcpy(lock_path + path_len, JTS_RING_OPEN_LOCK_SUFFIX,
+               sizeof(JTS_RING_OPEN_LOCK_SUFFIX));
         (void)unlink(lock_path);
     }
 }
@@ -1251,7 +1270,7 @@ static void test_stale_reclaimer_a_cannot_delete_replacement_for_b_and_c(void) {
                 observed = (test_inode_observation_t){.dev = (uint64_t)st.st_dev,
                                                       .ino = (uint64_t)st.st_ino,
                                                       .size = (int64_t)st.st_size};
-                (void)write(results[1], &observed, sizeof(observed));
+                if (write_bytes(results[1], &observed, sizeof(observed)) < 0) rc = -1;
             }
             jts_ring_writer_close(&w);
         }
@@ -1274,7 +1293,7 @@ static void test_stale_reclaimer_a_cannot_delete_replacement_for_b_and_c(void) {
         jts_ring_writer_t w;
         int rc = jts_ring_writer_open(path, &g, &w);
         if (rc == 0) {
-            report_fd_identity(results[1], w.fd);
+            if (report_fd_identity(results[1], w.fd) < 0) rc = -1;
             jts_ring_writer_close(&w);
         }
         _exit(rc == 0 ? 0 : 7);
@@ -1284,7 +1303,7 @@ static void test_stale_reclaimer_a_cannot_delete_replacement_for_b_and_c(void) {
         jts_ring_writer_t w;
         int rc = jts_ring_writer_open(path, &g, &w);
         if (rc == 0) {
-            report_fd_identity(results[1], w.fd);
+            if (report_fd_identity(results[1], w.fd) < 0) rc = -1;
             jts_ring_writer_close(&w);
         }
         _exit(rc == 0 ? 0 : 8);
