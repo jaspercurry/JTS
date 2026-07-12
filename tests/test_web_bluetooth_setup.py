@@ -189,8 +189,8 @@ def _make_request(
     h.wfile = BytesIO()
     h.client_address = ("127.0.0.1", 0)
 
-    # Capture the response status; the real _send/_send_html/_send_json and the
-    # shared send_html_response call send_response()/send_header()/end_headers().
+    # Capture the response status; the real _send_html/_send_json adapters and
+    # their shared response helpers call send_response()/send_header()/end_headers().
     h.status = None
     h.sent_headers = []
 
@@ -215,6 +215,32 @@ def test_public_surface_is_stable():
     assert callable(bluetooth_setup.main)
     assert callable(bluetooth_setup._landing_html)
     assert callable(bluetooth_setup._make_handler)
+
+
+def test_local_json_adapter_preserves_wire_contract():
+    h = _make_request("/")
+
+    h._send_json({"label": "café"}, status=http.HTTPStatus.CREATED)
+
+    body = b'{"label": "caf\\u00e9"}'
+    assert h.status == int(http.HTTPStatus.CREATED)
+    assert h.sent_headers == [
+        ("Content-Type", "application/json"),
+        ("Content-Length", str(len(body))),
+        ("Cache-Control", "no-store"),
+    ]
+    assert h.wfile.getvalue() == body
+
+
+def test_local_json_adapter_serialization_failure_emits_nothing():
+    h = _make_request("/")
+
+    with pytest.raises(TypeError):
+        h._send_json({"unsupported": object()})
+
+    assert h.status is None
+    assert h.sent_headers == []
+    assert h.wfile.getvalue() == b""
 
 
 def test_unexpected_pair_driver_failure_is_logged_once(monkeypatch, caplog):

@@ -36,9 +36,7 @@ WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
 # DA-0217 migration allowlist. Each staged response-helper chunk shrinks this;
 # the final stage deletes it and requires zero local JSON header assemblers.
 _LEGACY_JSON_RESPONSE_ASSEMBLERS = {
-    "bluetooth_setup.py",
     "correction_setup.py",
-    "dial_setup.py",
     "sound_setup.py",
     "wifi_setup.py",
 }
@@ -111,6 +109,8 @@ def test_local_json_responses_use_the_shared_response_helper():
 
 def test_migrated_local_object_responses_use_object_helper_not_byte_helper():
     for filename in (
+        "bluetooth_setup.py",
+        "dial_setup.py",
         "home_assistant_setup.py",
         "rooms_setup.py",
         "sources_setup.py",

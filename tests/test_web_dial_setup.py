@@ -235,6 +235,21 @@ def test_get_scan_route_returns_devices(monkeypatch: pytest.MonkeyPatch) -> None
     assert b'"devices"' in resp
 
 
+def test_get_scan_json_response_preserves_wire_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dial_setup, "_list_esp32_s3_ports", lambda: [])
+
+    status, resp = _drive("GET", "/scan")
+
+    head, body = resp.split(b"\r\n\r\n", 1)
+    assert status == 200
+    assert body == b'{"devices": []}'
+    assert b"Content-Type: application/json" in head
+    assert f"Content-Length: {len(body)}".encode() in head
+    assert b"Cache-Control: no-store" in head
+
+
 def test_get_unknown_route_404() -> None:
     status, _ = _drive("GET", "/nope")
     assert status == 404
