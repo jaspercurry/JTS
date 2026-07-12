@@ -621,8 +621,8 @@ records the ring's pre-read fill depth per impulse as diagnostic context, but
 that is not added to the latency (doing so would double-count the ring
 dwell).
 
-**Quick gate (p95 <= 48 ms, >=200 impulses, >=5 min — budget recalibrated
-2026-07-11 to the measured churn-safe floor, see
+**Quick gate (p95 <= 40 ms, >=200 impulses, >=5 min — budget tightened
+2026-07-11 to the certified electrical floor, see
 `docs/HANDOFF-usb-latency-measurement.md` §1):**
 
 Invoke every CLI by its absolute venv path (`/opt/jasper/.venv/bin/...`):
@@ -679,7 +679,7 @@ sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   --invoke-artifact
 ```
 
-**Promotion gate (p99 <= 60 ms, >=1000 jittered impulses, >=30 min):**
+**Promotion gate (p99 <= 42 ms, >=1000 jittered impulses, >=30 min):**
 identical flow with `generate promotion` instead of `generate quick`. On
 `analyze`, add `--impulse-spacing-jittered` to declare that fact to the
 artifact CLI (`run` needs no such flag — it reads jitteredness straight off

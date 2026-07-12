@@ -106,8 +106,8 @@ def pair_events(
     """Nearest-match pairing within `window_ms`, rejecting ambiguous matches.
 
     `window_ms` bounds the plausible ingress-to-egress latency: real route
-    latency is expected in the tens of ms (the p95 budget is 48 ms, p99 is
-    60 ms), so a generous-but-bounded 200 ms window comfortably covers a
+    latency is expected in the tens of ms (the p95 budget is 40 ms, p99 is
+    42 ms), so a generous-but-bounded 200 ms window comfortably covers a
     slow/degraded route without pairing across two different impulses on a
     densely-spaced (jittered promotion) schedule.
     """
