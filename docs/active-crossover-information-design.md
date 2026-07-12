@@ -775,13 +775,16 @@ trim calculation is a complete automatic crossover.
 
 As of 2026-07-11, JTS has much of the substrate but not the full product:
 
-- Manual setup exposes frequency, filter family/slope, and trim. There is
-  still no `/sound/` UI for polarity/delay authoring, but as of Slice 0 the
-  preview/preset/corrections chain persists polarity and relative delay as
-  first-class working-crossover values end to end — including through a
-  stereo apply, which no longer resets delay/inversion (corrections are only
-  re-derived from measurement under explicit automatic tuning with fresh
-  alignment evidence, never unconditionally).
+- Manual setup exposes frequency, filter family/slope, and trim. ~~There is
+  still no `/sound/` UI for polarity/delay authoring~~ Closed (P2a): the
+  manual crossover editor's collapsed "Alignment (advanced)" section now
+  authors per-region polarity and relative delay, validated through the same
+  design-draft/preview/staging chain as every other manual field. Since
+  Slice 0 the preview/preset/corrections chain persists polarity and relative
+  delay as first-class working-crossover values end to end — including
+  through a stereo apply, which no longer resets delay/inversion (corrections
+  are only re-derived from measurement under explicit automatic tuning with
+  fresh alignment evidence, never unconditionally).
 - The relay-guided automatic flow takes one accepted near-field sweep per
   driver and derives attenuation-only relative trims.
 - Crossover frequency, family, and slope remain operator-owned rather than

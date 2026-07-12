@@ -599,6 +599,11 @@
   .driver-settings__row--crossover {
     grid-template-columns: minmax(10rem, 1fr) repeat(3, minmax(7rem, 0.75fr));
   }
+  /* The polarity/delay <details> is a 5th child in the row's 4-column grid;
+     span it full-width instead of squeezing into one track. */
+  .driver-settings__row--crossover .driver-research__advanced {
+    grid-column: 1 / -1;
+  }
   .driver-settings__pair {
     display: flex; flex-direction: column; gap: 4px;
   }

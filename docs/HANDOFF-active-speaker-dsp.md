@@ -581,6 +581,19 @@
 > [`active-crossover-information-design.md`](active-crossover-information-design.md)
 > "Slice 0" for the product framing.
 
+> **Update, 2026-07-12 (manual polarity/delay authoring, P2a):** the
+> 2026-06-23 entry's manual-field enumeration above ("driver names,
+> sensitivity, safe low test limits, per-driver level trim, and active
+> crossover point/filter/slope") is now stale — `/sound/`'s manual crossover
+> editor gained a collapsed **Alignment (advanced)** section per crossover
+> region exposing lower/upper polarity and relative delay + target driver,
+> so the visible field set now matches everything Slice 0 already persisted
+> server-side. No schema or validation changed (`design_draft.py`'s
+> `_normalise_candidate` already accepted these fields); this closes the
+> "no `/sound/` UI for polarity/delay authoring" gap named in
+> [`active-crossover-information-design.md`](active-crossover-information-design.md)
+> "Current implementation gap summary".
+
 ## Current Operational Truth
 
 Active speaker DSP is a separate layer from room correction and from

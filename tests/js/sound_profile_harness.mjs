@@ -2349,6 +2349,304 @@ async function testVisibleCrossoverSettingsWinOverImportedJson() {
   return { visibleCrossoverSettingsWinOverImportedJson: true };
 }
 
+// The manual /sound/ crossover-editor polarity/delay authoring surface
+// (P2a). manualSettingsPayload() must omit lower_polarity/upper_polarity/
+// delay_ms/delay_target_role when the operator never touched them from their
+// defaults (absent-in -> absent-out), so an untouched draft stays
+// byte-minimal and round-trips cleanly through design_draft.py's own
+// {key: value for ... if value not in (None, [])} filter.
+async function testManualCrossoverPayloadOmitsPolarityAndDelayWhenDefault() {
+  const designSaves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        designSaves.push(body);
+        return Promise.resolve(response({
+          status: "ready_for_review",
+          summary: {},
+          manual_settings: body.manual_settings,
+          operator_inputs: body.operator_inputs || {},
+        }));
+      }
+      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "frequency_hz",
+  }, "2000");
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (designSaves.length !== 1) fail("Updating the working setup should POST once", { designSaves });
+  const candidate = designSaves[0].manual_settings.crossover_candidates[0];
+  if ("lower_polarity" in candidate || "upper_polarity" in candidate ||
+      "delay_ms" in candidate || "delay_target_role" in candidate) {
+    fail("Untouched polarity/delay defaults must stay absent from the saved candidate", { candidate });
+  }
+  return { manualCrossoverPayloadOmitsPolarityAndDelayWhenDefault: true };
+}
+
+// A set polarity/delay must be emitted, and a 0 ms delay is a legitimate,
+// deliberate value -- it must survive alongside its target role rather than
+// being dropped by a `if (delayMs)` truthiness check (0 is falsy).
+async function testManualCrossoverPayloadEmitsPolarityAndZeroDelay() {
+  const designSaves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        designSaves.push(body);
+        return Promise.resolve(response({
+          status: "ready_for_review",
+          summary: {},
+          manual_settings: body.manual_settings,
+          operator_inputs: body.operator_inputs || {},
+        }));
+      }
+      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "frequency_hz",
+  }, "2000");
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "upper_polarity",
+  }, "inverted");
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "delay_ms",
+  }, "0");
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "delay_target_role",
+  }, "tweeter");
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (designSaves.length !== 1) fail("Updating the working setup should POST once", { designSaves });
+  const candidate = designSaves[0].manual_settings.crossover_candidates[0];
+  if (candidate.upper_polarity !== "inverted") {
+    fail("upper_polarity=inverted should be sent", { candidate });
+  }
+  if ("lower_polarity" in candidate) {
+    fail("Untouched lower_polarity must stay absent", { candidate });
+  }
+  if (candidate.delay_ms !== 0) {
+    fail("0 ms delay is a legitimate value and must not be dropped by truthiness", { candidate });
+  }
+  if (candidate.delay_target_role !== "tweeter") {
+    fail("delay_target_role should be sent alongside a set delay_ms", { candidate });
+  }
+  return { manualCrossoverPayloadEmitsPolarityAndZeroDelay: true };
+}
+
+// A delay entered without picking which driver it applies to must block the
+// save client-side (not silently drop the delay, not silently POST a
+// mis-shaped candidate) and surface an inline hint.
+async function testManualCrossoverDelayWithoutTargetBlocksSaveClientSide() {
+  const designSaves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        designSaves.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response({ status: "ready_for_review", summary: {}, operator_inputs: {} }));
+      }
+      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "frequency_hz",
+  }, "2000");
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "delay_ms",
+  }, "0.15");
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (designSaves.length !== 0) {
+    fail("A delay without a target driver must block the save client-side", { designSaves });
+  }
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("Pick which driver is delayed")) {
+    fail("The blocked save should surface an inline hint", { html });
+  }
+  return { manualCrossoverDelayWithoutTargetBlocksSaveClientSide: true };
+}
+
+// Reload round-trip: a saved candidate carrying an inverted polarity or a
+// delay must reopen the collapsed "Alignment (advanced)" section and show
+// the saved values, without needing any user action first.
+async function testManualCrossoverAlignmentAdvancedAutoOpensOnSavedDelay() {
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "ready_for_review",
+      summary: {},
+      operator_inputs: { woofer: "Manual Woofer", tweeter: "Manual Tweeter" },
+      manual_settings: {
+        drivers: [],
+        crossover_candidates: [{
+          between_roles: ["woofer", "tweeter"],
+          frequency_hz: 2000,
+          filter_type: "Linkwitz-Riley",
+          slope_db_per_octave: 24,
+          confidence: "medium",
+          upper_polarity: "inverted",
+          delay_ms: 0.2,
+          delay_target_role: "tweeter",
+        }],
+      },
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('driver-research__advanced" open')) {
+    fail("A saved polarity/delay value should auto-open the Alignment (advanced) section on reload", { html });
+  }
+  if (!html.includes('data-manual-field="upper_polarity"') || !html.includes('value="0.2"')) {
+    fail("Reloaded form fields should reflect the saved polarity/delay", { html });
+  }
+  return { manualCrossoverAlignmentAdvancedAutoOpensOnSavedDelay: true };
+}
+
+// "Use values" (applyDriverResearchToManualSettings) must copy an imported
+// research candidate's polarity/delay into the working form, mirroring the
+// existing filter_type/slope copy, so a subsequent save persists them.
+async function testDriverResearchImportCopiesPolarityAndDelayIntoManualSettings() {
+  const designSaves = [];
+  const importedResearch = {
+    artifact_schema_version: 1,
+    kind: "jts_active_crossover_driver_research",
+    drivers: [
+      { role: "woofer", model: "Imported Woofer" },
+      { role: "tweeter", model: "Imported Tweeter" },
+    ],
+    crossover_candidates: [{
+      between_roles: ["woofer", "tweeter"],
+      frequency_hz: 1800,
+      filter_type: "Linkwitz-Riley",
+      slope_db_per_octave: 24,
+      confidence: "high",
+      upper_polarity: "inverted",
+      delay_ms: 0.1,
+      delay_target_role: "tweeter",
+    }],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        designSaves.push(body);
+        return Promise.resolve(response({
+          status: "ready_for_review",
+          summary: {},
+          manual_settings: body.manual_settings,
+          driver_research: body.driver_research,
+          operator_inputs: body.operator_inputs || {},
+        }));
+      }
+      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-import": "" }, JSON.stringify(importedResearch));
+  harness.dispatchClick({ "data-act": "parse-driver-research" });
+  await harness.flush();
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (designSaves.length !== 1) fail("Applying imported research should still allow exactly one save", { designSaves });
+  const candidate = designSaves[0].manual_settings.crossover_candidates[0];
+  if (candidate.upper_polarity !== "inverted" || candidate.delay_ms !== 0.1 ||
+      candidate.delay_target_role !== "tweeter") {
+    fail("Imported research polarity/delay should be copied into the manual working setting", { candidate });
+  }
+  return { driverResearchImportCopiesPolarityAndDelayIntoManualSettings: true };
+}
+
+// The crossover-preview candidate echo (renderCrossoverPreviewRows) must show
+// an inverted/delayed region as a read-only annotation once a preview exists
+// -- kept distinct from the applied-profile corrections card (never merged).
+async function testCrossoverPreviewRowsShowInversionAndDelay() {
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "ready_for_review",
+      summary: {},
+      operator_inputs: { woofer: "Manual Woofer", tweeter: "Manual Tweeter" },
+    })),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      kind: "jts_active_speaker_crossover_preview",
+      status: "ready_for_protected_staging",
+      summary: { ready_crossover_count: 1, blocker_count: 0 },
+      groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        crossovers: [{
+          status: "ready_for_review",
+          between_roles: ["woofer", "tweeter"],
+          proposed_frequency_hz: 2000,
+          filters: [{ filter_type: "Linkwitz-Riley", slope_db_per_octave: 24 }],
+          upper_polarity: "inverted",
+          delay_ms: 0.2,
+          delay_target_role: "tweeter",
+          issues: [],
+        }],
+      }],
+      issues: [],
+      permissions: { may_prepare_protected_startup_config: true },
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("Tweeter inverted")) {
+    fail("An inverted region should be echoed on the preview row", { html });
+  }
+  if (!html.includes("Tweeter delayed 0.2 ms")) {
+    fail("A delayed region should be echoed on the preview row", { html });
+  }
+  return { crossoverPreviewRowsShowInversionAndDelay: true };
+}
+
 async function testDriverResearchPromptCopyUsesHttpFallback() {
   let copiedText = "";
   let asyncClipboardCalled = false;
@@ -4314,6 +4612,12 @@ results.push(await testConfirmOutputAbortsPendingAuditionWithoutAutoRamp());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
+results.push(await testManualCrossoverPayloadOmitsPolarityAndDelayWhenDefault());
+results.push(await testManualCrossoverPayloadEmitsPolarityAndZeroDelay());
+results.push(await testManualCrossoverDelayWithoutTargetBlocksSaveClientSide());
+results.push(await testManualCrossoverAlignmentAdvancedAutoOpensOnSavedDelay());
+results.push(await testDriverResearchImportCopiesPolarityAndDelayIntoManualSettings());
+results.push(await testCrossoverPreviewRowsShowInversionAndDelay());
 results.push(await testDriverResearchPromptCopyUsesHttpFallback());
 results.push(await testDriverResearchPromptCopyBlockedSelectsPrompt());
 results.push(await testDriverResearchNotesCapExplainsBeforePost());

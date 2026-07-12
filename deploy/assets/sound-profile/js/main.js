@@ -1256,6 +1256,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     driverResearch.error = '';
     driverResearch.dirty = true;
   }
+  // A delay entered without picking which driver it applies to would silently
+  // mis-shape the saved candidate (manualSettingsPayload omits both delay_ms
+  // and delay_target_role rather than guess). Block the save client-side with
+  // a specific hint instead of discarding the entered value.
+  function manualCrossoverDelayValidationError(topology) {
+    var offending = activeCrossoverPairs(topology).filter(function(pair) {
+      var setting = crossoverSetting(pair);
+      if (manualNumberValue(setting.delay_ms) == null) return false;
+      var target = String(setting.delay_target_role || '').trim();
+      return target !== pair[0] && target !== pair[1];
+    });
+    if (!offending.length) return '';
+    var pair = offending[0];
+    return 'Pick which driver is delayed for ' +
+      humanRole(pair[0]) + ' / ' + humanRole(pair[1]) + ' before saving.';
+  }
   function manualSettingsPayload(topology) {
     var drivers = driverResearchRoles(topology).map(function(role) {
       var setting = driverSetting(role);
@@ -1294,7 +1310,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var setting = crossoverSetting(pair);
       var frequency = manualNumberValue(setting.frequency_hz);
       if (frequency == null) return null;
-      return {
+      var candidate = {
         between_roles: pair,
         frequency_hz: frequency,
         filter_type: setting.filter_type || 'Linkwitz-Riley',
@@ -1302,6 +1318,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         confidence: 'medium',
         rationale: 'Operator-entered crossover setting.'
       };
+      // Omit 'non-inverted'/unset so absent-in -> absent-out (mirrors the
+      // server's own default and keeps an untouched draft byte-minimal).
+      if (setting.lower_polarity === 'inverted') candidate.lower_polarity = 'inverted';
+      if (setting.upper_polarity === 'inverted') candidate.upper_polarity = 'inverted';
+      var delayMs = manualNumberValue(setting.delay_ms);
+      var delayTarget = String(setting.delay_target_role || '').trim();
+      // delayMs !== null (never truthiness) — 0.0 ms is a legitimate, server-
+      // pinned value, not "no delay entered". Guarded by
+      // manualCrossoverDelayValidationError before this ever runs, but stay
+      // defensive here too: never emit a delay without a driver it targets.
+      if (delayMs != null && (delayTarget === pair[0] || delayTarget === pair[1])) {
+        candidate.delay_ms = Math.max(0, Math.min(20, delayMs));
+        candidate.delay_target_role = delayTarget;
+      }
+      return candidate;
     }).filter(Boolean);
     return drivers.length || candidates.length
       ? {drivers: drivers, crossover_candidates: candidates}
@@ -1393,6 +1424,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (candidate.slope_db_per_octave != null) {
         setting.slope_db_per_octave = candidate.slope_db_per_octave;
       }
+      // Research candidates may legitimately propose polarity/delay too;
+      // _normalise_candidate validates server-side. Mirrors the filter_type/
+      // slope copy above, including its pick.pair orientation assumption —
+      // a reversed research JSON is a pre-existing, out-of-scope limitation.
+      if (candidate.lower_polarity) setting.lower_polarity = String(candidate.lower_polarity);
+      if (candidate.upper_polarity) setting.upper_polarity = String(candidate.upper_polarity);
+      if (candidate.delay_ms != null) setting.delay_ms = candidate.delay_ms;
+      if (candidate.delay_target_role) setting.delay_target_role = String(candidate.delay_target_role);
     });
     proposeSensitivityTrims(driversByRole);
   }
@@ -2150,6 +2189,56 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     }).join('') + '</div>';
   }
+  // Shared by the two per-region polarity selects below. 'non-inverted' is the
+  // unset default (mirrors SUPPORTED_POLARITY in jasper/active_speaker/profile.py).
+  function manualPolarityFieldHtml(key, field, label, value) {
+    return '<label class="driver-research__field">' +
+      '<span>' + escapeHtml(label) + '</span>' +
+      '<select data-manual-crossover="' + escapeHtml(key) + '" data-manual-field="' + field + '">' +
+        [['non-inverted', 'Normal'], ['inverted', 'Inverted']].map(function(option) {
+          return '<option value="' + escapeHtml(option[0]) + '"' +
+            ((value || 'non-inverted') === option[0] ? ' selected' : '') +
+            '>' + escapeHtml(option[1]) + '</option>';
+        }).join('') +
+      '</select>' +
+    '</label>';
+  }
+  // Collapsed by default (spec "Step 3A: manual crossover": polarity/delay
+  // "can [stay] collapsed, but they must remain reachable"); auto-opens when
+  // a saved value is non-default so a reload immediately shows what is set.
+  // delay_ms (not delay_target_role, which the server drops without it) is
+  // the reliable "a delay is set" signal.
+  function renderManualCrossoverAlignmentAdvanced(pair, key, setting) {
+    var advancedOpen =
+      (setting.lower_polarity && setting.lower_polarity !== 'non-inverted') ||
+      (setting.upper_polarity && setting.upper_polarity !== 'non-inverted') ||
+      manualNumberValue(setting.delay_ms) != null;
+    var delayValue = setting.delay_ms == null ? '' : String(setting.delay_ms);
+    return '<details class="advanced driver-research__advanced"' + (advancedOpen ? ' open' : '') + '>' +
+      '<summary>Alignment (advanced)</summary>' +
+      '<div class="driver-research__fields">' +
+        manualPolarityFieldHtml(key, 'lower_polarity', humanRole(pair[0]), setting.lower_polarity) +
+        manualPolarityFieldHtml(key, 'upper_polarity', humanRole(pair[1]), setting.upper_polarity) +
+        '<label class="driver-research__field">' +
+          '<span>Delay</span>' +
+          '<input type="number" inputmode="decimal" min="0" max="20" step="0.01" ' +
+            'data-manual-crossover="' + escapeHtml(key) + '" data-manual-field="delay_ms" value="' +
+            escapeHtml(delayValue) + '" placeholder="ms">' +
+        '</label>' +
+        '<label class="driver-research__field">' +
+          '<span>Delayed driver</span>' +
+          '<select data-manual-crossover="' + escapeHtml(key) + '" data-manual-field="delay_target_role">' +
+            [['', 'No delay'], [pair[0], humanRole(pair[0])], [pair[1], humanRole(pair[1])]]
+              .map(function(option) {
+                return '<option value="' + escapeHtml(option[0]) + '"' +
+                  ((setting.delay_target_role || '') === option[0] ? ' selected' : '') +
+                  '>' + escapeHtml(option[1]) + '</option>';
+              }).join('') +
+          '</select>' +
+        '</label>' +
+      '</div>' +
+    '</details>';
+  }
   function renderManualCrossoverSettings(topology) {
     var pairs = activeCrossoverPairs(topology);
     if (!pairs.length) {
@@ -2187,6 +2276,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
             }).join('') +
           '</select>' +
         '</label>' +
+        renderManualCrossoverAlignmentAdvanced(pair, key, setting) +
       '</div>';
     }).join('') + '</div>';
   }
@@ -2304,6 +2394,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderPreviewIssues(issues) {
     return renderIssueList(issues, 5);
   }
+  // Candidate echo of the working crossover's polarity/delay, kept as a
+  // read-only annotation on the (working) preview row — never merged with
+  // the applied profile's corrections block, which is a separate state
+  // (spec "One model, three states": "must never merge values from those
+  // states implicitly").
+  function crossoverAlignmentDetailText(crossover, roles) {
+    var parts = [];
+    if (crossover.lower_polarity === 'inverted' && roles[0]) {
+      parts.push(humanRole(roles[0]) + ' inverted');
+    }
+    if (crossover.upper_polarity === 'inverted' && roles[1]) {
+      parts.push(humanRole(roles[1]) + ' inverted');
+    }
+    if (crossover.delay_ms != null && crossover.delay_target_role) {
+      parts.push(humanRole(crossover.delay_target_role) + ' delayed ' + String(crossover.delay_ms) + ' ms');
+    }
+    return parts.join(', ');
+  }
   function renderCrossoverPreviewRows(payload) {
     var groups = Array.isArray(payload.groups) ? payload.groups : [];
     var rows = [];
@@ -2317,6 +2425,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           (filter.filter_type || 'filter') + ', ' +
           String(filter.slope_db_per_octave || 24) + ' dB/oct' :
           'needs research';
+        var alignment = crossoverAlignmentDetailText(crossover, roles);
+        if (alignment) detail += ', ' + alignment;
         rows.push('<div><dt>' + escapeHtml(label) + '</dt><dd>' + escapeHtml(detail) + '</dd></div>');
       });
     });
@@ -4816,6 +4926,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (!currentOutputTopology()) {
       status('Load output hardware before updating the working setup.', true);
+      return false;
+    }
+    var delayError = manualCrossoverDelayValidationError(currentOutputTopology());
+    if (delayError) {
+      driverResearch.error = delayError;
+      status(delayError, true);
+      render();
       return false;
     }
     var manualPayload = manualSettingsPayload(currentOutputTopology());
