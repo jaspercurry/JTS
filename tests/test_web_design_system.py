@@ -21,6 +21,10 @@ from jasper.web import _common
 ROOT = Path(__file__).resolve().parents[1]
 APP_CSS = ROOT / "deploy" / "assets" / "app.css"
 LANDING_HTML = ROOT / "deploy" / "index.html"
+SPINNER_PAGE_CSS = tuple(
+    ROOT / "deploy" / "assets" / page / f"{page}.css"
+    for page in ("bluetooth", "dial", "home-assistant", "wifi")
+)
 
 
 def _without_css_comments(text: str) -> str:
@@ -72,6 +76,57 @@ def test_home_assistant_css_uses_real_tokens_only():
     assert "var(--text-muted" not in css
     assert "var(--space-" not in css
     assert "color: var(--muted);" in css
+
+
+def test_spinner_primitive_is_shared_without_page_local_copies():
+    css = APP_CSS.read_text()
+    for marker in (
+        ".spinner {",
+        ".spinner--button {",
+        "--spinner-color:",
+        "@keyframes spinner-spin",
+    ):
+        assert marker in css, f"app.css missing shared spinner contract: {marker}"
+    assert re.search(
+        r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{"
+        r"[^}]*\.spinner\s*\{\s*animation:\s*none;\s*\}",
+        css,
+        flags=re.S,
+    ), "the shared spinner must stop completely under reduced motion"
+
+    local_rule = re.compile(
+        r"(?m)^\s*\.(?:spinner|btn-spinner|ha-spinner)\s*\{"
+    )
+    local_keyframes = re.compile(r"@keyframes\s+(?:bt|dial|ha|wifi)-spin\b")
+    offenders: list[str] = []
+    for path in SPINNER_PAGE_CSS:
+        page_css = _without_css_comments(path.read_text())
+        if local_rule.search(page_css) or local_keyframes.search(page_css):
+            offenders.append(str(path.relative_to(ROOT)))
+    assert not offenders, (
+        "page styles must configure app.css's shared spinner instead of "
+        "redefining it:\n" + "\n".join(offenders)
+    )
+
+    bluetooth_js = (
+        ROOT / "deploy" / "assets" / "bluetooth" / "js" / "main.js"
+    ).read_text()
+    wifi_js = (
+        ROOT / "deploy" / "assets" / "wifi" / "js" / "main.js"
+    ).read_text()
+    ha_js = (
+        ROOT / "deploy" / "assets" / "home-assistant" / "js" / "main.js"
+    ).read_text()
+    assert "spinner spinner--button" in bluetooth_js
+    assert "spinner spinner--button" in wifi_js
+    assert "btn-spinner" not in bluetooth_js + wifi_js
+    assert 's.className = "spinner"' in ha_js
+    assert "ha-spinner" not in ha_js
+
+    # Wi-Fi's ghost Scan button historically uses the light edge instead of
+    # currentColor. Keep that choice explicit so promotion cannot alter it.
+    wifi_css = SPINNER_PAGE_CSS[-1].read_text()
+    assert "--button-spinner-color: var(--primary-foreground);" in wifi_css
 
 
 def test_app_css_does_not_force_global_svg_size():

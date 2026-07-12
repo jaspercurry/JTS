@@ -7,6 +7,13 @@
  * glyphs. Everything is themed off the canonical design tokens so it sits with
  * the rest of the redesigned UI. */
 
+/* The shared spinner keeps this page's lighter track. The button track retains
+   the original oklch mix while its active edge follows the button text. */
+.page {
+  --spinner-track-color: var(--border);
+  --button-spinner-track-color: color-mix(in oklch, currentColor 35%, transparent);
+}
+
 /* Intro blurb + trailing note. */
 .bt-intro {
   color: var(--muted);
@@ -47,17 +54,6 @@
    label flip so the header doesn't jitter. */
 #scan-btn {
   min-width: 8em;
-}
-.btn-spinner {
-  display: inline-block;
-  width: 0.85em;
-  height: 0.85em;
-  border: 2px solid color-mix(in oklch, currentColor 35%, transparent);
-  border-top-color: currentColor;
-  border-radius: 50%;
-  animation: bt-spin 0.8s linear infinite;
-  vertical-align: -0.15em;
-  margin-right: 0.45em;
 }
 
 /* The section header that carries the inline Scan button. */
@@ -203,27 +199,6 @@
   color: var(--status-danger);
   font-weight: 600;
   margin-bottom: 0.4rem;
-}
-
-/* Spinners. The small per-stage spinner; @keyframes shared with .btn-spinner. */
-.spinner {
-  display: inline-block;
-  width: 1em;
-  height: 1em;
-  border: 2px solid var(--border);
-  border-top-color: var(--primary);
-  border-radius: 50%;
-  animation: bt-spin 0.8s linear infinite;
-  vertical-align: middle;
-}
-@keyframes bt-spin {
-  to { transform: rotate(360deg); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .spinner,
-  .btn-spinner {
-    animation: none;
-  }
 }
 
 /* Device-class glyphs (unicode; no icon font). Slugs come from bluez's

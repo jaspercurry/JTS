@@ -97,9 +97,9 @@ from ._common import (
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
 # (.page, .info-card, .deflist, .badge, .field/.form-actions/.form-hint,
-# .banner, .btn--*, .section__title, .eyebrow) come from /assets/app.css;
-# only the discover-result rows, the inline loading spinner, and the
-# post-save "configuring" restart chip live in home-assistant.css.
+# .banner, .btn--*, .section__title, .eyebrow, .spinner) come from
+# /assets/app.css; only the discover-result rows and the post-save
+# "configuring" restart chip live in home-assistant.css.
 HA_PAGE_CSS_HREF = "/assets/home-assistant/home-assistant.css"
 
 logger = logging.getLogger(__name__)

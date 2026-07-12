@@ -280,6 +280,39 @@ svg { display: block; }
 .btn--danger:hover { background: color-mix(in oklab, var(--destructive) 90%, black); }
 .btn:disabled { opacity: 0.42; cursor: not-allowed; }
 
+/* Loading indicator. Pages may tune only the observed visual differences
+   through custom properties; the geometry, motion, and reduced-motion
+   contract stay shared here. */
+.spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: var(--spinner-gap, 0);
+  border: 2px solid var(--spinner-track-color, var(--foreground-015));
+  border-top-color: var(--spinner-color, var(--primary));
+  border-radius: 50%;
+  animation: spinner-spin 0.8s linear infinite;
+  vertical-align: var(--spinner-align, middle);
+  flex: none;
+}
+.spinner--button {
+  width: 0.85em;
+  height: 0.85em;
+  --spinner-color: var(--button-spinner-color, currentColor);
+  --spinner-track-color: var(
+    --button-spinner-track-color,
+    color-mix(in oklab, var(--spinner-color) 35%, transparent)
+  );
+  --spinner-align: -0.15em;
+  --spinner-gap: 0.45em;
+}
+@keyframes spinner-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}
+
 /* ---------------- shared sub-page chrome ---------------- */
 /* Sticky top bar: back affordance on the left, centred title. Used by
    the redesigned sub-pages (/sound/, /system/). The landing page (/) has

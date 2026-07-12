@@ -3,13 +3,16 @@
    ------------------------------------------------------------
    Loaded by canonical_page(..., page_css_href="/assets/dial/dial.css").
    Only what app.css doesn't already provide lives here: the firmware-
-   freshness banner, the detected-device cards, the provision result
-   blocks + log expander, and the scanning spinner. Shared primitives
-   (.page, .info-card, .btn--*, .eyebrow, .section__title, .form-hint,
-   .badge) come from app.css — don't redefine them. Colours read the
+   freshness banner, the detected-device cards, and the provision result
+   blocks + log expander. Shared primitives (.page, .info-card, .btn--*,
+   .eyebrow, .section__title, .form-hint, .badge, .spinner) come from
+   app.css — don't redefine them. Colours read the
    canonical tokens (var(--card)/--border/--muted/--radius/--status-*),
    so this page re-skins with the rest of the design system.
    ============================================================ */
+
+/* Preserve the baseline alignment of this page's shared inline spinner. */
+.page { --spinner-align: -0.15em; }
 
 /* Firmware freshness banner. Three states (ready / source-newer /
    not-staged) are emitted server-side as .fw-banner.ok / .warn — the
@@ -137,21 +140,4 @@
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-/* Spinner shared by the scan status line and the provisioning result. */
-.spinner {
-  display: inline-block;
-  width: 1em;
-  height: 1em;
-  border: 2px solid var(--foreground-015);
-  border-top-color: var(--primary);
-  border-radius: 50%;
-  animation: dial-spin 0.8s linear infinite;
-  vertical-align: -0.15em;
-  flex: none;
-}
-@keyframes dial-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) {
-  .spinner { animation: none; }
 }
