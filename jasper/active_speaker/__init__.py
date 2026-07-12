@@ -119,7 +119,7 @@ from .playback import (
     stop_tone_playback,
     tone_backend_status,
 )
-from .topology_tone import build_summed_topology_tone_plan, build_topology_tone_plan
+from .topology_tone import build_summed_topology_tone_plan
 from .playback_route import resolve_active_playback_device
 from .staging import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
@@ -376,7 +376,6 @@ __all__ = [
     "build_startup_load_preflight",
     "build_startup_load_path_safety_evidence",
     "build_summed_topology_tone_plan",
-    "build_topology_tone_plan",
     "COMMISSION_LOAD_PREFLIGHT_KIND",
     "COMMISSION_LOAD_STATE_ENV",
     "COMMISSION_LOAD_STATE_KIND",

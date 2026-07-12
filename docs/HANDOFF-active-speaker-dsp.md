@@ -58,8 +58,10 @@
 > `commission-ramp-abort`). Passive/full-range groups render a "No active driver
 > test" card and continue through the normal listening path; there is no
 > separate direct-DAC driver test in the product UI. The old public setup probes
-> (`arm`, `playback-readiness`, `tone-targets`, `tone-plan`) are intentionally
-> not web routes anymore; their remaining logic is backend implementation detail.
+> (`arm`, `playback-readiness`, `tone-targets`, `tone-plan`) and their
+> superseded per-driver planners have been removed. Per-driver test planning is
+> commission-ramp-owned; the summed topology planner remains only for the live
+> combined-crossover test.
 > `/sound/active-speaker/channel-identity` now exposes and updates
 > operator-confirmed physical channel identity evidence for the saved
 > topology. The Confirm outputs UI can run a guarded quiet **Play** audition for
@@ -93,8 +95,8 @@
 > Stop/session-gated. Product audible commissioning never writes directly to a
 > physical DAC PCM.
 > The shared
-> `driver_protection_auto_level_v1` policy is recorded in readiness reports,
-> tone plans, playback results, and generated artifact metadata. Woofer, mid,
+> `driver_protection_auto_level_v1` policy is recorded in driver-test signal
+> plans, commission evidence, playback results, and generated artifact metadata. Woofer, mid,
 > and subwoofer targets use the normal commissioning envelope. Tweeter/
 > high-frequency targets can become eligible only when a protection profile is
 > accepted (`present` or `software_guard_requested`), the tone has the required
@@ -109,28 +111,20 @@
 > calibration floor is rejected until the same session and target has a
 > successful floor-level audible result; Stop, expiry, or target change resets
 > the lifecycle back to `floor_required`.
-> `jasper.active_speaker.readiness` remains an internal/test diagnostic, but
-> `/sound/active-speaker/playback-readiness` is no longer a web route. The
-> product flow is deliberately simpler: active crossover groups use the
+> The product flow is deliberately narrow: active crossover groups use the
 > commission ramp; passive/full-range groups have no separate active driver
 > test. The sound-producing product boundary is the commission ramp, which
 > revalidates the selected topology target, route policy, driver protection
-> policy, calibration bounds, and protected active graph state.
+> policy, calibration bounds, and protected active graph state. The old
+> readiness report and per-driver topology-tone planner are deleted rather than
+> retained as a second, non-authoritative safety checklist.
 > A stored startup-load state with an explicit current-config mismatch still
 > fails closed; a freshly loaded state without that optional live-match field is
 > accepted so the UI does not dead-end after the protected setup just succeeded.
-> For
-> tweeter/high-frequency targets it also
-> includes a **High-frequency bring-up readiness** packet that distinguishes
-> blocked, manual floor-test candidate, and guided floor-test candidate states
-> from topology/protection/startup-load/Stop/level/mic evidence. The packet
-> includes a floor-test preview
-> (`jts_active_speaker_high_frequency_floor_test_preview`) with the target,
-> short high-passed sine intent, calibration-floor level, driver protection
-> profile, and the current deterministic auto-level decision. Unknown
-> high-frequency style defaults to a conservative 5 kHz high-pass and -65 dBFS
-> closed-loop cap until the driver style is known. The same backend also
-> exposes a read-only **Commissioning view** from
+> Tweeter/high-frequency targets are governed by the shared driver-test signal
+> policy plus the protected commissioning graph; there is no separate
+> readiness-packet authority. The backend also exposes a read-only
+> **Commissioning view** from
 > `jasper.active_speaker.commissioning_coordinator` and
 > `/sound/active-speaker/commissioning-view` (the surface the `/sound/` UI
 > fetches). It composes the durable setup state from saved speaker layout
@@ -1493,22 +1487,14 @@ real read-only ALSA and CamillaDSP
 config/statefile inspection plus a `safe_playback` readiness block.
 `safe_playback` is not a permission grant: it reports environment readiness
 but never authorizes audio by itself.
-`jasper.active_speaker.readiness` remains a deterministic no-audio diagnostic
-for tests and internal callers, but `/sound/active-speaker/playback-readiness`
-is no longer a web route. The user-facing Measure Drivers step uses the
-commission ramp for active 2/3-way groups and renders no separate driver test
-for passive/full-range groups. Target selection, software-guard repair,
+The superseded playback-readiness diagnostic and per-driver topology-tone
+planner are removed. The user-facing Measure Drivers step uses the commission
+ramp for active 2/3-way groups and renders no separate driver test for
+passive/full-range groups. Target selection, software-guard repair,
 protected graph load, and audible ramp state are owned by
 `commission-load`/`commission-ramp-step`/`commission-ramp-ack`/
 `commission-ramp-abort`. The probe still does not perform physical channel
 verification or generate hardware-probe-backed path-safety evidence by itself.
-For a tweeter/high-frequency target, the report includes a
-`high_frequency_driver` section that distinguishes blocked evidence, manual
-floor-test candidate evidence, and guided floor-test candidate evidence from the
-saved speaker layout, protection mode, loaded protected DSP, Stop/session state,
-calibration floor, and operator-observed mic status. Unknown high-frequency
-style uses a high-passed 5 kHz floor-test intent and a conservative closed-loop
-cap until the driver style is known.
 
 `jasper.active_speaker.safe_playback` is the no-audio session substrate for
 commission-ramp confirmation state. It writes
@@ -1523,7 +1509,8 @@ commission state carries the current target and ramp acknowledgement state;
 changing target, stopping, aborting, or letting the session expire clears that
 evidence.
 
-`jasper.active_speaker.tone_plan` remains the lower-level planning primitive,
+`jasper.active_speaker.tone_plan` retains the shared artifact vocabulary,
+timing bounds, and preset loader,
 but the preset-era public routes (`/sound/active-speaker/tone-targets` and
 `/sound/active-speaker/tone-plan`) have been removed. Product active-driver
 playback goes through the commission ramp and protected graph, not a
@@ -1533,6 +1520,8 @@ compiled `ActiveSpeakerPreset` for active 2/3-way main speakers, while the
 edge-level helper already covers a future subwoofer low-pass plus subsonic floor
 once the subwoofer compiler/staging slice exists. Until then, optional subwoofer
 groups still fail closed before active startup staging or baseline compile.
+`jasper.active_speaker.topology_tone` owns only the still-live summed-crossover
+plan.
 
 `jasper.active_speaker.playback` is now the no-audio artifact / explicit-lab
 backend seam, not a product direct-DAC path. The default backend writes bounded
@@ -1683,12 +1672,12 @@ Updated execution plan:
    seam that renders bounded logical-output WAV artifacts and, only with
    explicit audio-lab env selection, can run the generated artifact through
    `aplay` for woofer, mid, and subwoofer topology targets only.
-   Expanded with `jasper.active_speaker.readiness`, a read-only
+   Historical, now superseded: expanded with `jasper.active_speaker.readiness`, a read-only
    playback-readiness gate that evaluates one requested output target across
    safe-session, output topology, channel identity, tweeter protection,
    clock-domain, active-config/path safety, calibration-level, Stop evidence,
-   and tone-backend status. It is the contract an audible backend must trust
-   before attempting playback. Default installs still return
+   and tone-backend status. It was the contract the lab backend evaluated
+   before the product converged on protected commission-load/ramp playback. Default installs returned
    `playback_allowed: false`; the lab `aplay` backend can make woofer, mid, and
    subwoofer targets eligible only after protected startup load evidence is
    current.
@@ -1809,7 +1798,9 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-11 (per-driver protected level tones and gain locks,
+Last verified: 2026-07-12 (superseded readiness and per-driver topology-tone
+planner removal checked against the protected commission ramp and retained
+summed-crossover planner; prior 2026-07-11 pass covered per-driver protected level tones and gain locks,
 relay placement acknowledgement + durable comparable capture-set contract,
 automatic excitation SSOT, room readiness, applied
 Layer-A snapshot, and relay crossover flow; prior 2026-06-24 room-correction

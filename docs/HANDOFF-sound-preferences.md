@@ -411,14 +411,16 @@ high-frequency target.
   channel-map, safety-envelope, baseline-profile schemas, and
 muted/protected startup-template YAML emission plus read-only
 environment reporting, safe-playback session state, preset-derived no-audio
-tone-plan preparation, topology-target tone plans, bounded artifact rendering,
-an explicitly lab-gated `aplay` backend for non-tweeter targets, and a
-read-only playback-readiness gate plus protected startup-config staging for the
-Epique/F110M mono cabinet. Current scope is validation/template generation and
-status/session/plan/artifact/readiness/staging bookkeeping plus optional lab
-channel tests and a guarded startup-config load/rollback boundary. The staging
-writer is still no-load; only the startup-load route may reload the protected
-graph, and it still does not emit audio or authorize playback.
+tone vocabulary, summed-crossover tone planning, bounded artifact rendering,
+an explicitly lab-gated `aplay` backend, and protected startup-config staging
+for the Epique/F110M mono cabinet. Per-driver product tests are owned by the
+protected commission ramp and shared driver-test signal policy; the obsolete
+readiness report and standalone per-driver topology planner are removed.
+Current scope is validation/template generation and
+status/session/plan/artifact/staging bookkeeping plus optional lab channel
+tests and a guarded startup-config load/rollback boundary. The staging writer
+is still no-load; only the startup-load route may reload the protected graph,
+and it still does not emit audio or authorize playback.
 - `jasper/output_topology.py` — import-cheap physical-output topology
   contract for DAC lanes, speaker groups, passive/active modes, subwoofers,
   identity verification, and tweeter-protection evidence. Current scope is
@@ -820,7 +822,9 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-25 (active-leader program-bake carrier support checked
+Last verified: 2026-07-12 (active-speaker file inventory and commission-ramp /
+summed-planner ownership checked after obsolete readiness removal; prior
+2026-06-25 pass covered active-leader program-bake carrier support
 for `/sound` and `/correction/start` on JTS5; active-crossover combined-test
 live-level route, pre-audio confirmation guard, backend watchdog, failed
 live-reload metadata guard, and backend-owned save/apply flow checked against

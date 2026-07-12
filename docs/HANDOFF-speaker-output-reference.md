@@ -1409,7 +1409,9 @@ datum: how much assistant audio was actually heard.
 - 2026-06-03: Added the active-speaker playback-readiness gate and the
   artifact-first topology channel-test slice. Default installs still verify
   artifacts only; an explicit lab `aplay` backend can emit short, clamped
-  non-tweeter tests after readiness passes.
+  non-tweeter tests after readiness passes. **Superseded:** the product later
+  converged on protected commission-load/ramp testing; the readiness report and
+  per-driver topology planner were removed in July 2026.
 - 2026-06-04: `jasper-doctor` now gates Apple-dongle-specific USB and
   headphone-gain checks on `JASPER_AUDIO_DAC_ID=apple_usb_c_dongle`, so
   HiFiBerry/DAC8x systems report the selected output role instead of false
@@ -1455,7 +1457,8 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-07-10 (optional-reference failure isolation and full
+Last verified: 2026-07-12 (historical readiness entry marked superseded by the
+protected commission ramp; prior 2026-07-10 pass covered optional-reference failure isolation and full
 transport coherence rechecked against `rust/jasper-outputd`,
 `jasper.audio_runtime_plan`, `jasper.camilla_config_contract`,
 `jasper.cli.audio_config`, the staged audio-hardware reconciler, and doctor;

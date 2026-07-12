@@ -293,7 +293,6 @@ module = [
     "jasper.active_speaker.measurement",
     "jasper.active_speaker.path_safety",
     "jasper.active_speaker.playback",
-    "jasper.active_speaker.readiness",
     "jasper.active_speaker.runtime_contract",
     "jasper.active_speaker.safe_playback",
     "jasper.active_speaker.staging",
