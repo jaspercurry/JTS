@@ -327,8 +327,10 @@ impl ContentBridge {
     }
 
     fn minimum_safe_fill_frames(&self) -> usize {
-        let max_ratio = 1.0 + self.config.max_adjust_ppm as f64 / 1_000_000.0;
-        (self.period_frames as f64 * max_ratio).ceil() as usize + SINC_RADIUS_FRAMES as usize + 1
+        jasper_resampler::minimum_safe_fill_frames(
+            self.period_frames as u32,
+            self.config.max_adjust_ppm as f64,
+        )
     }
 
     fn startup_prefill_frames(&self) -> usize {
@@ -603,5 +605,21 @@ mod tests {
         assert_eq!(metrics.unlock_count, 1);
         assert!(metrics.underrun_frames >= 1024);
         assert!(out.iter().all(|sample| *sample == 0));
+    }
+
+    #[test]
+    fn minimum_safe_fill_uses_shared_resampler_contract() {
+        for (period_frames, max_adjust_ppm) in [(256, 1), (480, 500), (1024, 5000)] {
+            let mut config = bridge_config();
+            config.max_adjust_ppm = max_adjust_ppm;
+            let bridge = ContentBridge::new(config, period_frames, 2).unwrap();
+            let shared_floor =
+                jasper_resampler::minimum_safe_fill_frames(period_frames, max_adjust_ppm as f64);
+
+            assert_eq!(bridge.minimum_safe_fill_frames(), shared_floor);
+        }
+
+        let bridge = ContentBridge::new(bridge_config(), 1024, 2).unwrap();
+        assert_eq!(bridge.minimum_safe_fill_frames(), 1042);
     }
 }
