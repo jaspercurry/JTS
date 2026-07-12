@@ -41,9 +41,16 @@ HOST=""
 LABEL=""
 
 usage() {
-    # Drop the SPDX license header (reuse inserts it at lines 2-6) so the
-    # extracted doc block is the original prose, not the license text.
-    sed '2,6d' "$0" | sed -n '2,30p'
+    awk '
+        /^# SPDX-License-Identifier:/ { after_spdx = 1; next }
+        !after_spdx { next }
+        !in_docs {
+            if ($0 ~ /^#/) in_docs = 1
+            else next
+        }
+        /^#/ { sub(/^# ?/, ""); print; next }
+        { exit }
+    ' "$0"
 }
 
 while [[ $# -gt 0 ]]; do

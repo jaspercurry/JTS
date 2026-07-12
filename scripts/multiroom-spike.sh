@@ -526,9 +526,16 @@ do_teardown() {
 }
 
 usage() {
-    # Drop the SPDX license header (reuse inserts it at lines 2-6) so the
-    # extracted doc block is the original banner, not the license text.
-    sed '2,6d' "$0" | sed -n '2,/^# ===/p' | sed 's/^# \{0,1\}//' >&2
+    awk '
+        /^# SPDX-License-Identifier:/ { after_spdx = 1; next }
+        !after_spdx { next }
+        !in_docs {
+            if ($0 ~ /^#/) in_docs = 1
+            else next
+        }
+        /^#/ { sub(/^# ?/, ""); print; next }
+        { exit }
+    ' "$0" >&2
 }
 
 # =============================================================================
