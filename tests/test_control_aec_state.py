@@ -39,14 +39,14 @@ def aec_mode_file(tmp_path: Path, monkeypatch):
     """Redirect _AEC_MODE_FILE at a tmp path so the helpers don't
     touch the real /var/lib/jasper/aec_mode.env."""
     path = tmp_path / "aec_mode.env"
-    monkeypatch.setattr(server, "_AEC_MODE_FILE", str(path))
+    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(path))
     return path
 
 
 @pytest.fixture
 def wake_model_file(tmp_path: Path, monkeypatch):
     path = tmp_path / "wake_model.env"
-    monkeypatch.setattr(server, "_WAKE_MODEL_FILE", str(path))
+    monkeypatch.setattr(aec_endpoints, "_WAKE_MODEL_FILE", str(path))
     return path
 
 
@@ -384,16 +384,16 @@ def test_toggle_to_token_maps_to_real_wake_input_legs():
     because one UI affordance can eventually map to several concrete legs."""
     from jasper.wake_legs import by_token, wake_input_legs
     wake_tokens = {leg.token for leg in wake_input_legs()}
-    for toggle, tokens in server._TOGGLE_TO_TOKEN.items():
+    for toggle, tokens in aec_endpoints._TOGGLE_TO_TOKEN.items():
         for token in tokens:
             assert token in wake_tokens, (
                 f"toggle {toggle!r} -> {token!r} is not a wake_input leg"
             )
     # The collision the map exists to document: operator "raw" == "off".
-    assert server._TOGGLE_TO_TOKEN["raw"] == ("off",)
+    assert aec_endpoints._TOGGLE_TO_TOKEN["raw"] == ("off",)
     assert by_token("off").udp_port == 9877
-    assert server._TOGGLE_TO_TOKEN["chip_aec_150"] == ("chip_aec_150",)
-    assert server._TOGGLE_TO_TOKEN["chip_aec_210"] == ("chip_aec_210",)
+    assert aec_endpoints._TOGGLE_TO_TOKEN["chip_aec_150"] == ("chip_aec_150",)
+    assert aec_endpoints._TOGGLE_TO_TOKEN["chip_aec_210"] == ("chip_aec_210",)
 
 
 # ---------- _write_wake_threshold ------------------------------------------
@@ -491,12 +491,12 @@ def test_aec_full_status_includes_legs_and_threshold(
     wake_model_file.write_text("JASPER_WAKE_THRESHOLD=0.40\n")
     # Stub the systemctl call — we don't want this unit test to
     # depend on a live jasper-aec-bridge.service.
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     # Stub the mic profile probe so the chip leg's `available` flag is
     # deterministic off-device (no /proc/asound/Array here).
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
@@ -513,7 +513,11 @@ def test_aec_full_status_includes_legs_and_threshold(
         validation_filters.append(kwargs)
         return {"state": "current", "status": "pass"}
 
-    monkeypatch.setattr(server, "_audio_validation_summary", fake_validation_summary)
+    monkeypatch.setattr(
+        aec_endpoints,
+        "_audio_validation_summary",
+        fake_validation_summary,
+    )
     status = server._aec_full_status()
     assert status["mode"] == "auto"
     assert status["bridge_active"] is True
@@ -559,9 +563,9 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
         "JASPER_WAKE_LEG_RAW=1\n"
         "JASPER_WAKE_LEG_DTLN=0\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: False)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
     _stub_xvf_runtime(monkeypatch, variant=None, present=False, channels=None)
-    monkeypatch.setattr(server, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     status = server._aec_full_status()
     assert status["mode"] == "disabled"
@@ -603,7 +607,7 @@ def test_aec_full_status_chip_available_tracks_firmware(
         "JASPER_AEC_MODE=auto\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     _stub_xvf_runtime(
         monkeypatch,
@@ -611,7 +615,7 @@ def test_aec_full_status_chip_available_tracks_firmware(
         present=True,
         channels=2,
     )
-    monkeypatch.setattr(server, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     status = server._aec_full_status()
     # Applied leg state reflects reconciler output; raw_intent preserves
     # the operator's unavailable chip request.
@@ -622,7 +626,7 @@ def test_aec_full_status_chip_available_tracks_firmware(
 
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
     )
@@ -667,9 +671,9 @@ def test_aec_full_status_rejects_unvalidated_beam_plan_from_one_probe(
         "JASPER_WAKE_LEG_CHIP_AEC=0\n"
     )
     monkeypatch.setattr(aec_endpoints, "_xvf_mic_probe", probe)
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
@@ -698,7 +702,7 @@ def test_aec_full_status_surfaces_required_xvf_firmware_update(
         "JASPER_WAKE_LEG_DTLN=0\n"
         "JASPER_WAKE_LEG_CHIP_AEC=0\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: False)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
     monkeypatch.setattr(aec_endpoints, "_unit_active", lambda unit: False)
     monkeypatch.setattr(aec_endpoints, "_read_xvf_firmware_update_state", lambda: {})
     _stub_xvf_runtime(
@@ -708,7 +712,7 @@ def test_aec_full_status_surfaces_required_xvf_firmware_update(
         channels=2,
     )
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
     )
@@ -737,11 +741,11 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
         "JASPER_WAKE_LEG_DTLN=0\n"
         "JASPER_WAKE_LEG_CHIP_AEC=0\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
@@ -795,10 +799,10 @@ def test_custom_chip_beam_toggle_uses_saved_intent_until_reconcile(
         "JASPER_WAKE_LEG_CHIP_AEC_150=1\n"
         "JASPER_WAKE_LEG_CHIP_AEC_210=0\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
@@ -834,11 +838,11 @@ def test_aec_full_status_testing_profile_allows_unapproved_dac_testing(
         "JASPER_WAKE_LEG_DTLN=0\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
@@ -874,11 +878,11 @@ def test_aec_full_status_flex_linear_auto_resolves_software_aec3(
         "JASPER_WAKE_LEG_DTLN=0\n"
         "JASPER_WAKE_LEG_CHIP_AEC=0\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     _stub_xvf_runtime(monkeypatch, variant=xvf3800.VARIANT_FLEX_LINEAR_6CH)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
@@ -906,11 +910,11 @@ def test_aec_full_status_chip_aec_request_shows_runtime_software_until_applied(
         "JASPER_AEC_MODE=auto\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
@@ -955,11 +959,11 @@ def test_aec_full_status_explicit_chip_fallback_reports_software_aec3(
         "JASPER_WAKE_LEG_DTLN=0\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
@@ -1013,11 +1017,11 @@ def test_aec_full_status_names_stale_saved_aec_card(
         "JASPER_WAKE_LEG_DTLN=0\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: False)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
@@ -1053,11 +1057,11 @@ def test_aec_full_status_stale_aec_card_does_not_report_software_active(
         "JASPER_WAKE_LEG_DTLN=0\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
@@ -1094,11 +1098,11 @@ def test_aec_full_status_chip_aec_applied_requires_runtime_env(
         "JASPER_AEC_MODE=auto\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n"
     )
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
-        server,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
@@ -1123,7 +1127,7 @@ def test_aec_full_status_survives_firmware_probe_error(
     """A failing firmware probe must never 500 the status GET the /wake/
     page polls every 3 s — it degrades to available=False."""
     aec_mode_file.write_text("JASPER_AEC_MODE=auto\n")
-    monkeypatch.setattr(server, "_aec_bridge_active", lambda: False)
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
 
     def _boom():

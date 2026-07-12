@@ -483,47 +483,16 @@ class _SingleFlightTTLCache:
 VOLUME_MIN_DB = _volume_ops.VOLUME_MIN_DB
 VOLUME_MAX_DB = _volume_ops.VOLUME_MAX_DB
 SPOTIFY_OAUTH_CALLBACK_BASE = _volume_ops.SPOTIFY_OAUTH_CALLBACK_BASE
-DIAL_HEARTBEAT_PATH = _dial.DIAL_HEARTBEAT_PATH
-_dial_heartbeat = _dial._dial_heartbeat
-SOURCE_AVAILABILITY_TTL_SEC = _state_aggregate.SOURCE_AVAILABILITY_TTL_SEC
-_source_availability_cache = _state_aggregate._source_availability_cache
-_source_availability_lock = _state_aggregate._source_availability_lock
-OUTPUTD_BASE_CAMILLA_CONFIG = _state_aggregate.OUTPUTD_BASE_CAMILLA_CONFIG
-_AEC_MODE_FILE = _aec_endpoints._AEC_MODE_FILE
-_WAKE_MODEL_FILE = _aec_endpoints._WAKE_MODEL_FILE
-_JASPER_ENV_FILE = _aec_endpoints._JASPER_ENV_FILE
-_TOGGLE_TO_TOKEN = _aec_endpoints._TOGGLE_TO_TOKEN
-
-_same_config_path = _state_aggregate._same_config_path
-_sound_apply_target = _state_aggregate._sound_apply_target
-_sound_runtime_status = _state_aggregate._sound_runtime_status
 _outputd_status = _state_aggregate._outputd_status
-_read_audio_quality_state = _state_aggregate._read_audio_quality_state
-_read_active_audio_converter = _state_aggregate._read_active_audio_converter
 _clamp_db = _volume_ops._clamp_db
 _db_to_percent = _volume_ops._db_to_percent
 _percent_to_db = _volume_ops._percent_to_db
 _delta_db_to_delta_percent = _volume_ops._delta_db_to_delta_percent
 _spotify_redirect_uri = _volume_ops._spotify_redirect_uri
-_audio_validation_summary = _aec_endpoints._audio_validation_summary
 
 
 def _safe_audio_quality_state() -> dict[str, Any]:
-    previous_state = _state_aggregate._read_audio_quality_state
-    previous_active = _state_aggregate._read_active_audio_converter
-    _state_aggregate._read_audio_quality_state = _read_audio_quality_state
-    _state_aggregate._read_active_audio_converter = _read_active_audio_converter
-    try:
-        return _state_aggregate._safe_audio_quality_state()
-    finally:
-        _state_aggregate._read_audio_quality_state = previous_state
-        _state_aggregate._read_active_audio_converter = previous_active
-
-
-def _sync_aec_module() -> None:
-    _aec_endpoints._AEC_MODE_FILE = _AEC_MODE_FILE
-    _aec_endpoints._WAKE_MODEL_FILE = _WAKE_MODEL_FILE
-    _aec_endpoints._JASPER_ENV_FILE = _JASPER_ENV_FILE
+    return _state_aggregate._safe_audio_quality_state()
 
 
 def _parse_env_bool(raw: str, default: bool) -> bool:
@@ -531,27 +500,22 @@ def _parse_env_bool(raw: str, default: bool) -> bool:
 
 
 def _read_aec_state() -> dict:
-    _sync_aec_module()
     return _aec_endpoints._read_aec_state()
 
 
 def _read_aec_mode() -> str:
-    _sync_aec_module()
     return _aec_endpoints._read_aec_mode()
 
 
 def _write_aec_mode(mode: str) -> None:
-    _sync_aec_module()
     _aec_endpoints._write_aec_mode(mode)
 
 
 def _write_aec_leg(leg: str, enabled: bool) -> None:
-    _sync_aec_module()
     _aec_endpoints._write_aec_leg(leg, enabled)
 
 
 def _write_audio_input_profile(profile: str) -> None:
-    _sync_aec_module()
     _aec_endpoints._write_audio_input_profile(profile)
 
 
@@ -560,23 +524,15 @@ def _atomic_rewrite_env(path: str, updates: dict) -> None:
 
 
 def _read_wake_threshold() -> float:
-    _sync_aec_module()
     return _aec_endpoints._read_wake_threshold()
 
 
 def _write_wake_threshold(value: float) -> None:
-    _sync_aec_module()
     _aec_endpoints._write_wake_threshold(value)
 
 
-_aec_bridge_active_impl = _aec_endpoints._aec_bridge_active
-
-
 def _aec_bridge_active() -> bool:
-    return _aec_bridge_active_impl()
-
-
-_server_aec_bridge_active_wrapper = _aec_bridge_active
+    return _aec_endpoints._aec_bridge_active()
 
 
 def _kick_aec_reconciler() -> None:
@@ -587,51 +543,15 @@ def _start_xvf_firmware_update() -> None:
     _aec_endpoints._start_xvf_firmware_update()
 
 
-_aec_fresh_jasper_env_impl = _aec_endpoints._fresh_jasper_env
-
-
-def _fresh_jasper_env() -> dict[str, str]:
-    _sync_aec_module()
-    return _aec_fresh_jasper_env_impl()
-
-
-_server_fresh_jasper_env_wrapper = _fresh_jasper_env
-
-
 def _aec_full_status() -> dict:
-    _sync_aec_module()
-    previous_fresh_env = _aec_endpoints._fresh_jasper_env
-    previous_bridge_active = _aec_endpoints._aec_bridge_active
-    previous_validation_summary = _aec_endpoints._audio_validation_summary
-    fresh_env_replacement = _fresh_jasper_env
-    if fresh_env_replacement is _server_fresh_jasper_env_wrapper:
-        fresh_env_replacement = _aec_fresh_jasper_env_impl
-    bridge_replacement = _aec_bridge_active
-    if bridge_replacement is _server_aec_bridge_active_wrapper:
-        bridge_replacement = _aec_bridge_active_impl
-    _aec_endpoints._fresh_jasper_env = fresh_env_replacement
-    _aec_endpoints._aec_bridge_active = bridge_replacement
-    _aec_endpoints._audio_validation_summary = _audio_validation_summary
-    try:
-        return _aec_endpoints._aec_full_status()
-    finally:
-        _aec_endpoints._fresh_jasper_env = previous_fresh_env
-        _aec_endpoints._aec_bridge_active = previous_bridge_active
-        _aec_endpoints._audio_validation_summary = previous_validation_summary
-
-
-def _sync_dial_module() -> None:
-    _dial.DIAL_HEARTBEAT_PATH = DIAL_HEARTBEAT_PATH
-    _dial._dial_heartbeat = _dial_heartbeat
+    return _aec_endpoints._aec_full_status()
 
 
 def _load_dial_heartbeat() -> dict[str, Any]:
-    _sync_dial_module()
     return _dial._load_dial_heartbeat()
 
 
 def _persist_dial_heartbeat(snapshot: dict[str, Any]) -> None:
-    _sync_dial_module()
     _dial._persist_dial_heartbeat(snapshot)
 
 
@@ -640,21 +560,11 @@ async def _probe_dial_reachable(ip: str, *, timeout: float = 0.5) -> bool:
 
 
 def run_dial_log_listener(host: str, port: int) -> threading.Thread:
-    _sync_dial_module()
     return _dial.run_dial_log_listener(host, port)
 
 
-def _sync_source_availability_module() -> None:
-    _state_aggregate._source_availability_cache = _source_availability_cache
-    _state_aggregate._source_availability_lock = _source_availability_lock
-
-
 def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    global _source_availability_cache
-    _sync_source_availability_module()
-    result = _state_aggregate._augment_source_payload(payload)
-    _source_availability_cache = _state_aggregate._source_availability_cache
-    return result
+    return _state_aggregate._augment_source_payload(payload)
 
 
 async def _get_state(
@@ -672,7 +582,7 @@ async def _get_state(
         mux_socket_command=_mux_socket_command,
         local_status_json=_local_status_json,
         aec_full_status=_aec_full_status,
-        dial_heartbeat=_dial_heartbeat,
+        dial_heartbeat=_dial._dial_heartbeat,
         dial_probe=_probe_dial_reachable,
         read_transit_state_func=read_transit_state,
         ha_status_snapshot=ha_status_snapshot,
@@ -1915,7 +1825,7 @@ def _make_handler(
         def _get_dial_status(self) -> None:
             # Heartbeat snapshot — used by jasper-doctor's
             # "is the dial actually talking to us?" check.
-            snap = dict(_dial_heartbeat)
+            snap = dict(_dial._dial_heartbeat)
             if snap["last_seen_at"] is not None:
                 snap["age_seconds"] = round(
                     time.time() - snap["last_seen_at"], 1,
@@ -2786,10 +2696,12 @@ def _make_handler(
             body = self._read_json()
             leg = body.get("leg")
             enabled_val = body.get("enabled")
-            if leg not in _TOGGLE_TO_TOKEN:
+            if leg not in _aec_endpoints._TOGGLE_TO_TOKEN:
                 self._send_json(
                     {"error": "leg must be one of: "
-                              + ", ".join(sorted(_TOGGLE_TO_TOKEN))},
+                              + ", ".join(
+                                  sorted(_aec_endpoints._TOGGLE_TO_TOKEN)
+                              )},
                     status=400,
                 )
                 return
