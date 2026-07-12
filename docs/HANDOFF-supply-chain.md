@@ -175,10 +175,12 @@ dependencies.
 
 These are real and intentionally left for later slices:
 
-- **Apt packages.** `install_deps` uses package names from the current
-  Raspberry Pi OS / Debian repositories. Apt signatures protect
-  transport and repository integrity, but installs are not snapshot-
-  pinned.
+- **Apt packages.** `install_deps` owns the full-profile package set,
+  `install_streambox_deps` owns the streambox-specific set, and their shared
+  `_install_renderer_native_deps` helper owns the renderer package set used by
+  both profiles. All three resolve package names from the current Raspberry Pi
+  OS / Debian repositories. Apt signatures protect transport and repository
+  integrity, but installs are not snapshot-pinned.
 - **Python hash-level verification.** Local development and GitHub
   Actions have `uv.lock`, and Pi deploys have `deploy/constraints-pi.txt`,
   but pip/uv still download PyPI wheels/sdists without an enforced
@@ -257,4 +259,5 @@ or support third-party speakers, add a migration/check path that records
 or rebuilds already-installed `librespot`, `nqptp`, `shairport-sync`,
 and CamillaGUI bits.
 
-Last verified: 2026-06-19
+Last verified: 2026-07-12 (renderer apt-package ownership rechecked against
+both full and streambox install profiles)

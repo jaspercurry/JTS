@@ -253,9 +253,9 @@ verification = "SHA-256 checked by deploy/install.sh before staging"
 [[surface]]
 id = "apt-packages"
 kind = "distro-packages"
-consumer = "deploy/install.sh: install_deps"
+consumer = "deploy/install.sh: install_deps, install_streambox_deps, and their shared _install_renderer_native_deps helper"
 status = "accepted-gap"
-notes = "Package names are listed in install_deps. Debian/Raspberry Pi apt repositories are signature-verified but not snapshot-pinned in this slice."
+notes = "Full-profile package names are listed in install_deps, streambox package names in install_streambox_deps, and their shared renderer package names in _install_renderer_native_deps. All resolve from Debian/Raspberry Pi apt repositories that are signature-verified but not snapshot-pinned."
 
 [[surface]]
 id = "python-runtime"

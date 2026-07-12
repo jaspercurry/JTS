@@ -387,10 +387,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - Streambox renderer/DSP stack runtime/build packages:
      python3 python3-venv python3-dev build-essential rustc cargo
      libasound2-dev libasound2 libasound2-plugins portaudio19-dev
-     libsndfile1 curl ca-certificates rsync pkg-config nginx-light
+     libsndfile1 curl ca-certificates rsync nginx-light
      openssl dnsmasq-base snapclient snapserver.
    - Renderer/Bluetooth/AirPlay packages and build inputs:
-     autoconf automake libtool libpopt-dev libconfig-dev
+     autoconf automake libtool pkg-config libpopt-dev libconfig-dev
      libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
      libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
      libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
@@ -536,10 +536,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      python3 python3-venv python3-dev build-essential libasound2-dev
      libasound2 portaudio19-dev libasound2-plugins libsndfile1 curl
      ca-certificates rsync dfu-util libwebrtc-audio-processing-dev
-     pkg-config meson ninja-build nginx-light openssl dnsmasq-base
+     meson ninja-build nginx-light openssl dnsmasq-base
      rustc cargo.
    - Renderer and Bluetooth/AirPlay build packages:
-     autoconf automake libtool libpopt-dev libconfig-dev
+     autoconf automake libtool pkg-config libpopt-dev libconfig-dev
      libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
      libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
      libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
@@ -794,6 +794,28 @@ fetch_verified_source_archive() {
     rm -rf "${tmpdir}"
 }
 
+_install_renderer_native_deps() {
+    # Source-build deps for shairport-sync (AirPlay 2) + nqptp, plus
+    # the bluez-alsa userspace and the JTS Bluetooth agent. All of these
+    # are absent on a stock Trixie Lite image and are shared by full speakers
+    # and streamboxes.
+    #
+    # `avahi-daemon` is the mDNS *publisher* — Pi OS Lite ships
+    # `libnss-mdns` (resolution only) by default but does NOT install
+    # the daemon, so without this line `<hostname>.local` from another
+    # device fails to find us, `_jasper-control._tcp` isn't advertised
+    # to the dial, and `avahi-utils` tools have no daemon to talk to.
+    # `avahi-utils` provides avahi-browse / avahi-publish for diagnostics.
+    apt-get install -y --no-install-recommends \
+        autoconf automake libtool pkg-config \
+        libpopt-dev libconfig-dev libavahi-client-dev \
+        libssl-dev libsoxr-dev libplist-dev libsodium-dev \
+        libgcrypt20-dev uuid-dev libmbedtls-dev libglib2.0-dev \
+        libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
+        xxd \
+        bluez-alsa-utils avahi-daemon avahi-utils
+}
+
 install_deps() {
     apt-get update
     apt-get install -y --no-install-recommends \
@@ -802,7 +824,7 @@ install_deps() {
         libasound2-plugins \
         libsndfile1 curl ca-certificates rsync \
         dfu-util \
-        libwebrtc-audio-processing-dev pkg-config \
+        libwebrtc-audio-processing-dev \
         meson ninja-build \
         nginx-light openssl \
         dnsmasq-base \
@@ -826,24 +848,7 @@ install_deps() {
     # during 44.1→48 conversion, which sabotages AEC speech-band
     # performance. See docs/HANDOFF-aec.md "Resampler quality".
 
-    # Source-build deps for shairport-sync (AirPlay 2) + nqptp, plus
-    # the bluez-alsa userspace and the JTS Bluetooth agent. All of these
-    # are absent on a stock Trixie Lite image.
-    #
-    # `avahi-daemon` is the mDNS *publisher* — Pi OS Lite ships
-    # `libnss-mdns` (resolution only) by default but does NOT install
-    # the daemon, so without this line `<hostname>.local` from another
-    # device fails to find us, `_jasper-control._tcp` isn't advertised
-    # to the dial, and `avahi-utils` tools have no daemon to talk to.
-    # `avahi-utils` provides avahi-browse / avahi-publish for diagnostics.
-    apt-get install -y --no-install-recommends \
-        autoconf automake libtool pkg-config \
-        libpopt-dev libconfig-dev libavahi-client-dev \
-        libssl-dev libsoxr-dev libplist-dev libsodium-dev \
-        libgcrypt20-dev uuid-dev libmbedtls-dev libglib2.0-dev \
-        libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
-        xxd \
-        bluez-alsa-utils avahi-daemon avahi-utils
+    _install_renderer_native_deps
 }
 
 install_streambox_deps() {
@@ -853,19 +858,12 @@ install_streambox_deps() {
         build-essential rustc cargo \
         libasound2-dev libasound2 portaudio19-dev \
         libasound2-plugins libsndfile1 \
-        curl ca-certificates rsync pkg-config \
+        curl ca-certificates rsync \
         nginx-light openssl \
         dnsmasq-base \
         snapclient snapserver
 
-    apt-get install -y --no-install-recommends \
-        autoconf automake libtool pkg-config \
-        libpopt-dev libconfig-dev libavahi-client-dev \
-        libssl-dev libsoxr-dev libplist-dev libsodium-dev \
-        libgcrypt20-dev uuid-dev libmbedtls-dev libglib2.0-dev \
-        libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
-        xxd \
-        bluez-alsa-utils avahi-daemon avahi-utils
+    _install_renderer_native_deps
 }
 
 _webrtc_compile_jobs() {
