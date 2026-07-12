@@ -27,10 +27,10 @@ import pytest
 
 from jasper.active_speaker import crossover_alignment as ca
 from jasper.active_speaker.commissioning_capture import (
+    RESERVED_CROSSOVER_EVENTS,
     DEFAULT_REPEAT_TARGET,
     DRIVER_VERDICT_TO_OUTCOME,
     REPEAT_OUTLIER_DB,
-    RESERVED_CROSSOVER_EVENTS,
     SUMMED_VERDICT_TO_OUTCOME,
     _summed_alignment_snr,
     build_crossover_alignment_proposal,
@@ -811,42 +811,6 @@ def test_summed_alignment_snr_real_ok_reading_is_true():
                 "worst_relevant": {
                     "band_id": "mid",
                     "estimated_snr_db": 40.0,
-# --- lifecycle events (lane E, docs/active-crossover-information-design.md
-# "Structured events") -------------------------------------------------------
-
-_LOGGER_NAME = "jasper.active_speaker.commissioning_capture"
-
-
-def _events(caplog, name: str) -> list[str]:
-    return [
-        r.getMessage() for r in caplog.records
-        if r.getMessage().startswith(f"event={name}")
-    ]
-
-
-class _FakeAcousticWithSnrAndGating:
-    """Duck-types DriverAcousticResult with a snr/gating block (SC-1/SC-2).
-
-    Those blocks are lane B's (snr) and lane A's (gating) — not shipped yet on
-    this branch — so this fake proves the capture-event wiring extracts them
-    correctly once they exist, without depending on either lane's code.
-    """
-
-    verdict = "present"
-    mic_clipping = False
-    observed_mic_dbfs = -32.0
-
-    def to_dict(self):
-        return {
-            "kind": "jts_active_speaker_driver_acoustics",
-            "verdict": "present",
-            "mic_clipping": False,
-            "snr": {
-                "schema_version": 1,
-                "decision_class": "magnitude",
-                "worst_relevant": {
-                    "band_id": "mid",
-                    "estimated_snr_db": 27.5,
                     "verdict": "ok",
                 },
                 "verdict": "ok",
@@ -1170,6 +1134,48 @@ def test_record_driver_repeat_aggregate_emits_lifecycle_event(caplog):
 
 def test_repeat_outlier_threshold_constant_is_positive_and_documented():
     assert REPEAT_OUTLIER_DB > 0
+
+
+# --- lifecycle events (lane E, docs/active-crossover-information-design.md
+# "Structured events") -------------------------------------------------------
+
+_LOGGER_NAME = "jasper.active_speaker.commissioning_capture"
+
+
+def _events(caplog, name: str) -> list[str]:
+    return [
+        r.getMessage() for r in caplog.records
+        if r.getMessage().startswith(f"event={name}")
+    ]
+
+
+class _FakeAcousticWithSnrAndGating:
+    """Duck-types DriverAcousticResult with a snr/gating block (SC-1/SC-2).
+
+    Those blocks are lane B's (snr) and lane A's (gating) — not shipped yet on
+    this branch — so this fake proves the capture-event wiring extracts them
+    correctly once they exist, without depending on either lane's code.
+    """
+
+    verdict = "present"
+    mic_clipping = False
+    observed_mic_dbfs = -32.0
+
+    def to_dict(self):
+        return {
+            "kind": "jts_active_speaker_driver_acoustics",
+            "verdict": "present",
+            "mic_clipping": False,
+            "snr": {
+                "schema_version": 1,
+                "decision_class": "magnitude",
+                "worst_relevant": {
+                    "band_id": "mid",
+                    "estimated_snr_db": 27.5,
+                    "verdict": "ok",
+                },
+                "verdict": "ok",
+            },
             "gating": {
                 "schema_version": 1,
                 "applied": True,
