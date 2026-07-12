@@ -219,7 +219,11 @@ Do not run any playback command unless all of these are true:
 - normal JTS audio owners are stopped before opening the DACs.
 
 The lab binary refuses playback without `--arm-no-speakers` and caps
-test output at `-30 dBFS`; the default is `-60 dBFS`.
+test output at `-30 dBFS`; the default is `-60 dBFS`. It also refuses
+playback if the two DACs negotiate different sample rates or if ALSA's
+negotiated rate differs from the requested rate. Runs still write whole ALSA
+periods, but any frames after the exact requested duration are forced to
+silence so a partial final period cannot begin the next identity/tick pulse.
 
 ## Build
 

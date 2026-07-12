@@ -188,6 +188,7 @@ struct Sink {
     device: DeviceInfo,
     pcm: PCM,
     frames_written: u64,
+    negotiated_sample_rate: u32,
 }
 
 impl Sink {
@@ -219,6 +220,7 @@ impl Sink {
             device,
             pcm,
             frames_written: 0,
+            negotiated_sample_rate: negotiated.sample_rate,
         })
     }
 
@@ -338,6 +340,11 @@ fn run(args: Vec<String>) -> Result<()> {
 
     let mut sink_a = Sink::open("dac_a", dac_a, &config)?;
     let mut sink_b = Sink::open("dac_b", dac_b, &config)?;
+    validate_negotiated_sample_rates(
+        config.sample_rate,
+        sink_a.negotiated_sample_rate,
+        sink_b.negotiated_sample_rate,
+    )?;
 
     let mut linked = false;
     if !config.disable_link {
@@ -395,12 +402,10 @@ fn run(args: Vec<String>) -> Result<()> {
         json_string(&sink_b.state_name()),
     );
 
-    let max_periods = div_ceil(
-        config
-            .duration_sec
-            .saturating_mul(config.sample_rate as u64),
-        config.period_frames as u64,
-    );
+    let requested_signal_frames = config
+        .duration_sec
+        .saturating_mul(config.sample_rate as u64);
+    let max_periods = div_ceil(requested_signal_frames, config.period_frames as u64);
     let run_started = Instant::now();
     let mut delay_delta_baseline: Option<i64> = None;
     let mut result: Result<()> = Ok(());
@@ -411,12 +416,15 @@ fn run(args: Vec<String>) -> Result<()> {
         }
 
         let start_frame = period_index.saturating_mul(config.period_frames as u64);
+        let active_frames =
+            active_frames_for_period(requested_signal_frames, start_frame, config.period_frames);
         fill_period(
             config.mode,
             0,
             start_frame,
             config.sample_rate,
             amplitude,
+            active_frames,
             &mut period_a,
         );
         fill_period(
@@ -425,6 +433,7 @@ fn run(args: Vec<String>) -> Result<()> {
             start_frame,
             config.sample_rate,
             amplitude,
+            active_frames,
             &mut period_b,
         );
 
@@ -689,6 +698,24 @@ fn validate_run_config(config: &RunConfig) -> Result<()> {
     }
     if config.duration_sec == 0 {
         bail!("--duration-sec must be > 0");
+    }
+    Ok(())
+}
+
+fn validate_negotiated_sample_rates(requested: u32, dac_a: u32, dac_b: u32) -> Result<()> {
+    if dac_a != dac_b {
+        bail!(
+            "refusing playback because negotiated sample rates disagree: dac_a={} dac_b={}",
+            dac_a,
+            dac_b
+        );
+    }
+    if dac_a != requested {
+        bail!(
+            "refusing playback because ALSA negotiated {} Hz instead of requested {} Hz",
+            dac_a,
+            requested
+        );
     }
     Ok(())
 }
@@ -1016,14 +1043,31 @@ fn fill_period(
     start_frame: u64,
     sample_rate: u32,
     amplitude: i16,
+    active_frames: usize,
     out: &mut [i16],
 ) {
     out.fill(0);
+    let active_samples = active_frames
+        .min(out.len() / CHANNELS)
+        .saturating_mul(CHANNELS);
+    let active_out = &mut out[..active_samples];
     match mode {
         Mode::Silence => {}
-        Mode::Identity => fill_identity(sink_index, start_frame, sample_rate, amplitude, out),
-        Mode::Ticks => fill_ticks(start_frame, sample_rate, amplitude, out),
+        Mode::Identity => {
+            fill_identity(sink_index, start_frame, sample_rate, amplitude, active_out)
+        }
+        Mode::Ticks => fill_ticks(start_frame, sample_rate, amplitude, active_out),
     }
+}
+
+fn active_frames_for_period(
+    requested_signal_frames: u64,
+    start_frame: u64,
+    period_frames: u32,
+) -> usize {
+    requested_signal_frames
+        .saturating_sub(start_frame)
+        .min(period_frames as u64) as usize
 }
 
 fn fill_identity(
@@ -1211,6 +1255,10 @@ mod tests {
         }
     }
 
+    fn stereo_frame(samples: &[i16], frame: usize) -> [i16; CHANNELS] {
+        [samples[frame * CHANNELS], samples[frame * CHANNELS + 1]]
+    }
+
     #[test]
     fn validate_run_config_accepts_defaults() {
         validate_run_config(&base_config()).unwrap();
@@ -1254,6 +1302,191 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("duration-sec"));
+    }
+
+    #[test]
+    fn negotiated_sample_rates_must_match_each_other_and_the_request() {
+        validate_negotiated_sample_rates(48_000, 48_000, 48_000).unwrap();
+
+        let disagreement = validate_negotiated_sample_rates(48_000, 48_000, 44_100)
+            .unwrap_err()
+            .to_string();
+        assert!(disagreement.contains("negotiated sample rates disagree"));
+        assert!(disagreement.contains("dac_a=48000 dac_b=44100"));
+
+        let nearest = validate_negotiated_sample_rates(48_000, 44_100, 44_100)
+            .unwrap_err()
+            .to_string();
+        assert!(nearest.contains("negotiated 44100 Hz instead of requested 48000 Hz"));
+    }
+
+    #[test]
+    fn identity_follows_documented_four_second_channel_order_and_wraps() {
+        const RATE: u32 = 1_000;
+        const AMPLITUDE: i16 = 777;
+        let expected = [
+            (Some(0), None),
+            (Some(1), None),
+            (None, Some(0)),
+            (None, Some(1)),
+            (Some(0), None),
+        ];
+
+        for (second, (dac_a_channel, dac_b_channel)) in expected.into_iter().enumerate() {
+            for (sink, target_channel) in [dac_a_channel, dac_b_channel].into_iter().enumerate() {
+                let mut out = vec![i16::MAX; RATE as usize * CHANNELS];
+                fill_period(
+                    Mode::Identity,
+                    sink,
+                    second as u64 * RATE as u64,
+                    RATE,
+                    AMPLITUDE,
+                    RATE as usize,
+                    &mut out,
+                );
+
+                for frame in 0..RATE as usize {
+                    for channel in 0..CHANNELS {
+                        let sample = stereo_frame(&out, frame)[channel];
+                        let should_pulse =
+                            frame < RATE as usize / 10 && target_channel == Some(channel);
+                        if should_pulse {
+                            assert_eq!(sample.abs(), AMPLITUDE);
+                        } else {
+                            assert_eq!(sample, 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn identity_pulse_stops_at_exact_one_tenth_second_boundary() {
+        const RATE: u32 = 1_000;
+        let mut out = vec![123; 3 * CHANNELS];
+        fill_period(Mode::Identity, 0, 99, RATE, 500, 3, &mut out);
+
+        assert_ne!(stereo_frame(&out, 0)[0], 0);
+        assert_eq!(stereo_frame(&out, 0)[1], 0);
+        assert_eq!(stereo_frame(&out, 1), [0, 0]);
+        assert_eq!(stereo_frame(&out, 2), [0, 0]);
+    }
+
+    #[test]
+    fn identity_preserves_order_when_nonzero_start_frame_crosses_boundaries() {
+        const RATE: u32 = 1_000;
+        for (start_frame, expected_channel) in [(998_u64, 1_usize), (3_998, 0)] {
+            let mut out = vec![123; 6 * CHANNELS];
+            fill_period(Mode::Identity, 0, start_frame, RATE, 500, 6, &mut out);
+
+            assert_eq!(stereo_frame(&out, 0), [0, 0]);
+            assert_eq!(stereo_frame(&out, 1), [0, 0]);
+            for frame in 2..6 {
+                let samples = stereo_frame(&out, frame);
+                assert_ne!(samples[expected_channel], 0);
+                assert_eq!(samples[1 - expected_channel], 0);
+            }
+        }
+    }
+
+    #[test]
+    fn identity_zeroes_dirty_non_target_channels_and_inactive_tail() {
+        const RATE: u32 = 1_000;
+        let mut non_target_sink = vec![123; 50 * CHANNELS];
+        fill_period(
+            Mode::Identity,
+            0,
+            2 * RATE as u64,
+            RATE,
+            500,
+            50,
+            &mut non_target_sink,
+        );
+        assert!(non_target_sink.iter().all(|sample| *sample == 0));
+
+        let mut target_sink = vec![123; 50 * CHANNELS];
+        fill_period(
+            Mode::Identity,
+            1,
+            2 * RATE as u64,
+            RATE,
+            500,
+            25,
+            &mut target_sink,
+        );
+        for frame in 0..50 {
+            let samples = stereo_frame(&target_sink, frame);
+            if frame < 25 {
+                assert_ne!(samples[0], 0);
+            } else {
+                assert_eq!(samples[0], 0);
+            }
+            assert_eq!(samples[1], 0);
+        }
+    }
+
+    #[test]
+    fn twenty_second_partial_period_cannot_start_next_identity_or_tick_cycle() {
+        const RATE: u32 = 48_000;
+        const PERIOD_FRAMES: u64 = 1_024;
+        let requested_frames = 20_u64 * RATE as u64;
+        let periods = div_ceil(requested_frames, PERIOD_FRAMES);
+        let start_frame = (periods - 1) * PERIOD_FRAMES;
+        let active_frames =
+            active_frames_for_period(requested_frames, start_frame, PERIOD_FRAMES as u32);
+        assert_eq!(active_frames, 512);
+        assert_eq!(
+            active_frames_for_period(requested_frames, 0, PERIOD_FRAMES as u32),
+            PERIOD_FRAMES as usize
+        );
+        assert_eq!(
+            active_frames_for_period(requested_frames, requested_frames, PERIOD_FRAMES as u32),
+            0
+        );
+        assert_eq!(
+            active_frames_for_period(
+                requested_frames,
+                requested_frames + PERIOD_FRAMES,
+                PERIOD_FRAMES as u32,
+            ),
+            0
+        );
+
+        for mode in [Mode::Identity, Mode::Ticks] {
+            let mut full_period = vec![123; PERIOD_FRAMES as usize * CHANNELS];
+            fill_period(
+                mode,
+                0,
+                start_frame,
+                RATE,
+                500,
+                PERIOD_FRAMES as usize,
+                &mut full_period,
+            );
+            assert!(full_period[active_frames * CHANNELS..]
+                .iter()
+                .any(|sample| *sample != 0));
+
+            let mut bounded_period = vec![123; PERIOD_FRAMES as usize * CHANNELS];
+            fill_period(
+                mode,
+                0,
+                start_frame,
+                RATE,
+                500,
+                active_frames,
+                &mut bounded_period,
+            );
+            assert!(bounded_period.iter().all(|sample| *sample == 0));
+        }
+    }
+
+    #[test]
+    fn silence_mode_clears_dirty_full_period_and_inactive_tail() {
+        let mut out = vec![i16::MAX; 16 * CHANNELS];
+        fill_period(Mode::Silence, 0, 123, 48_000, 500, 3, &mut out);
+        assert!(out.iter().all(|sample| *sample == 0));
     }
 
     #[test]
