@@ -794,6 +794,60 @@ def test_unreadable_baseline_profile_fails_closed(
     assert status["commissioning"]["applied_profile_fingerprint"] is None
 
 
+def test_commissioning_failed_phase_wired_through_full_status_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The "failed" phase is reachable through the real read path.
+
+    The standalone table below (test_commissioning_summary_failed_surfaces_
+    first_blocker_code) pins commissioning_summary's own phase-derivation
+    priority order in isolation. This test pins that
+    read_active_speaker_setup_status actually wires an apply_failed candidate
+    through to that same result, not only a hand-built input.
+    """
+    _save_topology(monkeypatch, tmp_path, _active_topology())
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    config_path.write_text("pipeline: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        setup_mod,
+        "build_baseline_profile_candidate",
+        lambda *_a, **_k: {
+            "status": "apply_failed",
+            "source": {"fingerprint": "source-fp"},
+            "permissions": {"may_apply": False},
+            "issues": [
+                {
+                    "severity": "warning",
+                    "code": "some_warning",
+                    "message": "not the one",
+                },
+                {
+                    "severity": "blocker",
+                    "code": "baseline_profile_apply_failed",
+                    "message": "camilladsp rejected the candidate",
+                },
+            ],
+        },
+    )
+    # Deterministic measurement state so the commissioning-phase assertion
+    # below isn't at the mercy of whatever (if anything) is on disk at the
+    # real default measurements path.
+    monkeypatch.setattr(
+        setup_mod, "load_measurement_state", lambda _topology: {"summary": {}},
+    )
+
+    status = setup_mod.read_active_speaker_setup_status(
+        active_config_path=str(config_path),
+    )
+
+    assert status["commissioning"]["phase"] == "failed"
+    assert (
+        status["commissioning"]["last_failure_code"]
+        == "baseline_profile_apply_failed"
+    )
+
+
 # --- commissioning_summary (lane E, docs/active-crossover-information-design.md
 # "Runtime surface") — standalone phase-derivation table ---------------------
 #
