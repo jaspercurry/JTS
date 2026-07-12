@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`78aaab66`): 2026-07-12.
+Last reconciled against `main` (`0e7a9ec9`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 489
-- **fixed**: 178
+- **open**: 487
+- **fixed**: 180
 - **in-progress**: 0
 - **mooted**: 9
 - **deferred**: 1
@@ -47,7 +47,7 @@ Last reconciled against `main` (`78aaab66`): 2026-07-12.
 | DA-0012 | `jasper/cli/aec_bridge.py` :: _aec_loop dtln runtime-crash handler (~2147- | should-fix | W5 | **fixed** | runtime DTLN failure now withdraws the leg from live health/capture-plan truth while primary AEC3 continues — #1295 |
 | DA-0013 | `jasper/cli/xvf_firmware_update.py` :: update | should-fix | W5 | **fixed** | bounded download + pre-flash budget + recovery/unit deadline contract — #1285 |
 | DA-0014 | `jasper/control/server.py` :: _make_handler / class Handler | should-fix | W5 | **open** | — |
-| DA-0018 | `jasper/multiroom/reconcile.py` :: _ensure_unit_active:1226-1274 | should-fix | W5 | **open** | — |
+| DA-0018 | `jasper/multiroom/reconcile.py` :: _ensure_unit_active:1226-1274 | should-fix | W5 | **fixed** | shared reset-failed helper + start OSError containment; recovery probes now fail closed — #1299 |
 | DA-0023 | `jasper/voice/gemini_session.py` :: _open_session / _receive_loop | should-fix | W5 | **open** | — |
 | DA-0025 | `jasper/wake_corpus/bridge_session.py` :: voice_daemon_active:2107 | should-fix | W5 | **open** | — |
 | DA-0026 | `jasper/wake_events.py` :: _STAGE_TO_COLUMN | should-fix | W5 | **open** | — |
@@ -410,7 +410,7 @@ Last reconciled against `main` (`78aaab66`): 2026-07-12.
 | DA-0541 | `jasper/correction/status.py` :: session_snapshot | nit | W3 | **open** | — |
 | DA-0542 | `jasper/fanin/coupling_reconcile.py` :: _recover_to_loopback | nit | W3 | **open** | — |
 | DA-0543 | `jasper/home_assistant.py` :: 583 | nit | W3 | **open** | — |
-| DA-0544 | `jasper/multiroom/reconcile.py` :: _unit_is_enabled:818, _unit_is_active:835 | nit | W3 | **open** | — |
+| DA-0544 | `jasper/multiroom/reconcile.py` :: _unit_is_enabled:818, _unit_is_active:835 | nit | W3 | **fixed** | shared tri-state systemd probe consolidates the duplicate wrappers — #1299 |
 | DA-0545 | `jasper/multiroom/reconcile.py` :: main():1560-1568,1639-1647 | nit | W3 | **open** | — |
 | DA-0546 | `jasper/multiroom/runtime_balance.py` :: active_endpoint | nit | W3 | **open** | — |
 | DA-0547 | `jasper/mux.py` :: _busctl | nit | W3 | **open** | — |
