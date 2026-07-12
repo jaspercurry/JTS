@@ -21,6 +21,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -837,6 +838,14 @@ static void test_geometry_mismatch_is_fatal(void) {
     jts_ring_writer_t w2;
     int rc = jts_ring_writer_open(path, &wrong, &w2);
     CHECK(rc < 0, "geometry mismatch is fatal (rc < 0)");
+    CHECK(w2.base == NULL, "failed writer attach leaves mapping detached");
+    CHECK(w2.fd == -1, "failed writer attach leaves fd detached");
+
+    jts_ring_reader_t r2;
+    rc = jts_ring_reader_open(path, &wrong, &r2);
+    CHECK(rc < 0, "reader geometry mismatch is fatal (rc < 0)");
+    CHECK(r2.base == NULL, "failed reader attach leaves mapping detached");
+    CHECK(r2.fd == -1, "failed reader attach leaves fd detached");
     jts_ring_writer_close(&w);
     unlink(path);
 }
@@ -862,6 +871,93 @@ static void test_writer_creates_missing_parent_dir(void) {
     CHECK(rc == 0, "writer_open creates the missing parent dir (no ENOENT)");
     if (rc == 0) jts_ring_writer_close(&w);
     (void)!system(rm);
+}
+
+static void test_reader_creates_missing_parent_then_writer_attaches(void) {
+    // Reboot-while-armed contract: Ring A's capture reader may beat fanin's
+    // writer to an empty tmpfs. The reader must create both the parent and the
+    // byte-identical ring; a later writer must attach and apply only its own
+    // epoch/pid/heartbeat stamps.
+    char dir[256];
+    char path[320];
+    snprintf(dir, sizeof(dir), "/tmp/jts-ring-ctest-%d-reader-first", (int)getpid());
+    char rm[512];
+    snprintf(rm, sizeof(rm), "rm -rf '%s'", dir);
+    (void)!system(rm);
+    snprintf(path, sizeof(path), "%s/nested/program.ring", dir);
+
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_reader_t r;
+    int rc = jts_ring_reader_open(path, &g, &r);
+    CHECK(rc == 0, "reader-first open creates missing parent and ring");
+    if (rc == 0) {
+        jts_ring_header_t *h = (jts_ring_header_t *)r.base;
+        uint64_t magic_version = atomic_load_explicit(
+            (_Atomic uint64_t *)r.base, memory_order_acquire);
+        CHECK(r.map_len == jts_ring_file_size(&g), "reader-created map has expected size");
+        CHECK((uint32_t)magic_version == JTS_RING_MAGIC,
+              "reader creator publishes ring magic");
+        CHECK((uint32_t)(magic_version >> 32) == JTS_RING_VERSION,
+              "reader creator publishes ring version");
+        CHECK(atomic_load_explicit(&h->reader_pid, memory_order_relaxed) ==
+                  (uint64_t)getpid(),
+              "reader creator stamps reader ownership");
+
+        jts_ring_writer_t w;
+        int wrc = jts_ring_writer_open(path, &g, &w);
+        CHECK(wrc == 0, "writer attaches to reader-created ring");
+        if (wrc == 0) {
+            CHECK(w.map_len == r.map_len, "both roles agree on reader-created map size");
+            CHECK(w.geometry.n_slots == g.n_slots,
+                  "writer sees reader-created geometry");
+            CHECK(atomic_load_explicit(&h->writer_epoch, memory_order_acquire) == 1,
+                  "writer attach bumps epoch on reader-created ring");
+            CHECK(atomic_load_explicit(&h->writer_pid, memory_order_relaxed) ==
+                      (uint64_t)getpid(),
+                  "writer attaches with its own ownership stamp");
+            CHECK(atomic_load_explicit(&h->reader_pid, memory_order_relaxed) ==
+                      (uint64_t)getpid(),
+                  "writer attach preserves reader ownership stamp");
+            jts_ring_writer_close(&w);
+        }
+        jts_ring_reader_close(&r);
+    }
+    (void)!system(rm);
+}
+
+static void test_magicless_foreign_file_is_rejected_without_reclaim(void) {
+    // A full-size file whose creator never published magic is torn. Under /tmp
+    // it is foreign, so both roles must fail closed without unlinking it and
+    // without leaking their temporary mapping/fd into the public result.
+    char path[256];
+    tmp_path(path, sizeof(path), "foreign-torn");
+    jts_ring_geometry_t g = proto_geometry();
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0660);
+    CHECK(fd >= 0, "create full-size foreign torn file");
+    if (fd < 0) return;
+    int truncate_rc = ftruncate(fd, (off_t)jts_ring_file_size(&g));
+    CHECK(truncate_rc == 0, "size foreign torn file without publishing magic");
+    close(fd);
+    if (truncate_rc != 0) {
+        unlink(path);
+        return;
+    }
+
+    jts_ring_writer_t w;
+    int rc = jts_ring_writer_open(path, &g, &w);
+    CHECK(rc == -EINVAL, "writer rejects non-owned magicless file");
+    CHECK(w.base == NULL, "rejected writer mapping is detached");
+    CHECK(w.fd == -1, "rejected writer fd is detached");
+    CHECK(access(path, F_OK) == 0, "writer does not reclaim foreign torn file");
+
+    jts_ring_reader_t r;
+    rc = jts_ring_reader_open(path, &g, &r);
+    CHECK(rc == -EINVAL, "reader rejects non-owned magicless file");
+    CHECK(r.base == NULL, "rejected reader mapping is detached");
+    CHECK(r.fd == -1, "rejected reader fd is detached");
+    CHECK(access(path, F_OK) == 0, "reader does not reclaim foreign torn file");
+    unlink(path);
 }
 
 static void test_can_accept_semantics(void) {
@@ -1233,6 +1329,7 @@ static void test_reader_ebusy_second_reader(void) {
     CHECK(atomic_load_explicit(&h->read_seq, memory_order_relaxed) == rseq_before,
           "EBUSY did not clobber read_seq");
     CHECK(r2.base == NULL, "refused reader struct left detached");
+    CHECK(r2.fd == -1, "refused reader fd left detached");
 
     // A DEAD foreign reader (stale heartbeat) must NOT block a fresh attach —
     // ownership is takeable when the incumbent is gone.
@@ -2060,6 +2157,8 @@ int main(void) {
     test_attach_second_writer_bumps_epoch();
     test_geometry_mismatch_is_fatal();
     test_writer_creates_missing_parent_dir();
+    test_reader_creates_missing_parent_then_writer_attaches();
+    test_magicless_foreign_file_is_rejected_without_reclaim();
     test_can_accept_semantics();
     test_deep_ring_16_slots();
     test_occupancy_tracks_reader_drain();
