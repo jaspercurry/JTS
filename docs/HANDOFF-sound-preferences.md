@@ -343,8 +343,9 @@ status grids. The saved topology does not make
 daemon-owned CamillaDSP/outputd lane. Tweeter/high-frequency targets are not
 horn-specific: the backend auto-records a
 software-guarded bring-up request when no physical protection evidence is
-present, and the tone plan still enforces role-specific caps and high-pass
-guards.
+present, and the shared driver-test signal policy still enforces
+role-specific frequency caps and high-pass guards before the protected
+commission ramp can make a driver audible.
 
 Lower-level diagnostics still exist for tests and operator debugging:
 `/sound/active-speaker/commissioning-view` composes a no-audio setup

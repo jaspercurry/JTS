@@ -97,9 +97,7 @@ from .driver_protection import (
 from .tone_plan import (
     DEFAULT_PRESET_RESOURCE,
     TONE_PLAN_KIND,
-    build_safe_tone_plan,
     load_active_speaker_preset,
-    tone_targets_payload,
 )
 from .test_signal_plan import (
     DRIVER_TEST_SIGNAL_PLAN_KIND,
@@ -367,7 +365,6 @@ __all__ = [
     "evaluate_path_safety_evidence",
     "audible_outputs_for_role",
     "emit_active_speaker_commissioning_config",
-    "build_safe_tone_plan",
     "build_bringup_preflight",
     "build_design_draft",
     "build_crossover_preview",
@@ -439,7 +436,6 @@ __all__ = [
     "stage_protected_startup_config",
     "stop_safe_playback_session",
     "stop_tone_playback",
-    "tone_targets_payload",
     "tone_backend_status",
     "update_calibration_level_state",
     "write_path_safety_evidence",
