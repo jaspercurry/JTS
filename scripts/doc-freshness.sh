@@ -25,13 +25,32 @@
 
 set -euo pipefail
 
+usage() {
+  awk '
+    /^# SPDX-License-Identifier:/ { after_spdx = 1; next }
+    !after_spdx { next }
+    !in_docs {
+      if ($0 ~ /^#/) in_docs = 1
+      else next
+    }
+    /^#/ { sub(/^# ?/, ""); print; next }
+    { exit }
+  ' "$0"
+}
+
+# Help is valid in any position, including before the optional day threshold.
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) usage; exit 0 ;;
+  esac
+done
+
 days=${1:-90}
 shift || true
 include_all=0
 for arg in "$@"; do
   case "$arg" in
     --all) include_all=1 ;;
-    -h|--help) sed '2,6d' "$0" | sed -n '2,21p' | sed 's/^# \?//'; exit 0 ;;  # 2,6d drops the SPDX header
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
