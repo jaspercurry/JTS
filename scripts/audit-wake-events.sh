@@ -24,30 +24,14 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
 TARGET="${1:-${REPO_ROOT}/wake-events/latest}"
 
-# Find a Python that has scipy + numpy (needed for the speech-band
-# xcorr). Try the worktree's venv first, then the main checkout's
-# venv (worktrees don't have their own venv by default), then
-# system python with a warning.
-CANDIDATES=(
-    "${REPO_ROOT}/.venv/bin/python"
-    # When running from a worktree under .claude/worktrees/<name>/,
-    # the main repo's venv is three levels up. Resolve via
-    # `git common-dir` to land at the .git of the main checkout.
-    "$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null | xargs -I {} dirname {} 2>/dev/null)/.venv/bin/python"
-)
-PY=""
-for c in "${CANDIDATES[@]}"; do
-    if [[ -n "$c" && -x "$c" ]]; then
-        PY="$c"
-        break
-    fi
-done
-if [[ -z "$PY" ]]; then
+PY="$(resolve_repo_python)"
+if [[ -z "${PYTHON:-}" && "$PY" == "python3" ]]; then
     echo "WARN: no venv with numpy/scipy found; falling back to python3" >&2
-    PY="python3"
 fi
 
 exec "$PY" "${REPO_ROOT}/scripts/_audit_wake_events.py" "$TARGET"

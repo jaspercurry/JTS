@@ -193,6 +193,32 @@ def test_phase0_runner_can_use_existing_bundles(tmp_path: Path) -> None:
     }
 
 
+def test_phase0_subprocess_child_inherits_python_override(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    log = tmp_path / "python-args.log"
+    operator_python = tmp_path / "operator-python"
+    operator_python.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$WRAPPER_LOG"\n'
+    )
+    operator_python.chmod(0o755)
+    monkeypatch.setenv("PYTHON", str(operator_python))
+    monkeypatch.setenv("WRAPPER_LOG", str(log))
+
+    result = phase0._run_command(
+        ["bash", str(phase0._script("build-wake-negative-feature-bank.sh")), "--help"],
+        tmp_path,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert log.read_text().splitlines() == [
+        str(phase0._script("_build_wake_negative_feature_bank.py")),
+        "--help",
+    ]
+
+
 def test_phase0_runner_records_failed_step(tmp_path: Path) -> None:
     out = tmp_path / "run"
     args = _parse([

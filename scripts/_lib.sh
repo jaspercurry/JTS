@@ -23,6 +23,8 @@
 #      wins; JASPER_HOSTNAME from the calling shell is kept only as a
 #      compatibility fallback for older operator scripts/docs; jts.local
 #      is the final default.
+#   4. Resolve the repository Python for laptop-side wrappers with one
+#      canonical precedence contract.
 #
 # This file is intentionally not executable and has no shebang — it
 # only makes sense when sourced from a bash script that has already
@@ -49,6 +51,40 @@ fi
 # reserve JASPER_HOSTNAME for speaker identity/cert URLs.
 export PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 export PI_USER="${PI_USER:-pi}"
+
+# Print the Python executable for repository-bound laptop tooling.
+# Precedence is the effective PYTHON value (one executable token/path),
+# this checkout's venv, the main checkout's venv when invoked from a linked
+# worktree, then python3. An explicit value is authoritative: callers exec it
+# as one token and let a missing or invalid executable fail visibly.
+resolve_repo_python() {
+    if [[ -n "${PYTHON:-}" ]]; then
+        printf '%s\n' "$PYTHON"
+        return 0
+    fi
+
+    local candidate="${REPO_ROOT}/.venv/bin/python"
+    if [[ -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    local common_dir="" common_parent=""
+    if common_dir="$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null)" \
+        && [[ -n "$common_dir" ]]; then
+        if [[ "$common_dir" != /* ]]; then
+            common_dir="${REPO_ROOT}/${common_dir}"
+        fi
+        common_parent="$(cd "$(dirname "$common_dir")" && pwd)"
+        candidate="${common_parent}/.venv/bin/python"
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    fi
+
+    printf '%s\n' python3
+}
 
 is_ipv4_host() {
     [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
