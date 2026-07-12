@@ -6,10 +6,10 @@
 
 camilla#2 is the endpoint-crossover CamillaDSP instance on an active
 leader (docs/HANDOFF-distributed-active.md "Stage B"). It coexists with
-the always-on camilla#1 and ships INERT — installed but not enabled,
-not yet reconciler-gated. The load-bearing safety invariants this file
+the always-on camilla#1 and is enabled only by grouping reconcile while the
+box is a bonded active leader. The load-bearing safety invariants this file
 moats against:
-  - **NO StartLimitAction=reboot.** camilla#1 owns the always-on
+  - **NO StartLimitAction=reboot.** camilla#1 owns a separate bounded
     recovery/forensics path; camilla#2 is a secondary, reconciler-gated
     instance whose crash must fail CLOSED to silence, NEVER reboot the
     household speaker.

@@ -44,6 +44,7 @@ EXPECTED_DSTS = (
     "jasper-audio-hardware-reconcile",
     "jasper-output-hardware-hotplug",
     "jasper-outputd-failure-reconcile",
+    "jasper-camilla-guard-common.sh",
     "jasper-camilla-pipe-guard",
     "jasper-camilla-recover",
     "jasper-camilla-crossover-guard",
@@ -119,6 +120,15 @@ def test_all_units_installed_on_clean_run(tmp_path):
     )
     # daemon-reload ran.
     assert (tmp_path / "reload.log").exists()
+
+
+def test_common_library_failure_does_not_overwrite_guard_consumers(tmp_path):
+    r = _run(tmp_path, fail_basename="jasper-camilla-guard-common.sh")
+    assert r.returncode != 0
+    attempted = _attempted_dsts(tmp_path)
+    assert "jasper-camilla-guard-common.sh" in attempted
+    assert "jasper-camilla-pipe-guard" not in attempted
+    assert "jasper-camilla-crossover-guard" not in attempted
 
 
 def test_full_install_uses_transactional_core_graph_installer():

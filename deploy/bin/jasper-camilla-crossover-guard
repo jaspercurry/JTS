@@ -44,10 +44,9 @@
 # statefile alone: there is NO safe flat recovery once a tweeter/protected
 # role is saved, and silence beats full-range-to-a-tweeter.
 #
-# This PR is INERT: jasper-camilla-crossover.service is not enabled, so in
-# practice this guard does not run yet. It ships now so the dormant
-# infrastructure is complete and a later reconciler PR can arm the unit
-# without also having to add its guard.
+# The unit is not boot-enabled globally. The grouping reconciler enables it
+# only while a box is a bonded active leader, and disables it again on unbond;
+# this guard therefore runs on a live tweeter-protection path in that mode.
 #
 # FAIL-OPEN EVERYWHERE: any unexpected condition (unreadable statefile,
 # missing base config, runtime contract unavailable, write failure) logs
@@ -63,10 +62,13 @@ STATEFILE="${JASPER_CAMILLA2_STATEFILE:-/var/lib/camilladsp/crossover-statefile.
 # --flat-config value the CLI requires; STRUCTURALLY UNREACHABLE for
 # camilla#2's roleful topology (see header). Present only to satisfy the
 # arg; never selected as camilla#2's repair target.
+# shellcheck disable=SC2034  # consumed by the sourced common guard library
 BASE_CONFIG="${JASPER_CAMILLA_BASE_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
+# shellcheck disable=SC2034  # consumed by the sourced common guard library
 RUNTIME_SAFE_GRAPH="${JASPER_RUNTIME_SAFE_GRAPH:-/opt/jasper/.venv/bin/jasper-active-speaker}"
 SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
 # Seconds the reader-presence probe waits before declaring "no reader".
+# shellcheck disable=SC2034  # consumed by the sourced common guard library
 PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
 
 log() {
@@ -75,6 +77,26 @@ log() {
     shift || true
     echo "event=camilla_crossover_guard.${outcome} ${*}" >&2
 }
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+COMMON_LIB="${JASPER_CAMILLA_GUARD_COMMON_LIB:-}"
+if [ -z "$COMMON_LIB" ]; then
+    if [ -r "${SCRIPT_DIR}/../lib/jasper-camilla-guard-common.sh" ]; then
+        COMMON_LIB="${SCRIPT_DIR}/../lib/jasper-camilla-guard-common.sh"
+    else
+        COMMON_LIB="/usr/local/lib/jasper/jasper-camilla-guard-common.sh"
+    fi
+fi
+# shellcheck disable=SC1090  # runtime path is repo-sibling or installed fallback
+if [ ! -r "$COMMON_LIB" ] || ! source "$COMMON_LIB"; then
+    log skip reason=common_lib_unavailable
+    exit 0
+fi
+if ! declare -F camilla_guard_repair_statefile >/dev/null \
+        || ! declare -F camilla_guard_check_playback_pipe_or_repair >/dev/null; then
+    log skip reason=common_lib_invalid
+    exit 0
+fi
 
 [ -r "$STATEFILE" ] || { log skip reason=no_statefile; exit 0; }
 
@@ -92,33 +114,6 @@ if ! grep -q "filename:.*${SNAPFIFO}" "$config_path"; then
     exit 0
 fi
 
-# Bonded pipe config. Healthy only if the FIFO exists AND has a reader.
-if [ -p "$SNAPFIFO" ]; then
-    # Reader-presence probe: opening a FIFO for write returns instantly
-    # iff a reader exists; with no reader it blocks (-> timeout). The
-    # momentary write-open is harmless to snapserver (a pipe source is
-    # designed for writers that come and go). FAIL-OPEN: if the timeout
-    # tool itself is unavailable, treat exists-as-FIFO as healthy — a
-    # repair needs positive evidence of a dead pipe, never a missing
-    # probe (the Pi always ships coreutils; this guards dev machines).
-    if ! command -v timeout >/dev/null 2>&1; then
-        log ok reason=pipe_exists_probe_unavailable
-        exit 0
-    fi
-    if timeout "$PROBE_TIMEOUT" bash -c "exec 3> '$SNAPFIFO'" 2>/dev/null; then
-        log ok reason=pipe_healthy
-        exit 0
-    fi
-    why=no_reader
-else
-    why=fifo_absent
-fi
-
-if ! command -v "$RUNTIME_SAFE_GRAPH" >/dev/null 2>&1; then
-    log skip reason=runtime_contract_unavailable "detail=$why"
-    exit 0
-fi
-
 # REPAIR: ask the active-speaker runtime contract for the only legal
 # persisted graph. For camilla#2 the saved topology is ALWAYS
 # roleful/protected, so the contract returns the DRIVER-DOMAIN baseline
@@ -128,21 +123,7 @@ fi
 # not a safe recovery target once a tweeter/protected role is saved, and
 # camilla#2 fails CLOSED to silence rather than risk full-range to a
 # tweeter.
-if output="$(
-    "$RUNTIME_SAFE_GRAPH" runtime-safe-graph \
-        --statefile "$STATEFILE" \
-        --flat-config "$BASE_CONFIG" \
-        --write-statefile \
-        --json 2>&1
-)"; then
-    repaired_to="$(
-        sed -n 's/^[[:space:]]*config_path:[[:space:]]*//p' "$STATEFILE" \
-            | head -1 | tr -d '"' | tr -d "'"
-    )"
-    log repaired "reason=$why from=$config_path to=${repaired_to:-unknown}" \
-        "detail=camilla#2 starts on the driver-domain (Layer-A-intact) safe graph; next grouping reconcile re-applies the bond"
-else
-    log skip reason=runtime_contract_blocked "detail=$why" \
-        "message=$(printf '%s' "$output" | tr '\n' ' ' | cut -c1-240)"
-fi
-exit 0
+camilla_guard_check_playback_pipe_or_repair \
+    "$SNAPFIFO" fifo_absent no_reader pipe_healthy pipe_exists_probe_unavailable \
+    "$config_path" \
+    "camilla#2 starts on the driver-domain (Layer-A-intact) safe graph; next grouping reconcile re-applies the bond"
