@@ -23,6 +23,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.log_event import log_event
 from jasper.output_topology import load_output_topology
 from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
@@ -334,7 +335,10 @@ def capture_sweep_meta(raw: Mapping[str, Any]) -> dict[str, Any]:
     return dict(sweep_meta)
 
 
-def capture_preset(topology: Any, frozen_preset: Any = None) -> Any:
+def capture_preset(
+    topology: Any,
+    frozen_preset: ActiveSpeakerPreset | None = None,
+) -> ActiveSpeakerPreset:
     """Resolve the active-speaker preset used to analyze browser captures."""
 
     if frozen_preset is not None:
@@ -581,7 +585,9 @@ def _finalize_driver_repeat_set(
     if aggregate["accepted"] < 2 or not isinstance(winner, Mapping):
         raise RuntimeError("driver repeat set is not eligible for finalization")
     analysis_kwargs = winner.get("analysis_kwargs")
-    preset = winner.get("preset")
+    if "preset" not in winner:
+        raise RuntimeError("accepted crossover repeats lost their analysis preset")
+    preset = winner["preset"]
     if not isinstance(analysis_kwargs, Mapping):
         raise RuntimeError("accepted crossover repeats lost finalization context")
     winner_path = Path(str(winner.get("wav_path") or ""))
@@ -889,11 +895,12 @@ def record_driver_capture(
         )
     else:
         comparison_set = measurements.get("active_comparison_set")
-        comparison_set_id = (
-            str(comparison_set.get("comparison_set_id") or "")
-            if isinstance(comparison_set, Mapping)
-            else ""
-        )
+        if not isinstance(comparison_set, Mapping):
+            raise ValueError(
+                "the crossover measurement context or repeat admission changed; "
+                "run the level check again"
+            )
+        comparison_set_id = str(comparison_set.get("comparison_set_id") or "")
         target_fingerprint = _driver_target_fingerprint(
             topology, group_id=group_id, role=role
         )

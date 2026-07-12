@@ -65,9 +65,11 @@
 > feeds the verified WAV into the same `record_*_capture` analysis. Measurement mutual-exclusion is
 > server-computed twice (refused at POST while room/balance/sync is active,
 > re-checked at armed time); the `crossover_sweep` spec floors the phone's hard
-> recording deadline at 30 s (`hard_timeout_ms`, the `room_sweep` contract) so
-> the Pi's armed-poll → config-load → playback → `sweep_complete` round trip
-> never races the deadline. The preceding near-field level step owns microphone
+> recording deadline at 30 s (`hard_timeout_ms`, the `room_sweep` contract).
+> Lane D raises the crossover-only floor to 45 s so its controlled 14 s quiet
+> capture, per-driver sweep, config load, and `sweep_complete` round trip cannot
+> race the phone deadline; the room and sync relay floors remain 30 s. The
+> preceding near-field level step owns microphone
 > and calibration setup; its identity is bound to the protected applied speaker
 > profile. Driver/summed capture reuses that Pi-side calibration and validates
 > the phone-reported realized device before recording acoustic evidence. The

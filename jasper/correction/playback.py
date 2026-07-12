@@ -57,6 +57,24 @@ class SweepPlaybackError(RuntimeError):
     """aplay returned non-zero or the subprocess timed out."""
 
 
+async def _wait_for_process_exit_resilient(
+    proc: asyncio.subprocess.Process,
+) -> None:
+    """Reap a killed player before propagating any caller cancellation."""
+    wait_task = asyncio.create_task(proc.wait())
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(wait_task)
+            break
+        except asyncio.CancelledError as exc:
+            if wait_task.cancelled():
+                raise
+            cancellation = exc
+    if cancellation is not None:
+        raise cancellation
+
+
 async def play_sweep(
     wav_path: str | Path,
     *,
@@ -104,7 +122,7 @@ async def play_sweep(
             proc.kill()
         except ProcessLookupError:
             pass
-        await proc.wait()
+        await _wait_for_process_exit_resilient(proc)
         if isinstance(exc, asyncio.CancelledError):
             raise
         raise SweepPlaybackError(

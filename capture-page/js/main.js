@@ -26,6 +26,7 @@ import {
 import { safeReturnUrl } from "./return-url.js";
 import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
 import { runLevelRampProtocol } from "./level-events.js";
+import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
   assertCaptureProtocolCompatible,
   requiredCaptureProtocol,
@@ -486,11 +487,14 @@ function renderCalibration(screenEl, ctx) {
     : [];
   if (String((setupState.calibration || {}).mode || "none") === "none") {
     const selected = setupInputs.find((input) => input.deviceId === selectedDeviceId);
-    const label = String((selected && selected.label) || "").toLowerCase();
-    if (label.includes("umik-2") || label.includes("umik 2")) {
+    const inferred = inferCalibrationModel(
+      calibrationModels,
+      String((selected && selected.label) || ""),
+    );
+    if (inferred) {
       setupState.calibration = {
         mode: "serial",
-        model: "minidsp_umik2",
+        model: inferred.key,
         serial: "",
       };
     }

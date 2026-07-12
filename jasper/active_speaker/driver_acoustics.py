@@ -510,6 +510,12 @@ def _capture_to_magnitude(
         smoothed = calibration_mod.apply_calibration_curve(freqs, smoothed, calibration)
     ambient_report = None
     if noise_ir_used is not None and ambient_source is not None:
+        if (
+            robust_ambient_source is None
+            or ambient_duration_s is None
+            or alignment is None
+        ):
+            raise RuntimeError("controlled ambient analysis context is incomplete")
         noise_freqs, noise_mag = deconv.magnitude_response(
             noise_ir_used, sr, normalize=False
         )

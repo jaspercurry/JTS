@@ -41,6 +41,7 @@ _HARNESSES = [
     "capture_return_url_test.mjs",
     "capture_level_events_test.mjs",
     "capture_setup_store_test.mjs",
+    "capture_calibration_model_test.mjs",
     "capture_protocol_test.mjs",
     "capture_transport_integrity_test.mjs",
 ]
@@ -90,9 +91,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260712.2",
+        "capture_page_build": "20260712.3",
     }
-    assert "main.js?v=20260712-2" in index_html
+    assert "main.js?v=20260712-3" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -250,12 +251,15 @@ def test_capture_page_rejects_oversize_calibration_and_unproven_agc():
     assert "JTS will not play the level tone" in main_js
 
 
-def test_capture_page_defaults_umik2_calibration_without_persisting_serial():
+def test_capture_page_infers_calibration_from_pi_registry_without_serial():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    assert 'label.includes("umik-2") || label.includes("umik 2")' in main_js
+    assert "inferCalibrationModel(" in main_js
+    assert "calibrationModels," in main_js
     assert 'mode: "serial"' in main_js
-    assert 'model: "minidsp_umik2"' in main_js
+    assert "model: inferred.key" in main_js
+    assert "umik-2" not in main_js.lower()
+    assert "minidsp_umik2" not in main_js
     assert 'serial: ""' in main_js
     assert "if (!setupState.calibration.serial)" in main_js
     assert "Enter the microphone serial number." in main_js

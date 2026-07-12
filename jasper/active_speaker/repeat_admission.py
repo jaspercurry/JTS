@@ -103,35 +103,34 @@ def _load(path: Path) -> dict[str, Any]:
         status = value.get("status")
         inflight = value.get("inflight")
         results = value.get("results", [])
-        attempts_valid = (
-            not isinstance(attempts, bool)
-            and isinstance(attempts, int)
-            and 1 <= attempts <= MAX_ATTEMPTS
-        )
-        result_attempts = [
-            item.get("attempt") if isinstance(item, Mapping) else None
-            for item in results
-        ] if isinstance(results, list) else []
-        result_attempts_valid = attempts_valid and all(
-            not isinstance(number, bool)
-            and isinstance(number, int)
-            and 1 <= number <= attempts
-            for number in result_attempts
-        )
-        result_attempts_ordered = (
-            result_attempts_valid
-            and result_attempts == sorted(set(result_attempts))
-        )
         if (
-            not attempts_valid
-            or status not in {"active", "ready", "completed", "refused", "aborted"}
+            isinstance(attempts, bool)
+            or not isinstance(attempts, int)
+            or not 1 <= attempts <= MAX_ATTEMPTS
+        ):
+            raise RuntimeError("crossover repeat target state is invalid")
+        if not isinstance(results, list):
+            raise RuntimeError("crossover repeat target state is invalid")
+        result_attempts: list[int] = []
+        for item in results:
+            if not isinstance(item, Mapping):
+                raise RuntimeError("crossover repeat target state is invalid")
+            result_attempt = item.get("attempt")
+            if (
+                isinstance(result_attempt, bool)
+                or not isinstance(result_attempt, int)
+                or not 1 <= result_attempt <= attempts
+            ):
+                raise RuntimeError("crossover repeat target state is invalid")
+            result_attempts.append(result_attempt)
+        result_attempts_ordered = result_attempts == sorted(set(result_attempts))
+        if (
+            status not in {"active", "ready", "completed", "refused", "aborted"}
             or (inflight is not None and (
                 not isinstance(inflight, str) or _UUID_HEX_RE.fullmatch(inflight) is None
             ))
             or status != "active" and inflight is not None
-            or not isinstance(results, list)
             or len(results) > attempts
-            or any(not isinstance(item, Mapping) for item in results)
             or not result_attempts_ordered
             or str(value.get("target_id") or "") != target_id
             or not str(value.get("target_fingerprint") or "")

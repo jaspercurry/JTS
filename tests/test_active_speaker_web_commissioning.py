@@ -609,6 +609,78 @@ def test_automatic_driver_sweep_restores_exact_entry_graph(
     assert second_restore["status"] == "already_restored"
 
 
+@pytest.mark.parametrize("rollback_mode", ["custom", "default"])
+def test_capture_sweep_repeated_cancel_waits_for_graph_rollback(
+    monkeypatch,
+    rollback_mode,
+):
+    playback_started = asyncio.Event()
+    rollback_started = asyncio.Event()
+    allow_rollback = asyncio.Event()
+    restored = False
+
+    async def play_sweep(*_args, **_kwargs):
+        playback_started.set()
+        await asyncio.Event().wait()
+
+    async def rollback():
+        nonlocal restored
+        rollback_started.set()
+        await allow_rollback.wait()
+        restored = True
+        return {"status": "rolled_back", "config_path": "/tmp/production.yml"}
+
+    monkeypatch.setattr(
+        web,
+        "_measurement_sweep_wav_path",
+        lambda: ("/tmp/sweep.wav", {"duration_s": 1.0}),
+    )
+    monkeypatch.setattr(
+        web,
+        "_commission_tone_select_fanin_lane",
+        lambda: {"status": "ok"},
+    )
+    monkeypatch.setattr(
+        web,
+        "_commission_tone_release_fanin_lane",
+        lambda *, reason: {"status": "ok", "reason": reason},
+    )
+    monkeypatch.setattr(correction_playback, "play_sweep", play_sweep)
+    if rollback_mode == "default":
+        monkeypatch.setattr(
+            web,
+            "_rollback_summed_commissioning_config",
+            lambda **_kwargs: rollback(),
+        )
+
+    async def scenario():
+        task = asyncio.create_task(
+            web._play_capture_sweep(
+                backend=web.SUMMED_CAPTURE_SWEEP_BACKEND,
+                target={"speaker_group_id": "mono", "role": "summed"},
+                playback_id="summed-test",
+                level_dbfs=-12.0,
+                load_payload={"load": {"status": "loaded"}},
+                camilla_factory=lambda: object(),
+                rollback_capture_config=(
+                    rollback if rollback_mode == "custom" else None
+                ),
+            )
+        )
+        await playback_started.wait()
+        task.cancel()
+        await rollback_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert task.done() is False
+        allow_rollback.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert restored is True
+
+
 def test_measurement_sweep_cache_is_duration_specific(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SWEEP_DIR", str(tmp_path))
 
@@ -1235,12 +1307,13 @@ def test_summed_measurement_loader_recomposes_validates_and_loads_snapshot(
 
 
 @pytest.mark.parametrize(
-    ("load_outcome", "rollback_fails"),
+    ("load_outcome", "rollback_fails", "cancel_during_rollback"),
     [
-        ("false", False),
-        ("exception", False),
-        ("false", True),
-        ("exception", True),
+        ("false", False, False),
+        ("exception", False, False),
+        ("false", True, False),
+        ("exception", True, False),
+        ("false", True, True),
     ],
 )
 def test_summed_measurement_loader_restores_every_unsuccessful_load(
@@ -1248,6 +1321,7 @@ def test_summed_measurement_loader_restores_every_unsuccessful_load(
     tmp_path,
     load_outcome,
     rollback_fails,
+    cancel_during_rollback,
 ):
     from jasper import dsp_apply
     from jasper.active_speaker import baseline_profile
@@ -1282,6 +1356,7 @@ def test_summed_measurement_loader_restores_every_unsuccessful_load(
         lambda *args, **kwargs: log_calls.append((args, kwargs)),
     )
     calls = []
+    rollback_gate = {}
 
     class Cam:
         async def get_config_file_path(self, *, best_effort):
@@ -1293,16 +1368,33 @@ def test_summed_measurement_loader_restores_every_unsuccessful_load(
                 if load_outcome == "exception":
                     raise RuntimeError("transient load failed")
                 return False
+            if cancel_during_rollback:
+                rollback_gate["started"].set()
+                await rollback_gate["allow"].wait()
             if rollback_fails:
                 raise RuntimeError("rollback failed")
             return True
 
-    payload = asyncio.run(
-        web._load_applied_summed_measurement_config(
-            topology=topology,
-            camilla_factory=Cam,
+    async def scenario():
+        if not cancel_during_rollback:
+            return await web._load_applied_summed_measurement_config(
+                topology=topology,
+                camilla_factory=Cam,
+            )
+        rollback_gate["started"] = asyncio.Event()
+        rollback_gate["allow"] = asyncio.Event()
+        load_task = asyncio.create_task(
+            web._load_applied_summed_measurement_config(
+                topology=topology,
+                camilla_factory=Cam,
+            )
         )
-    )
+        await rollback_gate["started"].wait()
+        load_task.cancel()
+        rollback_gate["allow"].set()
+        return await load_task
+
+    payload = asyncio.run(scenario())
 
     assert payload["status"] == "blocked"
     assert calls == [str(target), previous]
@@ -1330,6 +1422,141 @@ def test_summed_measurement_loader_restores_every_unsuccessful_load(
             "automatic_summed_config_load_failed"
         ]
         assert log_calls == []
+
+
+@pytest.mark.parametrize("rollback_fails", [False, True])
+def test_summed_measurement_loader_cancellation_orders_and_reports_restore(
+    monkeypatch,
+    tmp_path,
+    rollback_fails,
+):
+    from jasper import dsp_apply
+    from jasper.active_speaker import baseline_profile
+    from jasper.camilla import CamillaUnavailable
+
+    topology = _topology()
+    target = tmp_path / "summed.yml"
+    previous = "/tmp/normal.yml"
+    monkeypatch.setenv(web.AUTOMATIC_SUMMED_CONFIG_PATH_ENV, str(target))
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state",
+        lambda: _full_applied_profile(topology=topology),
+    )
+    monkeypatch.setattr(
+        baseline_profile,
+        "recompose_applied_baseline_yaml",
+        lambda *_args, **_kwargs: ("pipeline: {}\n", []),
+    )
+    monkeypatch.setattr(
+        dsp_apply,
+        "validate_camilla_config",
+        lambda path: SimpleNamespace(
+            ok_to_apply=True,
+            to_dict=lambda: {"status": "valid", "path": str(path)},
+        ),
+    )
+    calls = []
+    log_calls = []
+    monkeypatch.setattr(
+        web,
+        "log_event",
+        lambda *args, **kwargs: log_calls.append((args, kwargs)),
+    )
+
+    async def scenario():
+        transient_applied = asyncio.Event()
+        allow_transient_load_to_finish = asyncio.Event()
+        restore_started = asyncio.Event()
+        allow_restore = asyncio.Event()
+
+        class Cam:
+            async def get_config_file_path(self, *, best_effort):
+                return previous
+
+            async def set_config_file_path(self, path, *, best_effort):
+                calls.append(path)
+                if path == str(target):
+                    # Model Camilla applying the graph before the client gets
+                    # its response. Like asyncio.to_thread, this worker keeps
+                    # running after the caller is cancelled.
+                    transient_applied.set()
+                    try:
+                        await allow_transient_load_to_finish.wait()
+                    except asyncio.CancelledError:
+                        await allow_transient_load_to_finish.wait()
+                    return True
+                restore_started.set()
+                await allow_restore.wait()
+                if rollback_fails:
+                    raise CamillaUnavailable("camilla disconnected")
+                return True
+
+        load_task = asyncio.create_task(
+            web._load_applied_summed_measurement_config(
+                topology=topology,
+                camilla_factory=Cam,
+            )
+        )
+        await transient_applied.wait()
+        load_task.cancel()
+        await asyncio.sleep(0)
+        assert restore_started.is_set() is False
+        allow_transient_load_to_finish.set()
+        await restore_started.wait()
+        load_task.cancel()
+        await asyncio.sleep(0)
+        assert load_task.done() is False
+        allow_restore.set()
+        if rollback_fails:
+            with pytest.raises(
+                web.AutomaticSummedConfigRestoreError,
+                match="camilla disconnected",
+            ) as exc_info:
+                await load_task
+            return exc_info.value
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await load_task
+        return exc_info.value
+
+    error = asyncio.run(scenario())
+
+    assert calls == [str(target), previous]
+    if rollback_fails:
+        assert isinstance(error.__cause__, asyncio.CancelledError)
+        assert len(log_calls) == 1
+        args, kwargs = log_calls[0]
+        assert args[1] == "active_speaker.automatic_summed_config_rollback"
+        assert kwargs == {
+            "level": web.logging.WARNING,
+            "status": "failed",
+            "failure_mode": "load_interrupted",
+            "previous_config_path": previous,
+            "error": "camilla disconnected",
+        }
+    else:
+        assert log_calls == []
+
+
+def test_resilient_restore_does_not_retry_cancelled_child(monkeypatch):
+    shield_calls = 0
+
+    async def fake_shield(_task):
+        nonlocal shield_calls
+        shield_calls += 1
+        if shield_calls > 1:
+            raise AssertionError("cancelled cleanup task was retried")
+        raise asyncio.CancelledError
+
+    class CancelledTask:
+        def cancelled(self):
+            return True
+
+    monkeypatch.setattr(web.asyncio, "shield", fake_shield)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(web._await_restore_task_resilient(CancelledTask()))
+    assert shield_calls == 1
 
 
 def test_summed_test_playback_does_not_block_the_correction_loop(monkeypatch):

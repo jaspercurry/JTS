@@ -303,7 +303,7 @@ def record_driver_acoustic_capture(
     repeats: Mapping[str, Any] | None = None,
     emit_lifecycle_event: bool = True,
     analyze: Callable[..., DriverAcousticResult] = analyze_driver_capture,
-    record: Callable[..., dict[str, Any]] = record_driver_measurement,
+    record: Callable[..., dict[str, Any] | None] = record_driver_measurement,
 ) -> dict[str, Any]:
     """Analyze one driver's sweep capture and record the result.
 
