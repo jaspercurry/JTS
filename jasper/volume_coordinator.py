@@ -2173,42 +2173,6 @@ async def _busctl_set_property(
     return True
 
 
-async def _busctl_call_method(
-    bus_name: str,
-    object_path: str,
-    interface: str,
-    method: str,
-    signature: str,
-    value: str,
-    *,
-    bus: str = "--system",
-) -> bool:
-    """Run `busctl call` for one method with one typed value.
-
-    Returns True on success, False on any error. The `--` before the
-    value keeps negative dB values from being parsed as busctl flags.
-    """
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", bus, "call",
-            bus_name, object_path, interface, method, signature, "--", value,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError) as e:
-        logger.debug("busctl call %s.%s failed: %s", interface, method, e)
-        return False
-    if proc.returncode != 0:
-        logger.debug(
-            "busctl call %s.%s rc=%d stderr=%s",
-            interface, method, proc.returncode,
-            stderr.decode("utf-8", "replace") if stderr else "",
-        )
-        return False
-    return True
-
-
 _BLUEZ_TRANSPORT_PATH_RE = re.compile(
     rb"(/org/bluealsa/hci\d+/dev_[A-F0-9_]+/a2dpsnk/source)"
 )
