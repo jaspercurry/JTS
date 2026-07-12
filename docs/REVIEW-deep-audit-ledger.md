@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`d52fd099`): 2026-07-12.
+Last reconciled against `main` (`7d5c9e62`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 485
-- **fixed**: 182
+- **open**: 483
+- **fixed**: 184
 - **in-progress**: 0
 - **mooted**: 9
 - **deferred**: 1
@@ -49,7 +49,7 @@ Last reconciled against `main` (`d52fd099`): 2026-07-12.
 | DA-0014 | `jasper/control/server.py` :: _make_handler / class Handler | should-fix | W5 | **open** | — |
 | DA-0018 | `jasper/multiroom/reconcile.py` :: _ensure_unit_active:1226-1274 | should-fix | W5 | **fixed** | shared reset-failed helper + start OSError containment; recovery probes now fail closed — #1299 |
 | DA-0023 | `jasper/voice/gemini_session.py` :: _open_session / _receive_loop | should-fix | W5 | **fixed** | obsolete object-identity INFO probes removed; concise lifecycle timing retained — #1302 |
-| DA-0025 | `jasper/wake_corpus/bridge_session.py` :: voice_daemon_active:2107 | should-fix | W5 | **open** | — |
+| DA-0025 | `jasper/wake_corpus/bridge_session.py` :: voice_daemon_active:2107 | should-fix | W5 | **fixed** | bounded strict unit-state probe fails closed before corpus-mode mutation — #1304 |
 | DA-0026 | `jasper/wake_events.py` :: _STAGE_TO_COLUMN | should-fix | W5 | **open** | — |
 | DA-0028 | `jasper/web/bluetooth_setup.py` :: _start_pair_stream / _drive | should-fix | W5 | **fixed** | unexpected pair-driver failures now emit one structured error with traceback — #1301 |
 | DA-0031 | `jasper/web/rooms_setup.py` :: _self_addresses / _lan_target / _post_groupi | should-fix | W5 | **open** | — |
@@ -315,7 +315,7 @@ Last reconciled against `main` (`d52fd099`): 2026-07-12.
 | DA-0375 | `jasper/wake_corpus/bridge_session.py` :: :1237 | nit | W5 | **open** | — |
 | DA-0376 | `jasper/wake_corpus/bridge_session.py` :: :153 | nit | W5 | **open** | — |
 | DA-0377 | `jasper/wake_corpus/bridge_session.py` :: _enabled_legs_from_metadata:1552 | nit | W5 | **open** | — |
-| DA-0378 | `jasper/wake_corpus/bridge_session.py` :: voice_daemon_active:2109 | nit | W5 | **open** | — |
+| DA-0378 | `jasper/wake_corpus/bridge_session.py` :: voice_daemon_active:2109 | nit | W5 | **fixed** | redundant function-local subprocess import removed — #1304 |
 | DA-0379 | `jasper/wake_corpus/recording_backend.py` :: RecordingBackend._write_active_session_marke | nit | W5 | **open** | — |
 | DA-0380 | `jasper/wake_corpus/recording_backend.py` :: RecordingBackend.begin_session | nit | W5 | **open** | — |
 | DA-0381 | `jasper/weather.py` :: WeatherClient._get_json | nit | W5 | **open** | — |
