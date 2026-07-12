@@ -31,8 +31,12 @@
 
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
-PI_USER="${PI_USER:-pi}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
+# shellcheck source=scripts/_chip_aec_experiment_lib.sh
+. "${SCRIPT_DIR}/_chip_aec_experiment_lib.sh"
+
 REPEATS="${REPEATS:-3}"
 SECS="${SECS:-6}"
 GAP="${GAP:-8}"
@@ -46,80 +50,7 @@ TS="$(date +%Y%m%d-%H%M%S)"
 OUTDIR="captures/chip-aec-baseline/${TS}"
 mkdir -p "$OUTDIR"
 
-RESTORE_NEEDED=0
-
-prompt() {
-  if [[ "${ASSUME_READY:-0}" = "1" ]]; then
-    return
-  fi
-  echo
-  echo "------------------------------------------"
-  echo "$@"
-  echo "------------------------------------------"
-  read -r -p "Press Enter when ready... " _ < /dev/tty
-}
-
-ssh_pi() {
-  ssh "${PI_USER}@${PI_HOST}" "$@"
-}
-
-set_bypass() {
-  local value="$1"
-  ssh_pi "sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS --values ${value} >/dev/null"
-  echo "  SHF_BYPASS = ${value} ($([[ "${value}" = "0" ]] && echo "chip AEC ON" || echo "chip AEC bypassed"))"
-}
-
-daemon_set_mode() {
-  local mode="$1"
-  local extra=""
-  if [[ "$mode" = "ref-only" ]]; then
-    extra="--ref-only"
-  fi
-
-  ssh_pi "set -e
-    module='jasper.chip_aec'_experiment
-    module_re='[j]asper[.]chip_aec_experiment'
-    boundary=\$(wc -l < /var/log/chip-aec-experiment.log 2>/dev/null || echo 0)
-    sudo pkill -f \"\$module_re\" 2>/dev/null || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      pgrep -f \"\$module_re\" >/dev/null || break
-      sleep 0.4
-    done
-    if pgrep -f \"\$module_re\" >/dev/null; then
-      echo '    old daemon did not exit after SIGTERM; sending SIGKILL'
-      sudo pkill -9 -f \"\$module_re\" || true
-      sleep 0.5
-    fi
-    sudo bash -c \"nohup /opt/jasper/.venv/bin/python -m \$module --ref-delay-ms '${REF_DELAY_MS}' --mic-channel '${MIC_CHANNEL}' ${extra} >> /var/log/chip-aec-experiment.log 2>&1 < /dev/null &\"
-    sleep 2
-    if ! pgrep -f \"\$module_re\" >/dev/null; then
-      echo '    FAILED to restart daemon in ${mode} mode - last 20 log lines:'
-      sudo tail -20 /var/log/chip-aec-experiment.log
-      exit 1
-    fi
-    new_lines=\$(sudo tail -n +\$((boundary + 1)) /var/log/chip-aec-experiment.log 2>/dev/null || true)
-    if echo \"\$new_lines\" | grep -qE '(ref feeder|mic pump) open failed'; then
-      echo '    daemon process alive but PCM open failed - log excerpt:'
-      echo \"\$new_lines\" | grep -E 'open failed' | head -5
-      exit 1
-    fi
-    echo \"    daemon now in ${mode} mode (PID \$(pgrep -f \"\$module_re\"))\"
-  "
-}
-
-cleanup() {
-  local rc=$?
-  if [[ "$RESTORE_NEEDED" = "1" ]]; then
-    echo
-    echo "==> Restoring chip-AEC experiment daemon for convergence testing"
-    set +e
-    set_bypass 0
-    daemon_set_mode full
-    set -e
-  fi
-  exit "$rc"
-}
-trap cleanup EXIT
+chip_aec_install_restore_trap
 
 capture_run() {
   local idx="$1"
@@ -129,7 +60,7 @@ capture_run() {
 
   echo
   echo "==> Capture ${idx}/${REPEATS}: ${SECS}s simultaneous ref + chip mic"
-  ssh_pi "set -euo pipefail
+  chip_aec_ssh "set -euo pipefail
     rm -rf '${remote_dir}'
     mkdir -p '${remote_dir}'
 
@@ -201,9 +132,9 @@ PYREMOTE
     test -s '${remote_dir}/mic6.wav'
   "
 
-  ssh_pi "cat '${remote_dir}/ref.wav'" > "${OUTDIR}/${run_label}_ref.wav"
-  ssh_pi "cat '${remote_dir}/mic6.wav'" > "${OUTDIR}/${run_label}_mic6.wav"
-  ssh_pi "rm -rf '${remote_dir}'"
+  chip_aec_ssh "cat '${remote_dir}/ref.wav'" > "${OUTDIR}/${run_label}_ref.wav"
+  chip_aec_ssh "cat '${remote_dir}/mic6.wav'" > "${OUTDIR}/${run_label}_mic6.wav"
+  chip_aec_ssh "rm -rf '${remote_dir}'"
   echo "    wrote ${OUTDIR}/${run_label}_ref.wav"
   echo "    wrote ${OUTDIR}/${run_label}_mic6.wav"
 }
@@ -215,7 +146,7 @@ echo "Repeats: ${REPEATS}  Capture length: ${SECS}s  Gap: ${GAP}s  Stimulus: ${S
 echo
 
 echo "==> Route sanity"
-ssh_pi "set -e
+chip_aec_ssh "set -e
   pgrep -f '[j]asper.chip_aec_experiment' >/dev/null
   echo '  daemon PID(s):' \$(pgrep -f '[j]asper.chip_aec_experiment')
   echo '  chip USB-IN playback status:'
@@ -224,16 +155,17 @@ ssh_pi "set -e
   sudo tail -40 /var/log/chip-aec-experiment.log 2>/dev/null | grep -E 'ref feeder|open failed|unhandled|underrun|write error' | tail -8 | sed 's/^/    /' || true
 "
 
-prompt "Start steady music through the speaker now.
+if [[ "${ASSUME_READY:-0}" != "1" ]]; then
+  chip_aec_prompt "Start steady music through the speaker now.
 Use the source and volume you want to test. Keep it playing through all
 ${REPEATS} baseline captures. The script will temporarily bypass chip AEC,
 measure the reference and mic echo, then restore chip AEC for convergence."
+fi
 
 echo
 echo "==> Switching daemon to --ref-only and bypassing chip AEC for measurement"
-RESTORE_NEEDED=1
-daemon_set_mode ref-only
-set_bypass 1
+chip_aec_enter_ref_only
+chip_aec_set_bypass 1
 
 for i in $(seq 1 "$REPEATS"); do
   capture_run "$i"
@@ -242,6 +174,8 @@ for i in $(seq 1 "$REPEATS"); do
     sleep "$GAP"
   fi
 done
+
+chip_aec_restore_full
 
 echo
 echo "==> Analyzing baseline captures"
