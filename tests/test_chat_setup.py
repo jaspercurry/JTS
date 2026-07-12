@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import stat
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -27,6 +30,33 @@ from jasper.conversation_history import (
     read_settings,
 )
 from jasper.web import chat_setup
+
+_ROOT = Path(__file__).resolve().parents[1]
+_CHAT_VIEWS_TEST = _ROOT / "tests" / "js" / "chat_views_test.mjs"
+_CHAT_VIEWS_JS = _ROOT / "deploy" / "assets" / "chat" / "js" / "views.js"
+_NODE = shutil.which("node")
+
+
+def test_chat_view_date_helpers_in_new_york_timezone():
+    if _NODE is None:
+        pytest.skip("node is required for the chat views date harness")
+
+    env = {**os.environ, "TZ": "America/New_York"}
+    assert env["TZ"] == "America/New_York"
+    result = subprocess.run(
+        [_NODE, str(_CHAT_VIEWS_TEST), str(_CHAT_VIEWS_JS)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {
+        "ok": True,
+        "timezone": "America/New_York",
+    }
+
 
 def _turn(
     ts_utc: str,
