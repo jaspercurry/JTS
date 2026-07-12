@@ -455,11 +455,14 @@ def _xvf_mic_probe() -> MicProbe:
         )
 
 
-def _chip_aec_available() -> bool:
-    """True when the detected XVF variant has a validated beam plan."""
+def _chip_aec_available(mic_probe: MicProbe) -> bool:
+    """True when one mic snapshot names a production-validated beam plan."""
+    if not mic_probe.xvf_present or not mic_probe.chip_beam_plan:
+        return False
     try:
         from ..mics import xvf3800
-        return xvf3800.detect_runtime_profile().chip_aec_supported
+        plan = xvf3800.chip_beam_plan(mic_probe.chip_beam_plan)
+        return bool(plan and plan.production_validated)
     except Exception:  # noqa: BLE001
         return False
 
@@ -524,20 +527,6 @@ def _chip_aec_gate(
     return payload
 
 
-def _mic_status(
-    state: dict[str, Any],
-    *,
-    bridge_active: bool,
-    chip_available: bool,
-) -> dict[str, Any]:
-    """Compatibility wrapper for callers that only need mic status."""
-    return _audio_profile_status(
-        state,
-        bridge_active=bridge_active,
-        chip_available=chip_available,
-    )["microphone"]
-
-
 def _aec_full_status() -> dict:
     """JSON shape returned by GET /aec — the single source of truth
     for the /wake/ page's detection card. Includes both the configured
@@ -559,7 +548,7 @@ def _aec_full_status() -> dict:
     # Wrap defensively so a profile probe failure can never 500 a status
     # GET the /wake/ page polls every 3 s.
     mic_probe = _xvf_mic_probe()
-    chip_available = bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
+    chip_available = _chip_aec_available(mic_probe)
     chip_gate = _chip_aec_gate(env, state, mic_available=chip_available)
     requested_intent = AecIntent(
         mode=state["mode"],

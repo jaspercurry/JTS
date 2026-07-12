@@ -597,45 +597,6 @@ def _fresh_jasper_env() -> dict[str, str]:
 _server_fresh_jasper_env_wrapper = _fresh_jasper_env
 
 
-def _read_wake_word_status() -> dict[str, Any]:
-    _sync_aec_module()
-    return _aec_endpoints._read_wake_word_status()
-
-
-def _audio_profile_status(
-    state: dict[str, Any],
-    *,
-    bridge_active: bool,
-    chip_available: bool,
-    chip_gate: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    _sync_aec_module()
-    return _aec_endpoints._audio_profile_status(
-        state,
-        bridge_active=bridge_active,
-        chip_available=chip_available,
-        chip_gate=chip_gate,
-    )
-
-
-def _chip_aec_available() -> bool:
-    return _aec_endpoints._chip_aec_available()
-
-
-def _mic_status(
-    state: dict[str, Any],
-    *,
-    bridge_active: bool,
-    chip_available: bool,
-) -> dict[str, Any]:
-    _sync_aec_module()
-    return _aec_endpoints._mic_status(
-        state,
-        bridge_active=bridge_active,
-        chip_available=chip_available,
-    )
-
-
 def _aec_full_status() -> dict:
     _sync_aec_module()
     previous_fresh_env = _aec_endpoints._fresh_jasper_env
