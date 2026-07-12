@@ -795,7 +795,10 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   The safe level probe chooses non-clipping playback headroom only; acoustic
   accept/reduce/refuse comes from per-band SNR after the signal and ambient
   traverse the same regularized inverse, signal-owned arrival window and
-  reflection gate, and calibration domain. Interim bounded-four state is
+  reflection gate, and calibration domain. The ambient counterfactual is
+  tiled and aligned to the signal-derived direct-arrival sample because the
+  phone starts recording before the armed POST; it never assumes playback
+  begins exactly `ambient_duration_s` into the WAV. Interim bounded-four state is
   compactly persisted in the commissioning bundle; a service restart preserves
   its attempts and marks it aborted instead of silently starting at one. The
   envelope then requires a new driver level check before another capture, so a

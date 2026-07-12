@@ -454,6 +454,7 @@ def test_stored_ambient_uses_signal_window_and_recovers_known_snr_gain(
     assert high.ambient["operator"] == {
         "deconvolution": "regularized_fft_inverse",
         "arrival_window_source": "signal",
+        "ambient_alignment_source": "signal_direct_arrival",
         "reflection_gate_source": None,
         "calibration_applied_to_signal_and_noise": False,
     }
@@ -493,6 +494,52 @@ def test_stored_ambient_uses_signal_window_and_recovers_known_snr_gain(
     assert [band["estimated_snr_db"] for band in calibrated.snr["bands"]] == [
         band["estimated_snr_db"] for band in high.snr["bands"]
     ]
+
+
+@pytest.mark.parametrize("relay_delay_s", [0.05, 0.25, 0.8])
+@pytest.mark.parametrize(
+    ("sweep_gain", "expected_snr_db", "expected_verdict"),
+    [(0.09, 20.0, "reduced"), (0.99, 40.0, "ok")],
+)
+def test_stored_ambient_snr_tracks_signal_arrival_after_relay_delay(
+    tmp_path, relay_delay_s, sweep_gain, expected_snr_db, expected_verdict
+):
+    """Recorder-start → armed/poll latency never moves the ambient oracle.
+
+    The stored prefix and playback-time ambient are the same stationary
+    sweep-shaped fixture. Only an arbitrary relay delay separates them. The
+    signal-derived direct-arrival alignment must retain the exact 20/40 dB
+    oracle instead of sampling a guessed ``ambient_duration_s`` boundary.
+    """
+
+    reference, sweep_meta = sweep_mod.synchronized_swept_sine(
+        f1=20.0,
+        f2=12000.0,
+        duration_approx_s=1.0,
+        sample_rate=SR,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    ambient = 0.01 * reference.astype(np.float64)
+    extra_prefix = np.resize(ambient, int(relay_delay_s * SR))
+    captured = np.concatenate([
+        ambient,
+        extra_prefix,
+        sweep_gain * reference + ambient,
+    ])
+    path = tmp_path / f"delayed-{relay_delay_s}-{sweep_gain}.wav"
+    wavfile.write(path, SR, captured.astype(np.float32))
+
+    result = da.analyze_driver_capture(
+        path,
+        sweep_meta.to_dict(),
+        passband_hz=(100.0, 8000.0),
+        ambient_duration_s=len(ambient) / SR,
+    )
+
+    assert [band["estimated_snr_db"] for band in result.snr["bands"]] == [
+        expected_snr_db
+    ] * 6
+    assert result.snr["verdict"] == expected_verdict
 
 
 def test_driver_capture_snr_block_is_none_without_noise_input(tmp_path):

@@ -349,10 +349,16 @@ def band_snr_verdicts(
         if noise_band is not None:
             noise_level = _to_float(noise_band.get("level_dbfs"))
             if noise_level is not None:
-                estimated_snr_db = capture_level - noise_level
+                # Verdict and displayed evidence share the measurement's
+                # meaningful one-decimal precision. Without this normalization
+                # a binary-float 19.999999 result displayed as 20.0 dB failed
+                # the inclusive 20 dB reduced-confidence threshold.
+                estimated_snr_db = round(capture_level - noise_level, 1)
                 method = band_method
         if method == "none" and noise_floor_dbfs_scalar is not None:
-            estimated_snr_db = capture_level - float(noise_floor_dbfs_scalar)
+            estimated_snr_db = round(
+                capture_level - float(noise_floor_dbfs_scalar), 1
+            )
             method = "scalar_fallback"
 
         verdict, shortfall_db = _band_verdict(

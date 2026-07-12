@@ -205,6 +205,9 @@
   `capture_page_build=20260712.2`, supporting
   protocols 1 and 2; publish it
   before deploying a Pi that emits v2 specs.
+  **Pending release gate (verified 2026-07-12):** the public page still reports
+  `capture_page_build=20260711.4`. Publish the repo's `20260712.2` page only
+  after this code merges, and do so before the matching Pi deploy.
   Relay room level setup temporarily suspends the local browser's 120-second
   upload watchdog while the human completes mic permission, calibration,
   placement, and auto-level, then restores a fresh bound for the actual room

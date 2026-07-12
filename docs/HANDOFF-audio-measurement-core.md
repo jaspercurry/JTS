@@ -150,6 +150,9 @@ The product is three tiers:
   compares deconvolved sweep-band magnitude against ambient passed through
   the same regularized inverse, signal-owned arrival window/reflection gate,
   and calibration domain (ambient noise never selects its own IR argmax).
+  Because the phone records before posting `armed`, the true sweep is not at
+  `ambient_duration_s`; the counterfactual is tiled and phase-aligned at the
+  signal's measured direct-arrival sample, never a guessed transport boundary.
   The normal path collects three exact-position repeats,
   keeps their WAVs and acceptance evidence, and writes one durable driver
   measurement only after the shared repeat aggregator accepts at least two;
@@ -437,7 +440,8 @@ one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
    and advances its repeat count. The final record uses the repeat kernel's
    median representative and aggregate spread. Its band SNR compares the
    deconvolved sweep against the stored ambient prefix after the same
-   signal-owned linear windows and calibration domain; 25/20 dB magnitude
+   signal-owned direct-arrival alignment, linear windows, and calibration
+   domain; 25/20 dB magnitude
    pass/warn policy remains authoritative. Fewer
    than two accepted captures after the bounded fourth attempt refuses the
    driver and asks for a quieter room or an external-amplifier adjustment.

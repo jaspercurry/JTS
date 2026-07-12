@@ -42,7 +42,9 @@
 > The Pi runs the sweep and stored ambient through the same regularized inverse,
 > applies the signal-owned arrival window and reflection gate to both (ambient
 > noise never chooses its own random argmax), applies the same calibration
-> domain, and admits driver evidence through the
+> domain, and aligns the tiled ambient counterfactual at the signal-derived
+> direct arrival rather than assuming the sweep begins exactly after the Pi's
+> ambient sleep (the phone began recording before `armed`). It admits driver evidence through the
 > three-repeat kernel (one bounded fourth try; at least two accepted). The
 > protected level ramp therefore sets playback headroom only and never supplies
 > the acoustic SNR verdict. The capture page defaults a newly selected UMIK-2

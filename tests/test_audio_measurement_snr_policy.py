@@ -157,6 +157,30 @@ def test_magnitude_class_22db_reads_reduced_with_shortfall_against_ok():
     assert out["verdict"] == "reduced"
 
 
+@pytest.mark.parametrize(
+    ("capture_level", "expected_snr", "expected_verdict"),
+    [
+        (-20.0000001, 20.0, "reduced"),
+        (-20.1, 19.9, "insufficient"),
+    ],
+)
+def test_magnitude_warn_boundary_uses_displayed_inclusive_precision(
+    capture_level, expected_snr, expected_verdict
+):
+    out = snr_policy.band_snr_verdicts(
+        decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
+        capture_bands=_bands([("mid", 1000.0, 4000.0, capture_level)]),
+        noise_bands=_bands([("mid", 1000.0, 4000.0, -40.0)]),
+        noise_floor_dbfs_scalar=None,
+        relevant_hz=(1000.0, 4000.0),
+        model=DRIVER,
+    )
+
+    assert out["bands"][0]["estimated_snr_db"] == expected_snr
+    assert out["bands"][0]["verdict"] == expected_verdict
+    assert out["verdict"] == expected_verdict
+
+
 def test_magnitude_class_17db_reads_insufficient_with_missing_db_report():
     # The design doc's own worked example ("17.4 dB SNR; 2.6 dB more needed"):
     # 20.0 dB (snr_warn_db) - 17.4 dB = 2.6 dB missing.

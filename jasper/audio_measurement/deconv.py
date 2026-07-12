@@ -137,6 +137,7 @@ def direct_arrival_window(
     full_ir: np.ndarray,
     sample_rate: int,
     *,
+    direct_peak_idx: int | None = None,
     pre_arrival_ms: float = DEFAULT_PRE_ARRIVAL_MS,
     post_arrival_ms: float = DEFAULT_POST_ARRIVAL_MS,
 ) -> tuple[int, int]:
@@ -144,7 +145,13 @@ def direct_arrival_window(
 
     if full_ir.ndim != 1 or full_ir.size == 0:
         raise ValueError("full_ir must be non-empty 1-D data")
-    peak_idx = int(np.argmax(np.abs(full_ir)))
+    peak_idx = (
+        int(np.argmax(np.abs(full_ir)))
+        if direct_peak_idx is None
+        else int(direct_peak_idx)
+    )
+    if not 0 <= peak_idx < len(full_ir):
+        raise ValueError("direct peak is outside the full impulse response")
     pre_samples = max(0, int(round(pre_arrival_ms * sample_rate / 1000)))
     post_samples = max(1, int(round(post_arrival_ms * sample_rate / 1000)))
     return max(0, peak_idx - pre_samples), min(

@@ -1019,6 +1019,19 @@ def test_aggregate_rejects_on_snr_insufficient_when_lane_b_block_present():
     assert result["accepted"] == 2
 
 
+def test_aggregate_accepts_exact_warn_boundary_reduced_snr():
+    repeats = [
+        _repeat(-30.0, snr_verdict="reduced"),
+        _repeat(-30.1, snr_verdict="reduced"),
+        _repeat(-29.9, snr_verdict="reduced"),
+    ]
+
+    result = aggregate_driver_repeats(repeats)
+
+    assert result["accepted"] == 3
+    assert all(entry["reject_reason"] is None for entry in result["per_repeat"])
+
+
 def test_aggregate_rejects_below_validity_floor_when_lane_a_block_present():
     repeats = [
         _repeat(-30.0),

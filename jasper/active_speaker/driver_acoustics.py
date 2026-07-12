@@ -409,7 +409,10 @@ def _capture_to_magnitude(
         reference.astype(np.float64),
         sample_rate=sr,
     )
-    arrival_window = deconv.direct_arrival_window(full_signal_ir, sr)
+    arrival_peak_idx = int(np.argmax(np.abs(full_signal_ir)))
+    arrival_window = deconv.direct_arrival_window(
+        full_signal_ir, sr, direct_peak_idx=arrival_peak_idx
+    )
     ir = deconv.apply_arrival_window(full_signal_ir, arrival_window)
     noise_ir = None
     ambient_source = None
@@ -420,20 +423,21 @@ def _capture_to_magnitude(
                 "stored ambient must cover the sweep and precede its full capture"
             )
         ambient_source = captured[:ambient_count]
-        # Counterfactual noise during playback: place the stored ambient segment
-        # at the exact sweep position in an equal-length capture. Signal and
-        # noise then traverse the same inverse filter, signal-owned arrival
-        # window, and (below) signal-owned reflection gate. The zeros outside
-        # the counterfactual segment only preserve capture length/alignment;
-        # they do NOT make two independently chosen windows equivalent.
-        noise_capture = np.zeros_like(captured, dtype=np.float64)
-        # Preserve the actually recorded prefix too: any finite-window inverse
-        # leakage it contributes to the signal IR must also be present in the
-        # noise counterfactual, not silently counted as sweep energy.
-        noise_capture[:ambient_count] = ambient_source
-        noise_capture[ambient_count:ambient_count + len(reference)] = (
-            ambient_source[:len(reference)]
-        )
+        # Stationary counterfactual noise during playback. The phone begins
+        # recording before it posts ``armed``; relay/poll latency means the true
+        # sweep start is NOT ``ambient_count`` samples into the WAV. Repeat the
+        # measured ambient across the whole capture instead of guessing that
+        # unobservable boundary (or zero-padding around it). The signal's
+        # deconvolved direct-arrival sample is the observable alignment marker:
+        # restart the stored stationary sample there so the same arrival window
+        # samples ambient at the actual signal-derived location. Signal/noise
+        # still traverse the same inverse filter and reflection gate.
+        if not 0 <= arrival_peak_idx < len(captured):
+            raise ValueError("signal arrival is outside the captured WAV")
+        ambient_indices = (
+            np.arange(len(captured), dtype=np.int64) - arrival_peak_idx
+        ) % len(ambient_source)
+        noise_capture = ambient_source[ambient_indices].astype(np.float64)
         full_noise_ir = deconv.regularized_deconvolution_full(
             noise_capture,
             reference.astype(np.float64),
@@ -517,6 +521,7 @@ def _capture_to_magnitude(
             "operator": {
                 "deconvolution": "regularized_fft_inverse",
                 "arrival_window_source": "signal",
+                "ambient_alignment_source": "signal_direct_arrival",
                 "reflection_gate_source": (
                     "signal" if capture_geometry == "reference_axis" else None
                 ),
