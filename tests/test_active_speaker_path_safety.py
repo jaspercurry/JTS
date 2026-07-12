@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import json
+import stat
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,31 @@ from jasper.active_speaker.staging import stage_protected_startup_config
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
+
+
+def test_path_safety_writer_preserves_private_mode(tmp_path: Path) -> None:
+    path = write_path_safety_evidence(
+        {"safe": True},
+        path=tmp_path / "evidence.json",
+    )
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert json.loads(path.read_text()) == {"safe": True}
+
+
+def test_path_safety_writer_inherits_parent_group(monkeypatch) -> None:
+    import jasper.active_speaker.path_safety as path_safety
+
+    calls = []
+    monkeypatch.setattr(
+        path_safety,
+        "atomic_write_text",
+        lambda path, text, **kwargs: calls.append((path, text, kwargs)),
+    )
+
+    path_safety._atomic_write_json(Path("evidence.json"), {"safe": True})
+
+    assert calls[0][2] == {"mode": 0o640, "group_from_parent": True}
 
 
 def _topology(*, identity_verified: bool = True) -> OutputTopology:

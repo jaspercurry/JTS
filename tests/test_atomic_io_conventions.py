@@ -42,7 +42,6 @@ _ALLOWLIST = {
     "jasper/wifi_guardian_persistence.py",
     # Plain burn-down candidates (no fsync; mostly text/YAML/JSON with
     # an explicit chmod) — exact fits for atomic_write_text(mode=...).
-    "jasper/active_speaker/path_safety.py",
     "jasper/active_speaker/staging.py",
     "jasper/active_speaker/startup_load.py",
     "jasper/assistant_loudness.py",
