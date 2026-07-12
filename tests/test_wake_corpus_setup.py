@@ -3576,8 +3576,11 @@ def test_html_playback_uses_leg_selector() -> None:
     assert 'orderedLegs(c.files || {})' in js
     assert "'usb_dtln', 'ref'" in js
     assert 'encodeURIComponent(ev.target.value)' in js
-    assert "on: 'XVF WebRTC AEC3'" in js
-    # The sweep/legacy leg labels are injected via the config island.
+    assert 'import { createLegLabels } from "./labels.js";' in js
+    assert "on: 'XVF WebRTC AEC3'" not in js
+    # All base + sweep/legacy leg labels are injected via the config island.
+    for label in wake_corpus_setup.LEG_LABELS.values():
+        assert label in html_text
     assert "aec3_variant_1" in html_text
     assert "aec3_variant_2" in html_text
     assert "aec3_variant_3" in html_text
@@ -3588,9 +3591,8 @@ def test_html_playback_uses_leg_selector() -> None:
     assert "aec3_nearend_fast" in html_text
     assert "aec3_slow_attack" in html_text
     assert "USB AEC3 edge combo 80 ms" in html_text  # usb_webrtc corpus label
-    assert "USB_AEC3_SWEEP_BASELINE_LABEL" in js
-    assert "session?.include_aec3_sweep" in js
-    assert "usb_dtln: 'USB DTLN'" in js
+    assert "createLegLabels(_config)" in js
+    assert "usb_dtln: 'USB DTLN'" not in js
 
 
 def test_html_js_calls_sessions_endpoints() -> None:
