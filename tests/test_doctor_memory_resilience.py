@@ -478,11 +478,17 @@ _PID_MAP = {
     "jasper-fanin": "1003",
     "jasper-aec-bridge": "1004",
     "jasper-control": "1005",
-    "jasper-voice": "1006",
-    "nginx": "1007",
-    "jasper-mux": "1008",
-    "jasper-input": "1009",
-    "ssh": "1010",
+    "jasper-usbsink": "1006",
+    "jasper-voice": "1007",
+    "jasper-camilla-crossover": "1008",
+    "nginx": "1009",
+    "jasper-mux": "1010",
+    "jasper-input": "1011",
+    "jasper-wiim-remote-mic": "1012",
+    "jasper-snapclient": "1013",
+    "jasper-snapserver": "1014",
+    "ssh": "1015",
+    "jasper-usbsink-volume": "1016",
 }
 
 _EXPECTED_CONFIG = {
@@ -491,11 +497,17 @@ _EXPECTED_CONFIG = {
     "jasper-fanin": "-800",
     "jasper-aec-bridge": "-700",
     "jasper-control": "-600",
+    "jasper-usbsink": "-600",
     "jasper-voice": "-500",
+    "jasper-camilla-crossover": "-500",
     "nginx": "-450",
     "jasper-mux": "-300",
     "jasper-input": "-300",
+    "jasper-wiim-remote-mic": "-300",
+    "jasper-snapclient": "-300",
+    "jasper-snapserver": "-300",
     "ssh": "-250",
+    "jasper-usbsink-volume": "100",
 }
 
 
@@ -539,6 +551,7 @@ def test_oom_score_adj_skips_units_not_installed_on_streambox():
         "jasper-voice": "not-found",
         "jasper-aec-bridge": "not-found",
         "jasper-input": "not-found",
+        "jasper-wiim-remote-mic": "not-found",
     }
     # Absent units default to 0 (would be drift if not skipped); present
     # units match expected and have no live process drift.
@@ -560,18 +573,19 @@ def test_oom_score_adj_skips_units_not_installed_on_streambox():
     assert r.status == "ok", r.detail
     for unit in absent:
         assert unit not in r.detail
-    # The remaining 7 installed daemons are still verified.
-    assert "7 critical daemons protected" in r.detail
+    # The remaining 12 installed daemons are still verified.
+    assert "12 critical daemons protected" in r.detail
 
 
 def test_oom_score_adj_warns_on_present_drift_with_others_absent():
     """Mixed profile: the installed-unit filter must not swallow REAL drift
-    on a present unit. Streambox (voice/AEC/input absent) + a present,
+    on a present unit. Streambox (voice/AEC/input/WiiM absent) + a present,
     config-drifted jasper-mux → warn naming only the present unit."""
     absent = {
         "jasper-voice": "not-found",
         "jasper-aec-bridge": "not-found",
         "jasper-input": "not-found",
+        "jasper-wiim-remote-mic": "not-found",
     }
     config = dict(_EXPECTED_CONFIG)
     pid_map = dict(_PID_MAP)
@@ -597,10 +611,12 @@ def test_oom_score_adj_warns_on_present_drift_with_others_absent():
 
 _LIVE_OK = {
     "1001": "-950", "1002": "-900", "1003": "-800",
-    "1004": "-700", "1005": "-600", "1006": "-500",
-    "1007": "-450",
-    "1008": "-300", "1009": "-300",
-    "1010": "-250",   # ssh recovery path, still killable
+    "1004": "-700", "1005": "-600", "1006": "-600",
+    "1007": "-500", "1008": "-500", "1009": "-450",
+    "1010": "-300", "1011": "-300", "1012": "-300",
+    "1013": "-300", "1014": "-300",
+    "1015": "-250",   # ssh recovery path, still killable
+    "1016": "100",
 }
 
 
@@ -617,7 +633,7 @@ def test_oom_score_adj_all_match():
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
-    assert "10 critical daemons protected" in r.detail
+    assert "16 critical daemons protected" in r.detail
 
 
 def test_oom_score_adj_warns_if_sshd_drifts():
@@ -627,7 +643,7 @@ def test_oom_score_adj_warns_if_sshd_drifts():
     def fake_read(self):
         pid_str = str(self).split("/")[2]
         live = dict(_LIVE_OK)
-        live["1010"] = "0"  # sshd drifted to default
+        live["1015"] = "0"  # sshd drifted to default
         return live.get(pid_str, "0") + "\n"
 
     # Also reflect the drift in the unit file's configured value, so
@@ -649,7 +665,7 @@ def test_oom_score_adj_ignores_openssh_listener_self_protection():
     def fake_read(self):
         pid_str = str(self).split("/")[2]
         live = dict(_LIVE_OK)
-        live["1010"] = "-1000"
+        live["1015"] = "-1000"
         return live.get(pid_str, "0") + "\n"
 
     with patch.object(doctor._shared, "_run",

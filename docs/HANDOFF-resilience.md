@@ -522,11 +522,12 @@ JTS ladder, descending priority:
 | `jasper-camilla` | -900 | Silence is the worst possible UX |
 | `jasper-fanin` | -800 | Renderer audio convergence point |
 | `jasper-aec-bridge` | -700 | Real-time mic processing |
-| `jasper-control` | -600 | Recovery surface (operator can't reach /system/ without it) |
-| `jasper-voice` | -500 | Largest blast radius (~150 MB Pss; bound by Stage 2's MemoryMax once cgroup memory lands) |
+| `jasper-control`, `jasper-usbsink` | -600 | Recovery surface plus the optional USB-audio intent/liveness owner |
+| `jasper-voice`, `jasper-camilla-crossover` | -500 | Voice's large blast radius plus the reconciler-gated active-speaker crossover |
 | `nginx` | -450 | Management front door; package-owned, recoverable, protected below control/voice/audio |
-| `jasper-mux`, `jasper-input`, `jasper-wiim-remote-mic` | -300 | Restartable control/accessory daemons; mux outage is now user-visible because fan-in starts safe/closed until mux selects a lane; WiiM mic is profile-gated and loss falls back to the normal voice mic path |
+| `jasper-mux`, `jasper-input`, `jasper-wiim-remote-mic`, `jasper-snapclient`, `jasper-snapserver` | -300 | Restartable control/accessory and managed grouping daemons; mux outage is user-visible because fan-in starts safe/closed; WiiM falls back to the normal mic; Snapcast is reconciler-recoverable |
 | `sshd` | -250 | Recovery path; moderately protected, but SSH-launched diagnostics stay killable |
+| `jasper-usbsink-volume` | +100 | Optional long-running, non-real-time volume observer; deliberately preferred over audio/control owners |
 
 Critical: **nothing operator-launched through SSH should inherit
 -1000** because that fully disables OOM-kill for that PID. This was
@@ -708,8 +709,9 @@ verification is whether `/sys/fs/cgroup/cgroup.controllers` includes
 `MemorySwapMax=0`:
 
 ```
-jts-audio.slice          ← jasper-fanin, jasper-camilla, shairport-sync,
-                            librespot, bluealsa-aplay
+jts-audio.slice          ← jasper-outputd, jasper-fanin, jasper-camilla,
+                            jasper-camilla-crossover, jasper-usbsink
+                         ← shairport-sync, librespot, bluealsa-aplay
                          ← bonded grouping: jasper-snapclient /
                             jasper-snapserver managed units
                           MemorySwapMax=0
@@ -1372,7 +1374,9 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-07-12 (Wi-Fi wizard action/exception events and their
+Last verified: 2026-07-12 (jts-audio.slice membership and the complete
+OOMScoreAdjust ladder rechecked against every current unit/drop-in; Wi-Fi
+wizard action/exception events and their
 operator journal query rechecked against the real HTTP handler; output-DAC
 staged transport coherence and optional
 chip-reference failure isolation rechecked against the runtime plan,

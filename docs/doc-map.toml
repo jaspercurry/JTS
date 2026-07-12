@@ -940,6 +940,7 @@ id = "resilience-and-system-dashboard"
 title = "Resilience, watchdogs, system dashboard, and health surfaces"
 safety = "boot-risk"
 code = [
+  "jasper/_oom_adj.py",
   "jasper/watchdog.py",
   "jasper/debug_mode.py",
   "jasper/flight_recorder.py",
