@@ -2012,7 +2012,6 @@ mod tests {
             chip_ref_observe: false,
             chip_ref_tee_path: None,
             reference_udp_target: None,
-            stream_id: 1,
             control_socket_path: None,
             dac_content_fifo: None,
             dac_content_channel: crate::dac_content::ChannelPick::Stereo,

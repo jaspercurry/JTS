@@ -114,7 +114,7 @@ fn main() -> Result<()> {
 
     let result = match config.backend {
         BackendMode::Fake => {
-            let mut core = OutputCore::new_for_daemon(config.period_frames, config.stream_id);
+            let mut core = OutputCore::new_for_daemon(config.period_frames);
             run_fake(&config, &mut core, &state, once, &shutdown)
         }
         BackendMode::Alsa => run_alsa(&config, &state, once, &shutdown),
@@ -396,7 +396,7 @@ fn run_alsa(
             "event=outputd.tts.enabled socket={} budget_frames={} program_duck_db={}",
             path, config.tts_max_pending_frames, config.tts_program_duck_db,
         );
-        let core = OutputCore::new_for_daemon(config.period_frames, config.stream_id);
+        let core = OutputCore::new_for_daemon(config.period_frames);
         let bridge = TtsBridge::new(rx, flush_rx, metrics, config.tts_program_duck_db);
         Some((core, bridge))
     } else {
@@ -702,11 +702,10 @@ fn read_content_bridge_period(
 fn notify_ready(config: &Config) -> Result<()> {
     notify_systemd("READY=1").context("notifying systemd READY=1")?;
     eprintln!(
-        "event=outputd.ready backend={} sink_mode={} period_frames={} stream_id={}",
+        "event=outputd.ready backend={} sink_mode={} period_frames={}",
         config.backend.as_str(),
         config.sink_mode.as_str(),
-        config.period_frames,
-        config.stream_id
+        config.period_frames
     );
     Ok(())
 }
@@ -1447,7 +1446,6 @@ mod tests {
             chip_ref_observe: false,
             chip_ref_tee_path: None,
             reference_udp_target: None,
-            stream_id: 1,
             control_socket_path: None,
             dac_content_fifo: None,
             dac_content_channel: jasper_outputd::dac_content::ChannelPick::Stereo,

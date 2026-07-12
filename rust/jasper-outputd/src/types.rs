@@ -37,14 +37,3 @@ impl AudioFormat {
         (frames as usize) * (self.channels as usize)
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReferencePacket {
-    pub stream_id: u64,
-    pub sequence: u64,
-    pub monotonic_ns: u64,
-    pub format: AudioFormat,
-    pub frame_count: u32,
-    pub clipped_samples: u32,
-    pub samples: Vec<i16>,
-}
