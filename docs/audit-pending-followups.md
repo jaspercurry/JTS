@@ -44,10 +44,15 @@ problem — the actual cause was `multi`'s linked `period_size` constraint
 across slaves with different default period sizes. Pinning identical
 `period_size 1024` / `buffer_size 4096` on both leaves resolved it.
 
-`jasper-aec-tune` calibrates `AUDIO_MGR_SYS_DELAY` via white-noise
-cross-correlation; `jasper-aec-init.service` re-applies the persisted
-delay at every boot (firmware 2.0.6's `SAVE_CONFIGURATION` has a brick
-hazard per respeaker repo issue #8, so we don't persist on-chip).
+`jasper-aec-tune` estimates an `AUDIO_MGR_SYS_DELAY` candidate by
+cross-correlation and is diagnostic-only by default. Its explicit `--apply`
+mode is a guarded **volatile** lab write: it requires sufficient finite
+confidence, the firmware-confirmed `[-64,+256]` range, a present XVF, and an
+exact readback. It does not write a state file or persist on-chip (firmware
+2.0.6's `SAVE_CONFIGURATION` has a brick hazard per respeaker repo issue #8).
+The next `jasper-aec-init` run — including AEC reconcile or reboot — restores
+the active profile's `JASPER_AEC_*_CHIP_SYS_DELAY` value and therefore
+overwrites a manual tune write.
 
 **Hardware verification still pending.** The Tier 2 follow-ups below
 unlock once `jasper-aec-tune` produces a sane delay value AND

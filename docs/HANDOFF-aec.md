@@ -1921,8 +1921,9 @@ topology, regardless of configuration.
 - A `jasper-aec-init.service` that runs at boot to apply
   `AUDIO_MGR_SYS_DELAY` (the chip's bulk-delay tuning knob).
 - A `jasper-aec-tune` CLI that does white-noise cross-correlation
-  to measure the host-to-mic round-trip delay and program the
-  chip with the result.
+  to measure the host-to-mic round-trip delay. Its current default is
+  diagnostic-only; an explicit guarded `--apply` can write a candidate
+  to the chip for the current runtime only.
 - The JTS-owned `xvf_host.py` helper for talking to the chip's
   parameter API over USB vendor control transfers.
 
@@ -2081,7 +2082,7 @@ renderers / internal producers
                     ▼                                                   ▼
         reader A: jasper-camilla, via plug:jasper_capture   reader B: jasper-aec-bridge, via pcm.jasper_ref
           main_volume ducking + flat passthrough              captures jasper_ref (48k stereo) for FAR-END REFERENCE
-          writes to → pcm.jasper_out (dmix on dongle)         captures hw:Array,0 (XVF, 16k 6ch) for NEAR-END MIC
+          writes to → pcm.jasper_out (dmix on dongle)         captures detected supported XVF card, device 0 for NEAR-END MIC
           → speaker (audible path)                            takes channel 1 (ASR beam; chip AEC disabled via SHF_BYPASS=1)
                                                                downsamples ref 48k → 16k mono on left, HPF at 125 Hz
                                                                runs WebRTC AEC3 (10ms windows)
@@ -2301,9 +2302,15 @@ If RAM becomes a constraint, the highest-impact savings are:
 software fallback it applies the raw-ish XVF profile (`SHF_BYPASS=1`) for
 host-side WebRTC AEC3. In chip-AEC profiles it applies the volatile fixed-beam
 hardware-AEC profile and prepares the chip USB-IN reference path. The older
-`jasper-aec-tune` calibrator is still installed for diagnostics / future
-manual delay work, but the supported production path is profile-managed
-through the reconciler and `jasper-aec-init`.
+`jasper-aec-tune` is still installed for diagnostics / future manual delay
+work. It prints a candidate without changing state by default. Explicit
+`--apply` requires finite confidence of at least `0.001`, a candidate in the
+firmware-confirmed `[-64,+256]` range, a present XVF, and matching write
+readback. That write is volatile: the tool creates no delay state file and
+does not call `SAVE_CONFIGURATION`; the next AEC reconcile/init or reboot
+overwrites it from the active profile's `JASPER_AEC_*_CHIP_SYS_DELAY` value.
+The supported production path remains profile-managed through the reconciler
+and `jasper-aec-init`.
 
 ### What's still unmeasured: live in-person wake attempts
 
@@ -2330,8 +2337,9 @@ Files involved in the AEC subsystem:
   (`libwebrtc-audio-processing-1` v1.3-3 from Trixie's apt)
 - `jasper/cli/aec_init.py` — boot-time chip init (resets chip,
   sets UAC2 PCM to unity)
-- `jasper/cli/aec_tune.py` — calibrator for chip-side
-  `AUDIO_MGR_SYS_DELAY` (vestigial; kept for diagnostic use)
+- `jasper/cli/aec_tune.py` — diagnostic estimator for chip-side
+  `AUDIO_MGR_SYS_DELAY`; explicit `--apply` is a guarded volatile lab write,
+  not production configuration ownership
 - `jasper/xvf/xvf_host.py` — JTS-owned XVF3800 USB control helper
 - `jasper/cli/doctor/aec.py` — `check_aec_bridge_running`,
   `check_xvf_firmware_6ch`
@@ -2716,7 +2724,13 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-07-11 ("What we found about chip-side AEC in our
+Last verified: 2026-07-12 (`jasper-aec-tune` mic card and capture-width
+defaults rechecked against the shared XVF runtime profile, including the
+legacy hardware-absent fallback and registered Flex variants; its
+diagnostic-only default, guarded volatile apply/readback, reconciler overwrite
+semantics, and capture/volume/service cleanup contract were rechecked against
+`jasper/cli/aec_tune.py` and hardware-free tests; "What we
+found about chip-side AEC in our
 topology" section's obsolete verdict corrected with a superseded
 callout — the section previously read as a current negative verdict
 despite the doc's own TL;DR crediting Option D's 2026-05-29 lab result
