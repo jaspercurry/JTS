@@ -377,7 +377,7 @@ def test_maybe_auto_revert_swallows_errors(monkeypatch):
     assert correction_setup._maybe_auto_revert(sess) is False
 
 
-def test_auto_revert_accepts_target_detection():
+def test_target_config_path_parameter_detection_is_shared_by_reset_and_revert():
     # A function with the kwarg → True.
     async def with_kwarg(cam, *, target_config_path=None):
         return True
@@ -390,9 +390,9 @@ def test_auto_revert_accepts_target_detection():
     async def with_var_kwargs(cam, **kw):
         return True
 
-    assert correction_setup._auto_revert_accepts_target(with_kwarg) is True
-    assert correction_setup._auto_revert_accepts_target(without_kwarg) is False
-    assert correction_setup._auto_revert_accepts_target(with_var_kwargs) is True
+    assert correction_setup._accepts_target_config_path(with_kwarg) is True
+    assert correction_setup._accepts_target_config_path(without_kwarg) is False
+    assert correction_setup._accepts_target_config_path(with_var_kwargs) is True
 
 
 # ---------------------------------------------------------------------------
