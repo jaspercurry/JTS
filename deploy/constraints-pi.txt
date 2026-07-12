@@ -14,6 +14,20 @@
 #
 # install.sh passes this file to pip via -c ONLY when it exists;
 # deleting it reverts deploys to open-range resolution.
+#
+# 2026-07-11 coherence correction (#1275): pydantic_core, proto-plus,
+# googleapis-common-protos, and onnxruntime were reverted to the versions
+# that co-resolve with pyproject's held pins after cross-ecosystem
+# dependabot PRs bumped them here alone (pip side) without co-resolving
+# uv.lock:
+#   pydantic==2.13.4 hard-pins pydantic_core==2.46.4;
+#   protobuf==4.25.3 is held (nyct-gtfs hard pin; protobuf 7.x #865 is
+#   deliberately HELD), and only googleapis-common-protos<=1.73.0 /
+#   proto-plus<=1.27.1 / onnxruntime<=1.26.0 still admit it
+#   (googleapis-common-protos 1.74.0+, proto-plus 1.28.0, and
+#   onnxruntime 1.27.0 all floor protobuf>=4.25.8).
+# tests/test_constraints_pi_resolvable.py now fails any PR that
+# reintroduces this drift. A proper on-Pi regeneration overwrites this note.
 annotated-types==0.7.0
 anyio==4.13.0
 audioop-lts==0.2.2
@@ -35,7 +49,7 @@ google-auth-httplib2==0.4.0
 google-auth-oauthlib==1.4.0
 google-auth==2.53.0
 google-genai==2.9.0
-googleapis-common-protos==1.75.0
+googleapis-common-protos==1.73.0
 h11==0.16.0
 httpcore==1.0.9
 httplib2==0.31.2
@@ -52,18 +66,18 @@ mdurl==0.1.2
 numpy==2.4.6
 nyct-gtfs==2.1.0
 oauthlib==3.3.1
-onnxruntime==1.27.0
+onnxruntime==1.26.0
 openai==2.39.0
 openwakeword==0.6.0
 packaging==26.2
-proto-plus==1.28.0
+proto-plus==1.27.1
 protobuf==4.25.3
 pyalsaaudio==0.11.0
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
 pycparser==3.0
 pydantic==2.13.4
-pydantic_core==2.47.0
+pydantic_core==2.46.4
 Pygments==2.20.0
 pyparsing==3.3.2
 pyserial==3.5
