@@ -14,10 +14,10 @@
 from __future__ import annotations
 
 import http
-from email.message import Message
-from io import BytesIO
 
 from jasper.web import airplay_setup
+
+from ._web_test_helpers import FakeHandler
 
 
 def _render(mode: str = "synced", flash: str = "") -> str:
@@ -107,47 +107,6 @@ def test_airplay_flash_is_escaped():
 # --- Behaviour: drive do_GET / do_POST through a fake handler, like the other
 #     web-wizard tests. Network / subprocess side effects are monkeypatched. ---
 
-class _FakeHandler:
-    """Minimal BaseHTTPRequestHandler stand-in for driving do_GET/do_POST."""
-
-    def __init__(self, path: str, body: bytes = b"", cookies: str = "") -> None:
-        self.path = path
-        self.headers = Message()
-        self.headers["Content-Length"] = str(len(body))
-        self.headers["Content-Type"] = "application/x-www-form-urlencoded"
-        if cookies:
-            self.headers["Cookie"] = cookies
-        self.rfile = BytesIO(body)
-        self.wfile = BytesIO()
-        self.status = None
-        self.sent_headers = []
-        self.client_address = ("127.0.0.1", 0)
-
-    def send_response(self, status):
-        self.status = int(status)
-
-    def send_response_only(self, status):
-        self.status = int(status)
-
-    def send_header(self, name, value):
-        self.sent_headers.append((name, value))
-
-    def end_headers(self):
-        pass
-
-    def send_error(self, status, *a, **k):
-        self.status = int(status)
-
-    def address_string(self):
-        return "127.0.0.1"
-
-    def log_message(self, *a, **k):
-        pass
-
-    def header_values(self, name):
-        return [v for n, v in self.sent_headers if n.lower() == name.lower()]
-
-
 def _handler_cls():
     return airplay_setup._make_handler({"state_path": "/tmp/does-not-matter.env"})
 
@@ -162,7 +121,7 @@ def test_public_surface_is_stable():
 def test_get_root_renders_canonical_page(monkeypatch):
     monkeypatch.setattr(airplay_setup, "_current_mode", lambda path: "synced")
     handler = _handler_cls()
-    h = _FakeHandler("/")
+    h = FakeHandler("/")
     handler.do_GET(h)
     assert h.status == 200
     out = h.wfile.getvalue().decode()
@@ -172,7 +131,7 @@ def test_get_root_renders_canonical_page(monkeypatch):
 
 def test_post_unknown_route_404s():
     handler = _handler_cls()
-    h = _FakeHandler("/nope", body=b"")
+    h = FakeHandler("/nope", body=b"")
     handler.do_POST(h)
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 
@@ -193,7 +152,7 @@ def test_post_save_writes_mode_and_restarts(monkeypatch):
     handler = _handler_cls()
     # csrf_token = form field (CSRF_FORM_FIELD); jts_csrf = double-submit cookie.
     body = ("csrf_token=" + token + "&mode=free-running").encode()
-    h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
+    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
     handler.do_POST(h)
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
@@ -216,7 +175,7 @@ def test_post_save_synced_writes_no(monkeypatch):
 
     handler = _handler_cls()
     body = ("csrf_token=" + token + "&mode=synced").encode()
-    h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
+    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
     handler.do_POST(h)
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
@@ -234,7 +193,7 @@ def test_post_save_invalid_mode_redirects_without_write(monkeypatch):
 
     handler = _handler_cls()
     body = ("csrf_token=" + token + "&mode=bogus").encode()
-    h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
+    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
     handler.do_POST(h)
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
@@ -250,7 +209,7 @@ def test_post_save_rejects_bad_csrf(monkeypatch):
     handler = _handler_cls()
     # Form-field token deliberately differs from the cookie -> 403, no write.
     body = b"csrf_token=" + b"a" * 64 + b"&mode=synced"
-    h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + "b" * 64)
+    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + "b" * 64)
     handler.do_POST(h)
     assert h.status == int(http.HTTPStatus.FORBIDDEN)
     assert wrote == []

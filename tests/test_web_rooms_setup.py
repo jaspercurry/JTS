@@ -34,7 +34,6 @@ import json
 import logging
 import shutil
 import subprocess
-from email.message import Message
 from io import BytesIO
 from pathlib import Path
 
@@ -42,6 +41,8 @@ import pytest
 
 from jasper.control import household_credential
 from jasper.web import rooms_setup
+
+from ._web_test_helpers import FakeHandler
 
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -131,49 +132,13 @@ _OFF_GROUPING = {
 }
 
 
-class _FakeHandler:
-    """Minimal BaseHTTPRequestHandler stand-in for driving do_GET."""
-
-    def __init__(self, path: str, cookies: str = "") -> None:
-        self.path = path
-        self.headers = Message()
-        if cookies:
-            self.headers["Cookie"] = cookies
-        self.rfile = BytesIO(b"")
-        self.wfile = BytesIO()
-        self.status = None
-        self.sent_headers: list[tuple[str, str]] = []
-        self.client_address = ("127.0.0.1", 0)
-
-    def send_response(self, status):
-        self.status = int(status)
-
-    def send_response_only(self, status):
-        self.status = int(status)
-
-    def send_header(self, name, value):
-        self.sent_headers.append((name, value))
-
-    def end_headers(self):
-        pass
-
-    def address_string(self):
-        return "127.0.0.1"
-
-    def log_message(self, *a, **k):
-        pass
-
-    def header_values(self, name):
-        return [v for n, v in self.sent_headers if n.lower() == name.lower()]
-
-
 class _TrackingReader(BytesIO):
     def __init__(self, body: bytes, *, fail: bool = False) -> None:
         super().__init__(body)
         self.fail = fail
-        self.read_calls: list[int] = []
+        self.read_calls: list[int | None] = []
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, size: int | None = -1) -> bytes:
         self.read_calls.append(size)
         if self.fail:
             raise OSError("request body read failed")
@@ -231,7 +196,7 @@ def _patch_discovery(monkeypatch, *, speakers, grouping=None, airplay_fit=None,
 
 def _get(path: str):
     handler_cls = rooms_setup._make_handler()
-    h = _FakeHandler(path)
+    h = FakeHandler(path, body=None)
     handler_cls.do_GET(h)
     return h
 
@@ -850,7 +815,7 @@ def _post(path: str, body: bytes, *, csrf_ok: bool, monkeypatch):
             if units == ("jasper-control",) else None
         ),
     )
-    h = _FakeHandler(path)
+    h = FakeHandler(path, body=None)
     h.headers["Content-Length"] = str(len(body))
     h.rfile = BytesIO(body)
     handler_cls.do_POST(h)
@@ -873,7 +838,7 @@ def test_post_peering_unknown_path_404s_before_csrf(monkeypatch):
 
     monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
     handler_cls = rooms_setup._make_handler()
-    h = _FakeHandler("/not-peering")
+    h = FakeHandler("/not-peering", body=None)
     h.headers["Content-Length"] = "2"
     h.rfile = BytesIO(b"{}")
     handler_cls.do_POST(h)
@@ -919,7 +884,7 @@ def test_post_peering_rejects_invalid_json_framing_without_mutation(
         lambda: pytest.fail("invalid request must not restart daemons"),
     )
     handler_cls = rooms_setup._make_handler()
-    handler = _FakeHandler("/peering")
+    handler = FakeHandler("/peering", body=None)
     handler.headers["Content-Length"] = str(content_length)
     handler.rfile = _TrackingReader(body)
 
@@ -943,7 +908,7 @@ def test_post_peering_request_body_oserror_remains_distinct(monkeypatch):
         lambda *_a, **_k: pytest.fail("failed read must not write config"),
     )
     handler_cls = rooms_setup._make_handler()
-    handler = _FakeHandler("/peering")
+    handler = FakeHandler("/peering", body=None)
     handler.headers["Content-Length"] = "2"
     handler.rfile = _TrackingReader(b"{}", fail=True)
 
@@ -1033,7 +998,7 @@ def test_grouping_routes_reject_incomplete_json_before_state_or_control_mutation
     )
 
     handler_cls = rooms_setup._make_handler()
-    handler = _FakeHandler(path)
+    handler = FakeHandler(path, body=None)
     declared_length = len(body) + 1
     handler.headers["Content-Length"] = str(declared_length)
     handler.rfile = _TrackingReader(body)
@@ -1351,7 +1316,7 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
 
     handler_cls = rooms_setup._make_handler()
     raw = json.dumps(body).encode()
-    h = _FakeHandler("/bond")
+    h = FakeHandler("/bond", body=None)
     h.headers["Content-Length"] = str(len(raw))
     h.rfile = BytesIO(raw)
     handler_cls.do_POST(h)
@@ -1375,7 +1340,7 @@ def test_bond_forwards_browser_control_token_to_members(monkeypatch):
 
     handler_cls = rooms_setup._make_handler()
     raw = json.dumps({"members": _stereo_pair_members()}).encode()
-    h = _FakeHandler("/bond")
+    h = FakeHandler("/bond", body=None)
     h.headers["Content-Length"] = str(len(raw))
     h.headers["X-JTS-Token"] = "household-secret"
     h.rfile = BytesIO(raw)
@@ -1402,7 +1367,7 @@ def test_bond_forwards_no_token_when_browser_sent_none(monkeypatch):
 
     handler_cls = rooms_setup._make_handler()
     raw = json.dumps({"members": _stereo_pair_members()}).encode()
-    h = _FakeHandler("/bond")
+    h = FakeHandler("/bond", body=None)
     h.headers["Content-Length"] = str(len(raw))
     h.rfile = BytesIO(raw)
     handler_cls.do_POST(h)
@@ -1599,7 +1564,7 @@ def test_post_bond_unknown_path_still_404s_before_csrf(monkeypatch):
 
     monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
     handler_cls = rooms_setup._make_handler()
-    h = _FakeHandler("/bond-typo")
+    h = FakeHandler("/bond-typo", body=None)
     h.headers["Content-Length"] = "2"
     h.rfile = BytesIO(b"{}")
     handler_cls.do_POST(h)
@@ -1773,7 +1738,7 @@ def test_save_bond_mints_household_credential(monkeypatch):
 
     handler_cls = rooms_setup._make_handler()
     raw = json.dumps({"members": _stereo_pair_members()}).encode()
-    h = _FakeHandler("/bond")
+    h = FakeHandler("/bond", body=None)
     h.headers["Content-Length"] = str(len(raw))
     h.rfile = BytesIO(raw)
     handler_cls.do_POST(h)
@@ -1803,7 +1768,7 @@ def test_unbond_reads_household_once_and_passes_it_to_fanout(monkeypatch):
     monkeypatch.setattr(rooms_setup, "post_grouping_to_member", capture)
 
     handler_cls = rooms_setup._make_handler()
-    h = _FakeHandler("/unbond")
+    h = FakeHandler("/unbond", body=None)
     h.headers["Content-Length"] = "2"
     h.rfile = BytesIO(b"{}")
     handler_cls.do_POST(h)
@@ -2297,7 +2262,7 @@ def _post_unbond(*, csrf_ok=True, monkeypatch, self_grouping,
     monkeypatch.setattr(rooms_setup, "post_grouping_to_member", fake_member_post)
 
     handler_cls = rooms_setup._make_handler()
-    h = _FakeHandler("/unbond")
+    h = FakeHandler("/unbond", body=None)
     h.headers["Content-Length"] = "2"
     h.rfile = BytesIO(b"{}")
     handler_cls.do_POST(h)
@@ -2411,7 +2376,7 @@ def test_post_unbond_unknown_path_404s_before_csrf(monkeypatch):
 
     monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
     handler_cls = rooms_setup._make_handler()
-    h = _FakeHandler("/unbond-typo")
+    h = FakeHandler("/unbond-typo", body=None)
     h.headers["Content-Length"] = "2"
     h.rfile = BytesIO(b"{}")
     handler_cls.do_POST(h)
@@ -2514,7 +2479,7 @@ def _post_swap(*, monkeypatch, self_grouping, speakers=(), peer_grouping=None,
     monkeypatch.setattr(rooms_setup, "post_grouping_to_member", fake_member_post)
 
     handler_cls = rooms_setup._make_handler()
-    h = _FakeHandler("/swap")
+    h = FakeHandler("/swap", body=None)
     h.headers["Content-Length"] = "2"
     h.rfile = BytesIO(b"{}")
     handler_cls.do_POST(h)
@@ -2667,7 +2632,7 @@ def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
     import jasper.web.rooms_setup as rooms_setup_mod
     monkeypatch.setattr(rooms_setup_mod, "post_grouping_to_member", flaky_self)
     handler_cls = rooms_setup_mod._make_handler()
-    h = _FakeHandler("/swap")
+    h = FakeHandler("/swap", body=None)
     h.headers["Content-Length"] = "2"
     h.rfile = BytesIO(b"{}")
     handler_cls.do_POST(h)
@@ -2731,7 +2696,7 @@ def _post_trim(*, monkeypatch, body, self_grouping, speakers=(),
                         lambda a, known=None: (peer_grouping or {}).get(a))
     monkeypatch.setattr(rooms_setup, "post_grouping_to_member", _post)
     handler_cls = rooms_setup._make_handler()
-    h = _FakeHandler("/trim")
+    h = FakeHandler("/trim", body=None)
     raw = json.dumps(body).encode()
     h.headers["Content-Length"] = str(len(raw))
     h.rfile = BytesIO(raw)
@@ -2955,7 +2920,7 @@ def test_bond_create_records_roster_on_leader_and_clears_follower(monkeypatch):
     monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts.local")
 
     handler_cls = rooms_setup._make_handler()
-    h = _FakeHandler("/bond")
+    h = FakeHandler("/bond", body=None)
     payload = json.dumps({"members": [
         {"addr": "", "role": "leader", "channel": "left"},
         {"addr": "192.168.1.9", "role": "follower", "channel": "right",
@@ -2992,7 +2957,7 @@ def _drive_bond(members, monkeypatch):
     monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts.local")
 
     handler_cls = rooms_setup._make_handler()
-    h = _FakeHandler("/bond")
+    h = FakeHandler("/bond", body=None)
     payload = json.dumps({"members": members}).encode()
     h.headers["Content-Length"] = str(len(payload))
     h.rfile = BytesIO(payload)
@@ -3130,7 +3095,7 @@ def test_mains_highpass_toggle_fans_out_to_full_roster(monkeypatch):
     monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts.local")
 
     handler_cls = rooms_setup._make_handler()
-    h = _FakeHandler("/mains-highpass")
+    h = FakeHandler("/mains-highpass", body=None)
     payload = json.dumps({"enabled": False}).encode()
     h.headers["Content-Length"] = str(len(payload))
     h.rfile = BytesIO(payload)

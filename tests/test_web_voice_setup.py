@@ -25,11 +25,11 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from email.message import Message
-from io import BytesIO
 
 from jasper.voice.catalog import PROVIDERS
 from jasper.web import _common, voice_setup
+
+from ._web_test_helpers import FakeHandler
 
 
 def _render(state: dict | None = None, flash: str = "") -> str:
@@ -153,47 +153,6 @@ def test_voice_flash_is_routed_through_canonical_banner():
 # (mirroring tests/test_voice_setup.py).
 
 
-class _FakeHandler:
-    """Minimal BaseHTTPRequestHandler stand-in for the early-return branches."""
-
-    def __init__(self, path: str, body: bytes = b"", cookies: str = "") -> None:
-        self.path = path
-        self.headers = Message()
-        self.headers["Content-Length"] = str(len(body))
-        self.headers["Content-Type"] = "application/x-www-form-urlencoded"
-        if cookies:
-            self.headers["Cookie"] = cookies
-        self.rfile = BytesIO(body)
-        self.wfile = BytesIO()
-        self.status = None
-        self.sent_headers = []
-        self.client_address = ("127.0.0.1", 0)
-
-    def send_response(self, status):
-        self.status = int(status)
-
-    def send_response_only(self, status):
-        self.status = int(status)
-
-    def send_header(self, name, value):
-        self.sent_headers.append((name, value))
-
-    def end_headers(self):
-        pass
-
-    def send_error(self, status, *a, **k):
-        self.status = int(status)
-
-    def address_string(self):
-        return "127.0.0.1"
-
-    def log_message(self, *a, **k):
-        pass
-
-    def header_values(self, name):
-        return [v for n, v in self.sent_headers if n.lower() == name.lower()]
-
-
 def _handler_cls(tmp_path):
     return voice_setup._make_handler({
         "state_path": str(tmp_path / "voice.env"),
@@ -217,7 +176,7 @@ def test_public_surface_is_stable():
 
 def test_get_root_renders_canonical_page(tmp_path):
     handler = _handler_cls(tmp_path)
-    h = _FakeHandler("/")
+    h = FakeHandler("/")
     handler.do_GET(h)
     assert h.status == 200
     out = h.wfile.getvalue().decode()
@@ -229,7 +188,7 @@ def test_get_root_renders_canonical_page(tmp_path):
 
 def test_post_unknown_route_404s(tmp_path):
     handler = _handler_cls(tmp_path)
-    h = _FakeHandler("/nope", body=b"")
+    h = FakeHandler("/nope", body=b"")
     handler.do_POST(h)
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 

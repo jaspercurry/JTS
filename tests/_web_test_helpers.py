@@ -2,13 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Helpers for end-to-end web wizard tests.
+"""Shared helpers for web wizard tests.
 
 The wizards now require a CSRF token on every mutating POST
 (double-submit cookie pattern: token in `jts_csrf` cookie plus either a
 matching `csrf_token` form field or `X-CSRF-Token` header). These
 helpers handle the GET-then-POST handshake so each test can stay focused
 on what it's actually verifying.
+
+``FakeHandler`` provides the smaller in-process style used by wizard tests
+that call a handler class's ``do_GET`` / ``do_POST`` methods directly.
 """
 from __future__ import annotations
 
@@ -17,10 +20,71 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from email.message import Message
+from io import BytesIO
 
 
 CSRF_COOKIE_NAME = "jts_csrf"
 CSRF_FORM_FIELD = "csrf_token"
+
+
+class FakeHandler:
+    """Socketless ``BaseHTTPRequestHandler`` surface for wizard unit tests.
+
+    ``body=None`` deliberately omits Content-Length and Content-Type.  That
+    preserves the body-less request shape used by the rooms wizard; passing
+    bytes (including ``b""``) models a form request and installs both headers.
+    Response headers remain an ordered list so duplicate headers can be
+    asserted without collapsing them through ``Message``.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        body: bytes | None = b"",
+        cookies: str = "",
+    ) -> None:
+        self.path = path
+        self.headers = Message()
+        payload = b"" if body is None else body
+        if body is not None:
+            self.headers["Content-Length"] = str(len(body))
+            self.headers["Content-Type"] = "application/x-www-form-urlencoded"
+        if cookies:
+            self.headers["Cookie"] = cookies
+        self.rfile = BytesIO(payload)
+        self.wfile = BytesIO()
+        self.status: int | None = None
+        self.sent_headers: list[tuple[str, str]] = []
+        self.client_address = ("127.0.0.1", 0)
+
+    def send_response(self, status: int) -> None:
+        self.status = int(status)
+
+    def send_response_only(self, status: int) -> None:
+        self.status = int(status)
+
+    def send_header(self, name: str, value: str) -> None:
+        self.sent_headers.append((name, value))
+
+    def end_headers(self) -> None:
+        pass
+
+    def send_error(self, status: int, *args: object, **kwargs: object) -> None:
+        self.status = int(status)
+
+    def address_string(self) -> str:
+        return "127.0.0.1"
+
+    def log_message(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def header_values(self, name: str) -> list[str]:
+        return [
+            value
+            for header, value in self.sent_headers
+            if header.lower() == name.lower()
+        ]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -52,7 +116,7 @@ def make_csrf_session(base_url: str, page_path: str = "/") -> dict:
     token = ""
     for cookie in jar:
         if cookie.name == CSRF_COOKIE_NAME:
-            token = cookie.value
+            token = cookie.value or ""
             break
     if not token:
         raise AssertionError(

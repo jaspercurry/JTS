@@ -18,12 +18,12 @@ from __future__ import annotations
 import http
 import stat
 import urllib.parse
-from email.message import Message
-from io import BytesIO
 
 import pytest
 
 from jasper.web import transit_setup
+
+from ._web_test_helpers import FakeHandler
 
 # A 43-char token, the shape secrets.token_urlsafe(32) produces.
 TOKEN = "x" * 43
@@ -245,44 +245,6 @@ def test_flash_renders_canonical_banner():
 # ---- Public surface + routes (presentation-only migration) ----------------
 
 
-class _FakeHandler:
-    """Minimal BaseHTTPRequestHandler stand-in for driving do_GET/do_POST."""
-
-    def __init__(self, path: str, body: bytes = b"", cookies: str = "") -> None:
-        self.path = path
-        self.headers = Message()
-        self.headers["Content-Length"] = str(len(body))
-        self.headers["Content-Type"] = "application/x-www-form-urlencoded"
-        if cookies:
-            self.headers["Cookie"] = cookies
-        self.rfile = BytesIO(body)
-        self.wfile = BytesIO()
-        self.status = None
-        self.sent_headers: list[tuple[str, str]] = []
-        self.client_address = ("127.0.0.1", 0)
-
-    def send_response(self, status):
-        self.status = int(status)
-
-    def send_header(self, name, value):
-        self.sent_headers.append((name, value))
-
-    def end_headers(self):
-        pass
-
-    def send_error(self, status, *a, **k):
-        self.status = int(status)
-
-    def address_string(self):
-        return "127.0.0.1"
-
-    def log_message(self, *a, **k):
-        pass
-
-    def header_values(self, name):
-        return [v for n, v in self.sent_headers if n.lower() == name.lower()]
-
-
 def _handler_cls(tmp_path):
     return transit_setup._make_handler({
         "state_path": str(tmp_path / "transit.env"),
@@ -291,11 +253,11 @@ def _handler_cls(tmp_path):
     })
 
 
-def _bound_handler(tmp_path, fake: _FakeHandler):
+def _bound_handler(tmp_path, fake: FakeHandler):
     """A real closure-Handler instance carrying the fake's request attributes.
 
     `do_POST` delegates to sibling methods (`self._handle_clear()` etc.) that
-    only exist on the closure `Handler` class, so a bare `_FakeHandler` can't
+    only exist on the closure `Handler` class, so a bare `FakeHandler` can't
     drive those branches. Construct the real `Handler` via `__new__` (skipping
     BaseHTTPRequestHandler.__init__, which would touch a socket) and graft the
     fake's request/response stand-ins onto it — the instance keeps the real
@@ -321,7 +283,7 @@ def test_public_surface_is_stable():
 
 def test_get_root_renders_canonical_page(tmp_path):
     handler = _handler_cls(tmp_path)
-    h = _FakeHandler("/")
+    h = FakeHandler("/")
     handler.do_GET(h)
     assert h.status == 200
     out = h.wfile.getvalue().decode()
@@ -331,7 +293,7 @@ def test_get_root_renders_canonical_page(tmp_path):
 
 def test_get_root_with_tools_return_uses_tool_pack_back_link(tmp_path):
     handler = _handler_cls(tmp_path)
-    h = _FakeHandler("/?return_to=%2Ftools%2Fpack%2Fnyc-transit%2F")
+    h = FakeHandler("/?return_to=%2Ftools%2Fpack%2Fnyc-transit%2F")
     handler.do_GET(h)
     assert h.status == 200
     out = h.wfile.getvalue().decode()
@@ -340,7 +302,7 @@ def test_get_root_with_tools_return_uses_tool_pack_back_link(tmp_path):
 
 def test_get_root_rejects_off_origin_return_link(tmp_path):
     handler = _handler_cls(tmp_path)
-    h = _FakeHandler("/?return_to=%2F%2Fevil.test%2F")
+    h = FakeHandler("/?return_to=%2F%2Fevil.test%2F")
     handler.do_GET(h)
     assert h.status == 200
     out = h.wfile.getvalue().decode()
@@ -350,7 +312,7 @@ def test_get_root_rejects_off_origin_return_link(tmp_path):
 
 def test_post_unknown_route_404s(tmp_path):
     handler = _handler_cls(tmp_path)
-    h = _FakeHandler("/nope", body=b"")
+    h = FakeHandler("/nope", body=b"")
     handler.do_POST(h)
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 
@@ -365,7 +327,7 @@ def test_post_clear_with_csrf_redirects_and_restarts(tmp_path, monkeypatch):
     token = "z" * 64
     # csrf_token = form field (_common.CSRF_FORM_FIELD); jts_csrf = cookie.
     body = ("csrf_token=" + token).encode()
-    h = _FakeHandler("/clear", body=body, cookies="jts_csrf=" + token)
+    h = FakeHandler("/clear", body=body, cookies="jts_csrf=" + token)
     _bound_handler(tmp_path, h).do_POST()
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert h.header_values("Location") == ["./"]
@@ -387,7 +349,7 @@ def test_post_save_writes_routes_key_to_secret_file_and_default_to_transit_env(
         "travel_default_mode": "drive",
         "google_routes_key": key,
     }).encode()
-    h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
+    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
     _bound_handler(tmp_path, h).do_POST()
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
@@ -414,7 +376,7 @@ def test_post_save_blank_routes_key_preserves_existing_secret(tmp_path, monkeypa
         "travel_default_mode": "transit",
         "google_routes_key": "",
     }).encode()
-    h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
+    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
     _bound_handler(tmp_path, h).do_POST()
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
@@ -431,7 +393,7 @@ def test_post_clear_removes_routes_secret_file(tmp_path, monkeypatch):
     )
     token = "z" * 64
     body = ("csrf_token=" + token).encode()
-    h = _FakeHandler("/clear", body=body, cookies="jts_csrf=" + token)
+    h = FakeHandler("/clear", body=body, cookies="jts_csrf=" + token)
     _bound_handler(tmp_path, h).do_POST()
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
@@ -441,7 +403,7 @@ def test_post_clear_removes_routes_secret_file(tmp_path, monkeypatch):
 def test_post_clear_rejects_bad_csrf(tmp_path):
     # Form-field token differs from the cookie token → 403, no restart.
     body = b"csrf_token=" + b"a" * 64
-    h = _FakeHandler("/clear", body=body, cookies="jts_csrf=" + "b" * 64)
+    h = FakeHandler("/clear", body=body, cookies="jts_csrf=" + "b" * 64)
     _bound_handler(tmp_path, h).do_POST()
     assert h.status == int(http.HTTPStatus.FORBIDDEN)
 
@@ -494,7 +456,7 @@ def test_post_cities_enables_pack_writes_env_and_restarts(tmp_path, monkeypatch)
     )
     token = "z" * 64
     body = ("csrf_token=" + token + "&city_nyc=on").encode()
-    h = _FakeHandler("/cities", body=body, cookies="jts_csrf=" + token)
+    h = FakeHandler("/cities", body=body, cookies="jts_csrf=" + token)
     _bound_handler(tmp_path, h).do_POST()
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert restarts == [None]
@@ -515,7 +477,7 @@ def test_post_cities_uncheck_all_writes_empty_value(tmp_path, monkeypatch):
     )
     token = "z" * 64
     body = ("csrf_token=" + token).encode()  # no city_* fields => all off
-    h = _FakeHandler("/cities", body=body, cookies="jts_csrf=" + token)
+    h = FakeHandler("/cities", body=body, cookies="jts_csrf=" + token)
     _bound_handler(tmp_path, h).do_POST()
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     saved = transit_setup._load_state(str(tmp_path / "transit.env"))
@@ -531,7 +493,7 @@ def test_post_cities_rejects_bad_csrf(tmp_path, monkeypatch):
         transit_setup, "restart_voice_daemon", lambda: restarts.append(None),
     )
     body = b"csrf_token=" + b"a" * 64 + b"&city_nyc=on"
-    h = _FakeHandler("/cities", body=body, cookies="jts_csrf=" + "b" * 64)
+    h = FakeHandler("/cities", body=body, cookies="jts_csrf=" + "b" * 64)
     _bound_handler(tmp_path, h).do_POST()
     assert h.status == int(http.HTTPStatus.FORBIDDEN)
     assert restarts == []
