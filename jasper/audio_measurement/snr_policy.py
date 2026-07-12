@@ -83,6 +83,13 @@ def _dbfs(value: float) -> float:
     return max(DBFS_FLOOR, 20.0 * math.log10(value))
 
 
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def band_levels_dbfs(
     samples: np.ndarray,
     sample_rate: int,
@@ -244,19 +251,15 @@ def band_snr_verdicts(
             continue
         band_id = capture_band.get("band_id")
         band_hz = capture_band.get("band_hz")
-        try:
-            capture_level = float(capture_band.get("level_dbfs"))
-        except (TypeError, ValueError):
+        capture_level = _to_float(capture_band.get("level_dbfs"))
+        if capture_level is None:
             continue
 
         estimated_snr_db: float | None = None
         method = "none"
         noise_band = noise_by_band.get(band_id)
         if noise_band is not None:
-            try:
-                noise_level: float | None = float(noise_band.get("level_dbfs"))
-            except (TypeError, ValueError):
-                noise_level = None
+            noise_level = _to_float(noise_band.get("level_dbfs"))
             if noise_level is not None:
                 estimated_snr_db = capture_level - noise_level
                 method = "fft_band_power_difference"
