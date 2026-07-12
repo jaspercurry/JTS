@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import datetime
 import html
-import json
 import logging
 import os
 import shutil
@@ -47,11 +46,12 @@ from ._common import (
     begin_request,
     canonical_header,
     canonical_page,
+    guard_mutating_request,
+    guard_read_request,
+    read_json_object,
     reject_csrf,
     send_html_response,
-    guard_read_request,
-    guard_mutating_request,
-    read_json_object,
+    send_json_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -377,20 +377,11 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def _send(self, status: int, body: bytes, content_type: str) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
             send_html_response(self, body, status=status)
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
-            body = json.dumps(payload).encode("utf-8")
-            self._send(status, body, "application/json")
+            send_json_response(self, payload, status=status)
 
         def _read_json(self) -> dict[str, Any]:
             try:
