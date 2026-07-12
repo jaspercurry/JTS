@@ -9,9 +9,9 @@
 // server-side by jasper.web.bluetooth_setup; this module owns ONLY the live
 // behaviour:
 //
-//   * jsonHeaders() (CSRF X-CSRF-Token + Content-Type) from the shared http.js
-//     — same contract guard_mutating_request() accepts as a hidden form field. The token
-//     rides in the <meta name="jts-csrf"> tag canonical_page() renders.
+//   * jsonHeaders()/postJSON() (CSRF X-CSRF-Token + Content-Type) from shared
+//     http.js — the same contract guard_mutating_request() accepts as a hidden
+//     form field. The token rides in canonical_page()'s jts-csrf meta tag.
 //   * jtsConfirm / jtsAlert (accessible <dialog>, never window.confirm/alert,
 //     which the browser can suppress) from the shared dialog.js.
 //
@@ -20,9 +20,10 @@
 // per-row action targets ride in escaped data-* attributes consumed by a single
 // delegated click handler (never inline onclick), exactly as before.
 
-import { jsonHeaders } from "/assets/shared/js/http.js";
+import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 import { escapeHtml, cssIdSafe } from "/assets/shared/js/escape.js";
+import { toggleScanRequest } from "./scan.js";
 
 let state = { powered: false, discoverable: false, discovering: false };
 let devices = new Map(); // path → device
@@ -175,22 +176,14 @@ async function toggleDisc() {
 }
 
 async function toggleScan() {
-  const action = state.discovering ? 'stop' : 'start';
-  // Optimistic UI: assume the click took effect so the button
-  // flips immediately. State polling will correct us if not.
-  if (action === 'start') {
-    scanIntentUntil = Date.now() + 3000;
-  } else {
-    scanIntentUntil = 0;
-  }
-  renderToggles();
-  await fetch('scan', {
-    method: 'POST', headers: jsonHeaders(),
-    body: JSON.stringify({action}),
+  return toggleScanRequest({
+    discovering: !!state.discovering,
+    setIntentUntil(value) { scanIntentUntil = value; },
+    render: renderToggles,
+    postScan(action) { return postJSON('scan', {action}); },
+    refreshState: fetchState,
+    showAlert: jtsAlert,
   });
-  // Pull fresh state a beat after the POST so the button label
-  // matches reality without waiting for the next poll tick.
-  setTimeout(fetchState, 200);
 }
 
 // -------- live device list --------

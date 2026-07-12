@@ -16,13 +16,22 @@ writes, data-action attributes for untrusted device rows) are asserted
 against that module file; the server-rendered HTML still owns the CSRF
 meta tag and the semantic toggle switches.
 """
+
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from jasper.web import bluetooth_setup
 
 _MODULE_JS = Path("deploy/assets/bluetooth/js/main.js")
+_SCAN_JS = Path("deploy/assets/bluetooth/js/scan.js")
+_SCAN_HARNESS = Path("tests/js/bluetooth_scan_test.mjs")
+_NODE = shutil.which("node")
 
 
 def test_landing_html_uses_semantic_switches_and_csrf_meta():
@@ -47,6 +56,25 @@ def test_module_uses_csrf_aware_json_writes():
     # jsonHeaders comes from the shared http.js module, not re-declared here.
     assert '"/assets/shared/js/http.js"' in js
     assert '"Content-Type": "application/json"' not in js
+
+
+def test_scan_toggle_uses_shared_post_json_and_alert_recovery():
+    js = _MODULE_JS.read_text()
+    assert 'postJSON("scan", {action})' not in js
+    assert "postJSON('scan', {action})" in js
+    assert 'from "./scan.js"' in js
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH")
+def test_scan_toggle_browser_module_handles_success_and_failures():
+    proc = subprocess.run(
+        [_NODE, str(_SCAN_HARNESS), str(_SCAN_JS)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, f"Bluetooth scan harness errored:\n{proc.stderr}"
+    assert json.loads(proc.stdout.strip().splitlines()[-1]) == {"ok": True}
 
 
 def test_device_actions_use_data_attributes_not_inline_js():
@@ -77,7 +105,7 @@ def test_connected_unpaired_ble_devices_do_not_render_as_ready():
     assert "deviceRow(d, false)" not in js
     assert "(d.connected || d.trusted) && !d.paired" in js
     assert "Pair required" in js
-    assert 'badge linked' in js
+    assert "badge linked" in js
     assert ">Remove</button>" in js
     assert 'data-action="forget"' in js
 
