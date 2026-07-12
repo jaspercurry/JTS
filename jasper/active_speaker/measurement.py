@@ -958,6 +958,14 @@ def record_driver_measurement(
         # jasper.active_speaker.bundles. Forensic only: never read back as an
         # input to any decision this module makes.
         "bundle": dict(bundle_ref) if isinstance(bundle_ref, Mapping) else None,
+        # Optional three-repeat aggregate summary (SC-4 shape) when this
+        # record is the outcome of commissioning_capture.aggregate_driver_repeats
+        # rather than a single-shot capture. Per-repeat evidence beyond this
+        # compact per_repeat[] summary (the full audio/curves) lives only in
+        # the bundle's repeat_captures/ — this field never grows unbounded.
+        "repeats": (
+            dict(raw["repeats"]) if isinstance(raw.get("repeats"), Mapping) else None
+        ),
     }
     persisted = _normalise_state(state, path)
     persisted["driver_measurements"] = [

@@ -497,32 +497,14 @@ def _capture_group_role(payload: Mapping[str, Any]) -> tuple[Any, Any]:
     return group, role
 
 
-@_fail_soft("append_capture")
-def append_capture(
-    bundle_dir: Path,
-    *,
-    kind: str,
-    wav_source_path: Path | str,
-    payload: Mapping[str, Any],
-    relative_path: str | None = None,
-) -> dict[str, Any] | None:
-    """Copy one capture WAV into the bundle and record its compact entry.
+def _guarded_capture_source(bundle_dir: Path, wav_source_path: Path | str, *, op: str) -> Path | None:
+    """Validate a capture WAV source exists and is within the size cap.
 
-    ``payload`` is the dict a ``record_driver_acoustic_capture`` /
-    ``record_summed_acoustic_capture`` call returned (or a caller-enriched
-    superset of it — see :func:`_capture_group_role`). The full payload
-    (including the nested ``measurement`` record) is written verbatim as the
-    capture's ``*.json`` artifact; a compact entry (§4 of the design) is
-    appended to ``info.json``'s ``captures`` / ``summed_captures`` list.
-
-    Copies (never moves) the WAV so ``web_measurement.py``'s own
-    browser-capture-store retention is untouched. Guards the source file's
-    existence and size before copying; a missing or oversized source WARNs
-    and returns ``None`` without touching the bundle.
+    Returns ``None`` (WARN-logged under the shared fail-soft event name)
+    when the guard fails, so the caller can bail out before touching the
+    bundle at all — never a partial write from a missing/oversized source.
     """
 
-    if kind not in {"driver", "summed"}:
-        raise BundleError(f"unsupported capture kind: {kind!r}")
     source = Path(wav_source_path)
     try:
         source_size = source.stat().st_size
@@ -534,13 +516,21 @@ def append_capture(
             "active_speaker.bundle_write_failed",
             level=logging.WARNING,
             session=bundle_dir.name,
-            op="append_capture",
+            op=op,
             error="capture wav source is missing or too large",
         )
         return None
+    return source
 
-    group, role = _capture_group_role(payload)
-    rel_path = relative_path or capture_artifact_relpath(kind, group, role)
+
+def _copy_wav_into_bundle(bundle_dir: Path, source: Path, rel_path: str) -> None:
+    """Copy (never move) one WAV to ``bundle_dir / rel_path`` and record it.
+
+    Copy, not move, so ``web_measurement.py``'s own browser-capture-store
+    retention is untouched. Raises on failure (``OSError``/``BundleError``)
+    — the caller is a ``_fail_soft``-wrapped public entry point.
+    """
+
     dest = bundle_dir / rel_path
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(f".{dest.name}.tmp")
@@ -561,6 +551,40 @@ def append_capture(
         recomputable=False,
         generated_by="active_speaker.bundles",
     )
+
+
+@_fail_soft("append_capture")
+def append_capture(
+    bundle_dir: Path,
+    *,
+    kind: str,
+    wav_source_path: Path | str,
+    payload: Mapping[str, Any],
+    relative_path: str | None = None,
+) -> dict[str, Any] | None:
+    """Copy one capture WAV into the bundle and record its compact entry.
+
+    ``payload`` is the dict a ``record_driver_acoustic_capture`` /
+    ``record_summed_acoustic_capture`` call returned (or a caller-enriched
+    superset of it — see :func:`_capture_group_role`). The full payload
+    (including the nested ``measurement`` record) is written verbatim as the
+    capture's ``*.json`` artifact; a compact entry (§4 of the design) is
+    appended to ``info.json``'s ``captures`` / ``summed_captures`` list.
+
+    Guards the source file's existence and size before copying; a missing
+    or oversized source WARNs and returns ``None`` without touching the
+    bundle.
+    """
+
+    if kind not in {"driver", "summed"}:
+        raise BundleError(f"unsupported capture kind: {kind!r}")
+    source = _guarded_capture_source(bundle_dir, wav_source_path, op="append_capture")
+    if source is None:
+        return None
+
+    group, role = _capture_group_role(payload)
+    rel_path = relative_path or capture_artifact_relpath(kind, group, role)
+    _copy_wav_into_bundle(bundle_dir, source, rel_path)
 
     json_rel = str(Path(rel_path).with_suffix(".json"))
     write_json_artifact(
@@ -607,6 +631,58 @@ def append_capture(
         "updated_at": time.time(),
     })
     return entry
+
+
+@_fail_soft("append_repeat_capture")
+def append_repeat_capture(
+    bundle_dir: Path,
+    *,
+    index: int,
+    wav_source_path: Path | str,
+    payload: Mapping[str, Any],
+    relative_path: str | None = None,
+) -> dict[str, Any] | None:
+    """Copy one repeat-attempt WAV into ``repeat_captures/`` and record it.
+
+    Unlike :func:`append_capture`, a repeat attempt has no compact
+    ``info.json`` list entry of its own — the
+    ``commissioning_capture.aggregate_driver_repeats`` result already
+    indexes every attempt via its own ``per_repeat[]`` array (attached to
+    the WINNING capture's entry once the caller records the aggregate
+    through the normal :func:`append_capture` path), and that array is
+    where each repeat's ``artifact_path`` is discoverable. This function
+    only files the raw evidence: the WAV plus its quality JSON, both in the
+    manifest with a dependency edge between them, mirroring
+    :func:`append_capture`'s WAV+JSON pair.
+
+    Returns ``{artifact_path, quality_json_path}`` or ``None`` on any
+    guard/write failure (WARN-logged; fail-soft, same as every other public
+    write entry point in this module).
+    """
+
+    source = _guarded_capture_source(
+        bundle_dir, wav_source_path, op="append_repeat_capture"
+    )
+    if source is None:
+        return None
+
+    rel_path = relative_path or f"repeat_captures/repeat_{index}_{uuid.uuid4().hex}.wav"
+    _copy_wav_into_bundle(bundle_dir, source, rel_path)
+
+    json_rel = str(Path(rel_path).with_suffix(".json"))
+    write_json_artifact(
+        bundle_dir,
+        json_rel,
+        dict(payload),
+        kind="repeat_capture_analysis",
+        sensitivity="derived",
+        recomputable=True,
+        generated_by="active_speaker.bundles",
+        dependencies=[rel_path],
+        schema_version=BUNDLE_SCHEMA_VERSION,
+        file_mode=BUNDLE_FILE_MODE,
+    )
+    return {"artifact_path": rel_path, "quality_json_path": json_rel}
 
 
 def _plain(value: Any) -> dict[str, Any] | None:

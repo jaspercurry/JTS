@@ -20,19 +20,24 @@ wire is exercised deterministically and hardware-free.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
 
 from jasper.active_speaker import crossover_alignment as ca
 from jasper.active_speaker.commissioning_capture import (
+    DEFAULT_REPEAT_TARGET,
     DRIVER_VERDICT_TO_OUTCOME,
+    REPEAT_OUTLIER_DB,
     SUMMED_VERDICT_TO_OUTCOME,
     _summed_alignment_snr,
     build_crossover_alignment_proposal,
+    aggregate_driver_repeats,
     driver_passband_hz,
     primary_crossover_fc_hz,
     record_driver_acoustic_capture,
+    record_driver_repeat_aggregate,
     record_summed_acoustic_capture,
 )
 from jasper.active_speaker.driver_acoustics import (
@@ -886,3 +891,245 @@ def test_build_proposal_scalar_only_snr_never_degrades_keep_to_review():
     assert proposal["polarity_action"] == ca.POLARITY_KEEP
     codes = {issue["code"] for issue in proposal["issues"]}
     assert "alignment_snr_insufficient" not in codes
+# --- Step 2: three-repeat capture — aggregate_driver_repeats ----------------
+
+
+def _repeat(
+    level_dbfs: float,
+    *,
+    verdict: str = "present",
+    clipping: bool = False,
+    artifact_path: str | None = None,
+    snr_verdict: str | None = None,
+    above_validity_floor: bool | None = None,
+) -> dict:
+    """A minimal analyzer-result-shaped repeat item for aggregate_driver_repeats.
+
+    Real callers pass the full ``DriverAcousticResult.to_dict()`` under
+    "acoustic"; only ``observed_mic_dbfs`` / ``mic_clipping`` (and the
+    optional lane A/B "snr"/"gating" blocks once they land) are read.
+    """
+
+    acoustic: dict = {"observed_mic_dbfs": level_dbfs, "mic_clipping": clipping}
+    if snr_verdict is not None:
+        acoustic["snr"] = {"verdict": snr_verdict}
+    if above_validity_floor is not None:
+        acoustic["gating"] = {"above_validity_floor": above_validity_floor}
+    return {"verdict": verdict, "acoustic": acoustic, "artifact_path": artifact_path}
+
+
+def test_aggregate_three_accepted_repeats_is_normal_confidence():
+    repeats = [_repeat(-30.0), _repeat(-30.3), _repeat(-29.8)]
+
+    result = aggregate_driver_repeats(repeats)
+
+    assert result["target"] == DEFAULT_REPEAT_TARGET == 3
+    assert result["accepted"] == 3
+    assert result["rejected"] == 0
+    assert result["aggregate"] == "median_magnitude"
+    assert result["confidence"] == "normal"
+    assert result["spread_db_p90"] is not None
+    assert result["spread_db_p90"] <= 2.0
+    assert result["needed_recapture"] is False
+    assert result["recaptured"] is False
+    assert len(result["per_repeat"]) == 3
+    assert all(entry["accepted"] for entry in result["per_repeat"])
+    assert all(entry["reject_reason"] is None for entry in result["per_repeat"])
+
+
+def test_aggregate_one_outlier_needs_recapture_once():
+    # Repeat 2 deviates from the running median (built from repeats 0-1,
+    # ~ -30.1) by 9.9 dB, well past REPEAT_OUTLIER_DB (3.0).
+    repeats = [_repeat(-30.0), _repeat(-30.2), _repeat(-40.0)]
+
+    result = aggregate_driver_repeats(repeats)
+
+    assert result["accepted"] == 2
+    assert result["rejected"] == 1
+    assert result["needed_recapture"] is True
+    assert result["recaptured"] is False
+    outlier = result["per_repeat"][2]
+    assert outlier["accepted"] is False
+    assert outlier["reject_reason"] == "level_outlier"
+
+
+def test_aggregate_bounded_recapture_completes_at_three():
+    first_pass = [_repeat(-30.0), _repeat(-30.2), _repeat(-40.0)]
+    assert aggregate_driver_repeats(first_pass)["needed_recapture"] is True
+
+    # The caller took the ONE bounded extra attempt and appends it.
+    recaptured = [*first_pass, _repeat(-30.1)]
+
+    result = aggregate_driver_repeats(recaptured)
+
+    assert result["accepted"] == 3
+    assert result["rejected"] == 1
+    assert result["recaptured"] is True
+    assert result["needed_recapture"] is False
+    assert result["confidence"] == "normal"
+
+
+def test_aggregate_refusing_recapture_proceeds_with_two_reduced_confidence():
+    # Same 3-attempt, 1-rejected, 2-accepted list as the "needs recapture"
+    # case — the caller simply stops here instead of trying a 4th time.
+    repeats = [_repeat(-30.0), _repeat(-30.2), _repeat(-40.0)]
+
+    result = aggregate_driver_repeats(repeats)
+
+    assert result["accepted"] == 2
+    assert result["confidence"] == "reduced"
+
+
+def test_aggregate_rejects_clipping_and_unusable_capture():
+    repeats = [
+        _repeat(-30.0),
+        _repeat(-30.1, clipping=True),
+        _repeat(-29.9, verdict="unusable_capture"),
+    ]
+
+    result = aggregate_driver_repeats(repeats)
+
+    reasons = [entry["reject_reason"] for entry in result["per_repeat"]]
+    assert reasons == [None, "clipping", "unusable_capture"]
+    assert result["accepted"] == 1
+
+
+def test_aggregate_rejects_on_snr_insufficient_when_lane_b_block_present():
+    repeats = [
+        _repeat(-30.0),
+        _repeat(-30.1, snr_verdict="insufficient"),
+        _repeat(-29.9),
+    ]
+
+    result = aggregate_driver_repeats(repeats)
+
+    assert result["per_repeat"][1]["reject_reason"] == "snr_insufficient"
+    assert result["accepted"] == 2
+
+
+def test_aggregate_rejects_below_validity_floor_when_lane_a_block_present():
+    repeats = [
+        _repeat(-30.0),
+        _repeat(-30.1, above_validity_floor=False),
+        _repeat(-29.9),
+    ]
+
+    result = aggregate_driver_repeats(repeats)
+
+    assert result["per_repeat"][1]["reject_reason"] == "below_validity_floor"
+    assert result["accepted"] == 2
+
+
+def test_aggregate_absent_snr_and_gating_blocks_do_not_reject_everything():
+    """Lane A/B's snr/gating blocks are Slice 0 sibling work that may not
+    have landed yet; their absence must degrade to level-outlier-only
+    detection, never to rejecting every repeat outright."""
+
+    repeats = [_repeat(-30.0), _repeat(-30.1), _repeat(-29.9)]
+    assert "snr" not in repeats[0]["acoustic"]
+    assert "gating" not in repeats[0]["acoustic"]
+
+    result = aggregate_driver_repeats(repeats)
+
+    assert result["accepted"] == 3
+    assert result["rejected"] == 0
+
+
+def test_aggregate_empty_repeats_degrades_gracefully():
+    result = aggregate_driver_repeats([])
+
+    assert result["accepted"] == 0
+    assert result["rejected"] == 0
+    assert result["aggregate_repeat"] is None
+    assert result["spread_db_p90"] is None
+    assert result["confidence"] == "reduced"
+    assert result["needed_recapture"] is True
+    assert result["recaptured"] is False
+
+
+def test_aggregate_repeat_group_id_is_unique_per_call():
+    repeats = [_repeat(-30.0), _repeat(-30.1), _repeat(-29.9)]
+
+    first = aggregate_driver_repeats(repeats)
+    second = aggregate_driver_repeats(repeats)
+
+    assert first["repeat_group_id"] != second["repeat_group_id"]
+
+
+def test_aggregate_target_is_configurable():
+    repeats = [_repeat(-30.0), _repeat(-30.1)]
+
+    result = aggregate_driver_repeats(repeats, target=2)
+
+    assert result["target"] == 2
+    assert result["accepted"] == 2
+    assert result["needed_recapture"] is False
+    assert result["confidence"] == "normal"
+
+
+# --- Spec-promise guard: outlier rejection, never noise-floor reduction ----
+
+
+def test_aggregate_spec_promise_no_complex_ir_input_and_no_averaged_curve():
+    """aggregate_driver_repeats' only numeric input is a scalar magnitude
+    (observed_mic_dbfs) per repeat -- there is no complex/IR parameter
+    anywhere in its signature or in the per-repeat shape it reads, and the
+    winning repeat's full acoustic block (including any SNR block) is
+    reused byte-for-byte, never synthesized from an average across
+    repeats."""
+
+    import inspect
+
+    sig = inspect.signature(aggregate_driver_repeats)
+    assert "complex" not in str(sig).lower()
+    assert "ir" not in {p.lower() for p in sig.parameters}
+
+    repeats = [
+        _repeat(-30.0, artifact_path="r0.wav"),
+        _repeat(-30.05, artifact_path="r1.wav"),
+        _repeat(-29.95, artifact_path="r2.wav"),
+    ]
+    # Give each a distinguishable SNR reading so an averaged/synthesized
+    # value (e.g. the mean of 28/30/32 = 30) would be detectable.
+    repeats[0]["acoustic"]["snr"] = {"worst_relevant": {"estimated_snr_db": 28.0}}
+    repeats[1]["acoustic"]["snr"] = {"worst_relevant": {"estimated_snr_db": 30.0}}
+    repeats[2]["acoustic"]["snr"] = {"worst_relevant": {"estimated_snr_db": 32.0}}
+
+    result = aggregate_driver_repeats(repeats)
+
+    winner = result["aggregate_repeat"]
+    assert winner is not None
+    # The winner is EXACTLY one of the input repeats (object equality on the
+    # nested acoustic dict), not a new dict with blended/averaged fields.
+    assert winner["acoustic"] in (
+        repeats[0]["acoustic"],
+        repeats[1]["acoustic"],
+        repeats[2]["acoustic"],
+    )
+    winning_snr = winner["acoustic"]["snr"]["worst_relevant"]["estimated_snr_db"]
+    assert winning_snr in (28.0, 30.0, 32.0)  # one repeat's real value
+    assert winning_snr != sum([28.0, 30.0, 32.0]) / 3  # never the average
+
+
+def test_record_driver_repeat_aggregate_emits_lifecycle_event(caplog):
+    repeats = [_repeat(-30.0), _repeat(-30.2), _repeat(-29.8)]
+
+    with caplog.at_level(logging.INFO):
+        result = record_driver_repeat_aggregate(
+            speaker_group_id="mono",
+            role="woofer",
+            repeats=repeats,
+            session_id="sess-1",
+        )
+
+    assert result["accepted"] == 3
+    assert "event=correction.crossover_repeats_aggregated" in caplog.text
+    assert "session=sess-1" in caplog.text
+    assert "group=mono" in caplog.text
+    assert "role=woofer" in caplog.text
+    assert "accepted=3" in caplog.text
+    assert "rejected=0" in caplog.text
+
+
+def test_repeat_outlier_threshold_constant_is_positive_and_documented():
+    assert REPEAT_OUTLIER_DB > 0

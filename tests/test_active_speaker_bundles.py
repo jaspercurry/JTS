@@ -855,3 +855,186 @@ def test_record_driver_acoustic_capture_threads_bundle_ref_onto_the_record(
 
     assert payload["recorded"] is True
     assert seen_kwargs.get("bundle_ref") == bundle_ref
+
+
+# --------------------------------------------------------------------------
+# Step 2: repeat captures — repeat_captures/ manifest entries
+# --------------------------------------------------------------------------
+
+
+def test_append_repeat_capture_records_wav_and_json_under_repeat_captures(
+    tmp_path: Path,
+) -> None:
+    info = _open(tmp_path)
+    bundle_dir = Path(info["bundle_dir"])
+    wav = _write_wav(tmp_path / "repeat.wav")
+    payload = {
+        "verdict": "present",
+        "acoustic": {"observed_mic_dbfs": -30.0, "mic_clipping": False},
+    }
+
+    entry = bundles.append_repeat_capture(
+        bundle_dir, index=0, wav_source_path=wav, payload=payload
+    )
+
+    assert entry is not None
+    assert entry["artifact_path"].startswith("repeat_captures/")
+    wav_path = bundle_dir / entry["artifact_path"]
+    assert wav_path.is_file()
+    assert wav_path.read_bytes() == wav.read_bytes()
+    json_path = bundle_dir / entry["quality_json_path"]
+    assert json_path.is_file()
+
+    manifest = read_artifact_manifest(bundle_dir)
+    by_path = {a["path"]: a for a in manifest["artifacts"]}
+    assert entry["artifact_path"] in by_path
+    assert by_path[entry["artifact_path"]]["kind"] == "capture_wav"
+    assert by_path[entry["artifact_path"]]["sensitivity"] == "private_raw_audio"
+    json_entry = by_path[entry["quality_json_path"]]
+    assert json_entry["kind"] == "repeat_capture_analysis"
+    assert json_entry["dependencies"] == [entry["artifact_path"]]
+
+    # A repeat capture is NOT added to info.json's captures/summed_captures
+    # compact lists -- it's raw evidence only, indexed via the winning
+    # capture's aggregate_driver_repeats per_repeat[] array instead.
+    reloaded = bundles._read_info(bundle_dir)
+    assert reloaded["captures"] == []
+    assert reloaded["summed_captures"] == []
+
+
+def test_append_repeat_capture_uses_relative_path_when_given(
+    tmp_path: Path,
+) -> None:
+    info = _open(tmp_path)
+    bundle_dir = Path(info["bundle_dir"])
+    wav = _write_wav(tmp_path / "repeat.wav")
+
+    entry = bundles.append_repeat_capture(
+        bundle_dir,
+        index=2,
+        wav_source_path=wav,
+        payload={"verdict": "present"},
+        relative_path="repeat_captures/pre_minted.wav",
+    )
+
+    assert entry["artifact_path"] == "repeat_captures/pre_minted.wav"
+    assert (bundle_dir / "repeat_captures" / "pre_minted.wav").is_file()
+
+
+def test_append_repeat_capture_multiple_attempts_coexist(tmp_path: Path) -> None:
+    info = _open(tmp_path)
+    bundle_dir = Path(info["bundle_dir"])
+    paths = set()
+    for index in range(3):
+        wav = _write_wav(tmp_path / f"repeat_{index}.wav", size=32 + index)
+        entry = bundles.append_repeat_capture(
+            bundle_dir,
+            index=index,
+            wav_source_path=wav,
+            payload={"verdict": "present", "index": index},
+        )
+        assert entry is not None
+        paths.add(entry["artifact_path"])
+
+    assert len(paths) == 3  # every attempt gets a distinct file
+    manifest = read_artifact_manifest(bundle_dir)
+    repeat_entries = [
+        a for a in manifest["artifacts"] if a["path"].startswith("repeat_captures/")
+    ]
+    # 3 WAVs + 3 quality JSONs.
+    assert len(repeat_entries) == 6
+
+
+def test_append_repeat_capture_rejects_missing_source(
+    tmp_path: Path, caplog
+) -> None:
+    info = _open(tmp_path)
+    bundle_dir = Path(info["bundle_dir"])
+
+    with caplog.at_level(logging.WARNING):
+        entry = bundles.append_repeat_capture(
+            bundle_dir,
+            index=0,
+            wav_source_path=tmp_path / "missing.wav",
+            payload={"verdict": "present"},
+        )
+
+    assert entry is None
+    assert "event=active_speaker.bundle_write_failed" in caplog.text
+    assert "op=append_repeat_capture" in caplog.text
+
+
+def test_append_repeat_capture_is_fail_soft_when_info_json_is_missing(
+    tmp_path: Path, caplog
+) -> None:
+    # append_repeat_capture never touches info.json, but the WAV copy step
+    # itself must still degrade gracefully rather than raise if the bundle
+    # directory disappears mid-write.
+    bundle_dir = tmp_path / "partial-bundle"
+    bundle_dir.mkdir()
+    wav = _write_wav(tmp_path / "repeat.wav")
+
+    entry = bundles.append_repeat_capture(
+        bundle_dir, index=0, wav_source_path=wav, payload={"verdict": "present"}
+    )
+
+    # No info.json requirement -- this succeeds even without an opened
+    # bundle, since repeat evidence has no compact list to update.
+    assert entry is not None
+    assert (bundle_dir / entry["artifact_path"]).is_file()
+
+
+def test_repeat_captures_count_toward_bundle_size_and_retention(
+    tmp_path: Path,
+) -> None:
+    info = _open(tmp_path)
+    bundle_dir = Path(info["bundle_dir"])
+    bundles.append_repeat_capture(
+        bundle_dir,
+        index=0,
+        wav_source_path=_write_wav(tmp_path / "r.wav", size=256),
+        payload={"verdict": "present"},
+    )
+
+    summary = bundles.summarize_bundle(bundle_dir)
+
+    assert summary["bundle_size_bytes"] >= 256
+
+
+def test_record_driver_repeat_aggregate_event_fields_match_bundle_promise(
+    caplog,
+) -> None:
+    """Cross-module pin: commissioning_capture.record_driver_repeat_aggregate
+    (the lane D step-2 emitter per SC-5) logs the exact field set the
+    bundle/SC-5 contract requires: session, group, role, accepted, rejected,
+    spread."""
+
+    from jasper.active_speaker.commissioning_capture import (
+        record_driver_repeat_aggregate,
+    )
+
+    repeats = [
+        {
+            "verdict": "present",
+            "acoustic": {"observed_mic_dbfs": level, "mic_clipping": False},
+        }
+        for level in (-30.0, -30.1, -29.9)
+    ]
+
+    with caplog.at_level(logging.INFO):
+        record_driver_repeat_aggregate(
+            speaker_group_id="mono",
+            role="tweeter",
+            repeats=repeats,
+            session_id="sess-9",
+        )
+
+    assert "event=correction.crossover_repeats_aggregated" in caplog.text
+    for expected in (
+        "session=sess-9",
+        "group=mono",
+        "role=tweeter",
+        "accepted=3",
+        "rejected=0",
+    ):
+        assert expected in caplog.text

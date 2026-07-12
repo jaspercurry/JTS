@@ -981,3 +981,81 @@ def test_summed_validation_records_optional_bundle_ref(tmp_path: Path) -> None:
 
     record = state["summed_validations"][-1]
     assert record["bundle"] == bundle_ref
+
+
+def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
+    """Step 2: when commissioning_capture.aggregate_driver_repeats decided a
+    winner across N repeat captures, the SINGLE driver measurement recorded
+    is that winner -- with the SC-4 repeats summary attached -- and the
+    latest-wins pointer (summary.latest_driver_measurements) resolves to
+    THAT aggregate record. Per-repeat evidence beyond the compact
+    per_repeat[] summary lives only in the bundle, never duplicated into
+    measurement state."""
+
+    from jasper.active_speaker.commissioning_capture import aggregate_driver_repeats
+
+    topology = _topology(tweeter_output=1)
+    state_path = tmp_path / "measurements.json"
+
+    def repeat(level: float, path: str) -> dict:
+        return {
+            "verdict": "heard_correct_driver",
+            "acoustic": {"observed_mic_dbfs": level, "mic_clipping": False},
+            "artifact_path": path,
+        }
+
+    repeats = [
+        repeat(-30.0, "repeat_captures/r0.wav"),
+        repeat(-30.2, "repeat_captures/r1.wav"),
+        repeat(-29.9, "repeat_captures/r2.wav"),
+    ]
+    aggregate = aggregate_driver_repeats(repeats)
+    assert aggregate["accepted"] == 3
+    winner = aggregate["aggregate_repeat"]
+    assert winner is not None
+
+    state = record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": winner["verdict"],
+            "acoustic": winner["acoustic"],
+            "playback_id": "play-1",
+            "repeats": aggregate,
+        },
+        safe_session=_safe_session(
+            role="woofer", output_index=0, playback_id="play-1"
+        ),
+        state_path=state_path,
+        now="2026-07-11T12:00:00Z",
+    )
+
+    record = state["driver_measurements"][-1]
+    assert record["repeats"]["repeat_group_id"] == aggregate["repeat_group_id"]
+    assert record["repeats"]["accepted"] == 3
+    assert record["repeats"]["confidence"] == "normal"
+    assert len(record["repeats"]["per_repeat"]) == 3
+
+    # The latest-wins pointer resolves to this exact aggregate record.
+    latest = state["summary"]["latest_driver_measurements"]["mono:woofer"]
+    assert latest is record
+    assert latest["repeats"]["repeat_group_id"] == aggregate["repeat_group_id"]
+
+    # Per-repeat evidence is index-only (verdict/accepted/reject_reason/
+    # artifact_path/...) -- no full acoustic curves for the non-winning
+    # repeats leak into measurement state; that lives only in the bundle.
+    for entry in record["repeats"]["per_repeat"]:
+        assert "acoustic" not in entry
+        assert "fr_curve" not in entry
+        assert set(entry) == {
+            "index",
+            "verdict",
+            "accepted",
+            "reject_reason",
+            "artifact_path",
+            "estimated_snr_db",
+            "clipping",
+            "above_validity_floor",
+            "level_dbfs",
+        }
