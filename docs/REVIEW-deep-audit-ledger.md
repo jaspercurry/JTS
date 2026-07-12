@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`313ad3ef`): 2026-07-12.
+Last reconciled against `main` (`767fef2e`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 388
-- **fixed**: 276
+- **open**: 387
+- **fixed**: 277
 - **in-progress**: 0
 - **mooted**: 12
 - **deferred**: 1
@@ -189,7 +189,7 @@ Last reconciled against `main` (`313ad3ef`): 2026-07-12.
 | DA-0248 | `jasper/cli/aec_tune.py` :: DELAY_FILE / main | should-fix | W4 | **open** | — |
 | DA-0249 | `jasper/cli/doctor/audio.py` :: check_loopback:263 / check_fanin_binary_inst | should-fix | W4 | **fixed** | hardware-free loopback and fan-in installation-check contracts — #1406 |
 | DA-0250 | `jasper/cli/doctor/satellites.py` :: check_dial_heartbeat | should-fix | W4 | **fixed** | exception, never-seen, recent, and long-idle activity contracts — #1410 |
-| DA-0251 | `jasper/peering/discovery.py` :: PeerDiscovery._handle_change | should-fix | W4 | **open** | — |
+| DA-0251 | `jasper/peering/discovery.py` :: PeerDiscovery._handle_change | should-fix | W4 | **fixed** | fail-soft record parsing and FIFO identity-change bookkeeping — #1411 |
 | DA-0252 | `jasper/transit/_mta_stations.py` :: load_stations | should-fix | W4 | **open** | — |
 | DA-0253 | `jasper/voice/openai_session.py` :: OpenAIRealtimeConnection._reconnect_with_bac | should-fix | W4 | **open** | — |
 | DA-0254 | `jasper/web/speaker_setup.py` :: _apply_name / _write_bluez_main_conf_name | should-fix | W4 | **open** | — |
