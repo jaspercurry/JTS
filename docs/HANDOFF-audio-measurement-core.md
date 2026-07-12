@@ -188,9 +188,21 @@ The product is three tiers:
   `acoustic_quality.py`; driver: `driver_acoustics.py`
   `SILENT_PEAK_DBFS=-45`, `NULL_THRESHOLD_DB=6`, …) with no shared,
   parameterized model.
-- **Evidence durability is inconsistent**: correction has schema-versioned
-  per-session bundles; active-speaker uses one global JSON state file;
-  balance/sync don't persist bundles (lost on restart).
+- ~~**Evidence durability is inconsistent**: correction has schema-versioned
+  per-session bundles; active-speaker uses one global JSON state file~~
+  **PARTIALLY CLOSED (2026-07-11, active-crossover Slice 0).**
+  Active-speaker now also has a schema-versioned, append-only commissioning
+  bundle (`jasper/active_speaker/bundles.py`, ported directly from
+  correction's `bundles.py` pattern — same manifest/hashing primitives,
+  reused not forked). The global JSON state file
+  (`active_speaker_measurements.json`) stays exactly what it was: the
+  deliberate "latest-wins current pointer" the baseline compiler reads. The
+  bundle is separate — durable, retention-bounded, forensic-only evidence
+  keyed by `session_id` — and is never read back as an input to any
+  decision. See
+  [active-crossover-information-design.md](active-crossover-information-design.md)
+  "Durable evidence and observability". balance/sync still don't persist
+  bundles (lost on restart).
 - **JTS3 lab Pi (2026-06-19): the crossover is not live.** Output HW is a
   HiFiBerry DAC8x (8 outputs); the live CamillaDSP graph (`v1.yml` and the
   outputd `outputd-cutover.yml`) is a **flat identity passthrough** — no

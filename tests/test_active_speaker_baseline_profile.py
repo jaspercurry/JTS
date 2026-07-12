@@ -1256,6 +1256,214 @@ async def test_apply_baseline_profile_threads_capture_device(
     assert 'device: "hw:CARD=Loopback,DEV=1"' in config_path.read_text(encoding="utf-8")
 
 
+async def test_apply_baseline_profile_records_apply_outcome_into_bundle(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """apply_baseline_profile's single chokepoint (STEP 1 CONTRACT §7.4)
+    records every apply attempt into the active-speaker commissioning bundle
+    the run's comparison set was stamped with — see
+    jasper.active_speaker.bundles.record_apply."""
+
+    from jasper.active_speaker import bundles
+    from jasper.active_speaker.measurement import (
+        active_driver_targets,
+        start_active_comparison_set,
+    )
+
+    sessions_dir = tmp_path / "sessions"
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(sessions_dir))
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    state_path = tmp_path / "measurements.json"
+    _measurements(topology, tmp_path)
+
+    bundle = bundles.open_bundle(topology, calibration_id="cal-1")
+    assert bundle is not None
+    driver_level_locks = {
+        target["target_id"]: {
+            "target_id": target["target_id"],
+            "speaker_group_id": target["speaker_group_id"],
+            "role": target["role"],
+            "tone_frequency_hz": 250.0 if target["role"] == "woofer" else 6250.0,
+            "tone_peak_dbfs": -12.0,
+            "commissioning_gain_db": 0.0,
+            "locked_main_volume_db": -12.0,
+        }
+        for target in active_driver_targets(topology)
+    }
+    start_active_comparison_set(
+        topology,
+        profile_context_id="ctx-1",
+        setup_sha256="a" * 64,
+        device_sha256="b" * 64,
+        calibration_id="cal-1",
+        driver_level_locks=driver_level_locks,
+        bundle_session_id=bundle["session_id"],
+        state_path=state_path,
+    )
+    measurements = load_measurement_state(topology, state_path=state_path)
+    assert (
+        measurements["active_comparison_set"]["bundle_session_id"]
+        == bundle["session_id"]
+    )
+
+    prior = tmp_path / "prior.yml"
+    prior.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    current_path = str(prior)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str:
+        return current_path
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    assert payload["status"] == "applied"
+
+    bundle_dir = Path(bundle["bundle_dir"])
+    summary = bundles.summarize_bundle(bundle_dir)
+    assert summary["state"] == "applied"
+    assert summary["has_apply"] is True
+    assert summary["has_proposal"] is True
+    full = bundles._read_info(bundle_dir)
+    assert full["apply"] is not None
+    assert (
+        full["fingerprints"]["graph_fingerprint"]
+        == payload["profile"]["source"]["fingerprint"]
+    )
+    assert full["rollback_target"] == {"config_path": str(prior)}
+
+
+async def test_apply_baseline_profile_records_blocked_attempt_into_bundle(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A blocked apply (not ready — see test_baseline_profile_blocks_*) never
+    reaches the DSP transaction, but the attempt is still evidence: the
+    bundle records it as a failed apply, not silently dropped."""
+
+    from jasper.active_speaker import bundles
+    from jasper.active_speaker.measurement import (
+        active_driver_targets,
+        start_active_comparison_set,
+    )
+
+    sessions_dir = tmp_path / "sessions"
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(sessions_dir))
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    state_path = tmp_path / "measurements.json"
+    # No driver/summed measurements recorded: automatic_candidate_readiness
+    # is not ready, so build_baseline_profile_candidate blocks the apply.
+
+    bundle = bundles.open_bundle(topology, calibration_id="")
+    assert bundle is not None
+    driver_level_locks = {
+        target["target_id"]: {
+            "target_id": target["target_id"],
+            "speaker_group_id": target["speaker_group_id"],
+            "role": target["role"],
+            "tone_frequency_hz": 250.0 if target["role"] == "woofer" else 6250.0,
+            "tone_peak_dbfs": -12.0,
+            "commissioning_gain_db": 0.0,
+            "locked_main_volume_db": -12.0,
+        }
+        for target in active_driver_targets(topology)
+    }
+    start_active_comparison_set(
+        topology,
+        profile_context_id="ctx-1",
+        setup_sha256="a" * 64,
+        device_sha256="b" * 64,
+        calibration_id="",
+        driver_level_locks=driver_level_locks,
+        bundle_session_id=bundle["session_id"],
+        state_path=state_path,
+    )
+    measurements = load_measurement_state(topology, state_path=state_path)
+
+    async def load_config(_path: str) -> bool:
+        return True
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        tuning_owner="automatic",
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    assert payload["status"] == "blocked"
+
+    bundle_dir = Path(bundle["bundle_dir"])
+    full = bundles._read_info(bundle_dir)
+    assert full["state"] == "failed"
+    assert full["apply"] is None
+
+
+async def test_apply_baseline_profile_is_a_noop_when_no_bundle_is_open(
+    tmp_path: Path,
+) -> None:
+    """A comparison set never gets a bundle_session_id (a manual-only apply,
+    a follower/driver_domain apply): apply_baseline_profile must complete
+    exactly as before — the bundle hook is additive and silent when there is
+    nothing to record into."""
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    assert measurements.get("active_comparison_set") is None
+
+    prior = tmp_path / "prior.yml"
+    prior.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    current_path = str(prior)
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str:
+        return current_path
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "applied"
+
+
 async def test_new_candidate_cannot_overwrite_applied_graph_or_snapshot(
     monkeypatch,
     tmp_path: Path,

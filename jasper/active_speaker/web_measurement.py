@@ -405,6 +405,76 @@ def status_payload() -> dict[str, Any]:
     }
 
 
+def _resolve_bundle_for_capture(
+    topology: Any,
+    *,
+    kind: str,
+    group: str,
+    role: str | None,
+    calibration_id: str | None,
+) -> tuple[Path | None, str | None]:
+    """Resolve (or lazily open) the commissioning bundle for one capture.
+
+    Prefers the ``bundle_session_id`` stamped on the active comparison set by
+    ``measurement.start_active_comparison_set``; falls back to the newest
+    still-``open`` bundle; lazily opens a fresh one if neither exists (this
+    path does NOT re-stamp the comparison set — the capture record's
+    ``bundle_ref`` is the durable link either way). Mints the deterministic
+    capture path here so the SAME relative path is embedded in the
+    measurement record's ``bundle_ref`` and later handed to
+    ``bundles.append_capture`` — the on-disk WAV ends up at exactly the path
+    the durable record points at.
+
+    Fail-soft: returns ``(None, None)`` on any filesystem error or malformed
+    ``topology`` (an ``AttributeError``/``TypeError`` from dereferencing an
+    unexpected shape). Bundle resolution must never block a capture from
+    being recorded — mirrors ``bundles.py``'s own fail-soft contract, which
+    this helper is not itself part of but must uphold on its behalf.
+    """
+
+    from jasper.active_speaker import bundles as active_speaker_bundles
+    from jasper.active_speaker.measurement import load_measurement_state
+
+    try:
+        root = active_speaker_bundles.sessions_dir()
+        measurements = load_measurement_state(topology)
+        comparison_set = measurements.get("active_comparison_set")
+        session_id = (
+            comparison_set.get("bundle_session_id")
+            if isinstance(comparison_set, Mapping)
+            else None
+        )
+        bundle_dir: Path | None = None
+        if session_id:
+            candidate = root / str(session_id)
+            if (candidate / "info.json").is_file():
+                bundle_dir = candidate
+        if bundle_dir is None:
+            latest = active_speaker_bundles.latest_bundle(root)
+            if isinstance(latest, Mapping) and latest.get("state") == "open":
+                bundle_dir = Path(str(latest["bundle_dir"]))
+        if bundle_dir is None:
+            opened = active_speaker_bundles.open_bundle(
+                topology, calibration_id=calibration_id or "",
+            )
+            if opened is not None:
+                bundle_dir = Path(str(opened["bundle_dir"]))
+        if bundle_dir is None:
+            return None, None
+        relpath = active_speaker_bundles.capture_artifact_relpath(kind, group, role)
+        return bundle_dir, relpath
+    except (OSError, AttributeError, TypeError) as exc:
+        log_event(
+            logger,
+            "active_speaker.bundle_write_failed",
+            level=logging.WARNING,
+            session=None,
+            op="resolve_bundle_for_capture",
+            error=str(exc),
+        )
+        return None, None
+
+
 def record_driver_capture(
     raw: Mapping[str, Any],
     wav_bytes: bytes | None = None,
@@ -451,6 +521,18 @@ def record_driver_capture(
     preset = capture_preset(topology, preset)
     wav_path = capture_wav_path(raw, kind="driver", wav_bytes=wav_bytes)
     calibration_curve, calibration_id, measurement_mode = capture_calibration(raw)
+    bundle_dir, capture_relpath = _resolve_bundle_for_capture(
+        topology,
+        kind="driver",
+        group=group_id,
+        role=role,
+        calibration_id=calibration_id,
+    )
+    bundle_ref = (
+        {"session_id": bundle_dir.name, "artifact_path": capture_relpath}
+        if bundle_dir is not None
+        else None
+    )
     payload = record_driver_acoustic_capture(
         topology,
         preset,
@@ -473,9 +555,20 @@ def record_driver_capture(
         safe_session=None,
         durable_floor_confirmation=floor_evidence.get("confirmation"),
         capture_geometry=_capture_geometry(raw),
+        bundle_ref=bundle_ref,
     )
     payload["measurement_mode"] = measurement_mode
     payload["calibration_id"] = calibration_id
+    if bundle_dir is not None:
+        from jasper.active_speaker import bundles as active_speaker_bundles
+
+        active_speaker_bundles.append_capture(
+            bundle_dir,
+            kind="driver",
+            wav_source_path=wav_path,
+            relative_path=capture_relpath,
+            payload={**payload, "speaker_group_id": group_id, "role": role},
+        )
     log_event(
         logger,
         "active_speaker.web_driver_capture",
@@ -492,6 +585,7 @@ def record_driver_capture(
         ),
         placement_policy=(payload.get("placement_proof") or {}).get("policy_id"),
         floor_evidence_source=floor_evidence.get("source"),
+        bundle_session=bundle_dir.name if bundle_dir is not None else None,
     )
     return payload
 
@@ -514,6 +608,18 @@ def record_summed_capture(
     wav_path = capture_wav_path(raw, kind="summed", wav_bytes=wav_bytes)
     calibration_curve, calibration_id, measurement_mode = capture_calibration(raw)
     group_id = str(raw.get("speaker_group_id") or "").strip()
+    bundle_dir, capture_relpath = _resolve_bundle_for_capture(
+        topology,
+        kind="summed",
+        group=group_id,
+        role=None,
+        calibration_id=calibration_id,
+    )
+    bundle_ref = (
+        {"session_id": bundle_dir.name, "artifact_path": capture_relpath}
+        if bundle_dir is not None
+        else None
+    )
     payload = record_summed_acoustic_capture(
         topology,
         preset,
@@ -538,9 +644,20 @@ def record_summed_capture(
         noise_band_report=_noise_band_report_value(raw.get("noise_band_report")),
         calibration_level=load_calibration_level_state(),
         capture_geometry=_capture_geometry(raw),
+        bundle_ref=bundle_ref,
     )
     payload["measurement_mode"] = measurement_mode
     payload["calibration_id"] = calibration_id
+    if bundle_dir is not None:
+        from jasper.active_speaker import bundles as active_speaker_bundles
+
+        active_speaker_bundles.append_capture(
+            bundle_dir,
+            kind="summed",
+            wav_source_path=wav_path,
+            relative_path=capture_relpath,
+            payload={**payload, "speaker_group_id": group_id},
+        )
     log_event(
         logger,
         "active_speaker.web_summed_capture",
@@ -554,5 +671,6 @@ def record_summed_capture(
         ),
         placement_policy=(payload.get("placement_proof") or {}).get("policy_id"),
         noise_floor_dbfs=(payload.get("acoustic") or {}).get("noise_floor_dbfs"),
+        bundle_session=bundle_dir.name if bundle_dir is not None else None,
     )
     return payload

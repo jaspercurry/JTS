@@ -157,6 +157,7 @@ def record_driver_acoustic_capture(
     calibration_level: Mapping[str, Any] | None = None,
     safe_session: Mapping[str, Any] | None = None,
     durable_floor_confirmation: Mapping[str, Any] | None = None,
+    bundle_ref: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
     now: str | None = None,
     capture_geometry: str = "near_field",
@@ -189,6 +190,11 @@ def record_driver_acoustic_capture(
     passes straight through to ``analyze`` — see
     :func:`jasper.active_speaker.driver_acoustics.analyze_driver_capture`'s
     IR-gating / low-frequency validity-floor behavior.
+    ``bundle_ref`` is forwarded verbatim to ``record`` — the durable
+    commissioning-bundle join key (``{session_id, artifact_path}`` from
+    ``jasper.active_speaker.bundles``) a caller resolved before this call.
+    This module does no bundle I/O itself; it only threads the reference
+    through to the single measurement write.
     """
     passband = driver_passband_hz(preset, role)
     result = analyze(
@@ -307,6 +313,7 @@ def record_driver_acoustic_capture(
         calibration_level=calibration_level,
         safe_session=safe_session,
         durable_floor_confirmation=durable_floor_confirmation,
+        bundle_ref=bundle_ref,
         state_path=state_path,
         now=now,
     )
@@ -346,6 +353,7 @@ def record_summed_acoustic_capture(
     calibration: "CalibrationCurve | None" = None,
     notes: str | None = None,
     calibration_level: Mapping[str, Any] | None = None,
+    bundle_ref: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
     now: str | None = None,
     capture_geometry: str = "near_field",
@@ -372,6 +380,8 @@ def record_summed_acoustic_capture(
 
     ``capture_geometry`` (``"near_field"`` default, or ``"reference_axis"``)
     passes straight through to ``analyze``.
+    ``bundle_ref`` is forwarded verbatim to ``record`` — see
+    :func:`record_driver_acoustic_capture`'s docstring.
     """
     fc = (
         float(crossover_fc_hz)
@@ -504,6 +514,7 @@ def record_summed_acoustic_capture(
         topology,
         raw,
         calibration_level=calibration_level,
+        bundle_ref=bundle_ref,
         state_path=state_path,
         now=now,
     )
