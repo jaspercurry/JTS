@@ -199,8 +199,10 @@
   starting or awaiting the phone, so graph apply cannot race measurement
   playback or its rollback. The
   public page release that
-  implements this contract, including the UMIK-2 calibration default, is
-  `capture_page_build=20260712.1`, supporting
+  implements this contract, including UMIK-2 model/mode preselection (the
+  serial is still entered and validated once; there is no automatic
+  calibration-file match), is
+  `capture_page_build=20260712.2`, supporting
   protocols 1 and 2; publish it
   before deploying a Pi that emits v2 specs.
   Relay room level setup temporarily suspends the local browser's 120-second

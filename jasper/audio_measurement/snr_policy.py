@@ -73,6 +73,7 @@ DECISION_CLASSES = frozenset({DECISION_CLASS_MAGNITUDE, DECISION_CLASS_ALIGNMENT
 _ALIGNMENT_BAND_METHODS = frozenset({
     "fft_band_power_difference",
     "deconvolved_band_difference",
+    "paired_signal_window_deconvolution",
 })
 
 # Per-band verdict severity, worst last. Used to reduce a list of per-band
@@ -200,87 +201,6 @@ def magnitude_band_levels(
             "level_dbfs": round(level, 2),
         })
     return out
-
-
-def deconvolved_ambient_report(
-    ambient_samples: np.ndarray,
-    sample_rate: int,
-    sweep_meta: Mapping[str, Any],
-    *,
-    calibration: Any = None,
-    bands: Sequence[tuple[str, float, float]] = CROSSOVER_SNR_BANDS_HZ,
-    capture_length_samples: int | None = None,
-) -> dict[str, Any]:
-    """Transform stored ambient through the played sweep's deconvolution.
-
-    Signal and noise must be compared in the same domain.  The reference is
-    regenerated from the exact played metadata, and the ambient window must be
-    at least as long as that reference.  When the full recording length is
-    supplied, the ambient input is zero-padded to that length so signal and
-    noise use the same FFT grid. Per-band p95-vs-mean deltas from the full
-    ambient window are then applied to the deconvolved floor so the result
-    retains non-stationary noise rather than an optimistic average.
-    """
-
-    from jasper.audio_measurement import calibration as calibration_mod
-    from jasper.audio_measurement import sweep as sweep_mod
-
-    expected_rate = int(sweep_meta["sample_rate"])
-    if sample_rate != expected_rate:
-        raise ValueError("ambient and sweep sample rates differ")
-    reference, _ = sweep_mod.synchronized_swept_sine(
-        f1=float(sweep_meta["f1"]),
-        f2=float(sweep_meta["f2"]),
-        duration_approx_s=float(sweep_meta["duration_s"]),
-        sample_rate=expected_rate,
-        amplitude_dbfs=float(sweep_meta["amplitude_dbfs"]),
-    )
-    ambient = np.asarray(ambient_samples, dtype=np.float64)
-    if ambient.size < reference.size:
-        raise ValueError("stored ambient window is shorter than the played sweep")
-    matched = ambient[:reference.size]
-    deconvolution_input = matched
-    if capture_length_samples is not None:
-        target_length = max(reference.size, int(capture_length_samples))
-        if target_length > matched.size:
-            deconvolution_input = np.pad(
-                matched, (0, target_length - matched.size)
-            )
-    ir = deconv.deconvolve(
-        deconvolution_input, reference.astype(np.float64), expected_rate
-    )
-    freqs, magnitude = deconv.magnitude_response(ir, expected_rate, normalize=False)
-    if calibration is not None:
-        magnitude = calibration_mod.apply_calibration_curve(
-            freqs, magnitude, calibration
-        )
-    deconvolved = magnitude_band_levels(freqs, magnitude, bands)
-
-    robust = ambient_band_report(ambient, expected_rate, bands)["bands"]
-    mean_raw = band_levels_dbfs(matched, expected_rate, bands)
-    robust_by_id = {entry["band_id"]: entry for entry in robust}
-    mean_by_id = {entry["band_id"]: entry for entry in mean_raw}
-    adjusted: list[dict[str, Any]] = []
-    for entry in deconvolved:
-        band_id = entry["band_id"]
-        robust_entry = robust_by_id.get(band_id)
-        mean_entry = mean_by_id.get(band_id)
-        adjustment = 0.0
-        if robust_entry is not None and mean_entry is not None:
-            adjustment = float(robust_entry["level_dbfs"]) - float(
-                mean_entry["level_dbfs"]
-            )
-        adjusted.append({
-            **entry,
-            "level_dbfs": round(float(entry["level_dbfs"]) + adjustment, 2),
-        })
-    return {
-        "schema_version": 1,
-        "domain": "deconvolved",
-        "method": "deconvolved_band_difference",
-        "ambient_duration_s": round(ambient.size / expected_rate, 3),
-        "bands": adjusted,
-    }
 
 
 def unwrap_noise_report(

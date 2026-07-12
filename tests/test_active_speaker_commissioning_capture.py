@@ -1032,6 +1032,26 @@ def test_aggregate_rejects_below_validity_floor_when_lane_a_block_present():
     assert result["accepted"] == 2
 
 
+def test_aggregate_reads_real_driver_overlap_validity_shape_with_partial_pass():
+    below = _repeat(-30.1)
+    below["acoustic"]["overlap_levels"] = [
+        {"fc_hz": 200.0, "above_validity_floor": False, "usable": False}
+    ]
+    partial = _repeat(-29.9)
+    partial["acoustic"]["overlap_levels"] = [
+        {"fc_hz": 200.0, "above_validity_floor": False, "usable": False},
+        {"fc_hz": 2000.0, "above_validity_floor": True, "usable": True},
+    ]
+
+    result = aggregate_driver_repeats([_repeat(-30.0), below, partial])
+
+    assert result["per_repeat"][1]["reject_reason"] == "below_validity_floor"
+    assert result["per_repeat"][1]["above_validity_floor"] is False
+    assert result["per_repeat"][2]["reject_reason"] is None
+    assert result["per_repeat"][2]["above_validity_floor"] is True
+    assert result["accepted"] == 2
+
+
 def test_aggregate_absent_snr_and_gating_blocks_do_not_reject_everything():
     """Lane A/B's snr/gating blocks are Slice 0 sibling work that may not
     have landed yet; their absence must degrade to level-outlier-only

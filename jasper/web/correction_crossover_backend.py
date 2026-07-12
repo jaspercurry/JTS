@@ -59,6 +59,7 @@ class CrossoverLevelLease:
         # level/profile context can be paired with another.
         self._repeat_sessions: dict[tuple[str, str], dict[str, Any]] = {}
         self._repeat_failures: dict[str, dict[str, Any]] = {}
+        self._durable_repeat_progress: dict[str, Any] = {}
 
     def configure_targets(self, targets: Sequence[Mapping[str, Any]]) -> None:
         """Freeze one complete, protected per-driver level plan."""
@@ -146,6 +147,7 @@ class CrossoverLevelLease:
         self.relay_setup_binding = None
         self._repeat_sessions = {}
         self._repeat_failures = {}
+        self._durable_repeat_progress = {}
         log_event(
             logger,
             "correction.crossover_level_context_invalidated",
@@ -386,6 +388,19 @@ class CrossoverLevelLease:
     ) -> None:
         self._repeat_failures[target_id] = dict(payload)
 
+    def repeat_failure(self, target_id: str) -> dict[str, Any] | None:
+        failure = self._repeat_failures.get(target_id)
+        return dict(failure) if failure is not None else None
+
+    def active_repeat_bindings(self) -> set[tuple[str, str]]:
+        return set(self._repeat_sessions)
+
+    def set_durable_repeat_progress(self, payload: Mapping[str, Any]) -> None:
+        self._durable_repeat_progress = dict(payload)
+        for target_id, failure in (payload.get("failures") or {}).items():
+            if isinstance(failure, Mapping):
+                self._repeat_failures[str(target_id)] = dict(failure)
+
     def repeat_snapshot(self) -> dict[str, Any]:
         from jasper.active_speaker.commissioning_capture import (
             DEFAULT_REPEAT_TARGET,
@@ -404,7 +419,11 @@ class CrossoverLevelLease:
                 "target": DEFAULT_REPEAT_TARGET,
                 "needed_recapture": aggregate["needed_recapture"],
             }
-        return {"targets": targets, "failures": dict(self._repeat_failures)}
+        return {
+            "targets": targets,
+            "failures": dict(self._repeat_failures),
+            "durable": dict(self._durable_repeat_progress),
+        }
 
     def level_match_snapshot(
         self, *, current_context_id: str | None = None
@@ -470,6 +489,11 @@ def status_payload() -> dict[str, Any]:
         if isinstance(setup_profile, Mapping)
         else None
     )
+    durable_repeats = web_measurement.reconcile_durable_repeat_progress(
+        payload.get("measurements") or {},
+        live_bindings=_LEVEL_LEASE.active_repeat_bindings(),
+    )
+    _LEVEL_LEASE.set_durable_repeat_progress(durable_repeats)
     payload["level_match"] = _LEVEL_LEASE.level_match_snapshot(
         current_context_id=current_context_id
     )

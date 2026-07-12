@@ -286,6 +286,7 @@ def record_driver_acoustic_capture(
     noise_floor_dbfs: float | None = None,
     noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     ambient_report: Mapping[str, Any] | None = None,
+    ambient_duration_s: float | None = None,
     test_level_dbfs: float | None = None,
     excitation: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
@@ -337,18 +338,21 @@ def record_driver_acoustic_capture(
     through to the single measurement write.
     """
     passband = driver_passband_hz(preset, role)
-    result = analyze(
-        captured_wav,
-        sweep_meta,
-        passband_hz=passband,
-        overlap_fcs=driver_crossover_fcs(preset, role),
-        has_mic_calibration=has_mic_calibration,
-        calibration=calibration,
-        noise_band_report=noise_band_report,
-        capture_geometry=capture_geometry,
-    )
+    analyze_kwargs: dict[str, Any] = {
+        "passband_hz": passband,
+        "overlap_fcs": driver_crossover_fcs(preset, role),
+        "has_mic_calibration": has_mic_calibration,
+        "calibration": calibration,
+        "noise_band_report": noise_band_report,
+        "capture_geometry": capture_geometry,
+    }
+    if ambient_duration_s is not None:
+        analyze_kwargs["ambient_duration_s"] = ambient_duration_s
+    result = analyze(captured_wav, sweep_meta, **analyze_kwargs)
     acoustic = result.to_dict()
-    if isinstance(ambient_report, Mapping):
+    if isinstance(ambient_report, Mapping) and not isinstance(
+        acoustic.get("ambient"), Mapping
+    ):
         acoustic["ambient"] = dict(ambient_report)
     normalized_noise_floor = _finite_float(noise_floor_dbfs)
     if normalized_noise_floor is not None:
@@ -497,6 +501,7 @@ def record_summed_acoustic_capture(
     noise_floor_dbfs: float | None = None,
     noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     ambient_report: Mapping[str, Any] | None = None,
+    ambient_duration_s: float | None = None,
     excitation: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
     polarity: str | None = None,
@@ -566,20 +571,23 @@ def record_summed_acoustic_capture(
     # a reverse-polarity capture (one driver inverted) a present null is the PASS,
     # for an in-phase one it is the PROBLEM. The cap-independent polarity call
     # (reverse-vs-in-phase margin) is the proposal's job, not this per-capture verdict.
-    result = analyze(
-        captured_wav,
-        sweep_meta,
-        crossover_fc_hz=fc,
-        null_threshold_db=null_threshold_db,
-        expect_null=expect_null,
-        has_mic_calibration=has_mic_calibration,
-        calibration=calibration,
-        noise_band_report=noise_band_report,
-        noise_floor_dbfs=noise_floor_dbfs,
-        capture_geometry=capture_geometry,
-    )
+    analyze_kwargs: dict[str, Any] = {
+        "crossover_fc_hz": fc,
+        "null_threshold_db": null_threshold_db,
+        "expect_null": expect_null,
+        "has_mic_calibration": has_mic_calibration,
+        "calibration": calibration,
+        "noise_band_report": noise_band_report,
+        "noise_floor_dbfs": noise_floor_dbfs,
+        "capture_geometry": capture_geometry,
+    }
+    if ambient_duration_s is not None:
+        analyze_kwargs["ambient_duration_s"] = ambient_duration_s
+    result = analyze(captured_wav, sweep_meta, **analyze_kwargs)
     acoustic = result.to_dict()
-    if isinstance(ambient_report, Mapping):
+    if isinstance(ambient_report, Mapping) and not isinstance(
+        acoustic.get("ambient"), Mapping
+    ):
         acoustic["ambient"] = dict(ambient_report)
     normalized_noise_floor = _finite_float(noise_floor_dbfs)
     if normalized_noise_floor is not None:
@@ -1103,6 +1111,17 @@ def _repeat_reject_reason(
     gating = acoustic.get("gating")
     if isinstance(gating, Mapping) and gating.get("above_validity_floor") is False:
         return "below_validity_floor"
+    overlap_floor_evidence = [
+        entry.get("above_validity_floor")
+        for entry in acoustic.get("overlap_levels") or ()
+        if isinstance(entry, Mapping)
+        and isinstance(entry.get("above_validity_floor"), bool)
+    ]
+    if overlap_floor_evidence and not any(overlap_floor_evidence):
+        # Real DriverAcousticResult producer shape: validity is per crossover
+        # overlap entry, not a synthetic top-level gating boolean. Preserve
+        # partial-pass behavior when at least one region remains above floor.
+        return "below_validity_floor"
     if level_dbfs is None:
         return "level_unavailable"
     if (
@@ -1174,6 +1193,17 @@ def aggregate_driver_repeats(
         gating: Mapping[str, Any] = (
             gating_raw if isinstance(gating_raw, Mapping) else {}
         )
+        overlap_floor_evidence = [
+            entry.get("above_validity_floor")
+            for entry in acoustic.get("overlap_levels") or ()
+            if isinstance(entry, Mapping)
+            and isinstance(entry.get("above_validity_floor"), bool)
+        ]
+        above_validity_floor = (
+            bool(gating["above_validity_floor"])
+            if isinstance(gating.get("above_validity_floor"), bool)
+            else (any(overlap_floor_evidence) if overlap_floor_evidence else True)
+        )
         per_repeat.append({
             "index": index,
             "verdict": verdict,
@@ -1182,7 +1212,7 @@ def aggregate_driver_repeats(
             "artifact_path": item.get("artifact_path"),
             "estimated_snr_db": _finite_float(worst_relevant.get("estimated_snr_db")),
             "clipping": bool(acoustic.get("mic_clipping")),
-            "above_validity_floor": bool(gating.get("above_validity_floor", True)),
+            "above_validity_floor": above_validity_floor,
             "level_dbfs": level_dbfs,
         })
         if accepted and level_dbfs is not None:

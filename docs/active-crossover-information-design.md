@@ -610,6 +610,9 @@ including:
 - `correction.crossover_level_locked` or `correction.crossover_level_failed`;
 - `correction.crossover_capture_accepted` or
   `correction.crossover_capture_rejected`;
+- `correction.crossover_repeat_attempt` for each bounded attempt and
+  `correction.crossover_repeat_aborted` when a service restart durably
+  invalidates an orphaned comparison-bound set;
 - `correction.crossover_repeats_aggregated`;
 - `correction.crossover_proposal_ready`;
 - `correction.crossover_apply_started`;
@@ -773,7 +776,7 @@ trim calculation is a complete automatic crossover.
 
 ## Current implementation gap summary
 
-As of 2026-07-11, JTS has much of the substrate but not the full product:
+As of 2026-07-12, JTS has much of the substrate but not the full product:
 
 - Manual setup exposes frequency, filter family/slope, and trim. ~~There is
   still no `/sound/` UI for polarity/delay authoring~~ Closed (P2a): the
@@ -785,8 +788,18 @@ As of 2026-07-11, JTS has much of the substrate but not the full product:
   through a stereo apply, which no longer resets delay/inversion (corrections
   are only re-derived from measurement under explicit automatic tuning with
   fresh alignment evidence, never unconditionally).
-- The relay-guided automatic flow takes one accepted near-field sweep per
-  driver and derives attenuation-only relative trims.
+- ~~The relay-guided automatic flow takes one accepted near-field sweep per
+  driver.~~ Closed (Lane D): each role uses its own bounded sweep length after
+  a 13-second stored ambient prefix, then the server admits three stationary
+  repeats with at most one bounded fourth attempt and at least two accepted.
+  The safe level probe chooses non-clipping playback headroom only; acoustic
+  accept/reduce/refuse comes from per-band SNR after the signal and ambient
+  traverse the same regularized inverse, signal-owned arrival window and
+  reflection gate, and calibration domain. Interim bounded-four state is
+  compactly persisted in the commissioning bundle; a service restart preserves
+  its attempts and marks it aborted instead of silently starting at one. The
+  envelope then requires a new driver level check before another capture, so a
+  refused/interrupted comparison set cannot exceed the bounded four by retrying.
 - Crossover frequency, family, and slope remain operator-owned rather than
   measured automatically.
 - The automatic success path requires a pre-apply combined listening check,
@@ -870,4 +883,4 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-11
+Last verified: 2026-07-12

@@ -109,12 +109,14 @@ def _stored_ambient_report(
     calibration: Any,
     ambient_duration_s: Any,
 ) -> dict[str, Any] | None:
-    """Build post-deconvolution band noise from the relay's silent prefix.
+    """Validate and describe the relay's stored silent prefix.
 
     The relay orchestration pauses household audio and records a fixed silent
     window before playing the sweep.  The full uploaded WAV is already copied
     into every repeat/final bundle artifact, so the report identifies the
-    exact source window rather than duplicating private raw audio.
+    exact source window rather than duplicating private raw audio. The acoustic
+    analyzer performs the paired signal/noise deconvolution later, after the
+    signal has selected the one arrival/gating window both inputs must use.
     """
 
     try:
@@ -131,16 +133,12 @@ def _stored_ambient_report(
     if ambient_count <= 0 or len(samples) < ambient_count:
         raise ValueError("crossover capture is missing its stored ambient window")
     ambient = samples[:ambient_count]
-    report = snr_policy.deconvolved_ambient_report(
-        ambient,
-        sample_rate,
-        sweep_meta,
-        calibration=calibration,
-        capture_length_samples=len(samples),
-    )
     raw_robust = snr_policy.ambient_band_report(ambient, sample_rate)
     return {
-        **report,
+        "schema_version": 2,
+        "domain": "stored_capture_prefix",
+        "method": "paired_signal_window_deconvolution",
+        "ambient_duration_s": round(duration, 3),
         "source": {
             "kind": "capture_prefix",
             "start_s": 0.0,
@@ -524,6 +522,88 @@ def _resolve_bundle_for_capture(
         return None, None
 
 
+def reconcile_durable_repeat_progress(
+    measurements: Mapping[str, Any],
+    *,
+    live_bindings: set[tuple[str, str]],
+) -> dict[str, Any]:
+    """Abort bundle-indexed repeat attempts that no live process owns.
+
+    The correction service cannot safely reconstruct locked volume/mic state
+    after exit. It therefore preserves the bounded attempt evidence, marks the
+    old comparison set visibly aborted, and requires a fresh level sequence
+    instead of silently resetting attempt four back to attempt one.
+    """
+
+    comparison_set = measurements.get("active_comparison_set")
+    comparison_set = (
+        comparison_set if isinstance(comparison_set, Mapping) else {}
+    )
+    comparison_set_id = str(comparison_set.get("comparison_set_id") or "")
+    session_id = str(comparison_set.get("bundle_session_id") or "")
+    if not comparison_set_id or not session_id:
+        return {"session_id": None, "targets": {}, "failures": {}}
+    from jasper.active_speaker import bundles as active_speaker_bundles
+
+    bundle_dir = active_speaker_bundles.sessions_dir() / session_id
+    try:
+        info = active_speaker_bundles.summarize_bundle(bundle_dir)
+    except (active_speaker_bundles.BundleError, OSError, ValueError):
+        return {"session_id": session_id, "targets": {}, "failures": {}}
+    progress = {
+        str(key): dict(value)
+        for key, value in (info.get("repeat_progress") or {}).items()
+        if isinstance(value, Mapping)
+    }
+    orphaned_fingerprints = {
+        str(entry.get("target_fingerprint") or "")
+        for entry in progress.values()
+        if entry.get("status") == "active"
+        and entry.get("comparison_set_id") == comparison_set_id
+        and (
+            comparison_set_id,
+            str(entry.get("target_fingerprint") or ""),
+        ) not in live_bindings
+    }
+    if orphaned_fingerprints:
+        aborted = active_speaker_bundles.abort_active_repeat_progress(
+            bundle_dir,
+            comparison_set_id=comparison_set_id,
+            reason="correction_service_restarted",
+            target_fingerprints=orphaned_fingerprints,
+        )
+        if aborted is None:
+            raise ValueError("could not persist interrupted crossover repeats")
+        progress.update(aborted)
+        for target_id, entry in aborted.items():
+            log_event(
+                logger,
+                "correction.crossover_repeat_aborted",
+                session=session_id,
+                comparison_set_id=comparison_set_id,
+                target=target_id,
+                attempts=entry.get("attempts"),
+                accepted=entry.get("accepted"),
+                reason=entry.get("reason"),
+            )
+    failures = {
+        target_id: {
+            "reason": entry.get("reason"),
+            "attempts": entry.get("attempts"),
+            "accepted": entry.get("accepted"),
+            "target": entry.get("target"),
+            "status": entry.get("status"),
+        }
+        for target_id, entry in progress.items()
+        if entry.get("status") in {"aborted", "refused"}
+    }
+    return {
+        "session_id": session_id,
+        "targets": progress,
+        "failures": failures,
+    }
+
+
 def _analyze_only_record(*_args: Any, **_kwargs: Any) -> None:
     """Injection used while a repeat is still provisional."""
 
@@ -574,6 +654,17 @@ def record_driver_capture(
     topology = load_output_topology()
     group_id = str(raw.get("speaker_group_id") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
+    repeat_failure_reader = getattr(repeat_store, "repeat_failure", None)
+    prior_repeat_failure = (
+        repeat_failure_reader(f"{group_id}:{role}")
+        if callable(repeat_failure_reader)
+        else None
+    )
+    if isinstance(prior_repeat_failure, Mapping):
+        raise ValueError(
+            "the bounded crossover repeat set was refused or interrupted; "
+            "run the driver level check again before measuring"
+        )
     measurements = load_measurement_state(topology)
     floor_evidence = current_driver_floor_evidence(
         topology,
@@ -639,11 +730,16 @@ def record_driver_capture(
         notes=raw.get("notes"),
         noise_floor_dbfs=raw.get("noise_floor_dbfs"),
         noise_band_report=(
-            ambient_report
-            if ambient_report is not None
-            else _noise_band_report_value(raw.get("noise_band_report"))
+            _noise_band_report_value(raw.get("noise_band_report"))
+            if ambient_report is None
+            else None
         ),
         ambient_report=ambient_report,
+        ambient_duration_s=(
+            float(raw["ambient_duration_s"])
+            if ambient_report is not None
+            else None
+        ),
         calibration_level=load_calibration_level_state(),
         safe_session=None,
         durable_floor_confirmation=floor_evidence.get("confirmation"),
@@ -721,7 +817,45 @@ def record_driver_capture(
         aggregate = aggregate_driver_repeats(
             repeats, target=DEFAULT_REPEAT_TARGET
         )
+        latest_attempt = aggregate["per_repeat"][-1]
+        log_event(
+            logger,
+            "correction.crossover_repeat_attempt",
+            session=bundle_dir.name if bundle_dir is not None else None,
+            comparison_set_id=comparison_set_id,
+            group=group_id,
+            role=role,
+            attempt=latest_attempt.get("index", 0) + 1,
+            accepted=latest_attempt.get("accepted"),
+            reject_reason=latest_attempt.get("reject_reason"),
+            snr_db=latest_attempt.get("estimated_snr_db"),
+            clipping=latest_attempt.get("clipping"),
+        )
+
+        def persist_repeat_progress(status: str, reason: str | None = None) -> None:
+            if bundle_dir is None:
+                raise ValueError(
+                    "crossover repeat progress requires a durable session bundle"
+                )
+            from jasper.active_speaker import bundles as active_speaker_bundles
+
+            persisted = active_speaker_bundles.record_repeat_progress(
+                bundle_dir,
+                comparison_set_id=comparison_set_id,
+                target_fingerprint=target_fingerprint,
+                target_id=f"{group_id}:{role}",
+                attempts=len(repeats),
+                accepted=aggregate["accepted"],
+                target=DEFAULT_REPEAT_TARGET,
+                per_repeat=aggregate["per_repeat"],
+                status=status,
+                reason=reason,
+            )
+            if persisted is None:
+                raise ValueError("could not persist crossover repeat progress")
+
         if aggregate["needed_recapture"]:
+            persist_repeat_progress("active")
             return {
                 "recorded": False,
                 "verdict": provisional.get("verdict"),
@@ -751,6 +885,9 @@ def record_driver_capture(
             }
             repeat_store.clear_driver_repeats(key)
             repeat_store.record_repeat_failure(f"{group_id}:{role}", failure)
+            persist_repeat_progress(
+                "refused", reason="insufficient_accepted_repeats"
+            )
             return {
                 "recorded": False,
                 "status": "refused",
@@ -769,8 +906,11 @@ def record_driver_capture(
             "playback_id": winner.get("playback_id"),
             "test_level_dbfs": winner.get("test_level_dbfs"),
             "excitation": winner.get("excitation"),
-            "noise_band_report": winner.get("ambient_report"),
+            "noise_band_report": None,
             "ambient_report": winner.get("ambient_report"),
+            "ambient_duration_s": (
+                (winner.get("ambient_report") or {}).get("ambient_duration_s")
+            ),
         })
         payload = record_driver_acoustic_capture(
             topology,
@@ -781,6 +921,7 @@ def record_driver_capture(
             **final_kwargs,
         )
         wav_path = winner_path
+        persist_repeat_progress("completed")
         repeat_store.clear_driver_repeats(key)
     payload["measurement_mode"] = measurement_mode
     payload["calibration_id"] = calibration_id
@@ -877,11 +1018,16 @@ def record_summed_capture(
         notes=raw.get("notes"),
         noise_floor_dbfs=raw.get("noise_floor_dbfs"),
         noise_band_report=(
-            ambient_report
-            if ambient_report is not None
-            else _noise_band_report_value(raw.get("noise_band_report"))
+            _noise_band_report_value(raw.get("noise_band_report"))
+            if ambient_report is None
+            else None
         ),
         ambient_report=ambient_report,
+        ambient_duration_s=(
+            float(raw["ambient_duration_s"])
+            if ambient_report is not None
+            else None
+        ),
         calibration_level=load_calibration_level_state(),
         capture_geometry=_capture_geometry(raw),
         bundle_ref=bundle_ref,

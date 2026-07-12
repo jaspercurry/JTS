@@ -456,14 +456,25 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
     monkeypatch.setattr(
         web_measurement, "_stored_ambient_report", lambda *a, **k: ambient
     )
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
     monkeypatch.setattr(
-        web_measurement, "_resolve_bundle_for_capture", lambda *a, **k: (None, None)
+        web_measurement,
+        "_resolve_bundle_for_capture",
+        lambda *a, **k: (bundle_dir, "captures/driver.wav"),
     )
     monkeypatch.setattr(
         web_measurement, "_driver_target_fingerprint", lambda *a, **k: "target-fp"
     )
+    repeat_events = []
+    monkeypatch.setattr(
+        web_measurement,
+        "log_event",
+        lambda _logger, event, **fields: repeat_events.append((event, fields)),
+    )
 
     import jasper.active_speaker.calibration_level as calibration_level
+    import jasper.active_speaker.bundles as active_speaker_bundles
     import jasper.active_speaker.commissioning_capture as capture
     import jasper.active_speaker.measurement as measurement
 
@@ -521,6 +532,18 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
         }
 
     monkeypatch.setattr(capture, "record_driver_acoustic_capture", fake_record)
+    monkeypatch.setattr(
+        active_speaker_bundles,
+        "append_repeat_capture",
+        lambda *_a, **kwargs: {
+            "artifact_path": f"captures/repeat-{kwargs['index']}.wav"
+        },
+    )
+    monkeypatch.setattr(
+        active_speaker_bundles,
+        "record_repeat_progress",
+        lambda *_a, **kwargs: dict(kwargs),
+    )
     store = backend.CrossoverLevelLease()
     raw = {
         "speaker_group_id": "mono",
@@ -551,6 +574,15 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
     )
     assert len([call for call in calls if call.get("repeats") is not None]) == 1
     assert store.repeat_snapshot()["targets"] == {}
+    attempts = [
+        fields
+        for event, fields in repeat_events
+        if event == "correction.crossover_repeat_attempt"
+    ]
+    assert [entry["attempt"] for entry in attempts] == [1, 2, 3]
+    assert all(entry["accepted"] is True for entry in attempts)
+    assert all(entry["snr_db"] == 31.0 for entry in attempts)
+    assert all(entry["clipping"] is False for entry in attempts)
 
 
 def test_repeat_capture_refuses_without_stored_ambient(monkeypatch, tmp_path):
@@ -616,7 +648,7 @@ def test_repeat_store_never_pairs_attempts_across_comparison_sets():
     ]["comparison_set_id"]
 
 
-def test_stored_ambient_prefix_produces_deconvolved_band_report(tmp_path):
+def test_stored_ambient_prefix_is_described_for_paired_analysis(tmp_path):
     import wave
 
     import numpy as np
@@ -649,15 +681,122 @@ def test_stored_ambient_prefix_produces_deconvolved_band_report(tmp_path):
     )
 
     assert report is not None
-    assert report["domain"] == "deconvolved"
-    assert report["method"] == "deconvolved_band_difference"
+    assert report["schema_version"] == 2
+    assert report["domain"] == "stored_capture_prefix"
+    assert report["method"] == "paired_signal_window_deconvolution"
     assert report["source"] == {
         "kind": "capture_prefix",
         "start_s": 0.0,
         "end_s": 2.0,
     }
+    assert report["ambient_duration_s"] == 2.0
     assert report["raw_robust"]["method"] == "one_second_p95"
-    assert report["bands"]
+    assert "bands" not in report
+
+
+def test_fresh_process_durably_aborts_orphaned_bounded_repeats(
+    monkeypatch, tmp_path
+):
+    from jasper.active_speaker import bundles
+    from tests.test_active_speaker_measurement import _topology
+
+    opened = bundles.open_bundle(
+        _topology(), calibration_id="", sessions_dir=tmp_path
+    )
+    bundle_dir = Path(opened["bundle_dir"])
+    comparison_set_id = "c" * 32
+    bundles.record_repeat_progress(
+        bundle_dir,
+        comparison_set_id=comparison_set_id,
+        target_fingerprint="driver-fp",
+        target_id="mono:woofer",
+        attempts=3,
+        accepted=2,
+        target=3,
+        per_repeat=[
+            {
+                "index": index,
+                "accepted": index != 2,
+                "reject_reason": "level_outlier" if index == 2 else None,
+            }
+            for index in range(3)
+        ],
+        status="active",
+    )
+    bundles.record_repeat_progress(
+        bundle_dir,
+        comparison_set_id=comparison_set_id,
+        target_fingerprint="orphan-fp",
+        target_id="mono:tweeter",
+        attempts=1,
+        accepted=1,
+        target=3,
+        per_repeat=[{"index": 0, "accepted": True}],
+        status="active",
+    )
+    measurements = {
+        "active_comparison_set": {
+            "comparison_set_id": comparison_set_id,
+            "bundle_session_id": bundle_dir.name,
+        }
+    }
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path)
+
+    # The owning process leaves its live binding active while aborting only a
+    # sibling target that no process owns.
+    live = web_measurement.reconcile_durable_repeat_progress(
+        measurements,
+        live_bindings={(comparison_set_id, "driver-fp")},
+    )
+    assert live["targets"]["mono:woofer"]["status"] == "active"
+    assert live["targets"]["mono:tweeter"]["status"] == "aborted"
+
+    # A new process has no in-memory binding. It does not reset to attempt 1:
+    # it preserves the bounded-three evidence and marks the run visibly dead.
+    fresh = web_measurement.reconcile_durable_repeat_progress(
+        measurements, live_bindings=set()
+    )
+    failure = fresh["failures"]["mono:woofer"]
+    assert failure == {
+        "reason": "correction_service_restarted",
+        "attempts": 3,
+        "accepted": 2,
+        "target": 3,
+        "status": "aborted",
+    }
+    assert bundles._read_info(bundle_dir)["repeat_progress"]["mono:woofer"][
+        "status"
+    ] == "aborted"
+
+    restarted_lease = backend.CrossoverLevelLease()
+    restarted_lease.set_durable_repeat_progress(fresh)
+    assert restarted_lease.repeat_snapshot()["failures"]["mono:woofer"] == failure
+    again = web_measurement.reconcile_durable_repeat_progress(
+        measurements, live_bindings=set()
+    )
+    assert again["failures"]["mono:woofer"]["attempts"] == 3
+
+
+def test_aborted_repeat_set_cannot_restart_without_new_level_context(
+    monkeypatch
+):
+    store = backend.CrossoverLevelLease()
+    store.record_repeat_failure(
+        "mono:woofer",
+        {
+            "status": "aborted",
+            "reason": "correction_service_restarted",
+            "attempts": 3,
+        },
+    )
+    monkeypatch.setattr(web_measurement, "load_output_topology", object)
+
+    with pytest.raises(ValueError, match="run the driver level check again"):
+        backend.record_driver_capture(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            b"wav",
+            repeat_store=store,
+        )
 
 
 def _stub_driver_capture_collaborators(monkeypatch, wav_path: Path) -> None:
@@ -1737,6 +1876,36 @@ def test_crossover_envelope_surfaces_server_owned_repeat_progress():
     assert env["screen"] == "driver"
     assert "Repeat 3; 2 of 3 accepted" in env["verdict_text"]
     assert env["next_action"]["label"] == "Measure woofer — repeat 3"
+
+
+def test_crossover_envelope_requires_new_level_check_after_repeat_abort():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["level_match"]["repeats"] = {
+        "targets": {},
+        "failures": {
+            "mono:woofer": {
+                "status": "aborted",
+                "reason": "correction_service_restarted",
+                "attempts": 3,
+                "accepted": 2,
+                "target": 3,
+            }
+        },
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert "attempts were preserved" in env["verdict_text"]
+    assert env["next_action"] == {
+        "id": "level_match",
+        "label": "Restart woofer driver level check",
+        "endpoint": "/correction/crossover/level-match",
+        "body": {},
+    }
 
 
 @pytest.mark.parametrize("applied_owner", ["manual", "automatic"])

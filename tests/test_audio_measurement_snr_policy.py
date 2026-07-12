@@ -92,54 +92,28 @@ def test_ambient_report_uses_upper_percentile_across_one_second_frames():
     )
 
 
-def test_deconvolved_ambient_is_trusted_per_band_for_alignment(monkeypatch):
-    from jasper.audio_measurement import sweep
-
-    _reference, meta = sweep.synchronized_swept_sine(
-        f1=20.0,
-        f2=12000.0,
-        duration_approx_s=1.0,
-        sample_rate=SR,
-        amplitude_dbfs=-12.0,
-    )
-    rng = np.random.default_rng(44)
-    ambient = rng.normal(0.0, 1e-4, SR * 2)
-    seen = {}
-    real_deconvolve = snr_policy.deconv.deconvolve
-
-    def capture_deconvolution_length(samples, *args, **kwargs):
-        seen["samples"] = len(samples)
-        return real_deconvolve(samples, *args, **kwargs)
-
-    monkeypatch.setattr(
-        snr_policy.deconv, "deconvolve", capture_deconvolution_length
-    )
-    noise = snr_policy.deconvolved_ambient_report(
-        ambient,
-        SR,
-        meta.to_dict(),
-        bands=(("wide", 100.0, 8000.0),),
-        capture_length_samples=SR * 3,
-    )
-    capture = [{
-        **noise["bands"][0],
-        "level_dbfs": noise["bands"][0]["level_dbfs"] + 40.0,
+def test_paired_signal_window_deconvolution_is_trusted_for_alignment():
+    noise = [{
+        "band_id": "wide",
+        "band_hz": [100.0, 8000.0],
+        "level_dbfs": -80.0,
     }]
+    capture = [{**noise[0], "level_dbfs": -40.0}]
 
     verdict = snr_policy.band_snr_verdicts(
         decision_class=snr_policy.DECISION_CLASS_ALIGNMENT,
         capture_bands=capture,
-        noise_bands=noise["bands"],
+        noise_bands=noise,
         noise_floor_dbfs_scalar=None,
         relevant_hz=(100.0, 8000.0),
         model=DRIVER,
-        band_method=noise["method"],
+        band_method="paired_signal_window_deconvolution",
     )
 
-    assert noise["domain"] == "deconvolved"
-    assert seen["samples"] == SR * 3
     assert verdict["verdict"] == "ok"
-    assert verdict["bands"][0]["method"] == "deconvolved_band_difference"
+    assert verdict["bands"][0]["method"] == (
+        "paired_signal_window_deconvolution"
+    )
 
 
 # ---------- band_snr_verdicts: magnitude class -------------------------------

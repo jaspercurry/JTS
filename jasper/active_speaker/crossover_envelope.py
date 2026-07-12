@@ -414,8 +414,9 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "severity": "warn",
                 "text": (
                     "Too few repeat sweeps cleared the per-band SNR and clipping "
-                    "checks. Quiet the room or raise the external amplifier within "
-                    "the safe level, then measure again."
+                    "checks, or the service restarted mid-set. Quiet the room or "
+                    "adjust the external amplifier, then run the driver level "
+                    "check again before measuring."
                 ),
             })
         attempts = int(repeat.get("attempts") or 0)
@@ -426,27 +427,42 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             if attempts
             else f" JTS takes {repeat_target} stationary repeats."
         )
-        screen = "driver"
-        verdict = (
-            f"Measure the {role}. {driver_placement_instruction(role)} "
-            "JTS will use the safe protected path and saved level."
-            f"{repeat_copy}"
-        )
-        action = {
-            "id": "measure_driver",
-            "label": (
-                f"Measure {role} — repeat {attempts + 1}"
-                if attempts
-                else f"Position the mic, then measure {role}"
-            ),
-            "endpoint": "/correction/crossover/relay-capture",
-            "body": {
-                "kind": "driver",
-                "speaker_group_id": str(target.get("speaker_group_id") or ""),
-                "role": role,
-            },
-        }
-        active_step = "drivers"
+        if repeat_failure:
+            screen = "microphone"
+            verdict = (
+                f"The bounded repeat set for the {role} cannot continue. "
+                "Its attempts were preserved; run the driver level check to "
+                "start a fresh comparison-bound set."
+            )
+            action = {
+                "id": "level_match",
+                "label": f"Restart {role} driver level check",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {},
+            }
+            active_step = "microphone"
+        else:
+            screen = "driver"
+            verdict = (
+                f"Measure the {role}. {driver_placement_instruction(role)} "
+                "JTS will use the safe protected path and saved level."
+                f"{repeat_copy}"
+            )
+            action = {
+                "id": "measure_driver",
+                "label": (
+                    f"Measure {role} — repeat {attempts + 1}"
+                    if attempts
+                    else f"Position the mic, then measure {role}"
+                ),
+                "endpoint": "/correction/crossover/relay-capture",
+                "body": {
+                    "kind": "driver",
+                    "speaker_group_id": str(target.get("speaker_group_id") or ""),
+                    "role": role,
+                },
+            }
+            active_step = "drivers"
     elif automatic_candidate_ready:
         screen = "apply"
         replacing_manual = applied_ready and applied_owner == "manual"

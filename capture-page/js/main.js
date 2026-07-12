@@ -923,7 +923,12 @@ async function waitForSweepComplete(client, spec, isAborted) {
     }
     if (phase && phase !== lastPhase) {
       lastPhase = phase;
-      if (phase === "sweep_started") {
+      if (phase === "ambient_started") {
+        setStatus(
+          "Measuring room noise — stay quiet and keep the phone still.",
+          "recording",
+        );
+      } else if (phase === "sweep_started") {
         setStatus("Tone is playing — stay quiet and keep the phone still.", "recording");
       } else if (phase === "sweep_complete") {
         setStatus("Tone finished — capturing the room tail.", "recording");

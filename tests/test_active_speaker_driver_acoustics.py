@@ -29,6 +29,7 @@ from scipy.signal import firwin, firwin2, fftconvolve
 
 from jasper.active_speaker import driver_acoustics as da
 from jasper.audio_measurement import deconv, snr_policy
+from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement import sweep as sweep_mod
 
 SR = 48000
@@ -50,6 +51,18 @@ def _reference_sweep(duration_s: float = 1.0):
 def _write_capture(tmp_path, name, signal):
     path = tmp_path / name
     sweep_mod.write_sweep_wav(path, signal.astype(np.float32), SR)
+    return path
+
+
+def _write_ambient_prefixed_capture(tmp_path, name, reference, ambient, gain):
+    """Write the relay shape: stored ambient, then sweep plus room noise."""
+
+    full = np.concatenate([
+        ambient,
+        gain * reference.astype(np.float64) + ambient[: len(reference)],
+    ])
+    path = tmp_path / name
+    wavfile.write(path, SR, full.astype(np.float32))
     return path
 
 
@@ -368,6 +381,118 @@ def test_overlap_band_no_entries_when_no_fcs(tmp_path):
 # evidence is accepted for the magnitude class's "existing scalar path" at
 # the commissioning_capture layer but is explicitly NOT sufficient evidence
 # for an alignment/null decision (reads "unknown", never caps).
+
+
+def test_stored_ambient_uses_signal_window_and_recovers_known_snr_gain(
+    tmp_path, monkeypatch
+):
+    """End-to-end oracle for the Lane-D ambient/sweep transform.
+
+    A stored -40 dB sweep-shaped ambient plus captures at 10x and 100x that
+    amplitude must report exactly 20 dB and 40 dB in every band. The ambient
+    counterfactual traverses the exact same regularized
+    inverse and the one signal-owned arrival window; it must never find its
+    own random-noise argmax. A deliberately non-flat calibration, constant
+    within each decision band, is applied to both sides and therefore
+    cancels exactly from each band-SNR difference.
+    """
+
+    reference, sweep_meta = sweep_mod.synchronized_swept_sine(
+        f1=20.0,
+        f2=12000.0,
+        duration_approx_s=1.0,
+        sample_rate=SR,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    meta = sweep_meta.to_dict()
+    ambient = 0.01 * reference
+    ambient_duration_s = len(ambient) / SR
+    low_path = _write_ambient_prefixed_capture(
+        tmp_path, "ambient-low.wav", reference, ambient, 0.09
+    )
+    high_path = _write_ambient_prefixed_capture(
+        tmp_path, "ambient-high.wav", reference, ambient, 0.99
+    )
+
+    arrival_calls = 0
+    applied_windows = []
+    real_arrival = deconv.direct_arrival_window
+    real_apply = deconv.apply_arrival_window
+
+    def count_signal_window(*args, **kwargs):
+        nonlocal arrival_calls
+        arrival_calls += 1
+        return real_arrival(*args, **kwargs)
+
+    def record_applied_window(full_ir, window):
+        applied_windows.append(tuple(window))
+        return real_apply(full_ir, window)
+
+    monkeypatch.setattr(deconv, "direct_arrival_window", count_signal_window)
+    monkeypatch.setattr(deconv, "apply_arrival_window", record_applied_window)
+
+    low = da.analyze_driver_capture(
+        low_path,
+        meta,
+        passband_hz=(100.0, 8000.0),
+        ambient_duration_s=ambient_duration_s,
+    )
+    high = da.analyze_driver_capture(
+        high_path,
+        meta,
+        passband_hz=(100.0, 8000.0),
+        ambient_duration_s=ambient_duration_s,
+    )
+
+    assert arrival_calls == 2  # once per signal; never once per ambient noise
+    assert len(applied_windows) == 4
+    assert applied_windows[0] == applied_windows[1]
+    assert applied_windows[2] == applied_windows[3]
+    assert high.ambient is not None
+    assert high.ambient["domain"] == "deconvolved"
+    assert high.ambient["method"] == "paired_signal_window_deconvolution"
+    assert high.ambient["operator"] == {
+        "deconvolution": "regularized_fft_inverse",
+        "arrival_window_source": "signal",
+        "reflection_gate_source": None,
+        "calibration_applied_to_signal_and_noise": False,
+    }
+    assert high.ambient["source"] == {
+        "kind": "capture_prefix",
+        "start_s": 0.0,
+        "end_s": round(ambient_duration_s, 3),
+    }
+    assert [band["estimated_snr_db"] for band in low.snr["bands"]] == [20.0] * 6
+    assert [band["estimated_snr_db"] for band in high.snr["bands"]] == [40.0] * 6
+
+    # Non-flat across the range, constant inside each canonical band so the
+    # physical cancellation has an exact oracle.
+    calibration_freqs = []
+    calibration_db = []
+    for _band_id, lo, hi, correction_db in (
+        ("sub_bass", 20.0, 80.0, 12.0),
+        ("bass", 80.0, 160.0, 6.0),
+        ("upper_bass", 160.0, 350.0, 3.0),
+        ("transition", 350.0, 1000.0, 0.0),
+        ("mid", 1000.0, 4000.0, -6.0),
+        ("treble", 4000.0, 12000.0, -12.0),
+    ):
+        calibration_freqs.extend([lo, np.nextafter(hi, lo)])
+        calibration_db.extend([correction_db, correction_db])
+    calibrated = da.analyze_driver_capture(
+        high_path,
+        meta,
+        passband_hz=(100.0, 8000.0),
+        ambient_duration_s=ambient_duration_s,
+        calibration=CalibrationCurve(calibration_freqs, calibration_db),
+    )
+
+    assert calibrated.ambient["operator"][
+        "calibration_applied_to_signal_and_noise"
+    ] is True
+    assert [band["estimated_snr_db"] for band in calibrated.snr["bands"]] == [
+        band["estimated_snr_db"] for band in high.snr["bands"]
+    ]
 
 
 def test_driver_capture_snr_block_is_none_without_noise_input(tmp_path):

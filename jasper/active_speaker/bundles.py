@@ -420,6 +420,7 @@ def open_bundle(
         },
         "captures": [],
         "summed_captures": [],
+        "repeat_progress": {},
         "proposal": None,
         "previous_values": None,
         "proposed_values": None,
@@ -709,6 +710,112 @@ def append_repeat_capture(
         file_mode=BUNDLE_FILE_MODE,
     )
     return {"artifact_path": rel_path, "quality_json_path": json_rel}
+
+
+@_fail_soft("record_repeat_progress")
+def record_repeat_progress(
+    bundle_dir: Path,
+    *,
+    comparison_set_id: str,
+    target_fingerprint: str,
+    target_id: str,
+    attempts: int,
+    accepted: int,
+    target: int,
+    per_repeat: list[Mapping[str, Any]],
+    status: str,
+    reason: str | None = None,
+) -> dict[str, Any] | None:
+    """Persist compact, comparison-bound interim repeat state.
+
+    Raw WAVs and full analyses remain manifest artifacts. ``info.json`` keeps
+    only the bounded-four controller state needed to diagnose or explicitly
+    abort an interrupted process after restart.
+    """
+
+    if status not in {"active", "completed", "refused", "aborted"}:
+        raise BundleError("repeat progress status is invalid")
+    info = _read_info(bundle_dir)
+    progress = dict(info.get("repeat_progress") or {})
+    entry: dict[str, Any] = {
+        "schema_version": 1,
+        "comparison_set_id": str(comparison_set_id),
+        "target_fingerprint": str(target_fingerprint),
+        "target_id": str(target_id),
+        "attempts": int(attempts),
+        "accepted": int(accepted),
+        "target": int(target),
+        "status": status,
+        "per_repeat": [
+            {
+                key: item.get(key)
+                for key in (
+                    "index",
+                    "accepted",
+                    "reject_reason",
+                    "artifact_path",
+                    "estimated_snr_db",
+                    "clipping",
+                    "above_validity_floor",
+                    "level_dbfs",
+                )
+            }
+            for item in per_repeat[:4]
+        ],
+        "updated_at": time.time(),
+    }
+    if reason:
+        entry["reason"] = str(reason)
+    progress[str(target_id)] = entry
+    _write_info(bundle_dir, {
+        **info,
+        "repeat_progress": progress,
+        "updated_at": time.time(),
+    })
+    return entry
+
+
+@_fail_soft("abort_active_repeat_progress")
+def abort_active_repeat_progress(
+    bundle_dir: Path,
+    *,
+    comparison_set_id: str,
+    reason: str,
+    target_fingerprints: set[str] | None = None,
+) -> dict[str, dict[str, Any]] | None:
+    """Durably invalidate selected active repeats orphaned by a restart."""
+
+    info = _read_info(bundle_dir)
+    progress = dict(info.get("repeat_progress") or {})
+    aborted: dict[str, dict[str, Any]] = {}
+    for target_id, raw in progress.items():
+        if not isinstance(raw, Mapping):
+            continue
+        if (
+            raw.get("status") != "active"
+            or raw.get("comparison_set_id") != comparison_set_id
+            or (
+                target_fingerprints is not None
+                and str(raw.get("target_fingerprint") or "")
+                not in target_fingerprints
+            )
+        ):
+            continue
+        entry = {
+            **dict(raw),
+            "status": "aborted",
+            "reason": str(reason),
+            "updated_at": time.time(),
+        }
+        progress[str(target_id)] = entry
+        aborted[str(target_id)] = entry
+    if aborted:
+        _write_info(bundle_dir, {
+            **info,
+            "repeat_progress": progress,
+            "updated_at": time.time(),
+        })
+    return aborted
 
 
 def _plain(value: Any) -> dict[str, Any] | None:

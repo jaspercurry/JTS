@@ -39,8 +39,10 @@
 > than a fixed timer.
 > The crossover kind additionally records a 13-second silent ambient prefix
 > before every role-sized ESS and carries the entire raw WAV back to the Pi.
-> The Pi deconvolves both the sweep and stored ambient with the same reference,
-> applies the same calibration domain, and admits driver evidence through the
+> The Pi runs the sweep and stored ambient through the same regularized inverse,
+> applies the signal-owned arrival window and reflection gate to both (ambient
+> noise never chooses its own random argmax), applies the same calibration
+> domain, and admits driver evidence through the
 > three-repeat kernel (one bounded fourth try; at least two accepted). The
 > protected level ramp therefore sets playback headroom only and never supplies
 > the acoustic SNR verdict. The capture page defaults a newly selected UMIK-2
@@ -683,9 +685,11 @@ pairing proof, not a guess based on the Pages dashboard.
 ---
 
 Last updated: 2026-07-12 — active-crossover capture now uses role-sized sweeps,
-a stored ambient prefix, deconvolved per-band SNR, and the server-owned
-three-repeat admission loop; selecting a UMIK-2 now defaults to its vendor
-serial calibration mode without persisting the raw serial. Capture specs are MAC-bound to their fragment
+a stored ambient prefix, paired-window deconvolved per-band SNR, and the
+server-owned three-repeat admission loop; selecting a UMIK-2 preselects only
+the miniDSP UMIK-2 model/mode. Browser labels do not contain a trustworthy
+serial, so the operator must still enter and validate it once; there is no
+automatic calibration-file match. Capture specs are MAC-bound to their fragment
 links and protocol-v2 phone events are authenticated end to end before any
 correctness-critical field can reach playback; protocol 1 remains compatible
 but cannot satisfy v2 evidence. The level stage now preflights and freezes microphone,

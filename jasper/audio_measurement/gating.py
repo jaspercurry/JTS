@@ -312,6 +312,53 @@ def gate_impulse_response(
     return gated, fragment
 
 
+def apply_gate_fragment(
+    ir: np.ndarray,
+    sample_rate: int,
+    fragment: dict[str, Any],
+    *,
+    taper_fraction: float = TAPER_FRACTION,
+) -> np.ndarray:
+    """Apply a signal-derived gate fragment to another equal-length IR.
+
+    This is the paired-noise seam: reflection detection runs on the signal
+    exactly once through :func:`gate_impulse_response`; the resulting integer
+    peak/span (round-tripped through the fragment's millisecond fields) builds
+    the same half-Hann operator for noise.  The noise IR is never inspected to
+    choose a peak, reflection, or window.
+    """
+
+    ir_arr = np.asarray(ir)
+    if ir_arr.ndim != 1:
+        raise ValueError("paired gate input must be 1-D")
+    if fragment.get("floor_source") is None:
+        return np.asarray(ir_arr, dtype=np.float32)
+    sr = float(sample_rate)
+    direct_ms = fragment.get("direct_peak_ms")
+    window_ms = fragment.get("window_ms")
+    if not (
+        sr > 0
+        and isinstance(direct_ms, (int, float))
+        and isinstance(window_ms, (int, float))
+    ):
+        raise ValueError("signal gate fragment is incomplete")
+    p = int(round(float(direct_ms) * sr / 1000.0))
+    span = int(round(float(window_ms) * sr / 1000.0))
+    end = p + span
+    if not (0 <= p < end < len(ir_arr)):
+        raise ValueError("signal gate fragment is outside the paired IR")
+    win = np.zeros(len(ir_arr), dtype=np.float64)
+    win[: p + 1] = 1.0
+    taper_len = max(1, int(round(taper_fraction * span)))
+    flat_end = max(p, end - taper_len)
+    win[p:flat_end] = 1.0
+    tail_len = end - flat_end
+    idx = np.arange(flat_end, end + 1)
+    t = (idx - flat_end) / tail_len
+    win[flat_end : end + 1] = 0.5 * (1.0 + np.cos(np.pi * t))
+    return (ir_arr.astype(np.float64) * win).astype(np.float32)
+
+
 def exempt_gating_block(
     ir: np.ndarray,
     sample_rate: int,

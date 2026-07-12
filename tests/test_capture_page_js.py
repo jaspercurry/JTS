@@ -90,9 +90,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260712.1",
+        "capture_page_build": "20260712.2",
     }
-    assert "main.js?v=20260712-1" in index_html
+    assert "main.js?v=20260712-2" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -122,7 +122,8 @@ def test_capture_page_completion_renders_return_cta():
 def test_capture_page_waits_for_pi_sweep_completion():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    assert "Measuring room noise" in main_js
+    assert 'phase === "ambient_started"' in main_js
+    assert "Measuring room noise — stay quiet and keep the phone still." in main_js
     assert "fetchPhoneStatus" in main_js
     assert 'phase === "sweep_complete"' in main_js
     assert "recordWindowMs" not in main_js
