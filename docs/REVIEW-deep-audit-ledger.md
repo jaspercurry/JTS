@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`222f3809`): 2026-07-12.
+Last reconciled against `main` (`05a500cc`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 494
-- **fixed**: 172
+- **open**: 490
+- **fixed**: 176
 - **in-progress**: 1
 - **mooted**: 9
 - **deferred**: 1
@@ -37,8 +37,8 @@ Last reconciled against `main` (`222f3809`): 2026-07-12.
 | DA-0039 | `jasper/xvf/xvf_host.py` :: DEFAULT_TIMEOUT_MS | should-fix | W5 | **fixed** | control timeout bounded below systemd start ceiling — #1240 |
 | DA-0040 | `rust/jasper-fanin/src/config.rs` :: env_u32 / Config::from_env sample_rate, period_frames | should-fix | W5 | **fixed** | zero load-bearing dimensions fall back safely + warn — #1237 |
 | DA-0041 | `rust/jasper-fanin/src/host_compliance.rs` :: RevalidationTracker::step | should-fix | W5 | **fixed** | fresh-lock phantom strike re-arm removed + regression — #1237 |
-| DA-0003 | `jasper/route_latency/pairing.py` :: pair_events | should-fix | W5 | **open** | — |
-| DA-0004 | `LICENSE` :: :138 (§6 Trademarks), :165 (§9 Accepting War | should-fix | W5 | **open** | — |
+| DA-0003 | `jasper/route_latency/pairing.py` :: pair_events | should-fix | W5 | **fixed** | ambiguous mic candidates cannot re-enter certifiable matches — #1292 |
+| DA-0004 | `LICENSE` :: §6 Trademarks / §9 Accepting Warranty or Additional Liability | should-fix | W5 | **in-progress** | canonical Apache-2.0 terms restored + packaged-license integrity guard; canonical adversarial re-review pending |
 | DA-0005 | `capture-page/js/main.js` :: boot():604-616 | should-fix | W5 | **open** | — |
 | DA-0007 | `deploy/systemd/jasper-usbsink.service` :: Slice=jts-audio.slice membership | should-fix | W5 | **fixed** | doctor derives and checks every protected audio/mic unit — #1287 |
 | DA-0008 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored | should-fix | W5 | **open** | — |
@@ -56,7 +56,7 @@ Last reconciled against `main` (`222f3809`): 2026-07-12.
 | DA-0032 | `jasper/web/sound_setup.py` :: :177 | should-fix | W5 | **open** | — |
 | DA-0033 | `jasper/web/sound_setup.py` :: Handler.do_POST | should-fix | W5 | **open** | — |
 | DA-0038 | `jasper/web/wifi_setup.py` :: do_POST | should-fix | W5 | **open** | — |
-| DA-0042 | `scripts/_extract_wake_corpus.py` :: main():528-537 | should-fix | W5 | **open** | — |
+| DA-0042 | `scripts/_extract_wake_corpus.py` :: main --force deletion boundary | should-fix | W5 | **fixed** | positive ownership proof + lexical/resolved/filesystem-identity guards — #1291 |
 | DA-0043 | `scripts/doc-freshness.sh` :: :28-37, epoch_days_ago | should-fix | W5 | **open** | — |
 | DA-0044 | `scripts/multiroom-spike.sh` :: usage() :528-532 | should-fix | W5 | **open** | — |
 | DA-0045 | `scripts/s0-sync-bench.sh` :: :660,:674 | should-fix | W5 | **open** | — |
@@ -79,7 +79,7 @@ Last reconciled against `main` (`222f3809`): 2026-07-12.
 | DA-0062 | `jasper/sound/camilla_yaml.py` :: validate_camilla_config | should-fix | W1 | **open** | — |
 | DA-0063 | `jasper/sound/runtime.py` :: stage_lean_capture_config | should-fix | W1 | **mooted** | lean runtime pipeline deleted on main — #1200 |
 | DA-0064 | `jasper/volume_coordinator.py` :: VolumeCoordinator.__init__ :202-204,243-245; | should-fix | W1 | **open** | — |
-| DA-0065 | `jasper/volume_coordinator.py` :: _busctl_call_method :2150-2183 | should-fix | W1 | **open** | — |
+| DA-0065 | `jasper/volume_coordinator.py` :: _busctl_call_method | should-fix | W1 | **fixed** | dead AirPlay DBus helper removed; subprocess prohibition pinned behaviorally — #1290 |
 | DA-0066 | `jasper/volume_persistence.py` :: regress_if_stale | should-fix | W1 | **open** | — |
 | DA-0067 | `jasper/wake_corpus/bridge_session.py` :: enable_bridge_outputs_for_session:1173 | should-fix | W1 | **open** | — |
 | DA-0068 | `jasper/web/sound_setup.py` :: _active_speaker_arm_payload | should-fix | W1 | **open** | — |
@@ -89,7 +89,7 @@ Last reconciled against `main` (`222f3809`): 2026-07-12.
 | DA-0072 | `rust/jasper-outputd/src/reference.rs` :: ReferenceFanout::add_consumer/drain_consumer | should-fix | W1 | **open** | — |
 | DA-0073 | `scripts/aec-probe-usb-delay.sh` :: module:1-440 | should-fix | W1 | **open** | — |
 | DA-0074 | `scripts/airplay-receiver-timing-proof.py` :: main:738 | should-fix | W1 | **open** | — |
-| DA-0075 | `tests/js/sound_profile_harness.mjs` :: measurementAudioPreamble / import stripping | should-fix | W1 | **in-progress** | stale measurement-audio shim removed and import stripping narrowed; canonical adversarial review passed, publication pending |
+| DA-0075 | `tests/js/sound_profile_harness.mjs` :: measurementAudioPreamble / import stripping | should-fix | W1 | **fixed** | stale mic shim removed; known-import stripping narrowed + self-probed — #1289 |
 | DA-0152 | `AGENTS.md` :: Profile guardian — self-heal after filesyste | should-fix | W3 | **open** | — |
 | DA-0153 | `c/jts-ring-ioplug/jts_ring_shm.c` :: jts_ring_writer_open / jts_ring_reader_open | should-fix | W3 | **open** | — |
 | DA-0154 | `deploy/assets/bluetooth/bluetooth.css` :: .spinner / @keyframes bt-spin:208-227 | should-fix | W3 | **open** | — |

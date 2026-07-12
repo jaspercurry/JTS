@@ -7,6 +7,11 @@ format. Release tags are cut manually by a maintainer.
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored omitted wording in the packaged Apache License 2.0 text so its
+  terms match the repository's canonical SPDX reference.
+
 ## [0.1.0] - 2026-06-19
 
 First public release candidate. JTS is a voice-controlled smart speaker that
