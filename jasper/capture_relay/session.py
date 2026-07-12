@@ -54,7 +54,11 @@ DEFAULT_TIMEOUT_S = 120.0
 
 
 class CaptureTimeout(RuntimeError):
-    """The phone never uploaded a ready blob within the timeout."""
+    """The phone failed one bounded relay phase before capture completed."""
+
+    def __init__(self, message: str, *, phase: str | None = None) -> None:
+        super().__init__(message)
+        self.phase = phase
 
 
 class CaptureFailed(RuntimeError):
@@ -409,7 +413,8 @@ def run_capture(
     `on_armed` fires exactly once, when the phone's `armed` flag is first seen —
     the host plays the stimulus then. Raises loudly — never a silent hang or a
     silently-wrong measurement — on:
-      - `CaptureTimeout`: no ready blob within `timeout_s`;
+      - `CaptureTimeout`: no arm within the initial `timeout_s`, or no ready
+        blob within one refreshed `timeout_s` window after arming;
       - `CaptureAborted`: the phone posted an `aborted` event (backgrounded);
       - `CaptureFailed`: the pulled blob failed decrypt/integrity;
       - `RelayError` / `OSError`: the relay died or became unreachable mid-poll.
@@ -435,6 +440,9 @@ def run_capture(
         # type + cue slug, plus the traceback (so an *unexpected* error — e.g. a
         # bug in the host's on_armed/stimulus playback — is diagnosable even
         # though the household only hears the generic measurement_failed cue).
+        failure_fields: dict[str, Any] = {}
+        if isinstance(exc, CaptureTimeout) and exc.phase is not None:
+            failure_fields["phase"] = exc.phase
         log_event(
             logger,
             "capture_relay.failed",
@@ -443,6 +451,7 @@ def run_capture(
             session_id=session.session_id,
             reason=type(exc).__name__,
             cue=slug,
+            **failure_fields,
         )
         if play_cue is not None:
             try:
@@ -614,6 +623,13 @@ def _poll_until_capture(
                     )
                 raise
             armed_fired = True
+            # The pre-arm wait is operator time: opening the trusted page,
+            # selecting the microphone, and confirming placement.  Do not let
+            # that consume the bounded acoustic/upload window.  Refresh the
+            # deadline exactly once after the validated, acknowledged arm event;
+            # ``armed_fired`` prevents a phone from extending it by
+            # replaying the armed state on every poll.
+            deadline = monotonic() + timeout_s
             if session.spec.acknowledgement is not None:
                 log_event(
                     logger,
@@ -656,9 +672,17 @@ def _poll_until_capture(
             )
 
         if monotonic() >= deadline:
+            if armed_fired:
+                detail = (
+                    f"phone never uploaded within {timeout_s:.0f}s after arming"
+                )
+                phase = "awaiting_upload"
+            else:
+                detail = f"phone never armed within {timeout_s:.0f}s"
+                phase = "awaiting_arm"
             raise CaptureTimeout(
-                f"phone never uploaded within {timeout_s:.0f}s (session "
-                f"{session.session_id})"
+                f"{detail} (session {session.session_id})",
+                phase=phase,
             )
         sleep(poll_interval_s)
 

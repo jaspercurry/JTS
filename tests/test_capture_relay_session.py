@@ -659,23 +659,90 @@ def test_setup_validation_callback_runs_before_armed_capture():
     assert armed_calls == [setup]
 
 
-def test_timeout_is_loud():
+def test_armed_without_upload_times_out_after_one_fresh_window(caplog):
+    caplog.set_level(logging.WARNING, logger="jasper.capture_relay.session")
     backend = FakeRelayBackend()
     client, session = _mint(backend)
     backend.phone_arm(session.session_id)  # armed, but never uploads
+    armed_calls = []
 
     ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
 
-    with pytest.raises(CaptureTimeout):
+    with pytest.raises(
+        CaptureTimeout,
+        match=r"phone never uploaded within 3s after arming",
+    ):
         run_capture(
             client,
             session,
-            on_armed=lambda: None,
+            on_armed=lambda: armed_calls.append(True),
             poll_interval_s=0.0,
             timeout_s=3.0,
             sleep=lambda _s: None,
             monotonic=lambda: next(ticks),
         )
+    assert armed_calls == [True]
+    assert "event=capture_relay.failed" in caplog.text
+    assert "phase=awaiting_upload" in caplog.text
+
+
+def test_phone_that_never_arms_remains_bounded_by_pre_arm_window(caplog):
+    caplog.set_level(logging.WARNING, logger="jasper.capture_relay.session")
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    armed_calls = []
+    ticks = iter([0.0, 1.0, 2.0, 3.0])
+
+    with pytest.raises(CaptureTimeout, match=r"phone never armed within 3s"):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: armed_calls.append(True),
+            poll_interval_s=0.0,
+            timeout_s=3.0,
+            sleep=lambda _s: None,
+            monotonic=lambda: next(ticks),
+        )
+    assert armed_calls == []
+    assert "event=capture_relay.failed" in caplog.text
+    assert "phase=awaiting_arm" in caplog.text
+
+
+def test_late_arm_gets_a_fresh_bounded_capture_window(monkeypatch):
+    """Operator setup time must not consume the sweep/upload budget."""
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    wav = b"RIFF late arm"
+    status = client.status
+    polls = 0
+
+    def status_then_arm(session_id, pull_token):
+        nonlocal polls
+        polls += 1
+        if polls == 3:
+            backend.phone_arm(session.session_id)
+        return status(session_id, pull_token)
+
+    monkeypatch.setattr(client, "status", status_then_arm)
+
+    def on_armed():
+        backend.phone_upload(session.session_id, session.content_key, wav)
+
+    # The original deadline expires on the arm poll.  A fresh window lets the
+    # next poll observe the upload; it remains bounded from that arm event.
+    ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0])
+    result = run_capture(
+        client,
+        session,
+        on_armed=on_armed,
+        poll_interval_s=0.0,
+        timeout_s=3.0,
+        sleep=lambda _s: None,
+        monotonic=lambda: next(ticks),
+    )
+
+    assert result.wav == wav
+    assert polls == 4
 
 
 def test_integrity_failure_is_loud():
