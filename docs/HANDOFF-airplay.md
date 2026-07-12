@@ -56,6 +56,50 @@ should prefer daemon-owned live queue telemetry (fanin/outputd
 STATUS socket is unavailable. Any remaining residual beyond owned queue
 telemetry needs an in-daemon timestamp proof before it is auto-chased.
 
+On a box whose live outputd `STATUS` reports `content.source="alsa"`, reproduce
+that receiver-only measurement with
+[`scripts/airplay-receiver-timing-proof.py`](../scripts/airplay-receiver-timing-proof.py)
+while AirPlay is actively playing transient-rich program audio:
+
+```sh
+python3 scripts/airplay-receiver-timing-proof.py --host jts2.local --runs 3
+```
+
+The proof is passive with respect to audio services: it does not restart a
+daemon, bind outputd's reference port, or generate playback. It records short
+copies of the legacy loopback lane-7 summed-program diagnostic tap and outputd's
+electrical reference, so run it only with audio the operator is willing to
+retain. Remote and local
+artifacts stay private (`0700` directories / `0600` files), and the copied
+metadata contains an explicit allowlist of numeric buffer/model inputs rather
+than the base env file. Every run uses an unguessable directory token, and
+automatic cleanup occurs only after the remote response echoes that token and
+exact path. The command fails closed unless `/state` reports AirPlay before and
+after capture, outputd's electrical-reference UDP publisher reports
+`udp_target="127.0.0.1:9891"` and `udp_active=true` at both boundaries, and the
+correlation is at least medium confidence. It accepts only the production
+`plug:jasper_capture` pre-tap, requires both captures to contain at least 95% of
+the requested duration, requires known monotonic health counters and zero
+content/DAC/fan-in xrun deltas, and records any content-empty-period increase
+explicitly. The queue model prefers fan-in/outputd's live STATUS buffer and
+period geometry over env snapshots; CamillaDSP chunk/target values are labeled
+as inferred from the allowlisted env snapshot or built-in defaults because this
+proof does not have a live CamillaDSP queue-depth surface.
+
+The tool deliberately refuses outputd's production-default `shm_ring` content
+source. In that topology `plug:jasper_capture` is a lossy lane-7 diagnostic
+mirror rather than CamillaDSP's input transport, and neither ring transport
+latency nor mirror drops are represented by this proof's model. Do not interpret
+that refusal as a request to flip a working speaker's topology merely to collect
+this diagnostic; a future ring-native proof needs direct ring evidence first.
+On the supported loopback coupling, the result proves the receiver path from
+the lane-7 diagnostic tap to outputd's final electrical reference. It does
+**not** observe the sender's display scanout, speaker acoustic output, or
+end-to-end A/V sync. The reported lag is waveform alignment between files
+opened behind a common readiness gate; userspace first-read times are not used
+as sample timestamps, and small endpoint-open skew remains a hardware-validation
+uncertainty.
+
 Mux preemption now uses shairport-sync's MPRIS `Stop` when AirPlay
 loses the audible lane to Spotify, Bluetooth, or USB sink. Voice
 transport "pause AirPlay" still uses MPRIS `Pause`; source arbitration

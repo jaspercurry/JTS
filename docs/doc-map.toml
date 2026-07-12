@@ -208,6 +208,7 @@ code = [
   "deploy/systemd/librespot.service",
   "deploy/systemd/shairport-sync.service",
   "deploy/systemd/bluealsa-aplay.service.d/**",
+  "scripts/airplay-receiver-timing-proof.py",
   "rust/jasper-fanin/**",
   "rust/jasper-outputd/**",
   "jasper/fanin/**",
@@ -698,6 +699,7 @@ code = [
   "scripts/*capture*",
   "scripts/*audit*",
   "scripts/*probe*",
+  "scripts/airplay-receiver-timing-proof.py",
   "scripts/*score*",
   "scripts/*soak*",
 ]
