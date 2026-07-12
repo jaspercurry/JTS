@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
@@ -39,6 +40,7 @@ from jasper.output_topology import OutputTopology
 from ._common import issue as _issue
 from .camilla_yaml import (
     DRIVER_DOMAIN_PROGRAM_CHANNELS,
+    _role_polarity,
     emit_active_speaker_baseline_config,
     emit_active_speaker_driver_domain_config,
 )
@@ -75,6 +77,35 @@ _SENSITIVITY_TRIM_EPS_DB = 0.05
 # Floor for any single attenuation, mirroring the explicit-gain clamp below.
 _MAX_ATTENUATION_DB = -60.0
 _EXCITATION_MATCH_TOLERANCE_DB = 0.05
+
+# Canonical per-parameter provenance vocabulary (SC-3). ``RECOMMENDED_START``
+# is reserved for future profile prefills; no code path in this module emits
+# it directly (it only appears via the gain-source migration map below).
+PROVENANCE_MANUAL = "manual"
+PROVENANCE_MEASURED = "measured"
+PROVENANCE_RECOMMENDED_START = "recommended_start"
+PROVENANCE_PRESERVED = "preserved"
+
+# Reporting-layer migration from the legacy per-role gain-trim vocabulary
+# (this module's own ``sources[role]`` values, plus ``"explicit"`` kept as a
+# legacy alias for completeness) to the canonical provenance strings above.
+# The legacy ``corrections_source`` / ``gain_provenance`` payload keys are NOT
+# renamed or removed by this map — it only feeds the additional
+# ``corrections_provenance`` block. A source with no entry here (``"none"``)
+# makes no provenance claim, mirroring an untouched role.
+_GAIN_SOURCE_TO_PROVENANCE: dict[str, str] = {
+    "measured": PROVENANCE_MEASURED,
+    "operator_pinned": PROVENANCE_MANUAL,
+    "explicit": PROVENANCE_MANUAL,
+    "estimate": PROVENANCE_RECOMMENDED_START,
+    "sensitivity": PROVENANCE_RECOMMENDED_START,
+}
+
+# Both this module's ``_utc_now`` and ``measurement._utc_now`` emit this exact
+# fixed-width UTC format, which makes lexical string comparison a valid
+# freshness ordering. Any timestamp that doesn't match fails the freshness
+# check closed rather than risk misordering an unprovably-shaped value.
+_UTC_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
 def _utc_now() -> str:
@@ -398,6 +429,36 @@ def _measured_level_trims(
     return trims, meta
 
 
+def _is_fresh_usable_summed_alignment(
+    record: Any, preview_updated_at: Any
+) -> bool:
+    """Fail-closed: is ``record`` MEASURED alignment evidence newer than the
+    crossover preview it would override?
+
+    "Fresh" means ``record["created_at"]`` is provably newer than the
+    preview's ``updated_at`` — a lexical string comparison, valid because
+    both this module's ``_utc_now`` and ``measurement._utc_now`` emit the
+    identical fixed-width UTC format matched by ``_UTC_TIMESTAMP_RE``. Any
+    value that doesn't match that exact format (missing, malformed, or from
+    an unexpected source) fails closed to "not fresh": automatic tuning must
+    never let evidence it cannot prove is newer override a persisted working
+    value. "Usable" reuses ``validated`` — ``measurement.record_summed_validation``'s
+    own trust verdict for a summed observation (blend_ok outcome, no
+    blockers, and an operator listening check or a mic reading that isn't
+    clipping/too loud).
+    """
+    if not isinstance(record, Mapping) or record.get("validated") is not True:
+        return False
+    created = record.get("created_at")
+    if not isinstance(created, str) or not _UTC_TIMESTAMP_RE.match(created):
+        return False
+    if not isinstance(preview_updated_at, str) or not _UTC_TIMESTAMP_RE.match(
+        preview_updated_at
+    ):
+        return False
+    return created > preview_updated_at
+
+
 def _derive_corrections(
     preset: ActiveSpeakerPreset,
     crossover_preview: Mapping[str, Any],
@@ -412,6 +473,31 @@ def _derive_corrections(
         role: {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False}
         for role in required_driver_roles(preset.way_count)
     }
+    delay_provenance: dict[str, str] = {}
+    inverted_provenance: dict[str, str] = {}
+
+    # --- Persisted working-crossover values (Slice 0), manual/preview tier --
+    # Region polarity/delay are REGION-level, hence symmetric across every
+    # group a preset applies to (a stereo pair's L/R groups share one preset),
+    # so they populate every role unconditionally, before any measured
+    # evidence below. ``_role_polarity`` is camilla_yaml's own per-role
+    # reduction PLUS its cross-region consistency guard (raises if a role is
+    # inverted in one region but not another) — reused here so the derive
+    # path and the emit-time guard can never drift on what "this role is
+    # inverted" means. Only an explicit "inverted" region makes a provenance
+    # claim; "non-inverted" is indistinguishable from the schema default and
+    # stays unclaimed, mirroring gain's "none" -> no entry below.
+    for role, inverted in _role_polarity(preset).items():
+        if inverted and role in corrections:
+            corrections[role]["inverted"] = True
+            inverted_provenance[role] = PROVENANCE_MANUAL
+    for region in preset.crossover_regions:
+        if region.delay_ms is not None and region.delay_target_driver in corrections:
+            corrections[region.delay_target_driver]["delay_ms"] = max(
+                0.0, min(region.delay_ms, 20.0)
+            )
+            delay_provenance[region.delay_target_driver] = PROVENANCE_MANUAL
+
     drivers = crossover_preview.get("drivers")
     pinned_gain_roles: set[str] = set()
     estimated_gains: dict[str, float] = {}
@@ -562,35 +648,69 @@ def _derive_corrections(
             ),
         ))
 
-    latest_summed = measurements.get("latest_summed_by_group")
-    summed_records = [
-        item for item in (
-            latest_summed.values() if isinstance(latest_summed, Mapping) else []
-        )
-        if isinstance(item, Mapping)
-    ]
-    if len(summed_records) > 1:
-        issues.append(_issue(
-            "warning",
-            "group_specific_delay_not_applied",
-            "stereo/group-specific delay and polarity evidence is saved but not emitted yet",
-        ))
-        summed_records = []
-    for summed in summed_records:
-        delay_ms = _finite_float(summed.get("delay_ms"))
-        delay_target = str(summed.get("delay_target_role") or "").strip().lower()
-        if delay_ms is not None and delay_target in corrections:
-            corrections[delay_target]["delay_ms"] = max(0.0, min(delay_ms, 20.0))
-        polarity = str(summed.get("polarity") or "normal").strip().lower()
-        if polarity.startswith("invert_"):
-            role = polarity.removeprefix("invert_")
-            if role in corrections:
-                corrections[role]["inverted"] = True
+    # --- MEASURED refinement of delay/polarity (Slice 0), automatic tier ---
+    # Manual tuning never consults measured alignment evidence for these two
+    # sub-parameters — mirrors the shipped gain rule ("Manual tuning keeps an
+    # operator pin authoritative" above): a persisted working value from the
+    # manual/preview tier is never silently replaced by a background
+    # measurement. Automatic tuning is an explicit replacement operation, so
+    # FRESH + usable evidence wins over the preview value it targets.
+    if tuning_owner == "automatic":
+        preview_updated_at = crossover_preview.get("updated_at")
+        latest_summed = measurements.get("latest_summed_by_group")
+        summed_records = [
+            item for item in (
+                latest_summed.values() if isinstance(latest_summed, Mapping) else []
+            )
+            if isinstance(item, Mapping)
+        ]
+        fresh_records = [
+            record
+            for record in summed_records
+            if _is_fresh_usable_summed_alignment(record, preview_updated_at)
+        ]
+        if len(fresh_records) > 1:
+            issues.append(_issue(
+                "warning",
+                "group_specific_delay_not_applied",
+                (
+                    "measurement-derived group-specific delay and polarity "
+                    "evidence is saved but not emitted yet"
+                ),
+            ))
+            fresh_records = []
+        for summed in fresh_records:
+            delay_ms = _finite_float(summed.get("delay_ms"))
+            delay_target = str(summed.get("delay_target_role") or "").strip().lower()
+            if delay_ms is not None and delay_target in corrections:
+                corrections[delay_target]["delay_ms"] = max(0.0, min(delay_ms, 20.0))
+                delay_provenance[delay_target] = PROVENANCE_MEASURED
+            polarity = str(summed.get("polarity") or "normal").strip().lower()
+            if polarity.startswith("invert_"):
+                role = polarity.removeprefix("invert_")
+                if role in corrections:
+                    corrections[role]["inverted"] = True
+                    inverted_provenance[role] = PROVENANCE_MEASURED
+
+    corrections_provenance: dict[str, dict[str, str]] = {}
+    for role in corrections:
+        entry: dict[str, str] = {}
+        gain_provenance_value = _GAIN_SOURCE_TO_PROVENANCE.get(sources.get(role, "none"))
+        if gain_provenance_value is not None:
+            entry["gain_db"] = gain_provenance_value
+        if role in delay_provenance:
+            entry["delay_ms"] = delay_provenance[role]
+        if role in inverted_provenance:
+            entry["inverted"] = inverted_provenance[role]
+        if entry:
+            corrections_provenance[role] = entry
+
     meta = {
         "sources": sources,
         "gain_provenance": gain_provenance,
         "provisional": provisional,
         "level_match": level_match,
+        "corrections_provenance": corrections_provenance,
     }
     return corrections, issues, meta
 
@@ -624,6 +744,7 @@ def _blocked_payload(
         "corrections": {},
         "corrections_source": {},
         "gain_provenance": {},
+        "corrections_provenance": {},
         "level_match": {"groups_total": 0, "groups_measured": 0, "applied": False},
         "provisional": False,
         "validation": {"status": "skipped", "reason": status},
@@ -704,6 +825,7 @@ def _frozen_applied_profile(
         "corrections": dict(applied.get("corrections") or {}),
         "corrections_source": dict(applied.get("corrections_source") or {}),
         "gain_provenance": dict(applied.get("gain_provenance") or {}),
+        "corrections_provenance": dict(applied.get("corrections_provenance") or {}),
         "level_match": dict(applied.get("level_match") or {}),
         "tuning_owner": str(applied.get("tuning_owner") or ""),
         # Quality state belongs to the immutable applied anchor too.  Dropping
@@ -1194,6 +1316,19 @@ def build_baseline_profile_candidate(
             correction_meta["gain_provenance"] = {
                 role: "operator_pinned" for role in normalized
             }
+            # Wholesale carry-forward of the applied manual profile: every
+            # sub-parameter of every role came from that preserved snapshot,
+            # not from this derivation, so all three are stamped "preserved"
+            # (distinct from the legacy "operator_pinned" sources/gain_provenance
+            # stamping above, kept byte-compatible).
+            correction_meta["corrections_provenance"] = {
+                role: {
+                    "gain_db": PROVENANCE_PRESERVED,
+                    "delay_ms": PROVENANCE_PRESERVED,
+                    "inverted": PROVENANCE_PRESERVED,
+                }
+                for role in normalized
+            }
             correction_meta["provisional"] = False
             correction_meta["level_match"] = {
                 "groups_total": 0,
@@ -1318,6 +1453,7 @@ def build_baseline_profile_candidate(
         "corrections": corrections,
         "corrections_source": correction_meta["sources"],
         "gain_provenance": correction_meta["gain_provenance"],
+        "corrections_provenance": correction_meta["corrections_provenance"],
         "level_match": correction_meta["level_match"],
         "automatic_candidate": automatic_candidate,
         "tuning_owner": tuning_owner,
@@ -1357,6 +1493,7 @@ def build_baseline_profile_candidate(
             "corrections": corrections,
             "corrections_source": correction_meta["sources"],
             "gain_provenance": correction_meta["gain_provenance"],
+            "corrections_provenance": correction_meta["corrections_provenance"],
             "level_match": correction_meta["level_match"],
             "tuning_owner": tuning_owner,
             "playback_device": resolved_playback_device,
