@@ -17,7 +17,6 @@ so geometry/channel truth stays in this module.
 """
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass
 from math import pi
 from pathlib import Path
@@ -472,8 +471,11 @@ FIRMWARE_UPDATE_TARGETS_BY_ID = {
 # ALSA assigns new per-channel mixer slots for ch2-5 with defaults
 # of off / 0. `alsactl restore` then persists that silently across
 # reboot, killing the raw mics in spite of correct chip-side state.
-# `ensure_capture_open()` resets both controls to known-good values;
-# the reconciler calls it on every pass to self-heal.
+# `deploy/bin/jasper-aec-reconcile::ensure_capture_mixer_open` resets both
+# controls to known-good values before arming the profile-managed six-channel
+# AEC path. The constants below are the canonical data source for that
+# Bash-owned repair; cross-language tests keep the duplicated shell literals
+# in sync.
 #
 # These names are looked up via `amixer -c <card> cset name='...'`
 # (cset, not get — these controls aren't in any aggregated "simple
@@ -789,42 +791,9 @@ def capture_channels() -> int | None:
     return _capture_channels_for_card(alsa_card_name())
 
 
-def is_recommended_firmware() -> bool:
-    """True if the chip is on the 6-ch firmware variant — the one the
-    software AEC bridge needs."""
-    return capture_channels() == RECOMMENDED_FIRMWARE.capture_channels
-
-
 def chip_aec_supported() -> bool:
     """True only when the detected mic variant has a validated beam plan."""
     return detect_runtime_profile().chip_aec_supported
-
-
-def ensure_capture_open() -> bool:
-    """Reset capture switch + volume to known-good values, then
-    `alsactl store`. Idempotent — safe to call on every reconcile
-    pass. Returns True if the commands succeeded, False otherwise.
-
-    Caller is responsible for sudo: this runs `amixer` directly with
-    no privilege escalation. The reconciler invokes us as root."""
-    card = alsa_card_name()
-    on = ",".join(["on"] * RECOMMENDED_FIRMWARE.capture_channels)
-    max_vol = ",".join([str(MIXER_VOLUME_MAX)] * RECOMMENDED_FIRMWARE.capture_channels)
-    try:
-        subprocess.run(
-            ["amixer", "-c", card, "cset",
-             f"name={MIXER_CAPTURE_SWITCH}", on],
-            check=True, capture_output=True, timeout=5,
-        )
-        subprocess.run(
-            ["amixer", "-c", card, "cset",
-             f"name={MIXER_CAPTURE_VOLUME}", max_vol],
-            check=True, capture_output=True, timeout=5,
-        )
-        subprocess.run(["alsactl", "store"], check=False, timeout=5)
-        return True
-    except (subprocess.SubprocessError, OSError):
-        return False
 
 
 def dfu_flash_command(firmware_path: str = "") -> str:

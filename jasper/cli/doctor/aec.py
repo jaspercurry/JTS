@@ -932,7 +932,7 @@ def check_xvf_mixer_state() -> CheckResult:
     mid-bringup, ALSA assigns new slots for ch2-5 with defaults of
     off / 0 dB, and `alsactl restore` persists that across reboot —
     silently killing raw mics in spite of correct chip state. The
-    reconciler self-heals via xvf3800.ensure_capture_open(); this
+    Bash reconciler self-heals via `ensure_capture_mixer_open`; this
     check flags drift if anything sets them back."""
     from ...mics import xvf3800
     if not xvf3800.is_present():
