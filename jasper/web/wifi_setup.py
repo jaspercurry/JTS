@@ -74,6 +74,7 @@ from ._common import (
     reject_csrf,
     read_json_object,
     send_html_response,
+    send_json_response,
     guard_read_request,
     guard_mutating_request,
 )
@@ -1319,20 +1320,11 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def _send(self, status: int, body: bytes, content_type: str) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
             send_html_response(self, body, status=status)
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
-            body = json.dumps(payload).encode("utf-8")
-            self._send(status, body, "application/json")
+            send_json_response(self, payload, status=status)
 
         def _read_json(self) -> dict[str, Any]:
             try:
@@ -1352,10 +1344,13 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 if not guard_read_request(self):
                     return
                 try:
-                    self._send_json(gather_state())
+                    payload = gather_state()
+                    status = 200
                 except Exception as e:  # noqa: BLE001
                     logger.exception("/state failed")
-                    self._send_json({"error": str(e)}, status=502)
+                    payload = {"error": str(e)}
+                    status = 502
+                self._send_json(payload, status=status)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
