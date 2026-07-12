@@ -11,6 +11,7 @@
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsAlert } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
+import { createToolActions } from "./actions.js";
 import { packDetail, toolDetail } from "./render.js";
 
 const mount = document.getElementById("tool-detail");
@@ -94,33 +95,6 @@ async function load({ keepStale = false } = {}) {
     return null;
   } finally {
     mount.removeAttribute("aria-busy");
-  }
-}
-
-async function onToggle(e) {
-  const input = e.target;
-  if (!input.matches("input[type=checkbox][data-tool], input[type=checkbox][data-pack]")) {
-    return;
-  }
-  const isPack = !!input.dataset.pack;
-  const key = isPack ? input.dataset.pack : input.dataset.tool;
-  const enabled = input.checked;
-  input.disabled = true;
-  statusEl.textContent = (enabled ? "Enabling " : "Disabling ") + key + "...";
-  try {
-    await postJSON(isPack ? "/tools/toggle-pack" : "/tools/toggle", isPack
-      ? { id: key, enabled }
-      : { name: key, enabled });
-    const view = await load();
-    statusEl.textContent = view && view.pending
-      ? (enabled ? "Enabled " : "Disabled ") + key +
-        " - Apply to restart the assistant."
-      : "Saved.";
-  } catch (err) {
-    input.disabled = false;
-    input.checked = !enabled;
-    statusEl.textContent = "";
-    await jtsAlert("Couldn't save: " + err.message);
   }
 }
 
@@ -208,38 +182,14 @@ function onPromptInput(e) {
   updatePromptSaveState(e.target.closest(".prompt-editor"));
 }
 
-async function onApply() {
-  applyBtn.disabled = true;
-  statusEl.textContent = "Applying...";
-  let res;
-  try {
-    res = await postJSON("/tools/apply", {});
-  } catch (err) {
-    applyBtn.disabled = false;
-    statusEl.textContent = "";
-    await jtsAlert("Couldn't apply: " + err.message);
-    return;
-  }
-  if (!res || res.restarted !== true) {
-    applyBtn.disabled = false;
-    statusEl.textContent = (res && res.message) || "Saved.";
-    return;
-  }
-  statusEl.textContent =
-    "Restarting the assistant to apply your changes - about 10-15 seconds...";
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 1500));
-    const view = await load({ keepStale: true });
-    if (view && !view.unavailable && view.pending === false) {
-      statusEl.textContent = "Changes applied.";
-      applyBtn.disabled = false;
-      return;
-    }
-  }
-  applyBtn.disabled = false;
-  statusEl.textContent =
-    "Still applying - if the assistant doesn't come back, check the System page.";
-}
+const { onToggle, onApply } = createToolActions({
+  basePath: "/tools/",
+  statusEl,
+  applyBtn,
+  reload: load,
+  postJSON,
+  showAlert: jtsAlert,
+});
 
 mount.addEventListener("change", onToggle);
 mount.addEventListener("click", onPromptClick);

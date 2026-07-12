@@ -4,14 +4,16 @@
 
 // Exercises the /tools/ detail prompt editor state machine without a browser.
 //
-//   node tools_detail_harness.mjs deploy/assets/tools/js/detail.js
+//   node tools_detail_harness.mjs deploy/assets/tools/js/actions.js \
+//     deploy/assets/tools/js/detail.js
 //
 // The harness strips imports and the final load() call, then evaluates the
 // module against a tiny DOM surface. It intentionally covers only the prompt
 // editor controls; render.js has its own HTML/XSS harness.
 import { readFileSync } from "node:fs";
 
-const detailPath = process.argv[2];
+const actionsPath = process.argv[2];
+const detailPath = process.argv[3];
 const stripImports = (s) => s.replace(/^\s*import\s.*$/gm, "");
 
 function fail(message, extra = {}) {
@@ -83,7 +85,9 @@ const packDetail = () => "";
 const toolDetail = () => "";
 
 const current = makeEditor();
-const src = stripImports(readFileSync(detailPath, "utf8"))
+const actionsSrc = stripImports(readFileSync(actionsPath, "utf8"))
+  .replace(/\bexport\s+/g, "");
+const src = actionsSrc + "\n" + stripImports(readFileSync(detailPath, "utf8"))
   .replace(/\nload\(\);\s*$/m, "\n");
 const api = new Function(
   "document", "CSS", "getJSON", "postJSON", "jtsAlert", "escapeHtml",
