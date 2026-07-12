@@ -35,6 +35,7 @@ from unittest import mock
 
 import pytest
 
+web_common = importlib.import_module("jasper.web._common")
 google_setup = importlib.import_module("jasper.web.google_setup")
 
 
@@ -210,16 +211,18 @@ def _make_bound_handler(cfg, path):
 @pytest.fixture
 def patched_common():
     """Patch the I/O surface the handler relies on."""
+    send_see_other = mock.Mock()
     with mock.patch.object(google_setup, "begin_request",
                            return_value={"csrf_token": CSRF, "flash": ""}) as br, \
          mock.patch.object(google_setup, "send_html_response") as shr, \
-         mock.patch.object(google_setup, "send_see_other") as sso, \
+         mock.patch.object(web_common, "send_see_other", send_see_other), \
          mock.patch.object(google_setup, "read_form", return_value={}) as rf, \
          mock.patch.object(google_setup, "guard_mutating_request", return_value=True) as vc, \
          mock.patch.object(google_setup, "reject_csrf") as rc, \
          mock.patch.object(google_setup, "restart_voice_daemon") as rvd:
         yield SimpleNamespace(
-            begin_request=br, send_html_response=shr, send_see_other=sso,
+            begin_request=br, send_html_response=shr,
+            send_see_other=send_see_other,
             read_form=rf, guard_mutating_request=vc, reject_csrf=rc, restart_voice_daemon=rvd,
         )
 
@@ -233,6 +236,20 @@ def _cfg(**over):
     }
     base.update(over)
     return base
+
+
+def test_redirect_delegate_uses_shared_legacy_msg_helper(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        google_setup,
+        "redirect_with_legacy_msg",
+        lambda handler, location: calls.append((handler, location)),
+    )
+    fake = _make_bound_handler(_cfg(), "/")
+
+    fake._redirect("./?msg=Saved")
+
+    assert calls == [(fake, "./?msg=Saved")]
 
 
 def _flash(send_see_other_mock) -> str:

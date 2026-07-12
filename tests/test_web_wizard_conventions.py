@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import ast
 import http
+import inspect
 import json
 import re
+import textwrap
 from email.message import Message
 from io import BytesIO
 from pathlib import Path
@@ -260,6 +262,27 @@ def _google_handler_cls():
         ),
         "registry_path": "/tmp/jts-test-google-accounts.json",
     })
+
+
+def test_legacy_msg_redirect_handlers_are_thin_shared_helper_delegates():
+    for handler_cls in (_spotify_handler_cls(), _google_handler_cls()):
+        source = textwrap.dedent(inspect.getsource(handler_cls._redirect))
+        function = ast.parse(source).body[0]
+        assert isinstance(function, ast.FunctionDef)
+        assert len(function.body) == 1
+        statement = function.body[0]
+        assert isinstance(statement, ast.Expr)
+        call = statement.value
+        assert isinstance(call, ast.Call)
+        assert isinstance(call.func, ast.Name)
+        assert call.func.id == "redirect_with_legacy_msg"
+        assert len(call.args) == 2
+        assert all(isinstance(arg, ast.Name) for arg in call.args)
+        assert [arg.id for arg in call.args] == [
+            "self",
+            "location",
+        ]
+        assert call.keywords == []
 
 
 def test_oauth_callbacks_allow_cross_site_top_level_navigation():
