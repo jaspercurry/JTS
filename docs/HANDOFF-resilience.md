@@ -1256,12 +1256,17 @@ For anyone touching the resilience code:
   preceding a watchdog reset survive to `/var/log/journal/`.
 - `jasper/control/shairport_supervisor.py` — Tier 3 supervisor for
   shairport-sync's AP2 control plane. `ShairportSupervisor.run()` is
-  the supervisor loop; `_tick()` is the pure policy under test.
+  the subsystem adapter; `_tick()` is the pure policy under test.
   Overridable `probe`, `is_session_active`, `restart_shairport` IO
   methods are the seams for unit testing. Module-level `snapshot()`
   feeds `/state.resilience.shairport`. Started from `server.py:main`
   via `start_supervisor()`; no-op when
   `JASPER_SHAIRPORT_SUPERVISOR=disabled`.
+- `jasper/control/supervisor_runtime.py` — shared mechanics for the
+  shairport, grouping, and system supervisors: cold-start/jitter cadence,
+  per-tick crash isolation, environment mode normalization, disabled
+  snapshots, and the dedicated asyncio-thread lifecycle. Subsystem policy,
+  singleton ownership, event names, and public wrappers remain local.
 - `tests/test_watchdog.py` — sentinel-contract tests
   (fresh/stale/recovery/disabled-fallback).
 - `tests/test_udp_mic_capture.py` — UDP receiver contract
@@ -1374,7 +1379,8 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-07-12 (jts-audio.slice membership and the complete
+Last verified: 2026-07-12 (supervisor loop/thread ownership rechecked against
+all three adapters and `supervisor_runtime`; jts-audio.slice membership and the complete
 OOMScoreAdjust ladder rechecked against every current unit/drop-in; Wi-Fi
 wizard action/exception events and their
 operator journal query rechecked against the real HTTP handler; output-DAC

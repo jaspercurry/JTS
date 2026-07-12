@@ -62,8 +62,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import random
 import threading
 import time
 from typing import Any
@@ -73,6 +71,12 @@ from jasper.log_event import log_event
 
 from . import household_credential
 from .client import AsyncControlClient, DEFAULT_PORT
+from .supervisor_runtime import (
+    build_asyncio_thread,
+    resolve_env_mode,
+    run_supervisor_loop,
+    snapshot_or_disabled,
+)
 from ..multiroom.config import GroupingConfig, is_active_member, load_config
 from ..multiroom.reconcile import SNAP_STREAM_ID, is_active_speaker_box
 from ..multiroom.state import parse_grouping_response
@@ -159,27 +163,20 @@ class GroupingSupervisor:
     # ---- main loop ----
 
     async def run(self) -> None:
-        log_event(
-            logger,
-            "grouping_supervisor.start",
-            interval=f"{self._interval:.0f}s",
-            threshold=self._threshold,
-            rate_limit=f"{self._rate_limit:.0f}s",
+        await run_supervisor_loop(
+            tick=self._tick,
+            cold_start_sec=self._cold_start,
+            interval_sec=self._interval,
+            jitter_sec=self._jitter,
+            logger=logger,
+            start_event="grouping_supervisor.start",
+            tick_crash_event="grouping_supervisor.tick_crash",
+            start_fields={
+                "interval": f"{self._interval:.0f}s",
+                "threshold": self._threshold,
+                "rate_limit": f"{self._rate_limit:.0f}s",
+            },
         )
-        await asyncio.sleep(self._cold_start)
-        while True:
-            try:
-                await self._tick()
-            except Exception:  # noqa: BLE001
-                log_event(
-                    logger,
-                    "grouping_supervisor.tick_crash",
-                    level=logging.ERROR,
-                    exc_info=True,
-                )
-            await asyncio.sleep(self._interval + random.uniform(
-                -self._jitter, self._jitter,
-            ))
 
     async def _tick(self) -> None:
         cfg = self.load_grouping()
@@ -608,9 +605,9 @@ _supervisor_thread: threading.Thread | None = None
 def snapshot() -> dict[str, Any]:
     """Read-only state for /state. Returns `{"enabled": False}` when
     the supervisor is disabled or not yet running."""
-    if _supervisor is None:
-        return {"enabled": False}
-    return _supervisor.snapshot()
+    return snapshot_or_disabled(
+        None if _supervisor is None else _supervisor.snapshot,
+    )
 
 
 def start_supervisor() -> threading.Thread | None:
@@ -621,7 +618,7 @@ def start_supervisor() -> threading.Thread | None:
     global _supervisor, _supervisor_thread
     if _supervisor_thread is not None:
         return _supervisor_thread
-    mode = os.environ.get("JASPER_GROUPING_SUPERVISOR", "auto").lower()
+    mode = resolve_env_mode("JASPER_GROUPING_SUPERVISOR")
     if mode == "disabled":
         log_event(logger, "grouping_supervisor.disabled")
         return None
@@ -632,27 +629,11 @@ def start_supervisor() -> threading.Thread | None:
             mode,
         )
     _supervisor = GroupingSupervisor()
-
-    def _run() -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(_supervisor.run())
-        except Exception:  # noqa: BLE001
-            log_event(
-                logger,
-                "grouping_supervisor.thread_crash",
-                level=logging.ERROR,
-                exc_info=True,
-            )
-        finally:
-            try:
-                loop.close()
-            except Exception:  # noqa: BLE001
-                pass
-
-    _supervisor_thread = threading.Thread(
-        target=_run, name="grouping-supervisor", daemon=True,
+    _supervisor_thread = build_asyncio_thread(
+        target=_supervisor.run,
+        name="grouping-supervisor",
+        logger=logger,
+        crash_event="grouping_supervisor.thread_crash",
     )
     _supervisor_thread.start()
     return _supervisor_thread

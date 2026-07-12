@@ -19,13 +19,12 @@ A separate group exercises the snapshot() + start_supervisor() shape.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import tempfile
 import time
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -548,12 +547,13 @@ def test_start_supervisor_idempotent():
     mod._supervisor = None
     mod._supervisor_thread = None
     try:
-        # Replace the asyncio loop runner with a no-op so we don't
-        # actually start a real loop.
-        with patch.object(SystemSupervisor, "run") as mock_run:
-            async def noop():
-                await asyncio.sleep(0)
-            mock_run.return_value = noop()
+        # Keep this a module-wrapper test; the shared runner owns its
+        # own direct event-loop contract tests.
+        with patch.object(
+            mod,
+            "build_asyncio_thread",
+            return_value=Mock(),
+        ):
             with patch.dict(os.environ,
                             {"JASPER_SYSTEM_SUPERVISOR": "auto"}):
                 t1 = start_supervisor()
@@ -575,10 +575,11 @@ def test_start_supervisor_unrecognised_value_falls_back_to_auto():
     mod._supervisor = None
     mod._supervisor_thread = None
     try:
-        with patch.object(SystemSupervisor, "run") as mock_run:
-            async def noop():
-                await asyncio.sleep(0)
-            mock_run.return_value = noop()
+        with patch.object(
+            mod,
+            "build_asyncio_thread",
+            return_value=Mock(),
+        ):
             with patch.dict(os.environ,
                             {"JASPER_SYSTEM_SUPERVISOR": "on"}):
                 t = start_supervisor()

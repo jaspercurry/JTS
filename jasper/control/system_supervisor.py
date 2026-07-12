@@ -19,8 +19,8 @@ effectively dead. Manual power-cycle was the only recovery.
 
 What this supervisor does
 -------------------------
-Runs in `jasper-control`'s existing asyncio thread (no new daemon,
-no new resident-RAM cost beyond ~0). Every 30 s ± jitter, probes:
+Runs inside `jasper-control` on one dedicated daemon thread and asyncio
+event loop (no new process or systemd unit). Every 30 s ± jitter, probes:
 
   1. TCP connect to 127.0.0.1:22 (sshd accepting connections), skipped
      when systemd reports ssh/sshd disabled, masked, or absent. Set
@@ -77,7 +77,6 @@ import contextlib
 import json
 import logging
 import os
-import random
 import threading
 import time
 from pathlib import Path
@@ -86,6 +85,12 @@ from typing import Any
 from jasper.log_event import log_event
 
 from ..atomic_io import atomic_write_text
+from .supervisor_runtime import (
+    build_asyncio_thread,
+    resolve_env_mode,
+    run_supervisor_loop,
+    snapshot_or_disabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -202,28 +207,21 @@ class SystemSupervisor:
     # ---- main loop ----
 
     async def run(self) -> None:
-        log_event(
-            logger,
-            "system_supervisor.start",
-            interval=f"{self._interval:.0f}s",
-            threshold=self._threshold,
-            rate_limit=f"{self._rate_limit:.0f}s",
-            cold_start=f"{self._cold_start:.0f}s",
+        await run_supervisor_loop(
+            tick=self._tick,
+            cold_start_sec=self._cold_start,
+            interval_sec=self._interval,
+            jitter_sec=self._jitter,
+            logger=logger,
+            start_event="system_supervisor.start",
+            tick_crash_event="system_supervisor.tick_crash",
+            start_fields={
+                "interval": f"{self._interval:.0f}s",
+                "threshold": self._threshold,
+                "rate_limit": f"{self._rate_limit:.0f}s",
+                "cold_start": f"{self._cold_start:.0f}s",
+            },
         )
-        await asyncio.sleep(self._cold_start)
-        while True:
-            try:
-                await self._tick()
-            except Exception:  # noqa: BLE001
-                log_event(
-                    logger,
-                    "system_supervisor.tick_crash",
-                    level=logging.ERROR,
-                    exc_info=True,
-                )
-            await asyncio.sleep(self._interval + random.uniform(
-                -self._jitter, self._jitter,
-            ))
 
     async def _tick(self) -> None:
         ok, failed_probe = await self._run_all_probes()
@@ -626,9 +624,9 @@ _supervisor_thread: threading.Thread | None = None
 def snapshot() -> dict[str, Any]:
     """Read-only state for /state. Returns `{"enabled": False}` when
     the supervisor is disabled or not yet running."""
-    if _supervisor is None:
-        return {"enabled": False}
-    return _supervisor.snapshot()
+    return snapshot_or_disabled(
+        None if _supervisor is None else _supervisor.snapshot,
+    )
 
 
 def start_supervisor() -> threading.Thread | None:
@@ -639,7 +637,7 @@ def start_supervisor() -> threading.Thread | None:
     global _supervisor, _supervisor_thread
     if _supervisor_thread is not None:
         return _supervisor_thread
-    mode = os.environ.get("JASPER_SYSTEM_SUPERVISOR", "auto").lower()
+    mode = resolve_env_mode("JASPER_SYSTEM_SUPERVISOR")
     if mode == "disabled":
         log_event(logger, "system_supervisor.disabled")
         return None
@@ -650,27 +648,11 @@ def start_supervisor() -> threading.Thread | None:
             mode,
         )
     _supervisor = SystemSupervisor()
-
-    def _run() -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(_supervisor.run())
-        except Exception:  # noqa: BLE001
-            log_event(
-                logger,
-                "system_supervisor.thread_crash",
-                level=logging.ERROR,
-                exc_info=True,
-            )
-        finally:
-            try:
-                loop.close()
-            except Exception:  # noqa: BLE001
-                pass
-
-    _supervisor_thread = threading.Thread(
-        target=_run, name="system-supervisor", daemon=True,
+    _supervisor_thread = build_asyncio_thread(
+        target=_supervisor.run,
+        name="system-supervisor",
+        logger=logger,
+        crash_event="system_supervisor.thread_crash",
     )
     _supervisor_thread.start()
     return _supervisor_thread

@@ -149,8 +149,9 @@ watchdog, not inside it.
 
 ### Option A — Probing system supervisor in `jasper-control` (recommended for T5.2)
 
-A new `jasper/control/system_supervisor.py` running on
-`jasper-control`'s existing asyncio thread. **Mirrors the proven
+A new `jasper/control/system_supervisor.py` running inside
+`jasper-control` on a dedicated daemon thread and asyncio event loop.
+**Mirrors the proven
 shape of [`jasper/control/shairport_supervisor.py`](../jasper/control/shairport_supervisor.py)**
 (Tier 3, in production since the 2026-05-23 shairport-sync wedge):
 
@@ -163,34 +164,37 @@ class SystemSupervisor:
             - `cat /proc/loadavg` reads cleanly within 1 s
         if probe raises or times out: failures += 1
         if failures >= 3:
-            if not in_active_session():  # don't kill a live talk turn
-                if not rate_limited:    # 1 reboot per 24 hours
-                    log structured event=system_supervisor.escalate
-                    systemctl --no-block reboot
-                    rate_limit_set()
+            if not rate_limited:    # 1 reboot per 24 hours
+                log structured event=system_supervisor.escalate
+                systemctl --no-block reboot
+                rate_limit_set()
 ```
 
 Same primitives as `ShairportSupervisor`: consecutive-failure
-threshold, session gate, rate limit, cold-start delay, all
-configurable. Run inside `jasper-control` (already has the
-asyncio thread, already has `/state` for observability, already
-has the watchdog supervisor pattern). No new daemon, no new
+threshold, rate limit, and cold-start delay, all configurable. Unlike
+the source-specific supervisor, this whole-system liveness gate is
+deliberately not session-gated (rationale below). Run inside
+`jasper-control` (already has `/state` for
+observability and the watchdog supervisor pattern). No new daemon or
 systemd unit.
 
 **Engineering cost**: ~200 lines of new Python mirroring an
 existing file. ~1 engineer-day with tests and review. Adds a
 section to `/state` for the dashboard.
 
-**Resource cost**: ~0 RAM (lives inside an existing daemon's
-process). ~30 s probe cadence costs <1% CPU.
+**Resource cost**: one mostly idle daemon thread and event loop inside
+the existing process; no second Python interpreter. The ~30 s probe
+cadence costs <1% CPU.
 
 **Blast radius if buggy**: a false-positive reboot is the
 disaster scenario. Mitigations: (a) 3-consecutive-failure
-threshold (matches `ShairportSupervisor`); (b) session gate
-("don't reboot mid-voice-turn"); (c) 24-hour rate limit; (d)
-60-second cold-start window before any probe; (e)
+threshold (matches `ShairportSupervisor`); (b) 24-hour rate limit;
+(c) 120-second cold-start window before any probe; (d)
 `JASPER_SYSTEM_SUPERVISOR=disabled` env-var escape hatch
-mirroring `JASPER_SHAIRPORT_SUPERVISOR=disabled`. A second-
+mirroring `JASPER_SHAIRPORT_SUPERVISOR=disabled`. There is no active-
+session gate: three consecutive failures of any whole-system probe mean
+the session cannot be trusted as live, and the durable rate limit is the
+fail-safe against repeated false positives. A second-
 order risk: the supervisor itself wedges, no escalation. But
 that's exactly what Tier 5 (hardware watchdog) catches — they
 compose.
@@ -200,7 +204,8 @@ without a redeploy. PR-revert removes the file.
 
 **Why this matches JTS doctrine**:
 - Mirrors an established in-tree pattern (Tier 3 supervisor)
-- Doesn't introduce a new daemon → no resource cost increase
+- Doesn't introduce a new process or systemd unit; the bounded cost is
+  one mostly idle daemon thread and event loop
 - Logs structured events (`event=system_supervisor.*`) — same
   shape as existing `event=shairport.*` discipline
 - Off-switchable via env file → fits the "operator escape hatch"
@@ -396,8 +401,9 @@ focused day of work. Build it in `jasper-control` mirroring
 - `cat /proc/loadavg` reads in <1 s (catches kernel I/O stall)
 
 Threshold: 3 consecutive failures, 30 s cadence with ±3 s
-jitter. Rate-limit: 1 reboot per 24 hours. Gate: not during an
-active voice session. Off-switch: `JASPER_SYSTEM_SUPERVISOR=disabled`
+jitter. Rate-limit: 1 reboot per 24 hours. There is deliberately no
+active-session gate; see the rationale in the implementation and above.
+Off-switch: `JASPER_SYSTEM_SUPERVISOR=disabled`
 in `/etc/jasper/jasper.env`.
 
 **Don't ship T5.3 (Option C) yet** — needs 30 days of production
@@ -454,7 +460,9 @@ risk, not worth being first.
 
 ---
 
-Last verified: 2026-07-06 (outputd EX_CONFIG=78 retry/park exception rechecked
+Last verified: 2026-07-12 (supervisor thread/event-loop ownership and the
+deliberate no-session-gate policy rechecked against the shared runtime and
+system-supervisor implementation; outputd EX_CONFIG=78 retry/park exception rechecked
 against `jasper-outputd.service` and `jasper-outputd-failure-reconcile`;
 current T5.1 shipped-unit list and Camilla `OnFailure=jasper-camilla-recover.service`
 exception previously rechecked 2026-06-25 against systemd units and doctor
