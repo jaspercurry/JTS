@@ -72,8 +72,8 @@ class BluetoothEngine:
             accessory_reconcile or _default_accessory_reconcile
         )
         # Active scan auto-stop task. bluez auto-stops discovery when
-        # the initiating bus client disconnects, so the engine OWNS
-        # discovery on its long-lived bus — `adapter.start_discovery()`
+        # the initiating bus client disconnects, so the engine owns
+        # discovery on its long-lived bus. A short-lived adapter helper
         # would lose the scan the moment its ephemeral bus closed.
         self._scan_task: asyncio.Task | None = None
 
