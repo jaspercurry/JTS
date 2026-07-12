@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import os
 import subprocess
@@ -70,12 +69,14 @@ from ..source_intent import (
     intent_env_key,
 )
 from ._common import (
+    JsonBodyError,
     bonded_follower_active,
     begin_request,
     canonical_banner,
     canonical_header,
     canonical_page,
     reject_csrf,
+    read_json_object,
     send_html_response,
     send_json_response,
     toggle_html,
@@ -84,6 +85,11 @@ from ._common import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# /set carries only a source key and boolean; reject larger direct-socket
+# bodies before any source lifecycle mutation.
+_JSON_BODY_LIMIT = 4096
 
 
 def _intent_unit(source: Source) -> str:
@@ -721,12 +727,9 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             send_json_response(self, payload, status=status)
 
         def _read_json(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length") or "0")
-            if not length:
-                return {}
             try:
-                return json.loads(self.rfile.read(length).decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
+                return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
+            except JsonBodyError:
                 return {}
 
         def do_GET(self) -> None:  # noqa: N802

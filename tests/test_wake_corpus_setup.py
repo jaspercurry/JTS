@@ -26,6 +26,8 @@ import subprocess
 import threading
 import time
 import wave
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -1572,6 +1574,103 @@ def test_post_unknown_path_404s_without_revealing_csrf_state(backend) -> None:
 
 def test_post_known_path_without_token_403s(backend) -> None:
     assert _mutating_status(backend, "POST", "/api/session") == 403
+
+
+class _TrackingReader(BytesIO):
+    def __init__(self, body: bytes, *, fail: bool = False) -> None:
+        super().__init__(body)
+        self.fail = fail
+        self.read_calls: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_calls.append(size)
+        if self.fail:
+            raise OSError("request body read failed")
+        return super().read(size)
+
+
+def _corpus_post_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    body: bytes,
+    content_length: int | str,
+    read_fails: bool = False,
+):
+    handler_cls = wake_corpus_setup._make_handler_class(object(), "tok")
+    monkeypatch.setattr(
+        handler_cls,
+        "_post_session",
+        lambda *_a, **_k: pytest.fail("invalid request must not dispatch"),
+    )
+    handler = handler_cls.__new__(handler_cls)
+    handler.path = "/api/session"
+    handler.headers = Message()
+    handler.headers["Content-Length"] = str(content_length)
+    handler.headers[wake_corpus_setup.CSRF_HEADER] = "tok"
+    handler.rfile = _TrackingReader(body, fail=read_fails)
+    handler.wfile = BytesIO()
+    handler.client_address = ("127.0.0.1", 0)
+    captured: dict[str, int | None] = {"status": None}
+    handler.send_response = lambda status, *a, **k: captured.__setitem__(
+        "status", int(status),
+    )
+    handler.send_response_only = handler.send_response
+    handler.send_header = lambda *a, **k: None
+    handler.end_headers = lambda: None
+    handler.address_string = lambda: "127.0.0.1"
+    return handler, captured
+
+
+@pytest.mark.parametrize(
+    ("body", "content_length", "expected_error", "expected_reads"),
+    [
+        (b"{", 1, "invalid JSON body", [1]),
+        (b"\xff", 1, "invalid JSON body", [1]),
+        (b"[]", 2, "body must be a JSON object", [2]),
+        (b"{}", 3, "invalid JSON body", [3]),
+        (b"{}", "invalid", "invalid Content-Length", []),
+        (b"{}", -1, "invalid body length", []),
+        (b"{}", wake_corpus_setup._JSON_BODY_LIMIT + 1, "invalid body length", []),
+    ],
+)
+def test_post_rejects_invalid_json_framing_before_dispatch(
+    monkeypatch,
+    body,
+    content_length,
+    expected_error,
+    expected_reads,
+):
+    handler, captured = _corpus_post_handler(
+        monkeypatch,
+        body=body,
+        content_length=content_length,
+    )
+
+    handler.do_POST()
+
+    assert captured["status"] == 400
+    error = json.loads(handler.wfile.getvalue())["error"]
+    if expected_error == "invalid JSON body":
+        assert error.startswith(expected_error)
+    else:
+        assert error == expected_error
+    assert handler.rfile.read_calls == expected_reads
+
+
+def test_post_request_body_oserror_remains_distinct_from_client_json_errors(
+    monkeypatch,
+):
+    handler, captured = _corpus_post_handler(
+        monkeypatch,
+        body=b"{}",
+        content_length=2,
+        read_fails=True,
+    )
+
+    with pytest.raises(OSError, match="request body read failed"):
+        handler.do_POST()
+
+    assert captured["status"] is None
 
 
 def test_delete_unknown_path_404s_without_revealing_csrf_state(backend) -> None:

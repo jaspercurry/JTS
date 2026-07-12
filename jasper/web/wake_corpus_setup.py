@@ -214,15 +214,22 @@ from jasper.wake_corpus.recording_backend import (  # noqa: F401 - re-exported
 # dialog.js module respectively, so this page no longer embeds the old
 # one-page chrome or dialog snippets.
 from jasper.web._common import (
+    JsonBodyError,
     canonical_header,
     canonical_page,
     guard_read_request,
     json_island,
+    read_json_object,
     send_json_response,
     toggle_html,
 )
 
 logger = logging.getLogger("jasper-wake-corpus-web")
+
+
+# Session/capture-plan requests are larger than ordinary toggle payloads but
+# remain bounded when the socket is reached directly without nginx.
+_JSON_BODY_LIMIT = 65_536
 
 
 @dataclass(frozen=True)
@@ -308,14 +315,20 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json({"error": message}, status=status)
 
     def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        if length == 0:
-            return {}
-        raw = self.rfile.read(length)
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"invalid JSON body: {e}") from e
+            return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
+        except JsonBodyError as exc:
+            if exc.code == "invalid_content_length":
+                message = "invalid Content-Length"
+            elif exc.code in {"negative_content_length", "body_too_large"}:
+                message = "invalid body length"
+            elif exc.code == "non_object":
+                message = "body must be a JSON object"
+            elif exc.code == "invalid_json" and exc.__cause__:
+                message = f"invalid JSON body: {exc.__cause__}"
+            else:
+                message = "invalid JSON body"
+            raise ValueError(message) from exc
 
     def _check_csrf(self) -> bool:
         """Verify the X-CSRF-Token header matches the server token.

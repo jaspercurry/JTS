@@ -67,16 +67,23 @@ from .. import wifi_guardian_persistence, wifi_scan_repair
 from ..control.restart_broker import manage_units
 from ..log_event import log_event
 from ._common import (
+    JsonBodyError,
     begin_request,
     canonical_header,
     canonical_page,
     reject_csrf,
+    read_json_object,
     send_html_response,
     guard_read_request,
     guard_mutating_request,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Preserve the wizard's established direct-socket ceiling. Connect payloads
+# are normally tiny, but the cap is endpoint-owned rather than shared policy.
+_JSON_BODY_LIMIT = 100_000
 
 
 # Stash file path: wizard owns this on every successful save. Match the
@@ -1329,14 +1336,8 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
 
         def _read_json(self) -> dict[str, Any]:
             try:
-                length = int(self.headers.get("Content-Length") or "0")
-            except (TypeError, ValueError):
-                return {}
-            if length <= 0 or length > 100_000:
-                return {}
-            try:
-                return json.loads(self.rfile.read(length).decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+                return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
+            except (JsonBodyError, OSError):
                 return {}
 
         def do_GET(self) -> None:  # noqa: N802

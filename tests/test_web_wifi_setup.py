@@ -443,6 +443,24 @@ def test_post_scan_runs_with_valid_csrf(monkeypatch):
     assert json.loads(h.wfile.getvalue().decode())["scan"]["ok"] is True
 
 
+def test_post_scan_preserves_body_agnostic_policy_for_invalid_json(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        wifi_setup,
+        "scan_networks_report",
+        lambda: calls.append("scan") or {
+            "networks": [],
+            "scan": {"ok": True, "degraded": False},
+        },
+    )
+    h, captured = _valid_post("/scan", b"{")
+
+    h.do_POST()
+
+    assert captured["status"] == 200
+    assert calls == ["scan"]
+
+
 @pytest.mark.parametrize(("mode", "ok"), [("new", True), ("new", False),
                                             ("saved", True), ("saved", False)])
 def test_post_connect_emits_one_redacted_action_event(
@@ -605,7 +623,9 @@ def test_post_action_backend_exception_is_structured_and_generic(
     [
         (b"", 0, False, []),
         (b"{", 1, False, [1]),
+        (b"\xff", 1, False, [1]),
         (b"{}", 2, False, [2]),
+        (b"{}", 3, False, [3]),
         (b"[]", 2, False, [2]),
         (b"null", 4, False, [4]),
         (b'{"on":"false"}', 14, False, [14]),

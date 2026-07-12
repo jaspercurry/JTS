@@ -167,6 +167,19 @@ class _FakeHandler:
         return [v for n, v in self.sent_headers if n.lower() == name.lower()]
 
 
+class _TrackingReader(BytesIO):
+    def __init__(self, body: bytes, *, fail: bool = False) -> None:
+        super().__init__(body)
+        self.fail = fail
+        self.read_calls: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_calls.append(size)
+        if self.fail:
+            raise OSError("request body read failed")
+        return super().read(size)
+
+
 def _patch_discovery(monkeypatch, *, speakers, grouping=None, airplay_fit=None,
                      self_name="JTS",
                      self_hostname="jts-living.local", self_room="living",
@@ -873,6 +886,71 @@ def test_post_peering_rejects_bad_csrf(monkeypatch, tmp_path):
                         csrf_ok=False, monkeypatch=monkeypatch)
     assert h.status == 403
     assert restarts == {"voice": 0, "control": 0}  # no write, no restart
+
+
+@pytest.mark.parametrize(
+    ("body", "content_length", "expected_error", "expected_reads"),
+    [
+        (b"{", 1, "invalid JSON body", [1]),
+        (b"\xff", 1, "invalid JSON body", [1]),
+        (b"[]", 2, "body must be a JSON object", [2]),
+        (b"{}", 3, "invalid JSON body", [3]),
+        (b"{}", "invalid", "invalid Content-Length", []),
+        (b"{}", -1, "invalid body length", []),
+        (b"{}", rooms_setup._PEERING_BODY_LIMIT + 1, "invalid body length", []),
+    ],
+)
+def test_post_peering_rejects_invalid_json_framing_without_mutation(
+    monkeypatch,
+    body,
+    content_length,
+    expected_error,
+    expected_reads,
+):
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        rooms_setup,
+        "write_env_file",
+        lambda *_a, **_k: pytest.fail("invalid request must not write config"),
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "restart_voice_daemon",
+        lambda: pytest.fail("invalid request must not restart daemons"),
+    )
+    handler_cls = rooms_setup._make_handler()
+    handler = _FakeHandler("/peering")
+    handler.headers["Content-Length"] = str(content_length)
+    handler.rfile = _TrackingReader(body)
+
+    handler_cls.do_POST(handler)
+
+    assert handler.status == 400
+    payload = json.loads(handler.wfile.getvalue())
+    assert payload["ok"] is False
+    if expected_error == "invalid JSON body":
+        assert payload["error"].startswith(expected_error)
+    else:
+        assert payload["error"] == expected_error
+    assert handler.rfile.read_calls == expected_reads
+
+
+def test_post_peering_request_body_oserror_remains_distinct(monkeypatch):
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        rooms_setup,
+        "write_env_file",
+        lambda *_a, **_k: pytest.fail("failed read must not write config"),
+    )
+    handler_cls = rooms_setup._make_handler()
+    handler = _FakeHandler("/peering")
+    handler.headers["Content-Length"] = "2"
+    handler.rfile = _TrackingReader(b"{}", fail=True)
+
+    with pytest.raises(OSError, match="request body read failed"):
+        handler_cls.do_POST(handler)
+
+    assert handler.status is None
 
 
 def test_post_peering_enables_and_preserves_room(monkeypatch, tmp_path):

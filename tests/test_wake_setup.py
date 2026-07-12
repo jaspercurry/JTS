@@ -18,11 +18,14 @@ on a random port to match `tests/test_voice_setup.py`.
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -756,6 +759,105 @@ def _json_post_with_csrf(
             return r.status, _json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         return e.code, _json.loads(e.read().decode())
+
+
+class _TrackingReader(BytesIO):
+    def __init__(self, body: bytes, *, fail: bool = False) -> None:
+        super().__init__(body)
+        self.fail = fail
+        self.read_calls: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_calls.append(size)
+        if self.fail:
+            raise OSError("request body read failed")
+        return super().read(size)
+
+
+def _invalid_layer_request(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    body: bytes,
+    content_length: int | str,
+    read_fails: bool = False,
+):
+    handler_cls = wake_setup._make_handler(
+        {"state_path": "unused", "control_base": "http://unused"},
+    )
+    handler = handler_cls.__new__(handler_cls)
+    handler.path = "/layer/raw"
+    handler.headers = Message()
+    handler.headers["Content-Length"] = str(content_length)
+    handler.rfile = _TrackingReader(body, fail=read_fails)
+    handler.wfile = BytesIO()
+    handler.client_address = ("127.0.0.1", 0)
+    captured: dict[str, int | None] = {"status": None}
+    handler.send_response = lambda status, *a, **k: captured.__setitem__(
+        "status", int(status),
+    )
+    handler.send_response_only = handler.send_response
+    handler.send_header = lambda *a, **k: None
+    handler.end_headers = lambda: None
+    handler.address_string = lambda: "127.0.0.1"
+    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        wake_setup,
+        "_apply_layer",
+        lambda *_a, **_k: pytest.fail("invalid request must not reach control"),
+    )
+    return handler, captured
+
+
+@pytest.mark.parametrize(
+    ("body", "content_length", "expected_error", "expected_reads"),
+    [
+        (b"{", 1, "invalid JSON body", [1]),
+        (b"\xff", 1, "invalid JSON body", [1]),
+        (b"[]", 2, "body must be a JSON object", [2]),
+        (b"{}", 3, "invalid JSON body", [3]),
+        (b"{}", "invalid", "invalid Content-Length", []),
+        (b"{}", -1, "invalid body length", []),
+        (b"{}", wake_setup._LAYER_BODY_LIMIT + 1, "invalid body length", []),
+    ],
+)
+def test_layer_rejects_invalid_json_framing_without_control_side_effects(
+    monkeypatch,
+    body,
+    content_length,
+    expected_error,
+    expected_reads,
+):
+    handler, captured = _invalid_layer_request(
+        monkeypatch,
+        body=body,
+        content_length=content_length,
+    )
+
+    handler.do_POST()
+
+    assert captured["status"] == 400
+    error = json.loads(handler.wfile.getvalue())["error"]
+    if expected_error == "invalid JSON body":
+        assert error.startswith(expected_error)
+    else:
+        assert error == expected_error
+    assert handler.rfile.read_calls == expected_reads
+
+
+def test_layer_request_body_oserror_remains_distinct_from_client_json_errors(
+    monkeypatch,
+):
+    handler, captured = _invalid_layer_request(
+        monkeypatch,
+        body=b"{}",
+        content_length=2,
+        read_fails=True,
+    )
+
+    with pytest.raises(OSError, match="request body read failed"):
+        handler.do_POST()
+
+    assert captured["status"] is None
 
 
 def test_detection_json_proxies_aec(wired_server):
