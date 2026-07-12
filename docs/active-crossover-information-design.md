@@ -775,11 +775,13 @@ trim calculation is a complete automatic crossover.
 
 As of 2026-07-11, JTS has much of the substrate but not the full product:
 
-- Manual setup exposes frequency, filter family/slope, and trim. There is no
-  manual polarity/delay authoring at all: the preset schema carries the
-  fields, but nothing writes them from user input, and a stereo apply
-  currently resets delay/inversion because corrections are re-derived from
-  measurement on every apply.
+- Manual setup exposes frequency, filter family/slope, and trim. There is
+  still no `/sound/` UI for polarity/delay authoring, but as of Slice 0 the
+  preview/preset/corrections chain persists polarity and relative delay as
+  first-class working-crossover values end to end — including through a
+  stereo apply, which no longer resets delay/inversion (corrections are only
+  re-derived from measurement under explicit automatic tuning with fresh
+  alignment evidence, never unconditionally).
 - The relay-guided automatic flow takes one accepted near-field sweep per
   driver and derives attenuation-only relative trims.
 - Crossover frequency, family, and slope remain operator-owned rather than
@@ -789,8 +791,11 @@ As of 2026-07-11, JTS has much of the substrate but not the full product:
   verification.
 - Existing alignment analysis is not fully reachable through persisted paired
   summed evidence.
-- Automatic trim application must not reset a manually applied delay or
-  inversion when no new alignment evidence exists.
+- ~~Automatic trim application must not reset a manually applied delay or
+  inversion when no new alignment evidence exists.~~ Closed in Slice 0:
+  manual tuning never consults alignment evidence for these two
+  sub-parameters at all; automatic tuning only overrides a persisted value
+  with fresh, authorized (`validated`, newer than the preview) evidence.
 - Active-speaker evidence is less cohesive than the room-correction session
   bundle and needs a session manifest tying capture through apply and verify.
 
