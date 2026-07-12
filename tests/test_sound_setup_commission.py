@@ -32,8 +32,9 @@ from jasper.active_speaker import (
 from jasper.active_speaker.calibration_level import AUDIBLE_RAMP_STEP_DB
 from jasper.active_speaker.measurement import record_driver_measurement
 
+from tests.active_speaker_fixtures import mono_output_topology as _topology
 from tests.test_active_speaker_cli import _FakeController
-from tests.test_active_speaker_startup_load import _staged, _topology
+from tests.test_active_speaker_startup_load import _staged
 
 
 @pytest.fixture(autouse=True)

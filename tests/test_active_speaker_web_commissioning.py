@@ -22,8 +22,12 @@ from jasper.active_speaker.calibration_level import MIN_TEST_LEVEL_DBFS
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
-from tests.test_active_speaker_measurement import _topology
+from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _two_way_preset
+
+
+def _topology(**kwargs):
+    return mono_output_topology(topology_name="Bench mono", **kwargs)
 
 
 def _durable_driver_record(

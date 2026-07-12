@@ -7,6 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.active_speaker_fixtures import mono_output_topology
+
+
+def _topology():
+    return mono_output_topology(topology_name="Bench mono")
+
 
 def _locked_outcome(*, original: float, locked: float):
     from jasper.audio_measurement.ramp import RampState
@@ -41,8 +47,6 @@ def _locks(topology):
 def test_comparison_set_requires_all_drivers_and_recomputes_fingerprint(tmp_path):
     from jasper.active_speaker.capture_geometry import comparison_set_valid
     from jasper.active_speaker.measurement import start_active_comparison_set
-    from tests.test_active_speaker_measurement import _topology
-
     topology = _topology()
     locks = _locks(topology)
     with pytest.raises(ValueError, match="incomplete"):

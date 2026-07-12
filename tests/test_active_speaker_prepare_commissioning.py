@@ -24,7 +24,12 @@ from jasper.active_speaker import (
 
 # Reuse the canonical staging fixtures (mono 2-way DAC8x topology + a passing
 # CamillaDSP validation stub).
-from tests.test_active_speaker_staging import _topology, _valid_config
+from tests.active_speaker_fixtures import mono_output_topology
+from tests.test_active_speaker_staging import _valid_config
+
+
+def _topology():
+    return mono_output_topology(protection_status="present")
 
 
 def _prepare(role: str, *, tmp_path: Path, group_id: str = "mono", topology=None):

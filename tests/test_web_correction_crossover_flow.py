@@ -15,6 +15,11 @@ from jasper.active_speaker import web_measurement
 from jasper.active_speaker.capture_geometry import comparison_set_fingerprint
 from jasper.web import correction_crossover_backend as backend
 from jasper.web import correction_crossover_flow as flow
+from tests.active_speaker_fixtures import mono_output_topology
+
+
+def _topology(**kwargs):
+    return mono_output_topology(topology_name="Bench mono", **kwargs)
 
 
 def test_request_payload_parses_capture_query():
@@ -203,8 +208,6 @@ def test_driver_capture_rejects_post_play_topology_change_even_with_old_session(
         "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions")
     )
     from jasper.active_speaker.measurement import active_driver_targets
-    from tests.test_active_speaker_measurement import _topology
-
     import jasper.active_speaker.measurement as measurement
     import jasper.active_speaker.safe_playback as safe_playback
 
@@ -1072,8 +1075,6 @@ def test_driver_capture_appends_into_lazily_opened_bundle(monkeypatch, tmp_path)
     import json
 
     from jasper.correction.bundles import read_artifact_manifest
-    from tests.test_active_speaker_measurement import _topology
-
     sessions = tmp_path / "sessions"
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(sessions))
 
@@ -1140,8 +1141,6 @@ def test_driver_capture_reuses_stamped_session_bundle(monkeypatch, tmp_path):
     append into THAT bundle rather than lazily opening a second one."""
 
     from jasper.active_speaker import bundles as active_speaker_bundles
-    from tests.test_active_speaker_measurement import _topology
-
     sessions = tmp_path / "sessions"
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(sessions))
     sessions.mkdir(parents=True, exist_ok=True)
@@ -2712,8 +2711,6 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
     import jasper.correction.playback as correction_playback
     from jasper.active_speaker import web_commissioning as web
     from jasper.active_speaker.measurement import active_driver_targets
-    from tests.test_active_speaker_measurement import _topology
-
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SWEEP_DIR", str(tmp_path / "sweeps"))
     topology = _topology()
     applied_profile = None

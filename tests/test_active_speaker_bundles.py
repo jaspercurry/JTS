@@ -19,8 +19,11 @@ import pytest
 
 from jasper.active_speaker import bundles
 from jasper.correction.bundles import read_artifact_manifest
+from tests.active_speaker_fixtures import mono_output_topology
 
-from .test_active_speaker_measurement import _topology
+
+def _topology():
+    return mono_output_topology(topology_name="Bench mono")
 
 
 def _open(tmp_path: Path, **kwargs):

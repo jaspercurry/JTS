@@ -52,8 +52,9 @@ from jasper.active_speaker.camilla_yaml import (
 from jasper.active_speaker.safe_playback import load_safe_playback_state
 from jasper.active_speaker import ActiveSpeakerConfigError
 
+from tests.active_speaker_fixtures import mono_output_topology as _topology
 from tests.test_active_speaker_commission_load import _load
-from tests.test_active_speaker_startup_load import _topology, _valid_config
+from tests.test_active_speaker_startup_load import _valid_config
 from tests.test_active_speaker_profile import _two_way_preset
 
 

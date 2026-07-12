@@ -22,11 +22,11 @@ from jasper.active_speaker.measurement import (
     start_active_comparison_set,
 )
 from jasper.output_topology import (
-    OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
     OutputTopologyError,
     save_output_topology,
 )
+from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_baseline_profile import (
     _draft,
     _dual_apple_topology,
@@ -37,43 +37,7 @@ from tests.test_active_speaker_baseline_profile import (
 
 
 def _active_topology() -> OutputTopology:
-    return OutputTopology.from_mapping({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-            "card_id": "DAC8",
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono cabinet",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
+    return mono_output_topology(topology_name="Bench mono")
 
 
 def _passive_topology() -> OutputTopology:

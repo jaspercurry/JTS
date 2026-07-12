@@ -9,7 +9,7 @@ from jasper.active_speaker.commissioning_coordinator import (
     summed_test_failure_message,
 )
 
-from tests.test_active_speaker_startup_load import _topology
+from tests.active_speaker_fixtures import mono_output_topology as _topology
 
 
 def _ready_design() -> dict:
