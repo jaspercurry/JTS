@@ -29,28 +29,12 @@ from jasper.correction import bundles, runtime_integrity
 from jasper.correction.session import (
     AutolevelData,
     AutolevelStatus,
-    MeasurementSession,
     SessionBusyError,
-    SessionConfig,
     SessionState,
 )
-
-
-def _make_session(tmp_path: Path) -> MeasurementSession:
-    """Session pointed at tmp_path subdirs so the test doesn't write
-    to /var/lib/jasper or /var/lib/camilladsp."""
-    cfg = SessionConfig(
-        sweep_dir=tmp_path / "sweeps",
-        capture_dir=tmp_path / "captures",
-        sessions_dir=tmp_path / "sessions",
-        config_dir=tmp_path / "configs",
-        base_config_path=tmp_path / "v1.yml",
-        # Short sweep keeps tests fast.
-        duration_s=1.0,
-    )
-    # Make a stub base config so /reset has a target.
-    cfg.base_config_path.write_text("# stub base v1.yml for tests\n")
-    return MeasurementSession(cfg)
+from .correction_session_fixtures import (
+    make_measurement_session as _make_session,
+)
 
 
 def _synthesize_room_capture(

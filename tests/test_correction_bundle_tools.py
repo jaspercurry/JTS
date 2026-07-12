@@ -9,22 +9,13 @@ import pytest
 
 from jasper.audio_measurement import sweep
 from jasper.correction import bundle_tools, bundles, interop
-from jasper.correction.session import MeasurementSession, SessionConfig, SessionState
+from jasper.correction.session import MeasurementSession, SessionState
+from .correction_session_fixtures import make_measurement_session
 
 
-def _make_session(tmp_path: Path) -> MeasurementSession:
-    cfg = SessionConfig(
-        sweep_dir=tmp_path / "sweeps",
-        capture_dir=tmp_path / "captures",
-        sessions_dir=tmp_path / "sessions",
-        config_dir=tmp_path / "configs",
-        base_config_path=tmp_path / "v1.yml",
-        duration_s=1.0,
-    )
-    cfg.base_config_path.write_text("# stub base config\n")
-    cfg.config_dir.mkdir(parents=True, exist_ok=True)
-    return MeasurementSession(
-        cfg,
+async def _complete_one_position_bundle(tmp_path: Path) -> MeasurementSession:
+    sess = make_measurement_session(
+        tmp_path,
         input_device={
             "label": "USB measurement mic",
             "device_id_hash": "abc123",
@@ -35,10 +26,6 @@ def _make_session(tmp_path: Path) -> MeasurementSession:
             "auto_gain_control": False,
         },
     )
-
-
-async def _complete_one_position_bundle(tmp_path: Path) -> MeasurementSession:
-    sess = _make_session(tmp_path)
     sess.noise_floor_db = -80.0
 
     async def fake_play_sweep(path: str, **kwargs):
