@@ -287,7 +287,7 @@ and brick re-bonding.
 speaker whose `/rooms/` page the human used) ensures a household secret exists,
 then distributes it to each member during the existing bond fan-out — the same
 loop that already POSTs `/grouping/set` to members (`rooms_setup`
-`_post_grouping_to_member`).
+`post_grouping_to_member`).
 The **first** distribution is accepted over the trusted LAN: this is *no weaker
 than today* (the bond was already "unauthenticated by design"), and it
 **upgrades the steady state** — once a household is bonded, every subsequent
@@ -311,7 +311,7 @@ present — the leader daemon reads `/var/lib/jasper/household_secret` and prese
 it on its `/grouping/set` to followers, who verify against their persisted copy.
 This is *why* a persistent, machine-usable credential is required instead of
 relaying a browser token: the resilience path has no browser. **Design seam to
-call out:** today `rooms_setup._request_control_token` deliberately *relays* the
+call out:** today `rooms_setup.request_control_token` deliberately *relays* the
 browser-supplied token and never injects one from disk. The autonomous path has no
 browser to relay from, so it must read the household secret from disk daemon-side —
 an explicit, intentional break of the relay-only invariant for this one path, not
@@ -414,8 +414,8 @@ HW-free unless noted; multiroom phases gate on the two-Pi smoke test
   unbond; `/unbond` reads the secret ONCE and passes it explicitly so the
   concurrent per-member clears can't race a peer out of its credential. The
   `/grouping/set` gate accepts household-cred **or** control-token (on that route
-  ONLY); the fan-out chokepoint `_post_grouping_to_member` attaches the secret
-  (disk read — the intentional break of `_request_control_token`'s relay-only
+  ONLY); the fan-out chokepoint `post_grouping_to_member` attaches the secret
+  (disk read — the intentional break of `request_control_token`'s relay-only
   invariant); `AsyncControlClient.request/.post` gained the 2-line `headers=`
   kwarg (the Phase D enabler). One consequence to note: an **unpaired** speaker's
   `/grouping/set` is fail-safe-OPEN (the bootstrap window) — so two existing
@@ -482,4 +482,4 @@ household credential does not apply to it. Tracked separately.
   summary.
 - Prior-art sources: §4.
 
-Last verified: 2026-06-17
+Last verified: 2026-07-12

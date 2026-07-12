@@ -108,9 +108,9 @@ def pair_env(loop_thread, monkeypatch):
              "volume_normalized": 0, "volume_restored": 0}
     monkeypatch.setattr(
         mstate, "read_grouping_state", lambda *a, **k: dict(LEADER_G))
-    monkeypatch.setattr(rooms, "_self_addresses",
+    monkeypatch.setattr(rooms, "self_addresses",
                         lambda: {"192.168.1.74"})
-    monkeypatch.setattr(rooms, "_discover_speakers_cached", lambda: [
+    monkeypatch.setattr(rooms, "discover_speakers_cached", lambda: [
         {"address": "192.168.1.92", "name": "jts3", "hostname": "jts3"},
     ])
     monkeypatch.setattr(
@@ -166,7 +166,7 @@ def pair_env(loop_thread, monkeypatch):
         calls["posted"].append((addr, dict(body), token))
         return True, "HTTP 200"
 
-    monkeypatch.setattr(rooms, "_post_grouping_to_member", fake_post)
+    monkeypatch.setattr(rooms, "post_grouping_to_member", fake_post)
 
     def schedule(coro):
         fut = asyncio.run_coroutine_threadsafe(coro, loop_thread)
@@ -276,7 +276,7 @@ def test_start_rejects_follower(pair_env, monkeypatch):
 
 
 def test_start_rejects_ambiguous_peers(pair_env, monkeypatch):
-    monkeypatch.setattr(rooms, "_discover_speakers_cached", lambda: [
+    monkeypatch.setattr(rooms, "discover_speakers_cached", lambda: [
         {"address": "192.168.1.92", "name": "jts3", "hostname": "jts3"},
         {"address": "192.168.1.162", "name": "jts4", "hostname": "jts4"},
     ])
@@ -610,7 +610,7 @@ def test_apply_partial_failure_reports_and_stops(pair_env, monkeypatch):
     def fail_post(addr, body, known=None, *, token=None):
         return False, "connection refused"
 
-    monkeypatch.setattr(rooms, "_post_grouping_to_member", fail_post)
+    monkeypatch.setattr(rooms, "post_grouping_to_member", fail_post)
     payload, status = balance_flow.handle_apply(FakeHandler())
     assert status == 502 and not payload["ok"]
     assert len(payload["writes"]) == 1  # stopped at the first failure
@@ -655,7 +655,7 @@ def test_start_with_roster_survives_foreign_bond_claimer(
         mstate, "read_grouping_state",
         lambda *a, **k: dict(LEADER_G, peer_addr="192.168.1.92",
                              peer_name="jts3"))
-    monkeypatch.setattr(rooms, "_discover_speakers_cached", lambda: [
+    monkeypatch.setattr(rooms, "discover_speakers_cached", lambda: [
         {"address": "192.168.1.92", "name": "jts3", "hostname": "jts3"},
         {"address": "192.168.1.162", "name": "jts4", "hostname": "jts4"},
     ])

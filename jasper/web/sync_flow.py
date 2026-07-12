@@ -303,12 +303,12 @@ def handle_apply(handler) -> tuple[dict, int]:
     fails the apply outright.
     """
     from .rooms_setup import (
-        _post_grouping_to_member,
-        _request_control_token,
-        _self_addresses,
+        post_grouping_to_member,
+        request_control_token,
+        self_addresses,
     )
 
-    token = _request_control_token(handler)
+    token = request_control_token(handler)
 
     with _lock:
         if _state["phase"] != "analyzed" or not _state["recommendation"]:
@@ -335,8 +335,8 @@ def handle_apply(handler) -> tuple[dict, int]:
         "left_delay_ms": rec["left_delay_ms"],
         "right_delay_ms": rec["right_delay_ms"],
     }
-    ok, detail = _post_grouping_to_member(
-        "", body, _self_addresses(), token=token)
+    ok, detail = post_grouping_to_member(
+        "", body, self_addresses(), token=token)
     if ok:
         with _lock:
             _state["phase"] = "applied"

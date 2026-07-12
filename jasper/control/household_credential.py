@@ -105,7 +105,7 @@ def is_paired() -> bool:
 def current() -> str:
     """The active household secret, or "" if none exists yet.
 
-    Public reader for the LEADER's fan-out (``_post_grouping_to_member`` attaches
+    Public reader for the LEADER's fan-out (``post_grouping_to_member`` attaches
     it as ``X-JTS-Household``) and for ``/state`` / doctor posture surfaces. Same
     read path as :func:`verify`, so the presented value and the verified value
     never disagree.

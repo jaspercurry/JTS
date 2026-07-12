@@ -1554,7 +1554,7 @@ pending.
 What the fan-out adds — and how each piece is now covered:
 
 - **The SSRF guard is a target restriction, not an auth layer — still true
-  and complementary.** `rooms_setup._post_grouping_to_member` (and the
+  and complementary.** `rooms_setup.post_grouping_to_member` (and the
   unbond fan-out) constrain cross-speaker POST/GET targets to **private or
   loopback IPv4** and reject bare hostnames — so the cross-speaker surface
   can never be aimed at an internet host (no internet-proxy / no
@@ -1729,7 +1729,7 @@ aggregator**: each sibling row links to that peer's own
 hostname-derived `http://<hostname>.local/system/` URL, so you configure
 each speaker on its own UI (sidesteps cross-Pi write/auth; home-LAN trust).
 The peer's raw LAN `address` remains in `/rooms.json` for server-side bond /
-swap / trim control calls, where `_lan_target` applies the SSRF guard; browser
+swap / trim control calls, where `lan_target` applies the SSRF guard; browser
 click-through URLs never fall back to raw IPs. Live refresh ships as a
 static ES module polling `GET /rooms.json` (mirror `system_setup.py`'s
 `/data.json`). Escape all untrusted strings (`room`, mDNS names,
@@ -1903,8 +1903,8 @@ front-run the complexity nor forget where it belongs.
 
 - **Cross-speaker peer-control client.** The HTTP-to-a-peer's-control-API
   pattern lives as two helpers in `jasper/web/rooms_setup.py`
-  (`_post_grouping_to_member`, `_get_member_grouping`) sharing the
-  `_lan_target` SSRF guard and the `_map_peers` bounded-concurrency primitive
+  (`post_grouping_to_member`, `_get_member_grouping`) sharing the
+  `lan_target` SSRF guard and the `_map_peers` bounded-concurrency primitive
   — the right size for two call sites. (Concurrency is already DRY: `_map_peers`
   is the one pool used by the POST fan-out AND the discovery GETs, so adding a
   client wouldn't re-derive it.) **Trigger to extract a `PeerControlClient`:**
@@ -2040,7 +2040,7 @@ control calls are IP-only by SSRF design) + JASPER_GROUPING_PEER_NAME
 /grouping/set with the trim_db contract (settable, validated,
 PRESERVED when omitted; explicit empty clears — non-leader bond bodies
 clear so a role flip can't keep a stale roster).
-rooms_setup._resolve_bond_peer is the ONE resolver (swap, trim,
+rooms_setup.resolve_bond_peer is the ONE resolver (swap, trim,
 balance, unbond): roster IP probe → if dead, re-find PEER_NAME in the
 live directory and accept the same-bond match at its new IP (logged
 event=rooms.peer_addr_drift) → else a HARD error naming the speaker —
@@ -2679,7 +2679,7 @@ one), SSRF-guarded to private/loopback IPv4. Builds on the prior `POST
 share one validator). Configuration is now fully automatic — no
 per-speaker tinkering; audio FLOWs once the leader forms (producer + tap),
 with sample-lock (§2 inv. 2) the honest "preview" gap. Coverage:
-`_post_grouping_to_member` SSRF/self-routing + `/bond`
+`post_grouping_to_member` SSRF/self-routing + `/bond`
 fan-out/partial-failure-502/bad-CSRF/empty-400 in
 `tests/test_web_rooms_setup.py`; §0/§6 + this footer updated. Earlier
 2026-06-09 (staff-review fixes): extracted shared
@@ -2760,7 +2760,9 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-07-11 (SS2 KNOWN GAP note on TTS-rides-synced-stream
+Last verified: 2026-07-12 (rooms package-shared public boundary, IPv4-only
+SSRF predicate, and shared peer GET transport rechecked). Prior 2026-07-11:
+SS2 KNOWN GAP note on TTS-rides-synced-stream
 annotated as pre-PR-2/resolved, cross-checked against SS0's PR-2-built
 status). Prior 2026-06-26 pass: `/rooms/` backend-owned stereo-pair intent,
 primary subwoofer-control hiding, ±24 dB UI balance range (reverted from ±6 dB after PR #1034; verified against `deploy/assets/rooms/js/grouping-view.js` `BALANCE_MIN_DB`/`BALANCE_MAX_DB`), and fresh

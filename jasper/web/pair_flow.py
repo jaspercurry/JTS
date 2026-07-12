@@ -23,9 +23,9 @@ def resolve_pair() -> tuple[dict | None, dict | None, str]:
     foreign bond claimant cannot poison pair measurement.
     """
     from .rooms_setup import (
-        _discover_speakers_cached,
-        _resolve_bond_peer,
-        _self_addresses,
+        discover_speakers_cached,
+        resolve_bond_peer,
+        self_addresses,
     )
     from ..multiroom.state import read_grouping_state
 
@@ -37,13 +37,13 @@ def resolve_pair() -> tuple[dict | None, dict | None, str]:
     if str(own.get("role") or "") != "leader":
         return None, None, "open this page on the pair leader"
 
-    known = _self_addresses()
-    addr, pg, perr = _resolve_bond_peer(own, known)
+    known = self_addresses()
+    addr, pg, perr = resolve_bond_peer(own, known)
     if perr:
         return None, None, f"pair {perr}"
     directory_row = next(
         (
-            r for r in _discover_speakers_cached()
+            r for r in discover_speakers_cached()
             if str(r.get("address") or "").strip() == addr
         ),
         {},

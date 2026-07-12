@@ -698,12 +698,12 @@ def handle_apply(handler) -> tuple[dict, int]:
     ``canonical_page``); relaying it keeps Apply working on a gate-armed
     speaker."""
     from .rooms_setup import (
-        _post_grouping_to_member,
-        _request_control_token,
-        _self_addresses,
+        post_grouping_to_member,
+        request_control_token,
+        self_addresses,
     )
 
-    token = _request_control_token(handler)
+    token = request_control_token(handler)
     with _lock:
         if _state["phase"] != "analyzed":
             return ({"ok": False,
@@ -712,7 +712,7 @@ def handle_apply(handler) -> tuple[dict, int]:
         members = _state["members"]
         rec = _state["recommendation"]
 
-    known = _self_addresses()
+    known = self_addresses()
     writes: dict[str, dict] = {}
     order = sorted(
         ("left", "right"), key=lambda ch: members[ch]["is_self"])
@@ -728,7 +728,7 @@ def handle_apply(handler) -> tuple[dict, int]:
             "leader_addr": str(g.get("leader_addr") or ""),
             "trim_db": rec[f"{ch}_trim_db"],
         }
-        ok, detail = _post_grouping_to_member(
+        ok, detail = post_grouping_to_member(
             m["addr"], body, known, token=token)
         writes[ch] = {"label": m["label"], "ok": ok,
                       "trim_db": rec[f"{ch}_trim_db"], "detail": detail}

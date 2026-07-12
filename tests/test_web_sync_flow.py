@@ -47,8 +47,8 @@ def analyzed(monkeypatch):
         captured.append({"addr": addr, "body": dict(body), "token": token})
         return True, "HTTP 200"
 
-    monkeypatch.setattr(rooms, "_post_grouping_to_member", fake_post)
-    monkeypatch.setattr(rooms, "_self_addresses", lambda: {"192.168.1.74"})
+    monkeypatch.setattr(rooms, "post_grouping_to_member", fake_post)
+    monkeypatch.setattr(rooms, "self_addresses", lambda: {"192.168.1.74"})
 
     with sync_flow._lock:
         sync_flow._state.update({
