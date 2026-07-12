@@ -728,7 +728,10 @@ async def test_user_change_bumps_last_used_at(tmp_path):
 # ---------- AirPlay camilla-master dispatch --------------------------------
 
 
-async def test_set_airplay_delegates_to_camilla(tmp_path, monkeypatch):
+async def test_set_airplay_delegates_to_camilla_without_subprocess(
+    tmp_path,
+    monkeypatch,
+):
     """Real _set_airplay path: use CamillaDSP as the reliable audible
     AirPlay volume surface, not shairport-sync DACP/DBus."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
@@ -738,12 +741,10 @@ async def test_set_airplay_delegates_to_camilla(tmp_path, monkeypatch):
         camilla=cam, persistence=persistence, backend=backend,
         spotify_router=None,
     )
-    async def fail_call(*args, **kwargs):
-        raise AssertionError("AirPlay should not call shairport DBus")
+    async def fail_spawn(*args, **kwargs):
+        raise AssertionError("AirPlay should not spawn a control subprocess")
 
-    monkeypatch.setattr(
-        "jasper.volume_coordinator._busctl_call_method", fail_call,
-    )
+    monkeypatch.setattr(vc_mod.asyncio, "create_subprocess_exec", fail_spawn)
 
     await coord._set_airplay(75)
 
