@@ -377,26 +377,7 @@ def _capture_to_magnitude(
     sample_rate = int(sweep_meta["sample_rate"])
     n_samples = int(sweep_meta["n_samples"])
 
-    captured, sr = sweep_mod.read_wav_mono(captured_wav)
-    # Bound the capture before assess + deconv (mirrors the /correction
-    # session path) so quality and the IR describe the same signal and an
-    # over-long capture can't drive the FFT to OOM on the 1 GB Pi.
-    raw_capture_samples = len(captured)
-    captured = deconv.cap_capture_length(
-        captured, sweep_len=n_samples, sample_rate=sr,
-    )
-    report = quality.assess_capture(
-        captured,
-        sample_rate=sr,
-        expected_sample_rate=sample_rate,
-        sweep_n_samples=n_samples,
-        has_mic_calibration=has_cal,
-        truncated_from_samples=raw_capture_samples,
-        quality_model=DRIVER,
-    )
-    if report.failed:
-        return report, None, None, None, None
-
+    raw_captured, sr = sweep_mod.read_wav_mono(captured_wav)
     reference, _ = sweep_mod.synchronized_swept_sine(
         f1=float(sweep_meta["f1"]),
         f2=float(sweep_meta["f2"]),
@@ -404,6 +385,85 @@ def _capture_to_magnitude(
         sample_rate=sample_rate,
         amplitude_dbfs=float(sweep_meta["amplitude_dbfs"]),
     )
+    raw_capture_samples = len(raw_captured)
+    truncated_from_samples = None
+    capture_crop_start = 0
+    ambient_source = None
+    robust_ambient_source = None
+    alignment = None
+    if ambient_duration_s is not None:
+        from scipy.signal import resample_poly
+        from jasper.capture_relay.alignment import assert_alignment_confident
+
+        # Locate across the full legal relay window at 16 kHz.  The largest
+        # correlation is <=2**20, then only the final <=2**21 full-rate crop is
+        # deconvolved on the 1 GB Pi.
+        from jasper.active_speaker.test_signal_plan import (
+            CROSSOVER_CAPTURE_LOCATOR_WINDOW_S,
+        )
+
+        locator_input, locator_crop_start = deconv.cap_capture_tail(
+            raw_captured,
+            sweep_len=len(reference),
+            sample_rate=sr,
+            max_capture_seconds=CROSSOVER_CAPTURE_LOCATOR_WINDOW_S,
+        )
+        down = max(1, int(round(sr / 16000)))
+        located_capture = resample_poly(locator_input, 1, down)
+        located_reference = resample_poly(reference, 1, down)
+        alignment = assert_alignment_confident(
+            located_capture,
+            located_reference,
+            sample_rate=int(round(sr / down)),
+            max_capture_s=60.0,
+        )
+        arrival_sample = locator_crop_start + int(round(alignment.lag_samples * down))
+        pre_guard = int(round(0.250 * sr))
+        tail = int(round(0.500 * sr))
+        signal_start = arrival_sample - pre_guard
+        signal_end = arrival_sample + len(reference) + tail
+        ambient_start = arrival_sample - len(reference) - int(round(1.000 * sr))
+        ambient_end = arrival_sample - pre_guard
+        controlled_start = arrival_sample - int(round(float(ambient_duration_s) * sr))
+        if (
+            signal_start < 0
+            or signal_end > len(raw_captured)
+            or ambient_start < max(0, controlled_start)
+            or ambient_end <= ambient_start
+            or signal_end - signal_start != ambient_end - ambient_start
+        ):
+            raise ValueError(
+                "signal-located crossover capture lacks the complete controlled "
+                "ambient, sweep, or tail window"
+            )
+        captured = raw_captured[signal_start:signal_end]
+        ambient_source = raw_captured[ambient_start:ambient_end]
+        robust_ambient_source = raw_captured[controlled_start:ambient_end]
+        capture_crop_start = signal_start
+    else:
+        captured = deconv.cap_capture_length(
+            raw_captured,
+            sweep_len=n_samples,
+            sample_rate=sr,
+        )
+        if len(captured) < raw_capture_samples:
+            truncated_from_samples = raw_capture_samples
+    report = quality.assess_capture(
+        captured,
+        sample_rate=sr,
+        expected_sample_rate=sample_rate,
+        sweep_n_samples=n_samples,
+        has_mic_calibration=has_cal,
+        # The relay path intentionally selects equal-length signal and quiet
+        # evidence from a longer recording; that is not the memory-bound
+        # truncation this quality issue describes.  Only report a truncation
+        # when cap_capture_length actually discarded a tail.
+        truncated_from_samples=truncated_from_samples,
+        quality_model=DRIVER,
+    )
+    if report.failed:
+        return report, None, None, None, None
+
     full_signal_ir = deconv.regularized_deconvolution_full(
         captured.astype(np.float64),
         reference.astype(np.float64),
@@ -415,31 +475,9 @@ def _capture_to_magnitude(
     )
     ir = deconv.apply_arrival_window(full_signal_ir, arrival_window)
     noise_ir = None
-    ambient_source = None
-    if ambient_duration_s is not None:
-        ambient_count = int(round(float(ambient_duration_s) * sr))
-        if ambient_count < len(reference) or ambient_count + len(reference) > len(captured):
-            raise ValueError(
-                "stored ambient must cover the sweep and precede its full capture"
-            )
-        ambient_source = captured[:ambient_count]
-        # Stationary counterfactual noise during playback. The phone begins
-        # recording before it posts ``armed``; relay/poll latency means the true
-        # sweep start is NOT ``ambient_count`` samples into the WAV. Repeat the
-        # measured ambient across the whole capture instead of guessing that
-        # unobservable boundary (or zero-padding around it). The signal's
-        # deconvolved direct-arrival sample is the observable alignment marker:
-        # restart the stored stationary sample there so the same arrival window
-        # samples ambient at the actual signal-derived location. Signal/noise
-        # still traverse the same inverse filter and reflection gate.
-        if not 0 <= arrival_peak_idx < len(captured):
-            raise ValueError("signal arrival is outside the captured WAV")
-        ambient_indices = (
-            np.arange(len(captured), dtype=np.int64) - arrival_peak_idx
-        ) % len(ambient_source)
-        noise_capture = ambient_source[ambient_indices].astype(np.float64)
+    if ambient_source is not None:
         full_noise_ir = deconv.regularized_deconvolution_full(
-            noise_capture,
+            ambient_source.astype(np.float64),
             reference.astype(np.float64),
             sample_rate=sr,
         )
@@ -485,21 +523,26 @@ def _capture_to_magnitude(
         from jasper.audio_measurement import snr_policy
 
         noise_bands = snr_policy.magnitude_band_levels(noise_freqs, noise_smoothed)
-        robust = snr_policy.ambient_band_report(ambient_source, sr)
-        raw_mean = snr_policy.band_levels_dbfs(
-            ambient_source[:len(reference)],
+        robust = snr_policy.framed_ambient_band_report(
+            robust_ambient_source,
             sr,
-            snr_policy.CROSSOVER_SNR_BANDS_HZ,
+            percentile=95,
+        )
+        baseline = snr_policy.framed_ambient_band_report(
+            ambient_source,
+            sr,
+            percentile=50,
         )
         robust_by_id = {item["band_id"]: item for item in robust["bands"]}
-        mean_by_id = {item["band_id"]: item for item in raw_mean}
+        baseline_by_id = {item["band_id"]: item for item in baseline["bands"]}
         adjusted = []
         for item in noise_bands:
             robust_item = robust_by_id.get(item["band_id"])
-            mean_item = mean_by_id.get(item["band_id"])
+            baseline_item = baseline_by_id.get(item["band_id"])
             delta = (
-                float(robust_item["level_dbfs"]) - float(mean_item["level_dbfs"])
-                if robust_item is not None and mean_item is not None
+                float(robust_item["level_dbfs"])
+                - float(baseline_item["level_dbfs"])
+                if robust_item is not None and baseline_item is not None
                 else 0.0
             )
             adjusted.append({
@@ -510,18 +553,31 @@ def _capture_to_magnitude(
             "schema_version": 2,
             "domain": "deconvolved",
             "method": "paired_signal_window_deconvolution",
-            "ambient_duration_s": round(len(ambient_source) / sr, 3),
+            "ambient_duration_s": round(float(ambient_duration_s), 3),
+            "selected_quiet_duration_s": round(len(ambient_source) / sr, 3),
             "bands": adjusted,
             "raw_robust": robust,
+            "raw_baseline": baseline,
             "source": {
-                "kind": "capture_prefix",
-                "start_s": 0.0,
-                "end_s": round(len(ambient_source) / sr, 3),
+                "kind": "signal_bounded_pre_sweep_quiet",
+                "start_sample": ambient_start,
+                "end_sample": ambient_end,
+                "start_s": round(ambient_start / sr, 6),
+                "end_s": round(ambient_end / sr, 6),
+                "analysis_crop_start_sample": capture_crop_start,
+                "located_sweep_start_sample": arrival_sample,
+                "direct_arrival_sample": capture_crop_start + arrival_peak_idx,
+                "pre_arrival_guard_ms": 250.0,
+                "locator_sample_rate_hz": int(round(sr / down)),
+                "locator_crop_start_sample": locator_crop_start,
+                "locator_confidence": round(alignment.confidence, 6),
+                "locator_peak": round(alignment.peak, 6),
             },
             "operator": {
                 "deconvolution": "regularized_fft_inverse",
                 "arrival_window_source": "signal",
-                "ambient_alignment_source": "signal_direct_arrival",
+                "ambient_alignment_source": "signal_direct_arrival_minus_guard",
+                "robust_delta": "one_second_p95_minus_one_second_p50",
                 "reflection_gate_source": (
                     "signal" if capture_geometry == "reference_axis" else None
                 ),
@@ -737,7 +793,7 @@ def analyze_driver_capture(
     ``noise_band_report`` is an optional band-specific ambient-noise report:
     either the legacy correction-shape
     ``[{band_id, band_hz, level_dbfs}, ...]`` list, or a domain-tagged
-    ``{domain, method, bands}`` report from the stored ambient prefix. When
+    ``{domain, method, bands}`` report from the controlled pre-sweep quiet crop. When
     supplied, the SC-1 magnitude-class SNR verdict block
     (:func:`jasper.audio_measurement.snr_policy.band_snr_verdicts`) is
     computed and stored on the result's ``snr`` field, scoped to

@@ -91,6 +91,35 @@ def cap_capture_length(
     return captured[:max_samples]
 
 
+def cap_capture_tail(
+    captured: np.ndarray,
+    *,
+    sweep_len: int,
+    sample_rate: int,
+    max_capture_seconds: float,
+) -> tuple[np.ndarray, int]:
+    """Retain a bounded capture tail and return its source start offset.
+
+    Relay capture starts before an unbounded network/setup wait but stops just
+    after the sweep.  Crossover analysis therefore needs the tail, unlike the
+    generic :func:`cap_capture_length` contract whose existing callers retain
+    the beginning.  The returned offset makes persisted crop provenance exact.
+    """
+
+    if max_capture_seconds <= 0 or sample_rate <= 0:
+        return captured, 0
+    max_samples = max(sweep_len, int(round(max_capture_seconds * sample_rate)))
+    if len(captured) <= max_samples:
+        return captured, 0
+    start = len(captured) - max_samples
+    logger.warning(
+        "deconv: retaining final %d of %d samples for relay sweep analysis",
+        max_samples,
+        len(captured),
+    )
+    return captured[start:], start
+
+
 def regularized_deconvolution_full(
     captured: np.ndarray,
     sweep: np.ndarray,

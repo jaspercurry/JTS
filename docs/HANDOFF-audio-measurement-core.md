@@ -145,22 +145,28 @@ The product is three tiers:
   already there — that's why the refactor is low-risk.
 - **Active-crossover repeat + SNR controller (2026-07-12).** The protected
   level probe now owns only a safe, non-clipping playback level. Each driver
-  measurement records a 13-second silent ambient prefix followed by a
+  measurement holds a 14-second controlled quiet interval followed by a
   role-sized ESS (woofer/subwoofer 12 s, midrange 8 s, tweeter 4 s), and
   compares deconvolved sweep-band magnitude against ambient passed through
   the same regularized inverse, signal-owned arrival window/reflection gate,
   and calibration domain (ambient noise never selects its own IR argmax).
-  Because the phone records before posting `armed`, the true sweep is not at
-  `ambient_duration_s`; the counterfactual is tiled and phase-aligned at the
-  signal's measured direct-arrival sample, never a guessed transport boundary.
+  Because the phone records before posting `armed`, a bounded 16 kHz locator
+  finds the sweep after relay latency. Separate, real, equal-length full-rate
+  signal and quiet crops traverse the same inverse and signal-owned gate; there
+  is no guessed prefix, tiling, or zero padding.
   The normal path collects three exact-position repeats,
   keeps their WAVs and acceptance evidence, and writes one durable driver
   measurement only after the shared repeat aggregator accepts at least two;
   one bounded fourth attempt is allowed. Repeat state is scoped by comparison
-  set plus immutable target fingerprint and compactly persisted in the bundle;
-  a service restart preserves the bounded attempts and marks the orphaned set
-  aborted rather than silently restarting at one; the envelope requires a new
-  level check before another capture. A new setup cannot inherit it.
+  set plus immutable target fingerprint and atomically persisted before audio
+  by `active_speaker.repeat_admission`; bundles remain optional forensics. A
+  service restart preserves the bounded attempts: the single-process startup
+  claim marks an old active set aborted rather than silently restarting at one,
+  while an uncertain `ready` final write remains blocked. In either case the
+  envelope requires a new level check before another capture or automatic
+  apply. A new setup cannot inherit it. If attempt four fails in transport but
+  two prior deconvolved captures were accepted, the same shared finalizer keeps
+  them at reduced confidence; fewer than two refuses the set.
   This closes the prior live-hardware `acoustic.snr: null` path without making
   the probe's raw RMS an acoustic SNR verdict.
 
@@ -439,7 +445,7 @@ one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
    do not create a measurement record, so the envelope stays on the same driver
    and advances its repeat count. The final record uses the repeat kernel's
    median representative and aggregate spread. Its band SNR compares the
-   deconvolved sweep against the stored ambient prefix after the same
+   deconvolved sweep against the signal-bounded controlled quiet crop after the same
    signal-owned direct-arrival alignment, linear windows, and calibration
    domain; 25/20 dB magnitude
    pass/warn policy remains authoritative. Fewer

@@ -96,7 +96,7 @@ async def play_sweep(
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(), timeout=timeout_s,
         )
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
         # Don't leave a runaway aplay attached to the loopback —
         # would block the next measurement until the kernel reaped
         # it.
@@ -105,6 +105,8 @@ async def play_sweep(
         except ProcessLookupError:
             pass
         await proc.wait()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         raise SweepPlaybackError(
             f"aplay timed out after {timeout_s} s playing {wav_path}"
         )

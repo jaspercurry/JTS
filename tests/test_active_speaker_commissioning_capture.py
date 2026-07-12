@@ -1045,6 +1045,42 @@ def test_aggregate_rejects_below_validity_floor_when_lane_a_block_present():
     assert result["accepted"] == 2
 
 
+def test_aggregate_woofer_bad_bottom_band_keeps_good_required_overlap():
+    repeat = _repeat(-30.0, snr_verdict="insufficient")
+    repeat["acoustic"]["overlap_levels"] = [
+        {
+            "fc_hz": 800.0,
+            "usable": True,
+            "snr_verdict": "ok",
+            "above_validity_floor": True,
+        }
+    ]
+    result = aggregate_driver_repeats([repeat])
+    assert result["accepted"] == 1
+    assert result["per_repeat"][0]["reject_reason"] is None
+
+
+def test_aggregate_three_way_mid_accepts_one_of_two_usable_handoffs():
+    repeat = _repeat(-30.0, snr_verdict="insufficient")
+    repeat["acoustic"]["overlap_levels"] = [
+        {
+            "fc_hz": 250.0,
+            "usable": False,
+            "snr_verdict": "insufficient",
+            "above_validity_floor": False,
+        },
+        {
+            "fc_hz": 2400.0,
+            "usable": True,
+            "snr_verdict": "reduced",
+            "above_validity_floor": True,
+        },
+    ]
+    result = aggregate_driver_repeats([repeat])
+    assert result["accepted"] == 1
+    assert result["per_repeat"][0]["above_validity_floor"] is True
+
+
 def test_aggregate_reads_real_driver_overlap_validity_shape_with_partial_pass():
     below = _repeat(-30.1)
     below["acoustic"]["overlap_levels"] = [
@@ -1058,7 +1094,7 @@ def test_aggregate_reads_real_driver_overlap_validity_shape_with_partial_pass():
 
     result = aggregate_driver_repeats([_repeat(-30.0), below, partial])
 
-    assert result["per_repeat"][1]["reject_reason"] == "below_validity_floor"
+    assert result["per_repeat"][1]["reject_reason"] == "no_usable_overlap"
     assert result["per_repeat"][1]["above_validity_floor"] is False
     assert result["per_repeat"][2]["reject_reason"] is None
     assert result["per_repeat"][2]["above_validity_floor"] is True

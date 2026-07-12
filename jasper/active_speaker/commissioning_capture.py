@@ -1102,26 +1102,31 @@ def _repeat_reject_reason(
 
     if verdict in (None, VERDICT_UNUSABLE_CAPTURE):
         return "unusable_capture"
-    snr = acoustic.get("snr")
-    snr_verdict = snr.get("verdict") if isinstance(snr, Mapping) else None
-    if snr_verdict in _REPEAT_REJECT_SNR_VERDICTS:
-        return f"snr_{snr_verdict}"
     if bool(acoustic.get("mic_clipping")):
         return "clipping"
     gating = acoustic.get("gating")
     if isinstance(gating, Mapping) and gating.get("above_validity_floor") is False:
         return "below_validity_floor"
-    overlap_floor_evidence = [
-        entry.get("above_validity_floor")
+    overlap_entries = [
+        entry
         for entry in acoustic.get("overlap_levels") or ()
         if isinstance(entry, Mapping)
-        and isinstance(entry.get("above_validity_floor"), bool)
     ]
-    if overlap_floor_evidence and not any(overlap_floor_evidence):
-        # Real DriverAcousticResult producer shape: validity is per crossover
-        # overlap entry, not a synthetic top-level gating boolean. Preserve
-        # partial-pass behavior when at least one region remains above floor.
-        return "below_validity_floor"
+    if overlap_entries:
+        # A woofer's unusable bottom octave or a 3-way mid's unusable lower
+        # handoff must not veto a clean required overlap at the other edge.
+        # ``usable`` is the analyzer-owned conjunction of bins, local SNR,
+        # clipping and validity floor. Reject only when no topology overlap can
+        # support the trim decision.
+        if not any(entry.get("usable") is True for entry in overlap_entries):
+            return "no_usable_overlap"
+    else:
+        # Legacy/fabricated analyzers without topology overlap entries retain
+        # the coarse whole-passband SNR behavior.
+        snr = acoustic.get("snr")
+        snr_verdict = snr.get("verdict") if isinstance(snr, Mapping) else None
+        if snr_verdict in _REPEAT_REJECT_SNR_VERDICTS:
+            return f"snr_{snr_verdict}"
     if level_dbfs is None:
         return "level_unavailable"
     if (
@@ -1206,6 +1211,7 @@ def aggregate_driver_repeats(
         )
         per_repeat.append({
             "index": index,
+            "attempt": int(item.get("attempt") or index + 1),
             "verdict": verdict,
             "accepted": accepted,
             "reject_reason": reason,

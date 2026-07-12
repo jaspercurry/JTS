@@ -1058,15 +1058,6 @@ def test_repeat_progress_is_compact_bounded_and_durable(tmp_path: Path) -> None:
     reloaded = bundles._read_info(bundle_dir)["repeat_progress"]["mono:woofer"]
     assert reloaded == entry
 
-    aborted = bundles.abort_active_repeat_progress(
-        bundle_dir,
-        comparison_set_id="c" * 32,
-        reason="correction_service_restarted",
-    )
-    assert aborted["mono:woofer"]["status"] == "aborted"
-    assert aborted["mono:woofer"]["reason"] == "correction_service_restarted"
-    assert aborted["mono:woofer"]["attempts"] == 4
-
 def test_append_repeat_capture_rejects_missing_source(
     tmp_path: Path, caplog
 ) -> None:

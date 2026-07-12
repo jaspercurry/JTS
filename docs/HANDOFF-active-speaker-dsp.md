@@ -159,8 +159,9 @@
 > per-driver signal plan (12 s woofer/subwoofer, 8 s midrange, 4 s tweeter;
 > one sweep definition; the deconv
 > reference is always regenerated from the played `sweep_meta`, so the phone is a
-> pure recorder). Each driver recording begins with a 13-second silent ambient
-> prefix; the phone's hard deadline is 45 s and the Pi's `sweep_complete` event
+> pure recorder). Each driver recording includes a 14-second controlled quiet
+> interval before playback; a signal locator excludes pre-armed audio. The
+> phone's hard deadline is 45 s and the Pi's `sweep_complete` event
 > remains the normal stop. The safe probe owns only non-clipping level. The
 > deconvolved per-band sweep-versus-ambient verdict and the server-owned
 > three-repeat aggregator own evidence admission; one bounded fourth attempt is
@@ -751,11 +752,11 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    path, open the protected playback window, play an ESS sweep through the
    production fan-in lane, capture the phone mic in the HTTPS browser flow with
    [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js),
-   submit the bounded WAV to `/driver-capture`, analyze with
+   return the bounded WAV through `/correction/crossover/relay-capture`, analyze with
    `active_speaker.driver_acoustics.analyze_driver_capture`, and record via
    `commissioning_capture.record_driver_acoustic_capture` →
    `measurement.record_driver_measurement`. Advance per driver; then run the
-   combined-driver test, submit `/summed-capture`
+   combined-driver test, submit the summed relay leg
    (`analyze_summed_crossover`), and freeze the commissioned config as the
    durable profile (`baseline_profile.*`) when the measurement gates are
    complete. The server/core path above is covered with synthetic capture fixtures;

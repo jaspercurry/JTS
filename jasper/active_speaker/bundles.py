@@ -70,6 +70,7 @@ from jasper.output_topology import OutputTopology
 
 from . import measurement as _measurement
 from .capture_geometry import DRIVER_PLACEMENT_POLICY_ID
+from .test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ SESSIONS_DIR_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR"
 # Mirrors jasper.active_speaker.web_measurement.MAX_CAPTURE_WAV_BYTES — the
 # browser capture store's own cap. A bundle copy is never larger than the
 # capture it was made from, so the same ceiling bounds the copy.
-MAX_CAPTURE_WAV_BYTES = 3 * 1024 * 1024
+MAX_CAPTURE_WAV_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 DEFAULT_SESSIONS_MAX_BYTES = 256 * 1024 * 1024
 SESSIONS_MAX_BYTES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BYTES"
@@ -729,11 +730,11 @@ def record_repeat_progress(
     """Persist compact, comparison-bound interim repeat state.
 
     Raw WAVs and full analyses remain manifest artifacts. ``info.json`` keeps
-    only the bounded-four controller state needed to diagnose or explicitly
-    abort an interrupted process after restart.
+    only a forensic mirror of the authoritative admission ledger so a session
+    can be diagnosed without making bundle state a playback controller.
     """
 
-    if status not in {"active", "completed", "refused", "aborted"}:
+    if status not in {"active", "completed", "refused"}:
         raise BundleError("repeat progress status is invalid")
     info = _read_info(bundle_dir)
     progress = dict(info.get("repeat_progress") or {})
@@ -751,6 +752,7 @@ def record_repeat_progress(
                 key: item.get(key)
                 for key in (
                     "index",
+                    "attempt",
                     "accepted",
                     "reject_reason",
                     "artifact_path",
@@ -774,48 +776,6 @@ def record_repeat_progress(
     })
     return entry
 
-
-@_fail_soft("abort_active_repeat_progress")
-def abort_active_repeat_progress(
-    bundle_dir: Path,
-    *,
-    comparison_set_id: str,
-    reason: str,
-    target_fingerprints: set[str] | None = None,
-) -> dict[str, dict[str, Any]] | None:
-    """Durably invalidate selected active repeats orphaned by a restart."""
-
-    info = _read_info(bundle_dir)
-    progress = dict(info.get("repeat_progress") or {})
-    aborted: dict[str, dict[str, Any]] = {}
-    for target_id, raw in progress.items():
-        if not isinstance(raw, Mapping):
-            continue
-        if (
-            raw.get("status") != "active"
-            or raw.get("comparison_set_id") != comparison_set_id
-            or (
-                target_fingerprints is not None
-                and str(raw.get("target_fingerprint") or "")
-                not in target_fingerprints
-            )
-        ):
-            continue
-        entry = {
-            **dict(raw),
-            "status": "aborted",
-            "reason": str(reason),
-            "updated_at": time.time(),
-        }
-        progress[str(target_id)] = entry
-        aborted[str(target_id)] = entry
-    if aborted:
-        _write_info(bundle_dir, {
-            **info,
-            "repeat_progress": progress,
-            "updated_at": time.time(),
-        })
-    return aborted
 
 
 def _plain(value: Any) -> dict[str, Any] | None:

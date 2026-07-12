@@ -37,20 +37,23 @@
 > records a passive noise-floor window before the Pi plays anything, and the Pi
 > publishes `sweep_complete` so the phone stops from real sweep progress rather
 > than a fixed timer.
-> The crossover kind additionally records a 13-second silent ambient prefix
+> The crossover kind additionally holds a 14-second controlled quiet interval
 > before every role-sized ESS and carries the entire raw WAV back to the Pi.
-> The Pi runs the sweep and stored ambient through the same regularized inverse,
+> A bounded signal locator selects separate, real, equal-length signal and
+> quiet crops after relay latency. The Pi runs both through the same regularized inverse,
 > applies the signal-owned arrival window and reflection gate to both (ambient
 > noise never chooses its own random argmax), applies the same calibration
-> domain, and aligns the tiled ambient counterfactual at the signal-derived
-> direct arrival rather than assuming the sweep begins exactly after the Pi's
-> ambient sleep (the phone began recording before `armed`). It admits driver evidence through the
+> domain. It never guesses a prefix, tiles noise, zero-pads a counterfactual,
+> or lets noise select an IR argmax. It admits driver evidence through the
 > three-repeat kernel (one bounded fourth try; at least two accepted). The
 > protected level ramp therefore sets playback headroom only and never supplies
-> the acoustic SNR verdict. The capture page defaults a newly selected UMIK-2
-> to the correct miniDSP UMIK-2 vendor-serial calibration mode instead of “No
-> calibration.” Browser device labels do not reliably expose the serial, so the
-> operator still enters it once; after validation, the existing
+> the acoustic SNR verdict. An authenticated phone-activity watchdog covers the
+> full quiet interval and playback: backgrounding or an expired recorder
+> cancels the host task, kills/reaps `aplay`, and completes volume rollback
+> before household audio resumes. Selecting a UMIK-2 preselects the UMIK-2 model only;
+> it does not auto-match a calibration. Browser labels do not reliably expose
+> the serial, so the operator enters it and explicitly validates the vendor
+> calibration once; after validation, the existing
 > Pi-side bound setup carries that calibration into later
 > driver legs without placing the raw serial in browser storage.
 >
@@ -687,7 +690,7 @@ pairing proof, not a guess based on the Pages dashboard.
 ---
 
 Last updated: 2026-07-12 — active-crossover capture now uses role-sized sweeps,
-a stored ambient prefix, paired-window deconvolved per-band SNR, and the
+a signal-bounded controlled quiet crop, paired-window deconvolved per-band SNR, and the
 server-owned three-repeat admission loop; selecting a UMIK-2 preselects only
 the miniDSP UMIK-2 model/mode. Browser labels do not contain a trustworthy
 serial, so the operator must still enter and validate it once; there is no

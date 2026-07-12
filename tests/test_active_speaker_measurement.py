@@ -1099,7 +1099,8 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
     assert latest is record
     assert latest["repeats"]["repeat_group_id"] == aggregate["repeat_group_id"]
 
-    # Per-repeat evidence is index-only (verdict/accepted/reject_reason/
+    # Per-repeat evidence is compact index/authoritative-attempt metadata
+    # (verdict/accepted/reject_reason/
     # artifact_path/...) -- no full acoustic curves for the non-winning
     # repeats leak into measurement state; that lives only in the bundle.
     for entry in record["repeats"]["per_repeat"]:
@@ -1107,6 +1108,7 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
         assert "fr_curve" not in entry
         assert set(entry) == {
             "index",
+            "attempt",
             "verdict",
             "accepted",
             "reject_reason",

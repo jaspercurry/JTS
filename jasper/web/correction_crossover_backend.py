@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import threading
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from jasper.active_speaker import web_commissioning, web_measurement
@@ -58,6 +60,7 @@ class CrossoverLevelLease:
         # the immutable comparison set and driver target.  Nothing from one
         # level/profile context can be paired with another.
         self._repeat_sessions: dict[tuple[str, str], dict[str, Any]] = {}
+        self._repeat_lock = threading.RLock()
         self._repeat_failures: dict[str, dict[str, Any]] = {}
         self._durable_repeat_progress: dict[str, Any] = {}
 
@@ -365,41 +368,137 @@ class CrossoverLevelLease:
         *,
         target_id: str,
         item: Mapping[str, Any],
+        attempt: int | None = None,
     ) -> list[dict[str, Any]]:
-        session = self._repeat_sessions.setdefault(
-            key,
-            {"target_id": target_id, "items": []},
-        )
-        if session.get("target_id") != target_id:
-            raise RuntimeError("crossover repeat target changed during capture")
-        session["items"].append(dict(item))
-        self._repeat_failures.pop(target_id, None)
-        return list(session["items"])
+        with self._repeat_lock:
+            session = self._repeat_sessions.setdefault(
+                key,
+                {"target_id": target_id, "items": {}},
+            )
+            if session.get("target_id") != target_id:
+                raise RuntimeError("crossover repeat target changed during capture")
+            items = session["items"]
+            index = int(attempt) if attempt is not None else len(items) + 1
+            if not 1 <= index <= 4 or index in items:
+                raise RuntimeError("crossover repeat attempt is duplicate or out of bounds")
+            items[index] = dict(item)
+            self._repeat_failures.pop(target_id, None)
+            return [dict(items[key]) for key in sorted(items)]
 
     def driver_repeats(self, key: tuple[str, str]) -> list[dict[str, Any]]:
-        session = self._repeat_sessions.get(key) or {}
-        return list(session.get("items") or [])
+        with self._repeat_lock:
+            session = self._repeat_sessions.get(key) or {}
+            items = session.get("items") or {}
+            return [dict(items[index]) for index in sorted(items)]
 
     def clear_driver_repeats(self, key: tuple[str, str]) -> None:
-        self._repeat_sessions.pop(key, None)
+        with self._repeat_lock:
+            self._repeat_sessions.pop(key, None)
+
+    @contextmanager
+    def repeat_transaction(self):
+        """Serialize aggregate decisions after durable attempt reservation."""
+
+        with self._repeat_lock:
+            yield
 
     def record_repeat_failure(
         self, target_id: str, payload: Mapping[str, Any]
     ) -> None:
-        self._repeat_failures[target_id] = dict(payload)
+        with self._repeat_lock:
+            self._repeat_failures[target_id] = dict(payload)
 
     def repeat_failure(self, target_id: str) -> dict[str, Any] | None:
-        failure = self._repeat_failures.get(target_id)
-        return dict(failure) if failure is not None else None
+        with self._repeat_lock:
+            failure = self._repeat_failures.get(target_id)
+            return dict(failure) if failure is not None else None
 
     def active_repeat_bindings(self) -> set[tuple[str, str]]:
-        return set(self._repeat_sessions)
+        with self._repeat_lock:
+            return set(self._repeat_sessions)
 
     def set_durable_repeat_progress(self, payload: Mapping[str, Any]) -> None:
-        self._durable_repeat_progress = dict(payload)
-        for target_id, failure in (payload.get("failures") or {}).items():
-            if isinstance(failure, Mapping):
-                self._repeat_failures[str(target_id)] = dict(failure)
+        def public_result(value: Any) -> dict[str, Any]:
+            if not isinstance(value, Mapping):
+                return {}
+            return {
+                key: value.get(key)
+                for key in (
+                    "attempt",
+                    "accepted",
+                    "reject_reason",
+                    "failure_type",
+                    "estimated_snr_db",
+                    "snr_verdict",
+                    "worst_band_id",
+                    "snr_shortfall_db",
+                    "clipping",
+                    "above_validity_floor",
+                    "validity_floor_hz",
+                    "phase",
+                )
+                if value.get(key) is not None
+            }
+
+        def public_entry(value: Any) -> dict[str, Any]:
+            if not isinstance(value, Mapping):
+                return {}
+            return {
+                "target_id": value.get("target_id"),
+                "target_fingerprint": value.get("target_fingerprint"),
+                "attempts": value.get("attempts"),
+                "status": value.get("status"),
+                # Boolean state is enough for orphan detection; the unguessable
+                # completion token and process owner never belong in /status.
+                "inflight": bool(value.get("inflight")),
+                "results": [
+                    public_result(item) for item in value.get("results") or ()
+                ],
+                "reason": value.get("reason"),
+                "updated_at": value.get("updated_at"),
+            }
+
+        with self._repeat_lock:
+            raw_targets = payload.get("targets") or {}
+            raw_targets = raw_targets if isinstance(raw_targets, Mapping) else {}
+            public_targets = {
+                str(target_id): public_entry(entry)
+                for target_id, entry in raw_targets.items()
+                if isinstance(entry, Mapping)
+            }
+            comparison = payload.get("comparison")
+            self._durable_repeat_progress = {
+                "schema_version": payload.get("schema_version"),
+                "kind": payload.get("kind"),
+                "status": payload.get("status"),
+                "comparison": (
+                    {
+                        "comparison_set_id": comparison.get("comparison_set_id"),
+                        "fingerprint": comparison.get("fingerprint"),
+                    }
+                    if isinstance(comparison, Mapping)
+                    else None
+                ),
+                "targets": public_targets,
+                "updated_at": payload.get("updated_at"),
+            }
+            raw_failures = payload.get("failures") or {}
+            raw_failures = (
+                raw_failures if isinstance(raw_failures, Mapping) else {}
+            )
+            failures = {
+                str(target_id): public_entry(entry)
+                for target_id, entry in raw_failures.items()
+                if isinstance(entry, Mapping)
+            }
+            for target_id, entry in public_targets.items():
+                if isinstance(entry, Mapping) and entry.get("status") in {
+                    "aborted", "refused"
+                }:
+                    failures[str(target_id)] = dict(entry)
+            for target_id, failure in failures.items():
+                if isinstance(failure, Mapping):
+                    self._repeat_failures[str(target_id)] = dict(failure)
 
     def repeat_snapshot(self) -> dict[str, Any]:
         from jasper.active_speaker.commissioning_capture import (
@@ -407,23 +506,69 @@ class CrossoverLevelLease:
             aggregate_driver_repeats,
         )
 
-        targets: dict[str, Any] = {}
-        for (comparison_set_id, target_fingerprint), session in self._repeat_sessions.items():
-            items = list(session.get("items") or [])
-            aggregate = aggregate_driver_repeats(items, target=DEFAULT_REPEAT_TARGET)
-            targets[str(session.get("target_id") or "")] = {
-                "comparison_set_id": comparison_set_id,
-                "target_fingerprint": target_fingerprint,
-                "attempts": len(items),
-                "accepted": aggregate["accepted"],
-                "target": DEFAULT_REPEAT_TARGET,
-                "needed_recapture": aggregate["needed_recapture"],
+        from jasper.active_speaker.repeat_admission import MAX_ATTEMPTS
+
+        with self._repeat_lock:
+            targets: dict[str, Any] = {}
+            for (
+                comparison_set_id,
+                target_fingerprint,
+            ), session in self._repeat_sessions.items():
+                item_map = session.get("items") or {}
+                items = [dict(item_map[index]) for index in sorted(item_map)]
+                aggregate = aggregate_driver_repeats(
+                    items, target=DEFAULT_REPEAT_TARGET
+                )
+                targets[str(session.get("target_id") or "")] = {
+                    "comparison_set_id": comparison_set_id,
+                    "target_fingerprint": target_fingerprint,
+                    "attempts": len(items),
+                    "accepted": aggregate["accepted"],
+                    "target": DEFAULT_REPEAT_TARGET,
+                    "needed_recapture": aggregate["needed_recapture"],
+                }
+
+            # Playback admission is the authority for attempts, including
+            # captures that failed in transport before acoustic analysis.  Use
+            # its ledger for user-facing counts so the UI cannot promise a
+            # fifth attempt while the safety gate correctly refuses one.
+            durable_targets = self._durable_repeat_progress.get("targets") or {}
+            for target_id, raw in durable_targets.items():
+                if not isinstance(raw, Mapping):
+                    continue
+                entry = dict(raw)
+                results = [
+                    result
+                    for result in entry.get("results") or ()
+                    if isinstance(result, Mapping)
+                ]
+                attempts = int(entry.get("attempts") or 0)
+                accepted = sum(
+                    1 for result in results if result.get("accepted") is True
+                )
+                displayed = dict(targets.get(str(target_id)) or {})
+                displayed.update({
+                    "comparison_set_id": (
+                        self._durable_repeat_progress.get("comparison") or {}
+                    ).get("comparison_set_id"),
+                    "target_fingerprint": entry.get("target_fingerprint"),
+                    "attempts": attempts,
+                    "accepted": accepted,
+                    "target": DEFAULT_REPEAT_TARGET,
+                    "needed_recapture": (
+                        entry.get("status") == "active"
+                        and attempts < MAX_ATTEMPTS
+                        and accepted < DEFAULT_REPEAT_TARGET
+                    ),
+                    "status": entry.get("status"),
+                })
+                targets[str(target_id)] = displayed
+
+            return {
+                "targets": targets,
+                "failures": dict(self._repeat_failures),
+                "durable": dict(self._durable_repeat_progress),
             }
-        return {
-            "targets": targets,
-            "failures": dict(self._repeat_failures),
-            "durable": dict(self._durable_repeat_progress),
-        }
 
     def level_match_snapshot(
         self, *, current_context_id: str | None = None
@@ -489,10 +634,21 @@ def status_payload() -> dict[str, Any]:
         if isinstance(setup_profile, Mapping)
         else None
     )
-    durable_repeats = web_measurement.reconcile_durable_repeat_progress(
-        payload.get("measurements") or {},
-        live_bindings=_LEVEL_LEASE.active_repeat_bindings(),
+    from jasper.active_speaker import repeat_admission
+
+    comparison_set = (payload.get("measurements") or {}).get(
+        "active_comparison_set"
     )
+    try:
+        durable_repeats = repeat_admission.snapshot(
+            comparison_set if isinstance(comparison_set, Mapping) else None
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        durable_repeats = {
+            "status": "unavailable",
+            "targets": {},
+            "error": str(exc),
+        }
     _LEVEL_LEASE.set_durable_repeat_progress(durable_repeats)
     payload["level_match"] = _LEVEL_LEASE.level_match_snapshot(
         current_context_id=current_context_id
@@ -526,6 +682,40 @@ async def apply_profile(
     draft = load_design_draft()
     preview = load_crossover_preview(current_design_draft=draft)
     measurements = load_measurement_state(topology)
+    if tuning_owner == "automatic":
+        from jasper.active_speaker import repeat_admission
+
+        comparison_set = measurements.get("active_comparison_set")
+        if not isinstance(comparison_set, Mapping):
+            raise ValueError(
+                "automatic crossover apply requires a current repeat-bound "
+                "measurement set"
+            )
+        try:
+            repeat_state = repeat_admission.snapshot(comparison_set)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError(
+                "crossover repeat safety state is unavailable; rerun the driver "
+                "level check before apply"
+            ) from exc
+        from jasper.active_speaker.measurement import active_driver_targets
+
+        repeat_targets = repeat_state.get("targets") or {}
+        required_target_ids = {
+            str(target.get("target_id") or "")
+            for target in active_driver_targets(topology)
+        }
+        unresolved = [
+            target_id
+            for target_id, entry in repeat_targets.items()
+            if not isinstance(entry, Mapping) or entry.get("status") != "completed"
+        ]
+        unresolved.extend(sorted(required_target_ids - set(repeat_targets)))
+        if unresolved:
+            raise ValueError(
+                "crossover repeat persistence is incomplete; rerun the driver "
+                "level check before automatic apply"
+            )
     applied = load_applied_baseline_profile_state()
     legacy_manual_profile = (
         applied
@@ -711,13 +901,24 @@ def record_driver_capture(
 ) -> dict[str, Any]:
     """Analyze one secure browser WAV and record per-driver evidence."""
 
-    payload = web_measurement.record_driver_capture(
-        raw,
-        wav_bytes,
-        placement_proof=placement_proof,
-        preset=preset,
-        repeat_store=repeat_store,
-    )
+    transaction = getattr(repeat_store, "repeat_transaction", None)
+    if callable(transaction):
+        with transaction():
+            payload = web_measurement.record_driver_capture(
+                raw,
+                wav_bytes,
+                placement_proof=placement_proof,
+                preset=preset,
+                repeat_store=repeat_store,
+            )
+    else:
+        payload = web_measurement.record_driver_capture(
+            raw,
+            wav_bytes,
+            placement_proof=placement_proof,
+            preset=preset,
+            repeat_store=repeat_store,
+        )
     log_event(
         logger,
         "correction.crossover_driver_capture",

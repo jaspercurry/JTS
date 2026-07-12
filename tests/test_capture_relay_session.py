@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import urllib.parse
 
 import pytest
@@ -29,8 +30,12 @@ from jasper.capture_relay.cues import (
     MEASUREMENT_FAILED_CUE_SLUG,
     RELAY_UNREACHABLE_CUE_SLUG,
 )
-from jasper.capture_relay.integrity import authenticated_phone_event
+from jasper.capture_relay.integrity import (
+    CaptureIntegrityError,
+    authenticated_phone_event,
+)
 from jasper.capture_relay.session import (
+    CaptureActivityProbe,
     CaptureAborted,
     CaptureFailed,
     CapturePageIncompatible,
@@ -336,6 +341,97 @@ def test_required_acknowledgement_is_verified_before_stimulus():
     )
     assert result.wav == wav
     assert armed_calls == [True]
+
+
+def _activity_probe_fixture():
+    backend = FakeRelayBackend()
+    session = mint_session(
+        build_crossover_sweep_spec(
+            driver_label="Woofer driver",
+            driver_role="woofer",
+            acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+        ),
+        relay_base="https://relay.test",
+        capture_origin="capture.test",
+    )
+    client = RelayClient("https://relay.test", transport=backend)
+    register_session(client, session)
+    backend.phone_arm(
+        session.session_id,
+        auth_session=session,
+        capture_page={
+            **_CAPTURE_PAGE,
+            "capture_protocol_version": 2,
+            "supported_capture_protocol_versions": [1, 2],
+            "capture_page_build": "20260711.1",
+        },
+        sequence=1,
+    )
+    return backend, session, CaptureActivityProbe(client, session)
+
+
+def test_capture_activity_probe_requires_authenticated_active_phone():
+    backend, session, probe = _activity_probe_fixture()
+    probe.assert_active()
+
+    backend.sessions[session.session_id]["event"] = authenticated_phone_event(
+        session.content_key,
+        session.session_id,
+        {"aborted": True, "abort_reason": "backgrounded"},
+        sequence=2,
+    )
+    with pytest.raises(CaptureAborted, match="backgrounded"):
+        probe.assert_active()
+
+
+def test_capture_activity_probe_rejects_unsigned_abort():
+    backend, session, probe = _activity_probe_fixture()
+    probe.assert_active()
+    backend.sessions[session.session_id]["event"] = {
+        "aborted": True,
+        "abort_reason": "forged",
+    }
+    with pytest.raises(CaptureIntegrityError):
+        probe.assert_active()
+
+
+def test_capture_activity_probe_serializes_concurrent_verification():
+    _backend, _session, probe = _activity_probe_fixture()
+    barrier = threading.Barrier(3)
+    outcomes = []
+
+    def check():
+        barrier.wait()
+        try:
+            probe.assert_active()
+            outcomes.append("ok")
+        except Exception as exc:  # noqa: BLE001 - collect thread outcome
+            outcomes.append(type(exc).__name__)
+
+    threads = [threading.Thread(target=check) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+    assert outcomes == ["ok", "ok"]
+
+
+@pytest.mark.parametrize("terminal", ["ready", "disarmed"])
+def test_capture_activity_probe_refuses_inactive_recorder(terminal):
+    backend, session, probe = _activity_probe_fixture()
+    probe.assert_active()
+    if terminal == "ready":
+        backend.sessions[session.session_id]["state"] = "ready"
+    else:
+        backend.sessions[session.session_id]["event"] = authenticated_phone_event(
+            session.content_key,
+            session.session_id,
+            {"armed": False},
+            sequence=2,
+        )
+    with pytest.raises((CaptureAborted, CaptureFailed)):
+        probe.assert_active()
 
 
 @pytest.mark.parametrize(

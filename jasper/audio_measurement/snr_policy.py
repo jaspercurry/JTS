@@ -148,6 +148,18 @@ def ambient_band_report(
     commissioning window remains part of the noise evidence.
     """
 
+    return framed_ambient_band_report(samples, sample_rate, bands=bands, percentile=95)
+
+
+def framed_ambient_band_report(
+    samples: np.ndarray,
+    sample_rate: int,
+    bands: Sequence[tuple[str, float, float]] = CROSSOVER_SNR_BANDS_HZ,
+    *,
+    percentile: float,
+) -> dict[str, Any]:
+    """One-second-frame ambient PSD statistic, independent of total duration."""
+
     x = np.asarray(samples, dtype=np.float64)
     if sample_rate <= 0 or x.size < 8:
         return {"schema_version": 1, "duration_s": 0.0, "bands": []}
@@ -169,12 +181,12 @@ def ambient_band_report(
             out.append({
                 "band_id": band_id,
                 "band_hz": [low, high],
-                "level_dbfs": round(float(np.percentile(levels, 95)), 2),
+                "level_dbfs": round(float(np.percentile(levels, percentile)), 2),
             })
     return {
         "schema_version": 1,
         "duration_s": round(x.size / sample_rate, 3),
-        "method": "one_second_p95",
+        "method": f"one_second_p{percentile:g}",
         "bands": out,
     }
 
