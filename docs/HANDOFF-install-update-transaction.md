@@ -86,6 +86,36 @@ Both read the Pi over ssh and so are **skipped under interactive sudo**
 identity and direction guards. Passwordless sudo (BRINGUP Phase 2.5) is
 the posture that gets fully-verified deploys.
 
+On boxes below the deploy wrapper's 1.2 GB threshold, the health surface uses
+the stdlib-only `deploy/bin/jasper-deploy-health` instead of importing the
+full doctor stack under memory pressure. The probe reads the canonical
+`/var/lib/jasper/install_profile` marker before deciding what must run:
+
+- A missing, unreadable, or empty marker retains the backwards-compatible
+  `full` assumption. Legacy `endpoint` / `satellite` markers normalize to
+  `streambox`; any other token fails closed before probing services.
+- Both profiles require the control, fan-in, outputd, CamillaDSP, mux,
+  Bluetooth-audio, nginx, and core web-socket surfaces. AirPlay is required
+  when `/var/lib/jasper/source_intent.env` has no override or says `enabled`;
+  an intentional `disabled` instead requires the unit to be `inactive` after
+  install's source-intent reconcile stops it (an unexpectedly active unit still
+  fails). An unreadable, oversized, or malformed AirPlay intent fails closed
+  instead of guessing. `jasper-input` remains required on `full` only. A
+  `streambox` intentionally parks voice and AEC, so the probe neither requires
+  nor emits optional-unit warnings for those two services there.
+- Fan-in is sampled twice around a one-second interval and must show no xrun
+  increase and recent watchdog progress. Outputd must report its ALSA backend,
+  zero xruns / empty periods / EAGAINs, and recent progress. All counter and
+  progress fields are strict nonnegative JSON integers (booleans, strings,
+  negative values, missing fields, malformed input entries, and an empty input
+  list fail closed); this prevents a malformed status surface from certifying
+  a deploy. Each control-socket response is also capped at 256 KiB with a
+  two-second absolute deadline, so a peer cannot defeat the probe's low-memory
+  purpose by streaming forever or returning an unbounded payload.
+
+This low-memory report remains the same advisory end-state surface as the full
+doctor report; it does not broaden the manifest's verified-install claim.
+
 ### 3. Derived audio state is repaired best-effort, never a manifest gate
 
 Generated CamillaDSP sound YAML is a cache of saved JTS intent, not the
@@ -254,6 +284,10 @@ ssh pi@jts.local 'sudo cat /var/lib/jasper/build.txt'
 - `tests/test_deploy_wiring_guards.py` — deploy-to-pi.sh wires up the
   manifest gate, OOM scan, health surfacing, install-rc capture, and the
   interactive-sudo skip.
+- `tests/test_deploy_health_script.py` — the real AF_UNIX `STATUS` exchange,
+  profile-specific required / observed units, strict fan-in and outputd status
+  schemas, bounded response size/time, xrun/progress verdicts, persisted AirPlay
+  source intent, and fail-closed invalid profile behavior.
 - `tests/test_lib_deploy_direction.py` — the direction guard that now
   reads an honest manifest (unchanged, still green).
 - `tests/test_rust_build_cache_staging.py` — `stage_rust_crate`
@@ -279,7 +313,9 @@ sourced bash helpers). Confirm on a Pi:
 
 ---
 
-Last verified: 2026-07-11 (broken-vs-idle seam re-verified against
+Last verified: 2026-07-12 (low-memory deploy-health profile and status-schema
+contracts re-verified against `deploy/bin/jasper-deploy-health`;
+broken-vs-idle seam previously re-verified against
 `jasper-voice.service`'s `ConditionPathExists`, the doctor's
 `check_service_runtime_state`, and the deploy wrapper's advisory
 `surface_system_health` — Workstream C confirmed shipped #924; other
