@@ -601,6 +601,7 @@ Key differences from production:
 | Path | Purpose |
 |---|---|
 | `jasper/chip_aec_experiment.py` | The daemon (feeder + UDP pump) |
+| `scripts/_chip_aec_experiment_lib.sh` | Shared fail-safe daemon / bypass control for the laptop experiment scripts |
 | `scripts/chip-aec-setup.sh` | Phase 1: deploy + start daemon |
 | `scripts/chip-aec-baseline-check.sh` | Phase 2: route sanity + repeatable delay baseline |
 | `scripts/chip-aec-teardown.sh` | Revert everything to production state |
@@ -667,6 +668,10 @@ bash scripts/chip-aec-poll-convergence.sh
 bash scripts/chip-aec-capture-comparison.sh
 # Walk through the prompts (start music, mute music, speak, etc.)
 # Files land under captures/chip-aec-experiment/<timestamp>/
+# Both capture scripts restore SHF_BYPASS=0 and the full experiment
+# daemon after capture, including on ordinary failure or interruption.
+# This is experiment-state recovery only: step 8 teardown is still
+# required to unmask and restore the production AEC services.
 
 # 7. Listen with your ears. The ear test is the truth test.
 #    Recommended: open all 4 .wav files in Audacity side-by-side, or use
