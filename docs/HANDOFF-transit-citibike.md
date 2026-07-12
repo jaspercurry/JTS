@@ -319,8 +319,8 @@ provider:
    `id`, `label`, `help_url`. Decide whether to share the cache
    helpers from `jasper.citibike` (yes if behavior is identical;
    factor them into a `_gbfs.py` shared helper at that point).
-3. One line in `REGISTRY` at
-   `jasper/transit/__init__.py`.
+3. Add the provider to the matching `CityPack` in `CITY_PACKS` at
+   `jasper/transit/__init__.py`; the flat `REGISTRY` derives automatically.
 4. `elif p.id == "capital_bikeshare":` branch in
    `jasper/web/transit_setup.py:_index_html`. Reuse the citibike
    card if the UX is identical (likely is); just dispatch to
@@ -328,7 +328,9 @@ provider:
    the card is provider-keyed only by `p.label` so it generalises
    if the env keys do.
 5. New env keys in `migrate_transit_config`'s `keys=(...)` array
-   at `deploy/install.sh`.
+   at `deploy/lib/install/env-migrations.sh`. A contract test requires that
+   literal array to contain every provider `env_key`; its only non-provider
+   member is Google Routes' `JASPER_TRAVEL_DEFAULT_MODE`.
 6. A `make_capital_bikeshare_tools` factory if you want a separate
    tool surface, or extend `get_citibike_status` to take a network
    arg if you want one tool per household for multiple networks. (I
@@ -375,6 +377,7 @@ flag it on the second provider, do it on the third.
   the provider to inject context (system name in the response) so
   the LLM can disambiguate. Defer until two networks exist.
 
-Last verified: 2026-07-11 (subway fallback ownership re-checked against
-`jasper/subway.py`; Citi Bike remains provider-local, and Routes keeps its
-billable key in `/var/lib/jasper-secrets/google_routes.env`)
+Last verified: 2026-07-12 (provider registration and install-migration
+ownership re-checked against `jasper/transit/__init__.py` and
+`deploy/lib/install/env-migrations.sh`; Citi Bike remains provider-local, and
+Routes keeps its billable key in `/var/lib/jasper-secrets/google_routes.env`)

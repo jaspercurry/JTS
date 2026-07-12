@@ -1577,9 +1577,11 @@ transit env var:
 
 All live in **`/var/lib/jasper/transit.env`** at mode 0640 — same
 single-source-of-truth pattern as `voice_provider.env`. Never put
-them in `/etc/jasper/jasper.env`. `install.sh`'s
-`migrate_transit_config` moves any stale operator-set values into
-the wizard file on every deploy. `jasper-voice.service` sources
+them in `/etc/jasper/jasper.env`.
+[`migrate_transit_config`](deploy/lib/install/env-migrations.sh) moves any
+legacy provider keys, the travel-mode default, and the city-pack selection
+out of `jasper.env` on every deploy. Wizard-only geocoding fields have no
+legacy migration path. `jasper-voice.service` sources
 both files with the wizard file last so it wins on conflicts.
 
 **Subway behavior.** "Next train" returns every line stopping
@@ -1690,12 +1692,14 @@ tool/client surface):
      built transit client on shutdown (duck-typed), so a pool is reclaimed
      with no daemon edit
   7. The `keys=(...)` bash array in `migrate_transit_config` in
-     [`deploy/install.sh`](deploy/install.sh) — duplicates
-     `transit.all_env_keys()` because install.sh runs before Python
-     is available (`JASPER_TRANSIT_CITIES` is a pack-level toggle, not a
+     [`deploy/lib/install/env-migrations.sh`](deploy/lib/install/env-migrations.sh)
+     — a shell-owned literal kept by contract test as a superset of
+     `transit.all_env_keys()`. The additional `JASPER_TRAVEL_DEFAULT_MODE`
+     key belongs to Google Routes, not a transit provider.
+     `JASPER_TRANSIT_CITIES` is a pack-level toggle, not a
      provider env key, so it is NOT in that array — `migrate_transit_config`
      moves an operator-set value out of `jasper.env` AND seeds `nyc` for
-     existing NYC households, both in their own dedicated step)
+     existing NYC households, both in their own dedicated step.
 
 See `nyc_subway.py` (keyless, CSV-backed) and `nyc_bus.py`
 (credentialed, REST-backed) for the two provider shapes. The
@@ -2055,7 +2059,8 @@ picker, which preserves the threshold on model save). Edit point is
 - `POST /aec/threshold` body `{threshold: float}` (0.0..1.0) → set sensitivity
 
 **Migration on upgrade**: `migrate_wake_legs_config` in
-[`deploy/install.sh`](deploy/install.sh) moves any hand-set
+[`deploy/lib/install/env-migrations.sh`](deploy/lib/install/env-migrations.sh)
+moves any hand-set
 `JASPER_MIC_DEVICE_RAW` / `_DTLN` / `JASPER_AEC_DTLN_ENABLED` /
 chip-AEC device vars from `/etc/jasper/jasper.env` into
 `aec_mode.env`, infers the nearest profile (`xvf_chip_aec`,
