@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from jasper.output_topology import OutputTopology
 
@@ -147,6 +147,7 @@ def record_driver_acoustic_capture(
     sweep_meta: Mapping[str, Any],
     playback_id: str | None = None,
     noise_floor_dbfs: float | None = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
     test_level_dbfs: float | None = None,
     excitation: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
@@ -177,6 +178,12 @@ def record_driver_acoustic_capture(
     ``measurement._floor_confirmation_issues``). A missing or mismatched floor
     confirmation still records the acoustic evidence but leaves ``captured``
     False — the acoustic verdict never bypasses the operator floor gate.
+
+    ``noise_band_report`` (the correction-shape band-level list — see
+    ``jasper.audio_measurement.snr_policy.band_levels_dbfs``) is threaded to
+    ``analyze`` so the SC-1 magnitude-class SNR block
+    (``DriverAcousticResult.snr``) can be computed; it is independent of the
+    pre-existing scalar ``noise_floor_dbfs`` bolt-on below.
     """
     passband = driver_passband_hz(preset, role)
     result = analyze(
@@ -186,6 +193,7 @@ def record_driver_acoustic_capture(
         overlap_fcs=driver_crossover_fcs(preset, role),
         has_mic_calibration=has_mic_calibration,
         calibration=calibration,
+        noise_band_report=noise_band_report,
     )
     acoustic = result.to_dict()
     normalized_noise_floor = _finite_float(noise_floor_dbfs)
@@ -321,6 +329,7 @@ def record_summed_acoustic_capture(
     summed_test_id: str | None = None,
     playback_id: str | None = None,
     noise_floor_dbfs: float | None = None,
+    noise_band_report: Sequence[Mapping[str, Any]] | None = None,
     excitation: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
     polarity: str | None = None,
@@ -342,6 +351,13 @@ def record_summed_acoustic_capture(
     (defaulting to the lowest crossover in the preset), maps the verdict to a
     summed outcome, and persists it through ``record_summed_validation``. An
     ``unusable_capture`` — or a preset with no crossover — records nothing.
+
+    ``noise_band_report`` and ``noise_floor_dbfs`` both feed ``analyze`` (the
+    SC-1 alignment-class SNR block on ``SummedAcousticResult.snr`` and the
+    null-depth cap); ``noise_floor_dbfs`` is ALSO still bolted onto the
+    persisted ``acoustic`` dict's scalar ``noise_floor_dbfs``/
+    ``signal_over_noise_db`` keys below, unchanged from before this SNR block
+    existed.
     """
     fc = (
         float(crossover_fc_hz)
@@ -370,6 +386,8 @@ def record_summed_acoustic_capture(
         expect_null=expect_null,
         has_mic_calibration=has_mic_calibration,
         calibration=calibration,
+        noise_band_report=noise_band_report,
+        noise_floor_dbfs=noise_floor_dbfs,
     )
     acoustic = result.to_dict()
     normalized_noise_floor = _finite_float(noise_floor_dbfs)
@@ -531,6 +549,44 @@ def _summed_null_depths(
     return depth, None
 
 
+def _summed_alignment_snr(summed_record: Any) -> tuple[bool | None, bool]:
+    """(alignment_snr_ok, null_depth_capped) from a group's latest summed record.
+
+    Reads the SC-1 alignment-class SNR block
+    (``acoustic["snr"]``, see
+    :func:`jasper.audio_measurement.snr_policy.band_snr_verdicts`) and the
+    capped-null flag (``acoustic["null_depth_capped"]``, see
+    :func:`jasper.audio_measurement.snr_policy.cap_null_depth_db`) that
+    :func:`record_summed_acoustic_capture` persists when noise evidence was
+    supplied.
+
+    ``alignment_snr_ok`` is ``None`` (unknown/no evidence — matches
+    :func:`~jasper.active_speaker.crossover_alignment.propose_crossover_alignment`'s
+    own no-degrade default) when there is no ``snr`` block at all — today's
+    shipped flow, since no caller yet supplies ambient-noise evidence to a
+    summed capture. When a block IS present, ``alignment_snr_ok`` is exactly
+    ``worst_relevant.verdict == "ok"`` — ``True`` only on a confident overlap
+    SNR reading, ``False`` for any other outcome (insufficient, or "unknown"
+    from scalar-only/no-covered-band evidence — the block existing at all
+    means SOME evidence was supplied, and it didn't clear the bar).
+    """
+    if not isinstance(summed_record, Mapping):
+        return None, False
+    acoustic = summed_record.get("acoustic")
+    if not isinstance(acoustic, Mapping):
+        return None, False
+    snr = acoustic.get("snr")
+    if not isinstance(snr, Mapping):
+        alignment_snr_ok = None
+    else:
+        worst_relevant = snr.get("worst_relevant")
+        alignment_snr_ok = (
+            isinstance(worst_relevant, Mapping)
+            and worst_relevant.get("verdict") == "ok"
+        )
+    return alignment_snr_ok, bool(acoustic.get("null_depth_capped"))
+
+
 def build_crossover_alignment_proposal(
     preset: ActiveSpeakerPreset,
     measurements: Mapping[str, Any],
@@ -548,8 +604,13 @@ def build_crossover_alignment_proposal(
     only when the contributing summed capture was taken with a calibrated mic
     (``acoustic.calibrated``); otherwise it downgrades to ``magnitude_only`` and
     the proposal is unauthorized (no polarity/delay decision). So a phone capture
-    can never yield a phase decision even if phase_aware is requested. Never raises
-    on thin/empty state; returns ``{status, mode, proposal, ...}``.
+    can never yield a phase decision even if phase_aware is requested. A second,
+    independent gate rides the same summed record's SC-1 alignment-class SNR
+    block (:func:`_summed_alignment_snr`): a confirmed-insufficient overlap SNR
+    or a capped null depth further downgrades keep/invert to review and
+    "aligned" to "unknown" inside the proposer, even when phase_aware was
+    granted. Never raises on thin/empty state; returns
+    ``{status, mode, proposal, ...}``.
 
     Scope: ONE crossover (the primary / lowest). A 3-way's upper crossover needs
     its own summed-null capture and is out of scope for this increment. Multi-group
@@ -605,6 +666,7 @@ def build_crossover_alignment_proposal(
     upper_rec = by_group_role.get((group, upper_role))
     summed_rec = summed_by_group.get(group)
     in_phase_null, reverse_null = _summed_null_depths(summed_rec)
+    alignment_snr_ok, null_depth_capped = _summed_alignment_snr(summed_rec)
 
     # The phase_aware gate at the data layer: every contributing capture must be
     # calibrated. A single uncalibrated record blocks phase_aware.
@@ -629,6 +691,8 @@ def build_crossover_alignment_proposal(
         upper_role=upper_role,
         in_phase_null_depth_db=in_phase_null,
         reverse_null_depth_db=reverse_null,
+        alignment_snr_ok=alignment_snr_ok,
+        null_depth_capped=null_depth_capped,
     )
     return {
         "status": "ok",
