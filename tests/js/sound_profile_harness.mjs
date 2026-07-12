@@ -28,34 +28,25 @@ const httpPreamble = readFileSync(httpPath, "utf8")
 const activeSpeakerUiPath = new URL("../../deploy/assets/sound-profile/js/active-speaker-ui.js", import.meta.url);
 const activeSpeakerUiPreamble = readFileSync(activeSpeakerUiPath, "utf8")
   .replace(/^export\s+/gm, "");
-const measurementAudioPreamble = `
-const DEFAULT_SAMPLE_RATE = 48000;
-async function createMonoRecorder() {
-  return {
-    context: { sampleRate: DEFAULT_SAMPLE_RATE },
-    start() {},
-    async stop() { return new Float32Array(480); },
-    async close() {},
-  };
+
+function stripKnownImports(input) {
+  return input
+    .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m,
+      "const jtsConfirm = async (...args) => globalThis.__jtsConfirm ? globalThis.__jtsConfirm(...args) : true;\n")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*escape\.js["'];\s*/m, "")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*http\.js["'];\s*/m, "")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*active-speaker-ui\.js["'];\s*/m, "")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*eq-math\.js["'];\s*/m, "");
 }
-function float32ToWavBlob() {
-  return {
-    async arrayBuffer() {
-      return Uint8Array.from([82, 73, 70, 70, 4, 0, 0, 0]).buffer;
-    },
-  };
-}
-`;
 
 const rawSource = readFileSync(modulePath, "utf8");
-const source = rawSource
-  .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m,
-    "const jtsConfirm = async (...args) => globalThis.__jtsConfirm ? globalThis.__jtsConfirm(...args) : true;\n")
-  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*measurement-audio\.js["'];\s*/m, "")
-  .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*escape\.js["'];\s*/m, "")
-  .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*http\.js["'];\s*/m, "")
-  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*active-speaker-ui\.js["'];\s*/m, "")
-  .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*eq-math\.js["'];\s*/m, "");
+const unknownImportProbe = stripKnownImports(
+  'import {\n  unknownHarnessDependency,\n} from "/assets/unknown.js";\n' + rawSource
+);
+if (!/^import\s+\{\s*unknownHarnessDependency/m.test(unknownImportProbe)) {
+  throw new Error("known-import stripping swallowed an unknown multiline import");
+}
+const source = stripKnownImports(rawSource);
 if (/^import\s/m.test(source)) {
   throw new Error("unhandled import in main.js — add a strip rule + preamble to this harness");
 }
@@ -564,7 +555,7 @@ function setupHarness(fetchHandler, options = {}) {
 
   new Function(
     escapePreamble + "\n" + httpPreamble + "\n" + eqMathPreamble + "\n" +
-      activeSpeakerUiPreamble + "\n" + measurementAudioPreamble + "\n" + source
+      activeSpeakerUiPreamble + "\n" + source
   )();
 
   const viewBody = elements.get("view-body");
