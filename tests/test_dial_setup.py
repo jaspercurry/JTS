@@ -74,6 +74,30 @@ def test_read_firmware_status_marks_source_newer(tmp_path):
     assert "2024-05-24" in status["source_mtime_iso"]
 
 
+def test_read_firmware_status_marks_shared_library_newer(tmp_path):
+    """The dial binary is stale when its shared discovery library changes."""
+    from jasper.web.dial_setup import _read_firmware_status
+
+    firmware_root = tmp_path / "firmware"
+    dial_root = firmware_root / "dial"
+    dial_root.mkdir(parents=True)
+    bin_path = dial_root / "jasper-dial.bin"
+    bin_path.write_bytes(b"\x00" * 2048)
+    shared_source = (
+        firmware_root
+        / "common/jasper-control-discovery/src/discovery.cpp"
+    )
+    shared_source.parent.mkdir(parents=True)
+    shared_source.write_text("// newer shared source\n")
+    os.utime(bin_path, (1716470400, 1716470400))
+    os.utime(shared_source, (1716556800, 1716556800))
+
+    status = _read_firmware_status(str(bin_path), source_root=str(dial_root))
+    assert status["present"] is True
+    assert status["source_newer"] is True
+    assert "2024-05-24" in status["source_mtime_iso"]
+
+
 def test_setup_html_present_renders_ready_banner():
     """When the .bin exists, the wizard shows a green "ready to flash"
     banner with the bin's size + mtime. Force Flash will actually do

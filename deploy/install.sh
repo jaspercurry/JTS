@@ -1570,10 +1570,13 @@ set_jasper_env_value() {
 _newer_firmware_input() {
     local fw_root="$1"
     local bin_path="$2"
+    local shared_root
+    shared_root="$(dirname "${fw_root}")/common"
     local -a inputs=()
     local input
     for input in "${fw_root}/src" "${fw_root}/include" \
-                 "${fw_root}/platformio.ini" "${fw_root}/build.sh"; do
+                 "${fw_root}/platformio.ini" "${fw_root}/build.sh" \
+                 "${shared_root}"; do
         [[ -e "$input" ]] && inputs+=("$input")
     done
     [[ ${#inputs[@]} -gt 0 ]] || return 0
@@ -1994,7 +1997,8 @@ install_avahi_jasper_control() {
     # Advertise jasper-control over mDNS so the rotary dial can find
     # us via service discovery instead of a hardcoded hostname. See
     # deploy/avahi/jasper-control.service for the rationale and the
-    # firmware-side counterpart in firmware/dial/src/discovery.cpp.
+    # firmware-side counterpart in
+    # firmware/common/jasper-control-discovery/src/discovery.cpp.
     #
     # The advertised file now also carries a name= TXT record with the
     # speaker's friendly display name (the /speaker identity), so the
