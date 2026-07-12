@@ -28,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 import pytest
 
+from jasper.control import aec_endpoints, dial as dial_module, state_aggregate
 from jasper.control.server import (
     VOLUME_MAX_DB,
     VOLUME_MIN_DB,
@@ -944,7 +945,7 @@ def test_aec_toggle_restarts_reconciler(monkeypatch, tmp_path, server_with_coord
         def __init__(self, cmd):
             popens.append(cmd)
 
-    monkeypatch.setattr(srv_mod, "_AEC_MODE_FILE", str(mode_file))
+    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(srv_mod, "_aec_bridge_active", lambda: False)
     monkeypatch.setattr(
         srv_mod,
@@ -980,7 +981,7 @@ def test_aec_toggle_refuses_to_disable_chip_aec_carrier(
         def __init__(self, cmd):
             popens.append(cmd)
 
-    monkeypatch.setattr(srv_mod, "_AEC_MODE_FILE", str(mode_file))
+    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(
         srv_mod,
         "_aec_full_status",
@@ -1013,7 +1014,7 @@ def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordina
         def __init__(self, cmd):
             popens.append(cmd)
 
-    monkeypatch.setattr(srv_mod, "_AEC_MODE_FILE", str(mode_file))
+    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"ok": True})
     monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
 
@@ -1059,7 +1060,7 @@ def test_aec_profile_restarts_reconciler(
         def __init__(self, cmd):
             popens.append(cmd)
 
-    monkeypatch.setattr(srv_mod, "_AEC_MODE_FILE", str(mode_file))
+    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"profile": profile})
     monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
 
@@ -1720,9 +1721,9 @@ def test_system_snapshot_audio_quality_fails_soft(
     def fail_state() -> dict:
         raise ValueError("unsupported ALSA rate converter 'linear'")
 
-    monkeypatch.setattr(srv_mod, "_read_audio_quality_state", fail_state)
+    monkeypatch.setattr(state_aggregate, "_read_audio_quality_state", fail_state)
     monkeypatch.setattr(
-        srv_mod,
+        state_aggregate,
         "_read_active_audio_converter",
         lambda: "samplerate_medium",
     )
@@ -2403,23 +2404,67 @@ def test_source_availability_probe_runs_outside_cache_lock(monkeypatch):
             errors.append(e)
 
     monkeypatch.setattr(sources_mod, "_gather_state", slow_gather_state)
-    srv_mod._source_availability_cache = None
+    state_aggregate._source_availability_cache = None
     worker = threading.Thread(target=augment)
     worker.start()
     assert entered_probe.wait(timeout=2)
 
-    acquired = srv_mod._source_availability_lock.acquire(timeout=0.2)
+    acquired = state_aggregate._source_availability_lock.acquire(timeout=0.2)
     try:
         assert acquired, "source availability probe held the cache lock"
     finally:
         if acquired:
-            srv_mod._source_availability_lock.release()
+            state_aggregate._source_availability_lock.release()
         release_probe.set()
         worker.join(timeout=2)
-        srv_mod._source_availability_cache = None
+        state_aggregate._source_availability_cache = None
 
     assert not worker.is_alive()
     assert not errors
+
+
+def test_split_control_helpers_keep_state_at_owner_modules():
+    """The helper split must not grow mutable/config mirrors back in server."""
+    import jasper.control.server as srv_mod
+
+    mirrored_names = {
+        "DIAL_HEARTBEAT_PATH",
+        "OUTPUTD_BASE_CAMILLA_CONFIG",
+        "SOURCE_AVAILABILITY_TTL_SEC",
+        "_dial_heartbeat",
+        "_source_availability_cache",
+        "_source_availability_lock",
+        "_AEC_MODE_FILE",
+        "_WAKE_MODEL_FILE",
+        "_JASPER_ENV_FILE",
+        "_TOGGLE_TO_TOKEN",
+        "_aec_bridge_active_impl",
+        "_aec_fresh_jasper_env_impl",
+        "_fresh_jasper_env",
+        "_audio_validation_summary",
+        "_read_audio_quality_state",
+        "_read_active_audio_converter",
+        "_same_config_path",
+        "_server_aec_bridge_active_wrapper",
+        "_server_fresh_jasper_env_wrapper",
+        "_sound_apply_target",
+        "_sound_runtime_status",
+        "_sync_aec_module",
+        "_sync_dial_module",
+        "_sync_source_availability_module",
+    }
+    assert mirrored_names.isdisjoint(vars(srv_mod))
+
+    # These are intentional host seams, not mirrored state: handlers and
+    # _get_state composition replace the whole callable in route-level tests.
+    for name in (
+        "_aec_full_status",
+        "_augment_source_payload",
+        "_get_state",
+        "_probe_dial_reachable",
+        "_safe_audio_quality_state",
+    ):
+        assert callable(getattr(srv_mod, name))
 
 
 # --- 404 / coordinator-failure ---
@@ -2443,9 +2488,7 @@ def test_coordinator_failure_502(server_with_coordinator):
 
 
 def test_sound_runtime_status_flags_base_config_mismatch() -> None:
-    import jasper.control.server as srv_mod
-
-    runtime = srv_mod._sound_runtime_status(
+    runtime = state_aggregate._sound_runtime_status(
         {
             "enabled": True,
             "filter_count": 3,
@@ -3526,10 +3569,9 @@ def test_duck_active_probe_returns_none_when_field_wrong_type(monkeypatch):
 
 def test_dial_status_empty_when_no_dial_seen(server_with_coordinator):
     """Fresh daemon, no UDP datagrams yet → all heartbeat fields null."""
-    import jasper.control.server as srv_mod
-    srv_mod._dial_heartbeat["last_seen_at"] = None
-    srv_mod._dial_heartbeat["last_seen_ip"] = None
-    srv_mod._dial_heartbeat["last_message"] = None
+    dial_module._dial_heartbeat["last_seen_at"] = None
+    dial_module._dial_heartbeat["last_seen_ip"] = None
+    dial_module._dial_heartbeat["last_message"] = None
     base, _ = server_with_coordinator
     status, body = _get(f"{base}/dial/status")
     assert status == 200
@@ -3543,11 +3585,10 @@ def test_dial_status_reports_recent_heartbeat(server_with_coordinator):
     (the listener does the same on each datagram). /dial/status should
     then report a recent age."""
     import time
-    import jasper.control.server as srv_mod
     now = time.time()
-    srv_mod._dial_heartbeat["last_seen_at"] = now - 12.0
-    srv_mod._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
-    srv_mod._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST 2.00 dB OK"
+    dial_module._dial_heartbeat["last_seen_at"] = now - 12.0
+    dial_module._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
+    dial_module._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST 2.00 dB OK"
     base, _ = server_with_coordinator
     status, body = _get(f"{base}/dial/status")
     assert status == 200
@@ -3594,9 +3635,9 @@ def test_state_dial_online_true_when_probe_succeeds(
     import jasper.control.server as srv_mod
 
     # Ancient dlog activity (would have failed the old 30 s threshold).
-    srv_mod._dial_heartbeat["last_seen_at"] = time.time() - 3600.0
-    srv_mod._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
-    srv_mod._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST OK"
+    dial_module._dial_heartbeat["last_seen_at"] = time.time() - 3600.0
+    dial_module._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
+    dial_module._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST OK"
 
     async def fake_probe(ip, *, timeout=0.5):  # noqa: ARG001
         return True
@@ -3621,9 +3662,9 @@ def test_state_dial_online_false_when_probe_fails(
     import time
     import jasper.control.server as srv_mod
 
-    srv_mod._dial_heartbeat["last_seen_at"] = time.time() - 10.0
-    srv_mod._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
-    srv_mod._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST OK"
+    dial_module._dial_heartbeat["last_seen_at"] = time.time() - 10.0
+    dial_module._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
+    dial_module._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST OK"
 
     async def fake_probe(ip, *, timeout=0.5):  # noqa: ARG001
         return False
@@ -3645,9 +3686,9 @@ def test_state_dial_online_false_when_no_last_seen_ip(
     daemon doesn't add probe latency to /state."""
     import jasper.control.server as srv_mod
 
-    srv_mod._dial_heartbeat["last_seen_at"] = None
-    srv_mod._dial_heartbeat["last_seen_ip"] = None
-    srv_mod._dial_heartbeat["last_message"] = None
+    dial_module._dial_heartbeat["last_seen_at"] = None
+    dial_module._dial_heartbeat["last_seen_ip"] = None
+    dial_module._dial_heartbeat["last_message"] = None
 
     called = []
     async def fake_probe(ip, *, timeout=0.5):  # noqa: ARG001
@@ -3671,7 +3712,7 @@ def test_load_dial_heartbeat_missing_file_returns_defaults(tmp_path, monkeypatch
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(
-        srv_mod, "DIAL_HEARTBEAT_PATH", str(tmp_path / "missing.json"),
+        dial_module, "DIAL_HEARTBEAT_PATH", str(tmp_path / "missing.json"),
     )
     out = srv_mod._load_dial_heartbeat()
     assert out == {"last_seen_at": None, "last_seen_ip": None, "last_message": None}
@@ -3685,7 +3726,7 @@ def test_load_dial_heartbeat_malformed_file_returns_defaults(tmp_path, monkeypat
 
     bad = tmp_path / "bad.json"
     bad.write_text("{not valid json, last_seen_ip: ...")
-    monkeypatch.setattr(srv_mod, "DIAL_HEARTBEAT_PATH", str(bad))
+    monkeypatch.setattr(dial_module, "DIAL_HEARTBEAT_PATH", str(bad))
     out = srv_mod._load_dial_heartbeat()
     assert out["last_seen_ip"] is None
 
@@ -3708,7 +3749,7 @@ def test_load_dial_heartbeat_wrong_types_returns_defaults_per_field(
         "last_seen_ip": "192.168.1.89",  # valid
         "last_message": 42,              # wrong type
     }))
-    monkeypatch.setattr(srv_mod, "DIAL_HEARTBEAT_PATH", str(path))
+    monkeypatch.setattr(dial_module, "DIAL_HEARTBEAT_PATH", str(path))
     out = srv_mod._load_dial_heartbeat()
     assert out["last_seen_at"] is None
     assert out["last_seen_ip"] == "192.168.1.89"
@@ -3721,7 +3762,7 @@ def test_persist_then_load_roundtrip(tmp_path, monkeypatch):
     import jasper.control.server as srv_mod
 
     path = tmp_path / "round.json"
-    monkeypatch.setattr(srv_mod, "DIAL_HEARTBEAT_PATH", str(path))
+    monkeypatch.setattr(dial_module, "DIAL_HEARTBEAT_PATH", str(path))
     snapshot = {
         "last_seen_at": 1779550000.0,
         "last_seen_ip": "192.168.1.89",
@@ -3741,7 +3782,7 @@ def test_persist_dial_heartbeat_is_atomic_via_tempfile(tmp_path, monkeypatch):
     import jasper.control.server as srv_mod
 
     path = tmp_path / "atomic.json"
-    monkeypatch.setattr(srv_mod, "DIAL_HEARTBEAT_PATH", str(path))
+    monkeypatch.setattr(dial_module, "DIAL_HEARTBEAT_PATH", str(path))
     srv_mod._persist_dial_heartbeat({
         "last_seen_at": 1.0, "last_seen_ip": "1.2.3.4", "last_message": "x",
     })
@@ -3761,7 +3802,9 @@ def test_persist_dial_heartbeat_fails_soft_on_io_error(tmp_path, monkeypatch, ca
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("")
     monkeypatch.setattr(
-        srv_mod, "DIAL_HEARTBEAT_PATH", str(blocker / "child" / "hb.json"),
+        dial_module,
+        "DIAL_HEARTBEAT_PATH",
+        str(blocker / "child" / "hb.json"),
     )
     with caplog.at_level(logging.WARNING, logger="jasper.dial"):
         srv_mod._persist_dial_heartbeat({
@@ -3793,13 +3836,13 @@ def test_state_dial_online_uses_persisted_ip_after_restart_simulation(
         "last_seen_ip": "192.168.1.89",
         "last_message": "[encoder] detent=1 → POST OK",
     }))
-    monkeypatch.setattr(srv_mod, "DIAL_HEARTBEAT_PATH", str(path))
+    monkeypatch.setattr(dial_module, "DIAL_HEARTBEAT_PATH", str(path))
 
     # Simulate fresh-process startup: reload the heartbeat into the
     # module-level dict.
     fresh = srv_mod._load_dial_heartbeat()
     for k, v in fresh.items():
-        srv_mod._dial_heartbeat[k] = v
+        dial_module._dial_heartbeat[k] = v
 
     # Stub the TCP probe so the test doesn't touch the network.
     probed = []
