@@ -467,6 +467,12 @@ primitive layer:
   paths return 404 without revealing CSRF state.
 - Use `send_html_response()` / `send_see_other()` rather than
   hand-rolled response helpers.
+- `send_json_response()` is the canonical response API when the caller has a
+  Python payload; `send_proxy_json()` is the byte-preserving API when the caller
+  already has encoded JSON bytes (proxied or local). Neither wizard pages nor
+  handlers should hand-roll JSON response headers. When touching a default
+  `json.dumps(...).encode()` local response, migrate it to the object API rather
+  than preserving serialization whose bytes have no explicit contract.
 - Hand page data to an ES module with `json_island(element_id, payload)`
   (a typed `application/json` data island), never a hand-built
   `<script>` + `json.dumps` — the helper owns the `<`/`>`/`&` escaping

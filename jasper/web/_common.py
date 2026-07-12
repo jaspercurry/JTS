@@ -1241,3 +1241,14 @@ def send_proxy_json(
     handler.send_header("Cache-Control", "no-store")
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def send_json_response(
+    handler: BaseHTTPRequestHandler,
+    payload: Any,
+    *,
+    status: int = 200,
+) -> None:
+    """Serialize a local payload and send the canonical JSON response."""
+    body = json.dumps(payload).encode("utf-8")
+    send_proxy_json(handler, body, status=status)

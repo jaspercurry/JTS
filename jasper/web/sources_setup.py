@@ -77,6 +77,7 @@ from ._common import (
     canonical_page,
     reject_csrf,
     send_html_response,
+    send_json_response,
     toggle_html,
     guard_read_request,
     guard_mutating_request,
@@ -717,13 +718,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            send_json_response(self, payload, status=status)
 
         def _read_json(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length") or "0")
