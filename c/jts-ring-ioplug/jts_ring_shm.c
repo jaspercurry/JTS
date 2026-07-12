@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -113,6 +114,31 @@ static void test_barrier_after_exclusive_create(int fd) {
 
 static void test_report_size_wait(int fd, const struct stat *st) {
     test_report_inode(test_fd_from_env("JTS_RING_TEST_SIZE_WAIT_FD"), fd, st);
+}
+
+static void test_report_lock_wait(void) {
+    int fd = test_fd_from_env("JTS_RING_TEST_LOCK_WAIT_FD");
+    if (fd >= 0) test_write_all(fd, "w", 1);
+}
+
+static void test_barrier_after_init(int fd) {
+    int ready_fd = test_fd_from_env("JTS_RING_TEST_POST_INIT_READY_FD");
+    int release_fd = test_fd_from_env("JTS_RING_TEST_POST_INIT_RELEASE_FD");
+    if (ready_fd < 0 || release_fd < 0) return;
+    test_report_inode(ready_fd, fd, NULL);
+    char release = '\0';
+    while (read(release_fd, &release, 1) < 0 && errno == EINTR) {
+    }
+}
+
+static void test_barrier_before_reclaim(void) {
+    int ready_fd = test_fd_from_env("JTS_RING_TEST_RECLAIM_READY_FD");
+    int release_fd = test_fd_from_env("JTS_RING_TEST_RECLAIM_RELEASE_FD");
+    if (ready_fd < 0 || release_fd < 0) return;
+    test_write_all(ready_fd, "r", 1);
+    char release = '\0';
+    while (read(release_fd, &release, 1) < 0 && errno == EINTR) {
+    }
 }
 #endif
 
@@ -293,6 +319,76 @@ static void ring_mapping_close(ring_mapping_t *mapping) {
     ring_mapping_reset(mapping);
 }
 
+static int path_matches_fd(const char *path, int fd) {
+    struct stat fd_st;
+    struct stat path_st;
+    if (fstat(fd, &fd_st) < 0) return -errno;
+    if (stat(path, &path_st) < 0) return -errno;
+    return fd_st.st_dev == path_st.st_dev && fd_st.st_ino == path_st.st_ino ? 1 : 0;
+}
+
+static void open_lock_sleep(void) {
+    struct timespec ts = {
+        .tv_sec = 0,
+        .tv_nsec = (long)(JTS_RING_OPEN_LOCK_WAIT_STEP_US * 1000ull),
+    };
+    nanosleep(&ts, NULL);
+}
+
+static int acquire_open_lock(const char *path, ring_role_t role, int *lock_fd) {
+    char lock_path[PATH_MAX];
+    int n = snprintf(lock_path, sizeof(lock_path), "%s%s", path,
+                     JTS_RING_OPEN_LOCK_SUFFIX);
+    if (n < 0 || (size_t)n >= sizeof(lock_path)) return -ENAMETOOLONG;
+    int fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC,
+                  JTS_RING_OPEN_LOCK_MODE);
+    if (fd < 0) return -errno;
+    // Heal a creator's restrictive umask so future group-jasper peers can
+    // participate. A non-owner peer may see EPERM on an already-correct lock;
+    // it can still lock the opened fd, so that is not a transaction failure.
+    if (fchmod(fd, JTS_RING_OPEN_LOCK_MODE) < 0 && errno != EPERM) {
+        int chmod_errno = errno;
+        close(fd);
+        return -chmod_errno;
+    }
+    uint64_t deadline = jts_ring_monotonic_ns() +
+                        JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS * 1000000ull;
+#ifdef JTS_RING_TESTING
+    int wait_reported = 0;
+#endif
+    for (;;) {
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+            *lock_fd = fd;
+            return 0;
+        }
+        int lock_errno = errno;
+        if (lock_errno != EWOULDBLOCK && lock_errno != EAGAIN &&
+            lock_errno != EINTR) {
+            close(fd);
+            return -lock_errno;
+        }
+#ifdef JTS_RING_TESTING
+        if (!wait_reported) {
+            test_report_lock_wait();
+            wait_reported = 1;
+        }
+#endif
+        if (jts_ring_monotonic_ns() >= deadline) {
+            fprintf(stderr, "event=jts_ring.%s.open_lock_exhausted path=%s\n",
+                    ring_role_name(role), path);
+            close(fd);
+            return -EAGAIN;
+        }
+        open_lock_sleep();
+    }
+}
+
+static void release_open_lock(int lock_fd) {
+    if (lock_fd < 0) return;
+    (void)flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+}
+
 // Init a freshly-created (O_EXCL) fd: ftruncate, map, write config fields, then
 // publish magic LAST with release. Returns 0 on success.
 static int init_created_mapping(int fd, const jts_ring_geometry_t *g,
@@ -462,7 +558,17 @@ static int ring_mapping_open(const char *path, const jts_ring_geometry_t *expect
         return mkrc;
     }
 
-    for (int attempt = 0; attempt < 8; attempt++) {
+    int lock_fd = -1;
+    int lock_rc = acquire_open_lock(path, role, &lock_fd);
+    if (lock_rc != 0) return lock_rc;
+
+    int result = -EAGAIN;
+
+    for (unsigned attempt = 0; attempt < JTS_RING_OPEN_MAX_ATTEMPTS; attempt++) {
+#ifdef JTS_RING_TESTING
+        const char *force_retry = getenv("JTS_RING_TEST_FORCE_RETRY");
+        if (force_retry != NULL && force_retry[0] == '1') continue;
+#endif
         int create_fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0660);
         if (create_fd >= 0) {
 #ifdef JTS_RING_TESTING
@@ -470,60 +576,113 @@ static int ring_mapping_open(const char *path, const jts_ring_geometry_t *expect
 #endif
             int rc = init_created_mapping(create_fd, expected, out);
             if (rc != 0) {
+                int still_linked = path_matches_fd(path, create_fd);
                 close(create_fd);
-                unlink(path); // drop the half-baked file
+                if (still_linked == 1) (void)unlink(path);
                 fprintf(stderr, "event=jts_ring.%s.create_failed rc=%d\n", role_name,
                         rc);
-                return rc;
+                result = rc;
+                break;
             }
-            return 0;
+#ifdef JTS_RING_TESTING
+            test_barrier_after_init(out->fd);
+#endif
+            int owns_path = path_matches_fd(path, out->fd);
+            if (owns_path != 1) {
+                fprintf(stderr,
+                        "event=jts_ring.%s.creator_path_lost path=%s rc=%d\n",
+                        role_name, path, owns_path);
+                ring_mapping_close(out);
+                if (owns_path == 0 || owns_path == -ENOENT) continue;
+                result = owns_path;
+                break;
+            }
+            result = 0;
+            break;
         }
         int create_errno = errno;
         if (create_errno != EEXIST) {
             fprintf(stderr, "event=jts_ring.%s.create_open_failed errno=%d\n",
                     role_name, create_errno);
-            return -create_errno;
+            result = -create_errno;
+            break;
         }
 
         int fd = open(path, O_RDWR | O_CLOEXEC);
         if (fd < 0) {
             int attach_errno = errno;
             if (attach_errno == ENOENT) continue; // raced an unlink; retry create
-            return -attach_errno;
+            result = -attach_errno;
+            break;
+        }
+        struct stat opened_st;
+        int opened_stat_rc = fstat(fd, &opened_st);
+        if (opened_stat_rc < 0) {
+            result = -errno;
+            close(fd);
+            break;
         }
         ring_attach_result_t rc =
             attach_existing_mapping(fd, expected, out, &reason);
-        if (rc == RING_ATTACH_VALID) return 0;
+        if (rc == RING_ATTACH_VALID) {
+            int owns_path = path_matches_fd(path, out->fd);
+            if (owns_path == 1) {
+                result = 0;
+                break;
+            }
+            ring_mapping_close(out);
+            if (owns_path == 0 || owns_path == -ENOENT) continue;
+            result = owns_path;
+            break;
+        }
         close(fd);
         if (rc == RING_ATTACH_FATAL) {
             fprintf(stderr, "event=jts_ring.%s.attach_fatal reason=%s\n", role_name,
                     reason ? reason : "(unknown)");
-            return -EINVAL;
+            result = -EINVAL;
+            break;
         }
         // Torn init. Only the owner may reclaim, only under the owned path.
         // Otherwise fatal (do not clobber a foreign file).
         if (!owned_ring_path(path)) {
             fprintf(stderr, "event=jts_ring.%s.torn_not_reclaimable path=%s\n",
                     role_name, path);
-            return -EINVAL;
+            result = -EINVAL;
+            break;
         }
+        struct stat linked_st;
+        if (stat(path, &linked_st) < 0) {
+            if (errno == ENOENT) continue;
+            result = -errno;
+            break;
+        }
+        if (linked_st.st_dev != opened_st.st_dev ||
+            linked_st.st_ino != opened_st.st_ino) {
+            continue; // pathname changed while this inode was classified
+        }
+#ifdef JTS_RING_TESTING
+        test_barrier_before_reclaim();
+#endif
         if (unlink_owned_ring(path) < 0) {
             int unlink_errno = errno;
             if (unlink_errno == ENOENT) continue; // another reclaimer won; retry
             fprintf(stderr,
                     "event=jts_ring.%s.reclaim_failed errno=%d path=%s\n",
                     role_name, unlink_errno, path);
-            return -unlink_errno;
+            result = -unlink_errno;
+            break;
         }
         fprintf(stderr, "event=jts_ring.%s.reclaimed_magic_invalid path=%s\n",
                 role_name, path);
         // loop and re-create
     }
 
-    // Guard against attempt exhaustion: if every one of the 8 iterations ended
-    // in `continue` (raced an unlink) or reclaim-and-loop (pathological racing),
-    fprintf(stderr, "event=jts_ring.%s.attach_exhausted path=%s\n", role_name, path);
-    return -EAGAIN;
+    if (result == -EAGAIN) {
+        fprintf(stderr, "event=jts_ring.%s.attach_exhausted path=%s\n", role_name,
+                path);
+    }
+    release_open_lock(lock_fd);
+    return result;
 }
 
 static void writer_take_mapping(jts_ring_writer_t *out, ring_mapping_t *mapping) {

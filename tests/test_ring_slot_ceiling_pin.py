@@ -33,6 +33,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _C_HEADER = _REPO_ROOT / "c" / "jts-ring-ioplug" / "jts_ring_shm.h"
 _RING_LAYOUT_RS = _REPO_ROOT / "rust" / "jasper-ring" / "src" / "layout.rs"
+_RING_LIB_RS = _REPO_ROOT / "rust" / "jasper-ring" / "src" / "lib.rs"
 _OUTPUTD_CONFIG_RS = _REPO_ROOT / "rust" / "jasper-outputd" / "src" / "config.rs"
 
 
@@ -46,6 +47,12 @@ def _extract(pattern: str, text: str, label: str) -> int:
     m = re.search(pattern, text)
     assert m is not None, f"could not find {label} definition (pattern {pattern!r})"
     return int(m.group(1))
+
+
+def _extract_text(pattern: str, text: str, label: str) -> str:
+    m = re.search(pattern, text)
+    assert m is not None, f"could not find {label} definition (pattern {pattern!r})"
+    return m.group(1)
 
 
 def test_ring_slot_ceiling_agrees_across_c_and_both_rust_crates():
@@ -70,3 +77,64 @@ def test_ring_slot_ceiling_agrees_across_c_and_both_rust_crates():
         "Change all three in the same commit — the reader rejects a writer's "
         "out-of-range n_slots at RUNTIME, so a mismatch only surfaces on-Pi arm."
     )
+
+
+def test_ring_open_transaction_lock_contract_agrees_between_c_and_rust():
+    c = _read(_C_HEADER)
+    rust = _read(_RING_LIB_RS)
+    c_suffix = _extract_text(
+        r'#define\s+JTS_RING_OPEN_LOCK_SUFFIX\s+"([^"]+)"',
+        c,
+        "JTS_RING_OPEN_LOCK_SUFFIX",
+    )
+    rust_suffix = _extract_text(
+        r'const\s+OPEN_LOCK_SUFFIX:\s*&str\s*=\s*"([^"]+)";',
+        rust,
+        "OPEN_LOCK_SUFFIX",
+    )
+    c_mode = _extract_text(
+        r"#define\s+JTS_RING_OPEN_LOCK_MODE\s+(0[0-7]+)",
+        c,
+        "JTS_RING_OPEN_LOCK_MODE",
+    )
+    rust_mode = _extract_text(
+        r"const\s+OPEN_LOCK_MODE:\s*u32\s*=\s*(0o[0-7]+);",
+        rust,
+        "OPEN_LOCK_MODE",
+    )
+    c_timeout = _extract(
+        r"#define\s+JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS\s+(\d+)ull",
+        c,
+        "JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS",
+    )
+    rust_timeout = _extract(
+        r"const\s+OPEN_LOCK_WAIT_TIMEOUT_MS:\s*u64\s*=\s*(\d+);",
+        rust,
+        "OPEN_LOCK_WAIT_TIMEOUT_MS",
+    )
+    c_step = _extract(
+        r"#define\s+JTS_RING_OPEN_LOCK_WAIT_STEP_US\s+(\d+)ull",
+        c,
+        "JTS_RING_OPEN_LOCK_WAIT_STEP_US",
+    )
+    rust_step = _extract(
+        r"const\s+OPEN_LOCK_WAIT_STEP_US:\s*u64\s*=\s*([\d_]+);",
+        rust,
+        "OPEN_LOCK_WAIT_STEP_US",
+    )
+    c_attempts = _extract(
+        r"#define\s+JTS_RING_OPEN_MAX_ATTEMPTS\s+(\d+)u",
+        c,
+        "JTS_RING_OPEN_MAX_ATTEMPTS",
+    )
+    rust_attempts = _extract(
+        r"const\s+OPEN_MAX_ATTEMPTS:\s*usize\s*=\s*(\d+);",
+        rust,
+        "OPEN_MAX_ATTEMPTS",
+    )
+
+    assert c_suffix == rust_suffix == ".open.lock"
+    assert int(c_mode, 8) == int(rust_mode.removeprefix("0o"), 8) == 0o660
+    assert c_timeout == rust_timeout
+    assert c_step == int(str(rust_step).replace("_", ""))
+    assert c_attempts == rust_attempts

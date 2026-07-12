@@ -223,6 +223,16 @@ Verified missing on main (2026-07-03):
    `/etc/alsa/conf.d/`, 0644), plus the `/dev/shm/jts-ring` directory via
    `deploy/tmpfiles/jts-ring.conf` (mode 2775 `root:jasper`). Both INERT —
    nothing opens the PCMs / no ring file is created until P2 arms a coupling.
+
+   Ring open/recovery is one cross-language transaction. Both the C ioplug and
+   Rust ring crate take the persistent adjacent `<ring path>.open.lock` flock
+   (0660; bounded 500 ms acquisition) before they classify, conditionally
+   reclaim, create, or initialize a ring. The lock stays held through a final
+   fd-versus-path inode check, so a stale torn-inode reclaimer cannot unlink a
+   valid replacement and a creator cannot report success on an unlinked private
+   mapping. Valid-magic geometry/version failures remain fatal and are never
+   reclaimed. Lock contention fails with `EAGAIN` without touching the ring;
+   there is no background repair loop.
 3. **Config emission**: ~~no product emitter can produce a ring CamillaDSP
    config.~~ **CLOSED by P2**: `capture_kwargs_for_coupling("shm_ring")`
    (`jasper/fanin_coupling.py`) now returns the FULL end-to-end ring topology —
@@ -535,7 +545,8 @@ renderers,aec}.py`, `jasper/cli/{aec_tune,aec_bridge}.py`,
 measured floors: [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md)
 "Final state — 2026-07-03".
 
-Last verified: 2026-07-10 (A2/P5a marked DONE — the Rust solo/aloop USB capture
+Last verified: 2026-07-12 (cross-language ring open/reclaim transaction checked;
+A2/P5a marked DONE — the Rust solo/aloop USB capture
 path was deleted 2026-07-10; the standby daemon stays and `JASPER_USBSINK_AUDIO_STANDBY`
 is now always `1`. Only the USB-ingress rows were re-verified this pass; other
 phase rows unchanged.)

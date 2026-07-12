@@ -20,6 +20,7 @@
 #include "jts_ring_shm.h"
 
 #include <assert.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -34,6 +35,8 @@
 
 static int g_failures = 0;
 static char g_owned_dir[256];
+static char g_test_paths[128][512];
+static size_t g_test_path_count = 0;
 
 typedef struct {
     uint64_t dev;
@@ -73,6 +76,69 @@ static int read_observation(int fd, test_inode_observation_t *observation) {
         }
     }
     return 0;
+}
+
+static int read_bytes_bounded(int fd, void *out, size_t len) {
+    uint8_t *cursor = (uint8_t *)out;
+    size_t remaining = len;
+    while (remaining > 0) {
+        struct pollfd pfd = {.fd = fd, .events = POLLIN};
+        int poll_rc;
+        do {
+            poll_rc = poll(&pfd, 1, 2000);
+        } while (poll_rc < 0 && errno == EINTR);
+        if (poll_rc <= 0 || !(pfd.revents & POLLIN)) return -1;
+        ssize_t n = read(fd, cursor, remaining);
+        if (n > 0) {
+            cursor += (size_t)n;
+            remaining -= (size_t)n;
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void report_fd_identity(int report_fd, int ring_fd) {
+    struct stat st;
+    if (fstat(ring_fd, &st) < 0) return;
+    test_inode_observation_t observed = {
+        .dev = (uint64_t)st.st_dev,
+        .ino = (uint64_t)st.st_ino,
+        .size = (int64_t)st.st_size,
+    };
+    (void)write(report_fd, &observed, sizeof(observed));
+}
+
+static void cleanup_owned_test_locks(void) {
+    DIR *dir = opendir(g_owned_dir);
+    if (dir == NULL) return;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strstr(entry->d_name, JTS_RING_OPEN_LOCK_SUFFIX) == NULL) continue;
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s", g_owned_dir, entry->d_name);
+        (void)unlink(path);
+    }
+    closedir(dir);
+}
+
+static void remember_test_path(const char *path) {
+    if (g_test_path_count >= sizeof(g_test_paths) / sizeof(g_test_paths[0])) return;
+    snprintf(g_test_paths[g_test_path_count], sizeof(g_test_paths[0]), "%s", path);
+    g_test_path_count++;
+}
+
+static void cleanup_all_test_paths(void) {
+    for (size_t i = 0; i < g_test_path_count; i++) {
+        (void)unlink(g_test_paths[i]);
+        char lock_path[576];
+        snprintf(lock_path, sizeof(lock_path), "%s%s", g_test_paths[i],
+                 JTS_RING_OPEN_LOCK_SUFFIX);
+        (void)unlink(lock_path);
+    }
 }
 
 // A minimal in-process reader mirroring rust/jasper-ring's try_consume_slot:
@@ -138,6 +204,7 @@ static jts_ring_geometry_t proto_geometry(void) {
 static void tmp_path(char *buf, size_t buflen, const char *tag) {
     snprintf(buf, buflen, "/tmp/jts-ring-ctest-%d-%s.ring", (int)getpid(), tag);
     unlink(buf); // fresh
+    remember_test_path(buf);
 }
 
 static void owned_tmp_path(char *buf, size_t buflen, const char *tag) {
@@ -145,6 +212,7 @@ static void owned_tmp_path(char *buf, size_t buflen, const char *tag) {
           "create portable test-owned ring directory");
     snprintf(buf, buflen, "%s/%s.ring", g_owned_dir, tag);
     unlink(buf);
+    remember_test_path(buf);
 }
 
 static void test_geometry_math_and_validation(void) {
@@ -1004,23 +1072,22 @@ static void test_magicless_foreign_file_is_rejected_without_reclaim(void) {
 }
 
 static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
-    // Reproduce the exact split-brain race through TWO public openers. The
-    // test-only two-way barrier holds the O_EXCL winner before ftruncate. The
-    // competing opener reports from inside wait_for_mappable_size, including the
-    // fd's dev/inode/size; only after the parent proves that it opened the exact
-    // zero-size creator inode does the parent release the creator. Both public
-    // openers must then succeed without replacing that inode.
+    // Exact A -> B -> C regression: A holds the transaction lock after O_EXCL
+    // create but before ftruncate; B and C both prove they are blocked on that
+    // SAME adjacent lock. Releasing A lets it initialize + verify pathname
+    // ownership, after which B and C attach serially. Nobody may classify A's
+    // zero-size live inode as torn or replace it.
     char path[320];
     owned_tmp_path(path, sizeof(path), "first-open-race");
     jts_ring_geometry_t g = proto_geometry();
 
     int creator_ready[2] = {-1, -1};
     int creator_release[2] = {-1, -1};
-    int size_wait_ready[2] = {-1, -1};
+    int lock_wait_ready[2] = {-1, -1};
     CHECK(pipe(creator_ready) == 0, "create creator-ready barrier pipe");
     CHECK(pipe(creator_release) == 0, "create creator-release barrier pipe");
-    CHECK(pipe(size_wait_ready) == 0, "create size-wait barrier pipe");
-    if (creator_ready[0] < 0 || creator_release[0] < 0 || size_wait_ready[0] < 0) {
+    CHECK(pipe(lock_wait_ready) == 0, "create lock-wait barrier pipe");
+    if (creator_ready[0] < 0 || creator_release[0] < 0 || lock_wait_ready[0] < 0) {
         unlink(path);
         return;
     }
@@ -1038,8 +1105,8 @@ static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
     if (creator == 0) {
         close(creator_ready[0]);
         close(creator_release[1]);
-        close(size_wait_ready[0]);
-        close(size_wait_ready[1]);
+        close(lock_wait_ready[0]);
+        close(lock_wait_ready[1]);
         jts_ring_writer_t w;
         int rc = jts_ring_writer_open(path, &g, &w);
         if (rc == 0) jts_ring_writer_close(&w);
@@ -1052,8 +1119,8 @@ static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
     if (creator < 0) {
         close(creator_ready[0]);
         close(creator_release[1]);
-        close(size_wait_ready[0]);
-        close(size_wait_ready[1]);
+        close(lock_wait_ready[0]);
+        close(lock_wait_ready[1]);
         unlink(path);
         return;
     }
@@ -1063,15 +1130,15 @@ static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
     CHECK(creator_ready_rc == 0, "creator reports its O_EXCL inode before ftruncate");
     CHECK(creator_observation.size == 0, "O_EXCL creator inode is still zero-size");
 
-    char size_wait_fd[32];
-    snprintf(size_wait_fd, sizeof(size_wait_fd), "%d", size_wait_ready[1]);
-    CHECK(setenv("JTS_RING_TEST_SIZE_WAIT_FD", size_wait_fd, 1) == 0,
-          "arm competitor size-wait hook");
+    char lock_wait_fd[32];
+    snprintf(lock_wait_fd, sizeof(lock_wait_fd), "%d", lock_wait_ready[1]);
+    CHECK(setenv("JTS_RING_TEST_LOCK_WAIT_FD", lock_wait_fd, 1) == 0,
+          "arm competitor lock-wait hook");
 
-    pid_t attacher = fork();
-    CHECK(attacher >= 0, "fork simultaneous public attacher");
-    if (attacher == 0) {
-        close(size_wait_ready[0]);
+    pid_t attacher_b = fork();
+    CHECK(attacher_b >= 0, "fork simultaneous public attacher B");
+    if (attacher_b == 0) {
+        close(lock_wait_ready[0]);
         close(creator_ready[0]);
         close(creator_release[1]);
         jts_ring_writer_t w;
@@ -1079,52 +1146,267 @@ static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
         if (rc == 0) jts_ring_writer_close(&w);
         _exit(rc == 0 ? 0 : 3);
     }
-    unsetenv("JTS_RING_TEST_SIZE_WAIT_FD");
-    close(size_wait_ready[1]);
-    if (attacher < 0) {
+    pid_t attacher_c = fork();
+    CHECK(attacher_c >= 0, "fork simultaneous public attacher C");
+    if (attacher_c == 0) {
+        close(lock_wait_ready[0]);
+        close(creator_ready[0]);
+        close(creator_release[1]);
+        jts_ring_writer_t w;
+        int rc = jts_ring_writer_open(path, &g, &w);
+        if (rc == 0) jts_ring_writer_close(&w);
+        _exit(rc == 0 ? 0 : 4);
+    }
+    unsetenv("JTS_RING_TEST_LOCK_WAIT_FD");
+    close(lock_wait_ready[1]);
+    if (attacher_b < 0 || attacher_c < 0) {
         CHECK(write(creator_release[1], "x", 1) == 1, "release creator after fork failure");
         int creator_status = 0;
         waitpid(creator, &creator_status, 0);
         close(creator_ready[0]);
         close(creator_release[1]);
-        close(size_wait_ready[0]);
+        close(lock_wait_ready[0]);
         unlink(path);
         return;
     }
 
-    test_inode_observation_t attacher_observation = {0};
-    int attacher_ready_rc = read_observation(size_wait_ready[0], &attacher_observation);
-    CHECK(attacher_ready_rc == 0,
-          "competitor reports entry into the production size-wait loop");
-    CHECK(attacher_observation.size == 0,
-          "competitor observes the creator inode before ftruncate");
-    CHECK(creator_ready_rc == 0 && attacher_ready_rc == 0 &&
-              attacher_observation.dev == creator_observation.dev &&
-              attacher_observation.ino == creator_observation.ino,
-          "competitor opened the exact zero-size O_EXCL creator inode");
+    char waits[2] = {0};
+    CHECK(read_bytes_bounded(lock_wait_ready[0], waits, sizeof(waits)) == 0,
+          "B and C both report production open-lock contention");
 
     CHECK(write(creator_release[1], "x", 1) == 1,
-          "release creator only after competitor entered size wait");
+          "release creator only after B and C are serialized behind it");
     close(creator_ready[0]);
     close(creator_release[1]);
-    close(size_wait_ready[0]);
+    close(lock_wait_ready[0]);
 
     int creator_status = 0;
-    int attacher_status = 0;
+    int attacher_b_status = 0;
+    int attacher_c_status = 0;
     CHECK(waitpid(creator, &creator_status, 0) == creator,
           "join delayed public creator");
-    CHECK(waitpid(attacher, &attacher_status, 0) == attacher,
-          "join simultaneous public attacher");
+    CHECK(waitpid(attacher_b, &attacher_b_status, 0) == attacher_b,
+          "join simultaneous public attacher B");
+    CHECK(waitpid(attacher_c, &attacher_c_status, 0) == attacher_c,
+          "join simultaneous public attacher C");
     CHECK(WIFEXITED(creator_status) && WEXITSTATUS(creator_status) == 0,
           "O_EXCL-winning public opener succeeds");
-    CHECK(WIFEXITED(attacher_status) && WEXITSTATUS(attacher_status) == 0,
-          "competing public opener waits and attaches");
+    CHECK(WIFEXITED(attacher_b_status) && WEXITSTATUS(attacher_b_status) == 0,
+          "competing public opener B waits and attaches");
+    CHECK(WIFEXITED(attacher_c_status) && WEXITSTATUS(attacher_c_status) == 0,
+          "competing public opener C waits and attaches");
     struct stat path_st;
     CHECK(creator_ready_rc == 0 && stat(path, &path_st) == 0 &&
               (uint64_t)path_st.st_dev == creator_observation.dev &&
               (uint64_t)path_st.st_ino == creator_observation.ino,
           "owned path still names the original creator inode");
 
+    unlink(path);
+}
+
+static void test_stale_reclaimer_a_cannot_delete_replacement_for_b_and_c(void) {
+    char path[320];
+    owned_tmp_path(path, sizeof(path), "stale-reclaimer-a-b-c");
+    jts_ring_geometry_t g = proto_geometry();
+    int torn_fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0660);
+    CHECK(torn_fd >= 0, "create stale-reclaimer torn inode");
+    if (torn_fd < 0) return;
+    CHECK(ftruncate(torn_fd, (off_t)jts_ring_file_size(&g)) == 0,
+          "size stale-reclaimer torn inode");
+    struct stat torn_st;
+    CHECK(fstat(torn_fd, &torn_st) == 0, "stat stale-reclaimer torn inode");
+    close(torn_fd);
+
+    int reclaim_ready[2] = {-1, -1};
+    int reclaim_release[2] = {-1, -1};
+    int lock_wait[2] = {-1, -1};
+    int results[2] = {-1, -1};
+    CHECK(pipe(reclaim_ready) == 0, "create reclaim-ready pipe");
+    CHECK(pipe(reclaim_release) == 0, "create reclaim-release pipe");
+    CHECK(pipe(lock_wait) == 0, "create stale-reclaimer lock-wait pipe");
+    CHECK(pipe(results) == 0, "create stale-reclaimer result pipe");
+    if (reclaim_ready[0] < 0 || reclaim_release[0] < 0 || lock_wait[0] < 0 ||
+        results[0] < 0) {
+        unlink(path);
+        return;
+    }
+
+    char ready_fd[32], release_fd[32], result_fd[32];
+    snprintf(ready_fd, sizeof(ready_fd), "%d", reclaim_ready[1]);
+    snprintf(release_fd, sizeof(release_fd), "%d", reclaim_release[0]);
+    snprintf(result_fd, sizeof(result_fd), "%d", results[1]);
+    CHECK(setenv("JTS_RING_TEST_RECLAIM_READY_FD", ready_fd, 1) == 0,
+          "arm reclaimer A ready hook");
+    CHECK(setenv("JTS_RING_TEST_RECLAIM_RELEASE_FD", release_fd, 1) == 0,
+          "arm reclaimer A release hook");
+    pid_t a = fork();
+    CHECK(a >= 0, "fork stale reclaimer A");
+    if (a == 0) {
+        jts_ring_writer_t w;
+        int rc = jts_ring_writer_open(path, &g, &w);
+        if (rc == 0) {
+            test_inode_observation_t observed;
+            struct stat st;
+            if (fstat(w.fd, &st) == 0) {
+                observed = (test_inode_observation_t){.dev = (uint64_t)st.st_dev,
+                                                      .ino = (uint64_t)st.st_ino,
+                                                      .size = (int64_t)st.st_size};
+                (void)write(results[1], &observed, sizeof(observed));
+            }
+            jts_ring_writer_close(&w);
+        }
+        _exit(rc == 0 ? 0 : 6);
+    }
+    unsetenv("JTS_RING_TEST_RECLAIM_READY_FD");
+    unsetenv("JTS_RING_TEST_RECLAIM_RELEASE_FD");
+    close(reclaim_ready[1]);
+    close(reclaim_release[0]);
+    char reclaim_signal = 0;
+    CHECK(read_bytes_bounded(reclaim_ready[0], &reclaim_signal, 1) == 0,
+          "A holds lock after torn classification and before reclaim");
+
+    char lock_fd_text[32];
+    snprintf(lock_fd_text, sizeof(lock_fd_text), "%d", lock_wait[1]);
+    CHECK(setenv("JTS_RING_TEST_LOCK_WAIT_FD", lock_fd_text, 1) == 0,
+          "arm stale B/C lock-wait hook");
+    pid_t b = fork();
+    if (b == 0) {
+        jts_ring_writer_t w;
+        int rc = jts_ring_writer_open(path, &g, &w);
+        if (rc == 0) {
+            report_fd_identity(results[1], w.fd);
+            jts_ring_writer_close(&w);
+        }
+        _exit(rc == 0 ? 0 : 7);
+    }
+    pid_t c = fork();
+    if (c == 0) {
+        jts_ring_writer_t w;
+        int rc = jts_ring_writer_open(path, &g, &w);
+        if (rc == 0) {
+            report_fd_identity(results[1], w.fd);
+            jts_ring_writer_close(&w);
+        }
+        _exit(rc == 0 ? 0 : 8);
+    }
+    unsetenv("JTS_RING_TEST_LOCK_WAIT_FD");
+    close(lock_wait[1]);
+    char waits[2] = {0};
+    CHECK(read_bytes_bounded(lock_wait[0], waits, sizeof(waits)) == 0,
+          "stale B and C serialize behind reclaimer A");
+    CHECK(write(reclaim_release[1], "x", 1) == 1, "release reclaimer A");
+    close(reclaim_ready[0]);
+    close(reclaim_release[1]);
+    close(lock_wait[0]);
+    close(results[1]);
+
+    test_inode_observation_t observed[3] = {{0}};
+    CHECK(read_bytes_bounded(results[0], observed, sizeof(observed)) == 0,
+          "A, B, and C report their final mapped inode");
+    close(results[0]);
+    int sa = 0, sb = 0, sc = 0;
+    CHECK(waitpid(a, &sa, 0) == a && WIFEXITED(sa) && WEXITSTATUS(sa) == 0,
+          "stale reclaimer A succeeds");
+    CHECK(waitpid(b, &sb, 0) == b && WIFEXITED(sb) && WEXITSTATUS(sb) == 0,
+          "stale contender B succeeds");
+    CHECK(waitpid(c, &sc, 0) == c && WIFEXITED(sc) && WEXITSTATUS(sc) == 0,
+          "stale contender C succeeds");
+    CHECK(observed[0].dev == observed[1].dev &&
+              observed[0].ino == observed[1].ino &&
+              observed[0].dev == observed[2].dev &&
+              observed[0].ino == observed[2].ino,
+          "A, B, and C all map one replacement inode");
+    CHECK(observed[0].dev != (uint64_t)torn_st.st_dev ||
+              observed[0].ino != (uint64_t)torn_st.st_ino,
+          "serialized reclaim replaced the original torn inode once");
+    unlink(path);
+}
+
+static void test_creator_refuses_success_after_path_replacement(void) {
+    char path[320];
+    char orphan[352];
+    owned_tmp_path(path, sizeof(path), "creator-path-replaced");
+    snprintf(orphan, sizeof(orphan), "%s.orphan", path);
+    jts_ring_geometry_t g = proto_geometry();
+    int ready[2] = {-1, -1};
+    int release[2] = {-1, -1};
+    CHECK(pipe(ready) == 0, "create post-init ready pipe");
+    CHECK(pipe(release) == 0, "create post-init release pipe");
+    if (ready[0] < 0 || release[0] < 0) return;
+
+    char ready_fd[32];
+    char release_fd[32];
+    snprintf(ready_fd, sizeof(ready_fd), "%d", ready[1]);
+    snprintf(release_fd, sizeof(release_fd), "%d", release[0]);
+    CHECK(setenv("JTS_RING_TEST_POST_INIT_READY_FD", ready_fd, 1) == 0,
+          "arm post-init ready hook");
+    CHECK(setenv("JTS_RING_TEST_POST_INIT_RELEASE_FD", release_fd, 1) == 0,
+          "arm post-init release hook");
+    pid_t creator = fork();
+    CHECK(creator >= 0, "fork path-replaced creator");
+    if (creator == 0) {
+        close(ready[0]);
+        close(release[1]);
+        jts_ring_writer_t w;
+        int rc = jts_ring_writer_open(path, &g, &w);
+        if (rc == 0) jts_ring_writer_close(&w);
+        _exit(rc == 0 ? 0 : 5);
+    }
+    unsetenv("JTS_RING_TEST_POST_INIT_READY_FD");
+    unsetenv("JTS_RING_TEST_POST_INIT_RELEASE_FD");
+    close(ready[1]);
+    close(release[0]);
+    if (creator < 0) {
+        close(ready[0]);
+        close(release[1]);
+        return;
+    }
+
+    test_inode_observation_t created = {0};
+    CHECK(read_observation(ready[0], &created) == 0,
+          "creator reports initialized fd before ownership verification");
+    CHECK(rename(path, orphan) == 0, "replace linked creator pathname");
+    CHECK(mkdir(path, 0770) == 0, "install non-ring replacement at pathname");
+    CHECK(write(release[1], "x", 1) == 1,
+          "release creator after pathname replacement");
+    close(ready[0]);
+    close(release[1]);
+    int status = 0;
+    CHECK(waitpid(creator, &status, 0) == creator, "join path-replaced creator");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) != 0,
+          "creator never reports success for an fd no longer linked at path");
+    struct stat orphan_st;
+    CHECK(stat(orphan, &orphan_st) == 0 &&
+              (uint64_t)orphan_st.st_dev == created.dev &&
+              (uint64_t)orphan_st.st_ino == created.ino,
+          "initialized orphan is the creator fd that failed ownership proof");
+    rmdir(path);
+    unlink(orphan);
+}
+
+static void test_open_retry_exhaustion_releases_lock(void) {
+    char path[320];
+    owned_tmp_path(path, sizeof(path), "retry-exhaustion");
+    jts_ring_geometry_t g = proto_geometry();
+    CHECK(setenv("JTS_RING_TEST_FORCE_RETRY", "1", 1) == 0,
+          "arm deterministic retry exhaustion");
+    jts_ring_writer_t exhausted;
+    int rc = jts_ring_writer_open(path, &g, &exhausted);
+    unsetenv("JTS_RING_TEST_FORCE_RETRY");
+    CHECK(rc == -EAGAIN, "eight open attempts exhaust with stable EAGAIN");
+    CHECK(exhausted.base == NULL && exhausted.fd == -1,
+          "retry exhaustion leaves public mapping detached");
+
+    jts_ring_writer_t recovered;
+    rc = jts_ring_writer_open(path, &g, &recovered);
+    CHECK(rc == 0, "lock is released after retry-exhaustion error");
+    if (rc == 0) jts_ring_writer_close(&recovered);
+    char lock_path[384];
+    snprintf(lock_path, sizeof(lock_path), "%s%s", path,
+             JTS_RING_OPEN_LOCK_SUFFIX);
+    struct stat lock_st;
+    CHECK(stat(lock_path, &lock_st) == 0 && (lock_st.st_mode & 0777) == 0660,
+          "C opener heals transaction lock mode to group-writable 0660");
     unlink(path);
 }
 
@@ -2461,6 +2743,9 @@ int main(void) {
     test_reader_creates_missing_parent_then_writer_attaches();
     test_magicless_foreign_file_is_rejected_without_reclaim();
     test_simultaneous_first_open_waits_for_creator_ftruncate();
+    test_stale_reclaimer_a_cannot_delete_replacement_for_b_and_c();
+    test_creator_refuses_success_after_path_replacement();
+    test_open_retry_exhaustion_releases_lock();
     test_owned_magicless_file_is_reclaimed();
     test_owned_reclaim_enoent_retries_after_concurrent_reclaimer();
     test_owned_reclaim_failure_is_logged_and_fail_closed();
@@ -2485,6 +2770,8 @@ int main(void) {
     test_capture_avail_implies_deliverable();
     test_capture_occupancy_clamp_prevents_phantom_avail();
     test_capture_destage_partial_reads();
+    cleanup_all_test_paths();
+    cleanup_owned_test_locks();
     rmdir(g_owned_dir);
 
     if (g_failures == 0) {
