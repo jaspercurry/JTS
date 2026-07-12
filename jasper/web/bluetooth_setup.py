@@ -39,6 +39,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from ._common import (
+    JsonBodyError,
     begin_request,
     canonical_header,
     canonical_page,
@@ -47,6 +48,7 @@ from ._common import (
     toggle_html,
     guard_read_request,
     guard_mutating_request,
+    read_json_object,
 )
 from ..bluetooth.adapter import (
     DISCOVERABLE_AUTO_OFF_SEC,
@@ -261,13 +263,9 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             self._send(status, body, "application/json")
 
         def _read_json(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length") or "0")
-            if length <= 0 or length > 1_000_000:
-                return {}
             try:
-                raw = self.rfile.read(length)
-                return json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+                return read_json_object(self, max_bytes=1_000_000)
+            except (JsonBodyError, OSError):
                 return {}
 
         def _begin_sse(self) -> None:
@@ -338,14 +336,22 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 reject_csrf(self)
                 return
             body = self._read_json()
+            if path in {"/power", "/discoverable"} and not isinstance(
+                body.get("on"), bool,
+            ):
+                self._send_json(
+                    {"error": "on must be true or false"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
             try:
                 if path == "/power":
-                    on = bool(body.get("on"))
+                    on = body["on"]
                     _dispatch().run(set_powered(on))
                     self._send_json({"ok": True})
                     return
                 if path == "/discoverable":
-                    on = bool(body.get("on"))
+                    on = body["on"]
                     _dispatch().run(set_discoverable(on))
                     self._send_json({"ok": True})
                     return

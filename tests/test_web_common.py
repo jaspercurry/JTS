@@ -58,6 +58,99 @@ class _FakeHandler:
         return self.header_values("Set-Cookie")
 
 
+def _json_request(
+    body: bytes = b"",
+    *,
+    content_length: str | None = None,
+) -> _FakeHandler:
+    handler = _FakeHandler()
+    if content_length is not None:
+        handler.headers["Content-Length"] = content_length
+    handler.rfile = BytesIO(body)
+    return handler
+
+
+# ----------------------------------------------------------------------
+# Bounded JSON object body
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("body", "content_length", "expected"),
+    (
+        (b"", None, {}),
+        (b"", "0", {}),
+        (b'{"enabled":false,"count":2}', "27", {"enabled": False, "count": 2}),
+    ),
+)
+def test_read_json_object_accepts_empty_or_valid_object(
+    body: bytes,
+    content_length: str | None,
+    expected: dict,
+):
+    assert _common.read_json_object(
+        _json_request(body, content_length=content_length),
+        max_bytes=64,
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "content_length", "code"),
+    (
+        (b"{}", "lots", "invalid_content_length"),
+        (b"{}", "-1", "negative_content_length"),
+        (b"{}", "65", "body_too_large"),
+        (b"{}", "3", "incomplete_body"),
+        (b"\xff", "1", "invalid_utf8"),
+        (b"{", "1", "invalid_json"),
+        (b"[]", "2", "non_object"),
+        (b"null", "4", "non_object"),
+        (b'"text"', "6", "non_object"),
+        (b"1", "1", "non_object"),
+        (b"true", "4", "non_object"),
+    ),
+)
+def test_read_json_object_rejects_invalid_body_with_structured_error(
+    body: bytes,
+    content_length: str,
+    code: str,
+):
+    with pytest.raises(_common.JsonBodyError) as exc_info:
+        _common.read_json_object(
+            _json_request(body, content_length=content_length),
+            max_bytes=64,
+        )
+    assert exc_info.value.code == code
+
+
+def test_read_json_object_rejects_oversize_before_reading():
+    class Unreadable:
+        def read(self, _length: int) -> bytes:
+            raise AssertionError("oversized body must be rejected before read")
+
+    handler = _json_request(content_length="65")
+    handler.rfile = Unreadable()
+    with pytest.raises(_common.JsonBodyError) as exc_info:
+        _common.read_json_object(handler, max_bytes=64)
+    assert exc_info.value.code == "body_too_large"
+
+
+def test_read_json_object_leaves_stream_oserror_distinct():
+    class BrokenReader:
+        def read(self, _length: int) -> bytes:
+            raise OSError("socket reset")
+
+    handler = _json_request(content_length="1")
+    handler.rfile = BrokenReader()
+    with pytest.raises(OSError, match="socket reset"):
+        _common.read_json_object(handler, max_bytes=64)
+
+
+def test_read_json_object_requires_positive_cap():
+    with pytest.raises(ValueError, match="max_bytes must be positive"):
+        _common.read_json_object(_json_request(), max_bytes=0)
+
+
 # ----------------------------------------------------------------------
 # Cookie parsing
 # ----------------------------------------------------------------------

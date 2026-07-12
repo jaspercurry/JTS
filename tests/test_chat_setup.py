@@ -13,6 +13,8 @@ import threading
 import types
 import urllib.error
 import urllib.request
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -102,6 +104,33 @@ def _csrf_headers(base: str) -> dict[str, str]:
         "X-CSRF-Token": match.group(1),
         "Cookie": cookie,
     }
+
+
+@pytest.mark.parametrize(
+    ("body", "content_length", "expected"),
+    (
+        (b"", None, ({}, None)),
+        (b"{}", "not-a-number", (None, "invalid content length")),
+        (b"", "-1", (None, "request too large")),
+        (b"", str(chat_setup.MAX_JSON_BYTES + 1), (None, "request too large")),
+        (b"{", "1", (None, "invalid JSON body")),
+        (b"{}", "3", (None, "invalid JSON body")),
+        (b"[]", "2", (None, "JSON body must be an object")),
+    ),
+)
+def test_chat_json_adapter_preserves_public_error_messages(
+    body,
+    content_length,
+    expected,
+):
+    handler_cls = chat_setup._make_handler()
+    handler = handler_cls.__new__(handler_cls)
+    handler.headers = Message()
+    if content_length is not None:
+        handler.headers["Content-Length"] = content_length
+    handler.rfile = BytesIO(body)
+
+    assert handler._read_json() == expected
 
 
 @pytest.fixture

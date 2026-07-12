@@ -45,6 +45,13 @@ _LEGACY_JSON_RESPONSE_ASSEMBLERS = {
     "wifi_setup.py",
 }
 
+_SHARED_JSON_OBJECT_READERS = {
+    "bluetooth_setup.py": "max_bytes=1_000_000",
+    "dial_setup.py": "max_bytes=1_000_000",
+    "chat_setup.py": "max_bytes=MAX_JSON_BYTES",
+    "balance_flow.py": "max_bytes=65_536",
+}
+
 
 def _matches(pattern: str) -> list[str]:
     rx = re.compile(pattern)
@@ -108,6 +115,55 @@ def test_migrated_local_object_responses_use_object_helper_not_byte_helper():
         source = (Path("jasper/web") / filename).read_text()
         assert "send_json_response(" in source
         assert "send_proxy_json(" not in source
+
+
+def test_migrated_json_object_readers_use_shared_helper_and_local_caps():
+    for filename, cap_call in _SHARED_JSON_OBJECT_READERS.items():
+        path = Path("jasper/web") / filename
+        source = path.read_text(encoding="utf-8")
+        functions = [
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef) and node.name == "_read_json"
+        ]
+        assert len(functions) == 1, f"expected one _read_json adapter in {path}"
+        adapter = ast.get_source_segment(source, functions[0]) or ""
+        assert "read_json_object" in adapter
+        assert cap_call in adapter
+        assert "Content-Length" not in adapter
+        assert "json.loads" not in adapter
+
+
+def test_migrated_json_body_reads_remain_after_csrf_guard():
+    direct_readers = {
+        "bluetooth_setup.py": "body = self._read_json()",
+        "dial_setup.py": "body = self._read_json()",
+        "chat_setup.py": "self._set_capture()",
+    }
+    for filename, body_read in direct_readers.items():
+        path = Path("jasper/web") / filename
+        source = path.read_text(encoding="utf-8")
+        handlers = [
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef) and node.name == "do_POST"
+        ]
+        assert len(handlers) == 1, f"expected one do_POST in {path}"
+        handler = ast.get_source_segment(source, handlers[0]) or ""
+        assert handler.index("guard_mutating_request") < handler.index(body_read)
+
+    correction_source = Path("jasper/web/correction_setup.py").read_text(
+        encoding="utf-8",
+    )
+    correction_handlers = [
+        node for node in ast.walk(ast.parse(correction_source))
+        if isinstance(node, ast.FunctionDef) and node.name == "do_POST"
+    ]
+    assert len(correction_handlers) == 1
+    correction_handler = (
+        ast.get_source_segment(correction_source, correction_handlers[0]) or ""
+    )
+    assert correction_handler.index(
+        "guard_mutating_request",
+    ) < correction_handler.index("self._dispatch_balance(path)")
 
 
 # --- Mutating-request chokepoint: every wizard POST/DELETE handler funnels

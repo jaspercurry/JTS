@@ -46,7 +46,6 @@ The walkthrough:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import tempfile
@@ -54,6 +53,8 @@ import threading
 import time
 from http import HTTPStatus
 from typing import Any, Callable
+
+from ._common import JsonBodyError, read_json_object
 
 from jasper.log_event import log_event
 from jasper.measurement.level import DEFAULT_LOCK_FRAMES, MicLevelTracker
@@ -162,16 +163,9 @@ def active_phase() -> str | None:
 
 def _read_json(handler) -> dict:
     try:
-        length = int(handler.headers.get("Content-Length") or "0")
-    except ValueError:
+        return read_json_object(handler, max_bytes=65_536)
+    except JsonBodyError:
         return {}
-    if length <= 0 or length > 65536:
-        return {}
-    try:
-        parsed = json.loads(handler.rfile.read(length).decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
 
 
 def _ramp_wav_path(channel: str) -> str:

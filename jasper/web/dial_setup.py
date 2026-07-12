@@ -43,6 +43,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from ._common import (
+    JsonBodyError,
     begin_request,
     canonical_header,
     canonical_page,
@@ -50,6 +51,7 @@ from ._common import (
     send_html_response,
     guard_read_request,
     guard_mutating_request,
+    read_json_object,
 )
 
 logger = logging.getLogger(__name__)
@@ -391,13 +393,9 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             self._send(status, body, "application/json")
 
         def _read_json(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length") or "0")
-            if length <= 0 or length > 1_000_000:
-                return {}
             try:
-                raw = self.rfile.read(length)
-                return json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+                return read_json_object(self, max_bytes=1_000_000)
+            except (JsonBodyError, OSError):
                 return {}
 
         def do_GET(self) -> None:  # noqa: N802

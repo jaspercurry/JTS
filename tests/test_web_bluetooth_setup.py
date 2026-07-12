@@ -26,6 +26,8 @@ import logging
 from email.message import Message
 from io import BytesIO
 
+import pytest
+
 from jasper.web import bluetooth_setup
 
 
@@ -143,9 +145,11 @@ class _FakeDispatcher:
 
     def __init__(self) -> None:
         self._engine = _FakeEngine()
+        self.run_calls = 0
 
     def run(self, coro):
         import asyncio
+        self.run_calls += 1
         return asyncio.run(coro)
 
     @property
@@ -156,6 +160,7 @@ class _FakeDispatcher:
 def _make_request(
     path: str, body: bytes = b"", *,
     cookies: str = "", csrf_header: str = "",
+    content_length: str | None = None,
 ):
     """Instantiate the REAL handler class without running
     BaseHTTPRequestHandler.__init__ (which expects a live socket), then attach
@@ -171,7 +176,9 @@ def _make_request(
     h = cls.__new__(cls)  # bypass socketserver __init__
     h.path = path
     h.headers = Message()
-    h.headers["Content-Length"] = str(len(body))
+    h.headers["Content-Length"] = (
+        str(len(body)) if content_length is None else content_length
+    )
     h.headers["Content-Type"] = "application/json"
     if cookies:
         h.headers["Cookie"] = cookies
@@ -340,6 +347,81 @@ def test_post_scan_start_drives_engine_with_valid_csrf(monkeypatch):
     assert ("start_discovery", bluetooth_setup.SCAN_DURATION_SEC) in fake.engine.calls
     payload = json.loads(h.wfile.getvalue().decode())
     assert payload["ok"] is True
+
+
+@pytest.mark.parametrize("path", ("/power", "/discoverable"))
+@pytest.mark.parametrize(
+    ("body", "content_length"),
+    (
+        (b"{", None),
+        (b"", None),
+        (b"[]", None),
+        (b'{"on":false}', "not-a-number"),
+        (b"", "1000001"),
+        (b'{"on":"false"}', None),
+        (b'{"on":0}', None),
+        (b'{"on":null}', None),
+    ),
+)
+def test_boolean_adapter_routes_reject_invalid_body_without_dispatch(
+    monkeypatch,
+    path,
+    body,
+    content_length,
+):
+    token = "v" * 64
+    fake = _FakeDispatcher()
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
+    h = _make_request(
+        path,
+        body=body,
+        content_length=content_length,
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
+    )
+
+    h.do_POST()
+
+    assert h.status == int(http.HTTPStatus.BAD_REQUEST)
+    assert json.loads(h.wfile.getvalue()) == {
+        "error": "on must be true or false",
+    }
+    assert fake.run_calls == 0
+    assert fake.engine.calls == []
+
+
+@pytest.mark.parametrize(
+    ("path", "setter_name"),
+    (("/power", "set_powered"), ("/discoverable", "set_discoverable")),
+)
+@pytest.mark.parametrize("value", (False, True))
+def test_boolean_adapter_routes_pass_exact_json_boolean(
+    monkeypatch,
+    path,
+    setter_name,
+    value,
+):
+    token = "q" * 64
+    calls = []
+    fake = _FakeDispatcher()
+
+    async def setter(on):
+        calls.append(on)
+
+    monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
+    monkeypatch.setattr(bluetooth_setup, setter_name, setter)
+    h = _make_request(
+        path,
+        body=json.dumps({"on": value}).encode(),
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
+    )
+
+    h.do_POST()
+
+    assert h.status == int(http.HTTPStatus.OK)
+    assert calls == [value]
+    assert fake.run_calls == 1
 
 
 def test_post_connect_drives_engine(monkeypatch):
