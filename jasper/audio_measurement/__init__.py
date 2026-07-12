@@ -24,6 +24,10 @@ Modules:
   - :mod:`~jasper.audio_measurement.quality_model` — the parameterized
     :class:`QualityModel` profiles (``ROOM`` / ``DRIVER`` / ``RAMP``) that
     replace the previously-forked capture-quality constants.
+  - :mod:`~jasper.audio_measurement.snr_policy` — the band-specific,
+    decision-class-split SNR gate (``band_levels_dbfs`` FFT band power +
+    ``band_snr_verdicts`` magnitude/alignment verdicts) shared by room
+    correction and active-crossover commissioning.
   - :mod:`~jasper.audio_measurement.ramp` — the settle-based level-match
     ``RampController`` (muted-at-floor → audible gain ramp → audible-evidence
     confirmation) that drives main-volume-affecting playback.

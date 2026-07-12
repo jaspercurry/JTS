@@ -73,6 +73,20 @@ class QualityModel:
       snr_warn_db: below this the capture SNR is "low" (a warning); between the
         two it is "medium" / marginal.
 
+    Alignment SNR trust (read by
+    :mod:`~jasper.audio_measurement.snr_policy` for null/alignment decisions —
+    reverse-polarity null depth, the delay walk — which need far more SNR
+    headroom than a magnitude/trim reading; see "Level control and SNR" in
+    docs/active-crossover-information-design.md):
+      alignment_snr_ok_db: at/above this, the overlap-band SNR is trusted for
+        a polarity/delay decision. Deliberately higher than snr_ok_db — a
+        null of depth D is provably that deep only with roughly
+        D + null_cap_margin_db of SNR in the overlap band.
+      null_cap_margin_db: the "+10 dB" in "a null of depth D needs D + 10 dB
+        SNR to be measurable". A measured null deeper than
+        (overlap SNR - this margin) is reported capped at that ceiling
+        rather than at its raw measured depth.
+
     Driver verdict logic (read by the active-crossover driver analyzers; the
     room and ramp profiles carry values but do not consume them):
       silent_peak_dbfs: a per-driver capture whose peak is at/below this is the
@@ -96,6 +110,10 @@ class QualityModel:
     # --- SNR trust ---
     snr_ok_db: float = 25.0
     snr_warn_db: float = 20.0
+
+    # --- alignment SNR trust ---
+    alignment_snr_ok_db: float = 35.0
+    null_cap_margin_db: float = 10.0
 
     # --- driver verdict logic ---
     silent_peak_dbfs: float = -45.0
