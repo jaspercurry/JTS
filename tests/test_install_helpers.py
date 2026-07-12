@@ -320,6 +320,65 @@ def test_optional_firmware_builds_are_install_opt_in():
     )
 
 
+def test_firmware_staging_retires_only_legacy_discovery_sources(tmp_path):
+    """A no-delete firmware upgrade converges on the shared discovery owner
+    without removing locally staged factory images."""
+    installed_root = tmp_path / "installed/firmware"
+    source_root = tmp_path / "source/firmware"
+    obsolete = (
+        "dial/src/discovery.cpp",
+        "dial/src/discovery.h",
+        "satellite-amoled/src/discovery.cpp",
+        "satellite-amoled/src/discovery.h",
+    )
+    for relative in obsolete:
+        path = installed_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("// obsolete project-local owner\n")
+    bins = (
+        installed_root / "dial/jasper-dial.bin",
+        installed_root / "satellite-amoled/jasper-satellite-amoled.bin",
+    )
+    for path in bins:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"factory image")
+    source_shared = source_root / "common/jasper-control-discovery/src/discovery.cpp"
+    source_shared.parent.mkdir(parents=True)
+    source_shared.write_text("// staged shared owner\n")
+
+    # Mirrors rsync without --delete: new source is copied over the old tree,
+    # while locally staged bins and removed source paths remain until the
+    # narrow retirement helper runs.
+    shutil.copytree(source_root, installed_root, dirs_exist_ok=True)
+    assert all((installed_root / relative).exists() for relative in obsolete)
+    shared = installed_root / "common/jasper-control-discovery/src/discovery.cpp"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source "
+            + shlex.quote(str(_INSTALL_LIB_DIR / "python-runtime.sh"))
+            + " && retire_legacy_firmware_discovery_sources "
+            + shlex.quote(str(installed_root)),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert all(not (installed_root / relative).exists() for relative in obsolete)
+    assert all(path.read_bytes() == b"factory image" for path in bins)
+    assert shared.read_text() == "// staged shared owner\n"
+
+    runtime = (_INSTALL_LIB_DIR / "python-runtime.sh").read_text()
+    rsync_pos = runtime.index('"${REPO_DIR}/firmware" "${INSTALL_DIR}/"')
+    retire_pos = runtime.index("retire_legacy_firmware_discovery_sources", rsync_pos)
+    build_pos = runtime.index('_build_firmware_if_stale "dial"', rsync_pos)
+    assert rsync_pos < retire_pos < build_pos
+
+
 def test_active_speaker_tone_artifacts_are_writable_by_web_service():
     """The /sound/ combined-test path writes bounded WAV artifacts as jasper-web."""
 
@@ -481,6 +540,43 @@ def test_firmware_staleness_includes_platformio_inputs(tmp_path):
 
     assert result.returncode == 0
     assert result.stdout.strip() == str(platformio)
+
+
+def test_firmware_staleness_includes_shared_libraries(tmp_path):
+    """A shared accessory library change must invalidate every staged
+    firmware image that consumes it through PlatformIO's common library dir."""
+    firmware_root = tmp_path / "firmware"
+    fw_root = firmware_root / "dial"
+    shared_source = firmware_root / "common/jasper-control-discovery/src/discovery.cpp"
+    shared_source.parent.mkdir(parents=True)
+    (fw_root / "src").mkdir(parents=True)
+    bin_path = fw_root / "jasper-dial.bin"
+    bin_path.write_bytes(b"old")
+    shared_source.write_text("// shared discovery\n")
+
+    os_old = 1_716_470_400
+    os_new = 1_716_556_800
+    os.utime(bin_path, (os_old, os_old))
+    os.utime(shared_source, (os_new, os_new))
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source "
+            + shlex.quote(str(_INSTALL_SH))
+            + " >/dev/null && _newer_firmware_input "
+            + shlex.quote(str(fw_root))
+            + " "
+            + shlex.quote(str(bin_path)),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == str(shared_source)
 
 
 def test_install_dry_run_exits_before_root_and_lists_major_surfaces():

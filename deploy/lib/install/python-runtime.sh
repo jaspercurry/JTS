@@ -9,6 +9,19 @@
 # Extracted from install.sh; functions assume install.sh globals and
 # set -euo pipefail from the sourcing shell.
 
+retire_legacy_firmware_discovery_sources() {
+    # Firmware is staged without rsync --delete so locally-built factory
+    # images survive deploys. Retire only the four source files superseded by
+    # firmware/common; leaving them behind can shadow or duplicate the shared
+    # PlatformIO library on an upgraded Pi.
+    local firmware_root="$1"
+    rm -f -- \
+        "${firmware_root}/dial/src/discovery.cpp" \
+        "${firmware_root}/dial/src/discovery.h" \
+        "${firmware_root}/satellite-amoled/src/discovery.cpp" \
+        "${firmware_root}/satellite-amoled/src/discovery.h"
+}
+
 seed_capture_relay_env() {
     # Existing boxes have a frozen first-install jasper.env. Add the relay keys
     # if they predate the relay rollout, using the same public Jasper Tech relay
@@ -113,6 +126,7 @@ install_jasper() {
         rsync -a \
             --exclude='.pio' --exclude='.pioenvs' --exclude='.piolibdeps' \
             "${REPO_DIR}/firmware" "${INSTALL_DIR}/"
+        retire_legacy_firmware_discovery_sources "${INSTALL_DIR}/firmware"
 
         if [[ "${JASPER_BUILD_OPTIONAL_FIRMWARE:-0}" == "1" ]]; then
             _build_firmware_if_stale "dial" "jasper-dial.bin"

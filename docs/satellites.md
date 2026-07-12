@@ -500,7 +500,9 @@ The Pi advertises `_jasper-control._tcp` on port 8780 via avahi
 Satellites do `MDNS.queryService("jasper-control", "tcp")` at every
 WiFi-up to find whichever Pi is on the network — **so the Pi's hostname
 or IP can change without re-flashing satellite firmware.** Reference
-implementation in [`firmware/dial/src/discovery.cpp`](../firmware/dial/src/discovery.cpp).
+shared implementation in
+[`firmware/common/jasper-control-discovery/`](../firmware/common/jasper-control-discovery/),
+consumed by both the dial and AMOLED satellite PlatformIO projects.
 Fall back to a compile-time `JASPER_HOST` if mDNS doesn't resolve.
 
 ### Provisioning — Improv-over-Serial

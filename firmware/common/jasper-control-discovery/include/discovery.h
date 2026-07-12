@@ -5,13 +5,13 @@
  */
 
 // mDNS service discovery for jasper-control. Replaces the
-// hardcoded JASPER_HOST/JASPER_PORT pair so the dial finds whichever
+// hardcoded JASPER_HOST/JASPER_PORT pair so accessories find whichever
 // Pi answers `_jasper-control._tcp` rather than depending on a
 // specific hostname. Pi side: deploy/avahi/jasper-control.service
 // (installed by deploy/install.sh).
 //
 // Falls back to compile-time JASPER_HOST/PORT when no service is
-// advertised — keeps the dial working on networks where avahi isn't
+// advertised — keeps accessories working on networks where avahi isn't
 // running, or against a Pi whose install.sh predates the avahi file.
 #pragma once
 

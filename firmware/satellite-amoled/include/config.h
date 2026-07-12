@@ -36,7 +36,7 @@
 // --- jasper-control endpoint (compile-time fallback) ---
 //
 // Phase 1 switches the satellite to mDNS-SD discovery of
-// _jasper-control._tcp (matches firmware/dial/src/discovery.cpp).
+// _jasper-control._tcp (matches the shared jasper-control-discovery library).
 // Until then, hardcoded fallback for any HTTP we add. Match
 // JASPER_CONTROL_PORT in /etc/jasper/jasper.env on the Pi.
 #define JASPER_HOST    "jts.local"

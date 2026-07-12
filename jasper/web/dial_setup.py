@@ -93,8 +93,12 @@ def _newest_firmware_source_mtime(root: str = FIRMWARE_ROOT) -> float | None:
         os.path.join(root, "build.sh"),
         os.path.join(root, "platformio.ini"),
     ]
-    for dirname in ("include", "src"):
-        dirpath = os.path.join(root, dirname)
+    source_dirs = [
+        os.path.join(root, "include"),
+        os.path.join(root, "src"),
+        os.path.join(os.path.dirname(root), "common"),
+    ]
+    for dirpath in source_dirs:
         if not os.path.isdir(dirpath):
             continue
         for base, dirs, files in os.walk(dirpath):
