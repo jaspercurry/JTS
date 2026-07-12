@@ -98,7 +98,7 @@ def test_full_and_streambox_installers_stage_the_library() -> None:
 
     full_start = installer.index("install_systemd_units() {")
     full = installer[full_start:]
-    lib_pos = full.index("deploy/lib/jasper-apple-dongle.sh")
-    assert lib_pos < full.index(
+    support_pos = full.index("install_jasper_support_files")
+    assert support_pos < full.index(
         "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install"
     )

@@ -226,12 +226,14 @@ def test_installer_installs_fragment_to_runtime_lib_path():
         r"/usr/local/lib/jasper/jasper-core-graph-park-units\.sh",
     )
     install_count = len(install_line.findall(text))
-    # One in install_jasper_support_files (streambox path), one inline in
-    # install_systemd_units (full-speaker path).
-    assert install_count == 2, (
-        "expected the fragment to be installed in both the streambox and "
-        f"full-speaker install paths, found {install_count} install line(s)"
+    # Both profiles call install_jasper_support_files; the file has one owner.
+    assert install_count == 1, (
+        "expected one shared support-file install owner, "
+        f"found {install_count} install line(s)"
     )
+    for function in ("install_streambox_systemd_units", "install_systemd_units"):
+        body = text.split(f"{function}() {{", 1)[1].split("\n}\n", 1)[0]
+        assert "install_jasper_support_files" in body
     # The runtime path the deployed recovery script falls back to.
     assert (
         "/usr/local/lib/jasper/jasper-core-graph-park-units.sh"
