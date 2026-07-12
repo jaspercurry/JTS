@@ -21,7 +21,7 @@
 # dependabot PRs bumped them here alone (pip side) without co-resolving
 # uv.lock:
 #   pydantic==2.13.4 hard-pins pydantic_core==2.46.4;
-#   protobuf==4.25.3 is held (nyct-gtfs hard pin; protobuf 7.x #865 is
+#   protobuf==7.35.1 is held (nyct-gtfs hard pin; protobuf 7.x #865 is
 #   deliberately HELD), and only googleapis-common-protos<=1.73.0 /
 #   proto-plus<=1.27.1 / onnxruntime<=1.26.0 still admit it
 #   (googleapis-common-protos 1.74.0+, proto-plus 1.28.0, and
@@ -71,7 +71,7 @@ openai==2.39.0
 openwakeword==0.6.0
 packaging==26.2
 proto-plus==1.27.1
-protobuf==4.25.3
+protobuf==7.35.1
 pyalsaaudio==0.11.0
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
