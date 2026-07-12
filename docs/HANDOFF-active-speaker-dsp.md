@@ -285,9 +285,10 @@
 > fail closed for active driver commissioning and durable baseline apply. Ready
 > candidates apply through the
 > shared `dsp_apply` transaction and record applied
-> state. Optional subwoofer groups and multi-group
-> group-specific delay correction still fail closed or warn until later slices
-> add a verified compiler path for them.
+> state. Optional subwoofer groups and multi-group group-specific delay
+> correction still fail closed or warn until later slices add a verified
+> compiler path for them (superseded for the manual region-level
+> polarity/delay case — see the 2026-07-11 update below).
 > The clock-domain gate now distinguishes the normal single-device
 > path from the dual-Apple USB-C DAC 4-channel pair. The latter is the
 > `dual_apple_usb_c_dac_4ch` hardware profile: exactly two Apple child

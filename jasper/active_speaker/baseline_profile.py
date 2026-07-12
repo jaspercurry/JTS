@@ -487,6 +487,13 @@ def _derive_corrections(
     # inverted" means. Only an explicit "inverted" region makes a provenance
     # claim; "non-inverted" is indistinguishable from the schema default and
     # stays unclaimed, mirroring gain's "none" -> no entry below.
+    # NOTE: ``_role_polarity`` raises ``ActiveSpeakerConfigError`` on
+    # cross-region-inconsistent polarity. Exception-safety here relies on
+    # ``preset`` having already passed ``ActiveSpeakerPreset.validate()`` — both
+    # current callers obtain it from ``compile_preset_from_crossover_preview``,
+    # which rejects that shape and returns ``preset=None`` before this runs. A
+    # future caller passing an unvalidated preset would crash rather than get a
+    # bounded issue.
     for role, inverted in _role_polarity(preset).items():
         if inverted and role in corrections:
             corrections[role]["inverted"] = True
