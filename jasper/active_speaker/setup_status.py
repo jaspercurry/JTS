@@ -24,6 +24,7 @@ from .baseline_profile import (
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
 )
+from .capture_geometry import comparison_set_valid
 from .crossover_preview import load_crossover_preview
 from .crossover_contract import (
     automatic_candidate_readiness,
@@ -188,6 +189,183 @@ def _acoustic_commissioning_status(
     }
 
 
+def _newest_commissioning_record(
+    measurements: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    """The most recently created driver/summed record, across both maps.
+
+    ``created_at`` is the zero-padded UTC ``_utc_now()`` timestamp everywhere
+    it is written (measurement.py), so a plain string comparison sorts
+    chronologically.
+    """
+    if not isinstance(measurements, Mapping):
+        return None
+    candidates: list[Mapping[str, Any]] = []
+    for key in ("latest_by_target", "latest_summed_by_group"):
+        bucket = measurements.get(key)
+        if isinstance(bucket, Mapping):
+            candidates.extend(
+                record for record in bucket.values() if isinstance(record, Mapping)
+            )
+    if not candidates:
+        return None
+    return max(candidates, key=lambda record: str(record.get("created_at") or ""))
+
+
+def _last_capture_summary(
+    measurements: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """The ``{snr_db, verdict, clipping, at}`` view of the newest capture.
+
+    A fixed four-key shape (unlike the top-level commissioning fields, this
+    inner block always carries all four keys, ``null`` where unknown) so a
+    consumer never has to branch on which keys exist.
+
+    FORWARD-WIRED(active-crossover): acoustic['snr']['worst_relevant']
+    ['estimated_snr_db'] has no producer on main yet (lane B); when the
+    producing lane lands, verify the real key path matches, drive one
+    real-shape (non-fabricated) test through this site, then delete this
+    marker.
+    """
+    record = _newest_commissioning_record(measurements)
+    if record is None:
+        return None
+    acoustic = _mapping(record.get("acoustic"))
+    worst_relevant = _mapping(_mapping(acoustic.get("snr")).get("worst_relevant"))
+    return {
+        "snr_db": worst_relevant.get("estimated_snr_db"),
+        "verdict": acoustic.get("verdict"),
+        "clipping": record.get("mic_clipping"),
+        "at": record.get("created_at"),
+    }
+
+
+def _idle_commissioning_summary() -> dict[str, Any]:
+    return {
+        "phase": "idle",
+        "session_id": None,
+        "session_fingerprint": None,
+        "applied_profile_fingerprint": None,
+        "last_capture": None,
+        "last_failure_code": None,
+        "room_correction_allowed": False,
+    }
+
+
+def _derive_commissioning_summary(
+    topology: Any,
+    *,
+    profile: Mapping[str, Any] | None,
+    applied_profile: Mapping[str, Any] | None,
+    measurements: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    profile = profile if isinstance(profile, Mapping) else None
+    applied_profile = applied_profile if isinstance(applied_profile, Mapping) else None
+    measurements = measurements if isinstance(measurements, Mapping) else {}
+
+    # Phase derivation is pinned in priority order (design doc "Runtime
+    # surface" / "Structured events"): failed, then proposal_ready, then
+    # measuring, else idle. Each branch is mutually exclusive by construction
+    # (elif), so "measuring" is only reached when neither of the first two
+    # holds, matching "neither failed nor proposal_ready holds".
+    last_failure_code: str | None = None
+    if profile is not None and profile.get("status") == "apply_failed":
+        phase = "failed"
+        for issue_entry in profile.get("issues") or []:
+            if (
+                isinstance(issue_entry, Mapping)
+                and issue_entry.get("severity") == "blocker"
+            ):
+                code = issue_entry.get("code")
+                last_failure_code = str(code) if code else None
+                break
+    elif profile is not None and bool(
+        _mapping(profile.get("permissions")).get("may_apply")
+    ):
+        phase = "proposal_ready"
+    elif comparison_set_valid(measurements.get("active_comparison_set")) or bool(
+        measurements.get("bundle_session_id")
+    ):
+        # The "bundle_session_id" half of this check is forward-compatible
+        # with SC-4's bundle writer (a later lane): it never sets that key
+        # today, so only the comparison-set check is reachable yet.
+        # FORWARD-WIRED(active-crossover): bundle_session_id has no producer
+        # on main yet (lane D); when the producing lane lands, verify the
+        # real key path matches, drive one real-shape (non-fabricated) test
+        # through this site, then delete this marker.
+        phase = "measuring"
+    else:
+        phase = "idle"
+
+    session_id = measurements.get("bundle_session_id")
+    session_id = str(session_id) if session_id else None
+
+    active_comparison_set = measurements.get("active_comparison_set")
+    session_fingerprint = (
+        active_comparison_set.get("fingerprint")
+        if isinstance(active_comparison_set, Mapping)
+        else None
+    )
+
+    applied_profile_fingerprint = _mapping(
+        (applied_profile or {}).get("source")
+    ).get("fingerprint")
+
+    # Standalone approximation of "is there a valid applied Layer-A graph the
+    # room can correct against" -- read_active_speaker_setup_status overwrites
+    # this with the exact acoustic_commissioning.allowed value it already
+    # computes from these same inputs plus config-path/topology gating this
+    # function does not see, so the wired /state payload always mirrors it
+    # exactly; this value is what a caller gets from commissioning_summary
+    # standalone (e.g. in a unit test).
+    current_source = _mapping(profile.get("source")) if profile is not None else {}
+    applied_state = crossover_snapshot_state(
+        applied_profile,
+        expected_topology_id=getattr(topology, "topology_id", None),
+        expected_topology_fingerprint=(
+            str(current_source.get("topology_fingerprint") or "") or None
+        ),
+    )
+
+    return {
+        "phase": phase,
+        "session_id": session_id,
+        "session_fingerprint": session_fingerprint,
+        "applied_profile_fingerprint": applied_profile_fingerprint,
+        "last_capture": _last_capture_summary(measurements),
+        "last_failure_code": last_failure_code,
+        "room_correction_allowed": bool(applied_state.get("valid")),
+    }
+
+
+def commissioning_summary(
+    topology: Any,
+    *,
+    profile: Mapping[str, Any] | None,
+    applied_profile: Mapping[str, Any] | None,
+    measurements: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Small household/operator commissioning summary for ``/state``.
+
+    Pure over ``profile`` / ``applied_profile`` / ``measurements`` -- the same
+    objects :func:`read_active_speaker_setup_status` already loads -- and
+    fail-soft: any unreadable/malformed input degrades to the safest phase
+    (``"idle"``) instead of raising, mirroring
+    ``_READINESS_DERIVATION_ERRORS`` above. Detailed curves and bundle paths
+    stay out of this block by design; they belong to the session report, not
+    ``/state`` (design doc "Runtime surface").
+    """
+    try:
+        return _derive_commissioning_summary(
+            topology,
+            profile=profile,
+            applied_profile=applied_profile,
+            measurements=measurements,
+        )
+    except _READINESS_DERIVATION_ERRORS:
+        return _idle_commissioning_summary()
+
+
 def active_config_path_from_statefile(
     path: str | Path | None = None,
 ) -> str:
@@ -232,6 +410,15 @@ def read_active_speaker_setup_status(
             "output_topology_unreadable",
             f"output topology cannot be read safely: {exc}",
         ))
+        # No topology/profile/measurements were readable at all -- commissioning
+        # degrades to its own fail-soft idle default, then room_correction_allowed
+        # is overwritten below to mirror this branch's own value (design doc
+        # "Runtime surface": "room_correction_allowed mirrors the existing
+        # acoustic_commissioning.allowed").
+        unreadable_commissioning = commissioning_summary(
+            None, profile=None, applied_profile=None, measurements=None,
+        )
+        unreadable_commissioning["room_correction_allowed"] = False
         return {
             "artifact_schema_version": 1,
             "kind": SETUP_STATUS_KIND,
@@ -250,6 +437,7 @@ def read_active_speaker_setup_status(
                 "detail": "Read the output topology before room correction.",
                 "setup_href": _CROSSOVER_SETUP_HREF,
             },
+            "commissioning": unreadable_commissioning,
             "safety_muted": True,
             "reason": "output_topology_unreadable",
             "detail": "output topology cannot be read safely",
@@ -261,6 +449,10 @@ def read_active_speaker_setup_status(
 
     active_group_count = _active_group_count(topology)
     if active_group_count == 0:
+        passive_commissioning = commissioning_summary(
+            topology, profile=None, applied_profile=None, measurements=None,
+        )
+        passive_commissioning["room_correction_allowed"] = True
         return {
             "artifact_schema_version": 1,
             "kind": SETUP_STATUS_KIND,
@@ -279,6 +471,7 @@ def read_active_speaker_setup_status(
                 "detail": "Passive speakers do not need active-crossover commissioning.",
                 "setup_href": None,
             },
+            "commissioning": passive_commissioning,
             "safety_muted": False,
             "reason": None,
             "detail": "speaker does not use an active crossover",
@@ -539,6 +732,17 @@ def read_active_speaker_setup_status(
         applied_profile=applied_profile,
         measurements=measurements,
     )
+    commissioning = commissioning_summary(
+        topology,
+        profile=profile,
+        applied_profile=applied_profile,
+        measurements=measurements,
+    )
+    # Mirror the canonical gate exactly rather than trusting
+    # commissioning_summary's own standalone approximation (design doc
+    # "Runtime surface": "room_correction_allowed mirrors the existing
+    # acoustic_commissioning.allowed").
+    commissioning["room_correction_allowed"] = acoustic_commissioning["allowed"]
     return {
         "artifact_schema_version": 1,
         "kind": SETUP_STATUS_KIND,
@@ -550,6 +754,7 @@ def read_active_speaker_setup_status(
         "grouping_allowed": not blocked,
         "room_correction_allowed": acoustic_commissioning["allowed"],
         "acoustic_commissioning": acoustic_commissioning,
+        "commissioning": commissioning,
         "safety_muted": blocked,
         "reason": reason,
         "detail": detail,

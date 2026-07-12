@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from pathlib import Path
 
 import pytest
@@ -1059,3 +1061,82 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
             "above_validity_floor",
             "level_dbfs",
         }
+
+
+# --- lifecycle events (lane E, docs/active-crossover-information-design.md
+# "Structured events") -------------------------------------------------------
+
+
+def test_start_active_comparison_set_emits_session_started_event(
+    tmp_path: Path, caplog,
+) -> None:
+    state_path = tmp_path / "measurements.json"
+    topology = _topology()
+    driver_level_locks = {
+        target["target_id"]: {
+            "target_id": target["target_id"],
+            "speaker_group_id": target["speaker_group_id"],
+            "role": target["role"],
+            "tone_frequency_hz": 250.0 if target["role"] == "woofer" else 6250.0,
+            "tone_peak_dbfs": -12.0,
+            "commissioning_gain_db": 0.0,
+            "locked_main_volume_db": -12.0,
+        }
+        for target in active_driver_targets(topology)
+    }
+
+    with caplog.at_level(
+        logging.INFO, logger="jasper.active_speaker.measurement",
+    ):
+        comparison_set = start_active_comparison_set(
+            topology,
+            profile_context_id="protected-profile",
+            setup_sha256="a" * 64,
+            device_sha256="b" * 64,
+            calibration_id="cal-1",
+            driver_level_locks=driver_level_locks,
+            state_path=state_path,
+            now="2026-07-11T12:00:00Z",
+        )
+
+    started = [
+        r.getMessage() for r in caplog.records
+        if r.getMessage().startswith("event=correction.crossover_session_started")
+    ]
+    assert len(started) == 1
+    message = started[0]
+    # group(s) via topology: _topology() has exactly one active group, "mono".
+    assert "group=mono" in message
+    assert "calibration_id=cal-1" in message
+    assert f"comparison_set_fingerprint={comparison_set['fingerprint']}" in message
+    # No bundle exists yet (SC-4 lands in a later lane), so session is omitted
+    # rather than rendered as a literal "session=null".
+    assert "session=" not in message
+
+
+def test_start_active_comparison_set_raises_before_persisting_emits_no_event(
+    tmp_path: Path, caplog,
+) -> None:
+    # Incomplete driver level locks raise before the state is ever persisted;
+    # no event should fire for a call that never actually started a session.
+    state_path = tmp_path / "measurements.json"
+    topology = _topology()
+
+    with caplog.at_level(
+        logging.INFO, logger="jasper.active_speaker.measurement",
+    ):
+        with pytest.raises(ValueError, match="incomplete"):
+            start_active_comparison_set(
+                topology,
+                profile_context_id="protected-profile",
+                setup_sha256="a" * 64,
+                device_sha256="b" * 64,
+                calibration_id="",
+                driver_level_locks={},
+                state_path=state_path,
+            )
+
+    assert not any(
+        r.getMessage().startswith("event=correction.crossover_session_started")
+        for r in caplog.records
+    )

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import math
 import os
 import time
@@ -23,11 +24,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
+from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
 from ._common import issue as _issue
 from .calibration_level import classify_mic_meter
 from .safe_playback import playback_target_signature
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 MEASUREMENT_STATE_KIND = "jts_active_speaker_measurements"
@@ -341,6 +345,26 @@ def start_active_comparison_set(
     persisted["updated_at"] = created_at
     out = _with_summary(topology, persisted)
     _write_state(path, out)
+    event_fields: dict[str, Any] = {}
+    # FORWARD-WIRED(active-crossover): bundle_session_id has no producer on
+    # main yet (lanes A/B/D); when the producing lane lands, verify the real
+    # key path matches, drive one real-shape (non-fabricated) test through
+    # this site, then delete this marker.
+    #
+    # Read from `out` (the persisted measurement-state top level) rather than
+    # `comparison_set`: comparison_set is `{**core, "fingerprint"}` with a
+    # fixed inline key set (see `core` above), and adding a key there would
+    # change the fingerprint it's built from, so a bundle_session_id could
+    # never land on it. `out` is the same top-level object family
+    # setup_status.py already reads bundle_session_id from, aligning two of
+    # the three consumer sites on one assumption.
+    bundle_session_id = out.get("bundle_session_id")
+    if bundle_session_id:
+        event_fields["session"] = str(bundle_session_id)
+    event_fields["group"] = ",".join(sorted(_group_ids(topology)))
+    event_fields["calibration_id"] = comparison_set.get("calibration_id")
+    event_fields["comparison_set_fingerprint"] = comparison_set.get("fingerprint")
+    log_event(logger, "correction.crossover_session_started", **event_fields)
     return comparison_set
 
 

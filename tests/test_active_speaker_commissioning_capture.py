@@ -27,6 +27,7 @@ import pytest
 
 from jasper.active_speaker import crossover_alignment as ca
 from jasper.active_speaker.commissioning_capture import (
+    RESERVED_CROSSOVER_EVENTS,
     DEFAULT_REPEAT_TARGET,
     DRIVER_VERDICT_TO_OUTCOME,
     REPEAT_OUTLIER_DB,
@@ -1133,3 +1134,225 @@ def test_record_driver_repeat_aggregate_emits_lifecycle_event(caplog):
 
 def test_repeat_outlier_threshold_constant_is_positive_and_documented():
     assert REPEAT_OUTLIER_DB > 0
+
+
+# --- lifecycle events (lane E, docs/active-crossover-information-design.md
+# "Structured events") -------------------------------------------------------
+
+_LOGGER_NAME = "jasper.active_speaker.commissioning_capture"
+
+
+def _events(caplog, name: str) -> list[str]:
+    return [
+        r.getMessage() for r in caplog.records
+        if r.getMessage().startswith(f"event={name}")
+    ]
+
+
+class _FakeAcousticWithSnrAndGating:
+    """Duck-types DriverAcousticResult with a snr/gating block (SC-1/SC-2).
+
+    Those blocks are lane B's (snr) and lane A's (gating) — not shipped yet on
+    this branch — so this fake proves the capture-event wiring extracts them
+    correctly once they exist, without depending on either lane's code.
+    """
+
+    verdict = "present"
+    mic_clipping = False
+    observed_mic_dbfs = -32.0
+
+    def to_dict(self):
+        return {
+            "kind": "jts_active_speaker_driver_acoustics",
+            "verdict": "present",
+            "mic_clipping": False,
+            "snr": {
+                "schema_version": 1,
+                "decision_class": "magnitude",
+                "worst_relevant": {
+                    "band_id": "mid",
+                    "estimated_snr_db": 27.5,
+                    "verdict": "ok",
+                },
+                "verdict": "ok",
+            },
+            "gating": {
+                "schema_version": 1,
+                "applied": True,
+                "f_valid_floor_hz": 240.0,
+            },
+        }
+
+
+def test_driver_capture_accepted_emits_exactly_one_lifecycle_event(
+    tmp_path: Path, caplog,
+):
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        out, _ = _capture_driver(tmp_path, _driver_result("present", present=True))
+    assert out["recorded"] is True
+    accepted = _events(caplog, "correction.crossover_capture_accepted")
+    assert len(accepted) == 1
+    assert "group=mono" in accepted[0]
+    assert "role=woofer" in accepted[0]
+    assert "verdict=present" in accepted[0]
+    assert "outcome=heard_correct_driver" in accepted[0]
+    assert _events(caplog, "correction.crossover_capture_rejected") == []
+
+
+def test_driver_capture_accepted_surfaces_snr_and_floor_when_present(
+    tmp_path: Path, caplog,
+):
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        out = record_driver_acoustic_capture(
+            _topology(),
+            _two_way(),
+            speaker_group_id="mono",
+            role="woofer",
+            captured_wav=tmp_path / "cap.wav",
+            sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+            playback_id="pb1",
+            safe_session=_safe_session(role="woofer", output_index=0, playback_id="pb1"),
+            state_path=tmp_path / "measurements.json",
+            analyze=lambda *a, **k: _FakeAcousticWithSnrAndGating(),
+        )
+    assert out["recorded"] is True
+    accepted = _events(caplog, "correction.crossover_capture_accepted")
+    assert len(accepted) == 1
+    assert "snr_db=27.5" in accepted[0]
+    assert "floor_hz=240.0" in accepted[0]
+
+
+def test_driver_capture_accepted_includes_session_when_bundle_known(
+    tmp_path: Path, caplog,
+):
+    # SC-4's bundle writer (a later lane) is expected to stamp a top-level
+    # bundle_session_id on the persisted measurement state; this fake proves
+    # the event picks it up without depending on that lane's code.
+    def spy_record(*_args, **_kwargs):
+        return {"driver_measurements": [], "bundle_session_id": "sess-abc123"}
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        out = record_driver_acoustic_capture(
+            _topology(),
+            _two_way(),
+            speaker_group_id="mono",
+            role="woofer",
+            captured_wav=tmp_path / "cap.wav",
+            sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+            analyze=lambda *a, **k: _driver_result("present", present=True),
+            record=spy_record,
+        )
+    assert out["recorded"] is True
+    accepted = _events(caplog, "correction.crossover_capture_accepted")
+    assert len(accepted) == 1
+    assert "session=sess-abc123" in accepted[0]
+
+
+def test_driver_capture_unusable_emits_exactly_one_rejected_event(
+    tmp_path: Path, caplog,
+):
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        out = record_driver_acoustic_capture(
+            _topology(),
+            _two_way(),
+            speaker_group_id="mono",
+            role="woofer",
+            captured_wav=tmp_path / "cap.wav",
+            sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+            analyze=lambda *a, **k: _driver_result("unusable_capture"),
+            record=lambda *a, **k: pytest.fail("record must not run"),
+        )
+    assert out["recorded"] is False
+    rejected = _events(caplog, "correction.crossover_capture_rejected")
+    assert len(rejected) == 1
+    assert "reason=unusable_capture" in rejected[0]
+    assert "group=mono" in rejected[0]
+    assert "role=woofer" in rejected[0]
+    assert _events(caplog, "correction.crossover_capture_accepted") == []
+
+
+def test_summed_capture_accepted_emits_exactly_one_lifecycle_event(caplog):
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        out = record_summed_acoustic_capture(
+            _topology(),
+            _two_way(),
+            speaker_group_id="mono",
+            captured_wav="cap.wav",
+            sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+            summed_test_id="st1",
+            analyze=lambda *a, **k: _summed_result("blend_ok"),
+            record=lambda topology, raw, **kw: {"summed_validations": [dict(raw)]},
+        )
+    assert out["recorded"] is True
+    accepted = _events(caplog, "correction.crossover_capture_accepted")
+    assert len(accepted) == 1
+    assert "group=mono" in accepted[0]
+    assert "verdict=blend_ok" in accepted[0]
+    assert "outcome=blend_ok" in accepted[0]
+    # Summed captures have no per-driver role.
+    assert "role=" not in accepted[0]
+
+
+def test_summed_capture_unusable_emits_exactly_one_rejected_event(caplog):
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        out = record_summed_acoustic_capture(
+            _topology(),
+            _two_way(),
+            speaker_group_id="mono",
+            captured_wav="cap.wav",
+            sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+            analyze=lambda *a, **k: _summed_result("unusable_capture"),
+            record=lambda *a, **k: pytest.fail("record must not run"),
+        )
+    assert out["recorded"] is False
+    rejected = _events(caplog, "correction.crossover_capture_rejected")
+    assert len(rejected) == 1
+    assert "reason=unusable_capture" in rejected[0]
+    assert _events(caplog, "correction.crossover_capture_accepted") == []
+
+
+def test_summed_capture_no_crossover_region_emits_exactly_one_rejected_event(caplog):
+    preset = _NoCrossoverPreset()
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        out = record_summed_acoustic_capture(
+            _topology(),
+            preset,
+            speaker_group_id="mono",
+            captured_wav="cap.wav",
+            sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+            analyze=lambda *a, **k: pytest.fail("analyze must not run"),
+            record=lambda *a, **k: pytest.fail("record must not run"),
+        )
+    assert out["recorded"] is False
+    rejected = _events(caplog, "correction.crossover_capture_rejected")
+    assert len(rejected) == 1
+    assert "reason=no_crossover_region" in rejected[0]
+    # No verdict at all for this early-out path.
+    assert "verdict=" not in rejected[0]
+
+
+def test_reserved_crossover_events_are_never_emitted():
+    # Spec-pinned (docs/active-crossover-information-design.md "Structured
+    # events"): correction.crossover_proposal_ready / _verification_passed /
+    # _verification_failed / _level_locked / _level_failed are documented as
+    # future work and MUST NOT have a call site yet. A static grep over the
+    # source tree is the guard: no jasper/ file may pass one of these literal
+    # strings to log_event.
+    root = Path(__file__).resolve().parents[1] / "jasper"
+    assert set(RESERVED_CROSSOVER_EVENTS) == {
+        "correction.crossover_proposal_ready",
+        "correction.crossover_verification_passed",
+        "correction.crossover_verification_failed",
+        "correction.crossover_level_locked",
+        "correction.crossover_level_failed",
+    }
+    for name in RESERVED_CROSSOVER_EVENTS:
+        offenders = []
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            # Ignore the reserved-names tuple's own declaration.
+            if path.name == "commissioning_capture.py":
+                text = text.replace(f'"{name}"', "", 1)
+            if f'"{name}"' in text or f"'{name}'" in text:
+                offenders.append(str(path.relative_to(root.parent)))
+        assert offenders == [], f"{name} has a call site: {offenders}"

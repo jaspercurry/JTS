@@ -70,6 +70,28 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import CalibrationCurve
 
+logger = logging.getLogger(__name__)
+
+# Crossover lifecycle events reserved for later slices/phases -- declared here
+# (docs/active-crossover-information-design.md "Structured events") so a grep
+# for the event name finds a documented reason it is silent, not a missing
+# call site. No code path in this lane emits any of these; a unit test in
+# tests/test_active_speaker_commissioning_capture.py pins that.
+RESERVED_CROSSOVER_EVENTS = (
+    # Slice 3 (measured candidate selection) produces the proposal this fires
+    # for; Slice 1 wires only the lifecycle events themselves.
+    "correction.crossover_proposal_ready",
+    # Phase 2 post-apply acoustic verification; not built in Phase 1.
+    "correction.crossover_verification_passed",
+    "correction.crossover_verification_failed",
+    # Level locking already ships under correction.crossover_driver_level_*
+    # names in jasper/web/correction_crossover_backend.py. Renaming a shipped
+    # event onto this namespace is a deliberate future migration, not
+    # something this lane does silently.
+    "correction.crossover_level_locked",
+    "correction.crossover_level_failed",
+)
+
 
 def _finite_float(value: Any) -> float | None:
     try:
@@ -142,6 +164,90 @@ def primary_crossover_fc_hz(preset: ActiveSpeakerPreset) -> float | None:
         if region.fc_hz and region.fc_hz > 0
     ]
     return min(fcs) if fcs else None
+
+
+def _bundle_session_id(measurement: Any) -> str | None:
+    """Best-effort bundle session id from a just-recorded measurement.
+
+    FORWARD-WIRED(active-crossover): bundle_session_id has no producer on
+    main yet (lanes A/B/D); when the producing lane lands, verify the real
+    key path matches, drive one real-shape (non-fabricated) test through
+    this site, then delete this marker.
+
+    The commissioning-bundle writer (SC-4) is separate, later work and does
+    not stamp a bundle reference onto records yet, so this reads the single
+    most likely shape -- a per-record ``bundle_session_id`` on the just-
+    recorded measurement (distinct from the top-level-state assumption
+    `start_active_comparison_set` reads in measurement.py) -- meaning the
+    lifecycle event's ``session`` field starts populating itself the moment
+    that lands, without a further edit here. Absent today: the event's
+    ``session`` field is simply omitted
+    (docs/active-crossover-information-design.md "Structured events": fields
+    are included "when available, omit when not").
+    """
+    if not isinstance(measurement, Mapping):
+        return None
+    session_id = measurement.get("bundle_session_id")
+    return str(session_id) if session_id else None
+
+
+def _log_capture_verdict_event(
+    result: Mapping[str, Any],
+    *,
+    speaker_group_id: str,
+    role: str | None = None,
+) -> None:
+    """Emit ``correction.crossover_capture_accepted``/``_rejected`` once.
+
+    ``record_driver_acoustic_capture`` and ``record_summed_acoustic_capture``
+    are "the shared chokepoint both the relay flow and web_measurement call"
+    (docs/active-crossover-information-design.md "Structured events"), so
+    every one of their return points funnels through here exactly once.
+    """
+    acoustic = result.get("acoustic")
+    acoustic = acoustic if isinstance(acoustic, Mapping) else {}
+    fields: dict[str, Any] = {}
+    session = _bundle_session_id(result.get("measurement"))
+    if session:
+        fields["session"] = session
+    fields["group"] = speaker_group_id
+    if role:
+        fields["role"] = role
+    verdict = result.get("verdict")
+    if verdict is not None:
+        fields["verdict"] = verdict
+    if result.get("recorded"):
+        fields["outcome"] = result.get("outcome")
+        # FORWARD-WIRED(active-crossover): acoustic['snr']['worst_relevant']
+        # ['estimated_snr_db'] and acoustic['gating']['f_valid_floor_hz']
+        # have no producer on main yet (lanes A/B); when the producing lane
+        # lands, verify the real key path matches, drive one real-shape
+        # (non-fabricated) test through this site, then delete this marker.
+        snr_block = acoustic.get("snr")
+        worst_relevant = (
+            snr_block.get("worst_relevant") if isinstance(snr_block, Mapping) else None
+        )
+        snr_db = (
+            _finite_float(worst_relevant.get("estimated_snr_db"))
+            if isinstance(worst_relevant, Mapping)
+            else None
+        )
+        if snr_db is not None:
+            fields["snr_db"] = snr_db
+        gating_block = acoustic.get("gating")
+        floor_hz = (
+            _finite_float(gating_block.get("f_valid_floor_hz"))
+            if isinstance(gating_block, Mapping)
+            else None
+        )
+        if floor_hz is not None:
+            fields["floor_hz"] = floor_hz
+        log_event(logger, "correction.crossover_capture_accepted", **fields)
+    else:
+        reason = result.get("skipped_reason")
+        if reason is not None:
+            fields["reason"] = reason
+        log_event(logger, "correction.crossover_capture_rejected", **fields)
 
 
 def record_driver_acoustic_capture(
@@ -223,7 +329,7 @@ def record_driver_acoustic_capture(
         )
     outcome = DRIVER_VERDICT_TO_OUTCOME.get(result.verdict)
     if outcome is None:
-        return {
+        rejected: dict[str, Any] = {
             "verdict": result.verdict,
             "outcome": None,
             "recorded": False,
@@ -232,6 +338,10 @@ def record_driver_acoustic_capture(
             "acoustic": acoustic,
             "measurement": None,
         }
+        _log_capture_verdict_event(
+            rejected, speaker_group_id=speaker_group_id, role=role,
+        )
+        return rejected
     sweep_peak_dbfs = _finite_float(sweep_meta.get("amplitude_dbfs"))
     commissioning_gain_db = _finite_float(test_level_dbfs)
     excitation_ledger = None
@@ -324,7 +434,7 @@ def record_driver_acoustic_capture(
         state_path=state_path,
         now=now,
     )
-    return {
+    accepted: dict[str, Any] = {
         "verdict": result.verdict,
         "outcome": outcome,
         "recorded": True,
@@ -335,6 +445,8 @@ def record_driver_acoustic_capture(
         "placement_proof": dict(placement_proof) if placement_proof else None,
         "measurement": measurement,
     }
+    _log_capture_verdict_event(accepted, speaker_group_id=speaker_group_id, role=role)
+    return accepted
 
 
 def record_summed_acoustic_capture(
@@ -396,7 +508,7 @@ def record_summed_acoustic_capture(
         else primary_crossover_fc_hz(preset)
     )
     if not fc:
-        return {
+        no_crossover_rejected: dict[str, Any] = {
             "verdict": None,
             "outcome": None,
             "recorded": False,
@@ -405,6 +517,10 @@ def record_summed_acoustic_capture(
             "acoustic": None,
             "measurement": None,
         }
+        _log_capture_verdict_event(
+            no_crossover_rejected, speaker_group_id=speaker_group_id,
+        )
+        return no_crossover_rejected
     # Both capture kinds judge "is a null present?" against the same threshold; for
     # a reverse-polarity capture (one driver inverted) a present null is the PASS,
     # for an in-phase one it is the PROBLEM. The cap-independent polarity call
@@ -430,7 +546,7 @@ def record_summed_acoustic_capture(
         )
     outcome = SUMMED_VERDICT_TO_OUTCOME.get(result.verdict)
     if outcome is None:
-        return {
+        rejected: dict[str, Any] = {
             "verdict": result.verdict,
             "outcome": None,
             "recorded": False,
@@ -439,6 +555,8 @@ def record_summed_acoustic_capture(
             "acoustic": acoustic,
             "measurement": None,
         }
+        _log_capture_verdict_event(rejected, speaker_group_id=speaker_group_id)
+        return rejected
     excitation_ledger = None
     if excitation:
         sweep_peak = _finite_float(sweep_meta.get("amplitude_dbfs"))
@@ -525,7 +643,7 @@ def record_summed_acoustic_capture(
         state_path=state_path,
         now=now,
     )
-    return {
+    accepted: dict[str, Any] = {
         "verdict": result.verdict,
         "outcome": outcome,
         "recorded": True,
@@ -536,6 +654,8 @@ def record_summed_acoustic_capture(
         "placement_proof": dict(placement_proof) if placement_proof else None,
         "measurement": measurement,
     }
+    _log_capture_verdict_event(accepted, speaker_group_id=speaker_group_id)
+    return accepted
 
 
 def _acoustic_calibrated(record: Any) -> bool | None:

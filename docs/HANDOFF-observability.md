@@ -83,6 +83,63 @@ mapping. A conventions guard
 fails CI on any new hand-written `logger.<level>("event=…")` call;
 its allowlist holds only active-zone files deferred to in-flight work.
 
+**Active-crossover commissioning lifecycle events (Slice 0).** The shipped
+crossover flow's `correction.crossover_*` events
+(`correction.crossover_driver_capture_sweep`, `correction.crossover_summed_capture`,
+`correction.crossover_relay_recorded`, and friends, all in
+[`jasper/web/correction_crossover_backend.py`](../jasper/web/correction_crossover_backend.py))
+are joined by a small set of session/apply lifecycle events extending the same
+namespace (design of record:
+[`active-crossover-information-design.md`](active-crossover-information-design.md)
+"Structured events"): `correction.crossover_session_started`
+([`jasper/active_speaker/measurement.py`](../jasper/active_speaker/measurement.py)'s
+`start_active_comparison_set`), `correction.crossover_capture_accepted` /
+`correction.crossover_capture_rejected`
+([`jasper/active_speaker/commissioning_capture.py`](../jasper/active_speaker/commissioning_capture.py)'s
+`record_driver_acoustic_capture` / `record_summed_acoustic_capture` — the
+shared chokepoint both the relay flow and `web_measurement` call), and
+`correction.crossover_apply_started` / `correction.crossover_apply_succeeded` /
+`correction.crossover_apply_rolled_back`
+([`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py)'s
+`apply_baseline_profile` — `apply_rolled_back` is the one typed failure event
+name; there is no separate `apply_failed`). Common fields, included when
+available and omitted otherwise: `session`, `group`, `role`, `verdict`,
+`outcome`, `reason`, `snr_db`, `floor_hz`, `graph_fingerprint`,
+`candidate_fingerprint`, `applied_fingerprint`. Five more names are
+**reserved but never emitted yet** — declared in
+`commissioning_capture.RESERVED_CROSSOVER_EVENTS` with a docstring naming which
+future slice/phase emits each: `correction.crossover_proposal_ready` (Slice 3),
+`correction.crossover_verification_passed` / `_verification_failed` (Phase 2
+post-apply verification), and `correction.crossover_level_locked` /
+`_level_failed` (level locking already ships under
+`correction.crossover_driver_level_*` names; renaming it onto this namespace is
+a deliberate future migration, not something that happens silently). A static
+scan in
+[`tests/test_active_speaker_commissioning_capture.py`](../tests/test_active_speaker_commissioning_capture.py)
+pins that no call site emits a reserved name. The same slice also adds a small
+`commissioning` block to `/state.active_speaker_setup`
+(`jasper/active_speaker/setup_status.py`'s `commissioning_summary`) — phase,
+session/fingerprint ids, the newest capture's SNR/verdict/clipping, and the
+last failure code — for the household/operator summary described in the design
+doc's "Runtime surface"; detailed curves and bundle paths stay out of `/state`
+by design.
+
+**Forward-wired fields.** A handful of the fields above have no producer on
+`main` yet, because the lanes that write them (per
+`docs/active-crossover-information-design.md`'s parallel-lane plan) land
+after this one: `session` / `session_id` come from lane D's
+`bundle_session_id` (the top-level measurement-state key; the per-capture
+event reader additionally expects a copy stamped onto the individual
+record), and `snr_db` / `floor_hz` / `last_capture.snr_db` come from lanes
+A/B's `acoustic.snr.worst_relevant.estimated_snr_db` and
+`acoustic.gating.f_valid_floor_hz`. Every read site is marked
+`FORWARD-WIRED(active-crossover)` in a comment/docstring; until the
+producing lane lands, the value is simply absent and CI stays green on
+fabricated-empty inputs only. When a producing lane merges, run
+`git grep 'FORWARD-WIRED(active-crossover)'`, re-verify each hit against the
+real key shape, drive one real-shape test through that site, then delete
+the marker.
+
 **Remaining migration — 14 deferred active-zone files.** The migration is
 complete across the codebase *except* a small set of files an in-flight
 work-stream owns; those were left hand-written to avoid churning a parallel
