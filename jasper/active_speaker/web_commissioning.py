@@ -2362,6 +2362,31 @@ async def play_summed_capture_sweep(
     speaker_group_id = str(raw.get("speaker_group_id") or "").strip()
     if not speaker_group_id:
         raise ValueError("speaker_group_id is required")
+    requested_polarity = str(raw.get("polarity") or "normal").strip().lower()
+    if (
+        bool(raw.get("expect_null"))
+        or requested_polarity != "normal"
+        or "delay_ms" in raw
+        or raw.get("delay_target_role") not in (None, "")
+    ):
+        # The current loader intentionally re-emits the immutable applied
+        # Layer-A graph. Until the bounded alignment primitive can compile and
+        # prove a transient candidate graph, accepting these labels would let a
+        # normal playback be persisted as reverse/delayed evidence.
+        return {
+            "status": "refused",
+            "reason": "summed_alignment_candidate_not_loaded",
+            "audio_emitted": False,
+            "issues": [{
+                "severity": "blocker",
+                "code": "summed_alignment_candidate_not_loaded",
+                "message": (
+                    "the requested polarity or delay candidate is not loaded; "
+                    "use the bounded crossover alignment step"
+                ),
+            }],
+            "commission": commission_status_payload(),
+        }
 
     topology = load_output_topology()
     measurements = load_measurement_state(topology)

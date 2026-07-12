@@ -30,6 +30,12 @@ from __future__ import annotations
 from typing import Any
 
 
+# An analyzed summed Fc originates from the preset region itself.  This tolerance
+# permits only float round-trip noise; it must never bridge a real crossover
+# setting change.
+REGION_FC_MATCH_TOLERANCE_HZ = 1e-6
+
+
 ACTIVE_CROSSOVER_ROLE_PAIRS: dict[str, tuple[tuple[str, str], ...]] = {
     "active_2_way": (("woofer", "tweeter"),),
     "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),

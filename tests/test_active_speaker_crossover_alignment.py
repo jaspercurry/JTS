@@ -33,6 +33,7 @@ from jasper.active_speaker import driver_acoustics as da
 from jasper.active_speaker.commissioning_capture import (
     build_crossover_alignment_proposal,
 )
+from jasper.active_speaker.crossover_contract import preset_matches_applied_profile
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement import sweep as sweep_mod
 from jasper.audio_measurement.calibration import CalibrationCurve
@@ -45,6 +46,54 @@ SR = 48000
 def _two_way() -> ActiveSpeakerPreset:
     # Mono 2-way: woofer=lower, tweeter=upper, crossover at 1600 Hz.
     return ActiveSpeakerPreset.from_mapping(_two_way_preset())
+
+
+def _applied_profile() -> dict:
+    preset = _two_way()
+    corrections = {
+        role: {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False}
+        for role in ("woofer", "tweeter")
+    }
+    return {
+        "status": "applied",
+        "baseline_id": "baseline-test",
+        "source": {"fingerprint": "protected-profile"},
+        "recomposition_snapshot": {
+            "topology_id": "test-topology",
+            "preset": preset.to_dict(),
+            "corrections": corrections,
+        },
+    }
+
+
+def test_applied_profile_context_rejects_same_fc_setting_change() -> None:
+    preset = _two_way()
+    corrections = {
+        role: {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False}
+        for role in ("woofer", "tweeter")
+    }
+    applied = {
+        "recomposition_snapshot": {
+            "preset": preset.to_dict(),
+            "corrections": corrections,
+        }
+    }
+    changed = preset.to_dict()
+    changed["crossover_regions"][0]["order"] = 2
+
+    assert preset_matches_applied_profile(preset, applied) is True
+    assert preset_matches_applied_profile(
+        preset, applied, candidate_corrections=corrections
+    ) is True
+    changed_corrections = {role: dict(values) for role, values in corrections.items()}
+    changed_corrections["tweeter"]["gain_db"] = -1.0
+    assert preset_matches_applied_profile(
+        preset, applied, candidate_corrections=changed_corrections
+    ) is False
+    assert preset_matches_applied_profile(
+        ActiveSpeakerPreset.from_mapping(changed), applied
+    ) is False
+    assert preset_matches_applied_profile(preset, {}) is False
 
 
 def _reference_sweep(duration_s: float = 1.0):
@@ -429,31 +478,131 @@ def _driver_record(role, *, calibrated, group="mono"):
     }
 
 
+def _comparison_set():
+    from jasper.active_speaker.capture_geometry import comparison_set_fingerprint
+
+    core = {
+        "schema_version": 2,
+        "comparison_set_id": "a" * 32,
+        "created_at": "2026-07-12T12:00:00Z",
+        "topology_id": "test-topology",
+        "profile_context_id": "protected-profile",
+        "setup_sha256": "b" * 64,
+        "device_sha256": "c" * 64,
+        "calibration_id": "test-calibration",
+        "driver_level_locks": {
+            f"mono:{role}": {
+                "target_id": f"mono:{role}",
+                "speaker_group_id": "mono",
+                "role": role,
+                "tone_frequency_hz": 250.0 if role == "woofer" else 6250.0,
+                "tone_peak_dbfs": -12.0,
+                "commissioning_gain_db": 0.0,
+                "locked_main_volume_db": -12.0,
+            }
+            for role in ("woofer", "tweeter")
+        },
+    }
+    return {**core, "fingerprint": comparison_set_fingerprint(core)}
+
+
 def _state(*, calibrated, in_phase_null=None, reverse_null=None, group="mono"):
+    from jasper.active_speaker.capture_geometry import (
+        SUMMED_PLACEMENT_POLICY_ID,
+        normalized_placement_proof,
+    )
+
+    comparison_set = _comparison_set()
+    group_fingerprint = "d" * 64
     state = {
+        "active_comparison_set": comparison_set,
         "latest_by_target": {
             f"{group}:woofer": _driver_record("woofer", calibrated=calibrated, group=group),
             f"{group}:tweeter": _driver_record("tweeter", calibrated=calibrated, group=group),
         },
         "latest_summed_by_group": {},
+        "latest_summed_pairs_by_group": {},
     }
     if in_phase_null is not None or reverse_null is not None:
         is_reverse = reverse_null is not None
-        state["latest_summed_by_group"][group] = {
+        record = {
             "speaker_group_id": group,
+            "group_fingerprint": group_fingerprint,
+            "outcome": "blend_ok",
+            "validated": True,
+            "issues": [],
+            "mic_clipping": False,
+            "mic_meter": {"status": "usable"},
+            "summed_test_id": "summed-playback",
+            "summed_test": {
+                "summed_test_id": "summed-playback",
+                "playback_id": "summed-playback",
+                "speaker_group_id": group,
+                "group_fingerprint": group_fingerprint,
+                "captured": True,
+                "audio_emitted": True,
+            },
+            "region": {
+                "lower_role": "woofer",
+                "upper_role": "tweeter",
+                "fc_hz": 1600.0,
+            },
+            "placement_proof": normalized_placement_proof(
+                policy_id=SUMMED_PLACEMENT_POLICY_ID,
+                acknowledgement_binding="binding-summed-abcdefghijkl",
+                relay_session_id="relay-summed",
+                capture_page={
+                    "capture_protocol_version": 2,
+                    "capture_page_build": "20260712.2",
+                },
+                speaker_group_id=group,
+                role="summed",
+                target_fingerprint=group_fingerprint,
+                comparison_set=comparison_set,
+            ),
+            "excitation": {
+                "schema_version": 1,
+                "scope": "sweep_plus_applied_full_layer_a_graph",
+                "sweep_peak_dbfs": -12.0,
+                "gain_source": "applied_baseline_recomposition_snapshot",
+                "baseline_id": "baseline-test",
+                "topology_id": "test-topology",
+                "corrections": {
+                    role: {
+                        "gain_db": 0.0,
+                        "delay_ms": 0.0,
+                        "inverted": False,
+                        "effective_peak_dbfs": -12.0,
+                    }
+                    for role in ("woofer", "tweeter")
+                },
+            },
             "acoustic": {
+                "verdict": "blend_ok",
                 "null_depth_db": reverse_null if is_reverse else in_phase_null,
                 "expect_null": is_reverse,
+                "crossover_fc_hz": 1600.0,
                 "calibrated": calibrated,
+                "mic_clipping": False,
             },
         }
+        state["latest_summed_pairs_by_group"][group] = {
+            "woofer:tweeter": {
+                "in_phase": None if is_reverse else record,
+                "reverse": record if is_reverse else None,
+            }
+        }
+        if not is_reverse:
+            state["latest_summed_by_group"][group] = record
     return state
 
 
 def test_build_proposal_authorizes_phase_aware_on_calibrated_records():
     state = _state(calibrated=True, in_phase_null=2.0)
     out = build_crossover_alignment_proposal(
-        _two_way(), state, requested_mode=ca.PHASE_AWARE
+        _two_way(), state, requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
+        expected_applied_profile=_applied_profile(),
     )
     assert out["status"] == "ok"
     assert out["mode"]["mode"] == ca.PHASE_AWARE
@@ -466,7 +615,9 @@ def test_build_proposal_refuses_phase_aware_on_uncalibrated_records():
     # downgrade it — a phone can never yield a polarity decision.
     state = _state(calibrated=False, in_phase_null=2.0)
     out = build_crossover_alignment_proposal(
-        _two_way(), state, requested_mode=ca.PHASE_AWARE
+        _two_way(), state, requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
+        expected_applied_profile=_applied_profile(),
     )
     assert out["mode"]["mode"] == ca.MAGNITUDE_ONLY
     assert out["mode"]["downgraded"] is True
@@ -476,7 +627,9 @@ def test_build_proposal_refuses_phase_aware_on_uncalibrated_records():
 def test_build_proposal_reads_reverse_null_from_state():
     state = _state(calibrated=True, reverse_null=14.0)
     out = build_crossover_alignment_proposal(
-        _two_way(), state, requested_mode=ca.PHASE_AWARE
+        _two_way(), state, requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
+        expected_applied_profile=_applied_profile(),
     )
     proposal = out["proposal"]
     assert proposal["reverse_null_depth_db"] == 14.0
@@ -487,6 +640,7 @@ def test_build_proposal_graceful_on_empty_state():
     out = build_crossover_alignment_proposal(
         _two_way(), {"latest_by_target": {}, "latest_summed_by_group": {}},
         requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
     )
     assert out["status"] == "no_measurements"
     assert out["proposal"] is None

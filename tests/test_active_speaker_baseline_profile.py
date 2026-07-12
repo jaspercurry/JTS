@@ -25,7 +25,6 @@ from jasper.active_speaker.baseline_profile import (
     PROVENANCE_RECOMMENDED_START,
     _derive_corrections,
     _GAIN_SOURCE_TO_PROVENANCE,
-    _is_fresh_usable_summed_alignment,
     apply_baseline_profile,
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
@@ -2690,10 +2689,19 @@ def test_manual_apply_preserves_persisted_polarity_and_delay_against_trim_eviden
     assert payload["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MANUAL
 
 
-# --- Spec-promise guard 2: stereo apply does not zero persisted delay/inversion
+# --- Lane E admitted polarity; Lane F exclusively owns measured delay --------
 
 
-def test_derive_corrections_stereo_summed_evidence_does_not_zero_persisted_values():
+def test_derive_corrections_stereo_alignment_does_not_mutate_shared_preset(
+    monkeypatch,
+):
+    from jasper.active_speaker import crossover_contract
+
+    monkeypatch.setattr(
+        crossover_contract,
+        "preset_matches_applied_profile",
+        lambda *_args, **_kwargs: True,
+    )
     region = CrossoverRegion(
         id="woofer_tweeter_2000hz",
         lower_driver="woofer",
@@ -2705,30 +2713,15 @@ def test_derive_corrections_stereo_summed_evidence_does_not_zero_persisted_value
         delay_ms=0.35,
     )
     preset = _duck_preset(crossover_regions=[region])
-    crossover_preview = {"updated_at": "2026-06-19T12:10:00Z"}
-    # Two groups' worth of fresh, validated, CONFLICTING measured evidence —
-    # today this unconditionally zeroed delay/inversion for every role.
     measurements = {
-        "latest_summed_by_group": {
-            "left": {
-                "validated": True,
-                "created_at": "2026-06-19T12:20:00Z",
-                "polarity": "invert_woofer",
-                "delay_ms": 5.0,
-                "delay_target_role": "woofer",
-            },
-            "right": {
-                "validated": True,
-                "created_at": "2026-06-19T12:20:00Z",
-                "polarity": "invert_woofer",
-                "delay_ms": 5.0,
-                "delay_target_role": "woofer",
-            },
+        "latest_summed_pairs_by_group": {
+            "left": {"woofer:tweeter": {"in_phase": {}, "reverse": {}}},
+            "right": {"woofer:tweeter": {"in_phase": {}, "reverse": {}}},
         },
     }
-
     corrections, issues, _meta = _derive_corrections(
-        preset, crossover_preview, measurements, tuning_owner="automatic",
+        preset, {}, measurements, tuning_owner="automatic",
+        expected_profile_context_id="protected-profile",
     )
 
     # Every role's persisted (manual) delay/inversion survives untouched.
@@ -2736,7 +2729,8 @@ def test_derive_corrections_stereo_summed_evidence_does_not_zero_persisted_value
     assert corrections["tweeter"]["inverted"] is True
     assert corrections["tweeter"]["delay_ms"] == 0.35
     warning = next(
-        issue for issue in issues if issue["code"] == "group_specific_delay_not_applied"
+        issue for issue in issues
+        if issue["code"] == "group_specific_alignment_not_applied"
     )
     assert "measurement-derived" in warning["message"]
 
@@ -2755,254 +2749,219 @@ def test_derive_corrections_manual_tuning_never_looks_at_summed_evidence_at_all(
         delay_ms=0.35,
     )
     preset = _duck_preset(crossover_regions=[region])
-    crossover_preview = {"updated_at": "2026-06-19T12:10:00Z"}
     measurements = {
-        "latest_summed_by_group": {
-            "left": {
-                "validated": True,
-                "created_at": "2026-06-19T12:20:00Z",
-                "polarity": "invert_woofer",
-                "delay_ms": 5.0,
-                "delay_target_role": "woofer",
-            },
-            "right": {
-                "validated": True,
-                "created_at": "2026-06-19T12:20:00Z",
-                "polarity": "invert_woofer",
-                "delay_ms": 5.0,
-                "delay_target_role": "woofer",
-            },
+        "latest_summed_pairs_by_group": {
+            "left": {"woofer:tweeter": {"in_phase": {}, "reverse": {}}},
+            "right": {"woofer:tweeter": {"in_phase": {}, "reverse": {}}},
         },
     }
 
     corrections, issues, _meta = _derive_corrections(
-        preset, crossover_preview, measurements, tuning_owner="manual",
+        preset, {}, measurements, tuning_owner="manual",
     )
 
     assert corrections["woofer"]["inverted"] is True
     assert corrections["tweeter"]["inverted"] is True
     assert corrections["tweeter"]["delay_ms"] == 0.35
-    assert "group_specific_delay_not_applied" not in {
+    assert "group_specific_alignment_not_applied" not in {
         issue["code"] for issue in issues
     }
 
 
-# --- Automatic + fresh authorized evidence vs. manual on the SAME evidence --
-
-
-def test_derive_corrections_automatic_fresh_evidence_overrides_persisted_delay_and_adds_polarity():
-    region = CrossoverRegion(
-        id="woofer_tweeter_2000hz",
-        lower_driver="woofer",
-        upper_driver="tweeter",
-        fc_hz=2000.0,
-        delay_target_driver="tweeter",
-        delay_ms=0.35,  # persisted (manual) delay
-    )
-    preset = _duck_preset(crossover_regions=[region])
-    crossover_preview = {"updated_at": "2026-06-19T12:10:00Z"}
-    measurements = {
-        "latest_summed_by_group": {
-            "mono": {
-                "validated": True,
-                "created_at": "2026-06-19T12:20:00Z",  # fresher than the preview
-                "polarity": "invert_woofer",
-                "delay_ms": 1.2,
-                "delay_target_role": "tweeter",
-            },
-        },
-    }
-
-    auto_corrections, _auto_issues, auto_meta = _derive_corrections(
-        preset, crossover_preview, measurements, tuning_owner="automatic",
-    )
-    manual_corrections, _manual_issues, manual_meta = _derive_corrections(
-        preset, crossover_preview, measurements, tuning_owner="manual",
-    )
-
-    # Automatic: fresh authorized evidence overrides the persisted delay and
-    # applies the measured inversion, both stamped "measured".
-    assert auto_corrections["tweeter"]["delay_ms"] == 1.2
-    assert auto_meta["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MEASURED
-    assert auto_corrections["woofer"]["inverted"] is True
-    assert auto_meta["corrections_provenance"]["woofer"]["inverted"] == PROVENANCE_MEASURED
-
-    # Manual: the SAME evidence is never consulted -> persisted delay stands
-    # and no inversion is added.
-    assert manual_corrections["tweeter"]["delay_ms"] == 0.35
-    assert manual_meta["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MANUAL
-    assert manual_corrections["woofer"]["inverted"] is False
-    assert "woofer" not in manual_meta["corrections_provenance"]
-
-
-def test_derive_corrections_stale_summed_evidence_never_overrides_manual_even_when_automatic():
-    # A summed record OLDER than the preview cannot be proven fresh -> the
-    # fail-closed predicate rejects it, so even automatic tuning keeps the
-    # persisted working value.
-    region = CrossoverRegion(
-        id="woofer_tweeter_2000hz",
-        lower_driver="woofer",
-        upper_driver="tweeter",
-        fc_hz=2000.0,
-        delay_target_driver="tweeter",
-        delay_ms=0.35,
-    )
-    preset = _duck_preset(crossover_regions=[region])
-    crossover_preview = {"updated_at": "2026-06-19T12:10:00Z"}
-    measurements = {
-        "latest_summed_by_group": {
-            "mono": {
-                "validated": True,
-                "created_at": "2026-06-19T12:00:00Z",  # OLDER than the preview
-                "polarity": "invert_woofer",
-                "delay_ms": 1.2,
-                "delay_target_role": "tweeter",
-            },
-        },
-    }
-
-    corrections, _issues, meta = _derive_corrections(
-        preset, crossover_preview, measurements, tuning_owner="automatic",
-    )
-
-    assert corrections["tweeter"]["delay_ms"] == 0.35
-    assert meta["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MANUAL
-    assert corrections["woofer"]["inverted"] is False
-
-
-def test_derive_corrections_automatic_tier_unaffected_by_later_reverse_capture(
+def test_derive_corrections_automatic_uses_admitted_pair_and_never_capture_delay(
     tmp_path: Path,
 ) -> None:
-    """Overwrite-bug regression, through REAL persistence (not a hand-built
-    measurements dict, unlike the fixtures above): baseline_profile's
-    automatic delay/polarity tier reads
-    measurements["latest_summed_by_group"] (measurement.py: the latest
-    IN-PHASE record per group). A reverse-polarity capture recorded AFTER
-    the in-phase evidence -- which can ALSO read validated=True, since a
-    formed reverse null IS the pass for a reverse capture -- must not
-    silently override or corrupt the delay/polarity the automatic tier
-    already derived from the in-phase capture."""
-    topology = _topology()
-    state_path = tmp_path / "measurements.json"
-    region = CrossoverRegion(
-        id="woofer_tweeter_1600hz",
-        lower_driver="woofer",
-        upper_driver="tweeter",
-        fc_hz=1600.0,
-        delay_target_driver="tweeter",
-        delay_ms=0.35,  # persisted (manual) delay
-    )
-    preset = _duck_preset(crossover_regions=[region])
-    crossover_preview = {"updated_at": "2026-06-19T12:10:00Z"}
+    import copy
 
-    record_summed_test_artifact(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "playback": {
-                "status": "completed",
-                "backend": "aplay",
-                "playback_id": "summed-playback-audible",
-                "audio_emitted": True,
-                "artifact": {
-                    "wav_basename": "tone.wav",
-                    "metadata_basename": "tone.json",
-                    "target_output_indices": [0, 1],
-                    "channel_count": 2,
-                },
-                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
+    from tests.test_active_speaker_commissioning_capture import (
+        _alignment_applied_profile,
+        _valid_alignment_pair,
+    )
+
+    preset, measurements = _valid_alignment_pair(tmp_path)
+    measurements = copy.deepcopy(measurements)
+    pair = measurements["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    pair["in_phase"].update({
+        "outcome": "polarity_or_delay_problem",
+        "validated": False,
+        "delay_ms": 9.9,
+        "delay_target_role": "tweeter",
+    })
+    pair["in_phase"]["acoustic"].update({
+        "verdict": "polarity_or_delay_problem",
+        "null_depth_db": 24.0,
+    })
+    pair["reverse"].update({
+        "outcome": "polarity_or_delay_problem",
+        "validated": False,
+        "delay_ms": 8.8,
+        "delay_target_role": "woofer",
+    })
+    pair["reverse"]["acoustic"].update({
+        "verdict": "polarity_or_delay_problem",
+        "null_depth_db": 2.0,
+    })
+    for record in pair.values():
+        record["acoustic"].update({
+            "null_depth_capped": False,
+            "snr": {
+                "verdict": "ok",
+                "worst_relevant": {"verdict": "ok"},
             },
-        },
-        state_path=state_path,
-        now="2026-06-19T12:15:00Z",
+        })
+    applied_profile = _alignment_applied_profile(
+        preset,
+        topology_id=measurements["active_comparison_set"]["topology_id"],
     )
-    record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40.0,
-            "summed_test_id": "summed-playback-audible",
-            "polarity": "invert_woofer",
-            "delay_ms": 1.2,
-            "delay_target_role": "tweeter",
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-        now="2026-06-19T12:20:00Z",  # fresher than the preview
-    )
-    measurements = load_measurement_state(topology, state_path=state_path)
+
     corrections, _issues, meta = _derive_corrections(
-        preset, crossover_preview, measurements, tuning_owner="automatic",
+        preset,
+        {},
+        measurements,
+        tuning_owner="automatic",
+        expected_profile_context_id="protected-profile",
+        applied_profile_context=applied_profile,
     )
-    # Sanity: this IS the fresh-automatic-override path (mirrors
-    # test_derive_corrections_automatic_fresh_evidence_overrides_persisted_
-    # delay_and_adds_polarity above), so the later assertions are a real
-    # regression check, not a no-op.
-    assert corrections["tweeter"]["delay_ms"] == 1.2
-    assert corrections["woofer"]["inverted"] is True
-    assert meta["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MEASURED
 
-    # A reverse-polarity capture, fresher still, with CONFLICTING evidence --
-    # if it leaked into the automatic tier, this would flip the delay target
-    # and polarity onto the wrong role.
-    record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -55.0,
-            "summed_test_id": "summed-playback-audible",
-            "polarity": "invert_tweeter",
-            "delay_ms": 9.9,
-            "delay_target_role": "woofer",
-            "acoustic": {
-                "verdict": "blend_ok",
-                "null_depth_db": 22.0,
-                "expect_null": True,
-                "calibrated": True,
+    assert corrections["tweeter"]["inverted"] is True
+    assert corrections["tweeter"]["delay_ms"] == 0.0
+    assert meta["corrections_provenance"]["tweeter"] == {
+        "inverted": PROVENANCE_MEASURED,
+    }
+
+    changed_graph = copy.deepcopy(applied_profile)
+    changed_graph["recomposition_snapshot"]["corrections"]["tweeter"][
+        "gain_db"
+    ] = -1.0
+    stale_corrections, stale_issues, stale_meta = _derive_corrections(
+        preset,
+        {},
+        measurements,
+        tuning_owner="automatic",
+        expected_profile_context_id="protected-profile",
+        applied_profile_context=changed_graph,
+    )
+    assert stale_corrections["tweeter"]["inverted"] is False
+    assert "tweeter" not in stale_meta["corrections_provenance"]
+    assert "summed_alignment_graph_context_changed" in {
+        issue["code"] for issue in stale_issues
+    }
+
+
+def test_derive_corrections_never_applies_polarity_without_band_snr(
+    tmp_path: Path,
+) -> None:
+    from tests.test_active_speaker_commissioning_capture import (
+        _alignment_applied_profile,
+        _valid_alignment_pair,
+    )
+
+    preset, measurements = _valid_alignment_pair(tmp_path)
+    applied_profile = _alignment_applied_profile(
+        preset,
+        topology_id=measurements["active_comparison_set"]["topology_id"],
+    )
+    pair = measurements["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    pair["in_phase"]["outcome"] = "polarity_or_delay_problem"
+    pair["in_phase"]["validated"] = False
+    pair["in_phase"]["acoustic"].update({
+        "verdict": "polarity_or_delay_problem",
+        "null_depth_db": 24.0,
+    })
+    pair["reverse"]["outcome"] = "polarity_or_delay_problem"
+    pair["reverse"]["validated"] = False
+    pair["reverse"]["acoustic"].update({
+        "verdict": "polarity_or_delay_problem",
+        "null_depth_db": 2.0,
+    })
+
+    corrections, issues, meta = _derive_corrections(
+        preset,
+        {},
+        measurements,
+        tuning_owner="automatic",
+        expected_profile_context_id="protected-profile",
+        applied_profile_context=applied_profile,
+    )
+
+    assert corrections["tweeter"]["inverted"] is False
+    assert "tweeter" not in meta["corrections_provenance"]
+    assert "summed_alignment_quality_not_applied" in {
+        issue["code"] for issue in issues
+    }
+
+
+def test_derive_corrections_surfaces_rejected_alignment_evidence(
+    tmp_path: Path,
+) -> None:
+    from tests.test_active_speaker_commissioning_capture import (
+        _alignment_applied_profile,
+        _valid_alignment_pair,
+    )
+
+    preset, measurements = _valid_alignment_pair(tmp_path)
+    applied_profile = _alignment_applied_profile(
+        preset,
+        topology_id=measurements["active_comparison_set"]["topology_id"],
+    )
+    pair = measurements["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    for record in pair.values():
+        record["excitation"] = None
+
+    corrections, issues, meta = _derive_corrections(
+        preset,
+        {},
+        measurements,
+        tuning_owner="automatic",
+        expected_profile_context_id="protected-profile",
+        applied_profile_context=applied_profile,
+    )
+
+    assert corrections["tweeter"]["inverted"] is False
+    assert "tweeter" not in meta["corrections_provenance"]
+    assert "summed_alignment_evidence_not_applied" in {
+        issue["code"] for issue in issues
+    }
+
+
+def test_derive_corrections_rejects_flat_record_and_stale_profile_context(
+    tmp_path: Path,
+) -> None:
+    from tests.test_active_speaker_commissioning_capture import _valid_alignment_pair
+
+    preset, measurements = _valid_alignment_pair(tmp_path)
+    malicious = {
+        "latest_summed_by_group": {
+            "mono": {
+                "validated": True,
+                "polarity": "invert_tweeter",
+                "delay_ms": 12.0,
+                "delay_target_role": "tweeter",
             },
         },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-        now="2026-06-19T12:30:00Z",
+    }
+    flat_corrections, _issues, flat_meta = _derive_corrections(
+        preset,
+        {},
+        malicious,
+        tuning_owner="automatic",
+        expected_profile_context_id="protected-profile",
     )
-    measurements_after = load_measurement_state(topology, state_path=state_path)
-    corrections_after, _issues_after, meta_after = _derive_corrections(
-        preset, crossover_preview, measurements_after, tuning_owner="automatic",
-    )
-
-    # Unaffected: still the ORIGINAL in-phase evidence, not the reverse
-    # capture's conflicting values.
-    assert corrections_after["tweeter"]["delay_ms"] == 1.2
-    assert corrections_after["woofer"]["inverted"] is True
-    assert corrections_after["woofer"]["delay_ms"] == 0.0
-    assert (
-        meta_after["corrections_provenance"]["tweeter"]["delay_ms"]
-        == PROVENANCE_MEASURED
+    stale_corrections, _issues, stale_meta = _derive_corrections(
+        preset,
+        {},
+        measurements,
+        tuning_owner="automatic",
+        expected_profile_context_id="different-current-profile",
     )
 
-
-def test_is_fresh_usable_summed_alignment_fails_closed_on_malformed_timestamps():
-    fresh_shaped = {"validated": True, "created_at": "2026-06-19T12:20:00Z"}
-    assert _is_fresh_usable_summed_alignment(fresh_shaped, "2026-06-19T12:10:00Z") is True
-    # Not validated.
-    assert _is_fresh_usable_summed_alignment(
-        {"validated": False, "created_at": "2026-06-19T12:20:00Z"},
-        "2026-06-19T12:10:00Z",
-    ) is False
-    # Missing/malformed created_at.
-    assert _is_fresh_usable_summed_alignment(
-        {"validated": True, "created_at": "not-a-timestamp"}, "2026-06-19T12:10:00Z",
-    ) is False
-    assert _is_fresh_usable_summed_alignment(
-        {"validated": True}, "2026-06-19T12:10:00Z",
-    ) is False
-    # Missing/malformed preview updated_at.
-    assert _is_fresh_usable_summed_alignment(fresh_shaped, None) is False
-    assert _is_fresh_usable_summed_alignment(fresh_shaped, "not-a-timestamp") is False
-    # Not a mapping at all.
-    assert _is_fresh_usable_summed_alignment("not-a-record", "2026-06-19T12:10:00Z") is False
+    for corrections, meta in (
+        (flat_corrections, flat_meta),
+        (stale_corrections, stale_meta),
+    ):
+        assert corrections["tweeter"]["inverted"] is False
+        assert corrections["tweeter"]["delay_ms"] == 0.0
+        assert "tweeter" not in meta["corrections_provenance"]
 
 
 # --- corrections_provenance block on the candidate/applied payload ---------

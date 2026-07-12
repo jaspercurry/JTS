@@ -737,15 +737,15 @@ def build_crossover_relay_run_and_consume(
     played: dict[str, Any] = {}
     repeat_reservation: dict[str, Any] = {}
     placement_proof: dict[str, Any] = {}
-    frozen_driver_preset: Any = None
-    if kind == "driver" and isinstance(applied_profile, Mapping):
+    frozen_capture_preset: Any = None
+    if isinstance(applied_profile, Mapping):
         snapshot = applied_profile.get("recomposition_snapshot")
         snapshot = snapshot if isinstance(snapshot, Mapping) else {}
         preset_raw = snapshot.get("preset")
         if isinstance(preset_raw, dict):
             from jasper.active_speaker.profile import ActiveSpeakerPreset
 
-            frozen_driver_preset = ActiveSpeakerPreset.from_mapping(preset_raw)
+            frozen_capture_preset = ActiveSpeakerPreset.from_mapping(preset_raw)
 
     def _finish_reservation_failure(error: BaseException) -> None:
         if not repeat_reservation or finish_failed_repeat_attempt is None:
@@ -799,8 +799,18 @@ def build_crossover_relay_run_and_consume(
                             else None
                         ),
                     )
+                summed_play_raw = {"speaker_group_id": group_id}
+                for key in (
+                    "expect_null",
+                    "crossover_fc_hz",
+                    "polarity",
+                    "delay_ms",
+                    "delay_target_role",
+                ):
+                    if key in raw:
+                        summed_play_raw[key] = raw[key]
                 return await backend.play_summed_capture_sweep(
-                    {"speaker_group_id": group_id},
+                    summed_play_raw,
                     camilla_factory=camilla_factory,
                     blocking_phase=phase,
                 )
@@ -1085,8 +1095,8 @@ def build_crossover_relay_run_and_consume(
                 "placement_proof": placement_proof,
                 "repeat_store": backend.level_lease(),
             }
-            if frozen_driver_preset is not None:
-                record_kwargs["preset"] = frozen_driver_preset
+            if frozen_capture_preset is not None:
+                record_kwargs["preset"] = frozen_capture_preset
             try:
                 record_payload = backend.record_driver_capture(
                     record_raw,
@@ -1110,10 +1120,23 @@ def build_crossover_relay_run_and_consume(
             record_raw["summed_test_id"] = played.get("summed_test_id") or played.get(
                 "playback_id"
             )
+            # These fields define which region/polarity the capture analyzes.
+            # The relay is transport only; dropping them here silently relabels
+            # every capture as the lowest in-phase region.
+            for key in (
+                "expect_null",
+                "crossover_fc_hz",
+                "polarity",
+                "delay_ms",
+                "delay_target_role",
+            ):
+                if key in raw:
+                    record_raw[key] = raw[key]
             record_payload = backend.record_summed_capture(
                 record_raw,
                 result.wav,
                 placement_proof=placement_proof,
+                preset=frozen_capture_preset,
             )
         log_event(
             logger,

@@ -1009,7 +1009,7 @@ def build_crossover_sweep_spec(
     button_label = (
         f"I’ve positioned the mic — measure {driver_label}"
         if is_driver
-        else "I’ve moved the mic — measure the combined drivers"
+        else "The mic is fixed on-axis — measure the combined drivers"
     )
     acknowledgement = (
         CaptureAcknowledgement(

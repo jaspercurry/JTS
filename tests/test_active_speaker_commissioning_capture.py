@@ -33,7 +33,7 @@ from jasper.active_speaker.commissioning_capture import (
     REPEAT_OUTLIER_DB,
     SUMMED_VERDICT_TO_OUTCOME,
     _summed_alignment_snr,
-    build_crossover_alignment_proposal,
+    build_crossover_alignment_proposal as _build_crossover_alignment_proposal,
     aggregate_driver_repeats,
     driver_passband_hz,
     primary_crossover_fc_hz,
@@ -50,17 +50,20 @@ from jasper.active_speaker.driver_acoustics import (
 )
 from jasper.active_speaker.measurement import (
     MAX_SUMMED_RECORDS,
+    active_driver_targets,
+    active_summed_targets,
     load_measurement_state,
+    record_summed_test_artifact,
     record_summed_validation,
+    start_active_comparison_set,
 )
-from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.active_speaker.profile import ActiveSpeakerPreset, required_driver_roles
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
 
 # Canonical fixtures reused across the active-speaker suite.
 from tests.test_active_speaker_measurement import (
     _safe_session,
-    _summed_acoustic,
     _three_way_topology,
 )
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
@@ -79,6 +82,72 @@ def _two_way() -> ActiveSpeakerPreset:
 def _three_way() -> ActiveSpeakerPreset:
     # crossovers at 350 (woofer/mid) and 2500 (mid/tweeter).
     return ActiveSpeakerPreset.from_mapping(_three_way_preset())
+
+
+def _alignment_applied_profile(
+    preset: ActiveSpeakerPreset,
+    topology: OutputTopology | None = None,
+    *,
+    topology_id: str | None = None,
+) -> dict:
+    topology = topology or _topology()
+    resolved_topology_id = topology_id or topology.topology_id
+    corrections = {
+        role: {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False}
+        for role in required_driver_roles(preset.way_count)
+    }
+    return {
+        "status": "applied",
+        "baseline_id": "baseline-test",
+        "source": {"fingerprint": "protected-profile"},
+        "recomposition_snapshot": {
+            "topology_id": resolved_topology_id,
+            "preset": preset.to_dict(),
+            "corrections": corrections,
+        },
+    }
+
+
+def build_crossover_alignment_proposal(
+    preset: ActiveSpeakerPreset,
+    measurements: dict,
+    **kwargs,
+) -> dict:
+    comparison_set = measurements.get("active_comparison_set")
+    comparison_set = comparison_set if isinstance(comparison_set, dict) else {}
+    kwargs.setdefault(
+        "expected_applied_profile",
+        _alignment_applied_profile(
+            preset,
+            topology_id=str(comparison_set.get("topology_id") or "test-topology"),
+        ),
+    )
+    return _build_crossover_alignment_proposal(preset, measurements, **kwargs)
+
+
+def _alignment_excitation(
+    preset: ActiveSpeakerPreset,
+    topology: OutputTopology | None = None,
+) -> dict:
+    topology = topology or _topology()
+    sweep_peak_dbfs = -12.0
+    return {
+        "schema_version": 1,
+        "scope": "sweep_plus_applied_full_layer_a_graph",
+        "sweep_peak_dbfs": sweep_peak_dbfs,
+        "gain_source": "applied_baseline_recomposition_snapshot",
+        "baseline_id": "baseline-test",
+        "topology_id": topology.topology_id,
+        "corrections": {
+            role: {
+                "gain_db": 0.0,
+                "delay_ms": 0.0,
+                "inverted": False,
+                "effective_peak_dbfs": sweep_peak_dbfs,
+            }
+            for role in required_driver_roles(preset.way_count)
+        },
+    }
 
 
 def _driver_result(
@@ -819,7 +888,7 @@ def test_summed_alignment_snr_real_insufficient_reading_is_false():
     assert alignment_snr_ok is False
 
 
-def test_summed_alignment_snr_real_ok_reading_is_true():
+def test_summed_alignment_snr_both_real_ok_readings_are_true():
     record = {
         "acoustic": {
             "snr": {
@@ -832,7 +901,7 @@ def test_summed_alignment_snr_real_ok_reading_is_true():
             },
         },
     }
-    alignment_snr_ok, _ = _summed_alignment_snr(record)
+    alignment_snr_ok, _ = _summed_alignment_snr(record, record)
     assert alignment_snr_ok is True
 
 
@@ -858,53 +927,42 @@ def test_build_proposal_scalar_only_snr_never_degrades_keep_to_review():
     reverse-polarity null must still authorize polarity_action='keep', never
     'review', and must never raise 'alignment_snr_insufficient'.
     """
-    state = {
-        "latest_by_target": {
-            "mono:woofer": {
-                "speaker_group_id": "mono",
-                "role": "woofer",
-                "acoustic": {"verdict": "present", "calibrated": True},
-            },
-            "mono:tweeter": {
-                "speaker_group_id": "mono",
-                "role": "tweeter",
-                "acoustic": {"verdict": "present", "calibrated": True},
-            },
-        },
-        "latest_summed_by_group": {
-            "mono": {
-                "speaker_group_id": "mono",
-                "acoustic": {
-                    "null_depth_db": 14.0,
-                    "expect_null": True,
-                    "calibrated": True,
-                    "null_depth_capped": False,
-                    "snr": {
-                        "schema_version": 1,
-                        "decision_class": "alignment",
-                        "relevant_hz": [800.0, 3200.0],
-                        "bands": [
-                            {
-                                "band_id": "mid",
-                                "band_hz": [1000.0, 4000.0],
-                                "estimated_snr_db": 45.0,
-                                "verdict": "unknown",
-                                "shortfall_db": None,
-                                "method": "scalar_fallback",
-                            },
-                        ],
-                        "worst_relevant": None,
-                        "verdict": "unknown",
-                    },
+    from tests.test_active_speaker_crossover_alignment import _state
+
+    state = _state(calibrated=True, reverse_null=14.0)
+    record = state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"][
+        "reverse"
+    ]
+    record["acoustic"].update({
+        "null_depth_capped": False,
+        "snr": {
+            "schema_version": 1,
+            "decision_class": "alignment",
+            "relevant_hz": [800.0, 3200.0],
+            "bands": [
+                {
+                    "band_id": "mid",
+                    "band_hz": [1000.0, 4000.0],
+                    "estimated_snr_db": 45.0,
+                    "verdict": "unknown",
+                    "shortfall_db": None,
+                    "method": "scalar_fallback",
                 },
-            },
+            ],
+            "worst_relevant": None,
+            "verdict": "unknown",
         },
-    }
+    })
     out = build_crossover_alignment_proposal(
-        _two_way(), state, requested_mode=ca.PHASE_AWARE
+        _two_way(), state, requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
     )
     proposal = out["proposal"]
     assert proposal["polarity_action"] == ca.POLARITY_KEEP
+    assert out["proposals"][0]["decision_quality"] == {
+        "alignment_snr_ok": None,
+        "null_depth_capped": False,
+    }
     codes = {issue["code"] for issue in proposal["issues"]}
     assert "alignment_snr_insufficient" not in codes
 # --- Step 2: three-repeat capture — aggregate_driver_repeats ----------------
@@ -1458,21 +1516,115 @@ def _capture_summed(
     now: str | None = None,
     wav_name: str = "cap.wav",
     placement_proof: dict | None = None,
+    start_new_comparison_set: bool = False,
 ) -> dict:
     """Run the REAL record_summed_acoustic_capture -> record_summed_validation
     wire (region stamping included), unlike most tests above which spy on
     ``record``."""
+    from jasper.active_speaker.capture_geometry import (
+        SUMMED_PLACEMENT_POLICY_ID,
+        normalized_placement_proof,
+    )
+
+    topology = topology or _topology()
+    state_path = state_path or (tmp_path / "measurements.json")
+    state = load_measurement_state(topology, state_path=state_path)
+    comparison_set = state.get("active_comparison_set")
+    if start_new_comparison_set or not isinstance(comparison_set, dict):
+        comparison_set = start_active_comparison_set(
+            topology,
+            profile_context_id="protected-profile",
+            setup_sha256="a" * 64,
+            device_sha256="b" * 64,
+            calibration_id="test-calibration",
+            driver_level_locks={
+                target["target_id"]: {
+                    "target_id": target["target_id"],
+                    "speaker_group_id": target["speaker_group_id"],
+                    "role": target["role"],
+                    "tone_frequency_hz": (
+                        250.0 if target["role"] == "woofer" else 6250.0
+                    ),
+                    "tone_peak_dbfs": -12.0,
+                    "commissioning_gain_db": 0.0,
+                    "locked_main_volume_db": -12.0,
+                }
+                for target in active_driver_targets(topology)
+            },
+            state_path=state_path,
+            now=now or "2026-07-11T11:59:00Z",
+        )
+    state = load_measurement_state(topology, state_path=state_path)
+    playback_id = f"summed-playback-{len(state.get('summed_tests') or []) + 1}"
+    output_indices = sorted({
+        int(channel.physical_output_index)
+        for group in topology.speaker_groups
+        if group.id == "mono"
+        for channel in group.channels
+        if channel.physical_output_index is not None
+    })
+    record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "completed",
+                "backend": "aplay",
+                "playback_id": playback_id,
+                "audio_emitted": True,
+                "artifact": {
+                    "wav_basename": "summed.wav",
+                    "metadata_basename": "summed.json",
+                    "target_output_indices": output_indices,
+                    "channel_count": len(output_indices),
+                },
+            },
+        },
+        state_path=state_path,
+        now=now,
+    )
+    if placement_proof is None:
+        group_target = next(
+            target
+            for target in active_summed_targets(topology)
+            if target["speaker_group_id"] == "mono"
+        )
+        placement_proof = normalized_placement_proof(
+            policy_id=SUMMED_PLACEMENT_POLICY_ID,
+            acknowledgement_binding=f"binding-{playback_id}-abcdefghijkl",
+            relay_session_id=f"relay-{playback_id}",
+            capture_page={
+                "capture_protocol_version": 2,
+                "capture_page_build": "20260712.2",
+            },
+            speaker_group_id="mono",
+            role="summed",
+            target_fingerprint=group_target["group_fingerprint"],
+            comparison_set=comparison_set,
+        )
     return record_summed_acoustic_capture(
-        topology or _topology(),
+        topology,
         preset,
         speaker_group_id="mono",
         captured_wav=tmp_path / wav_name,
-        sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+        sweep_meta={
+            "sample_rate": 48000,
+            "n_samples": 4096,
+            "amplitude_dbfs": -12.0,
+        },
+        summed_test_id=playback_id,
         crossover_fc_hz=crossover_fc_hz,
         expect_null=result.expect_null,
+        excitation=_alignment_excitation(preset, topology),
         placement_proof=placement_proof,
         analyze=lambda *a, **k: result,
-        state_path=state_path or (tmp_path / "measurements.json"),
+        record=lambda topology, raw, **kwargs: record_summed_validation(
+            topology,
+            raw,
+            driver_target_proof_complete=True,
+            **kwargs,
+        ),
+        state_path=state_path,
         now=now,
     )
 
@@ -1605,6 +1757,7 @@ def test_build_proposal_three_way_returns_two_region_proposals(
     measurements = load_measurement_state(topology, state_path=state_path)
     out = build_crossover_alignment_proposal(
         preset, measurements, requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
     )
     assert out["status"] == "ok"
     assert len(out["proposals"]) == 2
@@ -1669,6 +1822,7 @@ def test_build_proposal_per_region_calibration_gate_is_independent(
     measurements = load_measurement_state(topology, state_path=state_path)
     out = build_crossover_alignment_proposal(
         preset, measurements, requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
     )
     proposal1 = out["proposals"][0]["proposal"]
     proposal2 = out["proposals"][1]["proposal"]
@@ -1724,6 +1878,7 @@ def test_build_proposal_reaches_both_captures_margin_through_persisted_pairs(
 
     out = build_crossover_alignment_proposal(
         preset, measurements, requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
     )
     proposal = out["proposal"]
     assert proposal["in_phase_null_depth_db"] == 2.0
@@ -1756,7 +1911,6 @@ def test_build_proposal_never_combines_polarities_from_different_runs(
         ),
         topology=topology,
         state_path=state_path,
-        placement_proof={"comparison_set_id": "a" * 32},
         wav_name="run_a_inphase.wav",
         now="2026-07-11T12:00:00Z",
     )
@@ -1771,7 +1925,7 @@ def test_build_proposal_never_combines_polarities_from_different_runs(
         ),
         topology=topology,
         state_path=state_path,
-        placement_proof={"comparison_set_id": "b" * 32},
+        start_new_comparison_set=True,
         wav_name="run_b_reverse.wav",
         now="2026-07-11T12:01:00Z",
     )
@@ -1779,6 +1933,7 @@ def test_build_proposal_never_combines_polarities_from_different_runs(
     measurements = load_measurement_state(topology, state_path=state_path)
     out = build_crossover_alignment_proposal(
         preset, measurements, requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
     )
     proposal = out["proposal"]
     assert proposal["in_phase_null_depth_db"] is None
@@ -1842,11 +1997,233 @@ def test_build_proposal_never_falls_back_around_malformed_modern_proof(
     measurements = load_measurement_state(topology, state_path=state_path)
     out = build_crossover_alignment_proposal(
         preset, measurements, requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
     )
     proposal = out["proposal"]
     assert proposal["in_phase_null_depth_db"] is None
     assert proposal["reverse_null_depth_db"] is None
     assert proposal["polarity_margin_db"] is None
+
+
+def _valid_alignment_pair(tmp_path: Path) -> tuple[ActiveSpeakerPreset, dict]:
+    preset = _two_way()
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    for expect_null, depth, created_at in (
+        (False, 2.0, "2026-07-12T12:00:00Z"),
+        (True, 24.0, "2026-07-12T12:01:00Z"),
+    ):
+        _capture_summed(
+            tmp_path,
+            preset,
+            SummedAcousticResult(
+                verdict="blend_ok",
+                null_depth_db=depth,
+                crossover_fc_hz=1600.0,
+                observed_mic_dbfs=-34.0,
+                mic_clipping=False,
+                quality={"failed": False, "rms_dbfs": -34.0},
+                expect_null=expect_null,
+                calibrated=True,
+            ),
+            topology=topology,
+            state_path=state_path,
+            wav_name=f"valid_{expect_null}.wav",
+            now=created_at,
+        )
+    return preset, load_measurement_state(topology, state_path=state_path)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "blocker",
+        "incomplete_proof",
+        "stale_comparison_set",
+        "polarity_slot",
+        "acoustic_fc",
+        "too_loud",
+        "missing_meter_status",
+        "unknown_meter_status",
+        "missing_excitation",
+        "excitation_graph_mismatch",
+        "malformed_clipping",
+        "missing_applied_graph",
+    ),
+)
+def test_build_proposal_rejects_unadmitted_summed_decision_evidence(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    """Regression: a valid-looking null never bypasses the record/run gates."""
+    import copy
+
+    from jasper.active_speaker.capture_geometry import comparison_set_fingerprint
+
+    preset, measurements = _valid_alignment_pair(tmp_path)
+    measurements = copy.deepcopy(measurements)
+    pair = measurements["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    if corruption == "blocker":
+        for record in pair.values():
+            record["validated"] = False
+            record["issues"].append({
+                "severity": "blocker",
+                "code": "summed_validation_test_missing",
+                "message": "no proven playback",
+            })
+    elif corruption == "incomplete_proof":
+        for record in pair.values():
+            record["placement_proof"] = {"comparison_set_id": "a" * 32}
+    elif corruption == "polarity_slot":
+        pair["reverse"]["acoustic"]["expect_null"] = False
+    elif corruption == "acoustic_fc":
+        for record in pair.values():
+            record["acoustic"]["crossover_fc_hz"] = 1200.0
+    elif corruption == "too_loud":
+        for record in pair.values():
+            record["mic_meter"]["status"] = "too_loud"
+    elif corruption == "missing_meter_status":
+        for record in pair.values():
+            record["mic_meter"] = {}
+    elif corruption == "unknown_meter_status":
+        for record in pair.values():
+            record["mic_meter"]["status"] = "mystery"
+    elif corruption == "missing_excitation":
+        for record in pair.values():
+            record["excitation"] = None
+    elif corruption == "excitation_graph_mismatch":
+        for record in pair.values():
+            record["excitation"]["corrections"]["tweeter"]["gain_db"] = -1.0
+    elif corruption == "malformed_clipping":
+        for record in pair.values():
+            record["mic_clipping"] = "yes"
+            record["acoustic"]["mic_clipping"] = "yes"
+    elif corruption == "missing_applied_graph":
+        pass
+    else:
+        current = dict(measurements["active_comparison_set"])
+        current["comparison_set_id"] = "f" * 32
+        current["fingerprint"] = comparison_set_fingerprint(current)
+        measurements["active_comparison_set"] = current
+
+    proposal_kwargs = (
+        {"expected_applied_profile": None}
+        if corruption == "missing_applied_graph"
+        else {}
+    )
+    out = build_crossover_alignment_proposal(
+        preset,
+        measurements,
+        requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
+        **proposal_kwargs,
+    )
+    if corruption == "polarity_slot":
+        # The still-valid in-phase half remains visible as tentative evidence,
+        # but the malformed reverse slot cannot form a paired margin.
+        assert out["proposal"]["in_phase_null_depth_db"] == 2.0
+        assert out["proposal"]["reverse_null_depth_db"] is None
+        assert out["proposal"]["polarity_margin_db"] is None
+    else:
+        assert out["proposal"]["authorized"] is False
+        assert out["proposal"]["in_phase_null_depth_db"] is None
+        assert out["proposal"]["reverse_null_depth_db"] is None
+    assert {
+        issue["code"] for issue in out["proposal"]["issues"]
+    } >= {"summed_decision_evidence_rejected"}
+    if corruption == "polarity_slot":
+        assert out["proposals"][0]["evidence"]["reverse"]["reason"] == (
+            "summed_evidence_polarity_slot_mismatch"
+        )
+    elif corruption == "acoustic_fc":
+        assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
+            "summed_evidence_acoustic_fc_mismatch"
+        )
+    elif corruption in {"too_loud", "missing_meter_status", "unknown_meter_status"}:
+        assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
+            "summed_evidence_mic_level_invalid"
+        )
+    elif corruption == "missing_excitation":
+        assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
+            "summed_evidence_excitation_missing"
+        )
+    elif corruption == "excitation_graph_mismatch":
+        assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
+            "summed_evidence_excitation_graph_mismatch"
+        )
+    elif corruption == "malformed_clipping":
+        assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
+            "summed_evidence_clipped"
+        )
+    elif corruption == "missing_applied_graph":
+        assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
+            "summed_evidence_applied_graph_missing"
+        )
+
+
+def test_build_proposal_rejects_another_profile_context(tmp_path: Path) -> None:
+    """A setting change invalidates otherwise-current acoustic evidence."""
+    preset, measurements = _valid_alignment_pair(tmp_path)
+
+    out = build_crossover_alignment_proposal(
+        preset,
+        measurements,
+        requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="new-protected-profile",
+    )
+
+    assert out["proposal"]["authorized"] is False
+    assert out["proposal"]["in_phase_null_depth_db"] is None
+    assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
+        "summed_evidence_profile_context_stale"
+    )
+
+
+def test_build_proposal_rejects_pair_measured_at_another_fc(tmp_path: Path) -> None:
+    """Role identity alone cannot relabel a 1200 Hz null as a 1600 Hz result."""
+    import copy
+
+    preset, measurements = _valid_alignment_pair(tmp_path)
+    measurements = copy.deepcopy(measurements)
+    pair = measurements["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    for record in pair.values():
+        record["region"]["fc_hz"] = 1200.0
+
+    out = build_crossover_alignment_proposal(
+        preset,
+        measurements,
+        requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
+    )
+    assert out["proposal"]["authorized"] is False
+    assert out["proposal"]["in_phase_null_depth_db"] is None
+    assert out["proposals"][0]["evidence"]["in_phase"]["reason"] == (
+        "summed_evidence_region_mismatch"
+    )
+
+
+def test_build_proposal_rejects_old_listening_position_policy(
+    tmp_path: Path,
+) -> None:
+    """Pre-reference-axis summed captures remain visible history only."""
+    import copy
+
+    preset, measurements = _valid_alignment_pair(tmp_path)
+    measurements = copy.deepcopy(measurements)
+    pair = measurements["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    for record in pair.values():
+        record["placement_proof"]["policy_id"] = "summed_listening_position_v1"
+
+    out = build_crossover_alignment_proposal(
+        preset,
+        measurements,
+        requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
+    )
+    assert out["proposal"]["authorized"] is False
+    assert out["proposals"][0]["evidence"]["reverse"]["reason"] == (
+        "summed_evidence_comparison_or_placement_invalid"
+    )
 
 
 def test_max_summed_records_eviction_degrades_to_single_capture_fallback(
@@ -1861,18 +2238,23 @@ def test_max_summed_records_eviction_degrades_to_single_capture_fallback(
     preset = _two_way()
     topology = _topology()
     state_path = tmp_path / "measurements.json"
-    region = {"lower_role": "woofer", "upper_role": "tweeter", "fc_hz": 1600.0}
-
     # The reverse capture that will fall off the ring.
-    record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "acoustic": _summed_acoustic(null_depth_db=22.0, expect_null=True),
-            "region": region,
-        },
+    _capture_summed(
+        tmp_path,
+        preset,
+        SummedAcousticResult(
+            verdict="blend_ok",
+            null_depth_db=22.0,
+            crossover_fc_hz=1600.0,
+            observed_mic_dbfs=-50.0,
+            mic_clipping=False,
+            quality={"failed": False, "rms_dbfs": -50.0},
+            expect_null=True,
+            calibrated=True,
+        ),
+        topology=topology,
         state_path=state_path,
+        wav_name="evicted_reverse.wav",
         now="2026-07-11T12:00:00Z",
     )
 
@@ -1880,19 +2262,25 @@ def test_max_summed_records_eviction_degrades_to_single_capture_fallback(
     # out of the retained [-MAX_SUMMED_RECORDS:] window.
     state = {}
     for i in range(MAX_SUMMED_RECORDS):
-        state = record_summed_validation(
-            topology,
-            {
-                "speaker_group_id": "mono",
-                "outcome": "blend_ok",
-                "acoustic": _summed_acoustic(
-                    null_depth_db=2.0, expect_null=False,
-                ),
-                "region": region,
-            },
+        out = _capture_summed(
+            tmp_path,
+            preset,
+            SummedAcousticResult(
+                verdict="blend_ok",
+                null_depth_db=2.0,
+                crossover_fc_hz=1600.0,
+                observed_mic_dbfs=-34.0,
+                mic_clipping=False,
+                quality={"failed": False, "rms_dbfs": -34.0},
+                expect_null=False,
+                calibrated=True,
+            ),
+            topology=topology,
             state_path=state_path,
+            wav_name=f"filler_{i}.wav",
             now=f"2026-07-11T13:{i:02d}:00Z",
         )
+        state = out["measurement"]
 
     assert len(state["summed_validations"]) == MAX_SUMMED_RECORDS
     pair = state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
@@ -1901,6 +2289,7 @@ def test_max_summed_records_eviction_degrades_to_single_capture_fallback(
 
     out = build_crossover_alignment_proposal(
         preset, state, requested_mode=ca.PHASE_AWARE,
+        expected_profile_context_id="protected-profile",
     )
     assert out["status"] == "ok"
     proposal = out["proposal"]
@@ -1918,14 +2307,15 @@ def test_summed_alignment_snr_pair_both_none_is_unknown():
     assert _summed_alignment_snr(None, None) == (None, False)
 
 
-def test_summed_alignment_snr_pair_one_ok_one_no_evidence_is_true():
+def test_summed_alignment_snr_pair_one_ok_one_no_evidence_is_unknown():
     ok_record = {
         "acoustic": {
             "snr": {"worst_relevant": {"verdict": "ok"}, "verdict": "ok"},
         },
     }
-    assert _summed_alignment_snr(ok_record, None) == (True, False)
-    assert _summed_alignment_snr(None, ok_record) == (True, False)
+    assert _summed_alignment_snr(ok_record, None) == (None, False)
+    assert _summed_alignment_snr(None, ok_record) == (None, False)
+    assert _summed_alignment_snr(ok_record, ok_record) == (True, False)
 
 
 def test_summed_alignment_snr_pair_either_insufficient_is_false():

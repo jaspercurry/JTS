@@ -170,7 +170,7 @@ def test_crossover_driver_requires_explicit_bound_placement_acknowledgement():
     assert round_tripped.acknowledgement == spec.acknowledgement
 
 
-def test_crossover_summed_capture_has_distinct_position_acknowledgement():
+def test_crossover_summed_capture_binds_fixed_reference_axis():
     spec = build_crossover_sweep_spec(
         driver_label="summed crossover",
         driver_role="summed",
@@ -178,10 +178,16 @@ def test_crossover_summed_capture_has_distinct_position_acknowledgement():
     )
 
     assert spec.acknowledgement is not None
-    assert spec.acknowledgement.id == "summed_listening_position_v1"
-    assert "listening position" in spec.acknowledgement.label
+    assert spec.acknowledgement.id == "summed_reference_axis_v1"
+    assert "tweeter axis" in spec.acknowledgement.label
+    assert "level with the centre" in spec.acknowledgement.label
+    assert "will not move" in spec.acknowledgement.label
     steps = next(item for item in spec.screen if item["type"] == "steps")
-    assert "listening position" in steps["items"][0]
+    assert "tweeter axis" in steps["items"][0]
+    assert "level with the centre" in steps["items"][0]
+    assert "completely still" in steps["items"][0]
+    button = next(item for item in spec.screen if item["type"] == "button")
+    assert "fixed on-axis" in button["label"]
 
 
 def test_crossover_sweep_stimulus_single_sourced_from_the_kernel():

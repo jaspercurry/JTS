@@ -935,6 +935,7 @@ def record_summed_capture(
     wav_bytes: bytes,
     *,
     placement_proof: Mapping[str, Any] | None = None,
+    preset: Any = None,
 ) -> dict[str, Any]:
     """Analyze one secure browser WAV and record summed-crossover evidence."""
 
@@ -942,6 +943,7 @@ def record_summed_capture(
         raw,
         wav_bytes,
         placement_proof=placement_proof,
+        preset=preset,
     )
     log_event(
         logger,

@@ -73,6 +73,15 @@
 > and calibration setup; its identity is bound to the protected applied speaker
 > profile. Driver/summed capture reuses that Pi-side calibration and validates
 > the phone-reported realized device before recording acoustic evidence. The
+> relay preserves summed-capture `expect_null`, region Fc, polarity, and delay
+> candidate metadata through both playback and record adapters. That is
+> transport fidelity only: the current crossover envelope exposes one combined
+> capture and the playback backend still loads the immutable applied graph; it
+> does not yet offer per-region normal/reverse actions or a transient reverse-
+> polarity graph. The playback boundary refuses reverse/delay candidates before
+> audio rather than persist unchanged playback under the requested label. The
+> bounded alignment lane owns that graph mutation.
+> The
 > acoustic proof (real-driver sweep + phone `getUserMedia`/CSP) is parked as
 > H2. **Sync relay fixed in the same pass (pre-existing):**
 > `sync_flow.relay_run_and_consume` never posted `sweep_complete` and

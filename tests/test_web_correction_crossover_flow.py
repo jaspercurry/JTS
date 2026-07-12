@@ -1523,7 +1523,7 @@ def _summed_acoustic() -> dict:
         "validated": True,
         "acoustic": {"verdict": "blend_ok"},
         "placement_proof": _placement_proof(
-            "summed_listening_position_v1",
+            "summed_reference_axis_v1",
             "summed",
         ),
     }
@@ -2713,14 +2713,13 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
     from jasper.active_speaker.measurement import active_driver_targets
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SWEEP_DIR", str(tmp_path / "sweeps"))
     topology = _topology()
-    applied_profile = None
+    from tests.test_active_speaker_web_commissioning import (
+        _applied_excitation_profile,
+    )
+
+    applied_profile = _applied_excitation_profile(topology=topology)
     if kind == "driver":
         from jasper.active_speaker import baseline_profile
-        from tests.test_active_speaker_web_commissioning import (
-            _applied_excitation_profile,
-        )
-
-        applied_profile = _applied_excitation_profile(topology=topology)
         monkeypatch.setattr(
             baseline_profile,
             "load_applied_baseline_profile_state",
@@ -2970,13 +2969,23 @@ async def test_crossover_relay_consume_feeds_real_summed_play_payload(
     # consume path must read them there.
     from jasper.web import correction_crossover_backend as be
 
-    _real_play_boundary(monkeypatch, tmp_path, kind="summed")
+    applied_profile = _real_play_boundary(monkeypatch, tmp_path, kind="summed")
     _fake_relay_transport(monkeypatch, wav=b"w")
 
     record_calls = {}
-    def fake_record_summed(raw, wav, *, placement_proof):
+    play_calls = {}
+    real_play_summed = be.play_summed_capture_sweep
+
+    async def spy_play_summed(raw, **kwargs):
+        play_calls["raw"] = dict(raw)
+        return await real_play_summed(raw, **kwargs)
+
+    monkeypatch.setattr(be, "play_summed_capture_sweep", spy_play_summed)
+
+    def fake_record_summed(raw, wav, *, placement_proof, preset):
         record_calls["raw"] = raw
         record_calls["placement_proof"] = placement_proof
+        record_calls["preset"] = preset
         return {"recorded": True}
 
     monkeypatch.setattr(
@@ -2986,10 +2995,17 @@ async def test_crossover_relay_consume_feeds_real_summed_play_payload(
     )
 
     run_and_consume = flow.build_crossover_relay_run_and_consume(
-        {"kind": "summed", "speaker_group_id": "mono"},
+        {
+            "kind": "summed",
+            "speaker_group_id": "mono",
+            "expect_null": False,
+            "crossover_fc_hz": 1600.0,
+            "polarity": "normal",
+        },
         lambda coro, timeout=None: _run_coro(coro),
         lambda: object(),
         blocking_phase=lambda: None,
+        applied_profile=applied_profile,
         **_relay_contract(),
     )
     await run_and_consume(object(), _relay_pi_session("summed", session_id="s"))
@@ -3003,6 +3019,62 @@ async def test_crossover_relay_consume_feeds_real_summed_play_payload(
     assert raw["excitation"]["sweep_peak_dbfs"] == -12.0
     assert raw["excitation"]["corrections"]["tweeter"]["inverted"] is True
     assert "role" not in raw
+    expected_region_fields = {
+        "expect_null": False,
+        "crossover_fc_hz": 1600.0,
+        "polarity": "normal",
+    }
+    assert {key: raw[key] for key in expected_region_fields} == expected_region_fields
+    assert {
+        key: play_calls["raw"][key] for key in expected_region_fields
+    } == expected_region_fields
+    assert record_calls["preset"].crossover_regions[0].fc_hz == 1600.0
+
+
+@pytest.mark.asyncio
+async def test_crossover_relay_never_records_an_unloaded_alignment_candidate(
+    monkeypatch, tmp_path
+):
+    """Transport forwards the candidate, but unchanged playback cannot label it."""
+    from jasper.web import correction_crossover_backend as be
+
+    applied_profile = _real_play_boundary(monkeypatch, tmp_path, kind="summed")
+    _fake_relay_transport(monkeypatch, wav=b"w")
+    play_calls = {}
+    real_play_summed = be.play_summed_capture_sweep
+
+    async def spy_play_summed(raw, **kwargs):
+        play_calls["raw"] = dict(raw)
+        return await real_play_summed(raw, **kwargs)
+
+    monkeypatch.setattr(be, "play_summed_capture_sweep", spy_play_summed)
+    monkeypatch.setattr(
+        be,
+        "record_summed_capture",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("an unplayed candidate must never be recorded")
+        ),
+    )
+    candidate = {
+        "expect_null": True,
+        "crossover_fc_hz": 2500.0,
+        "polarity": "invert_tweeter",
+        "delay_ms": 0.35,
+        "delay_target_role": "tweeter",
+    }
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "summed", "speaker_group_id": "mono", **candidate},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        blocking_phase=lambda: None,
+        applied_profile=applied_profile,
+        **_relay_contract(),
+    )
+
+    with pytest.raises(ValueError, match="polarity or delay candidate"):
+        await run_and_consume(object(), _relay_pi_session("summed", session_id="s"))
+
+    assert {key: play_calls["raw"][key] for key in candidate} == candidate
 
 
 @pytest.mark.asyncio

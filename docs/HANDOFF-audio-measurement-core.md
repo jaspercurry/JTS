@@ -498,6 +498,21 @@ can never authorize a phase decision:
    confirm); in-phase-only flat → keep *tentative*.
    `analyze_summed_crossover(expect_null=…)` flips the per-capture verdict for a
    reverse-polarity capture (a present null is the *pass*).
+   The pair is now admitted through one fail-closed decision contract before
+   those depths are read: each contributing record must prove its audible
+   playback, a normalized ESS excitation ledger exactly matching the immutable
+   applied topology/baseline/per-role corrections, exact current region/Fc in
+   both record and analyzer output, the
+   expected normal/reverse polarity slot, full active comparison/profile
+   fingerprint, and the `summed_reference_axis_v1` fixed-axis acknowledgement.
+   Automatic apply also requires the current preset and pre-alignment
+   corrections to equal the protected profile's immutable recomposition
+   snapshot; a same-Fc family/order/trim/polarity/delay edit therefore
+   invalidates old evidence. Preview may still surface an unknown-SNR proposal,
+   but apply requires affirmative per-band SNR and an uncapped null.
+   Old listening-position policy, legacy, stale, malformed, or blocker-bearing
+   records remain in the evidence history but cannot authorize an automatic
+   polarity decision.
 4. **No delay VALUE here — only a status.** JTS's near-field captures are
    browser-recorded with **no sample-sync to the Pi's playback** (`recordDriverCapture`
    / `captureMicWavBase64` just record a window while the tone plays), so a
@@ -511,17 +526,23 @@ can never authorize a phase decision:
    `GET /active-speaker/crossover-alignment` previews the proposal + the surfaced
    per-driver/summed FR curves (the maintainer tweaks Fc/slope by hand — this
    feature NEVER auto-rewrites Fc/slope). To **apply** a polarity decision, the
-   operator captures the summed crossover with the chosen `polarity` (the live
-   `/correction/crossover/` summed-capture path already carries it), which
-   `baseline_profile._derive_corrections` folds into the per-driver `corrections`
-   (`inverted`) exactly like L1's measured level trim — the measurement *is* the
-   apply, no separate confirm endpoint. The recompiled baseline re-proves the
+   automatic baseline composition may fold an admitted, complete normal/reverse
+   pair's polarity decision into per-driver `corrections` (`inverted`) exactly
+   like L1's measured level trim. It never consumes `delay_ms` from a capture;
+   the bounded Lane-F walk exclusively owns measured delay. The relay transport
+   preserves candidate polarity/Fc/delay metadata, but the current wizard
+   envelope does not yet expose the two per-region actions or load a transient
+   reverse-polarity graph. The playback boundary refuses reverse/delay
+   candidates before audio rather than persist unchanged playback under a false
+   label, so this is not yet a live end-to-end pair-capture UI.
+   The recompiled baseline re-proves the
    runtime_contract tweeter guard; level stays L1's attenuation-only job and the 0 dB
    ceiling holds.
 
 Scope held: NO per-driver post-split EQ, NO listening-position room correction —
-near-field crossover calibration only. Multi-group (stereo-pair) polarity/delay
-*emission* is also deferred (`group_specific_delay_not_applied`); the proposal
+driver level/LF work is near-field, while summed alignment uses the fixed
+tweeter-axis reference placement. Multi-group (stereo-pair) measured polarity
+*emission* is also deferred (`group_specific_alignment_not_applied`); the proposal
 computes for one group, so a mono/single-group speaker (jts3's
 `active_mono_2way`) gets the full refinement.
 

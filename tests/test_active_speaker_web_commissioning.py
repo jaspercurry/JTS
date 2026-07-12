@@ -1189,6 +1189,31 @@ def test_summed_capture_ignores_legacy_minus_80_level_and_uses_applied_graph(
     assert callable(play_call["rollback_capture_config"])
 
 
+def test_summed_capture_refuses_unloaded_reverse_or_delay_candidate(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    monkeypatch.setattr(
+        web,
+        "load_output_topology",
+        lambda: (_ for _ in ()).throw(AssertionError("must refuse before load")),
+    )
+
+    for candidate in (
+        {"expect_null": True, "polarity": "invert_tweeter"},
+        {"delay_ms": 0.1, "delay_target_role": "tweeter"},
+    ):
+        payload = asyncio.run(
+            web.play_summed_capture_sweep(
+                {"speaker_group_id": "mono", **candidate},
+                camilla_factory=lambda: object(),
+            )
+        )
+        assert payload["status"] == "refused"
+        assert payload["reason"] == "summed_alignment_candidate_not_loaded"
+        assert payload["audio_emitted"] is False
+
+
 def test_summed_capture_refuses_stale_applied_snapshot_before_audio(monkeypatch):
     topology = _topology()
     measurements = {

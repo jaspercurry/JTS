@@ -569,7 +569,8 @@
 > and reports the failure instead of resuming household audio silently at the
 > measurement level.
 
-> **Update, 2026-07-11 (polarity/delay persistence, Slice 0):** the "multi-group
+> **Update, 2026-07-11 (polarity/delay persistence, Slice 0; corrected
+> 2026-07-12):** the "multi-group
 > group-specific delay correction still fail closed or warn" claim in the
 > 2026-06-03 entry above is now stale for the MANUAL (region-level, symmetric)
 > case. `CrossoverRegion` (`jasper.active_speaker.profile`) now carries polarity
@@ -578,16 +579,17 @@
 > `jasper.active_speaker.baseline_profile._derive_corrections` to `corrections`
 > on every apply — including a stereo (multi-group) topology, which previously
 > zeroed both unconditionally via the `group_specific_delay_not_applied` guard.
-> Precedence: automatic tuning + FRESH authorized measured alignment evidence
-> (a `latest_summed_by_group` record newer than the preview, `validated=True`)
-> overrides the persisted region value; manual tuning never consults measured
-> alignment evidence for these two sub-parameters at all, mirroring the
-> existing gain-pin rule. Each sub-parameter's source is reported in a new
+> Manual tuning never consults measured alignment evidence for these two
+> sub-parameters, mirroring the existing gain-pin rule. Automatic polarity may
+> change only from a complete normal/reverse pair admitted by
+> `crossover_contract.summed_decision_evidence_state` in the current protected
+> profile context. A scalar `delay_ms` carried by any capture is never an apply
+> input; only the bounded, repeatable Lane-F null walk may author a measured
+> delay. Each applied sub-parameter's source is reported in a new
 > `corrections_provenance` block (`manual`/`measured`/`recommended_start`/
-> `preserved`). Only MEASUREMENT-DERIVED per-group delay/polarity evidence
-> remains deferred: `group_specific_delay_not_applied` still fires (reworded to
-> name measurement-derived evidence specifically) when more than one group has
-> fresh summed alignment evidence for automatic tuning. See
+> `preserved`). MEASUREMENT-DERIVED multi-group polarity emission remains
+> deferred: `group_specific_alignment_not_applied` fires when more than one
+> group has summed alignment evidence for automatic tuning. See
 > [`active-crossover-information-design.md`](active-crossover-information-design.md)
 > "Slice 0" for the product framing.
 
@@ -1408,7 +1410,9 @@ Delay alignment is measured, not guessed.
 > every live summed capture's `keep`/`aligned` result to `review`/`unknown`.
 > `False` is reserved for a confirmed-insufficient REAL per-band reading —
 > every existing margin/blend proposal stays unchanged until a caller
-> supplies one.
+> supplies one. **Automatic apply is stricter than preview:** baseline
+> composition requires `alignment_snr_ok is True` and an uncapped null before
+> it may mutate polarity. Unknown SNR remains visible as a proposal only.
 >
 > **Update, 2026-07-12 (Slice 2 — paired summed evidence + multi-region
 > proposals).** `measurement.py` retained only ONE summed record per group
@@ -1437,6 +1441,32 @@ Delay alignment is measured, not guessed.
 > pair only with other legacy records. A record that carries a malformed
 > modern proof is not treated as legacy: it anchors the region as invalid and
 > contributes no paired decision evidence.
+> **Hardening, 2026-07-12.** The paired summary is historical/indexing state,
+> not its own authorization boundary. `crossover_contract.
+> summed_decision_evidence_state` now admits each polarity independently only
+> when the record has a blocker-free, outcome-consistent analyzer result; a
+> completed audible summed-test artifact; the normalized ESS played-excitation
+> ledger exactly matching the immutable applied topology, baseline, per-role
+> gain, delay, and polarity; a full `capture_proof_valid` binding to the active
+> comparison set (including its profile fingerprint); and region
+> roles plus both stamped acoustic/region Fc matching the current preset. The
+> expected polarity slot must also match `acoustic.expect_null`. Legacy,
+> stale-profile/set, incomplete-proof, wrong-slot/Fc, and old
+> `summed_listening_position_v1` records remain visible history but supply no
+> null. Automatic baseline composition consumes this same admitted proposal;
+> it also requires the current preset and pre-alignment corrections (gain,
+> polarity, and delay) to equal the protected profile's immutable recomposition
+> snapshot, so a same-Fc family/order/trim/polarity/delay edit invalidates the
+> pair. It never reads a record-supplied delay. The summed relay preserves the
+> candidate polarity/Fc/delay metadata end to end, but the current wizard
+> envelope still exposes only one combined capture and does not yet load a
+> transient reverse-polarity graph. The playback boundary therefore refuses
+> reverse/delay candidates before audio, so unchanged playback cannot be
+> persisted under a candidate label. This is transport substrate, not a claim
+> that the normal/reverse UI loop is complete. `summed_reference_axis_v1`
+> standardizes the fallback placement at approximately 1 m on the tweeter axis,
+> level with the tweeter or horn-mouth center, with an explicit promise not to
+> move the microphone or speaker between normal/reverse captures.
 > `jasper.active_speaker.crossover_alignment.propose_crossover_alignment`
 > itself is unchanged — this is wiring persisted paired evidence around the
 > already-shipped proposer, per

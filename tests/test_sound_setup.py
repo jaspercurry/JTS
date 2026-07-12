@@ -1099,6 +1099,67 @@ def test_active_speaker_environment_payload_uses_configured_evidence_path(
     }
 
 
+def test_crossover_alignment_preview_binds_current_protected_profile(
+    monkeypatch,
+) -> None:
+    """The read-only proposal cannot reuse evidence from an older graph."""
+    from jasper.active_speaker import (
+        baseline_profile,
+        commissioning_capture,
+        crossover_contract,
+        measurement,
+        setup_status,
+    )
+
+    seen: dict[str, object] = {}
+    context = {"matches": True}
+
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: "topology")
+    monkeypatch.setattr(
+        sound_setup, "_active_speaker_capture_preset", lambda topology: "preset"
+    )
+    monkeypatch.setattr(measurement, "load_measurement_state", lambda topology: {})
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state",
+        lambda: {"recomposition_snapshot": {"preset": {}}},
+    )
+    monkeypatch.setattr(
+        crossover_contract,
+        "preset_matches_applied_profile",
+        lambda preset, applied: context["matches"],
+    )
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda: {
+            "protected_profile": {
+                "status": "ready",
+                "source_fingerprint": "applied-profile-fingerprint",
+            }
+        },
+    )
+
+    def fake_build(preset, measurements, **kwargs):
+        seen.update(kwargs)
+        return {"speaker_group_id": "mono", "proposal": None, "proposals": []}
+
+    monkeypatch.setattr(
+        commissioning_capture, "build_crossover_alignment_proposal", fake_build
+    )
+    monkeypatch.setattr(
+        sound_setup, "_active_speaker_alignment_curves", lambda *_args: {}
+    )
+
+    sound_setup._active_speaker_crossover_alignment_payload()
+
+    assert seen["expected_profile_context_id"] == "applied-profile-fingerprint"
+
+    context["matches"] = False
+    sound_setup._active_speaker_crossover_alignment_payload()
+    assert seen["expected_profile_context_id"] is None
+
+
 def test_active_speaker_stop_and_level_payloads_are_no_audio(
     monkeypatch,
     tmp_path: Path,

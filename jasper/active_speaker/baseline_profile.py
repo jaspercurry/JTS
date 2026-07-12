@@ -18,7 +18,6 @@ import json
 import logging
 import math
 import os
-import re
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
@@ -105,13 +104,6 @@ _GAIN_SOURCE_TO_PROVENANCE: dict[str, str] = {
     "estimate": PROVENANCE_RECOMMENDED_START,
     "sensitivity": PROVENANCE_RECOMMENDED_START,
 }
-
-# Both this module's ``_utc_now`` and ``measurement._utc_now`` emit this exact
-# fixed-width UTC format, which makes lexical string comparison a valid
-# freshness ordering. Any timestamp that doesn't match fails the freshness
-# check closed rather than risk misordering an unprovably-shaped value.
-_UTC_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -434,42 +426,14 @@ def _measured_level_trims(
     return trims, meta
 
 
-def _is_fresh_usable_summed_alignment(
-    record: Any, preview_updated_at: Any
-) -> bool:
-    """Fail-closed: is ``record`` MEASURED alignment evidence newer than the
-    crossover preview it would override?
-
-    "Fresh" means ``record["created_at"]`` is provably newer than the
-    preview's ``updated_at`` — a lexical string comparison, valid because
-    both this module's ``_utc_now`` and ``measurement._utc_now`` emit the
-    identical fixed-width UTC format matched by ``_UTC_TIMESTAMP_RE``. Any
-    value that doesn't match that exact format (missing, malformed, or from
-    an unexpected source) fails closed to "not fresh": automatic tuning must
-    never let evidence it cannot prove is newer override a persisted working
-    value. "Usable" reuses ``validated`` — ``measurement.record_summed_validation``'s
-    own trust verdict for a summed observation (blend_ok outcome, no
-    blockers, and an operator listening check or a mic reading that isn't
-    clipping/too loud).
-    """
-    if not isinstance(record, Mapping) or record.get("validated") is not True:
-        return False
-    created = record.get("created_at")
-    if not isinstance(created, str) or not _UTC_TIMESTAMP_RE.match(created):
-        return False
-    if not isinstance(preview_updated_at, str) or not _UTC_TIMESTAMP_RE.match(
-        preview_updated_at
-    ):
-        return False
-    return created > preview_updated_at
-
-
 def _derive_corrections(
     preset: ActiveSpeakerPreset,
     crossover_preview: Mapping[str, Any],
     measurements: Mapping[str, Any],
     *,
     tuning_owner: str = "manual",
+    expected_profile_context_id: str | None = None,
+    applied_profile_context: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, dict[str, float | bool]], list[dict[str, str]], dict[str, Any]]:
     if tuning_owner not in TUNING_OWNERS:
         raise ValueError(f"unsupported crossover tuning owner: {tuning_owner!r}")
@@ -660,48 +624,114 @@ def _derive_corrections(
             ),
         ))
 
-    # --- MEASURED refinement of delay/polarity (Slice 0), automatic tier ---
-    # Manual tuning never consults measured alignment evidence for these two
-    # sub-parameters — mirrors the shipped gain rule ("Manual tuning keeps an
-    # operator pin authoritative" above): a persisted working value from the
-    # manual/preview tier is never silently replaced by a background
-    # measurement. Automatic tuning is an explicit replacement operation, so
-    # FRESH + usable evidence wins over the preview value it targets.
+    # --- MEASURED polarity refinement (Lane E), automatic tier -------------
+    # Delay is intentionally absent: only Lane F's bounded, repeatable null
+    # walk may author a delay value. A scalar carried by one capture is
+    # forensic metadata, never an apply input.
     if tuning_owner == "automatic":
-        preview_updated_at = crossover_preview.get("updated_at")
-        latest_summed = measurements.get("latest_summed_by_group")
-        summed_records = [
-            item for item in (
-                latest_summed.values() if isinstance(latest_summed, Mapping) else []
+        from .crossover_contract import preset_matches_applied_profile
+
+        context_matches = preset_matches_applied_profile(
+            preset,
+            applied_profile_context,
+            candidate_corrections=corrections,
+        )
+        pairs_by_group = measurements.get("latest_summed_pairs_by_group")
+        measured_groups = sorted(
+            str(group_id)
+            for group_id, group_pairs in (
+                pairs_by_group.items()
+                if isinstance(pairs_by_group, Mapping)
+                else ()
             )
-            if isinstance(item, Mapping)
-        ]
-        fresh_records = [
-            record
-            for record in summed_records
-            if _is_fresh_usable_summed_alignment(record, preview_updated_at)
-        ]
-        if len(fresh_records) > 1:
+            if isinstance(group_pairs, Mapping) and group_pairs
+        )
+        if measured_groups and not context_matches:
             issues.append(_issue(
                 "warning",
-                "group_specific_delay_not_applied",
+                "summed_alignment_graph_context_changed",
                 (
-                    "measurement-derived group-specific delay and polarity "
-                    "evidence is saved but not emitted yet"
+                    "summed alignment evidence belongs to different crossover "
+                    "settings; capture the pair again before applying polarity"
                 ),
             ))
-            fresh_records = []
-        for summed in fresh_records:
-            delay_ms = _finite_float(summed.get("delay_ms"))
-            delay_target = str(summed.get("delay_target_role") or "").strip().lower()
-            if delay_ms is not None and delay_target in corrections:
-                corrections[delay_target]["delay_ms"] = max(0.0, min(delay_ms, 20.0))
-                delay_provenance[delay_target] = PROVENANCE_MEASURED
-            polarity = str(summed.get("polarity") or "normal").strip().lower()
-            if polarity.startswith("invert_"):
-                role = polarity.removeprefix("invert_")
+        elif len(measured_groups) > 1:
+            issues.append(_issue(
+                "warning",
+                "group_specific_alignment_not_applied",
+                (
+                    "measurement-derived group-specific polarity evidence is "
+                    "saved but not emitted yet"
+                ),
+            ))
+        elif len(measured_groups) == 1:
+            from .commissioning_capture import build_crossover_alignment_proposal
+            from .crossover_alignment import POLARITY_INVERT
+
+            alignment = build_crossover_alignment_proposal(
+                preset,
+                measurements,
+                speaker_group_id=measured_groups[0],
+                expected_profile_context_id=expected_profile_context_id,
+                expected_applied_profile=applied_profile_context,
+            )
+            for item in alignment.get("proposals") or ():
+                proposal = item.get("proposal") if isinstance(item, Mapping) else None
+                proposal_issues = (
+                    proposal.get("issues") if isinstance(proposal, Mapping) else None
+                )
+                if isinstance(proposal_issues, list) and any(
+                    isinstance(issue, Mapping)
+                    and issue.get("code") == "summed_decision_evidence_rejected"
+                    for issue in proposal_issues
+                ) and not any(
+                    issue.get("code") == "summed_alignment_evidence_not_applied"
+                    for issue in issues
+                ):
+                    issues.append(_issue(
+                        "warning",
+                        "summed_alignment_evidence_not_applied",
+                        (
+                            "summed alignment evidence failed the current applied-"
+                            "graph, playback, placement, or analyzer contract; "
+                            "capture the normal/reverse pair again"
+                        ),
+                    ))
+                if (
+                    not isinstance(proposal, Mapping)
+                    or proposal.get("authorized") is not True
+                    or proposal.get("polarity_margin_db") is None
+                    or proposal.get("polarity_action") != POLARITY_INVERT
+                ):
+                    continue
+                quality = (
+                    item.get("decision_quality")
+                    if isinstance(item.get("decision_quality"), Mapping)
+                    else {}
+                )
+                if (
+                    quality.get("alignment_snr_ok") is not True
+                    or quality.get("null_depth_capped") is not False
+                ):
+                    if not any(
+                        issue.get("code") == "summed_alignment_quality_not_applied"
+                        for issue in issues
+                    ):
+                        issues.append(_issue(
+                            "warning",
+                            "summed_alignment_quality_not_applied",
+                            (
+                                "measured polarity was not applied because both "
+                                "summed captures need affirmative overlap-band SNR "
+                                "and an uncapped null"
+                            ),
+                        ))
+                    continue
+                role = str(proposal.get("upper_role") or "")
                 if role in corrections:
-                    corrections[role]["inverted"] = True
+                    corrections[role]["inverted"] = not bool(
+                        corrections[role]["inverted"]
+                    )
                     inverted_provenance[role] = PROVENANCE_MEASURED
 
     corrections_provenance: dict[str, dict[str, str]] = {}
@@ -1057,6 +1087,13 @@ def build_baseline_profile_candidate(
     )
     saved = _load_saved_state(state_target)
     applied_anchor = _applied_profile_anchor(saved)
+    applied_source = (
+        applied_anchor.get("source")
+        if isinstance(applied_anchor, Mapping)
+        and isinstance(applied_anchor.get("source"), Mapping)
+        else {}
+    )
+    applied_profile_context_id = str(applied_source.get("fingerprint") or "")
     applied_config = (
         applied_anchor.get("config")
         if isinstance(applied_anchor, Mapping)
@@ -1279,11 +1316,20 @@ def build_baseline_profile_candidate(
                 playback_device_source=playback_device_source,
             ))
 
+    from .crossover_contract import preset_matches_applied_profile
+
+    expected_profile_context_id = (
+        applied_profile_context_id
+        if preset_matches_applied_profile(preset, applied_anchor)
+        else ""
+    )
     corrections, correction_issues, correction_meta = _derive_corrections(
         preset,
         crossover_preview,
         measurements,
         tuning_owner=tuning_owner,
+        expected_profile_context_id=expected_profile_context_id or None,
+        applied_profile_context=applied_anchor,
     )
     issues.extend(correction_issues)
     if preserved_applied_profile is not None:
