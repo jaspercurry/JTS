@@ -18,30 +18,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 
 import pytest
 
 from jasper.correction.autolevel import AutolevelController, AutolevelData
 from jasper.correction.session import (
     AutolevelStatus,
-    MeasurementSession,
-    SessionConfig,
     SessionState,
 )
-
-
-def _make_session(tmp_path: Path, **kwargs) -> MeasurementSession:
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    cfg = SessionConfig(
-        sweep_dir=tmp_path / "sweeps",
-        capture_dir=tmp_path / "captures",
-        config_dir=tmp_path / "configs",
-        base_config_path=tmp_path / "v1.yml",
-        duration_s=1.0,
-    )
-    cfg.base_config_path.write_text("# stub\n")
-    return MeasurementSession(cfg, **kwargs)
+from .correction_session_fixtures import (
+    make_measurement_session as _make_session,
+)
 
 
 # ---------- state_changed_from --------------------------------------------

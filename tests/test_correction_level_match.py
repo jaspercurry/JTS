@@ -39,6 +39,9 @@ from jasper.correction.level_match import (
     phone_reported_abort,
     phone_reported_armed,
 )
+from .correction_session_fixtures import (
+    make_measurement_session as _make_session,
+)
 
 FAST = dict(settle_hold_s=0.5, max_loop_latency_s=0.5, settle_min_samples=2)
 
@@ -697,21 +700,6 @@ async def test_level_match_manual_lock_via_public_seam():
 
 
 # --- MeasurementSession seam (run_level_match) --------------------------------
-
-
-def _make_session(tmp_path):
-    from jasper.correction.session import MeasurementSession, SessionConfig
-
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    cfg = SessionConfig(
-        sweep_dir=tmp_path / "sweeps",
-        capture_dir=tmp_path / "captures",
-        config_dir=tmp_path / "configs",
-        base_config_path=tmp_path / "v1.yml",
-        duration_s=1.0,
-    )
-    cfg.base_config_path.write_text("# stub\n")
-    return MeasurementSession(cfg)
 
 
 @pytest.mark.asyncio

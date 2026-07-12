@@ -437,14 +437,14 @@ def _session_primed_for_confirmed_revert(tmp_path):
     """
     from jasper.audio_measurement import sweep
 
+    from .correction_session_fixtures import make_measurement_session
     from .test_correction_session import (
-        _make_session,
         _measure_one_position,
         _run_verify,
         _synthesize_room_capture,
     )
 
-    sess = _make_session(tmp_path)
+    sess = make_measurement_session(tmp_path)
 
     async def _prime():
         async def fake_play(path, **kw):

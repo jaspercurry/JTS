@@ -21,6 +21,7 @@ import numpy as np
 import pytest
 
 from jasper.web import correction_setup
+from .correction_session_fixtures import make_measurement_session
 
 
 class _FakeHandler:
@@ -277,21 +278,10 @@ def _real_ready_session(tmp_path, *, with_target=True):
     path (no handler mocks; the P7 mock-shape lesson at one remove)."""
     from jasper.correction.session import (
         CurveJSON,
-        MeasurementSession,
-        SessionConfig,
         SessionState,
     )
 
-    cfg = SessionConfig(
-        sweep_dir=tmp_path / "sweeps",
-        capture_dir=tmp_path / "captures",
-        sessions_dir=tmp_path / "sessions",
-        config_dir=tmp_path / "configs",
-        base_config_path=tmp_path / "v1.yml",
-        duration_s=1.0,
-    )
-    cfg.base_config_path.write_text("# stub base v1.yml for tests\n")
-    sess = MeasurementSession(cfg)
+    sess = make_measurement_session(tmp_path)
     sess.state = SessionState.READY
     freqs = np.geomspace(20, 350, 60)
     measured = 8.0 * np.exp(-((np.log2(freqs / 62.0)) ** 2) / (2 * 0.25 ** 2))

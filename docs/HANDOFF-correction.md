@@ -1453,6 +1453,7 @@ tests/
 ├── test_correction_quality.py           capture quality gates
 ├── test_correction_bundles.py           bundle listing / validation helpers
 ├── correction_bundle_fixtures.py        golden synthetic bundle helper
+├── correction_session_fixtures.py       isolated session builder
 └── test_correction_systemd_unit.py      unit/install invariants
 
 /usr/share/jasper-web/index.html         EDIT — add /correction/ entry card

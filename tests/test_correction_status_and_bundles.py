@@ -35,7 +35,6 @@ import pytest
 from jasper.correction import bundles, evidence, status as correction_status
 from jasper.correction.session import (
     MeasurementSession,
-    SessionConfig,
     SessionState,
     describe_current_config,
     parse_current_correction,
@@ -45,6 +44,9 @@ from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
 from ._web_test_helpers import json_post_with_csrf
 from .correction_bundle_fixtures import write_golden_correction_bundle
+from .correction_session_fixtures import (
+    make_measurement_session as _make_session,
+)
 
 
 # ---------- parse_current_correction ---------------------------------------
@@ -245,20 +247,6 @@ def test_describe_current_config_does_not_overclaim_missing_sound_config(
 
 
 # ---------- Per-session bundle artifacts -----------------------------------
-
-
-def _make_session(tmp_path: Path, **kwargs) -> MeasurementSession:
-    cfg = SessionConfig(
-        sweep_dir=tmp_path / "sweeps",
-        capture_dir=tmp_path / "captures",
-        sessions_dir=tmp_path / "sessions",
-        config_dir=tmp_path / "configs",
-        base_config_path=tmp_path / "v1.yml",
-        duration_s=1.0,
-    )
-    cfg.base_config_path.write_text("# stub base v1.yml for tests\n")
-    cfg.config_dir.mkdir(exist_ok=True)
-    return MeasurementSession(cfg, **kwargs)
 
 
 # ---------- Status / bundle payload serialization --------------------------
@@ -592,6 +580,7 @@ async def test_correction_apply_replaces_existing_room_peqs(
     sess.state = SessionState.READY
     from jasper.correction.session import PEQJSON
     sess.peqs = [PEQJSON(freq_hz=80.0, q=4.0, gain_db=-3.0)]
+    sess.cfg.config_dir.mkdir()
     current = sess.cfg.config_dir / "correction_old_1700000000.yml"
     current.write_text(
         emit_sound_config(
@@ -631,6 +620,7 @@ async def test_reset_no_room_config_preserves_preference_and_strips_room(
     from jasper.web import correction_setup
 
     sess = _make_session(tmp_path)
+    sess.cfg.config_dir.mkdir()
     current = sess.cfg.config_dir / "correction_old_1700000000.yml"
     current.write_text(
         emit_sound_config(
@@ -982,6 +972,7 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
         lambda text: None,
     )
     sess = _make_session(tmp_path)
+    sess.cfg.config_dir.mkdir()
     old_path = sess.cfg.config_dir / "correction_old_1700000000.yml"
     old_path.write_text(
         emit_sound_config(
@@ -1064,6 +1055,7 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
         },
     )
     sess = _make_session(tmp_path)
+    sess.cfg.config_dir.mkdir()
     current = sess.cfg.config_dir / "sound_current.yml"
     current.write_text(
         emit_sound_config(
