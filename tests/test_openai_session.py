@@ -24,6 +24,10 @@ import logging
 import pytest
 
 from jasper.tools import ToolRegistry, tool
+from jasper.voice._supervisor import (
+    ESCALATION_CUE_SLUG,
+    ESCALATION_REPEAT_THRESHOLD,
+)
 from jasper.voice.openai_session import (
     ConnectionState,
     OpenAIRealtimeConnection,
@@ -1651,6 +1655,79 @@ async def test_reconnect_with_backoff_eventually_succeeds():
         await turn.release()
     finally:
         await conn.stop()
+
+
+async def test_reconnect_escalation_cue_rate_limits_and_resets_after_success():
+    """The OpenAI loop, not only the shared/Gemini helpers, must append
+    failure fingerprints and drive the proactive cue callback.
+
+    ESCALATION_REPEAT_THRESHOLD identical reopen failures trigger one cue; the
+    next attempt succeeds and clears the consecutive-failure buffer. A second
+    identical outage inside the one-hour window must recover without replaying
+    the cue.
+    """
+    conn, factory = _make_conn(
+        backoff_schedule=(0.0,) * (ESCALATION_REPEAT_THRESHOLD + 1)
+    )
+    cue_calls: list[tuple[str, int]] = []
+
+    async def cue_cb(slug: str) -> None:
+        cue_calls.append((slug, len(conn._recent_failure_fingerprints)))
+
+    class _IdenticalFailure(Exception):
+        pass
+
+    class _Drop(Exception):
+        pass
+
+    conn.set_failure_escalation_cb(cue_cb)
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        factory.next_exceptions = [
+            _IdenticalFailure("same reopen failure")
+            for _ in range(ESCALATION_REPEAT_THRESHOLD)
+        ]
+        factory.conns[-1].feed_error(_Drop("active socket dropped"))
+
+        await _wait_until(lambda: len(cue_calls) == 1, timeout=3.0)
+        await _wait_until(
+            lambda: (
+                len(factory.conns) >= 2
+                and conn._state is ConnectionState.CONNECTED
+            ),
+            timeout=3.0,
+        )
+        assert cue_calls == [
+            (ESCALATION_CUE_SLUG, ESCALATION_REPEAT_THRESHOLD)
+        ]
+        assert len(conn._recent_failure_fingerprints) == 0
+        first_escalation_at = conn._last_escalation_at
+
+        factory.next_exceptions = [
+            _IdenticalFailure("same reopen failure")
+            for _ in range(ESCALATION_REPEAT_THRESHOLD)
+        ]
+        factory.conns[-1].feed_error(_Drop("active socket dropped again"))
+
+        await _wait_until(
+            lambda: (
+                len(factory.conns) >= 3
+                and conn._state is ConnectionState.CONNECTED
+            ),
+            timeout=3.0,
+        )
+        # The callback is fire-and-forget. Give an erroneously scheduled
+        # second task an event-loop turn before asserting the rate limit.
+        await asyncio.sleep(0.05)
+        assert cue_calls == [
+            (ESCALATION_CUE_SLUG, ESCALATION_REPEAT_THRESHOLD)
+        ]
+        assert conn._last_escalation_at == first_escalation_at
+        assert len(conn._recent_failure_fingerprints) == 0
+    finally:
+        await conn.stop()
+    assert conn._state is ConnectionState.CLOSED
 
 
 async def test_repeated_failures_exhaust_bounded_schedule_to_failed():
