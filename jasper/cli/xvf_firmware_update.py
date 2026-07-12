@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -28,6 +30,25 @@ UPDATE_UNITS = (
     "jasper-aec-init.service",
 )
 RECONCILE_UNIT = "jasper-aec-reconcile.service"
+DOWNLOAD_IO_TIMEOUT_SEC = 60.0
+DOWNLOAD_TOTAL_TIMEOUT_SEC = 120.0
+PRE_FLASH_TIMEOUT_BUDGET_SEC = 150.0
+STOP_UNITS_TIMEOUT_SEC = 30.0
+DFU_FLASH_TIMEOUT_SEC = 120.0
+REENUMERATION_TIMEOUT_SEC = 30.0
+RECONCILE_TIMEOUT_SEC = 45.0
+PROFILE_POLL_INTERVAL_SEC = 1.0
+# The systemd unit's outer timeout must exceed this whole post-download path.
+# The second reconcile is the handled failure path when the first reconcile
+# itself times out. The poll interval covers the re-enumeration loop's final
+# sleep overshoot.
+POST_DOWNLOAD_TIMEOUT_BUDGET_SEC = (
+    STOP_UNITS_TIMEOUT_SEC
+    + DFU_FLASH_TIMEOUT_SEC
+    + REENUMERATION_TIMEOUT_SEC
+    + 2 * RECONCILE_TIMEOUT_SEC
+    + PROFILE_POLL_INTERVAL_SEC
+)
 EXPECTED_UPDATE_ERRORS = (
     OSError,
     RuntimeError,
@@ -35,6 +56,21 @@ EXPECTED_UPDATE_ERRORS = (
     TimeoutError,
     urllib.error.URLError,
 )
+
+
+class _DownloadDeadlineExpired(BaseException):
+    """Signal sentinel kept outside Exception/OSError catch hierarchies."""
+
+
+def _require_pre_flash_budget(update_started_at: float) -> None:
+    """Refuse before touching DFU if pre-flash work consumed its safe window."""
+
+    elapsed = time.monotonic() - update_started_at
+    if elapsed > PRE_FLASH_TIMEOUT_BUDGET_SEC:
+        raise TimeoutError(
+            f"refusing to start microphone flash after {elapsed:.1f}s of "
+            f"pre-flash work (limit {PRE_FLASH_TIMEOUT_BUDGET_SEC:g}s)"
+        )
 
 
 def _write_state(
@@ -85,7 +121,7 @@ def _run_dfu_flash(firmware_path: Path) -> subprocess.CompletedProcess[str]:
         ],
         capture_output=True,
         text=True,
-        timeout=120.0,
+        timeout=DFU_FLASH_TIMEOUT_SEC,
     )
     transcript = f"{result.stdout}\n{result.stderr}"
     if result.returncode == 0:
@@ -102,34 +138,78 @@ def _run_dfu_flash(firmware_path: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+@contextlib.contextmanager
+def _download_deadline():
+    """Bound the entire pre-flash download, not each socket operation alone.
+
+    The updater is a Linux systemd service running on the main thread, so a
+    real-time interval timer can interrupt DNS/connect/read stalls without
+    leaving a worker behind. Preserve any caller-owned alarm for test and
+    embedding hygiene even though the production CLI owns its process.
+    """
+
+    timeout_s = DOWNLOAD_TOTAL_TIMEOUT_SEC
+
+    def _expired(_signum, _frame) -> None:
+        # TimeoutError is also OSError, which urllib/socket internals may catch
+        # and swallow. This private BaseException must cross that boundary;
+        # _download_and_verify translates it after signal state is restored.
+        raise _DownloadDeadlineExpired
+
+    previous_handler = signal.signal(signal.SIGALRM, _expired)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout_s)
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            elapsed = time.monotonic() - started
+            remaining = max(previous_timer[0] - elapsed, 1e-6)
+            signal.setitimer(signal.ITIMER_REAL, remaining, previous_timer[1])
+
+
 def _download_and_verify(target: xvf3800.FirmwareUpdateTarget, dest: Path) -> str:
     hasher = hashlib.sha256()
     total = 0
-    with urllib.request.urlopen(target.url, timeout=60) as response:
-        raw_length = response.headers.get("Content-Length")
-        if raw_length:
-            try:
-                content_length = int(raw_length)
-            except ValueError:
-                content_length = -1
-            if content_length != target.expected_size_bytes:
-                raise RuntimeError(
-                    "firmware download size mismatch before read: "
-                    f"got {raw_length}, expected {target.expected_size_bytes}"
-                )
-        with dest.open("wb") as f:
-            while True:
-                chunk = response.read(1024 * 128)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > target.expected_size_bytes:
-                    raise RuntimeError(
-                        "firmware download exceeded expected size: "
-                        f"got at least {total}, expected {target.expected_size_bytes}"
-                    )
-                hasher.update(chunk)
-                f.write(chunk)
+    try:
+        with _download_deadline():
+            with urllib.request.urlopen(
+                target.url,
+                timeout=DOWNLOAD_IO_TIMEOUT_SEC,
+            ) as response:
+                raw_length = response.headers.get("Content-Length")
+                if raw_length:
+                    try:
+                        content_length = int(raw_length)
+                    except ValueError:
+                        content_length = -1
+                    if content_length != target.expected_size_bytes:
+                        raise RuntimeError(
+                            "firmware download size mismatch before read: "
+                            f"got {raw_length}, "
+                            f"expected {target.expected_size_bytes}"
+                        )
+                with dest.open("wb") as f:
+                    while True:
+                        chunk = response.read(1024 * 128)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > target.expected_size_bytes:
+                            raise RuntimeError(
+                                "firmware download exceeded expected size: "
+                                f"got at least {total}, "
+                                f"expected {target.expected_size_bytes}"
+                            )
+                        hasher.update(chunk)
+                        f.write(chunk)
+    except _DownloadDeadlineExpired as exc:
+        raise TimeoutError(
+            f"firmware download exceeded {DOWNLOAD_TOTAL_TIMEOUT_SEC:g}s "
+            "total deadline"
+        ) from exc
     if total != target.expected_size_bytes:
         raise RuntimeError(
             f"firmware download size mismatch: got {total}, "
@@ -146,7 +226,7 @@ def _download_and_verify(target: xvf3800.FirmwareUpdateTarget, dest: Path) -> st
 
 def _reconcile_after_failure() -> str:
     try:
-        _run(["systemctl", "restart", RECONCILE_UNIT], timeout=45.0)
+        _run(["systemctl", "restart", RECONCILE_UNIT], timeout=RECONCILE_TIMEOUT_SEC)
     except (OSError, subprocess.SubprocessError) as exc:
         return str(exc)
     return ""
@@ -155,7 +235,7 @@ def _reconcile_after_failure() -> str:
 def _wait_for_expected_profile(
     target: xvf3800.FirmwareUpdateTarget,
     *,
-    timeout_s: float = 30.0,
+    timeout_s: float = REENUMERATION_TIMEOUT_SEC,
 ) -> xvf3800.RuntimeProfile:
     deadline = time.monotonic() + timeout_s
     last = xvf3800.detect_runtime_profile()
@@ -166,7 +246,7 @@ def _wait_for_expected_profile(
             and last.capture_channels == target.expected_capture_channels
         ):
             return last
-        time.sleep(1.0)
+        time.sleep(PROFILE_POLL_INTERVAL_SEC)
     raise RuntimeError(
         "microphone did not re-enumerate with expected firmware: "
         f"wanted {target.to_variant_id}/{target.expected_capture_channels}ch, "
@@ -175,6 +255,7 @@ def _wait_for_expected_profile(
 
 
 def update(target_id: str = "") -> dict[str, Any]:
+    update_started_at = time.monotonic()
     profile = xvf3800.detect_runtime_profile()
     target = (
         xvf3800.FIRMWARE_UPDATE_TARGETS_BY_ID.get(target_id)
@@ -209,8 +290,12 @@ def update(target_id: str = "") -> dict[str, Any]:
                 target=target,
                 extra={"detected": profile.as_dict(), "sha256": digest},
             )
+            _require_pre_flash_budget(update_started_at)
             cleanup_needed = True
-            _run(["systemctl", "stop", *UPDATE_UNITS], timeout=30.0)
+            _run(
+                ["systemctl", "stop", *UPDATE_UNITS],
+                timeout=STOP_UNITS_TIMEOUT_SEC,
+            )
             _run_dfu_flash(firmware_path)
 
         _write_state(
@@ -225,7 +310,7 @@ def update(target_id: str = "") -> dict[str, Any]:
             target=target,
             extra={"verified": verified.as_dict()},
         )
-        _run(["systemctl", "restart", RECONCILE_UNIT], timeout=45.0)
+        _run(["systemctl", "restart", RECONCILE_UNIT], timeout=RECONCILE_TIMEOUT_SEC)
         cleanup_needed = False
     except EXPECTED_UPDATE_ERRORS as exc:
         if cleanup_needed:

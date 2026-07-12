@@ -4,39 +4,39 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main`: 2026-07-11.
+Last reconciled against `main` (`dc6a4d4b`): 2026-07-11.
 
 ## Status counts
 
-- **open**: 503
-- **fixed**: 146
-- **in-progress**: 19
-- **mooted**: 8
+- **open**: 498
+- **fixed**: 168
+- **in-progress**: 1
+- **mooted**: 9
 - **deferred**: 1
 
 ## Ledger
 
 | id | file :: anchor | sev | wave | status | disposition / owning PR |
 |---|---|---|---|---|---|
-| DA-0006 | `deploy/bin/jasper-wifi-guardian` :: L287,290 (nmcli stderr redirect), L297,314 ( | should-fix | W5 | **in-progress** | W5 web-security (this wave) — pending |
-| DA-0010 | `jasper/active_speaker/commission_ramp.py` :: _record_ramp_state:198 | should-fix | W5 | **in-progress** | W5 web-security (this wave) — pending |
-| DA-0015 | `jasper/correction/autolevel.py` :: AutolevelController.run._graceful_stop | should-fix | W5 | **in-progress** | W5 resilience-b (this wave) — pending |
-| DA-0016 | `jasper/cues/manager.py` :: AudioCueManager.regenerate :186 | should-fix | W5 | **in-progress** | W5 resilience-b (this wave) — pending |
-| DA-0017 | `jasper/measurement/volume_guard.py` :: _set_snapcast_snapshot | should-fix | W5 | **in-progress** | W5 resilience-a (this wave) — pending |
-| DA-0019 | `jasper/multiroom/snapcast_rpc.py` :: _ProbeCache.read | should-fix | W5 | **in-progress** | W5 resilience-a (this wave) — pending |
-| DA-0020 | `jasper/peering/daemon.py` :: ARBITRATE_RPC_TIMEOUT_SEC | should-fix | W5 | **in-progress** | W5 peering (this wave) — pending |
-| DA-0021 | `jasper/peering/state.py` :: _on_peer_claim | should-fix | W5 | **in-progress** | W5 peering (this wave) — pending |
-| DA-0024 | `jasper/voice/openai_session.py` :: OpenAIRealtimeConnection._dispatch_function_ | should-fix | W5 | **in-progress** | W5 resilience-b (this wave) — pending |
-| DA-0027 | `jasper/web/_common.py` :: read_form | should-fix | W5 | **in-progress** | W5 web-security (this wave) — pending |
-| DA-0029 | `jasper/web/google_setup.py` :: _handle_start / _exchange_code / _build_flow | should-fix | W5 | **in-progress** | W5 web-security (this wave) — pending |
-| DA-0030 | `jasper/web/home_assistant_setup.py` :: do_POST (/discover, /ready, /verify branches | should-fix | W5 | **in-progress** | W5 web-security (this wave) — pending |
-| DA-0034 | `jasper/web/sync_flow.py` :: handle_play | should-fix | W5 | **in-progress** | W5 resilience-a (this wave) — pending |
-| DA-0035 | `jasper/web/transit_setup.py` :: _apply_save() L375; _bus_card_html() L751-75 | should-fix | W5 | **in-progress** | W5 web-security (this wave) — pending |
-| DA-0036 | `jasper/web/weather_setup.py` :: _seed_transit_from_weather_if_missing | should-fix | W5 | **in-progress** | W5 resilience-a (this wave) — pending |
-| DA-0037 | `jasper/web/wifi_setup.py` :: _readable_nmcli_error() L794-800, used by co | should-fix | W5 | **in-progress** | W5 web-security (this wave) — pending |
-| DA-0039 | `jasper/xvf/xvf_host.py` :: DEFAULT_TIMEOUT_MS | should-fix | W5 | **in-progress** | W5 resilience-b (this wave) — pending |
-| DA-0040 | `rust/jasper-fanin/src/config.rs` :: env_u32 (:963) / Config::from_env sample_rat | should-fix | W5 | **in-progress** | W5 fanin (this wave) — pending |
-| DA-0041 | `rust/jasper-fanin/src/host_compliance.rs` :: RevalidationTracker::step | should-fix | W5 | **in-progress** | W5 fanin (this wave) — pending |
+| DA-0006 | `deploy/bin/jasper-wifi-guardian` :: nmcli stderr capture and cleanup; guardian unit `PrivateTmp` | should-fix | W5 | **fixed** | private temp capture + `PrivateTmp=true` — #1236 |
+| DA-0010 | `jasper/active_speaker/commission_ramp.py` :: _record_ramp_state:198 | should-fix | W5 | **fixed** | ramp-state temp file now mode 0640 — #1236 |
+| DA-0015 | `jasper/correction/autolevel.py` :: AutolevelController.run._graceful_stop | should-fix | W5 | **fixed** | graceful-stop volume-set failures logged + pinned — #1240 |
+| DA-0016 | `jasper/cues/manager.py` :: AudioCueManager.regenerate :186 | should-fix | W5 | **fixed** | per-cue regeneration failure isolation + regression — #1240 |
+| DA-0017 | `jasper/measurement/volume_guard.py` :: _set_snapcast_snapshot | should-fix | W5 | **fixed** | best-effort restore attempts every client — #1239 |
+| DA-0019 | `jasper/multiroom/snapcast_rpc.py` :: _ProbeCache.read | should-fix | W5 | **fixed** | blocking probe moved outside cache lock + threaded test — #1239 |
+| DA-0020 | `jasper/peering/daemon.py` :: ARBITRATE_RPC_TIMEOUT_SEC | should-fix | W5 | **fixed** | RPC timeout derived above arbitration-window ceiling — #1238 |
+| DA-0021 | `jasper/peering/state.py` :: _on_peer_claim | should-fix | W5 | **fixed** | unrelated foreign claims no longer clobber ACTIVE — #1238 |
+| DA-0024 | `jasper/voice/openai_session.py` :: OpenAIRealtimeConnection._dispatch_function_call | should-fix | W5 | **fixed** | tool-result serialization/send failures contained + pinned — #1240 |
+| DA-0027 | `jasper/web/_common.py` :: read_form | should-fix | W5 | **fixed** | bounded body + malformed Content-Length guard — #1236 |
+| DA-0029 | `jasper/web/google_setup.py` :: _handle_start / _exchange_code / _build_flow | should-fix | W5 | **fixed** | one-time expiring OAuth nonce binds account + PKCE state — #1236 |
+| DA-0030 | `jasper/web/home_assistant_setup.py` :: do_POST (`/discover`, `/ready`, `/verify`) | should-fix | W5 | **fixed** | read guards added to all three POST probes — #1236 |
+| DA-0034 | `jasper/web/sync_flow.py` :: handle_play | should-fix | W5 | **fixed** | post-spawn race revalidation + loser termination — #1239 |
+| DA-0035 | `jasper/web/transit_setup.py` :: _apply_save / _bus_card_html / _citibike_card_html | should-fix | W5 | **fixed** | BusTime key scrubbed from three broad-except log/UI surfaces — #1236 |
+| DA-0036 | `jasper/web/weather_setup.py` :: _seed_transit_from_weather_if_missing | should-fix | W5 | **fixed** | weather/transit writers serialized under shared flock — #1239 |
+| DA-0037 | `jasper/web/wifi_setup.py` :: _readable_nmcli_error used by connect_new and do_POST | should-fix | W5 | **fixed** | echoed PSK scrubbed before logging/browser response — #1236 |
+| DA-0039 | `jasper/xvf/xvf_host.py` :: DEFAULT_TIMEOUT_MS | should-fix | W5 | **fixed** | control timeout bounded below systemd start ceiling — #1240 |
+| DA-0040 | `rust/jasper-fanin/src/config.rs` :: env_u32 / Config::from_env sample_rate, period_frames | should-fix | W5 | **fixed** | zero load-bearing dimensions fall back safely + warn — #1237 |
+| DA-0041 | `rust/jasper-fanin/src/host_compliance.rs` :: RevalidationTracker::step | should-fix | W5 | **fixed** | fresh-lock phantom strike re-arm removed + regression — #1237 |
 | DA-0003 | `jasper/route_latency/pairing.py` :: pair_events | should-fix | W5 | **open** | — |
 | DA-0004 | `LICENSE` :: :138 (§6 Trademarks), :165 (§9 Accepting War | should-fix | W5 | **open** | — |
 | DA-0005 | `capture-page/js/main.js` :: boot():604-616 | should-fix | W5 | **open** | — |
@@ -45,7 +45,7 @@ Last reconciled against `main`: 2026-07-11.
 | DA-0009 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored / improvConnect | should-fix | W5 | **open** | — |
 | DA-0011 | `jasper/audio_runtime_plan.py` :: _route_policy_errors:1105 | should-fix | W5 | **open** | — |
 | DA-0012 | `jasper/cli/aec_bridge.py` :: _aec_loop dtln runtime-crash handler (~2147- | should-fix | W5 | **open** | — |
-| DA-0013 | `jasper/cli/xvf_firmware_update.py` :: update | should-fix | W5 | **open** | — |
+| DA-0013 | `jasper/cli/xvf_firmware_update.py` :: update | should-fix | W5 | **in-progress** | outer unit timeout now exceeds the pinned post-download budget; adversarial review pending on `codex/deep-audit-execution` |
 | DA-0014 | `jasper/control/server.py` :: _make_handler / class Handler | should-fix | W5 | **open** | — |
 | DA-0018 | `jasper/multiroom/reconcile.py` :: _ensure_unit_active:1226-1274 | should-fix | W5 | **open** | — |
 | DA-0023 | `jasper/voice/gemini_session.py` :: _open_session / _receive_loop | should-fix | W5 | **open** | — |
@@ -61,7 +61,7 @@ Last reconciled against `main`: 2026-07-11.
 | DA-0044 | `scripts/multiroom-spike.sh` :: usage() :528-532 | should-fix | W5 | **open** | — |
 | DA-0045 | `scripts/s0-sync-bench.sh` :: :660,:674 | should-fix | W5 | **open** | — |
 | DA-0046 | `scripts/s0-sync-measure.py` :: run_soak:304 | should-fix | W5 | **open** | — |
-| DA-0047 | `capture-page/js/level-events.js` :: LevelStreamer | should-fix | W1 | **open** | — |
+| DA-0047 | `capture-page/js/level-events.js` :: LevelStreamer | should-fix | W1 | **fixed** | level-ramp protocol wired into the shipped capture page — #1202 |
 | DA-0048 | `deploy/assets/sound-profile/js/main.js` :: fmtDbfs :193, toneSummary :1600, outputStart | should-fix | W1 | **open** | — |
 | DA-0049 | `deploy/install.sh` :: camilla_config_has_safe_volume_limit | should-fix | W1 | **open** | — |
 | DA-0050 | `jasper/accessories/registry.py` :: Device / KNOWN_DEVICES | should-fix | W1 | **open** | — |
@@ -72,12 +72,12 @@ Last reconciled against `main`: 2026-07-11.
 | DA-0055 | `jasper/active_speaker/topology_tone.py` :: build_topology_tone_plan | should-fix | W1 | **open** | — |
 | DA-0056 | `jasper/audio_measurement/quality.py` :: :32-39 | should-fix | W1 | **open** | — |
 | DA-0057 | `jasper/bluetooth/adapter.py` :: start_discovery | should-fix | W1 | **open** | — |
-| DA-0058 | `jasper/capture_relay/spec.py` :: build_level_ramp_spec | should-fix | W1 | **open** | — |
+| DA-0058 | `jasper/capture_relay/spec.py` :: build_level_ramp_spec | should-fix | W1 | **fixed** | correction flow now builds and runs the relay level ramp — #1202 |
 | DA-0059 | `jasper/control/aec_endpoints.py` :: _chip_aec_available / _mic_status | should-fix | W1 | **open** | — |
 | DA-0060 | `jasper/correction/target.py` :: HOUSE_CURVE_PRESETS | should-fix | W1 | **open** | — |
 | DA-0061 | `jasper/mics/xvf3800.py` :: ensure_capture_open | should-fix | W1 | **open** | — |
 | DA-0062 | `jasper/sound/camilla_yaml.py` :: validate_camilla_config | should-fix | W1 | **open** | — |
-| DA-0063 | `jasper/sound/runtime.py` :: stage_lean_capture_config | should-fix | W1 | **open** | — |
+| DA-0063 | `jasper/sound/runtime.py` :: stage_lean_capture_config | should-fix | W1 | **mooted** | lean runtime pipeline deleted on main — #1200 |
 | DA-0064 | `jasper/volume_coordinator.py` :: VolumeCoordinator.__init__ :202-204,243-245; | should-fix | W1 | **open** | — |
 | DA-0065 | `jasper/volume_coordinator.py` :: _busctl_call_method :2150-2183 | should-fix | W1 | **open** | — |
 | DA-0066 | `jasper/volume_persistence.py` :: regress_if_stale | should-fix | W1 | **open** | — |
@@ -193,7 +193,7 @@ Last reconciled against `main`: 2026-07-11.
 | DA-0252 | `jasper/transit/_mta_stations.py` :: load_stations | should-fix | W4 | **open** | — |
 | DA-0253 | `jasper/voice/openai_session.py` :: OpenAIRealtimeConnection._reconnect_with_bac | should-fix | W4 | **open** | — |
 | DA-0254 | `jasper/web/speaker_setup.py` :: _apply_name / _write_bluez_main_conf_name | should-fix | W4 | **open** | — |
-| DA-0255 | `jasper/web/sync_flow.py` :: handle_start / active_phase / handle_status | should-fix | W4 | **open** | — |
+| DA-0255 | `jasper/web/sync_flow.py` :: handle_start / active_phase / handle_status | should-fix | W4 | **open** | `handle_play` now directly covered by race and happy-path tests in #1239; start/analyze/active-phase coverage remains |
 | DA-0256 | `rust/jasper-dual-dac-lab/src/main.rs` :: fill_identity (:1029-1062) | should-fix | W4 | **open** | — |
 | DA-0257 | `rust/jasper-fanin/src/impulse_tap.rs` :: RESERVED_TAP_DIR_BASENAMES (:148) | should-fix | W4 | **open** | — |
 | DA-0258 | `rust/jasper-outputd/src/state.rs` :: OutputdState::snapshot_json | should-fix | W4 | **open** | — |
@@ -324,7 +324,7 @@ Last reconciled against `main`: 2026-07-11.
 | DA-0384 | `jasper/web/correction_setup.py` :: log_event event names :1246,1358,1886,1919 | nit | W5 | **open** | — |
 | DA-0385 | `jasper/web/sound_setup.py` :: _live_draft_profile | nit | W5 | **open** | — |
 | DA-0386 | `jasper/web/tools_setup.py` :: _handle_toggle_pack | nit | W5 | **open** | — |
-| DA-0387 | `jasper/web/transit_setup.py` :: _apply_save | nit | W5 | **open** | — |
+| DA-0387 | `jasper/web/transit_setup.py` :: _apply_save | should-fix | W5 | **fixed** | duplicate of DA-0035; BusTime key scrubbed from the same broad-except surface — #1236 |
 | DA-0388 | `jasper/web/transit_setup.py` :: _handle_geocode | nit | W5 | **open** | — |
 | DA-0389 | `jasper/web/voice_setup.py` :: _load_state | nit | W5 | **open** | — |
 | DA-0390 | `jasper/web/weather_setup.py` :: main | nit | W5 | **open** | — |
