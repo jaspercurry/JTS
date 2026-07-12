@@ -235,6 +235,7 @@ BRIDGE_UNIT = "jasper-aec-bridge.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 AEC_INIT_UNIT = "jasper-aec-init.service"
 BRIDGE_RESTART_TIMEOUT_SEC = 30.0
+_UNIT_STATE_TIMEOUT_SEC = 1.5
 BRIDGE_CORPUS_OUTPUT_VARS = (
     *PLAN_ENV_VARS,
     "JASPER_AEC_DTLN_ENABLED",
@@ -2562,28 +2563,51 @@ def validate_active_capture_plan(
 # ---------------------------------------------------------------------------
 
 
-def voice_daemon_active() -> bool:
-    """True if jasper-voice is currently running (systemd active)."""
-    import subprocess
+def _systemd_unit_active(unit: str) -> bool:
+    """Return whether *unit* is active, with bounded systemd I/O.
+
+    Only stable, recognized states authorize a state-changing caller to
+    continue.  Spawn, timeout, manager, permission, transitional, and
+    otherwise unrecognized responses raise so those callers can fail closed.
+    Observational callers use the public wrappers below.
+    """
     rc = subprocess.run(
-        ["systemctl", "is-active", VOICE_UNIT],
-        capture_output=True, text=True,
+        ["systemctl", "is-active", unit],
+        capture_output=True,
+        text=True,
+        timeout=_UNIT_STATE_TIMEOUT_SEC,
     )
-    return rc.returncode == 0 and rc.stdout.strip() == "active"
+    state = (rc.stdout or "").strip().lower()
+    detail = (rc.stderr or "").strip()
+    if detail:
+        raise OSError(
+            f"systemctl is-active {unit} returned rc={rc.returncode}: "
+            f"{detail[-300:]}",
+        )
+    if rc.returncode == 0 and state == "active":
+        return True
+    if state in {"inactive", "failed"}:
+        return False
+    raise OSError(
+        f"systemctl is-active {unit} returned rc={rc.returncode}, "
+        f"state={state or '<empty>'}",
+    )
+
+
+def voice_daemon_active() -> bool:
+    """True if jasper-voice is active; fail soft for status snapshots."""
+    try:
+        return _systemd_unit_active(VOICE_UNIT)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def aec_bridge_active() -> bool:
     """True if jasper-aec-bridge is active, for metadata snapshots only."""
     try:
-        rc = subprocess.run(
-            ["systemctl", "is-active", BRIDGE_UNIT],
-            capture_output=True,
-            text=True,
-            timeout=1.5,
-        )
+        return _systemd_unit_active(BRIDGE_UNIT)
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return rc.returncode == 0 and rc.stdout.strip() == "active"
 
 
 def set_voice_daemon_state(action: str) -> None:
@@ -2625,7 +2649,17 @@ def enter_corpus_test_mode(
     )
     if include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB:
         include_usb_mic = True
-    voice_was_active = voice_daemon_active()
+    try:
+        voice_was_active = _systemd_unit_active(VOICE_UNIT)
+    except subprocess.TimeoutExpired as e:
+        raise OSError(
+            f"could not determine whether {VOICE_UNIT} is active: "
+            f"systemctl probe timed out after {_UNIT_STATE_TIMEOUT_SEC:g}s",
+        ) from e
+    except OSError as e:
+        raise OSError(
+            f"could not determine whether {VOICE_UNIT} is active: {e}",
+        ) from e
     set_voice_daemon_state("stop")
     try:
         set_bridge_outputs_for_session(

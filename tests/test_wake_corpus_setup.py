@@ -4154,6 +4154,294 @@ def test_api_bridge_outputs_disable(
         th.join(timeout=2)
 
 
+def test_systemd_unit_active_is_bounded_and_parses_stable_states(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="active\n")
+
+    monkeypatch.setattr(bridge_session.subprocess, "run", fake_run)
+
+    assert bridge_session._systemd_unit_active("example.service") is True
+    assert calls == [
+        (
+            ["systemctl", "is-active", "example.service"],
+            {"capture_output": True, "text": True, "timeout": 1.5},
+        ),
+    ]
+
+    for state in ("inactive", "failed"):
+        monkeypatch.setattr(
+            bridge_session.subprocess,
+            "run",
+            lambda cmd, **kwargs: subprocess.CompletedProcess(
+                cmd, 3, stdout=f"{state}\n",
+            ),
+        )
+        assert bridge_session._systemd_unit_active("example.service") is False
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_detail"),
+    [
+        (
+            subprocess.CompletedProcess(
+                ["systemctl"],
+                1,
+                stdout="",
+                stderr="Failed to connect to bus: Permission denied\n",
+            ),
+            "Failed to connect to bus: Permission denied",
+        ),
+        (
+            subprocess.CompletedProcess(
+                ["systemctl"], 3, stdout="activating\n", stderr="",
+            ),
+            "state=activating",
+        ),
+        (
+            subprocess.CompletedProcess(
+                ["systemctl"], 4, stdout="unknown\n", stderr="",
+            ),
+            "state=unknown",
+        ),
+        (
+            subprocess.CompletedProcess(
+                ["systemctl"], 1, stdout="", stderr="",
+            ),
+            "state=<empty>",
+        ),
+    ],
+)
+def test_systemd_unit_active_rejects_unavailable_or_unstable_state(
+    monkeypatch: pytest.MonkeyPatch,
+    result: subprocess.CompletedProcess,
+    expected_detail: str,
+) -> None:
+    monkeypatch.setattr(
+        bridge_session.subprocess,
+        "run",
+        lambda cmd, **kwargs: result,
+    )
+
+    with pytest.raises(
+        OSError,
+        match=rf"systemctl is-active example.service.*{expected_detail}",
+    ):
+        bridge_session._systemd_unit_active("example.service")
+
+
+@pytest.mark.parametrize(
+    ("wrapper_name", "unit"),
+    [
+        ("voice_daemon_active", bridge_session.VOICE_UNIT),
+        ("aec_bridge_active", bridge_session.BRIDGE_UNIT),
+    ],
+)
+def test_unit_active_wrappers_use_shared_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper_name: str,
+    unit: str,
+) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(
+        bridge_session,
+        "_systemd_unit_active",
+        lambda candidate: seen.append(candidate) or True,
+    )
+
+    assert getattr(bridge_session, wrapper_name)() is True
+    assert seen == [unit]
+
+
+@pytest.mark.parametrize(
+    "probe_error",
+    [
+        OSError("systemctl unavailable"),
+        subprocess.TimeoutExpired(["systemctl", "is-active"], 1.5),
+    ],
+)
+@pytest.mark.parametrize(
+    "wrapper_name",
+    ["voice_daemon_active", "aec_bridge_active"],
+)
+def test_unit_active_wrappers_fail_soft_on_probe_error(
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper_name: str,
+    probe_error: BaseException,
+) -> None:
+    def fail_probe(unit: str) -> bool:
+        raise probe_error
+
+    monkeypatch.setattr(bridge_session, "_systemd_unit_active", fail_probe)
+
+    assert getattr(bridge_session, wrapper_name)() is False
+
+
+@pytest.mark.parametrize(
+    ("probe_error", "expected_detail"),
+    [
+        (OSError("systemctl unavailable"), "systemctl unavailable"),
+        (
+            subprocess.TimeoutExpired(["systemctl", "is-active"], 1.5),
+            "systemctl probe timed out after 1.5s",
+        ),
+    ],
+)
+def test_enter_corpus_test_mode_aborts_before_mutation_when_voice_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    probe_error: BaseException,
+    expected_detail: str,
+) -> None:
+    mutations: list[str] = []
+
+    def fail_probe(unit: str) -> bool:
+        assert unit == bridge_session.VOICE_UNIT
+        raise probe_error
+
+    monkeypatch.setattr(bridge_session, "_systemd_unit_active", fail_probe)
+    monkeypatch.setattr(
+        bridge_session,
+        "set_voice_daemon_state",
+        lambda action: mutations.append(f"voice:{action}"),
+    )
+    monkeypatch.setattr(
+        bridge_session,
+        "set_bridge_outputs_for_session",
+        lambda **kwargs: mutations.append("bridge"),
+    )
+
+    with pytest.raises(
+        OSError,
+        match=(
+            rf"could not determine whether {bridge_session.VOICE_UNIT} "
+            rf"is active: {expected_detail}"
+        ),
+    ):
+        bridge_session.enter_corpus_test_mode(
+            include_dtln=False,
+            include_usb_mic=False,
+            include_usb_dtln=False,
+        )
+
+    assert mutations == []
+
+
+def test_api_corpus_test_mode_enter_reports_voice_probe_timeout_without_mutation(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import http.client
+
+    mutations: list[str] = []
+
+    def timeout_probe(unit: str) -> bool:
+        assert unit == bridge_session.VOICE_UNIT
+        raise subprocess.TimeoutExpired(["systemctl", "is-active", unit], 1.5)
+
+    monkeypatch.setattr(bridge_session, "_systemd_unit_active", timeout_probe)
+    monkeypatch.setattr(
+        bridge_session,
+        "set_voice_daemon_state",
+        lambda action: mutations.append(f"voice:{action}"),
+    )
+    monkeypatch.setattr(
+        bridge_session,
+        "set_bridge_outputs_for_session",
+        lambda **kwargs: mutations.append("bridge"),
+    )
+
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/corpus-test-mode",
+            json.dumps({"action": "enter", "include_dtln": False}),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 500
+            assert body == {
+                "error": (
+                    "corpus test mode enter failed: could not determine whether "
+                    "jasper-voice is active: systemctl probe timed out "
+                    "after 1.5s"
+                ),
+            }
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+    assert mutations == []
+
+
+def test_api_corpus_test_mode_enter_rejects_manager_error_without_mutation(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import http.client
+
+    mutations: list[str] = []
+    monkeypatch.setattr(
+        bridge_session.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd,
+            1,
+            stdout="",
+            stderr="Failed to connect to bus: Permission denied\n",
+        ),
+    )
+    monkeypatch.setattr(
+        bridge_session,
+        "set_voice_daemon_state",
+        lambda action: mutations.append(f"voice:{action}"),
+    )
+    monkeypatch.setattr(
+        bridge_session,
+        "set_bridge_outputs_for_session",
+        lambda **kwargs: mutations.append("bridge"),
+    )
+
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/corpus-test-mode",
+            json.dumps({"action": "enter", "include_dtln": False}),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 500
+            assert body == {
+                "error": (
+                    "corpus test mode enter failed: could not determine whether "
+                    "jasper-voice is active: systemctl is-active jasper-voice "
+                    "returned rc=1: Failed to connect to bus: Permission denied"
+                ),
+            }
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+    assert mutations == []
+
+
 def test_api_corpus_test_mode_enter_stops_voice_and_sets_outputs(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -4172,8 +4460,8 @@ def test_api_corpus_test_mode_enter_stops_voice_and_sets_outputs(
     restarts: list[str] = []
     monkeypatch.setattr(
         bridge_session,
-        "voice_daemon_active",
-        lambda: voice_active["value"],
+        "_systemd_unit_active",
+        lambda unit: voice_active["value"],
     )
 
     def fake_voice(action: str) -> None:
@@ -4232,8 +4520,8 @@ def test_api_corpus_test_mode_enter_can_enable_aec3_sweep(
     voice_active = {"value": True}
     monkeypatch.setattr(
         bridge_session,
-        "voice_daemon_active",
-        lambda: voice_active["value"],
+        "_systemd_unit_active",
+        lambda unit: voice_active["value"],
     )
     monkeypatch.setattr(
         bridge_session,
