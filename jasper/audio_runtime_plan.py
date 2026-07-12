@@ -1076,7 +1076,7 @@ def _route_policy_errors(
     if normalized_coupling == COUPLING_SHM_RING and ring_pair_is_coherent(
         normalized_coupling, raw_bridge
     ):
-        return ()
+        return tuple(errors)
 
     if normalized_coupling != COUPLING_LOOPBACK:
         errors.append(

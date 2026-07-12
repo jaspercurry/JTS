@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`dc6a4d4b`): 2026-07-11.
+Last reconciled against `main` (`9301d025`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 498
-- **fixed**: 168
+- **open**: 497
+- **fixed**: 169
 - **in-progress**: 1
 - **mooted**: 9
 - **deferred**: 1
@@ -43,9 +43,9 @@ Last reconciled against `main` (`dc6a4d4b`): 2026-07-11.
 | DA-0007 | `deploy/systemd/jasper-usbsink.service` :: :134 | should-fix | W5 | **open** | — |
 | DA-0008 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored | should-fix | W5 | **open** | — |
 | DA-0009 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored / improvConnect | should-fix | W5 | **open** | — |
-| DA-0011 | `jasper/audio_runtime_plan.py` :: _route_policy_errors:1105 | should-fix | W5 | **open** | — |
+| DA-0011 | `jasper/audio_runtime_plan.py` :: _route_policy_errors | should-fix | W5 | **in-progress** | coherent shm-ring plans now preserve computed transport errors; canonical adversarial review passed, publication pending |
 | DA-0012 | `jasper/cli/aec_bridge.py` :: _aec_loop dtln runtime-crash handler (~2147- | should-fix | W5 | **open** | — |
-| DA-0013 | `jasper/cli/xvf_firmware_update.py` :: update | should-fix | W5 | **in-progress** | outer unit timeout now exceeds the pinned post-download budget; adversarial review pending on `codex/deep-audit-execution` |
+| DA-0013 | `jasper/cli/xvf_firmware_update.py` :: update | should-fix | W5 | **fixed** | bounded download + pre-flash budget + recovery/unit deadline contract — #1285 |
 | DA-0014 | `jasper/control/server.py` :: _make_handler / class Handler | should-fix | W5 | **open** | — |
 | DA-0018 | `jasper/multiroom/reconcile.py` :: _ensure_unit_active:1226-1274 | should-fix | W5 | **open** | — |
 | DA-0023 | `jasper/voice/gemini_session.py` :: _open_session / _receive_loop | should-fix | W5 | **open** | — |
