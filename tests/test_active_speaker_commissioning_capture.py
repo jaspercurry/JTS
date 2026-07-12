@@ -24,9 +24,12 @@ from pathlib import Path
 
 import pytest
 
+from jasper.active_speaker import crossover_alignment as ca
 from jasper.active_speaker.commissioning_capture import (
     DRIVER_VERDICT_TO_OUTCOME,
     SUMMED_VERDICT_TO_OUTCOME,
+    _summed_alignment_snr,
+    build_crossover_alignment_proposal,
     driver_passband_hz,
     primary_crossover_fc_hz,
     record_driver_acoustic_capture,
@@ -619,3 +622,169 @@ def test_record_summed_validation_persists_acoustic_block(tmp_path: Path):
     assert record["acoustic"]["verdict"] == "blend_ok"
     assert record["acoustic"]["kind"] == "jts_active_speaker_summed_acoustics"
     assert record["excitation"]["sweep_peak_dbfs"] == -12.0
+
+
+# --- _summed_alignment_snr (B-1: scalar-only 'unknown' must not degrade) -----
+#
+# jasper/web/correction_crossover_flow.py bolts a scalar noise_floor_dbfs onto
+# every summed record and never supplies noise_band_report, so the SC-1
+# alignment-class snr block on every LIVE summed capture has an overall
+# verdict of "unknown" with worst_relevant=None (see
+# jasper.audio_measurement.snr_policy._band_verdict: a scalar_fallback method
+# always reads "unknown" for the alignment decision class). That must resolve
+# to alignment_snr_ok=None (no evidence, no degrade) — not False (confirmed
+# insufficient) — or every real summed capture silently downgrades keep/
+# aligned to review/unknown.
+
+
+def test_summed_alignment_snr_no_record_or_no_acoustic_is_unknown_no_degrade():
+    assert _summed_alignment_snr(None) == (None, False)
+    assert _summed_alignment_snr("not a mapping") == (None, False)
+    assert _summed_alignment_snr({}) == (None, False)
+    assert _summed_alignment_snr({"acoustic": "not a mapping"}) == (None, False)
+
+
+def test_summed_alignment_snr_no_snr_block_is_unknown_no_degrade():
+    # No caller supplied any noise evidence at all.
+    record = {"acoustic": {"verdict": "blend_ok"}}
+    assert _summed_alignment_snr(record) == (None, False)
+
+
+def test_summed_alignment_snr_scalar_only_worst_relevant_none_is_unknown_no_degrade():
+    # The live shape: an snr block IS present (some evidence was supplied),
+    # but its overall verdict is "unknown" because that evidence was
+    # scalar-only (or covered no relevant band) — worst_relevant is None.
+    # This must read as "no evidence" (None), never "confirmed bad" (False).
+    record = {
+        "acoustic": {
+            "snr": {
+                "schema_version": 1,
+                "decision_class": "alignment",
+                "relevant_hz": [800.0, 3200.0],
+                "bands": [
+                    {
+                        "band_id": "mid",
+                        "band_hz": [1000.0, 4000.0],
+                        "estimated_snr_db": 45.0,
+                        "verdict": "unknown",
+                        "shortfall_db": None,
+                        "method": "scalar_fallback",
+                    },
+                ],
+                "worst_relevant": None,
+                "verdict": "unknown",
+            },
+        },
+    }
+    alignment_snr_ok, null_depth_capped = _summed_alignment_snr(record)
+    assert alignment_snr_ok is None
+    assert null_depth_capped is False
+
+
+def test_summed_alignment_snr_real_insufficient_reading_is_false():
+    # A real per-band reading that did NOT clear the alignment bar is the
+    # only case that may degrade the proposal.
+    record = {
+        "acoustic": {
+            "snr": {
+                "worst_relevant": {
+                    "band_id": "mid",
+                    "estimated_snr_db": 28.0,
+                    "verdict": "insufficient",
+                },
+                "verdict": "insufficient",
+            },
+        },
+    }
+    alignment_snr_ok, _ = _summed_alignment_snr(record)
+    assert alignment_snr_ok is False
+
+
+def test_summed_alignment_snr_real_ok_reading_is_true():
+    record = {
+        "acoustic": {
+            "snr": {
+                "worst_relevant": {
+                    "band_id": "mid",
+                    "estimated_snr_db": 40.0,
+                    "verdict": "ok",
+                },
+                "verdict": "ok",
+            },
+        },
+    }
+    alignment_snr_ok, _ = _summed_alignment_snr(record)
+    assert alignment_snr_ok is True
+
+
+def test_summed_alignment_snr_null_depth_capped_passes_through_regardless_of_verdict():
+    for snr_block in (
+        None,
+        {"worst_relevant": None, "verdict": "unknown"},
+        {"worst_relevant": {"verdict": "ok"}, "verdict": "ok"},
+    ):
+        acoustic: dict = {"null_depth_capped": True}
+        if snr_block is not None:
+            acoustic["snr"] = snr_block
+        _, null_depth_capped = _summed_alignment_snr({"acoustic": acoustic})
+        assert null_depth_capped is True
+
+
+def test_build_proposal_scalar_only_snr_never_degrades_keep_to_review():
+    """End-to-end guard pinning the live scalar-injection path (B-1).
+
+    Calibrated records plus a summed capture whose acoustic block carries a
+    scalar-only 'unknown' snr block (worst_relevant=None — exactly what
+    jasper/web/correction_crossover_flow.py produces today) and a deep
+    reverse-polarity null must still authorize polarity_action='keep', never
+    'review', and must never raise 'alignment_snr_insufficient'.
+    """
+    state = {
+        "latest_by_target": {
+            "mono:woofer": {
+                "speaker_group_id": "mono",
+                "role": "woofer",
+                "acoustic": {"verdict": "present", "calibrated": True},
+            },
+            "mono:tweeter": {
+                "speaker_group_id": "mono",
+                "role": "tweeter",
+                "acoustic": {"verdict": "present", "calibrated": True},
+            },
+        },
+        "latest_summed_by_group": {
+            "mono": {
+                "speaker_group_id": "mono",
+                "acoustic": {
+                    "null_depth_db": 14.0,
+                    "expect_null": True,
+                    "calibrated": True,
+                    "null_depth_capped": False,
+                    "snr": {
+                        "schema_version": 1,
+                        "decision_class": "alignment",
+                        "relevant_hz": [800.0, 3200.0],
+                        "bands": [
+                            {
+                                "band_id": "mid",
+                                "band_hz": [1000.0, 4000.0],
+                                "estimated_snr_db": 45.0,
+                                "verdict": "unknown",
+                                "shortfall_db": None,
+                                "method": "scalar_fallback",
+                            },
+                        ],
+                        "worst_relevant": None,
+                        "verdict": "unknown",
+                    },
+                },
+            },
+        },
+    }
+    out = build_crossover_alignment_proposal(
+        _two_way(), state, requested_mode=ca.PHASE_AWARE
+    )
+    proposal = out["proposal"]
+    assert proposal["polarity_action"] == ca.POLARITY_KEEP
+    codes = {issue["code"] for issue in proposal["issues"]}
+    assert "alignment_snr_insufficient" not in codes

@@ -562,13 +562,20 @@ def _summed_alignment_snr(summed_record: Any) -> tuple[bool | None, bool]:
 
     ``alignment_snr_ok`` is ``None`` (unknown/no evidence — matches
     :func:`~jasper.active_speaker.crossover_alignment.propose_crossover_alignment`'s
-    own no-degrade default) when there is no ``snr`` block at all — today's
-    shipped flow, since no caller yet supplies ambient-noise evidence to a
-    summed capture. When a block IS present, ``alignment_snr_ok`` is exactly
-    ``worst_relevant.verdict == "ok"`` — ``True`` only on a confident overlap
-    SNR reading, ``False`` for any other outcome (insufficient, or "unknown"
-    from scalar-only/no-covered-band evidence — the block existing at all
-    means SOME evidence was supplied, and it didn't clear the bar).
+    own no-degrade default) when there is no ``snr`` block at all, OR when a
+    block IS present but its overall verdict is "unknown" — ``worst_relevant``
+    is ``None`` because the only evidence supplied was a scalar noise floor
+    (or no relevant band was covered at all). The spec rejects a scalar
+    reading as alignment evidence ("Level control and SNR"), so that case is
+    indistinguishable from no evidence at all and must not degrade — this
+    matters live, not just in theory: today's shipped flow
+    (``jasper/web/correction_crossover_flow.py``) bolts a scalar
+    ``noise_floor_dbfs`` onto every summed record and never supplies
+    ``noise_band_report``, so every real summed capture hits this branch.
+    ``alignment_snr_ok`` is ``False`` ONLY when a real per-band reading
+    produced a non-"ok" ``worst_relevant`` (i.e. "insufficient" — confirmed
+    inadequate overlap-band SNR); ``True`` only on a confident ("ok") overlap
+    SNR reading.
     """
     if not isinstance(summed_record, Mapping):
         return None, False
@@ -580,10 +587,13 @@ def _summed_alignment_snr(summed_record: Any) -> tuple[bool | None, bool]:
         alignment_snr_ok = None
     else:
         worst_relevant = snr.get("worst_relevant")
-        alignment_snr_ok = (
-            isinstance(worst_relevant, Mapping)
-            and worst_relevant.get("verdict") == "ok"
-        )
+        if not isinstance(worst_relevant, Mapping):
+            # Overall 'unknown': scalar-only evidence or no relevant band
+            # covered. The spec rejects scalar levels as alignment evidence,
+            # so this is indistinguishable from no evidence -> no degrade.
+            alignment_snr_ok = None
+        else:
+            alignment_snr_ok = worst_relevant.get("verdict") == "ok"
     return alignment_snr_ok, bool(acoustic.get("null_depth_capped"))
 
 

@@ -1350,9 +1350,19 @@ Delay alignment is measured, not guessed.
 > the phase_aware gate's promise, not a promise that the overlap band had
 > enough SNR to trust a specific null depth. Both new parameters default to
 > "no evidence" (`None`/`False`) and DELIBERATELY do not degrade at their
-> default, since no caller yet supplies the ambient-noise evidence that
-> would produce a real verdict (that capture flow is a later slice) — every
-> existing margin/blend proposal is unchanged until it does.
+> default. "No evidence" here means no *real per-band* reading
+> (`noise_band_report`) — no caller supplies that yet. A scalar reading is
+> NOT equivalent: `correction_crossover_flow.py` already bolts a scalar
+> `noise_floor_dbfs` onto every summed capture today, and the split SNR
+> policy treats a scalar as insufficient evidence for an alignment call, so
+> it reads as the SNR block's overall verdict `"unknown"`
+> (`worst_relevant=None`). `commissioning_capture._summed_alignment_snr`
+> maps that to `alignment_snr_ok=None` (no degrade) — fixed 2026-07-11 after
+> a bug briefly mapped it to `False` instead, which silently downgraded
+> every live summed capture's `keep`/`aligned` result to `review`/`unknown`.
+> `False` is reserved for a confirmed-insufficient REAL per-band reading —
+> every existing margin/blend proposal stays unchanged until a caller
+> supplies one.
 
 ## CamillaDSP Profile Architecture
 
