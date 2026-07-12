@@ -1099,7 +1099,7 @@ def test_active_speaker_environment_payload_uses_configured_evidence_path(
     }
 
 
-def test_active_speaker_safe_playback_payloads_are_no_audio(
+def test_active_speaker_stop_and_level_payloads_are_no_audio(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -1135,7 +1135,11 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
         },
     )
 
-    armed = sound_setup._active_speaker_arm_payload()
+    from jasper.active_speaker.safe_playback import arm_safe_playback_session
+
+    armed = arm_safe_playback_session(
+        sound_setup._active_speaker_environment_payload()
+    )
     guarded = sound_setup._active_speaker_calibration_level_payload({
         "action": "set",
         "level_dbfs": -55,
@@ -1188,7 +1192,9 @@ def test_active_speaker_stop_payload_survives_level_reset_failure(
     def fail_reset(*args, **kwargs):
         raise OSError("state path is unavailable")
 
-    sound_setup._active_speaker_arm_payload()
+    from jasper.active_speaker.safe_playback import arm_safe_playback_session
+
+    arm_safe_playback_session(sound_setup._active_speaker_environment_payload())
     monkeypatch.setattr(level_mod, "update_calibration_level_state", fail_reset)
 
     stopped = sound_setup._active_speaker_stop_payload()

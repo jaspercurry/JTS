@@ -1809,25 +1809,6 @@ def _active_speaker_calibration_level_payload(
     return payload
 
 
-def _active_speaker_arm_payload() -> dict[str, Any]:
-    """Arm a no-audio active-speaker safety session if gates pass."""
-
-    from jasper.active_speaker.safe_playback import arm_safe_playback_session
-
-    environment_report = _active_speaker_environment_payload()
-    state = arm_safe_playback_session(environment_report)
-    log_event(
-        logger,
-        "sound.active_speaker_safe_playback",
-        action="arm",
-        status=str(state.get("status")),
-        session_id=str(state.get("session_id")),
-        load_gate=str(state.get("environment", {}).get("load_gate")),
-        blockers=len(state.get("issues") or []),
-    )
-    return state
-
-
 def _active_speaker_stop_payload() -> dict[str, Any]:
     """Stop any no-audio active-speaker safety session."""
 
