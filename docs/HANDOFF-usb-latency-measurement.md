@@ -7,11 +7,15 @@ them, and the host/bench setup to reproduce it. For the *design* narrative
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) — this doc links to it
 rather than restating it.
 
-`Last verified: 2026-07-11` (§1 gained the "Certification budget"
-cross-reference to the honest p95<=48ms/p99<=60ms cert-gate constants in
-`jasper/audio_runtime_plan.py`. Same day, earlier: §7 gained "Documented
-leads (not scheduled)", "Rejected paths (do not re-chase)", and "Windows
-host validation (deferred)" subsections; claims re-verified against
+`Last verified: 2026-07-11` (§1 gained the 2026-07-11 certified promotion
+result — p50 36.35 / p95 37.93 / p99 38.29 ms, 1094 impulses — as current
+truth, and the cert budget was tightened to p95<=40ms/p99<=42ms in
+`jasper/audio_runtime_plan.py`; §7's "aspirational ~40 ms gated on leads"
+framing was rewritten — the goal is met at the electrical plane, the leads are
+now further-improvement candidates. Same day, earlier: §1 gained the
+"Certification budget" cross-reference (then p95<=48ms/p99<=60ms); §7 gained
+"Documented leads (not scheduled)", "Rejected paths (do not re-chase)", and
+"Windows host validation (deferred)" subsections; claims re-verified against
 `rust/jasper-fanin/src/config.rs`, `mixer.rs`, `host_compliance.rs`, and
 `jasper/fanin/coupling_reconcile.py`. Prior 2026-07-07: jts.local live
 probes, combo mux liveness patch, 2-slot ring geometry).
@@ -24,8 +28,28 @@ The USB-input chain is `Mac app → hw:UAC2Gadget → fan-in direct capture →
 [host-clock DLL + varispeed resampler + cushion] → Ring A → CamillaDSP → Ring B
 → jasper-outputd → Apple USB-C dongle → analog out`.
 
+**Certified promotion result (2026-07-11) — current certified truth.** The
+promotion-length certification run on jts.local (build `d5abf5ad`; artifact
+`20260711T234400.457205Z__route_latency__apple_usb_c_dongle__route_latency__pass.json`;
+route_hash `3bca2569c864ad1a`) measured, at the electrical `:9891` plane with
+the flow-gated streaming detector, at the **576-frame churn-safe floor**:
+
+| p50 | p95 | p99 | max | match | n | duration |
+|---|---|---|---|---|---|---|
+| **36.35** | 37.93 | 38.29 | 38.48 | 100% | 1094 | 32.6 min |
+
+Zero outliers. This is the **route JTS owns** (fan-in ingress → outputd egress)
+— the plane the cert gate certifies — and it clears the tightened p95<=40 /
+p99<=42 budget (below) with margin. It reads ~4 ms below the 2026-07-07 `40.73`
+p50 quick number because it is a longer, flow-gated measurement (1094 impulses
+/ 32.6 min vs n=40) on a later build; both are the same 576 floor / `:9891`
+plane, so the delta is run-length + build, not a measurement-point change. This
+supersedes the 2026-07-07 electrical row as the current certified electrical
+truth; that pair is kept below as the DAC-term composition basis.
+
+**2026-07-07 electrical+analog cross-check (the DAC-term composition basis).**
 Two independent measurements, taken through different capture points, at the
-**576-frame cushion floor** (the steady low-latency state):
+same **576-frame cushion floor** (the steady low-latency state):
 
 | Measurement | Reference point | p50 | p95 | p99 | match | n |
 |---|---|---|---|---|---|---|
@@ -36,17 +60,27 @@ Two independent measurements, taken through different capture points, at the
 = `53.96` — composing to the directly-measured analog p50 **exactly**. Two
 independent measurements a day apart validate each other.
 
-**Certification budget (recalibrated 2026-07-11):** these are the numbers the
-route-latency cert gate now honestly certifies against —
-`USB_LOW_LATENCY_P95_BUDGET_MS = 48.0` / `_P99_BUDGET_MS = 60.0` in
-`jasper/audio_runtime_plan.py`, ~5-7 ms of headroom over this run's p95/p99
-(`42.12` / `43.17`) so a real regression still trips the gate. The prior
-40.0 ms p95 budget was unattainable by construction — the p50 alone
-(`40.73`) already exceeded it, and a compliant run's p95 window also has to
-absorb the ~2.5-min cold-descent ceiling below (~43 ms). The aspirational
-~40 ms target is not abandoned; it is gated on the §7 "Documented leads"
-(`EarlyUnlock` revoke-policy tuning, DAC-side buffer trim) — lower the
-budget again once one of those ships and is re-measured.
+**Certification budget (tightened 2026-07-11 to the certified floor):** these
+are the numbers the route-latency cert gate now certifies against —
+`USB_LOW_LATENCY_P95_BUDGET_MS = 40.0` / `_P99_BUDGET_MS = 42.0` in
+`jasper/audio_runtime_plan.py`. `40.0` sits `2.1` ms over the certified p95
+(`37.93`) and `1.5` ms over the observed max (`38.48`); `42.0` is the tail
+budget, `2` ms above the p95 gate and `~3.7` ms over the certified p99
+(`38.29`) — so any `>=2` ms regression trips the gate. It is a cert-time
+tripwire only: no runtime consumer reads it. The prior `48.0` / `60.0` budget
+was the honest-but-loose recalibration from the 2026-07-07 n=40 quick run,
+before the promotion run proved the electrical plane holds well under 40 ms in
+steady state. **Flap protocol:** a marginal fail gets ONE clean re-run
+(steady-state, flow-gated) before it is treated as a regression; loosening
+these numbers requires new measured evidence. **Config-hash note:** the budget
+participates in `route_config_hash`, so tightening it invalidates the
+2026-07-11 artifact's `config_match` — doctor reads `config_mismatch` until one
+fresh certification run re-certifies against 40/42 (the measured numbers clear
+it with margin; the run is ~35 min at the documented flow-gated methodology).
+The ~40 ms goal is **met at the electrical plane** in steady state; the §7
+"Documented leads" (`EarlyUnlock` revoke-policy tuning, DAC-side buffer trim)
+are now further-improvement candidates — deliver it from the *first click* and
+push below the floor — not gates on reaching it.
 
 **Delta with the 2026-07-03 tap→ref number — explained, not a regression.**
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) records a 2026-07-03
@@ -343,14 +377,17 @@ floor via STATUS: `held_target_frames: 576`, `decay.frozen_reason: at_floor` (or
 
 ## 7. Future work — the remaining latency ladder
 
-We are at diminishing returns on the *controllable* path: tap→`:9891` p50
-`40.73` ms. An early proof-of-concept reached ~35 ms tap→ref, but only at a
-256-frame cushion that was **not churn-stable** (unlock storms on a drifting
-host); the production 576-frame floor is the churn-*safe* minimum, ~7 ms higher
-by a deliberate stability trade. So the remaining floor is gated by churn
-stability, not by tuning. The full-chain `55.5` ms is dominated by two terms —
-the host-clock cushion and the DAC-side buffering — and the honest ranking of
-what's left, most-actionable first:
+The ~40 ms electrical goal is **met in steady state**: the 2026-07-11 promotion
+cert measured tap→`:9891` p50 `36.35` / p95 `37.93` ms at the churn-safe floor
+(§1), so we are at diminishing returns on the *controllable* path. An early
+proof-of-concept reached ~35 ms tap→ref at a 256-frame cushion, but that cushion
+was **not churn-stable** (unlock storms on a drifting host); the production
+576-frame floor is the churn-*safe* minimum, only ~1 ms above that PoC in steady
+state — the stability trade's real cost is the ~2.5-min cold-descent ceiling
+(~43 ms) a cold session pays *before* reaching the floor, not the floor itself.
+So the remaining floor is gated by churn stability, not by tuning. The full-chain
+`55.5` ms is dominated by two terms — the host-clock cushion and the DAC-side
+buffering — and the honest ranking of what's left, most-actionable first:
 
 1. **Revoke-policy tuning for `EarlyUnlock` — the highest-value item (a policy
    question, not a diagnosis).** §6's compliance-revoke thread: the
@@ -402,11 +439,13 @@ what's left, most-actionable first:
    the `f_uac2` feedback path) is captured in the design notes; this is where those
    directions would land.
 
-**Net:** #1 (`EarlyUnlock` revoke-policy tuning) and #2 (DAC URB depth) are the realistic
-near-term targets — together they'd make the box *reliably* deliver ~40 ms
-tap→ref / ~53 ms full-chain from the first click, instead of only in steady
-state. #3 and #4 are larger and lower-priority; #4 is the research frontier for
-ever pushing below the current churn-safe floor.
+**Net:** the ~40 ms electrical goal is already met in steady state (`36.35` ms
+certified p50, §1). #1 (`EarlyUnlock` revoke-policy tuning) and #2 (DAC URB
+depth) are the realistic near-term targets — together they'd make the box
+*reliably* deliver that floor from the *first click* (eliminating the ~2.5-min
+cold-descent ceiling) and trim ~2-3 ms off the ~53 ms full-chain, rather than
+push the steady floor lower. #3 and #4 are larger and lower-priority; #4 is the
+research frontier for ever pushing below the current churn-safe floor.
 
 ### Documented leads (not scheduled)
 
@@ -522,10 +561,13 @@ conditions"; that section is the single source of truth, this is a pointer.
 
 ---
 
-Last verified: 2026-07-11 (§1 gained the "Certification budget" cross-reference
-to the honest p95<=48ms/p99<=60ms cert-gate constants codified in
-`jasper/audio_runtime_plan.py`, re-verified against that module and
-`jasper/audio_validation.py`. Prior 2026-07-10: §§6-7 cold-start/revoke-policy
+Last verified: 2026-07-11 (§1 gained the 2026-07-11 certified promotion result
+as current truth and the cert budget was tightened to p95<=40ms/p99<=42ms in
+`jasper/audio_runtime_plan.py`; §7's aspirational-~40ms framing rewritten to
+"met at the electrical plane". Re-verified against `jasper/audio_runtime_plan.py`
+and `jasper/audio_validation.py`. Same day, earlier: §1 gained the
+"Certification budget" cross-reference (then p95<=48ms/p99<=60ms), re-verified
+against those same modules. Prior 2026-07-10: §§6-7 cold-start/revoke-policy
 claims rechecked against `settle_regime_ok` in `rust/jasper-host-clock/src/lib.rs`
 and `classify_strike`/`RevokeReason::EarlyUnlock` in
 `rust/jasper-fanin/src/host_compliance.rs`, including the

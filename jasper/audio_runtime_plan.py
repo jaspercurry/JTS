@@ -117,18 +117,27 @@ ROUTE_BITPERFECT_DECLARED = "bitperfect_passthrough_declared"
 ROUTE_LATENCY_PROFILE = "route_latency"
 USB_LOW_LATENCY_SOURCE_ID = "usbsink"
 # Route-latency certification budget at the electrical tap->:9891 plane.
-# Measured basis (docs/HANDOFF-usb-latency-measurement.md §1, 2026-07-07 run,
-# n=40): the shipped churn-safe floor is p50 40.73 / p95 42.12 / p99 43.17 ms,
-# and a compliant run's p95 window also spans the ~2.5-min cold-descent
-# ceiling (~43 ms; same doc §6/§7). The prior 40.0 ms p95 budget was
-# unattainable by construction — measured p50 alone already exceeded it.
-# 48.0 / 60.0 give ~5-7 ms of headroom over measured steady-state so a real
-# regression still trips the gate. The aspirational ~40 ms target is not
-# abandoned: it's gated on the EarlyUnlock revoke-policy and DAC-side buffer
-# leads in that doc's §7 "Documented leads" — lower this budget again once
-# one of those ships and is re-measured.
-USB_LOW_LATENCY_P95_BUDGET_MS = 48.0
-USB_LOW_LATENCY_P99_BUDGET_MS = 60.0
+# Measured basis: the 2026-07-11 promotion certification on jts.local (artifact
+# 20260711T234400.457205Z__route_latency__apple_usb_c_dongle__route_latency__pass.json,
+# build d5abf5ad, route_hash 3bca2569c864ad1a) measured p50 36.35 / p95 37.93 /
+# p99 38.29 / max 38.48 ms over 1094 matched impulses (100% match, 32.6 min,
+# zero outliers) at the 576-frame churn-safe floor, electrical :9891 plane,
+# flow-gated streaming detector. See docs/HANDOFF-usb-latency-measurement.md §1.
+# 40.0 sits 2.1 ms over the measured p95 (37.93) and 1.5 ms over the observed
+# max (38.48); 42.0 is the tail budget, 2 ms above the p95 gate and ~3.7 ms over
+# the measured p99 (38.29) — so any >=2 ms regression trips the gate. The gate
+# is a cert-time tripwire only: no runtime consumer reads these constants. Flap
+# protocol: a marginal fail gets ONE clean re-run (steady-state, flow-gated)
+# before it is treated as a regression; loosening these numbers requires new
+# measured evidence.
+# NOTE: these constants ride AudioRouteProfile.to_dict() into
+# route_config_hash_for_plan, so tightening them changes the route_config_hash
+# for any usb_low_latency_48k box. The 2026-07-11 artifact (certified against
+# the prior 48/60 budget) therefore reads config_mismatch until ONE fresh
+# certification run re-certifies against 40/42 — its measured numbers clear the
+# new gate with margin.
+USB_LOW_LATENCY_P95_BUDGET_MS = 40.0
+USB_LOW_LATENCY_P99_BUDGET_MS = 42.0
 ROUTE_CONFIG_HASH_SCHEMA_VERSION = 3
 UAC2_LOW_LATENCY_EXPECTED_ATTRS = {
     "c_sync": "async",

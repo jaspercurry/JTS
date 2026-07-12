@@ -284,7 +284,7 @@ def route_latency_gate_status(
     if p95_ms is None:
         issues.append("p95_missing")
     elif p95_ms > ROUTE_LATENCY_P95_BUDGET_MS:
-        issues.append("p95_exceeds_48ms")
+        issues.append("p95_exceeds_40ms")
     if 95 not in certified:
         issues.append("p95_uncertified")
 
@@ -307,7 +307,7 @@ def route_latency_gate_status(
         return "warn", "run_p99_promotion_validation", certified, ("p99_uncertified",)
     if p99_ms > ROUTE_LATENCY_P99_BUDGET_MS:
         return "warn", "reduce_tail_latency_before_promotion", certified, (
-            "p99_exceeds_60ms",
+            "p99_exceeds_42ms",
         )
     return "pass", "usb_low_latency_route_promotable", certified, ()
 

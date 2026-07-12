@@ -99,11 +99,14 @@ Measured reconstruction on jts.local: the 8-slot/deep-queue shipped default was
 ≈90-95 ms e2e, while the validated 2-slot Ring A plus chunk 128 / target 128 /
 queue 1 product shape is ≈48.8 ms e2e. The 2026-07-06 primed product-path run
 measured 54.3 ms tap→ref with chunk 128 / target 128 / queue 1; the earlier
-40 ms-descent PoC measured 35.4 ms tap→ref. Once this deploys, refreshing the
-route-latency artifact against the 48 ms p95 budget becomes achievable (the
-budget was recalibrated 2026-07-11 to the measured churn-safe floor — see
-HANDOFF-usb-latency-measurement.md §1); the artifact still needs a real
-click/capture run before doctor may certify it.
+40 ms-descent PoC measured 35.4 ms tap→ref. The 2026-07-11 promotion cert then
+measured p50 36.35 / p95 37.93 / p99 38.29 ms at the electrical `:9891` plane
+(1094 impulses, 32.6 min — see HANDOFF-usb-latency-measurement.md §1), clearing
+the gate. On the strength of that run the p95/p99 cert budget was tightened
+48/60 → 40/42 ms. Because the budget rides `route_config_hash`, that tightening
+invalidates the just-passed artifact's `config_match`, so doctor reads
+`config_mismatch` until ONE fresh re-cert run against 40/42 — its measured
+numbers clear the new gate with margin.
 
 The loopback path remains the fallback when the ring gates fail, the box is not
 ring-eligible, or an operator freezes the coupling. Its tuned Apple USB-C DAC
@@ -156,11 +159,11 @@ DAC xruns, zero fan-in output xruns, zero fan-in USB resampler relocks/unlocks/
 silence/overruns, and zero CamillaDSP warnings. Lower content-buffer probes at
 640, 768, 1024, and 1280 each produced a content-side xrun. This proves fallback
 stability, not route certification. Doctor must keep failing `route latency
-evidence` until a click/capture artifact certifies p95 <= 48 ms (recalibrated
-2026-07-11 to the measured churn-safe floor — see
+evidence` until a click/capture artifact certifies p95 <= 40 ms (tightened
+2026-07-11 to the certified electrical floor — see
 HANDOFF-usb-latency-measurement.md §1) with >=200 impulses over >=5 minutes;
 p99 promotion requires >=1000 impulses over >=30 minutes with jittered
-spacing and p99 <= 60 ms.
+spacing and p99 <= 42 ms.
 
 The claiming route now hard-fails if it is combined with the legacy low-latency
 lab transport `JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match`. That path remains
@@ -1843,18 +1846,21 @@ observable clock-domain crossings.
    the click-in/capture-back producer `jasper-route-latency-artifact` binds
    samples to the live route identity from. Its `quick`/`promotion` presets are
    sized directly off the certification gates with margin (quick: 240 impulses
-   over 6 minutes for p95 <= 48 ms — recalibrated 2026-07-11 to the measured
-   churn-safe floor, see HANDOFF-usb-latency-measurement.md §1; promotion:
-   1200 jittered impulses over 36 minutes for p99 <= 60 ms). Note the preset
+   over 6 minutes for p95 <= 40 ms — tightened 2026-07-11 to the certified
+   electrical floor, see HANDOFF-usb-latency-measurement.md §1; promotion:
+   1200 jittered impulses over 36 minutes for p99 <= 42 ms). Note the preset
    impulse counts/durations are sized off sample-count and duration floors,
-   not the ms budget, so they are unaffected by that recalibration. See
+   not the ms budget, so they are unaffected by that tightening. See
    [`docs/testing-tooling.md` "Route-latency click/capture harness"](testing-tooling.md#route-latency-clickcapture-harness)
-   for the architecture and the quick/promotion walkthroughs above. **Still
-   owed:** an on-device end-to-end run against real jts.local hardware — the
-   harness is unit-tested against synthetic evidence (`tests/test_route_latency_harness.py`
-   includes a clock-drift injection test) but has not yet produced a real
-   artifact from an actual click-track playback + XVF3800 capture, so the
-   low-latency claim remains correctly failing until that run happens.
+   for the architecture and the quick/promotion walkthroughs above. **Cert
+   landed:** the 2026-07-11 promotion run on jts.local produced a real pass
+   artifact at the electrical `:9891` plane (p50 36.35 / p95 37.93 / p99 38.29
+   ms, 1094 impulses / 32.6 min), so the harness is now hardware-proven, not
+   just unit-tested against synthetic evidence (`tests/test_route_latency_harness.py`
+   includes a clock-drift injection test). **Still owed:** ONE fresh re-cert run
+   against the tightened 40/42 budget — the budget rides `route_config_hash`, so
+   tightening it makes the just-passed artifact read `config_mismatch`; the
+   measured numbers clear the new gate with margin.
 3. **Replace the bottleneck, not the DAC owner.** The current loopback graph
    cannot meet 40 ms because the USB resampler held target alone is ~42.7 ms.
    The next architecture step is a frame-bounded transport at one or both
@@ -2043,10 +2049,17 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-11 (fix-forward from the #1251 post-merge audit:
-truthed the "Current Production Route" disarm-kick paragraph above with the
-voice-stop cost, the outputd double-bounce, and the `_recover_to_loopback`
-no-kick exception; cross-referenced issue #1257. Same day, earlier: de-staled
+Last verified: 2026-07-11 (recorded the 2026-07-11 promotion cert result in
+"Current Production Route" and "Productization Plan", tightened the cert-gate
+mentions from p95<=48/p99<=60 to the certified p95<=40/p99<=42 ms budget, and
+noted the config_mismatch re-cert requirement; re-verified against
+`jasper/audio_runtime_plan.py` / `jasper/audio_validation.py`. Left the
+superseded "Historical Lean-FIFO Worklist" (p95<=40/p99<=60 line) untouched per
+the doc-freshness convention. Same day, earlier: fix-forward from the #1251
+post-merge audit: truthed the "Current Production Route" disarm-kick paragraph
+above with the voice-stop cost, the outputd double-bounce, and the
+`_recover_to_loopback` no-kick exception; cross-referenced issue #1257. Same
+day, earlier: de-staled
 the await-lock LOCKED-mapping passage in
 "The probe does NOT baseline at the session edge": its "two daemons map LOCKED
 differently" bullets still presented the deleted usbsink-solo settle-only

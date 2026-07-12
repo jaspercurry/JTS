@@ -68,7 +68,7 @@ def test_build_artifact_binds_live_route_identity(monkeypatch):
     )
     metrics = route_latency_artifact.metrics_from_aggregates(
         p95_ms=39.0,
-        p99_ms=59.0,
+        p99_ms=41.0,
         sample_count=1000,
         duration_seconds=30 * 60,
     )
@@ -103,7 +103,7 @@ def test_artifact_fails_without_clean_route_health(monkeypatch):
     )
     metrics = route_latency_artifact.metrics_from_aggregates(
         p95_ms=39.0,
-        p99_ms=59.0,
+        p99_ms=41.0,
         sample_count=1000,
         duration_seconds=30 * 60,
     )
@@ -126,7 +126,7 @@ def test_build_artifact_refuses_runtime_plan_errors(monkeypatch):
     )
     metrics = route_latency_artifact.metrics_from_aggregates(
         p95_ms=39.0,
-        p99_ms=59.0,
+        p99_ms=41.0,
         sample_count=1000,
         duration_seconds=30 * 60,
     )

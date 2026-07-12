@@ -165,12 +165,12 @@ def test_route_latency_certification_requires_samples_and_duration():
 
 
 def test_route_latency_gate_status_pass_warn_fail_boundaries():
-    # Boundary values sit just inside/outside the honest, measured-basis
-    # budget (p95<=48ms, p99<=60ms — 2026-07-11 recalibration; see the
-    # docstring on USB_LOW_LATENCY_P95_BUDGET_MS in audio_runtime_plan.py).
+    # Boundary values sit just inside/outside the certified, measured-basis
+    # budget (p95<=40ms, p99<=42ms — 2026-07-11 tightening; see the docstring
+    # on USB_LOW_LATENCY_P95_BUDGET_MS in audio_runtime_plan.py).
     status, _rec, certified, issues = route_latency_gate_status(
-        p95_ms=47.0,
-        p99_ms=59.0,
+        p95_ms=39.0,
+        p99_ms=41.0,
         sample_count=1000,
         duration_seconds=30 * 60,
         jittered_impulse_spacing=True,
@@ -180,7 +180,7 @@ def test_route_latency_gate_status_pass_warn_fail_boundaries():
     assert issues == ()
 
     status, _rec, certified, issues = route_latency_gate_status(
-        p95_ms=47.0,
+        p95_ms=39.0,
         p99_ms=None,
         sample_count=200,
         duration_seconds=5 * 60,
@@ -190,18 +190,18 @@ def test_route_latency_gate_status_pass_warn_fail_boundaries():
     assert issues == ("p99_missing",)
 
     status, _rec, _certified, issues = route_latency_gate_status(
-        p95_ms=49.0,
-        p99_ms=59.0,
+        p95_ms=41.0,
+        p99_ms=41.0,
         sample_count=1000,
         duration_seconds=30 * 60,
         jittered_impulse_spacing=True,
     )
     assert status == "fail"
-    assert "p95_exceeds_48ms" in issues
+    assert "p95_exceeds_40ms" in issues
 
     status, _rec, certified, issues = route_latency_gate_status(
-        p95_ms=47.0,
-        p99_ms=59.0,
+        p95_ms=39.0,
+        p99_ms=41.0,
         sample_count=1000,
         duration_seconds=30 * 60,
     )
@@ -227,7 +227,7 @@ def test_make_route_latency_artifact_records_identity_and_certification():
             "harness_id": "jts-click-capture",
         },
         p95_ms=38.5,
-        p99_ms=58.0,
+        p99_ms=41.0,
         sample_count=1000,
         duration_seconds=30 * 60,
         impulse_spacing_jittered=True,
@@ -314,7 +314,7 @@ def test_assess_route_latency_artifact_fails_mismatched_hash(tmp_path):
         dac_id="apple_usb_c_dongle",
         route_config_hash="old",
         p95_ms=38.5,
-        p99_ms=58.0,
+        p99_ms=41.0,
         sample_count=1000,
         duration_seconds=30 * 60,
         validated_at=NOW,
@@ -340,7 +340,7 @@ def test_assess_route_latency_artifact_fails_identity_mismatch(tmp_path):
         outputd_config={"JASPER_OUTPUTD_PERIOD_FRAMES": 1024},
         rust_bridge_config={"period_frames": 256, "ring_periods": 3},
         p95_ms=38.5,
-        p99_ms=58.0,
+        p99_ms=41.0,
         sample_count=1000,
         duration_seconds=30 * 60,
         impulse_spacing_jittered=True,
@@ -376,7 +376,7 @@ def test_route_latency_artifact_uses_fresh_24h_window(tmp_path):
         dac_id="apple_usb_c_dongle",
         route_config_hash="same",
         p95_ms=38.5,
-        p99_ms=58.0,
+        p99_ms=41.0,
         sample_count=1000,
         duration_seconds=30 * 60,
         impulse_spacing_jittered=True,
@@ -403,7 +403,7 @@ def test_assess_route_latency_artifact_preserves_route_health_anomaly(tmp_path):
         dac_id="apple_usb_c_dongle",
         route_config_hash="same",
         p95_ms=38.5,
-        p99_ms=58.0,
+        p99_ms=41.0,
         sample_count=1000,
         duration_seconds=30 * 60,
         impulse_spacing_jittered=True,
