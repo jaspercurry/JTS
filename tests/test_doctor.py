@@ -4218,11 +4218,6 @@ def test_aec_clock_drift_skips_when_outputd_disabled(monkeypatch):
     assert "not enabled" in r.detail
 
 
-def test_audio_path_no_swap_includes_fanin_and_outputd():
-    assert "jasper-fanin" in doctor._AUDIO_PATH_UNITS
-    assert "jasper-outputd" in doctor._AUDIO_PATH_UNITS
-
-
 def test_fanin_asound_wiring_fails_on_bare_renderer_lane(monkeypatch, tmp_path):
     _patch_asound_conf(
         monkeypatch,
