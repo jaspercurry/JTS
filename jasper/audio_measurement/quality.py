@@ -13,9 +13,8 @@ same evidence.
 The thresholds are supplied by a :class:`~jasper.audio_measurement.quality_model.QualityModel`
 profile so the room, driver, and level-ramp layers can differ by data rather
 than by forked constants; :func:`assess_capture` defaults to the ``ROOM``
-profile, which carries the pre-extraction values verbatim. The module-level
-constants below are preserved as aliases of the ``ROOM`` profile for callers
-that referenced them directly.
+profile, which carries the pre-extraction values verbatim. QualityModel
+profiles are the sole source of capture-quality thresholds.
 """
 from __future__ import annotations
 
@@ -29,14 +28,8 @@ from jasper.audio_measurement.quality_model import ROOM, QualityModel
 
 Severity = Literal["warn", "fail"]
 
-# Backward-compatible aliases of the ROOM profile's values. Kept so existing
-# references to `quality.PEAK_TOO_LOW_DBFS` etc. still resolve; the source of
-# truth for a layer's thresholds is its QualityModel profile.
+# Default used by the local dBFS conversion helper.
 DBFS_FLOOR = ROOM.dbfs_floor
-CLIP_ABS_THRESHOLD = ROOM.clip_abs_threshold
-CLIP_FRACTION_FAIL = ROOM.clip_fraction_fail
-PEAK_TOO_LOW_DBFS = ROOM.peak_too_low_dbfs
-RMS_TOO_LOW_DBFS = ROOM.rms_too_low_dbfs
 
 
 @dataclass(frozen=True)
