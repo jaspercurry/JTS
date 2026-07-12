@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`1b44516b`): 2026-07-12.
+Last reconciled against `main` (`222f3809`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 495
-- **fixed**: 171
+- **open**: 494
+- **fixed**: 172
 - **in-progress**: 1
 - **mooted**: 9
 - **deferred**: 1
@@ -84,12 +84,12 @@ Last reconciled against `main` (`1b44516b`): 2026-07-12.
 | DA-0067 | `jasper/wake_corpus/bridge_session.py` :: enable_bridge_outputs_for_session:1173 | should-fix | W1 | **open** | — |
 | DA-0068 | `jasper/web/sound_setup.py` :: _active_speaker_arm_payload | should-fix | W1 | **open** | — |
 | DA-0069 | `multiroom-spike/stats-flac-300ms.json` :: multiroom-spike/ (6 files) | should-fix | W1 | **open** | — |
-| DA-0070 | `rust/jasper-host-clock/src/lib.rs` :: HostClock::raw_demand_ppm | should-fix | W1 | **in-progress** | inert persistent field removed while raw local demand still drives L1/L2; canonical adversarial review passed, publication pending |
+| DA-0070 | `rust/jasper-host-clock/src/lib.rs` :: HostClock::raw_demand_ppm | should-fix | W1 | **fixed** | inert private field removed; raw local demand still drives L1/L2 — #1288 |
 | DA-0071 | `rust/jasper-outputd/src/core.rs` :: OutputCore::add_reference_consumer / drain_r | should-fix | W1 | **open** | — |
 | DA-0072 | `rust/jasper-outputd/src/reference.rs` :: ReferenceFanout::add_consumer/drain_consumer | should-fix | W1 | **open** | — |
 | DA-0073 | `scripts/aec-probe-usb-delay.sh` :: module:1-440 | should-fix | W1 | **open** | — |
 | DA-0074 | `scripts/airplay-receiver-timing-proof.py` :: main:738 | should-fix | W1 | **open** | — |
-| DA-0075 | `tests/js/sound_profile_harness.mjs` :: measurementAudioPreamble (:31-48), import-st | should-fix | W1 | **open** | — |
+| DA-0075 | `tests/js/sound_profile_harness.mjs` :: measurementAudioPreamble / import stripping | should-fix | W1 | **in-progress** | stale measurement-audio shim removed and import stripping narrowed; canonical adversarial review passed, publication pending |
 | DA-0152 | `AGENTS.md` :: Profile guardian — self-heal after filesyste | should-fix | W3 | **open** | — |
 | DA-0153 | `c/jts-ring-ioplug/jts_ring_shm.c` :: jts_ring_writer_open / jts_ring_reader_open | should-fix | W3 | **open** | — |
 | DA-0154 | `deploy/assets/bluetooth/bluetooth.css` :: .spinner / @keyframes bt-spin:208-227 | should-fix | W3 | **open** | — |
