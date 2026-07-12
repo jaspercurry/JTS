@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`3de05da9`): 2026-07-12.
+Last reconciled against `main` (`a1fe24f0`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 391
-- **fixed**: 273
+- **open**: 390
+- **fixed**: 274
 - **in-progress**: 0
 - **mooted**: 12
 - **deferred**: 1
@@ -187,7 +187,7 @@ Last reconciled against `main` (`3de05da9`): 2026-07-12.
 | DA-0246 | `jasper/bluetooth/engine.py` :: _auto_stop_scan | should-fix | W4 | **open** | — |
 | DA-0247 | `jasper/bluetooth/scan.py` :: DeviceObserver | should-fix | W4 | **fixed** | bounded device-observer subscriptions, stale-callback guards, and battery-task cleanup — #1405 |
 | DA-0248 | `jasper/cli/aec_tune.py` :: DELAY_FILE / main | should-fix | W4 | **open** | — |
-| DA-0249 | `jasper/cli/doctor/audio.py` :: check_loopback:263 / check_fanin_binary_inst | should-fix | W4 | **open** | — |
+| DA-0249 | `jasper/cli/doctor/audio.py` :: check_loopback:263 / check_fanin_binary_inst | should-fix | W4 | **fixed** | hardware-free loopback and fan-in installation-check contracts — #1406 |
 | DA-0250 | `jasper/cli/doctor/satellites.py` :: check_dial_heartbeat | should-fix | W4 | **open** | — |
 | DA-0251 | `jasper/peering/discovery.py` :: PeerDiscovery._handle_change | should-fix | W4 | **open** | — |
 | DA-0252 | `jasper/transit/_mta_stations.py` :: load_stations | should-fix | W4 | **open** | — |
