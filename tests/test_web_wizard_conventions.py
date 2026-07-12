@@ -38,7 +38,6 @@ WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
 _LEGACY_JSON_RESPONSE_ASSEMBLERS = {
     "correction_setup.py",
     "sound_setup.py",
-    "wifi_setup.py",
 }
 
 _SHARED_JSON_OBJECT_READERS = {
@@ -116,6 +115,7 @@ def test_migrated_local_object_responses_use_object_helper_not_byte_helper():
         "sources_setup.py",
         "spotify_setup.py",
         "wake_corpus_setup.py",
+        "wifi_setup.py",
     ):
         source = (Path("jasper/web") / filename).read_text()
         assert "send_json_response(" in source

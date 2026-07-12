@@ -318,7 +318,7 @@ def _make_request(path: str, body: bytes = b"", cookies: str = "",
                   csrf_header: str = ""):
     """Build a real wifi Handler instance wired to a synthetic request.
 
-    The Handler defines its response helpers (_send / _send_json / _read_json)
+    The Handler defines its response helpers (_send_json / _read_json)
     as instance methods, so we instantiate the *real* class (via __new__, to
     skip BaseHTTPRequestHandler.__init__'s socket plumbing) and bolt the request
     I/O onto it. Returns (handler, captured) where ``captured`` exposes
@@ -415,6 +415,64 @@ def test_get_state_returns_json(monkeypatch):
     h.do_GET()
     assert cap["status"] == 200
     assert json.loads(h.wfile.getvalue().decode())["lockoutRisk"] == "high"
+
+
+def test_get_state_backend_failure_returns_one_502(monkeypatch, caplog):
+    def fail_state():
+        raise RuntimeError("state unavailable")
+
+    monkeypatch.setattr(wifi_setup, "gather_state", fail_state)
+    caplog.set_level(logging.ERROR, logger=wifi_setup.logger.name)
+    h, captured = _make_request("/state")
+
+    h.do_GET()
+
+    assert captured["responses"] == [502]
+    assert json.loads(h.wfile.getvalue()) == {"error": "state unavailable"}
+    assert "/state failed" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    ["send_response", "header_flush", "body_write"],
+)
+def test_get_state_response_disconnect_does_not_attempt_secondary_502(
+    monkeypatch,
+    caplog,
+    failure_point,
+):
+    calls = []
+    monkeypatch.setattr(
+        wifi_setup,
+        "gather_state",
+        lambda: calls.append("state") or {"ok": True},
+    )
+    caplog.set_level(logging.ERROR, logger=wifi_setup.logger.name)
+    h, captured = _make_request("/state")
+    response_attempts = captured["responses"]
+    if failure_point == "send_response":
+        response_attempts = []
+
+        def fail_response(status, *args, **kwargs):
+            response_attempts.append(int(status))
+            raise BrokenPipeError("client disconnected before response headers")
+
+        h.send_response = fail_response
+        h.send_response_only = fail_response
+    elif failure_point == "header_flush":
+        def fail_end_headers():
+            raise BrokenPipeError("client disconnected during header flush")
+
+        h.end_headers = fail_end_headers
+    else:
+        h.wfile = _FailingWriter()
+
+    with pytest.raises(BrokenPipeError):
+        h.do_GET()
+
+    assert calls == ["state"]
+    assert response_attempts == [200]
+    assert "/state failed" not in caplog.text
 
 
 def test_post_unknown_route_404s():
