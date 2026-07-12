@@ -30,7 +30,6 @@ pub mod fake;
 pub mod ledger;
 pub mod loudness;
 pub mod mixer;
-pub mod reference;
 // Ring B: the SHM ping-pong ring content-source reader, active only under
 // JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring. Shipped default on eligible stereo
 // topologies (P4 LANDED — docs/HANDOFF-audio-graph-consolidation.md); off

@@ -528,14 +528,16 @@ fan-in → CamillaDSP → `jasper-outputd` → DAC → amp → speakers
 (see [audio-paths.md](audio-paths.md),
 [HANDOFF-fan-in-daemon.md](HANDOFF-fan-in-daemon.md)).
 
-The leader streams to followers from a **new reference consumer on
-`jasper-outputd`** — the `ReferenceFanout` already copies
-post-mix / post-CamillaDSP / post-TTS / **post-safety-clamp**
-samples to bounded lossy per-consumer ring queues. We add one more
-consumer that writes 48k/S16/stereo into a bounded non-blocking
-FIFO; `snapserver` reads it as a `pipe` input. Tapping *after* the
-clamp is what makes the streamed audio inherit JTS's hardware-safety
-ceiling (§7). **Superseded — see §0:** this described a planned outputd-as-
+The superseded design would have streamed to followers from a **new reference
+consumer on `jasper-outputd`**. At the time, `ReferenceFanout` carried bounded
+lossy per-consumer queues for post-mix / post-CamillaDSP / post-TTS /
+**post-safety-clamp** samples, and the plan was to add a consumer that wrote
+48k/S16/stereo into a non-blocking FIFO for `snapserver`. The named-consumer
+queue and its publication abstraction are now deleted; `OutputCore` retains
+only its internal per-period sequence in `PeriodReport`. Tapping *after* the
+clamp was intended to make streamed audio inherit JTS's hardware-safety
+ceiling (§7). **Superseded — see §0:** this
+described a planned outputd-as-
 producer consumer (`SnapfifoSink`); that whole machinery (`snapfifo.rs`,
 `SNAPFIFO_PRODUCER_WIRED`, the reconciler's outputd tap-env write) was
 REMOVED on 2026-06-11 (the "Stranded by this design" cleanup). The
@@ -548,17 +550,19 @@ see `reconcile.py`).
 
 **Five timing invariants (load-bearing):**
 
-1. `jasper-outputd`'s DAC write loop stays the **sole timing
-   owner**; the snapfifo consumer is a bounded lossy side-reader
-   that never back-pressures it.
+1. Each member's `jasper-outputd` DAC write loop stays the **sole local
+   playback timing owner**. The leader's CamillaDSP is the Snapcast producer;
+   member outputd consumes the explicit snapclient FIFO lane and has no
+   optional Snapcast-producer side-reader.
 2. The leader runs its *own* `snapclient` against `127.0.0.1`,
    playing to a real outputd content lane — **never a Loopback
    PCM** (dodges the documented `snd_pcm_delay`-lies-on-snd-aloop
    trap).
 3. Voice / wake / TTS stay **entirely off** the Snapcast path
    (§6).
-4. AEC taps `pcm.jasper_ref` (a *separate* reference consumer) —
-   never shares a sender with the snapfifo consumer.
+4. Software AEC consumes outputd's final-electrical localhost UDP monitor;
+   the optional chip-AEC writer uses its dedicated XVF3800 reference PCM.
+   Neither reference path shares the Snapcast producer transport.
 5. **Exactly one rate-adjuster per chain.** snapclient's
    sample-stuffing is the rate-tracker, so each member's local
    CamillaDSP runs `rate_adjust=false` / no resampler. **SHIPPED:**

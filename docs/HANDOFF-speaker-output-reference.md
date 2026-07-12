@@ -915,9 +915,9 @@ rejected — see the "Stage 2a landed" callout above.)
 - **Zero allocation on the DAC-write hot path at any width** — preallocated
   per-child period buffers; preallocated fold scratch. Test mirrors
   `steady_state_reuses_segment_write_buffer_capacity`.
-- **`OutputCore`/`ReferenceFanout`/ledger-loudness stay conditional on TTS** — a
-  solo stereo speaker allocates none of it; the minimal clip/ledger counters the
-  active loop needs are cheap scalars, not the full `OutputCore`.
+- **`OutputCore`/reference sequence tracking/ledger-loudness stay conditional
+  on TTS** — a solo stereo speaker allocates none of it; the minimal clip/ledger
+  counters the active loop needs are cheap scalars, not the full `OutputCore`.
 - **Composite drift-sync cost gated to composite** — `SingleAlsaSink` pays
   nothing; M=2 keeps exactly today's 2 `snd_pcm_delay` ioctls/period.
 - **No new threads, no new poll loops, no new resident process** — reconciler
@@ -1039,15 +1039,14 @@ The useful lessons are smaller and specific:
   a driver node starts each cycle, and dependent nodes run only when
   their upstream dependencies complete.
 - **Async side consumers.** AEC, corpus, and debug readers receive
-  copies through bounded queues/rings. If they fall behind, they drop
-  frames with counters; they do not block playback. PipeWire's async
-  links use the same idea and add a cycle of latency rather than
-  putting side work in the synchronous graph completion path. The
-  multi-room **snapfifo** consumer (a grouping leader's post-clamp tap
-  to `snapserver`, `rust/jasper-outputd/src/snapfifo.rs`) is a new
-  instance of exactly this contract — a separate bounded, drop-on-full
-  side reader handed to a dedicated FIFO-writer thread, never in the DAC
-  path; off-by-default, design in
+  failure-isolated copies; the software UDP monitor is nonblocking and the
+  optional chip-reference writer has its own bounded queue/retry state. If a
+  reference output falls behind or disappears, it drops/counts reference
+  periods rather than blocking playback. PipeWire's async links use the same
+  idea and add a cycle of latency rather than putting side work in the
+  synchronous graph completion path. Multi-room does not use an outputd side
+  consumer: the leader's CamillaDSP writes the snapserver pipe and member
+  outputd consumes snapclient's explicit FIFO lane. See
   [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §2.
 - **Explicit ring semantics.** Use bounded storage, monotonic sequence
   numbers, underrun/overrun counters, and clear drop policy rather

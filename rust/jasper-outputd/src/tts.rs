@@ -588,7 +588,7 @@ mod tests {
         let (tx, rx, flush_tx, flush_rx, metrics, _epoch) =
             tts_channels(DEFAULT_MAX_PENDING_FRAMES);
         let bridge = TtsBridge::new(rx, flush_rx, metrics, -12.0);
-        let core = OutputCore::new(4, 7);
+        let core = OutputCore::new(4);
         (bridge, core, tx, flush_tx)
     }
 
@@ -714,7 +714,7 @@ mod tests {
     fn bridge_enforces_pending_budget() {
         let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(8); // 8-frame budget
         let mut bridge = TtsBridge::new(rx, flush_rx, metrics.clone(), -12.0);
-        let mut core = OutputCore::new(4, 7);
+        let mut core = OutputCore::new(4);
         let _ = flush_tx;
         send(&tx, 0, TtsCommand::Audio(vec![1i16; 16])); // 8 frames: fits
         send(&tx, 0, TtsCommand::Audio(vec![1i16; 16])); // 8 more: over budget

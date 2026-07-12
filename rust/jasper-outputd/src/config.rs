@@ -27,7 +27,6 @@ pub const MAX_CONTENT_BRIDGE_TARGET_FRAMES: u32 = 65_536;
 pub const DEFAULT_CHIP_REF_SAMPLE_RATE: u32 = 16_000;
 pub const DEFAULT_CHIP_REF_PERIOD_FRAMES: u32 = 320;
 pub const DEFAULT_CHIP_REF_BUFFER_FRAMES: u32 = 1280;
-pub const DEFAULT_STREAM_ID: u64 = 1;
 pub const DEFAULT_DUAL_MAX_DELAY_DELTA_FRAMES: i64 = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +159,6 @@ pub struct Config {
     pub chip_ref_observe: bool,
     pub chip_ref_tee_path: Option<String>,
     pub reference_udp_target: Option<String>,
-    pub stream_id: u64,
     pub control_socket_path: Option<String>,
     /// OPTIONAL multi-room round-trip lane (Increment 3,
     /// HANDOFF-multiroom.md §2): a raw-PCM FIFO a grouping member's
@@ -607,7 +605,6 @@ impl Config {
             chip_ref_observe: env_bool("JASPER_OUTPUTD_CHIP_REF_OBSERVE", false),
             chip_ref_tee_path: env_optional("JASPER_OUTPUTD_CHIP_REF_TEE_PATH"),
             reference_udp_target: env_optional("JASPER_OUTPUTD_REFERENCE_UDP_TARGET"),
-            stream_id: env_u64("JASPER_OUTPUTD_STREAM_ID", DEFAULT_STREAM_ID)?,
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
             dac_content_fifo,
             dac_content_channel,

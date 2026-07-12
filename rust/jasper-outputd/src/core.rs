@@ -8,7 +8,6 @@ use crate::fake::{FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentWr
 use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEGMENT_RETENTION};
 use crate::loudness::{AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig};
 use crate::mixer::{gain_db_to_linear, mix_i16_saturating, sanitize_tts_gain_db};
-use crate::reference::{ConsumerId, ReferenceFanout};
 use crate::types::{AssistantProfile, AudioFormat, SegmentKind, CHANNELS, SAMPLE_RATE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +23,7 @@ pub struct OutputCore {
     content: FakeContentSource,
     assistant: FakeAssistantSource,
     dac: FakeDacSink,
-    reference: ReferenceFanout,
+    next_reference_sequence: u64,
     ledger: PlayoutLedger,
     loudness: AssistantLoudness,
     content_buf: Vec<i16>,
@@ -39,15 +38,15 @@ pub struct OutputCore {
 }
 
 impl OutputCore {
-    pub fn new(period_frames: u32, stream_id: u64) -> Self {
-        Self::with_dac(period_frames, stream_id, FakeDacSink::new())
+    pub fn new(period_frames: u32) -> Self {
+        Self::with_dac(period_frames, FakeDacSink::new())
     }
 
-    pub fn new_for_daemon(period_frames: u32, stream_id: u64) -> Self {
-        Self::with_dac(period_frames, stream_id, FakeDacSink::discarding())
+    pub fn new_for_daemon(period_frames: u32) -> Self {
+        Self::with_dac(period_frames, FakeDacSink::discarding())
     }
 
-    fn with_dac(period_frames: u32, stream_id: u64, dac: FakeDacSink) -> Self {
+    fn with_dac(period_frames: u32, dac: FakeDacSink) -> Self {
         assert!(period_frames > 0, "period frames must be > 0");
         let format = AudioFormat::default();
         let period_samples = format.samples_for_frames(period_frames);
@@ -57,7 +56,7 @@ impl OutputCore {
             content: FakeContentSource::new(),
             assistant: FakeAssistantSource::new(CHANNELS as usize),
             dac,
-            reference: ReferenceFanout::new(stream_id, format, period_frames),
+            next_reference_sequence: 0,
             ledger: PlayoutLedger::new(SAMPLE_RATE),
             loudness: AssistantLoudness::new(AssistantLoudnessConfig::default()),
             content_buf: vec![0; period_samples],
@@ -70,14 +69,6 @@ impl OutputCore {
             frames_written: 0,
             monotonic_ns: 0,
         }
-    }
-
-    pub fn add_reference_consumer(
-        &mut self,
-        name: impl Into<String>,
-        capacity_packets: usize,
-    ) -> ConsumerId {
-        self.reference.add_consumer(name, capacity_packets)
     }
 
     pub fn push_content_period(&mut self, samples: Vec<i16>) {
@@ -212,12 +203,8 @@ impl OutputCore {
         self.ledger
             .prune_terminal_segments(DEFAULT_TERMINAL_SEGMENT_RETENTION);
 
-        let published = self.reference.publish(
-            &self.output_buf,
-            self.period_frames,
-            self.pending_clipped_samples,
-            self.monotonic_ns,
-        );
+        let reference_sequence = self.next_reference_sequence;
+        self.next_reference_sequence = self.next_reference_sequence.saturating_add(1);
         self.frames_written = accepted_end_frame;
         self.monotonic_ns +=
             (self.period_frames as u64) * 1_000_000_000u64 / (self.format.sample_rate as u64);
@@ -226,7 +213,7 @@ impl OutputCore {
         PeriodReport {
             frames_written: self.frames_written,
             clipped_samples: self.pending_clipped_samples,
-            reference_sequence: published.sequence,
+            reference_sequence,
         }
     }
 
@@ -236,13 +223,6 @@ impl OutputCore {
         self.ledger
             .prune_terminal_segments(DEFAULT_TERMINAL_SEGMENT_RETENTION);
         events
-    }
-
-    pub fn drain_reference_consumer(
-        &mut self,
-        id: ConsumerId,
-    ) -> Vec<crate::types::ReferencePacket> {
-        self.reference.drain_consumer(id)
     }
 
     pub fn dac(&self) -> &FakeDacSink {
@@ -344,9 +324,8 @@ mod tests {
     }
 
     #[test]
-    fn step_mixes_content_and_assistant_to_dac_and_reference() {
-        let mut core = OutputCore::new(4, 99);
-        let consumer = core.add_reference_consumer("aec", 4);
+    fn step_mixes_content_and_assistant_and_advances_reference_sequence() {
+        let mut core = OutputCore::new(4);
         core.push_content_period(stereo(10_000, 4));
         core.enqueue_assistant_segment(
             Some("item-1".to_string()),
@@ -360,14 +339,11 @@ mod tests {
         assert_eq!(report.reference_sequence, 0);
         assert_eq!(report.clipped_samples, 0);
         assert_eq!(core.dac().periods[0], stereo(10_839, 4));
-        let reference = core.drain_reference_consumer(consumer);
-        assert_eq!(reference.len(), 1);
-        assert_eq!(reference[0].samples, stereo(10_839, 4));
     }
 
     #[test]
     fn step_reports_clipping_and_preserves_sequence_numbers() {
-        let mut core = OutputCore::new(2, 99);
+        let mut core = OutputCore::new(2);
         core.push_content_period(stereo(30_000, 2));
         core.enqueue_assistant_segment(None, SegmentKind::Cue, 12.0, stereo(30_000, 2));
 
@@ -381,7 +357,7 @@ mod tests {
 
     #[test]
     fn outputd_uses_loudness_decided_assistant_gain_before_mixing() {
-        let mut core = OutputCore::new(2, 99);
+        let mut core = OutputCore::new(2);
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
@@ -402,7 +378,7 @@ mod tests {
 
     #[test]
     fn step_with_content_period_uses_caller_supplied_content() {
-        let mut core = OutputCore::new(2, 99);
+        let mut core = OutputCore::new(2);
 
         let report = core.step_with_content_period(&stereo(123, 2));
 
@@ -413,7 +389,7 @@ mod tests {
 
     #[test]
     fn pending_assistant_frames_tracks_queue_depth() {
-        let mut core = OutputCore::new(2, 99);
+        let mut core = OutputCore::new(2);
         core.enqueue_assistant_segment(None, SegmentKind::Assistant, -6.0, stereo(100, 4));
 
         assert_eq!(core.pending_assistant_frames(), 4);
@@ -425,8 +401,7 @@ mod tests {
 
     #[test]
     fn prepare_does_not_publish_or_mark_playout_until_commit() {
-        let mut core = OutputCore::new(2, 99);
-        let consumer = core.add_reference_consumer("aec", 4);
+        let mut core = OutputCore::new(2);
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
@@ -440,7 +415,6 @@ mod tests {
         assert_eq!(core.output_period(), stereo(939, 2).as_slice());
         assert_eq!(core.frames_written(), 0);
         assert!(core.dac().periods.is_empty());
-        assert!(core.drain_reference_consumer(consumer).is_empty());
         assert_eq!(core.ledger().segment(segment).written_frames, 0);
         assert_eq!(
             core.ledger().segment(segment).status,
@@ -452,7 +426,6 @@ mod tests {
         assert_eq!(report.frames_written, 2);
         assert_eq!(report.reference_sequence, 0);
         assert_eq!(core.dac().periods[0], stereo(939, 2));
-        assert_eq!(core.drain_reference_consumer(consumer).len(), 1);
         assert_eq!(core.ledger().segment(segment).written_frames, 2);
         assert_eq!(
             core.ledger().segment(segment).status,
@@ -462,7 +435,7 @@ mod tests {
 
     #[test]
     fn dac_delay_defers_playout_drain_accounting() {
-        let mut core = OutputCore::new(48, 99);
+        let mut core = OutputCore::new(48);
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
@@ -488,7 +461,7 @@ mod tests {
 
     #[test]
     fn steady_state_reuses_segment_write_buffer_capacity() {
-        let mut core = OutputCore::new(2, 99);
+        let mut core = OutputCore::new(2);
         core.enqueue_assistant_segment(None, SegmentKind::Assistant, -6.0, stereo(1000, 8));
 
         core.step();
@@ -501,7 +474,7 @@ mod tests {
 
     #[test]
     fn daemon_core_does_not_retain_fake_dac_history() {
-        let mut core = OutputCore::new_for_daemon(2, 99);
+        let mut core = OutputCore::new_for_daemon(2);
 
         core.step();
         core.step();
@@ -511,7 +484,7 @@ mod tests {
 
     #[test]
     fn resuming_content_meter_clears_prepared_loudness_context() {
-        let mut core = OutputCore::new(2, 99);
+        let mut core = OutputCore::new(2);
         core.prepare_assistant_context(
             "openai".to_string(),
             "gpt-realtime-2".to_string(),
@@ -549,7 +522,7 @@ mod tests {
 
     #[test]
     fn flush_clears_queued_assistant_audio_and_reports_played_ms() {
-        let mut core = OutputCore::new(48, 99);
+        let mut core = OutputCore::new(48);
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
