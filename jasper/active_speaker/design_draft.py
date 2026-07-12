@@ -22,6 +22,7 @@ from typing import Any, Mapping
 from jasper.atomic_io import atomic_write_text
 from jasper.output_topology import OutputTopology
 from ._common import issue as _issue
+from .profile import SUPPORTED_POLARITY
 
 SCHEMA_VERSION = 1
 DESIGN_DRAFT_KIND = "jts_active_speaker_design_draft"
@@ -124,6 +125,23 @@ def _positive_float(raw: Any, field_name: str) -> float | None:
     out = _finite_float(raw, field_name)
     if out is not None and out <= 0:
         raise ActiveSpeakerDesignDraftError(f"{field_name} must be > 0")
+    return out
+
+
+def _polarity(raw: Any, field_name: str) -> str | None:
+    if raw is None or raw == "":
+        return None
+    value = _text(raw, field_name, max_chars=20)
+    if value not in SUPPORTED_POLARITY:
+        supported = ", ".join(sorted(SUPPORTED_POLARITY))
+        raise ActiveSpeakerDesignDraftError(f"{field_name} must be one of: {supported}")
+    return value
+
+
+def _delay_ms(raw: Any, field_name: str) -> float | None:
+    out = _finite_float(raw, field_name)
+    if out is not None and not 0.0 <= out <= 20.0:
+        raise ActiveSpeakerDesignDraftError(f"{field_name} must be between 0 and 20 ms")
     return out
 
 
@@ -297,6 +315,20 @@ def _normalise_candidate(raw: Any) -> dict[str, Any]:
         raise ActiveSpeakerDesignDraftError(
             "crossover_candidate.confidence must be low, medium, high, or unknown"
         )
+    delay_ms = _delay_ms(raw.get("delay_ms"), "crossover_candidate.delay_ms")
+    delay_target_role = None
+    if raw.get("delay_target_role") not in (None, ""):
+        delay_target_role = _role(
+            raw.get("delay_target_role"), "crossover_candidate.delay_target_role"
+        )
+        if delay_target_role not in roles:
+            raise ActiveSpeakerDesignDraftError(
+                "crossover_candidate.delay_target_role must be one of between_roles"
+            )
+    if delay_ms is not None and delay_target_role is None:
+        raise ActiveSpeakerDesignDraftError(
+            "crossover_candidate.delay_target_role is required when delay_ms is set"
+        )
     candidate: dict[str, Any] = {
         "between_roles": roles,
         "frequency_hz": _positive_float(
@@ -323,6 +355,18 @@ def _normalise_candidate(raw: Any) -> dict[str, Any]:
             "crossover_candidate.warnings",
             limit=8,
         ),
+        # Persisted working-crossover values (Slice 0): the operator's/preview's
+        # own polarity and relative-delay intent for this driver pair. Distinct
+        # from any future MEASURED delay-walk verdict — see
+        # docs/active-crossover-information-design.md "Slice 0".
+        "lower_polarity": _polarity(
+            raw.get("lower_polarity"), "crossover_candidate.lower_polarity"
+        ),
+        "upper_polarity": _polarity(
+            raw.get("upper_polarity"), "crossover_candidate.upper_polarity"
+        ),
+        "delay_ms": delay_ms,
+        "delay_target_role": delay_target_role,
     }
     return {key: value for key, value in candidate.items() if value not in (None, [])}
 

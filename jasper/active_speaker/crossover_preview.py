@@ -384,7 +384,28 @@ def _build_crossover(
             },
         ]
 
-    return {
+    # Persisted working-crossover values (Slice 0): copy polarity/delay from the
+    # candidate, absent-in -> absent-out. The candidate's own ``lower_polarity``/
+    # ``upper_polarity`` describe ``candidate["between_roles"][0]``/``[1]`` — the
+    # frozenset lookup above loses that order, so realign to THIS function's own
+    # (lower_role, upper_role) convention before copying, or a reversed candidate
+    # would silently swap which driver gets inverted.
+    lower_polarity: str | None = None
+    upper_polarity: str | None = None
+    delay_ms: float | None = None
+    delay_target_role: str | None = None
+    if candidate is not None:
+        candidate_between = candidate.get("between_roles")
+        if candidate_between == [lower_role, upper_role]:
+            lower_polarity = candidate.get("lower_polarity")
+            upper_polarity = candidate.get("upper_polarity")
+        elif candidate_between == [upper_role, lower_role]:
+            lower_polarity = candidate.get("upper_polarity")
+            upper_polarity = candidate.get("lower_polarity")
+        delay_ms = candidate.get("delay_ms")
+        delay_target_role = candidate.get("delay_target_role")
+
+    out: dict[str, Any] = {
         "id": f"{group_id}:{lower_role}-{upper_role}",
         "between_roles": [lower_role, upper_role],
         "status": (
@@ -397,10 +418,19 @@ def _build_crossover(
         "proposed_frequency_hz": (
             round(proposed_frequency, 2) if proposed_frequency is not None else None
         ),
-        "do_not_test_below_hz": round(do_not_test, 2) if do_not_test is not None else None,
-        "filters": filters,
-        "issues": issues,
     }
+    if lower_polarity is not None:
+        out["lower_polarity"] = lower_polarity
+    if upper_polarity is not None:
+        out["upper_polarity"] = upper_polarity
+    if delay_ms is not None:
+        out["delay_ms"] = delay_ms
+    if delay_target_role is not None:
+        out["delay_target_role"] = delay_target_role
+    out["do_not_test_below_hz"] = round(do_not_test, 2) if do_not_test is not None else None
+    out["filters"] = filters
+    out["issues"] = issues
+    return out
 
 
 def build_crossover_preview(

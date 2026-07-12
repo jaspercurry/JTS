@@ -352,6 +352,10 @@ class CrossoverRegion:
     lower_polarity: str = "non-inverted"
     upper_polarity: str = "non-inverted"
     delay_target_driver: str | None = None
+    # The working (persisted, first-class) relative delay value for
+    # ``delay_target_driver`` — distinct from ``delay_range_ms`` below, which is
+    # only a SEARCH BOUND for a future measured delay walk, never a value.
+    delay_ms: float | None = None
     delay_range_ms: tuple[float, float] = (0.0, 1.0)
     null_depth_threshold_db: float = 25.0
 
@@ -378,6 +382,11 @@ class CrossoverRegion:
             delay_target_driver=(
                 _require_id(raw.get("delay_target_driver"), "crossover.delay_target_driver")
                 if raw.get("delay_target_driver") not in {None, ""}
+                else None
+            ),
+            delay_ms=(
+                _finite_float(raw.get("delay_ms"), "crossover.delay_ms")
+                if raw.get("delay_ms") not in {None, ""}
                 else None
             ),
             delay_range_ms=(
@@ -415,6 +424,13 @@ class CrossoverRegion:
             raise ActiveSpeakerConfigError(
                 "delay_target_driver must be one of the crossover drivers"
             )
+        if self.delay_ms is not None:
+            if not 0.0 <= self.delay_ms <= 20.0:
+                raise ActiveSpeakerConfigError("delay_ms must be between 0 and 20 ms")
+            if self.delay_target_driver is None:
+                raise ActiveSpeakerConfigError(
+                    "delay_target_driver is required when delay_ms is set"
+                )
         lo, hi = self.delay_range_ms
         if lo < 0 or hi < 0 or lo > hi or hi > 20:
             raise ActiveSpeakerConfigError(
@@ -424,7 +440,7 @@ class CrossoverRegion:
             raise ActiveSpeakerConfigError("null depth threshold is too weak")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "id": self.id,
             "lower_driver": self.lower_driver,
             "upper_driver": self.upper_driver,
@@ -437,6 +453,11 @@ class CrossoverRegion:
             "delay_range_ms": list(self.delay_range_ms),
             "null_depth_threshold_db": self.null_depth_threshold_db,
         }
+        # Emit only when set, so a region with no persisted working delay stays
+        # byte-identical to every pre-existing preset/region dict fixture.
+        if self.delay_ms is not None:
+            out["delay_ms"] = self.delay_ms
+        return out
 
 
 @dataclass(frozen=True)

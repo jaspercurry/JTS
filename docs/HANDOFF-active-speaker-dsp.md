@@ -285,9 +285,10 @@
 > fail closed for active driver commissioning and durable baseline apply. Ready
 > candidates apply through the
 > shared `dsp_apply` transaction and record applied
-> state. Optional subwoofer groups and multi-group
-> group-specific delay correction still fail closed or warn until later slices
-> add a verified compiler path for them.
+> state. Optional subwoofer groups and multi-group group-specific delay
+> correction still fail closed or warn until later slices add a verified
+> compiler path for them (superseded for the manual region-level
+> polarity/delay case — see the 2026-07-11 update below).
 > The clock-domain gate now distinguishes the normal single-device
 > path from the dual-Apple USB-C DAC 4-channel pair. The latter is the
 > `dual_apple_usb_c_dac_4ch` hardware profile: exactly two Apple child
@@ -563,6 +564,28 @@
 > JTS applies a −60 dB emergency fallback before releasing the measurement window
 > and reports the failure instead of resuming household audio silently at the
 > measurement level.
+
+> **Update, 2026-07-11 (polarity/delay persistence, Slice 0):** the "multi-group
+> group-specific delay correction still fail closed or warn" claim in the
+> 2026-06-03 entry above is now stale for the MANUAL (region-level, symmetric)
+> case. `CrossoverRegion` (`jasper.active_speaker.profile`) now carries polarity
+> (existing `lower_polarity`/`upper_polarity`) and a first-class `delay_ms`
+> working value, set on the crossover candidate/preview and carried through
+> `jasper.active_speaker.baseline_profile._derive_corrections` to `corrections`
+> on every apply — including a stereo (multi-group) topology, which previously
+> zeroed both unconditionally via the `group_specific_delay_not_applied` guard.
+> Precedence: automatic tuning + FRESH authorized measured alignment evidence
+> (a `latest_summed_by_group` record newer than the preview, `validated=True`)
+> overrides the persisted region value; manual tuning never consults measured
+> alignment evidence for these two sub-parameters at all, mirroring the
+> existing gain-pin rule. Each sub-parameter's source is reported in a new
+> `corrections_provenance` block (`manual`/`measured`/`recommended_start`/
+> `preserved`). Only MEASUREMENT-DERIVED per-group delay/polarity evidence
+> remains deferred: `group_specific_delay_not_applied` still fires (reworded to
+> name measurement-derived evidence specifically) when more than one group has
+> fresh summed alignment evidence for automatic tuning. See
+> [`active-crossover-information-design.md`](active-crossover-information-design.md)
+> "Slice 0" for the product framing.
 
 ## Current Operational Truth
 

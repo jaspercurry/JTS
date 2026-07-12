@@ -10,10 +10,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml as yaml_lib
 
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
+from jasper.active_speaker import emit_active_speaker_baseline_config
 from jasper.active_speaker.baseline_profile import (
+    PROVENANCE_MANUAL,
+    PROVENANCE_MEASURED,
+    PROVENANCE_PRESERVED,
+    PROVENANCE_RECOMMENDED_START,
     _derive_corrections,
+    _GAIN_SOURCE_TO_PROVENANCE,
+    _is_fresh_usable_summed_alignment,
     apply_baseline_profile,
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
@@ -27,10 +35,12 @@ from jasper.active_speaker.measurement import (
     record_summed_test_artifact,
     record_summed_validation,
 )
+from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from tests.test_active_speaker_profile import _two_way_preset
 
 
 def _topology(
@@ -2173,6 +2183,15 @@ def test_manual_migration_preserves_exact_applied_corrections(tmp_path: Path) ->
     assert {issue["code"] for issue in payload["issues"]} >= {
         "manual_crossover_preserved"
     }
+    # Wholesale carry-forward: every sub-parameter of every role is stamped
+    # "preserved", distinct from the legacy operator_pinned sources/
+    # gain_provenance stamping (kept byte-compatible) asserted below.
+    assert payload["corrections_provenance"] == {
+        role: {"gain_db": "preserved", "delay_ms": "preserved", "inverted": "preserved"}
+        for role in preserved
+    }
+    assert payload["corrections_source"] == {role: "operator_pinned" for role in preserved}
+    assert payload["gain_provenance"] == {role: "operator_pinned" for role in preserved}
 
 
 def test_manual_migration_refuses_unsafe_preserved_gain(tmp_path: Path) -> None:
@@ -2267,3 +2286,421 @@ def test_manual_migration_refuses_changed_crossover_preview(tmp_path: Path) -> N
     assert "manual_crossover_source_changed" in {
         issue["code"] for issue in payload["issues"]
     }
+
+
+# --- Persisted working-crossover values (Slice 0): polarity/delay ------------
+#
+# Precedence: [automatic tuning_owner + fresh authorized measured alignment
+# evidence] > [persisted working-crossover values from the preview/preset] >
+# [preserved_applied_profile carryover] > [schema defaults]. Manual tuning
+# never consults measured alignment evidence for these two sub-parameters —
+# mirrors the shipped gain rule that a manual pin is never silently replaced.
+
+
+def _duck_preset(*, way_count: int = 2, crossover_regions=()) -> SimpleNamespace:
+    """A minimal duck object exercising the SAME attributes _derive_corrections
+    reads (preset.way_count, preset.crossover_regions) — mirrors the existing
+    ``_derive_sensitivity_trims`` pattern above."""
+    return SimpleNamespace(way_count=way_count, crossover_regions=list(crossover_regions))
+
+
+def test_gain_source_to_provenance_migration_mapping_pinned():
+    # SC-3's migration table, verbatim: explicit/operator_pinned -> manual,
+    # measured -> measured, sensitivity/estimate -> recommended_start,
+    # none -> no entry (an untouched role makes no provenance claim).
+    assert _GAIN_SOURCE_TO_PROVENANCE["measured"] == PROVENANCE_MEASURED
+    assert _GAIN_SOURCE_TO_PROVENANCE["operator_pinned"] == PROVENANCE_MANUAL
+    assert _GAIN_SOURCE_TO_PROVENANCE["explicit"] == PROVENANCE_MANUAL
+    assert _GAIN_SOURCE_TO_PROVENANCE["sensitivity"] == PROVENANCE_RECOMMENDED_START
+    assert _GAIN_SOURCE_TO_PROVENANCE["estimate"] == PROVENANCE_RECOMMENDED_START
+    assert "none" not in _GAIN_SOURCE_TO_PROVENANCE
+
+
+def test_derive_corrections_manual_tier_sets_polarity_and_delay_from_region():
+    region = CrossoverRegion(
+        id="woofer_tweeter_2000hz",
+        lower_driver="woofer",
+        upper_driver="tweeter",
+        fc_hz=2000.0,
+        upper_polarity="inverted",
+        delay_target_driver="tweeter",
+        delay_ms=0.35,
+    )
+    preset = _duck_preset(crossover_regions=[region])
+
+    corrections, _issues, meta = _derive_corrections(preset, {}, {})
+
+    assert corrections["tweeter"]["inverted"] is True
+    assert corrections["tweeter"]["delay_ms"] == 0.35
+    assert corrections["woofer"]["inverted"] is False
+    assert corrections["woofer"]["delay_ms"] == 0.0
+    assert meta["corrections_provenance"]["tweeter"]["inverted"] == PROVENANCE_MANUAL
+    assert meta["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MANUAL
+    # "non-inverted" is indistinguishable from the schema default, so an
+    # untouched role makes no provenance claim (mirrors gain's "none").
+    assert "woofer" not in meta["corrections_provenance"]
+
+
+def test_derive_corrections_both_sides_inverted_is_schema_legal():
+    # Both lower and upper "inverted" in the same region is schema-legal — the
+    # preset author's intent, not a contradiction (net polarity is theirs to
+    # judge). Emit both inversions.
+    region = CrossoverRegion(
+        id="woofer_tweeter_2000hz",
+        lower_driver="woofer",
+        upper_driver="tweeter",
+        fc_hz=2000.0,
+        lower_polarity="inverted",
+        upper_polarity="inverted",
+    )
+    preset = _duck_preset(crossover_regions=[region])
+
+    corrections, _issues, _meta = _derive_corrections(preset, {}, {})
+
+    assert corrections["woofer"]["inverted"] is True
+    assert corrections["tweeter"]["inverted"] is True
+
+
+def test_baseline_config_emits_single_net_inversion_not_double():
+    """Regression for the double-inversion emit bug: a region's own polarity
+    AND ``corrections['inverted']`` both trace back to the SAME manual-tier
+    source (a preview-persisted "inverted" region), since
+    ``_derive_corrections`` reads the region to populate ``corrections``. If
+    ``emit_active_speaker_baseline_config``'s split mixer ALSO applied the
+    region's polarity (on top of the per-driver gain filter that reads
+    ``corrections``), the two inversions would cancel to a net non-inversion —
+    silently dropping the operator's intended polarity flip. The mixer must
+    stay a no-op inverter on this emit path; the gain filter is the sole
+    inverter.
+    """
+    raw = _two_way_preset()
+    raw["crossover_regions"][0]["upper_polarity"] = "inverted"
+    preset = ActiveSpeakerPreset.from_mapping(raw)
+
+    yaml_text = emit_active_speaker_baseline_config(
+        preset,
+        playback_device="hw:ActiveDAC",
+        corrections={
+            "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
+            "tweeter": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": True},
+        },
+    )
+    parsed = yaml_lib.safe_load(yaml_text)
+
+    # The per-driver baseline gain filter is the sole inverter.
+    assert parsed["filters"]["as_tweeter_baseline_gain"]["parameters"]["inverted"] is True
+    assert parsed["filters"]["as_woofer_baseline_gain"]["parameters"]["inverted"] is False
+    # The split mixer's source for the tweeter output does NOT also invert.
+    tweeter_index = next(
+        output.index
+        for output in preset.channel_map.outputs
+        if output.driver_role == "tweeter"
+    )
+    mixer = parsed["mixers"][f"split_active_{preset.way_count}way"]
+    dest = next(entry for entry in mixer["mapping"] if entry["dest"] == tweeter_index)
+    assert all(source["inverted"] is False for source in dest["sources"])
+
+
+# --- Spec-promise guard 1: trim-only apply preserves manual polarity/delay --
+
+
+def test_manual_apply_preserves_persisted_polarity_and_delay_against_trim_evidence(
+    tmp_path: Path,
+) -> None:
+    """A preview persists inverted-upper polarity + a 0.35 ms delay. Fresh
+    MEASURED gain-trim evidence (an unrelated sub-parameter) applies, and a
+    summed-validation record with CONFLICTING polarity/delay also exists — but
+    manual tuning_owner (the default) never consults it for these two
+    sub-parameters, so the persisted working values survive untouched."""
+    topology = _dual_apple_topology()
+    research = _research_with_sensitivity(
+        tweeter_gain_db=-15.0, tweeter_gain_provenance="operator_pinned",
+    )
+    research["crossover_candidates"][0].update({
+        "upper_polarity": "inverted",
+        "delay_ms": 0.35,
+        "delay_target_role": "tweeter",
+    })
+    draft = build_design_draft(
+        topology,
+        driver_research=research,
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    measurements = _acoustic_measurements(
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+    )
+    # A conflicting summed observation is present (mutating the SAME dict
+    # measurements["latest_summed_by_group"] aliases), but manual tuning must
+    # never consult it for delay/polarity.
+    summed = measurements["summary"]["latest_summed_validations"]["mono"]
+    summed["polarity"] = "invert_woofer"
+    summed["delay_ms"] = 5.0
+    summed["delay_target_role"] = "woofer"
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        created_at="2026-06-19T12:20:00Z",
+    )
+
+    assert payload["status"] == "ready_to_apply"
+    assert payload["tuning_owner"] == "manual"
+    # The trim (gain) evidence DID apply — proves this was a real trim-only
+    # apply, not just an absence of measurement.
+    assert payload["corrections_source"]["tweeter"] == "operator_pinned"
+    # The persisted polarity/delay survive, unaffected by the conflicting
+    # summed evidence.
+    assert payload["corrections"]["tweeter"]["inverted"] is True
+    assert payload["corrections"]["tweeter"]["delay_ms"] == 0.35
+    assert payload["corrections"]["woofer"]["inverted"] is False
+    assert payload["corrections_provenance"]["tweeter"]["inverted"] == PROVENANCE_MANUAL
+    assert payload["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MANUAL
+
+
+# --- Spec-promise guard 2: stereo apply does not zero persisted delay/inversion
+
+
+def test_derive_corrections_stereo_summed_evidence_does_not_zero_persisted_values():
+    region = CrossoverRegion(
+        id="woofer_tweeter_2000hz",
+        lower_driver="woofer",
+        upper_driver="tweeter",
+        fc_hz=2000.0,
+        lower_polarity="inverted",
+        upper_polarity="inverted",
+        delay_target_driver="tweeter",
+        delay_ms=0.35,
+    )
+    preset = _duck_preset(crossover_regions=[region])
+    crossover_preview = {"updated_at": "2026-06-19T12:10:00Z"}
+    # Two groups' worth of fresh, validated, CONFLICTING measured evidence —
+    # today this unconditionally zeroed delay/inversion for every role.
+    measurements = {
+        "latest_summed_by_group": {
+            "left": {
+                "validated": True,
+                "created_at": "2026-06-19T12:20:00Z",
+                "polarity": "invert_woofer",
+                "delay_ms": 5.0,
+                "delay_target_role": "woofer",
+            },
+            "right": {
+                "validated": True,
+                "created_at": "2026-06-19T12:20:00Z",
+                "polarity": "invert_woofer",
+                "delay_ms": 5.0,
+                "delay_target_role": "woofer",
+            },
+        },
+    }
+
+    corrections, issues, _meta = _derive_corrections(
+        preset, crossover_preview, measurements, tuning_owner="automatic",
+    )
+
+    # Every role's persisted (manual) delay/inversion survives untouched.
+    assert corrections["woofer"]["inverted"] is True
+    assert corrections["tweeter"]["inverted"] is True
+    assert corrections["tweeter"]["delay_ms"] == 0.35
+    warning = next(
+        issue for issue in issues if issue["code"] == "group_specific_delay_not_applied"
+    )
+    assert "measurement-derived" in warning["message"]
+
+
+def test_derive_corrections_manual_tuning_never_looks_at_summed_evidence_at_all():
+    # Same fixture as above but tuning_owner="manual": the guard/warning never
+    # fires because the measured branch is never entered.
+    region = CrossoverRegion(
+        id="woofer_tweeter_2000hz",
+        lower_driver="woofer",
+        upper_driver="tweeter",
+        fc_hz=2000.0,
+        lower_polarity="inverted",
+        upper_polarity="inverted",
+        delay_target_driver="tweeter",
+        delay_ms=0.35,
+    )
+    preset = _duck_preset(crossover_regions=[region])
+    crossover_preview = {"updated_at": "2026-06-19T12:10:00Z"}
+    measurements = {
+        "latest_summed_by_group": {
+            "left": {
+                "validated": True,
+                "created_at": "2026-06-19T12:20:00Z",
+                "polarity": "invert_woofer",
+                "delay_ms": 5.0,
+                "delay_target_role": "woofer",
+            },
+            "right": {
+                "validated": True,
+                "created_at": "2026-06-19T12:20:00Z",
+                "polarity": "invert_woofer",
+                "delay_ms": 5.0,
+                "delay_target_role": "woofer",
+            },
+        },
+    }
+
+    corrections, issues, _meta = _derive_corrections(
+        preset, crossover_preview, measurements, tuning_owner="manual",
+    )
+
+    assert corrections["woofer"]["inverted"] is True
+    assert corrections["tweeter"]["inverted"] is True
+    assert corrections["tweeter"]["delay_ms"] == 0.35
+    assert "group_specific_delay_not_applied" not in {
+        issue["code"] for issue in issues
+    }
+
+
+# --- Automatic + fresh authorized evidence vs. manual on the SAME evidence --
+
+
+def test_derive_corrections_automatic_fresh_evidence_overrides_persisted_delay_and_adds_polarity():
+    region = CrossoverRegion(
+        id="woofer_tweeter_2000hz",
+        lower_driver="woofer",
+        upper_driver="tweeter",
+        fc_hz=2000.0,
+        delay_target_driver="tweeter",
+        delay_ms=0.35,  # persisted (manual) delay
+    )
+    preset = _duck_preset(crossover_regions=[region])
+    crossover_preview = {"updated_at": "2026-06-19T12:10:00Z"}
+    measurements = {
+        "latest_summed_by_group": {
+            "mono": {
+                "validated": True,
+                "created_at": "2026-06-19T12:20:00Z",  # fresher than the preview
+                "polarity": "invert_woofer",
+                "delay_ms": 1.2,
+                "delay_target_role": "tweeter",
+            },
+        },
+    }
+
+    auto_corrections, _auto_issues, auto_meta = _derive_corrections(
+        preset, crossover_preview, measurements, tuning_owner="automatic",
+    )
+    manual_corrections, _manual_issues, manual_meta = _derive_corrections(
+        preset, crossover_preview, measurements, tuning_owner="manual",
+    )
+
+    # Automatic: fresh authorized evidence overrides the persisted delay and
+    # applies the measured inversion, both stamped "measured".
+    assert auto_corrections["tweeter"]["delay_ms"] == 1.2
+    assert auto_meta["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MEASURED
+    assert auto_corrections["woofer"]["inverted"] is True
+    assert auto_meta["corrections_provenance"]["woofer"]["inverted"] == PROVENANCE_MEASURED
+
+    # Manual: the SAME evidence is never consulted -> persisted delay stands
+    # and no inversion is added.
+    assert manual_corrections["tweeter"]["delay_ms"] == 0.35
+    assert manual_meta["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MANUAL
+    assert manual_corrections["woofer"]["inverted"] is False
+    assert "woofer" not in manual_meta["corrections_provenance"]
+
+
+def test_derive_corrections_stale_summed_evidence_never_overrides_manual_even_when_automatic():
+    # A summed record OLDER than the preview cannot be proven fresh -> the
+    # fail-closed predicate rejects it, so even automatic tuning keeps the
+    # persisted working value.
+    region = CrossoverRegion(
+        id="woofer_tweeter_2000hz",
+        lower_driver="woofer",
+        upper_driver="tweeter",
+        fc_hz=2000.0,
+        delay_target_driver="tweeter",
+        delay_ms=0.35,
+    )
+    preset = _duck_preset(crossover_regions=[region])
+    crossover_preview = {"updated_at": "2026-06-19T12:10:00Z"}
+    measurements = {
+        "latest_summed_by_group": {
+            "mono": {
+                "validated": True,
+                "created_at": "2026-06-19T12:00:00Z",  # OLDER than the preview
+                "polarity": "invert_woofer",
+                "delay_ms": 1.2,
+                "delay_target_role": "tweeter",
+            },
+        },
+    }
+
+    corrections, _issues, meta = _derive_corrections(
+        preset, crossover_preview, measurements, tuning_owner="automatic",
+    )
+
+    assert corrections["tweeter"]["delay_ms"] == 0.35
+    assert meta["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MANUAL
+    assert corrections["woofer"]["inverted"] is False
+
+
+def test_is_fresh_usable_summed_alignment_fails_closed_on_malformed_timestamps():
+    fresh_shaped = {"validated": True, "created_at": "2026-06-19T12:20:00Z"}
+    assert _is_fresh_usable_summed_alignment(fresh_shaped, "2026-06-19T12:10:00Z") is True
+    # Not validated.
+    assert _is_fresh_usable_summed_alignment(
+        {"validated": False, "created_at": "2026-06-19T12:20:00Z"},
+        "2026-06-19T12:10:00Z",
+    ) is False
+    # Missing/malformed created_at.
+    assert _is_fresh_usable_summed_alignment(
+        {"validated": True, "created_at": "not-a-timestamp"}, "2026-06-19T12:10:00Z",
+    ) is False
+    assert _is_fresh_usable_summed_alignment(
+        {"validated": True}, "2026-06-19T12:10:00Z",
+    ) is False
+    # Missing/malformed preview updated_at.
+    assert _is_fresh_usable_summed_alignment(fresh_shaped, None) is False
+    assert _is_fresh_usable_summed_alignment(fresh_shaped, "not-a-timestamp") is False
+    # Not a mapping at all.
+    assert _is_fresh_usable_summed_alignment("not-a-record", "2026-06-19T12:10:00Z") is False
+
+
+# --- corrections_provenance block on the candidate/applied payload ---------
+
+
+def test_corrections_provenance_present_on_candidate_and_applied_payload(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    research = _research_with_sensitivity()  # 25.2 dB gap, no explicit gain
+    research["crossover_candidates"][0].update({
+        "upper_polarity": "inverted",
+        "delay_ms": 0.4,
+        "delay_target_role": "tweeter",
+    })
+
+    payload = _baseline_payload(topology, research, tmp_path)
+
+    assert payload["status"] == "ready_to_apply"
+    provenance = payload["corrections_provenance"]
+    assert provenance["tweeter"]["gain_db"] == PROVENANCE_RECOMMENDED_START
+    assert provenance["tweeter"]["inverted"] == PROVENANCE_MANUAL
+    assert provenance["tweeter"]["delay_ms"] == PROVENANCE_MANUAL
+    assert "woofer" not in provenance
+    # Only the canonical vocabulary is ever used.
+    allowed = {
+        PROVENANCE_MANUAL,
+        PROVENANCE_MEASURED,
+        PROVENANCE_RECOMMENDED_START,
+        PROVENANCE_PRESERVED,
+    }
+    for role_entry in provenance.values():
+        assert set(role_entry.values()) <= allowed
+    # Legacy corrections_source / gain_provenance stay byte-compatible for
+    # this legacy-shaped fixture (no gain_offset_db_provenance anywhere).
+    assert payload["corrections_source"]["tweeter"] == "sensitivity"
+    assert payload["gain_provenance"] == {}
+    # The recomposition_snapshot (the frozen "applied" projection once this
+    # candidate is later applied) carries the same block.
+    assert payload["recomposition_snapshot"]["corrections_provenance"] == provenance
