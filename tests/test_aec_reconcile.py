@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -16,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from jasper.audio_profile_state import profile_env_updates
+from jasper.control import aec_endpoints
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
 from jasper.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
@@ -24,6 +26,41 @@ from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-aec-reconcile"
 VOICE_RESTART_CMD = "--no-block restart jasper-voice.service"
+
+
+def _control_leg_defaults() -> dict[str, str]:
+    """Return control's missing-key defaults in systemd-env form."""
+    return {
+        "JASPER_WAKE_LEG_RAW": "1" if aec_endpoints._LEG_DEFAULT_RAW else "0",
+        "JASPER_WAKE_LEG_DTLN": "1" if aec_endpoints._LEG_DEFAULT_DTLN else "0",
+        "JASPER_WAKE_LEG_CHIP_AEC": (
+            "1" if aec_endpoints._LEG_DEFAULT_CHIP_AEC else "0"
+        ),
+        "JASPER_WAKE_LEG_CHIP_AEC_150": (
+            "1" if aec_endpoints._LEG_DEFAULT_CHIP_AEC_150 else "0"
+        ),
+        "JASPER_WAKE_LEG_CHIP_AEC_210": (
+            "1" if aec_endpoints._LEG_DEFAULT_CHIP_AEC_210 else "0"
+        ),
+    }
+
+
+def _env_assignments(path: Path) -> dict[str, str]:
+    return dict(
+        line.split("=", 1)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line and not line.lstrip().startswith("#") and "=" in line
+    )
+
+
+def _shell_function_body(source: str, name: str) -> str:
+    match = re.search(
+        rf"^{re.escape(name)}\(\)\s*\{{\n(.*?)^\}}$",
+        source,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None, f"could not locate shell function {name}"
+    return match.group(1)
 
 
 def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
@@ -465,6 +502,41 @@ def test_ensure_mode_file_seeds_default_leg_keys(tmp_path: Path) -> None:
     assert "JASPER_AEC_MODE=auto" in body
     assert "JASPER_WAKE_LEG_RAW=1" in body
     assert "JASPER_WAKE_LEG_DTLN=0" in body
+
+
+@pytest.mark.parametrize("existing_mode", [None, "JASPER_AEC_MODE=disabled\n"])
+def test_reconciler_leg_defaults_match_control_fallback(
+    tmp_path: Path,
+    existing_mode: str | None,
+) -> None:
+    """Fresh and upgrade seeds must match control's pre-reconcile view.
+
+    ``jasper-control`` can read a missing or partial mode file before the
+    reconciler has seeded its keys. A drift here would make the API report
+    different operator intent from the state the reconciler subsequently
+    persists and applies.
+    """
+    if existing_mode is not None:
+        (tmp_path / "aec_mode.env").write_text(existing_mode, encoding="utf-8")
+    _write_env(tmp_path, "Array")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    actual = _env_assignments(tmp_path / "aec_mode.env")
+    expected = _control_leg_defaults()
+    assert {key: actual.get(key) for key in expected} == expected
+
+
+def test_install_leg_seed_matches_control_fallback() -> None:
+    """The install-time seed and control's missing-file view stay aligned."""
+    install = (ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
+    function = _shell_function_body(install, "reconcile_aec_state")
+    key_pattern = "|".join(re.escape(key) for key in _control_leg_defaults())
+    pairs = re.findall(rf"({key_pattern})=([01])\\n", function)
+
+    assert len(pairs) == len(_control_leg_defaults()), pairs
+    assert dict(pairs) == _control_leg_defaults()
 
 
 def test_reconcile_preserves_existing_mode_file_dir_mode(tmp_path: Path) -> None:
