@@ -161,6 +161,70 @@ def test_manual_driver_notes_use_same_bound():
         build_design_draft(_topology(), manual_settings=manual_settings)
 
 
+def test_research_and_manual_drivers_share_field_normalisation() -> None:
+    common = {
+        "role": "woofer",
+        "model": "Shared Model",
+        "manufacturer": "Example Audio",
+        "nominal_impedance_ohm": 4,
+        "sensitivity_db_2v83_1m": 88.5,
+        "usable_frequency_range_hz": [40, 4500],
+        "recommended_highpass_hz": 35,
+        "recommended_lowpass_hz": 2600,
+        "do_not_test_below_hz": 25,
+        "gain_offset_db": -2.5,
+        "notes": "same normalized fields",
+        "sources": ["https://example.test/woofer"],
+    }
+    research = _research()
+    research["drivers"] = [common]
+    research["crossover_candidates"] = []
+    research_driver = build_design_draft(
+        _topology(),
+        driver_research=research,
+    )["driver_research"]["drivers"][0]
+    manual_driver = build_design_draft(
+        _topology(),
+        manual_settings={"drivers": [common], "crossover_candidates": []},
+    )["manual_settings"]["drivers"][0]
+
+    assert research_driver["gain_offset_db_provenance"] == "research_estimate"
+    assert manual_driver["gain_offset_db_provenance"] == "operator_pinned"
+    assert research_driver["sources"] == ["https://example.test/woofer"]
+    assert "sources" not in manual_driver
+    for field in common.keys() - {"sources"}:
+        assert research_driver[field] == manual_driver[field]
+
+
+def test_research_requires_model_while_manual_driver_does_not() -> None:
+    research = _research()
+    research["drivers"][0].pop("model")
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match=r"^driver\.model is required$",
+    ):
+        build_design_draft(_topology(), driver_research=research)
+
+    payload = build_design_draft(
+        _topology(),
+        manual_settings={
+            "drivers": [
+                {
+                    "role": "woofer",
+                    "notes": "operator knows the installed driver",
+                    "sources": ["https://example.test/not-retained"],
+                }
+            ],
+            "crossover_candidates": [],
+        },
+    )
+    manual_driver = payload["manual_settings"]["drivers"][0]
+    assert manual_driver["role"] == "woofer"
+    assert manual_driver["notes"] == "operator knows the installed driver"
+    assert "model" not in manual_driver
+    assert "sources" not in manual_driver
+
+
 def test_manual_crossover_settings_can_replace_ai_research():
     payload = build_design_draft(
         _topology(),
