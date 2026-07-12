@@ -208,6 +208,118 @@ def test_proposal_round_trips_to_dict():
 
 
 # ===========================================================================
+# propose_crossover_alignment — the alignment-SNR degradation gate (P1b)
+# ===========================================================================
+#
+# A second, independent gate on top of the calibrated-mic (phase_aware) gate:
+# even a calibrated capture needs enough overlap-band SNR to trust a
+# null/alignment call. alignment_snr_ok=False (real evidence proved the
+# overlap SNR insufficient) or null_depth_capped=True (the measured depth
+# itself wasn't fully provable) must never let a keep/invert action or an
+# "aligned" delay status through — the spec-promise guard: "the alignment
+# verdict degrades to review — never aligned". alignment_snr_ok=None (the
+# default, and the only value any caller passes today) must NOT degrade —
+# every test above this section already pins that by never setting it.
+
+
+def test_alignment_snr_insufficient_degrades_keep_to_review():
+    # Same evidence as test_polarity_keep_when_reverse_null_is_much_deeper
+    # (margin=14 >= POLARITY_MARGIN_DB, flat blend), but the overlap-band SNR
+    # was confirmed insufficient.
+    p = _propose(
+        in_phase_null_depth_db=2.0, reverse_null_depth_db=16.0,
+        alignment_snr_ok=False,
+    )
+    assert p.authorized is True  # the mic IS calibrated; phase_aware still granted
+    assert p.polarity_action == ca.POLARITY_REVIEW
+    assert p.polarity == "normal"
+    assert p.delay_status == ca.DELAY_UNKNOWN  # would have been ALIGNED
+    # The raw evidence is untouched — only the action/status are downgraded.
+    assert p.polarity_margin_db == pytest.approx(14.0)
+    assert p.summed_blend == ca.BLEND_FLAT
+    assert any(i["code"] == "alignment_snr_insufficient" for i in p.issues)
+
+
+def test_alignment_snr_insufficient_degrades_invert_to_review():
+    # Same evidence as test_polarity_invert_when_in_phase_null_is_much_deeper.
+    p = _propose(
+        in_phase_null_depth_db=15.0, reverse_null_depth_db=2.0,
+        alignment_snr_ok=False,
+    )
+    assert p.polarity_action == ca.POLARITY_REVIEW
+    # The degraded candidate polarity string is reset to "normal" — a
+    # "review" action never leaves a still-standing "invert_X" recommendation
+    # for a naive consumer to apply.
+    assert p.polarity == "normal"
+    assert any(i["code"] == "alignment_snr_insufficient" for i in p.issues)
+
+
+def test_alignment_snr_ok_true_preserves_existing_margin_behavior():
+    # alignment_snr_ok=True is explicitly "all existing margin-based cases
+    # are unchanged" — identical outcome to the baseline (no alignment_snr_ok)
+    # tests above, plus no alignment_snr_insufficient issue.
+    baseline = _propose(in_phase_null_depth_db=2.0, reverse_null_depth_db=16.0)
+    trusted = _propose(
+        in_phase_null_depth_db=2.0, reverse_null_depth_db=16.0,
+        alignment_snr_ok=True,
+    )
+    assert trusted.polarity_action == baseline.polarity_action == ca.POLARITY_KEEP
+    assert trusted.delay_status == baseline.delay_status == ca.DELAY_ALIGNED
+    assert not any(i["code"] == "alignment_snr_insufficient" for i in trusted.issues)
+
+
+def test_alignment_snr_unknown_default_does_not_degrade():
+    # alignment_snr_ok left at its default (None, "unknown/no evidence") must
+    # NOT degrade — it preserves today's shipped behavior, since no caller
+    # currently supplies a real verdict.
+    p = _propose(in_phase_null_depth_db=2.0, reverse_null_depth_db=16.0)
+    assert p.polarity_action == ca.POLARITY_KEEP
+    assert p.delay_status == ca.DELAY_ALIGNED
+    assert not any(i["code"] == "alignment_snr_insufficient" for i in p.issues)
+
+
+def test_null_depth_capped_degrades_even_when_snr_ok():
+    # null_depth_capped is an INDEPENDENT trigger: even a confirmed-ok overlap
+    # SNR (alignment_snr_ok=True) does not save a capped-depth proposal — the
+    # specific measured number wasn't fully provable.
+    p = _propose(
+        in_phase_null_depth_db=2.0, reverse_null_depth_db=16.0,
+        alignment_snr_ok=True, null_depth_capped=True,
+    )
+    assert p.polarity_action == ca.POLARITY_REVIEW
+    assert p.delay_status == ca.DELAY_UNKNOWN
+    assert any(i["code"] == "alignment_snr_insufficient" for i in p.issues)
+
+
+def test_degradation_never_returns_aligned_delay_or_keep_invert_action():
+    """The spec-promise guard, swept across every combination that would
+    otherwise have produced keep/invert/aligned: alignment_snr_ok=False can
+    never let DELAY_ALIGNED or {KEEP, INVERT} through."""
+    scenarios = [
+        {"in_phase_null_depth_db": 2.0, "reverse_null_depth_db": 16.0},  # keep
+        {"in_phase_null_depth_db": 15.0, "reverse_null_depth_db": 2.0},  # invert
+        {"in_phase_null_depth_db": 2.0},  # in-phase-only keep-tentative
+        {"reverse_null_depth_db": 14.0},  # reverse-only keep-tentative
+    ]
+    for kwargs in scenarios:
+        p = _propose(alignment_snr_ok=False, **kwargs)
+        assert p.polarity_action not in (ca.POLARITY_KEEP, ca.POLARITY_INVERT)
+        assert p.delay_status != ca.DELAY_ALIGNED
+
+
+def test_magnitude_only_proposal_unaffected_by_alignment_snr_gate():
+    # magnitude_only is already unauthorized (a separate, prior gate); the
+    # alignment-SNR gate must not change that shape or double up issues.
+    p = _propose(
+        mode=ca.MAGNITUDE_ONLY, in_phase_null_depth_db=2.0,
+        reverse_null_depth_db=16.0, alignment_snr_ok=False,
+    )
+    assert p.authorized is False
+    assert p.polarity_action == ca.POLARITY_REVIEW
+    assert [i["code"] for i in p.issues] == ["requires_calibrated_mic"]
+
+
+# ===========================================================================
 # analyze_driver_capture — calibration curve + surfaced FR (no arrival)
 # ===========================================================================
 

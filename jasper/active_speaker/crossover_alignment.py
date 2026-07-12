@@ -41,6 +41,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from jasper.audio_measurement.quality_model import DRIVER
+
 from .driver_acoustics import DEFAULT_NULL_THRESHOLD_DB
 
 # Measurement modes. magnitude_only is L1 (any mic); phase_aware is L2 and is
@@ -179,6 +181,34 @@ def _classify_blend(in_phase_null_depth_db: float | None) -> str:
     return BLEND_NULL if in_phase_null_depth_db >= DEFAULT_NULL_THRESHOLD_DB else BLEND_FLAT
 
 
+def _alignment_snr_issue(null_depth_capped: bool) -> dict[str, str]:
+    """The ``alignment_snr_insufficient`` issue for a degraded proposal.
+
+    Only called when the caller's degradation condition
+    (``alignment_snr_ok is False or null_depth_capped``) held, so exactly one
+    of those two is why — ``null_depth_capped`` is checked first because a
+    capped depth is the more specific, actionable fact. Names the REQUIRED
+    overlap-band SNR (a known constant, ``DRIVER.alignment_snr_ok_db``) — the
+    ACHIEVED dB is not known here (this function receives only the
+    boolean/capped verdict, not the raw number; see
+    :func:`jasper.audio_measurement.snr_policy.band_snr_verdicts` for the
+    per-band figures), so it is not claimed.
+    """
+    required = DRIVER.alignment_snr_ok_db
+    if null_depth_capped:
+        detail = (
+            f"the measured null is deeper than the overlap-band SNR can prove "
+            f"(needs roughly {required:.0f} dB there)"
+        )
+    else:
+        detail = f"overlap-band SNR is below the ~{required:.0f} dB alignment needs"
+    return _issue(
+        "warning",
+        "alignment_snr_insufficient",
+        f"polarity/delay downgraded to review: {detail}",
+    )
+
+
 def propose_crossover_alignment(
     *,
     mode: str,
@@ -187,6 +217,8 @@ def propose_crossover_alignment(
     upper_role: str,
     in_phase_null_depth_db: float | None = None,
     reverse_null_depth_db: float | None = None,
+    alignment_snr_ok: bool | None = None,
+    null_depth_capped: bool = False,
 ) -> CrossoverAlignmentProposal:
     """Propose crossover polarity (+ a delay status) from calibrated null evidence.
 
@@ -204,6 +236,29 @@ def propose_crossover_alignment(
 
     The delay STATUS is read straight from the in-phase null (flat = time-aligned;
     deep null = needs the alignment walk); the delay VALUE is the walk's job.
+
+    A SECOND, independent gate sits on top of the calibrated-mic gate: even a
+    calibrated (``phase_aware``) capture needs enough overlap-band SNR to trust
+    a null/alignment call (see "Level control and SNR" in
+    docs/active-crossover-information-design.md and
+    ``jasper.audio_measurement.snr_policy``). ``alignment_snr_ok`` carries that
+    verdict — ``True`` only when a real per-band SNR reading cleared the
+    stricter alignment threshold, ``False`` only when real evidence proved it
+    insufficient. ``None`` — the default, and the value every caller passes
+    today, since the ambient-noise capture flow that would produce a real
+    verdict is not wired up yet — means unknown/no evidence and DELIBERATELY
+    does not degrade: it preserves the shipped margin/blend behavior rather
+    than silently degrading every proposal the moment this parameter existed.
+    When ``alignment_snr_ok is False``: any ``keep``/``invert`` polarity action
+    downgrades to ``review``, and ``delay_status`` can never read ``aligned``
+    (downgrades to ``unknown``). ``null_depth_capped`` (either contributing
+    null depth was capped — see
+    :func:`jasper.audio_measurement.snr_policy.cap_null_depth_db`) forces the
+    same downgrade independently, even when ``alignment_snr_ok`` is ``True``:
+    a capped depth is, by construction, not fully proven. The margin/blend
+    classification above is computed from the RAW depths regardless — only
+    the outward action/status are downgraded, so the evidence stays visible
+    for review.
     """
     blend = _classify_blend(in_phase_null_depth_db)
     margin = (
@@ -319,6 +374,37 @@ def propose_crossover_alignment(
         ))
     else:
         delay_status = DELAY_UNKNOWN
+
+    # Second, independent gate: even a calibrated capture needs enough
+    # overlap-band SNR to trust a null/alignment call (see "Level control and
+    # SNR" in docs/active-crossover-information-design.md). A CONFIRMED
+    # insufficient SNR (alignment_snr_ok is False) or a capped null depth
+    # (the measured number itself wasn't fully provable) may not produce a
+    # confident keep/invert or an "aligned" delay status — degrade to review
+    # / unknown instead. alignment_snr_ok=None ("unknown/no evidence" — the
+    # default, and the only value any caller passes today, since the ambient-
+    # noise capture flow that would produce a real verdict is not wired up
+    # yet) deliberately does NOT degrade: it preserves the shipped
+    # margin/blend behavior rather than silently degrading every proposal the
+    # moment this parameter existed. This never TIGHTENS the margin/blend
+    # classification above (computed from the raw depths); it only
+    # downgrades the outward action/status so the evidence stays visible.
+    if alignment_snr_ok is False or null_depth_capped:
+        degraded = False
+        if action in (POLARITY_KEEP, POLARITY_INVERT):
+            action = POLARITY_REVIEW
+            # A "review" action always pairs with polarity="normal" elsewhere
+            # in this function (every OTHER path that sets POLARITY_REVIEW
+            # never touches polarity); reset it here too so a degraded
+            # candidate ("invert_tweeter") can't leak out looking like a
+            # still-standing recommendation.
+            polarity = "normal"
+            degraded = True
+        if delay_status == DELAY_ALIGNED:
+            delay_status = DELAY_UNKNOWN
+            degraded = True
+        if degraded:
+            issues.append(_alignment_snr_issue(null_depth_capped))
 
     return CrossoverAlignmentProposal(
         authorized=True,
