@@ -4587,6 +4587,98 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
     assert "jasper-usbgadget.service" not in flat
 
 
+@pytest.mark.parametrize(
+    "omitted",
+    (
+        "trim_db",
+        "client_latency_ms",
+        "left_delay_ms",
+        "right_delay_ms",
+        "crossover_hz",
+        "mains_highpass_enabled",
+        "subwoofer_present",
+    ),
+)
+def test_grouping_optional_field_parser_preserves_omission(omitted: str) -> None:
+    import jasper.control.server as srv_mod
+
+    body = {
+        "trim_db": -2.5,
+        "client_latency_ms": 11,
+        "left_delay_ms": 1.25,
+        "right_delay_ms": 0.5,
+        "crossover_hz": 90,
+        "mains_highpass_enabled": False,
+        "subwoofer_present": True,
+    }
+    body.pop(omitted)
+
+    parsed, error = srv_mod._parse_grouping_optional_fields(body)
+
+    assert error is None
+    assert parsed is not None
+    assert getattr(parsed, omitted) is None
+    for key, value in body.items():
+        assert getattr(parsed, key) == value
+
+
+def test_grouping_optional_numeric_parser_preserves_python_coercions() -> None:
+    import jasper.control.server as srv_mod
+
+    parsed, error = srv_mod._parse_grouping_optional_fields({
+        "trim_db": True,
+        "client_latency_ms": 2.9,
+        "left_delay_ms": "1.25",
+        "right_delay_ms": False,
+        "crossover_hz": "90",
+    })
+
+    assert error is None
+    assert parsed is not None
+    assert parsed.trim_db == 1.0
+    assert parsed.client_latency_ms == 2
+    assert parsed.left_delay_ms == 1.25
+    assert parsed.right_delay_ms == 0.0
+    assert parsed.crossover_hz == 90.0
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    (
+        ("trim_db", "loud", "trim_db must be a number"),
+        (
+            "client_latency_ms",
+            "soon",
+            "client_latency_ms must be an integer",
+        ),
+        ("left_delay_ms", {}, "left_delay_ms must be a number"),
+        ("right_delay_ms", None, "right_delay_ms must be a number"),
+        ("crossover_hz", "low", "crossover_hz must be a number"),
+        (
+            "mains_highpass_enabled",
+            "off",
+            "mains_highpass_enabled must be boolean",
+        ),
+        ("subwoofer_present", 1, "subwoofer_present must be boolean"),
+    ),
+)
+def test_grouping_set_optional_field_invalid_type_returns_exact_400(
+    field: str,
+    value: object,
+    message: str,
+    server_with_coordinator,
+) -> None:
+    base, _fake = server_with_coordinator
+
+    status, response = _post(
+        f"{base}/grouping/set",
+        {"enabled": False, field: value},
+    )
+
+    assert status == 400
+    assert response == {"error": message}
+
+
 def test_grouping_set_trim_settable_validated_and_preserved(
     monkeypatch, server_with_coordinator,
 ):

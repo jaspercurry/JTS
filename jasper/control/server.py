@@ -43,6 +43,7 @@ import signal
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1214,6 +1215,63 @@ def _is_trim_only_grouping_change(before: GroupingConfig, after: GroupingConfig)
     )
 
 
+@dataclass(frozen=True)
+class _GroupingOptionalFields:
+    trim_db: float | None
+    client_latency_ms: int | None
+    left_delay_ms: float | None
+    right_delay_ms: float | None
+    crossover_hz: float | None
+    mains_highpass_enabled: bool | None
+    subwoofer_present: bool | None
+
+
+def _parse_grouping_optional_fields(
+    body: dict[str, Any],
+) -> tuple[_GroupingOptionalFields | None, str | None]:
+    """Parse optional ``/grouping/set`` scalars without HTTP side effects.
+
+    Numeric fields intentionally retain Python ``int``/``float`` coercion;
+    the two flags retain their stricter JSON-boolean-only contract.
+    """
+    parsed: dict[str, Any] = {}
+    for key, caster, error in (
+        ("trim_db", float, "trim_db must be a number"),
+        (
+            "client_latency_ms",
+            int,
+            "client_latency_ms must be an integer",
+        ),
+        ("left_delay_ms", float, "left_delay_ms must be a number"),
+        ("right_delay_ms", float, "right_delay_ms must be a number"),
+        ("crossover_hz", float, "crossover_hz must be a number"),
+    ):
+        if key not in body:
+            continue
+        try:
+            parsed[key] = caster(body[key])
+        except (TypeError, ValueError):
+            return None, error
+
+    for key in ("mains_highpass_enabled", "subwoofer_present"):
+        if key not in body:
+            continue
+        value = body[key]
+        if not isinstance(value, bool):
+            return None, f"{key} must be boolean"
+        parsed[key] = value
+
+    return _GroupingOptionalFields(
+        trim_db=parsed.get("trim_db"),
+        client_latency_ms=parsed.get("client_latency_ms"),
+        left_delay_ms=parsed.get("left_delay_ms"),
+        right_delay_ms=parsed.get("right_delay_ms"),
+        crossover_hz=parsed.get("crossover_hz"),
+        mains_highpass_enabled=parsed.get("mains_highpass_enabled"),
+        subwoofer_present=parsed.get("subwoofer_present"),
+    ), None
+
+
 def _resolve_grouping_crossover_hz_for_write(
     *,
     channel: str,
@@ -2177,73 +2235,18 @@ def _make_handler(
             channel = str(body.get("channel", "")).strip()
             bond_id = str(body.get("bond_id", "")).strip()
             leader_addr = str(body.get("leader_addr", "")).strip()
-            trim_db: float | None = None
-            if "trim_db" in body:
-                try:
-                    trim_db = float(body["trim_db"])
-                except (TypeError, ValueError):
-                    self._send_json(
-                        {"error": "trim_db must be a number"}, status=400,
-                    )
-                    return
-            client_latency_ms: int | None = None
-            if "client_latency_ms" in body:
-                try:
-                    client_latency_ms = int(body["client_latency_ms"])
-                except (TypeError, ValueError):
-                    self._send_json(
-                        {"error": "client_latency_ms must be an integer"},
-                        status=400,
-                    )
-                    return
-            left_delay_ms: float | None = None
-            if "left_delay_ms" in body:
-                try:
-                    left_delay_ms = float(body["left_delay_ms"])
-                except (TypeError, ValueError):
-                    self._send_json(
-                        {"error": "left_delay_ms must be a number"},
-                        status=400,
-                    )
-                    return
-            right_delay_ms: float | None = None
-            if "right_delay_ms" in body:
-                try:
-                    right_delay_ms = float(body["right_delay_ms"])
-                except (TypeError, ValueError):
-                    self._send_json(
-                        {"error": "right_delay_ms must be a number"},
-                        status=400,
-                    )
-                    return
-            crossover_hz: float | None = None
-            if "crossover_hz" in body:
-                try:
-                    crossover_hz = float(body["crossover_hz"])
-                except (TypeError, ValueError):
-                    self._send_json(
-                        {"error": "crossover_hz must be a number"},
-                        status=400,
-                    )
-                    return
-            mains_highpass_enabled: bool | None = None
-            if "mains_highpass_enabled" in body:
-                if not isinstance(body["mains_highpass_enabled"], bool):
-                    self._send_json(
-                        {"error": "mains_highpass_enabled must be boolean"},
-                        status=400,
-                    )
-                    return
-                mains_highpass_enabled = body["mains_highpass_enabled"]
-            subwoofer_present: bool | None = None
-            if "subwoofer_present" in body:
-                if not isinstance(body["subwoofer_present"], bool):
-                    self._send_json(
-                        {"error": "subwoofer_present must be boolean"},
-                        status=400,
-                    )
-                    return
-                subwoofer_present = body["subwoofer_present"]
+            optional_fields, parse_error = _parse_grouping_optional_fields(body)
+            if parse_error is not None:
+                self._send_json({"error": parse_error}, status=400)
+                return
+            assert optional_fields is not None
+            trim_db = optional_fields.trim_db
+            client_latency_ms = optional_fields.client_latency_ms
+            left_delay_ms = optional_fields.left_delay_ms
+            right_delay_ms = optional_fields.right_delay_ms
+            crossover_hz = optional_fields.crossover_hz
+            mains_highpass_enabled = optional_fields.mains_highpass_enabled
+            subwoofer_present = optional_fields.subwoofer_present
             peer_addr: str | None = None
             if "peer_addr" in body:
                 peer_addr = str(body.get("peer_addr") or "").strip()
