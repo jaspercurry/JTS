@@ -42,8 +42,10 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
+from ._common import region_key as _region_key
 from .crossover_alignment import (
     PHASE_AWARE,
+    ResolvedMode,
     propose_crossover_alignment,
     resolve_measurement_mode,
 )
@@ -164,6 +166,40 @@ def primary_crossover_fc_hz(preset: ActiveSpeakerPreset) -> float | None:
         if region.fc_hz and region.fc_hz > 0
     ]
     return min(fcs) if fcs else None
+
+
+# Tolerance for matching an analyzed fc back to the preset region it came
+# from. The fc always originates FROM a region's own fc_hz (either
+# `primary_crossover_fc_hz`'s default or an explicit caller value that
+# should match one), so an exact-ish float comparison is enough; this only
+# guards against float round-trip noise, not a real mismatch.
+_REGION_FC_MATCH_TOLERANCE_HZ = 1e-6
+
+
+def region_for_fc(
+    preset: ActiveSpeakerPreset, fc_hz: float,
+) -> dict[str, Any] | None:
+    """The preset crossover region whose ``fc_hz`` matches ``fc_hz``, or None.
+
+    Stamped onto a summed capture at record time (see
+    ``record_summed_acoustic_capture``) so paired in-phase/reverse evidence
+    can be grouped per region downstream (``measurement.
+    record_summed_validation`` / ``_latest_current_summed_records``). A
+    caller-supplied ``crossover_fc_hz`` that does not match any region's
+    ``fc_hz`` resolves to ``None`` — an honest "couldn't identify the
+    region" rather than a guess.
+    """
+    for region in preset.crossover_regions:
+        if (
+            region.fc_hz
+            and abs(float(region.fc_hz) - fc_hz) < _REGION_FC_MATCH_TOLERANCE_HZ
+        ):
+            return {
+                "lower_role": region.lower_driver,
+                "upper_role": region.upper_driver,
+                "fc_hz": float(region.fc_hz),
+            }
+    return None
 
 
 def _bundle_session_id(measurement: Any) -> str | None:
@@ -501,6 +537,12 @@ def record_summed_acoustic_capture(
     passes straight through to ``analyze``.
     ``bundle_ref`` is forwarded verbatim to ``record`` — see
     :func:`record_driver_acoustic_capture`'s docstring.
+    The analyzed ``fc`` is resolved back to its preset crossover region
+    (:func:`region_for_fc`) and stamped onto the persisted record — this is
+    what lets :func:`build_crossover_alignment_proposal` retain BOTH this
+    capture's polarity (``expect_null``) and its sibling opposite-polarity
+    capture as distinct, region-keyed evidence instead of one overwriting
+    the other.
     """
     fc = (
         float(crossover_fc_hz)
@@ -634,6 +676,11 @@ def record_summed_acoustic_capture(
         "delay_ms": delay_ms,
         "delay_target_role": delay_target_role,
         "notes": notes,
+        # Which crossover region this fc belongs to -- lets paired in-phase/
+        # reverse evidence be grouped per region downstream (measurement.py's
+        # latest_summed_pairs_by_group). None when fc matches no preset
+        # region (should not happen: fc always came FROM one above).
+        "region": region_for_fc(preset, fc),
     }
     measurement = record(
         topology,
@@ -674,36 +721,40 @@ def _acoustic_calibrated(record: Any) -> bool | None:
     return bool(acoustic.get("calibrated"))
 
 
-def _summed_null_depths(
-    summed_record: Any,
+def _pair_null_depths(
+    in_phase_record: Any,
+    reverse_record: Any,
 ) -> tuple[float | None, float | None]:
-    """(in_phase_null_db, reverse_null_db) from a group's latest summed record.
+    """(in_phase_null_db, reverse_null_db) read directly from a resolved pair.
 
-    The state keeps one summed record per group, tagged ``expect_null`` (True for a
-    reverse-polarity capture). Route its depth to the matching slot; the other is
-    None until that capture is taken.
+    Each side's null depth comes straight from ITS OWN record — no more
+    XOR-on-``expect_null`` routing through one latest-record-per-group slot.
+    ``in_phase_record`` / ``reverse_record`` are the two sides of one
+    ``measurement.py`` ``latest_summed_pairs_by_group[group][region_key]``
+    entry (either may be ``None`` — that capture hasn't been taken yet, or
+    fell off the ``MAX_SUMMED_RECORDS`` ring).
     """
-    if not isinstance(summed_record, Mapping):
-        return None, None
-    acoustic = summed_record.get("acoustic")
-    if not isinstance(acoustic, Mapping):
-        return None, None
-    raw_depth = acoustic.get("null_depth_db")
-    if raw_depth is None:
-        return None, None
-    try:
-        depth = float(raw_depth)
-    except (TypeError, ValueError):
-        return None, None
-    if not math.isfinite(depth):
-        return None, None
-    if acoustic.get("expect_null"):
-        return None, depth
-    return depth, None
+
+    def _depth(record: Any) -> float | None:
+        if not isinstance(record, Mapping):
+            return None
+        acoustic = record.get("acoustic")
+        if not isinstance(acoustic, Mapping):
+            return None
+        raw_depth = acoustic.get("null_depth_db")
+        if raw_depth is None:
+            return None
+        try:
+            depth = float(raw_depth)
+        except (TypeError, ValueError):
+            return None
+        return depth if math.isfinite(depth) else None
+
+    return _depth(in_phase_record), _depth(reverse_record)
 
 
-def _summed_alignment_snr(summed_record: Any) -> tuple[bool | None, bool]:
-    """(alignment_snr_ok, null_depth_capped) from a group's latest summed record.
+def _record_alignment_snr(summed_record: Any) -> tuple[bool | None, bool]:
+    """(alignment_snr_ok, null_depth_capped) from ONE summed record.
 
     Reads the SC-1 alignment-class SNR block
     (``acoustic["snr"]``, see
@@ -750,6 +801,84 @@ def _summed_alignment_snr(summed_record: Any) -> tuple[bool | None, bool]:
     return alignment_snr_ok, bool(acoustic.get("null_depth_capped"))
 
 
+def _summed_alignment_snr(
+    in_phase_record: Any,
+    reverse_record: Any = None,
+) -> tuple[bool | None, bool]:
+    """(alignment_snr_ok, null_depth_capped) — the conservative combination
+    across up to two paired summed records (in-phase + reverse-polarity).
+
+    Evaluates each side independently through :func:`_record_alignment_snr`
+    and combines them conservatively, never optimistically: a single record
+    (the pre-pairing call shape — ``reverse_record`` defaults to ``None``,
+    which contributes no evidence) behaves exactly as before.
+
+    * ``null_depth_capped`` is ``True`` if EITHER side capped its null depth
+      — a capped depth on either polarity's capture means that side's
+      number wasn't fully provable, and the proposer's alignment gate must
+      see that regardless of which side actually holds the deep null.
+    * ``alignment_snr_ok`` is ``False`` if EITHER side confirmed insufficient
+      overlap-band SNR (a confirmed problem on one side is not erased by a
+      clean reading on the other); ``None`` only when NEITHER side has real
+      evidence; otherwise ``True`` (at least one side confirmed sufficient
+      SNR and neither confirmed insufficient).
+    """
+    ok_in_phase, capped_in_phase = _record_alignment_snr(in_phase_record)
+    ok_reverse, capped_reverse = _record_alignment_snr(reverse_record)
+    if ok_in_phase is False or ok_reverse is False:
+        alignment_snr_ok: bool | None = False
+    elif ok_in_phase is None and ok_reverse is None:
+        alignment_snr_ok = None
+    else:
+        alignment_snr_ok = True
+    return alignment_snr_ok, (capped_in_phase or capped_reverse)
+
+
+def _resolve_region_pair(
+    *,
+    pairs_by_group: Mapping[str, Any],
+    flat_by_group: Mapping[str, Any],
+    group: str,
+    region_key: str,
+    allow_flat_fallback: bool,
+) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
+    """(in_phase_record, reverse_record) for one (group, region_key).
+
+    Prefers ``measurement.py``'s region-keyed ``latest_summed_pairs_by_group``
+    — the real production shape, since ``load_measurement_state`` always
+    produces it alongside the flat map. Falls back to the flat, region-
+    unaware ``latest_summed_by_group`` (latest in-phase record per group)
+    routed by its own ``expect_null`` flag ONLY when ``allow_flat_fallback``
+    (the caller passes this true only for a group's SOLE region — a 2-way,
+    or a hand-built ``measurements`` mapping that predates the paired shape
+    entirely): a 3-way's second region has no way to claim a flat,
+    region-unaware record without risking misfiling another region's
+    evidence as its own, so it stays unpaired instead.
+    """
+    group_pairs = (
+        pairs_by_group.get(group) if isinstance(pairs_by_group, Mapping) else None
+    )
+    pair = group_pairs.get(region_key) if isinstance(group_pairs, Mapping) else None
+    if isinstance(pair, Mapping):
+        in_phase = pair.get("in_phase")
+        reverse = pair.get("reverse")
+        return (
+            in_phase if isinstance(in_phase, Mapping) else None,
+            reverse if isinstance(reverse, Mapping) else None,
+        )
+    if not allow_flat_fallback:
+        return None, None
+    record = flat_by_group.get(group) if isinstance(flat_by_group, Mapping) else None
+    if not isinstance(record, Mapping):
+        return None, None
+    acoustic = record.get("acoustic")
+    if not isinstance(acoustic, Mapping):
+        return None, None
+    if acoustic.get("expect_null"):
+        return None, record
+    return record, None
+
+
 def build_crossover_alignment_proposal(
     preset: ActiveSpeakerPreset,
     measurements: Mapping[str, Any],
@@ -759,25 +888,31 @@ def build_crossover_alignment_proposal(
 ) -> dict[str, Any]:
     """Propose a SAFE crossover polarity refinement (+ delay status) from state.
 
-    A pure read: it walks the recorded summed-crossover null depths (in-phase and,
-    if captured, reverse-polarity) for the PRIMARY (lowest) crossover and asks
+    A pure read: for EVERY crossover region (sorted by fc — every region in a
+    3-way, not only the lowest) it walks the recorded summed-crossover null
+    depths (in-phase and, if captured, reverse-polarity) and asks
     :func:`crossover_alignment.propose_crossover_alignment`.
 
-    The phase_aware gate is enforced AT THE DATA: ``requested_mode`` is granted
-    only when the contributing summed capture was taken with a calibrated mic
-    (``acoustic.calibrated``); otherwise it downgrades to ``magnitude_only`` and
-    the proposal is unauthorized (no polarity/delay decision). So a phone capture
-    can never yield a phase decision even if phase_aware is requested. A second,
-    independent gate rides the same summed record's SC-1 alignment-class SNR
-    block (:func:`_summed_alignment_snr`): a confirmed-insufficient overlap SNR
-    or a capped null depth further downgrades keep/invert to review and
-    "aligned" to "unknown" inside the proposer, even when phase_aware was
-    granted. Never raises on thin/empty state; returns
-    ``{status, mode, proposal, ...}``.
+    The phase_aware gate is enforced AT THE DATA and is PER REGION: every
+    record contributing to a region's proposal (both drivers' captures, both
+    summed captures of that region's pair) must be calibrated
+    (``acoustic.calibrated``); otherwise that region's proposal downgrades to
+    ``magnitude_only`` and is unauthorized (no polarity/delay decision). So a
+    phone capture can never yield a phase decision even if phase_aware is
+    requested, and one region's uncalibrated evidence never blocks a sibling
+    region whose own evidence IS calibrated. A second, independent gate rides
+    each region's own pair's SC-1 alignment-class SNR block
+    (:func:`_summed_alignment_snr`, the conservative combination across both
+    polarities of that region): a confirmed-insufficient overlap SNR or a
+    capped null depth further downgrades keep/invert to review and "aligned"
+    to "unknown" inside the proposer, even when phase_aware was granted.
+    Never raises on thin/empty state; returns ``{status, speaker_group_id,
+    mode, proposals, proposal}`` — ``proposals`` is one ``{region, proposal}``
+    entry per crossover region sorted by fc; ``mode``/``proposal`` are the
+    lowest region's, kept for backward compatibility with callers that only
+    know about a single crossover.
 
-    Scope: ONE crossover (the primary / lowest). A 3-way's upper crossover needs
-    its own summed-null capture and is out of scope for this increment. Multi-group
-    (stereo-pair) polarity/delay *emission* is also deferred (see
+    Multi-group (stereo-pair) polarity/delay *emission* is deferred (see
     ``baseline_profile``'s ``group_specific_delay_not_applied``); the proposal
     computes for one group, so a mono/single-group speaker (jts3's
     active_mono_2way) gets the full L2 polarity refinement.
@@ -787,11 +922,7 @@ def build_crossover_alignment_proposal(
         key=lambda r: r.fc_hz,
     )
     if not regions:
-        return {"status": "no_crossover", "proposal": None}
-    region = regions[0]
-    lower_role = region.lower_driver
-    upper_role = region.upper_driver
-    fc = float(region.fc_hz)
+        return {"status": "no_crossover", "proposal": None, "proposals": []}
 
     latest = measurements.get("latest_by_target")
     if not isinstance(latest, Mapping):
@@ -813,55 +944,101 @@ def build_crossover_alignment_proposal(
     latest_summed = measurements.get("latest_summed_by_group")
     summed_by_group = latest_summed if isinstance(latest_summed, Mapping) else {}
 
+    pairs_by_group = measurements.get("latest_summed_pairs_by_group")
+    if not isinstance(pairs_by_group, Mapping):
+        summary = measurements.get("summary")
+        pairs_by_group = (
+            summary.get("latest_summed_pairs_by_group")
+            if isinstance(summary, Mapping)
+            else None
+        )
+    pairs_by_group = pairs_by_group if isinstance(pairs_by_group, Mapping) else {}
+
     group = speaker_group_id
     if group is None:
-        groups = {g for (g, _r) in by_group_role} | set(summed_by_group.keys())
+        groups = (
+            {g for (g, _r) in by_group_role}
+            | set(summed_by_group.keys())
+            | set(pairs_by_group.keys())
+        )
         if len(groups) == 1:
             group = next(iter(groups))
         elif summed_by_group:
             group = sorted(summed_by_group.keys())[0]
+        elif pairs_by_group:
+            group = sorted(pairs_by_group.keys())[0]
         elif groups:
             group = sorted(groups)[0]
     if group is None:
-        return {"status": "no_measurements", "proposal": None}
+        return {"status": "no_measurements", "proposal": None, "proposals": []}
 
-    lower_rec = by_group_role.get((group, lower_role))
-    upper_rec = by_group_role.get((group, upper_role))
-    summed_rec = summed_by_group.get(group)
-    in_phase_null, reverse_null = _summed_null_depths(summed_rec)
-    alignment_snr_ok, null_depth_capped = _summed_alignment_snr(summed_rec)
+    allow_flat_fallback = len(regions) == 1
+    proposals: list[dict[str, Any]] = []
+    resolved_modes: list[ResolvedMode] = []
+    for region in regions:
+        lower_role = region.lower_driver
+        upper_role = region.upper_driver
+        fc = float(region.fc_hz)
+        region_key = _region_key(lower_role, upper_role)
 
-    # The phase_aware gate at the data layer: every contributing capture must be
-    # calibrated. A single uncalibrated record blocks phase_aware.
-    cal_flags = [
-        flag
-        for flag in (
-            _acoustic_calibrated(lower_rec),
-            _acoustic_calibrated(upper_rec),
-            _acoustic_calibrated(summed_rec),
+        lower_rec = by_group_role.get((group, lower_role))
+        upper_rec = by_group_role.get((group, upper_role))
+        in_phase_rec, reverse_rec = _resolve_region_pair(
+            pairs_by_group=pairs_by_group,
+            flat_by_group=summed_by_group,
+            group=group,
+            region_key=region_key,
+            allow_flat_fallback=allow_flat_fallback,
         )
-        if flag is not None
-    ]
-    data_calibrated = bool(cal_flags) and all(cal_flags)
-    resolved = resolve_measurement_mode(
-        requested_mode, has_calibrated_mic=data_calibrated
-    )
+        in_phase_null, reverse_null = _pair_null_depths(in_phase_rec, reverse_rec)
+        alignment_snr_ok, null_depth_capped = _summed_alignment_snr(
+            in_phase_rec, reverse_rec
+        )
 
-    proposal = propose_crossover_alignment(
-        mode=resolved.mode,
-        crossover_fc_hz=fc,
-        lower_role=lower_role,
-        upper_role=upper_role,
-        in_phase_null_depth_db=in_phase_null,
-        reverse_null_depth_db=reverse_null,
-        alignment_snr_ok=alignment_snr_ok,
-        null_depth_capped=null_depth_capped,
-    )
+        # The phase_aware gate at the data layer, per region: every
+        # contributing capture must be calibrated. A single uncalibrated
+        # record blocks phase_aware for THIS region only.
+        cal_flags = [
+            flag
+            for flag in (
+                _acoustic_calibrated(lower_rec),
+                _acoustic_calibrated(upper_rec),
+                _acoustic_calibrated(in_phase_rec),
+                _acoustic_calibrated(reverse_rec),
+            )
+            if flag is not None
+        ]
+        data_calibrated = bool(cal_flags) and all(cal_flags)
+        resolved = resolve_measurement_mode(
+            requested_mode, has_calibrated_mic=data_calibrated
+        )
+        resolved_modes.append(resolved)
+
+        proposal = propose_crossover_alignment(
+            mode=resolved.mode,
+            crossover_fc_hz=fc,
+            lower_role=lower_role,
+            upper_role=upper_role,
+            in_phase_null_depth_db=in_phase_null,
+            reverse_null_depth_db=reverse_null,
+            alignment_snr_ok=alignment_snr_ok,
+            null_depth_capped=null_depth_capped,
+        )
+        proposals.append({
+            "region": {
+                "lower_role": lower_role,
+                "upper_role": upper_role,
+                "fc_hz": fc,
+            },
+            "proposal": proposal.to_dict(),
+        })
+
     return {
         "status": "ok",
         "speaker_group_id": group,
-        "mode": resolved.to_dict(),
-        "proposal": proposal.to_dict(),
+        "mode": resolved_modes[0].to_dict(),
+        "proposals": proposals,
+        "proposal": proposals[0]["proposal"],
     }
 
 
