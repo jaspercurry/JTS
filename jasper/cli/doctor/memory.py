@@ -30,7 +30,6 @@ from ._shared import (
     CheckResult,
     _installed_units,
     _meminfo_kb,
-    _pid_of_unit,
     _systemctl_show_property,
 )
 
@@ -479,7 +478,11 @@ _AUDIO_PATH_UNITS = (
     "jasper-fanin",
     "jasper-outputd",
     "jasper-camilla",
+    "jasper-camilla-crossover",
     "jasper-aec-bridge",
+    "jasper-snapclient",
+    "jasper-snapserver",
+    "jasper-usbsink",
     "shairport-sync",
     "librespot",
     "bluealsa-aplay",
@@ -504,9 +507,15 @@ def check_audio_path_no_swap() -> CheckResult:
     swapped: list[str] = []
     missing: list[str] = []
     units = _audio_path_units()
-    for unit in units:
-        pid = _pid_of_unit(unit)
-        if pid is None:
+    pids_raw = _systemctl_show_property("MainPID", list(units))
+    if pids_raw is None:
+        pids_raw = [""] * len(units)
+    for unit, pid_raw in zip(units, pids_raw):
+        try:
+            pid = int(pid_raw) if pid_raw else 0
+        except ValueError:
+            pid = 0
+        if pid <= 0:
             missing.append(unit)
             continue
         try:

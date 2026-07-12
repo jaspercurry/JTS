@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import io
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
 from jasper.cli import doctor
+from jasper.cli.doctor import memory as doctor_memory
 from jasper.conversation_history import (
     CAPTURE_ENABLED_ENV,
     DEFAULT_RETENTION_DAYS,
@@ -33,6 +35,9 @@ from jasper.conversation_history import (
     RETENTION_DAYS_ENV,
     make_turn_id,
 )
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 # --- check_ram -----------------------------------------------------------
@@ -1051,23 +1056,33 @@ def test_cgroup_memory_skips_on_dev_host():
     assert "not Linux" in r.detail
 
 
+def test_audio_path_no_swap_covers_every_protected_slice_unit():
+    systemd_dir = ROOT / "deploy/systemd"
+    expected: set[str] = set()
+    for service in systemd_dir.glob("*.service"):
+        directives = {
+            line.strip()
+            for line in service.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        if directives & {"Slice=jts-audio.slice", "Slice=jts-mic.slice"}:
+            expected.add(service.stem)
+    for drop_in in systemd_dir.glob("*.service.d/*.conf"):
+        directives = {
+            line.strip()
+            for line in drop_in.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        if directives & {"Slice=jts-audio.slice", "Slice=jts-mic.slice"}:
+            expected.add(drop_in.parent.name.removesuffix(".service.d"))
+
+    assert set(doctor._AUDIO_PATH_UNITS) == expected
+    assert len(doctor._AUDIO_PATH_UNITS) == len(set(doctor._AUDIO_PATH_UNITS))
+
+
 def test_audio_path_no_swap_happy_path():
     """All audio-path daemons running with VmSwap=0 (or very low):
     happy path = ok."""
-    def fake_run(cmd, **kwargs):
-        unit = cmd[5].rsplit(".", 1)[0]
-        pid_map = {
-            "jasper-fanin": "2001",
-            "jasper-camilla": "2002",
-            "jasper-aec-bridge": "2003",
-            "shairport-sync": "2004",
-            "librespot": "2005",
-            "bluealsa-aplay": "2006",
-        }
-        result = MagicMock()
-        result.stdout = pid_map.get(unit, "0") + "\n"
-        return result
-
     def fake_read(self):
         # All audio daemons have VmSwap=0 (or tiny transient)
         return (
@@ -1076,7 +1091,8 @@ def test_audio_path_no_swap_happy_path():
             "VmSwap:\t0 kB\n"
         )
 
-    with patch.object(doctor._shared, "_run", side_effect=fake_run), \
+    pids = [str(2001 + index) for index, _unit in enumerate(doctor._AUDIO_PATH_UNITS)]
+    with patch.object(doctor_memory, "_systemctl_show_property", return_value=pids), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_audio_path_no_swap()
     assert r.status == "ok"
@@ -1087,20 +1103,6 @@ def test_audio_path_no_swap_warns_on_42mb_swap():
     """Reproduce the 2026-05-24 failure-mode signature: aec-bridge
     with 42 MB of VmSwap. Should warn loudly with the daemon name
     + amount."""
-    def fake_run(cmd, **kwargs):
-        unit = cmd[5].rsplit(".", 1)[0]
-        pid_map = {
-            "jasper-fanin": "2001",
-            "jasper-camilla": "2002",
-            "jasper-aec-bridge": "2003",
-            "shairport-sync": "2004",
-            "librespot": "2005",
-            "bluealsa-aplay": "2006",
-        }
-        result = MagicMock()
-        result.stdout = pid_map.get(unit, "0") + "\n"
-        return result
-
     def fake_read(self):
         pid_str = str(self).split("/")[2]
         # jasper-aec-bridge (pid 2003) has 42 MB swapped (the
@@ -1109,7 +1111,11 @@ def test_audio_path_no_swap_warns_on_42mb_swap():
             return "Name:\tfoo\nVmRSS:\t100000 kB\nVmSwap:\t43056 kB\n"
         return "Name:\tfoo\nVmRSS:\t100000 kB\nVmSwap:\t0 kB\n"
 
-    with patch.object(doctor._shared, "_run", side_effect=fake_run), \
+    pids = [
+        "2003" if unit == "jasper-aec-bridge" else str(3000 + index)
+        for index, unit in enumerate(doctor._AUDIO_PATH_UNITS)
+    ]
+    with patch.object(doctor_memory, "_systemctl_show_property", return_value=pids), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_audio_path_no_swap()
     assert r.status == "warn"
@@ -1121,10 +1127,7 @@ def test_audio_path_no_swap_warns_on_42mb_swap():
 def test_audio_path_no_swap_dev_host():
     """No systemctl → all daemons "not running", check still passes
     cleanly (doesn't crash)."""
-    def fake_run(cmd, **kwargs):
-        raise FileNotFoundError("systemctl not found")
-
-    with patch.object(doctor._shared, "_run", side_effect=fake_run):
+    with patch.object(doctor_memory, "_systemctl_show_property", return_value=None):
         r = doctor.check_audio_path_no_swap()
     assert r.status == "ok"
     assert "not running" in r.detail

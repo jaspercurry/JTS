@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`9301d025`): 2026-07-12.
+Last reconciled against `main` (`44b4579f`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 497
-- **fixed**: 169
+- **open**: 496
+- **fixed**: 170
 - **in-progress**: 1
 - **mooted**: 9
 - **deferred**: 1
@@ -40,10 +40,10 @@ Last reconciled against `main` (`9301d025`): 2026-07-12.
 | DA-0003 | `jasper/route_latency/pairing.py` :: pair_events | should-fix | W5 | **open** | — |
 | DA-0004 | `LICENSE` :: :138 (§6 Trademarks), :165 (§9 Accepting War | should-fix | W5 | **open** | — |
 | DA-0005 | `capture-page/js/main.js` :: boot():604-616 | should-fix | W5 | **open** | — |
-| DA-0007 | `deploy/systemd/jasper-usbsink.service` :: :134 | should-fix | W5 | **open** | — |
+| DA-0007 | `deploy/systemd/jasper-usbsink.service` :: Slice=jts-audio.slice membership | should-fix | W5 | **in-progress** | doctor now derives and checks every protected audio/mic unit; canonical adversarial review passed, publication pending |
 | DA-0008 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored | should-fix | W5 | **open** | — |
 | DA-0009 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored / improvConnect | should-fix | W5 | **open** | — |
-| DA-0011 | `jasper/audio_runtime_plan.py` :: _route_policy_errors | should-fix | W5 | **in-progress** | coherent shm-ring plans now preserve computed transport errors; canonical adversarial review passed, publication pending |
+| DA-0011 | `jasper/audio_runtime_plan.py` :: _route_policy_errors | should-fix | W5 | **fixed** | coherent shm-ring plans preserve computed capture/playback mismatches — #1286 |
 | DA-0012 | `jasper/cli/aec_bridge.py` :: _aec_loop dtln runtime-crash handler (~2147- | should-fix | W5 | **open** | — |
 | DA-0013 | `jasper/cli/xvf_firmware_update.py` :: update | should-fix | W5 | **fixed** | bounded download + pre-flash budget + recovery/unit deadline contract — #1285 |
 | DA-0014 | `jasper/control/server.py` :: _make_handler / class Handler | should-fix | W5 | **open** | — |
