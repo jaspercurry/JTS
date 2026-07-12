@@ -28,7 +28,7 @@ from scipy.io import wavfile
 from scipy.signal import firwin, firwin2, fftconvolve
 
 from jasper.active_speaker import driver_acoustics as da
-from jasper.audio_measurement import deconv
+from jasper.audio_measurement import deconv, snr_policy
 from jasper.audio_measurement import sweep as sweep_mod
 
 SR = 48000
@@ -354,3 +354,187 @@ def test_overlap_band_no_entries_when_no_fcs(tmp_path):
 
     result = da.analyze_driver_capture(path, meta, passband_hz=(40.0, 2000.0))
     assert result.overlap_levels == ()
+
+
+# ---------- SC-1 band-specific SNR gate (P1b) --------------------------------
+#
+# analyze_driver_capture / analyze_summed_crossover optionally accept
+# noise_band_report (+ analyze_summed_crossover also noise_floor_dbfs) and
+# compute jasper.audio_measurement.snr_policy.band_snr_verdicts. These tests
+# pin: (1) the shipped no-noise-input flow is byte-for-byte unchanged
+# (snr=None, overlap_levels' usable flags untouched); (2) real band evidence
+# populates a real verdict block and, for the alignment class, caps a
+# measured null depth to what the overlap SNR can prove; (3) scalar-only
+# evidence is accepted for the magnitude class's "existing scalar path" at
+# the commissioning_capture layer but is explicitly NOT sufficient evidence
+# for an alignment/null decision (reads "unknown", never caps).
+
+
+def test_driver_capture_snr_block_is_none_without_noise_input(tmp_path):
+    """Behavior-preservation regression: the shipped no-noise flow is
+    unaffected by the new optional kwarg — verdict/present/separation/overlap
+    usability are exactly what they were before this field existed."""
+    sig, meta = _reference_sweep()
+    ir = firwin(1023, 400, fs=SR).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "woofer.wav", captured)
+
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 400.0), overlap_fcs=(400.0,)
+    )
+    assert result.snr is None
+    assert result.verdict == "present"
+    assert result.present is True
+    assert result.band_separation_db > da.PRESENT_MIN_SEPARATION_DB
+    assert result.to_dict()["snr"] is None
+    entry = result.overlap_levels[0]
+    assert entry["snr_verdict"] == "unknown"
+    assert entry["usable"] is True
+
+
+def test_driver_capture_snr_block_populated_with_noise_evidence(tmp_path):
+    sig, meta = _reference_sweep()
+    ir = firwin(1023, 400, fs=SR).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "woofer.wav", captured)
+
+    # Noise well below every canonical band's captured level -> a confident
+    # "ok" magnitude-class verdict.
+    noise = [
+        {"band_id": band_id, "band_hz": [lo, hi], "level_dbfs": -100.0}
+        for band_id, lo, hi in snr_policy.CROSSOVER_SNR_BANDS_HZ
+    ]
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 400.0), noise_band_report=noise,
+    )
+    assert result.snr is not None
+    assert result.snr["decision_class"] == "magnitude"
+    assert result.snr["verdict"] == "ok"
+    assert result.snr["relevant_hz"] == [40.0, 400.0]
+    # The verdict/present logic is unaffected by adding noise evidence.
+    assert result.verdict == "present"
+
+
+def test_overlap_band_marked_unusable_when_snr_insufficient(tmp_path):
+    sig, meta = _reference_sweep()
+    ir = firwin(1023, 2000, fs=SR).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "woofer.wav", captured)
+
+    mid_dbfs = next(
+        b["level_dbfs"]
+        for b in da._capture_band_levels(path)
+        if b["band_id"] == "mid"
+    )
+    # 5 dB SNR: real evidence, well below snr_warn_db (20) -> insufficient.
+    noise = [{"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": mid_dbfs - 5.0}]
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 2000.0), overlap_fcs=(2000.0,),
+        noise_band_report=noise,
+    )
+    entry = result.overlap_levels[0]
+    assert entry["snr_verdict"] == "insufficient"
+    # An insufficient SNR verdict fails the overlap-band reading closed, same
+    # as a silent/clipped/too-few-bins capture would.
+    assert entry["usable"] is False
+
+
+def test_overlap_band_usable_when_snr_reduced_not_insufficient(tmp_path):
+    """A "reduced" verdict is a reduced-confidence result, not a refusal —
+    only "insufficient" forces usable=False."""
+    sig, meta = _reference_sweep()
+    ir = firwin(1023, 2000, fs=SR).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "woofer.wav", captured)
+
+    mid_dbfs = next(
+        b["level_dbfs"]
+        for b in da._capture_band_levels(path)
+        if b["band_id"] == "mid"
+    )
+    # 22 dB SNR: real evidence, in [snr_warn_db, snr_ok_db) -> reduced.
+    noise = [{"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": mid_dbfs - 22.0}]
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 2000.0), overlap_fcs=(2000.0,),
+        noise_band_report=noise,
+    )
+    entry = result.overlap_levels[0]
+    assert entry["snr_verdict"] == "reduced"
+    assert entry["usable"] is True
+
+
+def test_summed_snr_block_is_none_without_any_noise_input(tmp_path):
+    """Behavior-preservation regression: neither noise_band_report nor
+    noise_floor_dbfs supplied -> snr stays None and null_depth_db is exactly
+    the raw measured value, same as before this field existed."""
+    sig, meta = _reference_sweep()
+    ir = np.zeros(64, dtype=np.float64)
+    ir[0] = 1.0
+    ir[12] = 0.98
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "null.wav", captured)
+
+    result = da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+    assert result.snr is None
+    assert result.null_depth_capped is False
+    assert result.verdict == "polarity_or_delay_problem"
+    assert result.null_depth_db >= da.DEFAULT_NULL_THRESHOLD_DB
+
+
+def test_summed_null_depth_capped_by_insufficient_overlap_snr(tmp_path):
+    sig, meta = _reference_sweep()
+    ir = np.zeros(64, dtype=np.float64)
+    ir[0] = 1.0
+    ir[12] = 0.98
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "null.wav", captured)
+
+    plain = da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+    mid_dbfs = next(
+        b["level_dbfs"]
+        for b in da._capture_band_levels(path)
+        if b["band_id"] == "mid"
+    )
+    # The overlap band [fc/2, fc*2] = [1000, 4000] Hz is exactly the "mid"
+    # canonical band at fc=2000. 20 dB SNR: real evidence, below
+    # alignment_snr_ok_db (35) -> insufficient, and D + 10 >= 20 fails for the
+    # ~18 dB measured depth, so it must report capped.
+    noise = [{"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": mid_dbfs - 20.0}]
+    capped = da.analyze_summed_crossover(
+        path, meta, crossover_fc_hz=2000.0, noise_band_report=noise,
+    )
+    assert capped.snr is not None
+    assert capped.snr["decision_class"] == "alignment"
+    assert capped.snr["verdict"] == "insufficient"
+    assert capped.snr["worst_relevant"]["estimated_snr_db"] == pytest.approx(20.0, abs=0.05)
+    assert capped.null_depth_capped is True
+    expected = 20.0 - da.DRIVER.null_cap_margin_db
+    assert capped.null_depth_db == pytest.approx(expected, abs=0.05)
+    assert capped.null_depth_db < plain.null_depth_db
+    # The pass/fail verdict itself is decided from the UNCAPPED measured
+    # depth — a capped-but-still-deep null is safely "at least that deep".
+    assert capped.verdict == plain.verdict == "polarity_or_delay_problem"
+
+
+def test_summed_null_depth_uncapped_with_scalar_only_noise(tmp_path):
+    """A scalar noise floor alone is not sufficient evidence for the
+    alignment class (per "Level control and SNR"): the snr block reads
+    "unknown" for every band and the null depth is reported exactly as
+    measured — never silently capped from an untrusted scalar number."""
+    sig, meta = _reference_sweep()
+    ir = np.zeros(64, dtype=np.float64)
+    ir[0] = 1.0
+    ir[12] = 0.98
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "null.wav", captured)
+
+    plain = da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+    scalar_only = da.analyze_summed_crossover(
+        path, meta, crossover_fc_hz=2000.0, noise_floor_dbfs=-80.0,
+    )
+    assert scalar_only.snr is not None
+    assert scalar_only.snr["verdict"] == "unknown"
+    assert scalar_only.snr["worst_relevant"] is None
+    assert all(b["method"] == "scalar_fallback" for b in scalar_only.snr["bands"])
+    assert scalar_only.null_depth_capped is False
+    assert scalar_only.null_depth_db == pytest.approx(plain.null_depth_db)
