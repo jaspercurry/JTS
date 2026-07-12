@@ -102,10 +102,12 @@ C).
   (20–500 Hz) overlaps the crossover with no awareness (double-correction risk);
   the bass wizard `correction_bass_flow.py` is a stub.
 - **Crossover commissioning** is the most-built layer (~35 modules, safe-by-
-  construction, evidence-complete) but **acoustically unvalidated on real
+  construction, with a fail-closed paired-evidence contract) but **acoustically unvalidated on real
   drivers.** JTS5 runs the crossover live; JTS3 has been flat passthrough (the
-  live shrill/hot-tweeter L0 hole). Time/phase: polarity done; per-driver
-  **delay deliberately deferred** (browser captures aren't sample-synced).
+  live shrill/hot-tweeter L0 hole). Time/phase: paired polarity persistence and
+  proposal admission are built, but the wizard's per-region normal/reverse DSP
+  capture loop is still pending; per-driver **delay deliberately deferred**
+  (browser captures aren't sample-synced).
 - **LLM:** `calibration_agent/` is a live OpenAI advisor
   (`model_client.py::AdvisorModelSettings{provider,model,base_url}`) but
   CLI-only (zero non-test importers), scoped to *preference* auditions, with an

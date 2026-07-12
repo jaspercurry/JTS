@@ -826,14 +826,27 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   `measurement.py` now retains both in-phase and reverse-polarity summed
   evidence per crossover region (one polarity captured after the other no
   longer overwrites it), and `build_crossover_alignment_proposal` reaches
-  every region in a three-way, not only the lowest. The bounded measured
+  every region in a three-way, not only the lowest. A 2026-07-12 hardening pass
+  made the paired summary historical rather than authoritative: only records
+  with full current comparison/profile proof, completed playback, blocker-free
+  analysis, the exact current region/Fc and polarity slot, and the fixed
+  tweeter-axis reference placement may contribute a null. Automatic baseline
+  composition additionally requires affirmative per-band alignment SNR, an
+  uncapped null, and an exact match to the applied preset plus corrections; it
+  never consumes a capture-carried delay. The relay preserves the candidate metadata,
+  but the wizard does not yet expose the per-region normal/reverse loop or load
+  a transient reverse-polarity graph; the playback boundary refuses those
+  candidates before audio so it cannot mislabel the unchanged applied graph.
+  The bounded measured
   delay *walk* (a value, not just a status) and post-apply verification
   remain separate, not-yet-built pieces of Slice 2.
 - ~~Automatic trim application must not reset a manually applied delay or
   inversion when no new alignment evidence exists.~~ Closed in Slice 0:
   manual tuning never consults alignment evidence for these two
-  sub-parameters at all; automatic tuning only overrides a persisted value
-  with fresh, authorized (`validated`, newer than the preview) evidence.
+  sub-parameters at all. Automatic polarity tuning requires an admitted
+  same-comparison-set normal/reverse pair bound to the current protected
+  profile, exact applied-graph excitation ledger, affirmative overlap-band
+  alignment SNR, and an uncapped null; it never consumes capture-carried delay.
 - Active-speaker evidence is less cohesive than the room-correction session
   bundle and needs a session manifest tying capture through apply and verify.
 

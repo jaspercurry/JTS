@@ -1197,6 +1197,7 @@ def record_summed_capture(
     wav_bytes: bytes | None = None,
     *,
     placement_proof: Mapping[str, Any] | None = None,
+    preset: Any = None,
 ) -> dict[str, Any]:
     """Analyze one browser WAV and record summed-crossover evidence."""
 
@@ -1206,7 +1207,7 @@ def record_summed_capture(
     )
 
     topology = load_output_topology()
-    preset = capture_preset(topology)
+    preset = capture_preset(topology, preset)
     wav_path = capture_wav_path(raw, kind="summed", wav_bytes=wav_bytes)
     calibration_curve, calibration_id, measurement_mode = capture_calibration(raw)
     sweep_meta = capture_sweep_meta(raw)

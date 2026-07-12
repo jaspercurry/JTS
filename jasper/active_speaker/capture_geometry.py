@@ -20,7 +20,12 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 DRIVER_PLACEMENT_POLICY_ID = "driver_same_distance_v1"
-SUMMED_PLACEMENT_POLICY_ID = "summed_listening_position_v1"
+# Deliberately a new policy id: evidence captured under the old
+# ``summed_listening_position_v1`` instruction did not bind the microphone to
+# the crossover's reference axis or promise that it would remain fixed across
+# the normal/reverse pair.  It remains historical evidence, never automatic
+# alignment evidence.
+SUMMED_PLACEMENT_POLICY_ID = "summed_reference_axis_v1"
 COMPARISON_SET_SCHEMA_VERSION = 2
 PLACEMENT_PROOF_SCHEMA_VERSION = 1
 DRIVER_PLACEMENT_TARGET_CM = 3.0
@@ -102,12 +107,14 @@ def driver_placement_instruction(role: str) -> str:
 
 
 def summed_placement_instruction() -> str:
-    """Canonical placement for the combined-driver validation."""
+    """Canonical fixed-axis placement for combined-driver alignment evidence."""
 
     return (
-        "Move the microphone to the main listening position at ear height, "
-        "pointed toward the speaker. This is a new position after the "
-        "near-field driver measurements."
+        "Place the microphone capsule on the tweeter axis, exactly level with "
+        "the centre of the tweeter or horn mouth, about 1 metre away when the "
+        "room permits. Aim it according to its calibration file, then keep the "
+        "microphone and speaker completely still for every normal- and "
+        "reverse-polarity combined-driver capture in this measurement set."
     )
 
 
@@ -125,8 +132,9 @@ def summed_acknowledgement_label() -> str:
     """Explicit promise made before the combined-driver sweep."""
 
     return (
-        "I moved the microphone to the main listening position at ear height "
-        "for the combined-driver measurement."
+        "The microphone is on the tweeter axis, level with the centre of the "
+        "tweeter or horn mouth, and I will not move it or the speaker between "
+        "the normal- and reverse-polarity combined-driver measurements."
     )
 
 

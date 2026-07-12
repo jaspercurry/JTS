@@ -4396,17 +4396,37 @@ def _active_speaker_crossover_alignment_payload(
     from jasper.active_speaker.commissioning_capture import (
         build_crossover_alignment_proposal,
     )
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+    )
+    from jasper.active_speaker.crossover_contract import (
+        preset_matches_applied_profile,
+    )
     from jasper.active_speaker.crossover_alignment import PHASE_AWARE
     from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.active_speaker.setup_status import read_active_speaker_setup_status
 
     topology = load_output_topology()
     preset = _active_speaker_capture_preset(topology)
     measurements = load_measurement_state(topology)
+    setup = read_active_speaker_setup_status()
+    applied_profile = load_applied_baseline_profile_state()
+    protected_profile = (
+        setup.get("protected_profile") if isinstance(setup, dict) else None
+    )
+    expected_profile_context_id = (
+        str(protected_profile.get("source_fingerprint") or "")
+        if isinstance(protected_profile, dict)
+        and preset_matches_applied_profile(preset, applied_profile)
+        else ""
+    )
     result = build_crossover_alignment_proposal(
         preset,
         measurements,
         requested_mode=requested_mode or PHASE_AWARE,
         speaker_group_id=speaker_group_id,
+        expected_profile_context_id=expected_profile_context_id or None,
+        expected_applied_profile=applied_profile,
     )
     result["curves"] = _active_speaker_alignment_curves(
         measurements, result.get("speaker_group_id")

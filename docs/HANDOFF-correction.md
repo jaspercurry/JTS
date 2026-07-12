@@ -202,17 +202,19 @@
   mutable `/sound/` draft edits cannot change an in-flight measurement. The
   explicit crossover apply route is also refused while the shared relay slot is
   starting or awaiting the phone, so graph apply cannot race measurement
-  playback or its rollback. The
-  public page release that
-  implements this contract, including UMIK-2 model/mode preselection (the
+  playback or its rollback. Summed alignment captures use the distinct
+  `summed_reference_axis_v1` acknowledgement: the calibrated mic sits
+  approximately 1 m away on the tweeter axis, level with the center of the
+  tweeter or horn mouth, and remains fixed across the normal/reverse pair. The prior
+  listening-position policy remains historical only and cannot authorize an
+  alignment proposal. The
+  public page release that implements this contract, including UMIK-2
+  model/mode preselection (the
   serial is still entered and validated once; there is no automatic
-  calibration-file match), is
-  `capture_page_build=20260712.2`, supporting
-  protocols 1 and 2; publish it
-  before deploying a Pi that emits v2 specs.
-  **Pending release gate (verified 2026-07-12):** the public page still reports
-  `capture_page_build=20260711.4`. Publish the repo's `20260712.2` page only
-  after this code merges, and do so before the matching Pi deploy.
+  calibration-file match), is `capture_page_build=20260712.3`, supporting
+  protocols 1 and 2. The repo version and public
+  `https://capture.jasper.tech/version.json` both reported `20260712.3` on
+  2026-07-12; there is no pending capture-page publish gate for this contract.
   Relay room level setup temporarily suspends the local browser's 120-second
   upload watchdog while the human completes mic permission, calibration,
   placement, and auto-level, then restores a fresh bound for the actual room
@@ -2246,7 +2248,9 @@ Internal:
 
 ---
 
-Last verified: 2026-07-11 (driver-specific crossover level sequence,
+Last verified: 2026-07-12 (summed fixed-axis placement and relay metadata
+transport rechecked against the Lane-E admission boundary; prior 2026-07-11
+pass covered driver-specific crossover level sequence,
 authenticated capture-page protocol v2 control data, and the placement/
 comparison-set contract reviewed against the relay, persistence, envelope, and
 baseline-apply paths; prior JTS3 UMIK-2 on-device level-ramp evidence,

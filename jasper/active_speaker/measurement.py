@@ -540,8 +540,12 @@ def _latest_current_summed_records(
       ``_TWO_WAY_REGION_KEY``. This prevents a new in-phase capture from being
       paired with an old reverse capture taken at a different placement/run.
       Legacy records without comparison-set proof pair only with other legacy
-      records. A 3-way's region-less legacy record has no unambiguous home and
-      is left out of pairing (though it can still be in-phase-eligible above).
+      records in this historical summary. They are never decision-authorizing:
+      ``crossover_contract.summed_decision_evidence_state`` re-proves the full
+      current comparison/profile, playback, placement, and region contract
+      before the proposal reads a null. A 3-way's region-less legacy record has
+      no unambiguous home and is left out of pairing (though it can still be
+      in-phase-eligible above).
     """
     target_by_group = {target["speaker_group_id"]: target for target in targets}
     latest: dict[str, dict[str, Any]] = {}

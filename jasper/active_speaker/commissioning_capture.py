@@ -42,13 +42,14 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
-from ._common import region_key as _region_key
+from ._common import REGION_FC_MATCH_TOLERANCE_HZ, region_key as _region_key
 from .crossover_alignment import (
     PHASE_AWARE,
     ResolvedMode,
     propose_crossover_alignment,
     resolve_measurement_mode,
 )
+from .crossover_contract import summed_decision_evidence_state
 from .driver_acoustics import (
     ANALYSIS_HI_HZ,
     ANALYSIS_LO_HZ,
@@ -173,9 +174,6 @@ def primary_crossover_fc_hz(preset: ActiveSpeakerPreset) -> float | None:
 # `primary_crossover_fc_hz`'s default or an explicit caller value that
 # should match one), so an exact-ish float comparison is enough; this only
 # guards against float round-trip noise, not a real mismatch.
-_REGION_FC_MATCH_TOLERANCE_HZ = 1e-6
-
-
 def region_for_fc(
     preset: ActiveSpeakerPreset, fc_hz: float,
 ) -> dict[str, Any] | None:
@@ -192,7 +190,7 @@ def region_for_fc(
     for region in preset.crossover_regions:
         if (
             region.fc_hz
-            and abs(float(region.fc_hz) - fc_hz) < _REGION_FC_MATCH_TOLERANCE_HZ
+            and abs(float(region.fc_hz) - fc_hz) < REGION_FC_MATCH_TOLERANCE_HZ
         ):
             return {
                 "lower_role": region.lower_driver,
@@ -818,9 +816,9 @@ def _summed_alignment_snr(
     across up to two paired summed records (in-phase + reverse-polarity).
 
     Evaluates each side independently through :func:`_record_alignment_snr`
-    and combines them conservatively, never optimistically: a single record
-    (the pre-pairing call shape — ``reverse_record`` defaults to ``None``,
-    which contributes no evidence) behaves exactly as before.
+    and combines them conservatively, never optimistically. A single capture
+    still surfaces the same tentative preview, but its pair-quality verdict is
+    ``None`` because the absent side cannot authorize automatic application.
 
     * ``null_depth_capped`` is ``True`` if EITHER side capped its null depth
       — a capped depth on either polarity's capture means that side's
@@ -828,15 +826,16 @@ def _summed_alignment_snr(
       see that regardless of which side actually holds the deep null.
     * ``alignment_snr_ok`` is ``False`` if EITHER side confirmed insufficient
       overlap-band SNR (a confirmed problem on one side is not erased by a
-      clean reading on the other); ``None`` only when NEITHER side has real
-      evidence; otherwise ``True`` (at least one side confirmed sufficient
-      SNR and neither confirmed insufficient).
+      clean reading on the other); ``None`` when EITHER contributing side is
+      unknown; and ``True`` only when BOTH sides affirmatively cleared the
+      alignment threshold. A pair margin consumes both null depths, so one
+      clean capture cannot authorize the other capture's unknown depth.
     """
     ok_in_phase, capped_in_phase = _record_alignment_snr(in_phase_record)
     ok_reverse, capped_reverse = _record_alignment_snr(reverse_record)
     if ok_in_phase is False or ok_reverse is False:
         alignment_snr_ok: bool | None = False
-    elif ok_in_phase is None and ok_reverse is None:
+    elif ok_in_phase is None or ok_reverse is None:
         alignment_snr_ok = None
     else:
         alignment_snr_ok = True
@@ -862,7 +861,9 @@ def _resolve_region_pair(
     or a hand-built ``measurements`` mapping that predates the paired shape
     entirely): a 3-way's second region has no way to claim a flat,
     region-unaware record without risking misfiling another region's
-    evidence as its own, so it stays unpaired instead.
+    evidence as its own, so it stays unpaired instead. This resolver preserves
+    historical visibility only; :func:`summed_decision_evidence_state` is the
+    later authorization boundary and rejects every legacy/flat fallback.
     """
     group_pairs = (
         pairs_by_group.get(group) if isinstance(pairs_by_group, Mapping) else None
@@ -894,6 +895,8 @@ def build_crossover_alignment_proposal(
     *,
     requested_mode: str = PHASE_AWARE,
     speaker_group_id: str | None = None,
+    expected_profile_context_id: str | None = None,
+    expected_applied_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Propose a SAFE crossover polarity refinement (+ delay status) from state.
 
@@ -922,9 +925,17 @@ def build_crossover_alignment_proposal(
     know about a single crossover.
 
     Multi-group (stereo-pair) polarity/delay *emission* is deferred (see
-    ``baseline_profile``'s ``group_specific_delay_not_applied``); the proposal
-    computes for one group, so a mono/single-group speaker (jts3's
+    ``baseline_profile``'s ``group_specific_alignment_not_applied``); the
+    proposal computes for one group, so a mono/single-group speaker (jts3's
     active_mono_2way) gets the full L2 polarity refinement.
+
+    A paired summary is not authority by itself. Every contributing summed
+    record passes :func:`crossover_contract.summed_decision_evidence_state`,
+    which binds it to the current full comparison/profile fingerprint, audible
+    playback artifact, fixed reference-axis placement proof, blocker-free
+    analyzer result, and this exact region/Fc. Rejected records remain visible
+    through the measurement history and the returned per-region ``evidence``
+    verdict, but cannot supply a null or grant ``phase_aware``.
     """
     regions = sorted(
         (r for r in preset.crossover_regions if r.fc_hz and r.fc_hz > 0),
@@ -962,6 +973,12 @@ def build_crossover_alignment_proposal(
             else None
         )
     pairs_by_group = pairs_by_group if isinstance(pairs_by_group, Mapping) else {}
+    active_comparison_set = measurements.get("active_comparison_set")
+    active_comparison_set = (
+        active_comparison_set
+        if isinstance(active_comparison_set, Mapping)
+        else None
+    )
 
     group = speaker_group_id
     if group is None:
@@ -992,13 +1009,39 @@ def build_crossover_alignment_proposal(
 
         lower_rec = by_group_role.get((group, lower_role))
         upper_rec = by_group_role.get((group, upper_role))
-        in_phase_rec, reverse_rec = _resolve_region_pair(
+        raw_in_phase_rec, raw_reverse_rec = _resolve_region_pair(
             pairs_by_group=pairs_by_group,
             flat_by_group=summed_by_group,
             group=group,
             region_key=region_key,
             allow_flat_fallback=allow_flat_fallback,
         )
+        in_phase_evidence = summed_decision_evidence_state(
+            raw_in_phase_rec,
+            active_comparison_set=active_comparison_set,
+            expected_applied_profile=expected_applied_profile,
+            speaker_group_id=group,
+            lower_role=lower_role,
+            upper_role=upper_role,
+            crossover_fc_hz=fc,
+            expected_expect_null=False,
+            expected_profile_context_id=expected_profile_context_id,
+        )
+        reverse_evidence = summed_decision_evidence_state(
+            raw_reverse_rec,
+            active_comparison_set=active_comparison_set,
+            expected_applied_profile=expected_applied_profile,
+            speaker_group_id=group,
+            lower_role=lower_role,
+            upper_role=upper_role,
+            crossover_fc_hz=fc,
+            expected_expect_null=True,
+            expected_profile_context_id=expected_profile_context_id,
+        )
+        in_phase_rec = (
+            raw_in_phase_rec if in_phase_evidence["valid"] is True else None
+        )
+        reverse_rec = raw_reverse_rec if reverse_evidence["valid"] is True else None
         in_phase_null, reverse_null = _pair_null_depths(in_phase_rec, reverse_rec)
         alignment_snr_ok, null_depth_capped = _summed_alignment_snr(
             in_phase_rec, reverse_rec
@@ -1017,7 +1060,10 @@ def build_crossover_alignment_proposal(
             )
             if flag is not None
         ]
-        data_calibrated = bool(cal_flags) and all(cal_flags)
+        has_summed_decision_evidence = bool(in_phase_rec or reverse_rec)
+        data_calibrated = (
+            has_summed_decision_evidence and bool(cal_flags) and all(cal_flags)
+        )
         resolved = resolve_measurement_mode(
             requested_mode, has_calibrated_mic=data_calibrated
         )
@@ -1033,13 +1079,40 @@ def build_crossover_alignment_proposal(
             alignment_snr_ok=alignment_snr_ok,
             null_depth_capped=null_depth_capped,
         )
+        proposal_payload = proposal.to_dict()
+        rejected_evidence = [
+            kind
+            for kind, raw_record, state in (
+                ("in_phase", raw_in_phase_rec, in_phase_evidence),
+                ("reverse", raw_reverse_rec, reverse_evidence),
+            )
+            if raw_record is not None and state["valid"] is not True
+        ]
+        for kind in rejected_evidence:
+            proposal_payload["issues"].append({
+                "severity": "warning",
+                "code": "summed_decision_evidence_rejected",
+                "message": (
+                    f"{kind.replace('_', '-')} summed evidence is historical only; "
+                    "capture it again at the fixed reference axis in the current "
+                    "automatic measurement run"
+                ),
+            })
         proposals.append({
             "region": {
                 "lower_role": lower_role,
                 "upper_role": upper_role,
                 "fc_hz": fc,
             },
-            "proposal": proposal.to_dict(),
+            "evidence": {
+                "in_phase": in_phase_evidence,
+                "reverse": reverse_evidence,
+            },
+            "decision_quality": {
+                "alignment_snr_ok": alignment_snr_ok,
+                "null_depth_capped": null_depth_capped,
+            },
+            "proposal": proposal_payload,
         })
 
     return {
