@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`955b8c11`): 2026-07-12.
+Last reconciled against `main` (`78aaab66`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 490
-- **fixed**: 177
+- **open**: 489
+- **fixed**: 178
 - **in-progress**: 0
 - **mooted**: 9
 - **deferred**: 1
@@ -44,7 +44,7 @@ Last reconciled against `main` (`955b8c11`): 2026-07-12.
 | DA-0008 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored | should-fix | W5 | **open** | — |
 | DA-0009 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored / improvConnect | should-fix | W5 | **open** | — |
 | DA-0011 | `jasper/audio_runtime_plan.py` :: _route_policy_errors | should-fix | W5 | **fixed** | coherent shm-ring plans preserve computed capture/playback mismatches — #1286 |
-| DA-0012 | `jasper/cli/aec_bridge.py` :: _aec_loop dtln runtime-crash handler (~2147- | should-fix | W5 | **open** | — |
+| DA-0012 | `jasper/cli/aec_bridge.py` :: _aec_loop dtln runtime-crash handler (~2147- | should-fix | W5 | **fixed** | runtime DTLN failure now withdraws the leg from live health/capture-plan truth while primary AEC3 continues — #1295 |
 | DA-0013 | `jasper/cli/xvf_firmware_update.py` :: update | should-fix | W5 | **fixed** | bounded download + pre-flash budget + recovery/unit deadline contract — #1285 |
 | DA-0014 | `jasper/control/server.py` :: _make_handler / class Handler | should-fix | W5 | **open** | — |
 | DA-0018 | `jasper/multiroom/reconcile.py` :: _ensure_unit_active:1226-1274 | should-fix | W5 | **open** | — |
