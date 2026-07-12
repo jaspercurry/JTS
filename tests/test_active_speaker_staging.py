@@ -191,6 +191,54 @@ def _stereo_three_way_topology() -> OutputTopology:
     return OutputTopology.from_mapping(raw)
 
 
+def _stereo_two_way_topology() -> OutputTopology:
+    raw = _topology().to_dict()
+    raw["topology_id"] = "bench_stereo_2way"
+    raw["speaker_groups"] = [
+        {
+            "id": "left",
+            "label": "Left speaker",
+            "kind": "left",
+            "mode": "active_2_way",
+            "channels": [
+                {"role": "woofer", "physical_output_index": 0, "identity_verified": True},
+                {
+                    "role": "tweeter",
+                    "physical_output_index": 1,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                },
+            ],
+        },
+        {
+            "id": "right",
+            "label": "Right speaker",
+            "kind": "right",
+            "mode": "active_2_way",
+            "channels": [
+                {"role": "woofer", "physical_output_index": 2, "identity_verified": True},
+                {
+                    "role": "tweeter",
+                    "physical_output_index": 3,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                },
+            ],
+        },
+    ]
+    raw["routing"] = {
+        "main_left_group_id": "left",
+        "main_right_group_id": "right",
+        "mono_group_id": None,
+        "subwoofer_group_ids": [],
+    }
+    return OutputTopology.from_mapping(raw)
+
+
 def _driver_research(
     *,
     frequency_hz: float = 2500,
@@ -364,6 +412,79 @@ def test_stage_protected_startup_config_uses_crossover_preview_frequency(
     assert payload["config"]["tweeter_protective_highpass_hz"] == 6400
     assert "freq: 3200.0000" in text
     assert "freq: 6400.0000" in text
+
+
+def test_compile_preset_from_crossover_preview_sets_polarity_and_delay() -> None:
+    topology = _stereo_two_way_topology()
+    preview = _crossover_preview(topology, frequency_hz=2500, way_count=2)
+    for group in preview["groups"]:
+        crossover = group["crossovers"][0]
+        crossover["lower_polarity"] = "non-inverted"
+        crossover["upper_polarity"] = "inverted"
+        crossover["delay_ms"] = 0.3
+        crossover["delay_target_role"] = "woofer"
+
+    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+        topology, preview
+    )
+
+    assert preset is not None, issues
+    region = preset.crossover_regions[0]
+    assert region.lower_polarity == "non-inverted"
+    assert region.upper_polarity == "inverted"
+    assert region.delay_ms == 0.3
+    assert region.delay_target_driver == "woofer"
+
+
+def test_compile_preset_from_crossover_preview_omits_polarity_and_delay_by_default() -> None:
+    # Legacy-shaped preview (no persisted working-crossover values): the
+    # region stays byte-identical to the pre-Slice-0 schema defaults.
+    topology = _topology()
+    preview = _crossover_preview(topology, frequency_hz=2500, way_count=2)
+
+    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+        topology, preview
+    )
+
+    assert preset is not None, issues
+    region = preset.crossover_regions[0]
+    assert region.lower_polarity == "non-inverted"
+    assert region.upper_polarity == "non-inverted"
+    assert region.delay_ms is None
+    assert region.delay_target_driver is None
+
+
+def test_compile_preset_from_crossover_preview_stereo_polarity_mismatch_blocks() -> None:
+    topology = _stereo_two_way_topology()
+    preview = _crossover_preview(topology, frequency_hz=2500, way_count=2)
+    left_group = next(g for g in preview["groups"] if g["kind"] == "left")
+    left_group["crossovers"][0]["lower_polarity"] = "inverted"
+
+    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+        topology, preview
+    )
+
+    assert preset is None
+    assert "crossover_preview_stereo_values_differ" in {
+        issue["code"] for issue in issues
+    }
+
+
+def test_compile_preset_from_crossover_preview_stereo_delay_mismatch_blocks() -> None:
+    topology = _stereo_two_way_topology()
+    preview = _crossover_preview(topology, frequency_hz=2500, way_count=2)
+    right_group = next(g for g in preview["groups"] if g["kind"] == "right")
+    right_group["crossovers"][0]["delay_ms"] = 0.5
+    right_group["crossovers"][0]["delay_target_role"] = "woofer"
+
+    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+        topology, preview
+    )
+
+    assert preset is None
+    assert "crossover_preview_stereo_values_differ" in {
+        issue["code"] for issue in issues
+    }
 
 
 def test_stage_protected_startup_config_blocks_unready_crossover_preview(

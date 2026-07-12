@@ -202,6 +202,116 @@ def test_crossover_preview_blocks_missing_research() -> None:
     assert "driver_research_missing" in {issue["code"] for issue in payload["issues"]}
 
 
+def test_crossover_preview_carries_polarity_and_delay_from_candidate() -> None:
+    payload = build_crossover_preview(
+        build_design_draft(
+            _topology(),
+            driver_research=_research(),
+            manual_settings={
+                "drivers": [],
+                "crossover_candidates": [{
+                    "between_roles": ["woofer", "tweeter"],
+                    "frequency_hz": 2200,
+                    "filter_type": "Linkwitz-Riley",
+                    "slope_db_per_octave": 24,
+                    "confidence": "medium",
+                    "lower_polarity": "non-inverted",
+                    "upper_polarity": "inverted",
+                    "delay_ms": 0.4,
+                    "delay_target_role": "tweeter",
+                }],
+            },
+            created_at="2026-06-10T12:00:00Z",
+        ),
+        created_at="2026-06-10T12:30:00Z",
+    )
+    crossover = payload["groups"][0]["crossovers"][0]
+
+    assert crossover["lower_polarity"] == "non-inverted"
+    assert crossover["upper_polarity"] == "inverted"
+    assert crossover["delay_ms"] == 0.4
+    assert crossover["delay_target_role"] == "tweeter"
+
+
+def test_crossover_preview_reversed_candidate_between_roles_realigns_polarity() -> None:
+    # The candidate declares its pair as [tweeter, woofer] — reversed from this
+    # function's own (lower_role, upper_role)=(woofer, tweeter) convention for
+    # this group's mode. _build_crossover must realign so "lower_polarity" in
+    # the emitted preview always describes the woofer, not whichever role
+    # happened to be listed first in the candidate.
+    payload = build_crossover_preview(
+        build_design_draft(
+            _topology(),
+            driver_research=_research(),
+            manual_settings={
+                "drivers": [],
+                "crossover_candidates": [{
+                    "between_roles": ["tweeter", "woofer"],
+                    "frequency_hz": 2200,
+                    "filter_type": "Linkwitz-Riley",
+                    "slope_db_per_octave": 24,
+                    "confidence": "medium",
+                    "lower_polarity": "inverted",
+                    "upper_polarity": "non-inverted",
+                }],
+            },
+            created_at="2026-06-10T12:00:00Z",
+        ),
+        created_at="2026-06-10T12:30:00Z",
+    )
+    crossover = payload["groups"][0]["crossovers"][0]
+
+    assert crossover["between_roles"] == ["woofer", "tweeter"]
+    # The candidate's lower_polarity (="inverted") described its own
+    # between_roles[0]=tweeter, which is THIS function's upper_role.
+    assert crossover["upper_polarity"] == "inverted"
+    assert crossover["lower_polarity"] == "non-inverted"
+
+
+def test_crossover_preview_omits_polarity_and_delay_when_candidate_lacks_them() -> None:
+    payload = build_crossover_preview(_draft(), created_at="2026-06-10T12:30:00Z")
+    crossover = payload["groups"][0]["crossovers"][0]
+
+    assert "lower_polarity" not in crossover
+    assert "upper_polarity" not in crossover
+    assert "delay_ms" not in crossover
+    assert "delay_target_role" not in crossover
+
+
+def test_crossover_preview_no_audio_invariant_holds_with_polarity_and_delay() -> None:
+    payload = build_crossover_preview(
+        build_design_draft(
+            _topology(),
+            driver_research=_research(),
+            manual_settings={
+                "drivers": [],
+                "crossover_candidates": [{
+                    "between_roles": ["woofer", "tweeter"],
+                    "frequency_hz": 2200,
+                    "filter_type": "Linkwitz-Riley",
+                    "slope_db_per_octave": 24,
+                    "confidence": "medium",
+                    "lower_polarity": "inverted",
+                    "delay_ms": 0.4,
+                    "delay_target_role": "woofer",
+                }],
+            },
+            created_at="2026-06-10T12:00:00Z",
+        ),
+        created_at="2026-06-10T12:30:00Z",
+    )
+
+    assert payload["safety"]["no_audio"] is True
+    assert payload["safety"]["loads_camilla"] is False
+    assert payload["safety"]["applies_filters"] is False
+    assert payload["safety"]["emits_camilla_yaml"] is False
+    assert payload["safety"]["authorizes_playback"] is False
+    assert payload["permissions"]["may_not_emit_camilla_yaml"] is True
+    assert payload["permissions"]["may_not_load_camilla"] is True
+    assert payload["permissions"]["may_not_emit_audio"] is True
+    assert payload["permissions"]["may_not_authorize_playback"] is True
+
+
 def test_crossover_preview_prefers_manual_settings_over_imported_research() -> None:
     payload = build_crossover_preview(
         build_design_draft(

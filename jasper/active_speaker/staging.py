@@ -1001,6 +1001,14 @@ def _preset_from_crossover_preview(
                 "frequency_hz": frequency,
                 "filter_type": filter_type,
                 "slope_db_per_octave": slope,
+                # Persisted working-crossover values (Slice 0): a per-side
+                # mismatch here trips the SAME stereo-consistency blocker below
+                # as a frequency/slope mismatch — a preview only stages when
+                # both sides agree.
+                "lower_polarity": crossover.get("lower_polarity"),
+                "upper_polarity": crossover.get("upper_polarity"),
+                "delay_ms": crossover.get("delay_ms"),
+                "delay_target_role": crossover.get("delay_target_role"),
             }
             previous = crossover_values.setdefault(key, current)
             if previous != current:
@@ -1044,6 +1052,10 @@ def _preset_from_crossover_preview(
             fc_hz=frequency,
             target_type=filter_type,
             order=order,
+            lower_polarity=value.get("lower_polarity") or "non-inverted",
+            upper_polarity=value.get("upper_polarity") or "non-inverted",
+            delay_ms=value.get("delay_ms"),
+            delay_target_driver=value.get("delay_target_role"),
         ))
 
     # A routed local subwoofer is the lower half of the bass-management crossover;

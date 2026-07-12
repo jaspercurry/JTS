@@ -17,6 +17,7 @@ from jasper.active_speaker import (
     load_design_draft,
     save_design_draft,
 )
+from jasper.active_speaker.design_draft import _normalise_candidate
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
@@ -287,3 +288,121 @@ def test_load_design_draft_fails_soft_on_unsupported_schema(tmp_path: Path):
 
     assert payload["status"] == "unreadable"
     assert payload["issues"][0]["code"] == "design_draft_unsupported_schema"
+
+
+# --- Persisted working-crossover values (Slice 0): polarity/delay on a
+# crossover candidate -----------------------------------------------------
+
+
+def _candidate(**overrides) -> dict:
+    base = {
+        "between_roles": ["woofer", "tweeter"],
+        "frequency_hz": 2000,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_normalise_candidate_accepts_polarity_and_delay():
+    out = _normalise_candidate(_candidate(
+        lower_polarity="inverted",
+        upper_polarity="non-inverted",
+        delay_ms=0.35,
+        delay_target_role="woofer",
+    ))
+
+    assert out["lower_polarity"] == "inverted"
+    assert out["upper_polarity"] == "non-inverted"
+    assert out["delay_ms"] == 0.35
+    assert out["delay_target_role"] == "woofer"
+
+
+def test_normalise_candidate_polarity_delay_omitted_fields_stay_absent():
+    out = _normalise_candidate(_candidate())
+
+    assert "lower_polarity" not in out
+    assert "upper_polarity" not in out
+    assert "delay_ms" not in out
+    assert "delay_target_role" not in out
+
+
+def test_normalise_candidate_zero_delay_ms_is_not_dropped():
+    out = _normalise_candidate(_candidate(delay_ms=0.0, delay_target_role="tweeter"))
+
+    assert out["delay_ms"] == 0.0
+    assert out["delay_target_role"] == "tweeter"
+
+
+def test_normalise_candidate_rejects_unsupported_polarity():
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="lower_polarity must be one of",
+    ):
+        _normalise_candidate(_candidate(lower_polarity="reversed"))
+
+
+def test_normalise_candidate_rejects_delay_ms_out_of_range():
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="delay_ms must be between 0 and 20 ms",
+    ):
+        _normalise_candidate(_candidate(delay_ms=25.0, delay_target_role="woofer"))
+
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="delay_ms must be between 0 and 20 ms",
+    ):
+        _normalise_candidate(_candidate(delay_ms=-1.0, delay_target_role="woofer"))
+
+
+def test_normalise_candidate_delay_target_role_must_be_in_between_roles():
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="delay_target_role must be one of between_roles",
+    ):
+        _normalise_candidate(_candidate(delay_ms=0.2, delay_target_role="mid"))
+
+
+def test_normalise_candidate_delay_ms_requires_delay_target_role():
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="delay_target_role is required when delay_ms is set",
+    ):
+        _normalise_candidate(_candidate(delay_ms=0.2))
+
+
+def test_manual_crossover_settings_carry_polarity_and_delay_through_draft():
+    payload = build_design_draft(
+        _topology(),
+        manual_settings={
+            "drivers": [],
+            "crossover_candidates": [{
+                "between_roles": ["woofer", "tweeter"],
+                "frequency_hz": 2200,
+                "filter_type": "Linkwitz-Riley",
+                "slope_db_per_octave": 24,
+                "confidence": "medium",
+                "lower_polarity": "non-inverted",
+                "upper_polarity": "inverted",
+                "delay_ms": 0.4,
+                "delay_target_role": "tweeter",
+            }],
+        },
+    )
+
+    candidate = payload["manual_settings"]["crossover_candidates"][0]
+    assert candidate["upper_polarity"] == "inverted"
+    assert candidate["delay_ms"] == 0.4
+    assert candidate["delay_target_role"] == "tweeter"
+
+
+def test_existing_draft_fixtures_stay_byte_identical_without_polarity_delay():
+    # Every pre-existing crossover-candidate fixture in this file omits the
+    # new fields; confirm normalisation doesn't inject them.
+    payload = build_design_draft(_topology(), driver_research=_research())
+
+    candidate = payload["driver_research"]["crossover_candidates"][0]
+    assert "lower_polarity" not in candidate
+    assert "upper_polarity" not in candidate
+    assert "delay_ms" not in candidate
+    assert "delay_target_role" not in candidate
