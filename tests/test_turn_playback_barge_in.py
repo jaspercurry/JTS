@@ -18,19 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
-import types as _types
 
 from jasper.voice.session import AudioOutChunk
 
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = _types.ModuleType("sounddevice")
-
 
 async def _play_responses(*args, **kwargs):
-    # Imported lazily so the sounddevice stub above is in place before
-    # jasper.voice.turn_playback -> audio_io -> sounddevice resolves
-    # (keeps the import ordering without a module-top lint suppression).
     from jasper.voice.turn_playback import _play_responses as impl
 
     return await impl(*args, **kwargs)

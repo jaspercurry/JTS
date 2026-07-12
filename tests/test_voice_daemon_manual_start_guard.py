@@ -18,29 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import types
-
-
-# Same import-time stubs the sibling voice_daemon tests use so importing
-# jasper.voice_daemon doesn't require the hardware-only deps.
-if "httpx" not in sys.modules:
-    httpx = types.ModuleType("httpx")
-
-    class _Timeout:
-        def __init__(self, *args, **kwargs) -> None:
-            self.args = args
-            self.kwargs = kwargs
-
-    httpx.Timeout = _Timeout
-    sys.modules["httpx"] = httpx
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = types.ModuleType("sounddevice")
-if "rapidfuzz" not in sys.modules:
-    rapidfuzz = types.ModuleType("rapidfuzz")
-    rapidfuzz.fuzz = types.SimpleNamespace()
-    sys.modules["rapidfuzz"] = rapidfuzz
-
 
 class _SpyCalls:
     """Records that a side-effecting coroutine was awaited."""

@@ -27,25 +27,14 @@ These tests pin the contract:
 from __future__ import annotations
 
 import json
-import sys
-import types
 from queue import Empty
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-# aec_bridge.py imports sounddevice at module level for the
-# `sd.InputStream` / `sd.RawOutputStream` calls. Neither is touched
-# by the stall logic itself — but the import has to succeed. Stub
-# before the bridge module loads; matches the pattern in
-# tests/test_doctor.py for sounddevice and tests/conftest.py for
-# camilladsp.
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = types.ModuleType("sounddevice")
-
-from jasper.cli import aec_bridge  # noqa: E402
-from jasper.cli.aec_bridge import (  # noqa: E402
+from jasper.cli import aec_bridge
+from jasper.cli.aec_bridge import (
     BridgeStalled,
     FRAME_SAMPLES,
     MicDeviceUnavailable,

@@ -8,34 +8,13 @@ import asyncio
 import contextlib
 import gc
 import logging
-import sys
 import time
-import types
 import weakref
 
 import pytest
 
-
-if "httpx" not in sys.modules:
-    httpx = types.ModuleType("httpx")
-
-    class _Timeout:
-        def __init__(self, *args, **kwargs) -> None:
-            self.args = args
-            self.kwargs = kwargs
-
-    httpx.Timeout = _Timeout
-    sys.modules["httpx"] = httpx
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = types.ModuleType("sounddevice")
-if "rapidfuzz" not in sys.modules:
-    rapidfuzz = types.ModuleType("rapidfuzz")
-    rapidfuzz.fuzz = types.SimpleNamespace()
-    sys.modules["rapidfuzz"] = rapidfuzz
-
-
-from jasper.voice.session import LiveConnection, LiveTurn  # noqa: E402
-from jasper.voice_daemon import (  # noqa: E402
+from jasper.voice.session import LiveConnection, LiveTurn
+from jasper.voice_daemon import (
     State,
     WakeLoop,
     _idle_watchdog,

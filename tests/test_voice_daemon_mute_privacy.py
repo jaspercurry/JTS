@@ -16,35 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
-import types
 from collections import deque
 from types import SimpleNamespace
 
 import pytest
-
-
-# Stub heavyweight/host-specific deps only when genuinely absent —
-# a fake httpx shadowing a real install breaks jasper.tools imports.
-def _stub_if_missing(name: str, module: types.ModuleType) -> None:
-    if name in sys.modules:
-        return
-    try:
-        __import__(name)
-    except ImportError:
-        sys.modules[name] = module
-
-
-_httpx = types.ModuleType("httpx")
-_httpx.Timeout = lambda *a, **kw: SimpleNamespace(
-    read=5.0, write=5.0, connect=5.0, pool=5.0,
-)
-_stub_if_missing("httpx", _httpx)
-_stub_if_missing("sounddevice", types.ModuleType("sounddevice"))
-_rapidfuzz = types.ModuleType("rapidfuzz")
-_rapidfuzz.fuzz = types.SimpleNamespace()
-_stub_if_missing("rapidfuzz", _rapidfuzz)
-
 
 def _wake_loop_for_mute(tmp_path):
     from jasper.voice_daemon import State, WakeLoop

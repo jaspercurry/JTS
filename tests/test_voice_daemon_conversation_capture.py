@@ -5,8 +5,6 @@
 from __future__ import annotations
 
 import json
-import sys
-import types
 
 from jasper.conversation_history import (
     CAPTURE_ALIAS_ENV,
@@ -17,11 +15,6 @@ from jasper.conversation_history import (
     RETENTION_MAX_ROWS_ENV,
 )
 from jasper.research import DONE, ResearchJob
-
-
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = types.ModuleType("sounddevice")
-
 
 class _FakeTurn:
     def __init__(

@@ -24,20 +24,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
-import types as _types
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-# voice_daemon → audio_io → sounddevice (lazy at use, but module-level
-# `import sounddevice as sd` in audio_io evaluates eagerly). Stub it.
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = _types.ModuleType("sounddevice")
-
-from jasper.voice_daemon import WakeLoop, _LegRuntime  # noqa: E402
-from jasper.wake_legs import by_token  # noqa: E402
+from jasper.voice_daemon import WakeLoop, _LegRuntime
+from jasper.wake_legs import by_token
 
 
 def _make_detector(threshold: float = 0.5) -> MagicMock:

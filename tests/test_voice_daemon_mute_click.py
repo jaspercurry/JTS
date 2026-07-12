@@ -5,28 +5,7 @@
 from __future__ import annotations
 
 import logging
-import sys
-import types
 from dataclasses import dataclass
-
-
-if "httpx" not in sys.modules:
-    httpx = types.ModuleType("httpx")
-
-    class _Timeout:
-        def __init__(self, *args, **kwargs) -> None:
-            self.args = args
-            self.kwargs = kwargs
-
-    httpx.Timeout = _Timeout
-    sys.modules["httpx"] = httpx
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = types.ModuleType("sounddevice")
-if "rapidfuzz" not in sys.modules:
-    rapidfuzz = types.ModuleType("rapidfuzz")
-    rapidfuzz.fuzz = types.SimpleNamespace()
-    sys.modules["rapidfuzz"] = rapidfuzz
-
 
 @dataclass(frozen=True)
 class _FakeMeasurement:
