@@ -1328,7 +1328,7 @@ mod tests {
         }
     }
 
-    fn create_full_size_torn_ring(path: &str, g: Geometry) -> std::fs::Metadata {
+    fn create_full_size_torn_ring(path: &str, g: Geometry) -> (std::fs::File, std::fs::Metadata) {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -1336,7 +1336,8 @@ mod tests {
             .open(path)
             .unwrap();
         file.set_len(g.file_size() as u64).unwrap();
-        file.metadata().unwrap()
+        let metadata = file.metadata().unwrap();
+        (file, metadata)
     }
 
     #[test]
@@ -1589,7 +1590,7 @@ mod tests {
     fn stale_reclaimer_a_cannot_delete_replacement_seen_by_b_and_c() {
         let path = tmp_ring_path("stale-reclaimer-a-b-c");
         let g = proto_geometry();
-        let torn = create_full_size_torn_ring(&path, g);
+        let (_torn_file, torn) = create_full_size_torn_ring(&path, g);
         let (reclaim_tx, reclaim_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let path_a = path.clone();
@@ -1847,7 +1848,7 @@ mod tests {
         // valid replacement rather than failing like the EACCES case below.
         let path = tmp_ring_path("reclaim-enoent");
         let g = proto_geometry();
-        let torn_metadata = create_full_size_torn_ring(&path, g);
+        let (_torn_file, torn_metadata) = create_full_size_torn_ring(&path, g);
         let _hooks = OwnedReclaimTestGuard::arm(&path, libc::ENOENT);
 
         let reader = RingReader::create_or_attach(&path, g)
@@ -1873,7 +1874,7 @@ mod tests {
     fn owned_reclaim_eacces_fails_closed_without_retry() {
         let path = tmp_ring_path("reclaim-eacces");
         let g = proto_geometry();
-        let torn_metadata = create_full_size_torn_ring(&path, g);
+        let (_torn_file, torn_metadata) = create_full_size_torn_ring(&path, g);
         let _hooks = OwnedReclaimTestGuard::arm(&path, libc::EACCES);
 
         let err = match RingReader::create_or_attach(&path, g) {
