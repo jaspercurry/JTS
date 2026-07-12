@@ -23,6 +23,7 @@
 
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsAlert } from "/assets/shared/js/dialog.js";
+import { createToolActions } from "./actions.js";
 import { toolList } from "./render.js";
 
 const listEl = document.getElementById("tools-list");
@@ -105,80 +106,14 @@ async function load({ keepStale = false } = {}) {
   }
 }
 
-// Delegated toggle handler: a .toggle checkbox carries the tool name in
-// data-tool. POST the staged state, then re-read the overlay so the badge +
-// Apply affordance converge. No restart happens here, so the re-fetch can't be
-// raced — it's the daemon-independent overlay.
-async function onToggle(e) {
-  const input = e.target;
-  if (!input.matches("input[type=checkbox][data-tool], input[type=checkbox][data-pack]")) {
-    return;
-  }
-  const isPack = !!input.dataset.pack;
-  const key = isPack ? input.dataset.pack : input.dataset.tool;
-  const enabled = input.checked;
-  input.disabled = true;
-  statusEl.textContent = (enabled ? "Enabling " : "Disabling ") + key + "…";
-  try {
-    await postJSON(isPack ? "toggle-pack" : "toggle", isPack
-      ? { id: key, enabled }
-      : { name: key, enabled });
-    const view = await load();
-    statusEl.textContent = view && view.pending
-      ? (enabled ? "Enabled " : "Disabled ") + key +
-        " — Apply to restart the assistant."
-      : "Saved.";
-  } catch (err) {
-    input.disabled = false;
-    input.checked = !enabled; // revert the optimistic flip
-    statusEl.textContent = "";
-    await jtsAlert("Couldn't save: " + err.message);
-  }
-}
-
-// Explicit Apply: restart jasper-voice once so staged changes go live. Then
-// poll the catalog until `pending` clears (the daemon rewrote tools.json), or
-// give up after a bounded window. The list is held stable throughout.
-async function onApply() {
-  applyBtn.disabled = true;
-  statusEl.textContent = "Applying…";
-  let res;
-  try {
-    res = await postJSON("apply", {});
-  } catch (err) {
-    applyBtn.disabled = false;
-    statusEl.textContent = "";
-    await jtsAlert("Couldn't apply: " + err.message);
-    return;
-  }
-  if (!res || res.restarted !== true) {
-    // No restart happened (no provider / bonded follower / throttled). The
-    // change is still saved; surface the server's honest reason.
-    applyBtn.disabled = false;
-    statusEl.textContent = (res && res.message) || "Saved.";
-    return;
-  }
-  statusEl.textContent =
-    "Restarting the assistant to apply your changes — about 10–15 seconds…";
-  // Poll for convergence: a healthy catalog has NO `unavailable` key (only the
-  // failure path adds it), so test `!view.unavailable` — `=== false` would
-  // never match a healthy read and every Apply would falsely time out.
-  // pending=false means the live registry now matches the staged set.
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 1500));
-    const view = await load({ keepStale: true });
-    if (view && !view.unavailable && view.pending === false) {
-      statusEl.textContent = "Changes applied.";
-      applyBtn.disabled = false;
-      return;
-    }
-  }
-  // Timed out waiting — the restart may still be settling.
-  applyBtn.disabled = false;
-  statusEl.textContent =
-    "Still applying — if the assistant doesn't come back, check the " +
-    "System page.";
-}
+const { onToggle, onApply } = createToolActions({
+  basePath: "/tools/",
+  statusEl,
+  applyBtn,
+  reload: load,
+  postJSON,
+  showAlert: jtsAlert,
+});
 
 searchEl.addEventListener("input", render);
 listEl.addEventListener("change", onToggle);

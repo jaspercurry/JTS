@@ -39,9 +39,12 @@ import pytest
 _NODE = shutil.which("node")
 _HARNESS = Path("tests/js/tools_render_harness.mjs")
 _DETAIL_HARNESS = Path("tests/js/tools_detail_harness.mjs")
+_ACTIONS_HARNESS = Path("tests/js/tools_actions_test.mjs")
 _ESCAPE = Path("deploy/assets/shared/js/escape.js")
 _RENDER = Path("deploy/assets/tools/js/render.js")
 _DETAIL = Path("deploy/assets/tools/js/detail.js")
+_MAIN = Path("deploy/assets/tools/js/main.js")
+_ACTIONS = Path("deploy/assets/tools/js/actions.js")
 
 pytestmark = pytest.mark.skipif(_NODE is None, reason="node not on PATH")
 
@@ -94,9 +97,28 @@ def test_render_escapes_every_untrusted_tool_field():
 
 def test_prompt_editor_actions_follow_view_and_edit_modes():
     proc = subprocess.run(
-        [_NODE, str(_DETAIL_HARNESS), str(_DETAIL)],
+        [_NODE, str(_DETAIL_HARNESS), str(_ACTIONS), str(_DETAIL)],
         capture_output=True, text=True, timeout=30,
     )
     assert proc.returncode == 0, f"detail harness errored:\n{proc.stderr}"
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["ok"] is True
+
+
+def test_catalog_and_detail_share_mutation_actions():
+    for page in (_MAIN, _DETAIL):
+        source = page.read_text()
+        assert 'import { createToolActions } from "./actions.js";' in source
+        assert "createToolActions({" in source
+        assert "async function onToggle" not in source
+        assert "async function onApply" not in source
+
+
+def test_shared_mutation_actions_pin_requests_errors_and_bounded_polling():
+    proc = subprocess.run(
+        [_NODE, str(_ACTIONS_HARNESS), str(_ACTIONS)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, f"actions harness errored:\n{proc.stderr}"
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert out["ok"] is True
