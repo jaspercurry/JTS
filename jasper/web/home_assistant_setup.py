@@ -88,6 +88,7 @@ from ._common import (
     restart_voice_daemon,
     safe_back_href,
     send_html_response,
+    send_json_response,
     send_see_other,
     guard_read_request,
     guard_mutating_request,
@@ -1017,13 +1018,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             send_html_response(self, body, status=status)
 
         def _send_json(self, payload: Any, *, status: int = 200) -> None:
-            body = json.dumps(payload).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+            send_json_response(self, payload, status=status)
 
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)

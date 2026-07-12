@@ -501,6 +501,6 @@ def test_playlist_preview_is_json_and_needs_no_csrf(monkeypatch):
     h.do_GET()
     assert h.status == 200
     ctype = h.header_values("Content-Type")
-    assert any("application/json" in c for c in ctype)
+    assert ctype == ["application/json"]
     body = h.wfile.getvalue().decode()
     assert "error" in body

@@ -367,6 +367,35 @@ def test_send_html_response_works_without_begin_request_context():
 
 
 # ----------------------------------------------------------------------
+# Canonical JSON response
+# ----------------------------------------------------------------------
+
+
+def test_send_json_response_preserves_default_serialization_and_headers():
+    h = _FakeHandler()
+
+    _common.send_json_response(h, {"label": "café"}, status=http.HTTPStatus.CREATED)
+
+    body = b'{"label": "caf\\u00e9"}'
+    assert h._status == http.HTTPStatus.CREATED
+    assert h.header_values("Content-Type") == ["application/json"]
+    assert h.header_values("Content-Length") == [str(len(body))]
+    assert h.header_values("Cache-Control") == ["no-store"]
+    assert h.wfile.getvalue() == body
+
+
+def test_send_json_response_serialization_failure_emits_nothing():
+    h = _FakeHandler()
+
+    with pytest.raises(TypeError):
+        _common.send_json_response(h, {"unsupported": object()})
+
+    assert h._status is None
+    assert h._headers == []
+    assert h.wfile.getvalue() == b""
+
+
+# ----------------------------------------------------------------------
 # systemd restarts
 # ----------------------------------------------------------------------
 

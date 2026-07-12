@@ -119,6 +119,7 @@ from ._common import (
     restart_systemd_units,
     safe_back_href,
     send_html_response,
+    send_json_response,
     write_env_file,
 )
 
@@ -955,14 +956,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             send_html_response(self, body, status=status)
 
         def _send_json(self, payload: dict, *, status: int = 200) -> None:
-            import json as _json
-            body = _json.dumps(payload).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+            send_json_response(self, payload, status=status)
 
         # --- routes ---
 

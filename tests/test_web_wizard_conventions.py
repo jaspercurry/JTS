@@ -33,6 +33,18 @@ from jasper.web import (
 WEB_SETUP_FILES = tuple(Path("jasper/web").glob("*_setup.py"))
 WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
 
+# DA-0217 migration allowlist. Each staged response-helper chunk shrinks this;
+# the final stage deletes it and requires zero local JSON header assemblers.
+_LEGACY_JSON_RESPONSE_ASSEMBLERS = {
+    "bluetooth_setup.py",
+    "correction_setup.py",
+    "dial_setup.py",
+    "rooms_setup.py",
+    "sound_setup.py",
+    "wake_corpus_setup.py",
+    "wifi_setup.py",
+}
+
 
 def _matches(pattern: str) -> list[str]:
     rx = re.compile(pattern)
@@ -42,6 +54,60 @@ def _matches(pattern: str) -> list[str]:
         if rx.search(text):
             hits.append(str(path))
     return hits
+
+
+def test_local_json_responses_use_the_shared_response_helper():
+    offenders = set()
+    for path in WEB_PY_FILES:
+        if path.name == "_common.py":
+            continue
+        tree = ast.parse(path.read_text())
+        content_type_senders = set()
+        for function in (
+            node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+        ):
+            for call in (
+                node for node in ast.walk(function) if isinstance(node, ast.Call)
+            ):
+                if (
+                    isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "send_header"
+                    and len(call.args) >= 2
+                    and isinstance(call.args[0], ast.Constant)
+                    and call.args[0].value == "Content-Type"
+                ):
+                    content_type_senders.add(function.name)
+                    value = call.args[1]
+                    if (
+                        isinstance(value, ast.Constant)
+                        and isinstance(value.value, str)
+                        and value.value.startswith("application/json")
+                    ):
+                        offenders.add(path.name)
+        for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+            if not isinstance(call.func, ast.Attribute):
+                continue
+            if call.func.attr not in content_type_senders:
+                continue
+            if any(
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and arg.value.startswith("application/json")
+                for arg in call.args
+            ):
+                offenders.add(path.name)
+    assert offenders == _LEGACY_JSON_RESPONSE_ASSEMBLERS
+
+
+def test_migrated_local_object_responses_use_object_helper_not_byte_helper():
+    for filename in (
+        "home_assistant_setup.py",
+        "sources_setup.py",
+        "spotify_setup.py",
+    ):
+        source = (Path("jasper/web") / filename).read_text()
+        assert "send_json_response(" in source
+        assert "send_proxy_json(" not in source
 
 
 # --- Mutating-request chokepoint: every wizard POST/DELETE handler funnels
