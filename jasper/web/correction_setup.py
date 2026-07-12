@@ -3125,6 +3125,27 @@ def _handle_relay_level_match(handler: BaseHTTPRequestHandler) -> dict[str, Any]
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 
 
+def _open_commissioning_bundle_for_level_match(
+    topology: Any,
+    *,
+    calibration_id: str,
+) -> dict[str, Any] | None:
+    """Open the active-speaker commissioning bundle for a new comparison set.
+
+    Called immediately before ``measurement.start_active_comparison_set`` so
+    the fresh ``session_id`` can be stamped into the comparison set it is
+    about to mint. ``bundles.open_bundle`` is already fail-soft (returns
+    ``None``, WARN-logged, on any I/O failure); this wrapper exists only so
+    the call site reads as one step and is independently unit-testable.
+    """
+
+    from jasper.active_speaker import bundles as active_speaker_bundles
+
+    return active_speaker_bundles.open_bundle(
+        topology, calibration_id=calibration_id or "",
+    )
+
+
 def _handle_crossover_relay_level_match(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
@@ -3371,6 +3392,9 @@ def _handle_crossover_relay_level_match(
                 "the level check did not produce a complete microphone and "
                 "volume binding; run it again"
             )
+        bundle = _open_commissioning_bundle_for_level_match(
+            topology, calibration_id=identity.calibration_id,
+        )
         comparison_set = start_active_comparison_set(
             topology,
             profile_context_id=context_id,
@@ -3380,7 +3404,16 @@ def _handle_crossover_relay_level_match(
             ).hexdigest(),
             calibration_id=identity.calibration_id,
             driver_level_locks=driver_level_locks,
+            bundle_session_id=(bundle or {}).get("session_id"),
         )
+        if bundle is not None:
+            from jasper.active_speaker import bundles as active_speaker_bundles
+
+            active_speaker_bundles.attach_comparison_set(
+                Path(str(bundle["bundle_dir"])),
+                comparison_set_id=comparison_set["comparison_set_id"],
+                comparison_set_fingerprint=comparison_set["fingerprint"],
+            )
         log_event(
             logger,
             "correction.crossover_comparison_set_started",
@@ -3389,6 +3422,7 @@ def _handle_crossover_relay_level_match(
             geometry_policy=DRIVER_PLACEMENT_POLICY_ID,
             calibrated=bool(identity.calibration_id),
             driver_locks=len(driver_level_locks),
+            bundle_session=(bundle or {}).get("session_id"),
         )
 
     relay = _run_relay_capture(

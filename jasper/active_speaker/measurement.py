@@ -287,10 +287,20 @@ def start_active_comparison_set(
     device_sha256: str,
     calibration_id: str,
     driver_level_locks: Mapping[str, Mapping[str, Any]],
+    bundle_session_id: str | None = None,
     state_path: str | Path | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
-    """Persist the immutable mic and complete per-driver level context."""
+    """Persist the immutable mic and complete per-driver level context.
+
+    ``bundle_session_id``, when supplied, joins this comparison set to a
+    durable commissioning bundle (``jasper.active_speaker.bundles``) opened
+    for the same run. It rides an extra key outside
+    ``capture_geometry._COMPARISON_SET_CORE_KEYS``, so it does not change
+    ``comparison_set_fingerprint`` or affect ``comparison_set_valid`` — the
+    bundle is forensic evidence, never an input to any decision this state
+    makes.
+    """
 
     from .capture_geometry import (
         COMPARISON_SET_SCHEMA_VERSION,
@@ -322,6 +332,8 @@ def start_active_comparison_set(
         "driver_level_locks": normalized_locks,
     }
     comparison_set = {**core, "fingerprint": comparison_set_fingerprint(core)}
+    if bundle_session_id:
+        comparison_set["bundle_session_id"] = str(bundle_session_id)
     if not comparison_set_valid(comparison_set):
         raise ValueError("driver level locks are malformed")
     persisted = _normalise_state(state, path)
@@ -831,6 +843,7 @@ def record_driver_measurement(
     calibration_level: Mapping[str, Any] | None = None,
     safe_session: Mapping[str, Any] | None = None,
     durable_floor_confirmation: Mapping[str, Any] | None = None,
+    bundle_ref: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
@@ -941,6 +954,18 @@ def record_driver_measurement(
         ),
         "notes": _text(raw.get("notes"), max_chars=1000),
         "issues": issues,
+        # Optional durable-bundle join key ({session_id, artifact_path}) — see
+        # jasper.active_speaker.bundles. Forensic only: never read back as an
+        # input to any decision this module makes.
+        "bundle": dict(bundle_ref) if isinstance(bundle_ref, Mapping) else None,
+        # Optional three-repeat aggregate summary (SC-4 shape) when this
+        # record is the outcome of commissioning_capture.aggregate_driver_repeats
+        # rather than a single-shot capture. Per-repeat evidence beyond this
+        # compact per_repeat[] summary (the full audio/curves) lives only in
+        # the bundle's repeat_captures/ — this field never grows unbounded.
+        "repeats": (
+            dict(raw["repeats"]) if isinstance(raw.get("repeats"), Mapping) else None
+        ),
     }
     persisted = _normalise_state(state, path)
     persisted["driver_measurements"] = [
@@ -1061,11 +1086,17 @@ def record_summed_validation(
     raw: Mapping[str, Any],
     *,
     calibration_level: Mapping[str, Any] | None = None,
+    bundle_ref: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
     driver_target_proof_complete: bool = False,
     now: str | None = None,
 ) -> dict[str, Any]:
-    """Persist one summed crossover validation observation."""
+    """Persist one summed crossover validation observation.
+
+    ``bundle_ref``, when supplied, is stored verbatim on the record as
+    ``bundle`` — the same ``{session_id, artifact_path}`` join key
+    :func:`record_driver_measurement` stores. See its docstring.
+    """
 
     path = measurement_state_path(state_path)
     state = load_measurement_state(topology, state_path=path)
@@ -1192,6 +1223,7 @@ def record_summed_validation(
         ),
         "notes": _text(raw.get("notes"), max_chars=1000),
         "issues": issues,
+        "bundle": dict(bundle_ref) if isinstance(bundle_ref, Mapping) else None,
     }
     persisted = _normalise_state(state, path)
     persisted["summed_validations"] = [

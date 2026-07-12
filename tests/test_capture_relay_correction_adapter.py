@@ -1301,3 +1301,80 @@ def test_crossover_level_start_refuses_unsafe_legacy_preservation(monkeypatch):
 
     with pytest.raises(ValueError, match="Saved crossover inputs changed"):
         correction_setup._handle_crossover_relay_level_match(object())
+
+
+def test_open_commissioning_bundle_for_level_match_forwards_calibration_id(
+    monkeypatch,
+) -> None:
+    """The comparison-set-start hook in _handle_crossover_relay_level_match's
+    _run closure opens a bundle through this one-line seam before minting the
+    comparison set — see STEP 1 CONTRACT §7.1. Unit-tested directly (rather
+    than through the full relay flow, which no existing test drives to this
+    point) because bundles.open_bundle is already exhaustively covered in
+    tests/test_active_speaker_bundles.py; this only pins the wiring."""
+
+    from jasper.active_speaker import bundles as active_speaker_bundles
+    from jasper.web import correction_setup
+
+    seen = {}
+
+    def fake_open_bundle(topology, *, calibration_id):
+        seen["topology"] = topology
+        seen["calibration_id"] = calibration_id
+        return {"session_id": "abc123def456", "bundle_dir": "/tmp/x/abc123def456"}
+
+    monkeypatch.setattr(active_speaker_bundles, "open_bundle", fake_open_bundle)
+
+    sentinel_topology = object()
+    result = correction_setup._open_commissioning_bundle_for_level_match(
+        sentinel_topology, calibration_id="cal-9"
+    )
+
+    assert result == {
+        "session_id": "abc123def456",
+        "bundle_dir": "/tmp/x/abc123def456",
+    }
+    assert seen == {"topology": sentinel_topology, "calibration_id": "cal-9"}
+
+
+def test_open_commissioning_bundle_for_level_match_treats_none_id_as_empty(
+    monkeypatch,
+) -> None:
+    from jasper.active_speaker import bundles as active_speaker_bundles
+    from jasper.web import correction_setup
+
+    seen = {}
+    monkeypatch.setattr(
+        active_speaker_bundles,
+        "open_bundle",
+        lambda topology, *, calibration_id: seen.setdefault(
+            "calibration_id", calibration_id
+        ),
+    )
+
+    correction_setup._open_commissioning_bundle_for_level_match(
+        object(), calibration_id=""
+    )
+
+    assert seen["calibration_id"] == ""
+
+
+def test_open_commissioning_bundle_for_level_match_is_fail_soft(
+    monkeypatch,
+) -> None:
+    """bundles.open_bundle is already fail-soft (returns None on write
+    failure); the wrapper must pass that None straight through rather than
+    masking it, so the caller's own None-handling still applies."""
+
+    from jasper.active_speaker import bundles as active_speaker_bundles
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        active_speaker_bundles, "open_bundle", lambda *_a, **_k: None
+    )
+
+    result = correction_setup._open_commissioning_bundle_for_level_match(
+        object(), calibration_id="cal-9"
+    )
+
+    assert result is None

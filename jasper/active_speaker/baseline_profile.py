@@ -12,6 +12,7 @@ the shared DSP apply transaction. It does not play tones or capture audio.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -1739,6 +1740,64 @@ def recompose_baseline_yaml(
     return yaml, []
 
 
+def _bundle_dir_from_measurements(measurements: Mapping[str, Any]) -> Path | None:
+    """The open commissioning bundle a comparison set was stamped with, if any.
+
+    A follower/driver_domain apply, a manual-only apply with no comparison
+    set, or measurements shaped unexpectedly all resolve to ``None`` — there
+    is simply nothing to record an apply outcome into.
+    """
+
+    try:
+        comparison_set = measurements.get("active_comparison_set")
+        session_id = (
+            comparison_set.get("bundle_session_id")
+            if isinstance(comparison_set, Mapping)
+            else None
+        )
+    except (AttributeError, TypeError):
+        return None
+    if not session_id:
+        return None
+
+    from jasper.active_speaker import bundles as active_speaker_bundles
+
+    return active_speaker_bundles.sessions_dir() / str(session_id)
+
+
+async def _record_apply_outcome_into_bundle(
+    measurements: Mapping[str, Any],
+    *,
+    candidate: Mapping[str, Any],
+    apply_state: Mapping[str, Any] | None,
+    rollback_target: Mapping[str, Any] | None,
+) -> None:
+    """Record one apply attempt (blocked, failed, or applied) into the bundle.
+
+    ``jasper.active_speaker.bundles.record_apply`` is already fail-soft —
+    this wrapper only resolves which bundle (via the comparison set's
+    ``bundle_session_id`` — see ``jasper.active_speaker.bundles``) and moves
+    the small JSON-only write off the event loop, since
+    :func:`apply_baseline_profile` is async. Lane E's apply lifecycle events
+    (``correction.crossover_apply_started`` / ``_succeeded`` /
+    ``_rolled_back``) land at this same boundary.
+    """
+
+    bundle_dir = _bundle_dir_from_measurements(measurements)
+    if bundle_dir is None:
+        return
+
+    from jasper.active_speaker import bundles as active_speaker_bundles
+
+    await asyncio.to_thread(
+        active_speaker_bundles.record_apply,
+        bundle_dir,
+        candidate=candidate,
+        apply_state=apply_state,
+        rollback_target=rollback_target,
+    )
+
+
 async def apply_baseline_profile(
     topology: OutputTopology,
     *,
@@ -1820,6 +1879,12 @@ async def apply_baseline_profile(
             group_from_parent=True,
         )
     if not candidate.get("permissions", {}).get("may_apply"):
+        await _record_apply_outcome_into_bundle(
+            measurements,
+            candidate=candidate,
+            apply_state=None,
+            rollback_target=None,
+        )
         return {
             "status": "blocked",
             "profile": candidate,
@@ -1863,6 +1928,16 @@ async def apply_baseline_profile(
             mode=0o640,
             group_from_parent=True,
         )
+        await _record_apply_outcome_into_bundle(
+            measurements,
+            candidate=failed,
+            apply_state=exc.state.to_dict(),
+            rollback_target=(
+                {"config_path": exc.state.prior_config_path}
+                if exc.state.prior_config_path
+                else None
+            ),
+        )
         return {
             "status": "apply_failed",
             "profile": failed,
@@ -1888,6 +1963,16 @@ async def apply_baseline_profile(
         json.dumps(applied, indent=2, sort_keys=True) + "\n",
         mode=0o640,
         group_from_parent=True,
+    )
+    await _record_apply_outcome_into_bundle(
+        measurements,
+        candidate=applied,
+        apply_state=apply_state.to_dict(),
+        rollback_target=(
+            {"config_path": apply_state.prior_config_path}
+            if apply_state.prior_config_path
+            else None
+        ),
     )
     return {
         "status": "applied",

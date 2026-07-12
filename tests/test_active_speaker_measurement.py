@@ -846,3 +846,216 @@ def test_new_level_run_invalidates_prior_comparison_set(tmp_path: Path) -> None:
     assert load_measurement_state(topology, state_path=state_path)[
         "active_comparison_set"
     ] is None
+
+
+def test_start_active_comparison_set_stamps_bundle_session_id(
+    tmp_path: Path,
+) -> None:
+    """bundle_session_id joins a comparison set to a durable commissioning
+    bundle (jasper.active_speaker.bundles) without becoming part of the
+    fingerprinted, comparison-critical core — comparison_set_valid must
+    still pass and the fingerprint must not depend on it."""
+
+    from jasper.active_speaker.capture_geometry import (
+        comparison_set_fingerprint,
+        comparison_set_valid,
+    )
+
+    state_path = tmp_path / "measurements.json"
+    topology = _topology()
+    driver_level_locks = {
+        target["target_id"]: {
+            "target_id": target["target_id"],
+            "speaker_group_id": target["speaker_group_id"],
+            "role": target["role"],
+            "tone_frequency_hz": 250.0 if target["role"] == "woofer" else 6250.0,
+            "tone_peak_dbfs": -12.0,
+            "commissioning_gain_db": 0.0,
+            "locked_main_volume_db": -12.0,
+        }
+        for target in active_driver_targets(topology)
+    }
+
+    with_bundle = start_active_comparison_set(
+        topology,
+        profile_context_id="protected-profile",
+        setup_sha256="a" * 64,
+        device_sha256="b" * 64,
+        calibration_id="",
+        driver_level_locks=driver_level_locks,
+        bundle_session_id="abc123def456",
+        state_path=state_path,
+        now="2026-07-11T12:00:00Z",
+    )
+
+    assert with_bundle["bundle_session_id"] == "abc123def456"
+    assert comparison_set_valid(with_bundle) is True
+    assert load_measurement_state(topology, state_path=state_path)[
+        "active_comparison_set"
+    ] == with_bundle
+
+    # bundle_session_id sits outside _COMPARISON_SET_CORE_KEYS: changing it
+    # (or removing it) on the SAME comparison set must not move the
+    # fingerprint comparison_set_fingerprint recomputes.
+    mutated = {**with_bundle, "bundle_session_id": "a-totally-different-id"}
+    assert comparison_set_fingerprint(mutated) == with_bundle["fingerprint"]
+    dropped = {k: v for k, v in with_bundle.items() if k != "bundle_session_id"}
+    assert comparison_set_fingerprint(dropped) == with_bundle["fingerprint"]
+
+    without_bundle = start_active_comparison_set(
+        topology,
+        profile_context_id="protected-profile",
+        setup_sha256="a" * 64,
+        device_sha256="b" * 64,
+        calibration_id="",
+        driver_level_locks=driver_level_locks,
+        state_path=state_path,
+        now="2026-07-11T12:05:00Z",
+    )
+
+    assert "bundle_session_id" not in without_bundle
+
+
+def test_driver_measurement_records_optional_bundle_ref(tmp_path: Path) -> None:
+    """A recorded driver measurement carries the optional bundle join key
+    ({session_id, artifact_path}) verbatim when a bundle is open, and stores
+    None (not an absent key) when it is not — old state files without the
+    key still round-trip through load_measurement_state."""
+
+    topology = _topology(tweeter_output=1)
+    state_path = tmp_path / "measurements.json"
+    bundle_ref = {"session_id": "sess-1", "artifact_path": "captures/x.wav"}
+
+    with_bundle = record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": "silent",
+        },
+        bundle_ref=bundle_ref,
+        state_path=state_path,
+        now="2026-07-11T12:00:00Z",
+    )
+    record_with_bundle = with_bundle["driver_measurements"][-1]
+    assert record_with_bundle["bundle"] == bundle_ref
+
+    without_bundle = record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": "silent",
+        },
+        state_path=state_path,
+        now="2026-07-11T12:01:00Z",
+    )
+    record_without_bundle = without_bundle["driver_measurements"][-1]
+    assert record_without_bundle["bundle"] is None
+
+    # Round-trips through a fresh load, including the pre-existing record
+    # that has no "bundle" key at all in this state file's prior shape.
+    reloaded = load_measurement_state(topology, state_path=state_path)
+    assert reloaded["driver_measurements"][-2]["bundle"] == bundle_ref
+    assert reloaded["driver_measurements"][-1]["bundle"] is None
+
+
+def test_summed_validation_records_optional_bundle_ref(tmp_path: Path) -> None:
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    _record_summed_test(topology, state_path)
+    bundle_ref = {"session_id": "sess-2", "artifact_path": "summed/y.wav"}
+
+    state = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "operator_listening_check": True,
+            "summed_test_id": "summed-playback-1",
+        },
+        bundle_ref=bundle_ref,
+        state_path=state_path,
+        now="2026-06-14T12:03:00Z",
+    )
+
+    record = state["summed_validations"][-1]
+    assert record["bundle"] == bundle_ref
+
+
+def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
+    """Step 2: when commissioning_capture.aggregate_driver_repeats decided a
+    winner across N repeat captures, the SINGLE driver measurement recorded
+    is that winner -- with the SC-4 repeats summary attached -- and the
+    latest-wins pointer (summary.latest_driver_measurements) resolves to
+    THAT aggregate record. Per-repeat evidence beyond the compact
+    per_repeat[] summary lives only in the bundle, never duplicated into
+    measurement state."""
+
+    from jasper.active_speaker.commissioning_capture import aggregate_driver_repeats
+
+    topology = _topology(tweeter_output=1)
+    state_path = tmp_path / "measurements.json"
+
+    def repeat(level: float, path: str) -> dict:
+        return {
+            "verdict": "heard_correct_driver",
+            "acoustic": {"observed_mic_dbfs": level, "mic_clipping": False},
+            "artifact_path": path,
+        }
+
+    repeats = [
+        repeat(-30.0, "repeat_captures/r0.wav"),
+        repeat(-30.2, "repeat_captures/r1.wav"),
+        repeat(-29.9, "repeat_captures/r2.wav"),
+    ]
+    aggregate = aggregate_driver_repeats(repeats)
+    assert aggregate["accepted"] == 3
+    winner = aggregate["aggregate_repeat"]
+    assert winner is not None
+
+    state = record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": winner["verdict"],
+            "acoustic": winner["acoustic"],
+            "playback_id": "play-1",
+            "repeats": aggregate,
+        },
+        safe_session=_safe_session(
+            role="woofer", output_index=0, playback_id="play-1"
+        ),
+        state_path=state_path,
+        now="2026-07-11T12:00:00Z",
+    )
+
+    record = state["driver_measurements"][-1]
+    assert record["repeats"]["repeat_group_id"] == aggregate["repeat_group_id"]
+    assert record["repeats"]["accepted"] == 3
+    assert record["repeats"]["confidence"] == "normal"
+    assert len(record["repeats"]["per_repeat"]) == 3
+
+    # The latest-wins pointer resolves to this exact aggregate record.
+    latest = state["summary"]["latest_driver_measurements"]["mono:woofer"]
+    assert latest is record
+    assert latest["repeats"]["repeat_group_id"] == aggregate["repeat_group_id"]
+
+    # Per-repeat evidence is index-only (verdict/accepted/reject_reason/
+    # artifact_path/...) -- no full acoustic curves for the non-winning
+    # repeats leak into measurement state; that lives only in the bundle.
+    for entry in record["repeats"]["per_repeat"]:
+        assert "acoustic" not in entry
+        assert "fr_curve" not in entry
+        assert set(entry) == {
+            "index",
+            "verdict",
+            "accepted",
+            "reject_reason",
+            "artifact_path",
+            "estimated_snr_db",
+            "clipping",
+            "above_validity_floor",
+            "level_dbfs",
+        }
