@@ -594,6 +594,36 @@ def _correction_bool(
     return bool(corrections.get(role, {}).get(field))
 
 
+def _validated_driver_corrections(
+    preset: ActiveSpeakerPreset,
+    corrections: dict[str, dict[str, float | bool]] | None,
+) -> dict[str, dict[str, float | bool]]:
+    """Normalize the final per-driver correction gate shared by both emitters."""
+
+    safe_corrections: dict[str, dict[str, float | bool]] = {}
+    for role, values in (corrections or {}).items():
+        if role not in required_driver_roles(preset.way_count):
+            continue
+        if not isinstance(values, dict):
+            continue
+        gain_db = _correction_value({role: values}, role, "gain_db", 0.0)
+        delay_ms = _correction_value({role: values}, role, "delay_ms", 0.0)
+        if gain_db > 0:
+            raise ActiveSpeakerConfigError(
+                f"baseline correction gain for {role} must not be positive"
+            )
+        if delay_ms < 0 or delay_ms > 20:
+            raise ActiveSpeakerConfigError(
+                f"baseline delay for {role} must be between 0 and 20 ms"
+            )
+        safe_corrections[role] = {
+            "gain_db": gain_db,
+            "delay_ms": delay_ms,
+            "inverted": bool(values.get("inverted")),
+        }
+    return safe_corrections
+
+
 def _emit_baseline_driver_definitions(
     preset: ActiveSpeakerPreset,
     *,
@@ -1547,27 +1577,7 @@ def emit_active_speaker_baseline_config(
             "limiter_clip_limit_db must be between -120 and 0 dB"
         )
 
-    safe_corrections: dict[str, dict[str, float | bool]] = {}
-    for role, values in (corrections or {}).items():
-        if role not in required_driver_roles(preset.way_count):
-            continue
-        if not isinstance(values, dict):
-            continue
-        gain_db = _correction_value({role: values}, role, "gain_db", 0.0)
-        delay_ms = _correction_value({role: values}, role, "delay_ms", 0.0)
-        if gain_db > 0:
-            raise ActiveSpeakerConfigError(
-                f"baseline correction gain for {role} must not be positive"
-            )
-        if delay_ms < 0 or delay_ms > 20:
-            raise ActiveSpeakerConfigError(
-                f"baseline delay for {role} must be between 0 and 20 ms"
-            )
-        safe_corrections[role] = {
-            "gain_db": gain_db,
-            "delay_ms": delay_ms,
-            "inverted": bool(values.get("inverted")),
-        }
+    safe_corrections = _validated_driver_corrections(preset, corrections)
 
     # Drop inactive bands (a near-zero gain rounds to a no-op) exactly like the
     # stereo emitter's build_sound_filters does, so an "all flat" preference
@@ -1780,27 +1790,7 @@ def emit_active_speaker_driver_domain_config(
             "limiter_clip_limit_db must be between -120 and 0 dB"
         )
 
-    safe_corrections: dict[str, dict[str, float | bool]] = {}
-    for role, values in (corrections or {}).items():
-        if role not in required_driver_roles(preset.way_count):
-            continue
-        if not isinstance(values, dict):
-            continue
-        gain_db = _correction_value({role: values}, role, "gain_db", 0.0)
-        delay_ms = _correction_value({role: values}, role, "delay_ms", 0.0)
-        if gain_db > 0:
-            raise ActiveSpeakerConfigError(
-                f"baseline correction gain for {role} must not be positive"
-            )
-        if delay_ms < 0 or delay_ms > 20:
-            raise ActiveSpeakerConfigError(
-                f"baseline delay for {role} must be between 0 and 20 ms"
-            )
-        safe_corrections[role] = {
-            "gain_db": gain_db,
-            "delay_ms": delay_ms,
-            "inverted": bool(values.get("inverted")),
-        }
+    safe_corrections = _validated_driver_corrections(preset, corrections)
 
     output_count = _output_count(preset)
     filter_lines = _emit_baseline_driver_definitions(
