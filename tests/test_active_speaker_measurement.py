@@ -1454,6 +1454,57 @@ def test_reverse_only_new_run_does_not_fall_back_to_old_in_phase(
     assert pair["reverse"]["placement_proof"]["comparison_set_id"] == run_b
 
 
+def test_malformed_modern_proof_never_falls_into_the_legacy_pair_bucket(
+    tmp_path: Path,
+) -> None:
+    """Corrupt/migrated modern evidence must fail closed, not look legacy."""
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+
+    for expect_null, depth, created_at in (
+        (False, 2.0, "2026-07-11T12:00:00Z"),
+        (True, 24.0, "2026-07-11T12:01:00Z"),
+    ):
+        record_summed_validation(
+            topology,
+            {
+                "speaker_group_id": "mono",
+                "outcome": "blend_ok",
+                "observed_mic_dbfs": -40,
+                "summed_test_id": "summed-playback-1",
+                "acoustic": _summed_acoustic(
+                    null_depth_db=depth, expect_null=expect_null,
+                ),
+            },
+            state_path=state_path,
+            driver_target_proof_complete=True,
+            now=created_at,
+        )
+
+    fresh = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -41,
+            "summed_test_id": "summed-playback-1",
+            "acoustic": _summed_acoustic(
+                null_depth_db=3.0, expect_null=False,
+            ),
+            "placement_proof": {"comparison_set_id": "not-a-valid-id"},
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+        now="2026-07-11T12:02:00Z",
+    )
+
+    assert fresh["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"] == {
+        "in_phase": None,
+        "reverse": None,
+    }
+
+
 def test_summed_validation_persists_valid_region(tmp_path: Path) -> None:
     topology = _topology()
     state_path = tmp_path / "measurements.json"

@@ -1418,7 +1418,9 @@ Delay alignment is measured, not guessed.
 > older run may not fill the missing side. This prevents a moved microphone or
 > new commissioning attempt from fabricating a same-position null margin out
 > of two individually valid captures. Legacy records without placement proof
-> pair only with other legacy records.
+> pair only with other legacy records. A record that carries a malformed
+> modern proof is not treated as legacy: it anchors the region as invalid and
+> contributes no paired decision evidence.
 > `jasper.active_speaker.crossover_alignment.propose_crossover_alignment`
 > itself is unchanged — this is wiring persisted paired evidence around the
 > already-shipped proposer, per

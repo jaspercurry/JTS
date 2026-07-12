@@ -164,24 +164,30 @@ def _record_summed_kind(record: Mapping[str, Any]) -> str | None:
     return "reverse" if _truthy_flag(acoustic.get("expect_null")) else "in_phase"
 
 
-def _record_comparison_set_id(record: Mapping[str, Any]) -> str | None:
-    """Authoritative commissioning-run id carried by a capture record.
+def _record_comparison_scope(record: Mapping[str, Any]) -> tuple[str, str | None]:
+    """Authoritative commissioning-run scope carried by a capture record.
 
     Modern relay captures bind their server-normalized placement proof to the
     active comparison set.  That id is decision evidence (unlike the optional
     forensic bundle reference), so paired in-phase/reverse captures may use it
     to prove they came from the same fixed-position commissioning run.  Legacy
-    records have no proof and return ``None``; they retain the pre-existing
-    newest-per-polarity fallback within the legacy/unbound bucket.
+    records have no proof and return the legacy scope; they retain the
+    pre-existing newest-per-polarity fallback within that legacy bucket. A
+    present-but-malformed proof is distinct from legacy evidence and must not
+    authorize any pair.
     """
 
+    if "placement_proof" not in record or record.get("placement_proof") is None:
+        return "legacy", None
     proof = record.get("placement_proof")
     if not isinstance(proof, Mapping):
-        return None
+        return "invalid", None
     value = proof.get("comparison_set_id")
     if not isinstance(value, str) or len(value) != 32:
-        return None
-    return value if all(ch in "0123456789abcdef" for ch in value) else None
+        return "invalid", None
+    if not all(ch in "0123456789abcdef" for ch in value):
+        return "invalid", None
+    return "comparison_set", value
 
 
 def _valid_region(value: Any) -> dict[str, Any] | None:
@@ -549,9 +555,9 @@ def _latest_current_summed_records(
     target_by_group = {target["speaker_group_id"]: target for target in targets}
     latest: dict[str, dict[str, Any]] = {}
     pairs: dict[str, dict[str, dict[str, dict[str, Any] | None]]] = {}
-    pair_comparison_sets: dict[str, dict[str, str | None]] = {}
+    pair_comparison_sets: dict[str, dict[str, tuple[str, str | int | None]]] = {}
     stale_count = 0
-    for record in reversed(records):
+    for record_index, record in enumerate(reversed(records)):
         group_id = record.get("speaker_group_id")
         if not isinstance(group_id, str) or group_id not in target_by_group:
             continue
@@ -566,19 +572,28 @@ def _latest_current_summed_records(
         if region_key is None and target.get("mode") == "active_2_way":
             region_key = _TWO_WAY_REGION_KEY
         if kind is not None and region_key is not None:
-            comparison_set_id = _record_comparison_set_id(record)
+            scope_kind, comparison_set_id = _record_comparison_scope(record)
+            comparison_scope: tuple[str, str | int | None] = (
+                scope_kind,
+                record_index if scope_kind == "invalid" else comparison_set_id,
+            )
             group_pair_sets = pair_comparison_sets.setdefault(group_id, {})
             if region_key not in group_pair_sets:
                 # Records are walked newest-first. The first record for this
                 # region anchors the pair to its commissioning run; an older
                 # run may not fill the missing polarity slot.
-                group_pair_sets[region_key] = comparison_set_id
-            elif group_pair_sets[region_key] != comparison_set_id:
+                group_pair_sets[region_key] = comparison_scope
+            elif group_pair_sets[region_key] != comparison_scope:
                 continue
             region_pairs = pairs.setdefault(group_id, {})
             slot = region_pairs.setdefault(
                 region_key, {"in_phase": None, "reverse": None}
             )
+            if scope_kind == "invalid":
+                # Keep an authoritative empty region so 2-way consumers do
+                # not mistake absence for legacy state and fall back to the
+                # flat latest-in-phase compatibility slot.
+                continue
             if slot[kind] is None:
                 slot[kind] = record
     return latest, pairs, stale_count

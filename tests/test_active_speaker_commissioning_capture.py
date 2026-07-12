@@ -1711,6 +1711,69 @@ def test_build_proposal_never_combines_polarities_from_different_runs(
     assert proposal["polarity_margin_db"] is None
 
 
+@pytest.mark.parametrize("malformed_expect_null", [False, True])
+def test_build_proposal_never_falls_back_around_malformed_modern_proof(
+    tmp_path: Path,
+    malformed_expect_null: bool,
+) -> None:
+    """An authoritative invalid region blocks the 2-way legacy fallback."""
+    preset = _two_way()
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+
+    for expect_null, depth, created_at in (
+        (False, 2.0, "2026-07-11T12:00:00Z"),
+        (True, 24.0, "2026-07-11T12:01:00Z"),
+    ):
+        _capture_summed(
+            tmp_path,
+            preset,
+            SummedAcousticResult(
+                verdict="blend_ok",
+                null_depth_db=depth,
+                crossover_fc_hz=1600.0,
+                observed_mic_dbfs=-34.0,
+                mic_clipping=False,
+                quality={"failed": False, "rms_dbfs": -34.0},
+                expect_null=expect_null,
+                calibrated=True,
+            ),
+            topology=topology,
+            state_path=state_path,
+            wav_name=f"legacy_{expect_null}.wav",
+            now=created_at,
+        )
+
+    _capture_summed(
+        tmp_path,
+        preset,
+        SummedAcousticResult(
+            verdict="blend_ok",
+            null_depth_db=7.0,
+            crossover_fc_hz=1600.0,
+            observed_mic_dbfs=-34.0,
+            mic_clipping=False,
+            quality={"failed": False, "rms_dbfs": -34.0},
+            expect_null=malformed_expect_null,
+            calibrated=True,
+        ),
+        topology=topology,
+        state_path=state_path,
+        placement_proof={"comparison_set_id": "bad"},
+        wav_name="malformed.wav",
+        now="2026-07-11T12:02:00Z",
+    )
+
+    measurements = load_measurement_state(topology, state_path=state_path)
+    out = build_crossover_alignment_proposal(
+        preset, measurements, requested_mode=ca.PHASE_AWARE,
+    )
+    proposal = out["proposal"]
+    assert proposal["in_phase_null_depth_db"] is None
+    assert proposal["reverse_null_depth_db"] is None
+    assert proposal["polarity_margin_db"] is None
+
+
 def test_max_summed_records_eviction_degrades_to_single_capture_fallback(
     tmp_path: Path,
 ) -> None:
