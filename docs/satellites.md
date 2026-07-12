@@ -137,7 +137,10 @@ closes the input side only: the turn remains active while the assistant
 responds and then exits through the normal session-end cue path. HID
 bridges retry a busy `/session/start` while the button remains held, so a
 press that lands during that short closing window can still begin the next
-manual turn without a separate tap. Code-level
+manual turn without a separate tap. One speaker supports exactly one connected
+WiiM Remote 2: if more than one connected remote exposes the voice report, the
+BLE adapter refuses to choose between microphones and logs guidance to leave
+only one connected. Code-level
 profiles live in [`jasper/accessories/registry.py`](../jasper/accessories/registry.py);
 a profile may reserve future hold-to-talk or remote-mic metadata, but
 that metadata is not a runtime audio path until a capture source is
@@ -1014,3 +1017,5 @@ answered or as new ones surface.**
   — ESP-IDF native Snapcast client for ESP32-S3.
 - [formatBCE/Respeaker-XVF3800-ESPHome-integration](https://github.com/formatBCE/Respeaker-XVF3800-ESPHome-integration)
   — reference integration for the Seeed XVF3800-with-XIAO fallback path.
+
+Last verified: 2026-07-12
