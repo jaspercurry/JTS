@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`b0f9bac4`): 2026-07-12.
+Last reconciled against `main` (`2a8584c3`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 384
-- **fixed**: 280
+- **open**: 383
+- **fixed**: 281
 - **in-progress**: 0
 - **mooted**: 12
 - **deferred**: 1
@@ -190,7 +190,7 @@ Last reconciled against `main` (`b0f9bac4`): 2026-07-12.
 | DA-0249 | `jasper/cli/doctor/audio.py` :: check_loopback:263 / check_fanin_binary_inst | should-fix | W4 | **fixed** | hardware-free loopback and fan-in installation-check contracts — #1406 |
 | DA-0250 | `jasper/cli/doctor/satellites.py` :: check_dial_heartbeat | should-fix | W4 | **fixed** | exception, never-seen, recent, and long-idle activity contracts — #1410 |
 | DA-0251 | `jasper/peering/discovery.py` :: PeerDiscovery._handle_change | should-fix | W4 | **fixed** | fail-soft record parsing and FIFO identity-change bookkeeping — #1411 |
-| DA-0252 | `jasper/transit/_mta_stations.py` :: load_stations | should-fix | W4 | **open** | — |
+| DA-0252 | `jasper/transit/_mta_stations.py` :: load_stations | should-fix | W4 | **fixed** | real missing/open/decode fallback tests and truthful permissive-CSV contract — #1413 |
 | DA-0253 | `jasper/voice/openai_session.py` :: OpenAIRealtimeConnection._reconnect_with_bac | should-fix | W4 | **open** | — |
 | DA-0254 | `jasper/web/speaker_setup.py` :: _apply_name / _write_bluez_main_conf_name | should-fix | W4 | **open** | — |
 | DA-0255 | `jasper/web/sync_flow.py` :: handle_start / active_phase / handle_status | should-fix | W4 | **open** | `handle_play` now directly covered by race and happy-path tests in #1239; start/analyze/active-phase coverage remains |
