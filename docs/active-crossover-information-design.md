@@ -792,8 +792,14 @@ As of 2026-07-11, JTS has much of the substrate but not the full product:
 - The automatic success path requires a pre-apply combined listening check,
   but not reverse-polarity/delay/off-axis evidence or post-apply acoustic
   verification.
-- Existing alignment analysis is not fully reachable through persisted paired
-  summed evidence.
+- ~~Existing alignment analysis is not fully reachable through persisted
+  paired summed evidence.~~ Closed for the polarity/margin proposal (Slice 2):
+  `measurement.py` now retains both in-phase and reverse-polarity summed
+  evidence per crossover region (one polarity captured after the other no
+  longer overwrites it), and `build_crossover_alignment_proposal` reaches
+  every region in a three-way, not only the lowest. The bounded measured
+  delay *walk* (a value, not just a status) and post-apply verification
+  remain separate, not-yet-built pieces of Slice 2.
 - ~~Automatic trim application must not reset a manually applied delay or
   inversion when no new alignment evidence exists.~~ Closed in Slice 0:
   manual tuning never consults alignment evidence for these two
