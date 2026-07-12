@@ -692,11 +692,11 @@ def _assess_dtln_engine_from_stats(
 ) -> CheckResult | None:
     """Authoritative DTLN-leg verdict from the bridge's live stats
     snapshot (/run/jasper/aec_bridge_stats.json, `leg_engines.dtln`,
-    written at startup by jasper/cli/aec_bridge.py). Returns None when
-    the snapshot is stale or predates the leg_engines field — caller
-    falls back to journal parsing, which is window-limited (a load
-    failure ages out of the 10-min journal window; this surface
-    doesn't)."""
+    maintained by jasper/cli/aec_bridge.py across initialization and
+    runtime failures). Returns None when the snapshot is stale or predates
+    the leg_engines field — caller falls back to journal parsing, which is
+    window-limited (a failure ages out of the 10-min journal window; this
+    surface doesn't)."""
     try:
         updated = float(stats.get("updated_epoch_sec", 0.0))
         leg = stats["leg_engines"]["dtln"]
@@ -716,9 +716,9 @@ def _assess_dtln_engine_from_stats(
     if enabled:
         return CheckResult(
             "DTLN-aec engine", "fail",
-            "JASPER_AEC_DTLN_ENABLED=1 but the running bridge could not "
-            f"load the engine: {error or 'unknown error'}. Bridge "
-            "degraded to AEC3-only — triple-stream is silently "
+            "JASPER_AEC_DTLN_ENABLED=1 but the running bridge reports "
+            f"the engine unavailable: {error or 'unknown error'}. Bridge "
+            "degraded to AEC3-only — triple-stream is "
             "dual-stream and voice listens on an unfed :9878 leg. Check "
             "/var/lib/jasper/dtln/ and `journalctl -u jasper-aec-bridge -e`.",
         )
