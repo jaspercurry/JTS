@@ -650,6 +650,69 @@ def restart_voice_daemon() -> None:
 MAX_FORM_BODY_BYTES = 1024 * 1024
 
 
+class JsonBodyError(ValueError):
+    """Structured validation failure from :func:`read_json_object`."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def read_json_object(
+    handler: BaseHTTPRequestHandler,
+    *,
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Read one bounded UTF-8 JSON object from a stdlib request handler.
+
+    Missing and zero Content-Length represent an empty object. Validation
+    failures are policy-free structured errors; callers own response text and
+    status. Stream ``OSError`` exceptions remain distinct for callers whose
+    established error contract treats transport failures differently.
+    """
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+
+    raw_length = handler.headers.get("Content-Length") or "0"
+    try:
+        length = int(raw_length)
+    except (TypeError, ValueError) as exc:
+        raise JsonBodyError(
+            "invalid_content_length",
+            "Content-Length must be an integer",
+        ) from exc
+    if length < 0:
+        raise JsonBodyError(
+            "negative_content_length",
+            "Content-Length must not be negative",
+        )
+    if length > max_bytes:
+        raise JsonBodyError(
+            "body_too_large",
+            f"JSON body exceeds {max_bytes} bytes",
+        )
+    if length == 0:
+        return {}
+
+    raw = handler.rfile.read(length)
+    if len(raw) != length:
+        raise JsonBodyError(
+            "incomplete_body",
+            f"incomplete JSON body: expected {length} bytes, received {len(raw)}",
+        )
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise JsonBodyError("invalid_utf8", "JSON body must be valid UTF-8") from exc
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise JsonBodyError("invalid_json", "invalid JSON body") from exc
+    if not isinstance(parsed, dict):
+        raise JsonBodyError("non_object", "JSON body must be an object")
+    return parsed
+
+
 def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
     """Parse a urlencoded form body off a stdlib BaseHTTPRequestHandler
     request into a single-value dict. Empty values are preserved (so

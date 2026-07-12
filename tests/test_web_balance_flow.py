@@ -205,12 +205,64 @@ class FakeHandler:
     """Just enough of BaseHTTPRequestHandler for _read_json plus the
     optional X-JTS-Token the apply path forwards to /grouping/set."""
 
-    def __init__(self, body: bytes = b"{}", *, token: str | None = None):
+    def __init__(
+        self,
+        body: bytes = b"{}",
+        *,
+        token: str | None = None,
+        content_length: str | None = None,
+        reader=None,
+    ):
         import io
-        self.headers = {"Content-Length": str(len(body))}
+        self.headers = {
+            "Content-Length": (
+                str(len(body)) if content_length is None else content_length
+            ),
+        }
         if token is not None:
             self.headers["X-JTS-Token"] = token
-        self.rfile = io.BytesIO(body)
+        self.rfile = io.BytesIO(body) if reader is None else reader
+
+
+@pytest.mark.parametrize(
+    ("body", "content_length"),
+    (
+        (b"{", None),
+        (b"[]", None),
+        (b"{}", None),
+        (b'{"channel":"left"}', "not-a-number"),
+        (b"", "65537"),
+        (b'{"channel":"left"}', "19"),
+    ),
+)
+def test_invalid_json_ramp_preserves_response_without_starting_playback(
+    body,
+    content_length,
+):
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("invalid body must not start or schedule playback")
+
+    payload, status = balance_flow.handle_ramp(
+        FakeHandler(body, content_length=content_length),
+        unexpected,
+        unexpected,
+    )
+
+    assert status == HTTPStatus.BAD_REQUEST
+    assert payload == {"ok": False, "error": "channel must be left|right"}
+
+
+def test_balance_json_adapter_leaves_stream_oserror_distinct():
+    class BrokenReader:
+        def read(self, _length):
+            raise OSError("socket reset")
+
+    with pytest.raises(OSError, match="socket reset"):
+        balance_flow.handle_ramp(
+            FakeHandler(content_length="1", reader=BrokenReader()),
+            lambda *_args, **_kwargs: None,
+            lambda *_args, **_kwargs: None,
+        )
 
 
 def start_ok(env) -> dict:

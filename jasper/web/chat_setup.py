@@ -17,10 +17,12 @@ from typing import Any
 
 from ..conversation_history import ConversationStore, read_settings, write_settings
 from ._common import (
+    JsonBodyError,
     begin_request,
     canonical_page,
     guard_mutating_request,
     guard_read_request,
+    read_json_object,
     reject_csrf,
     send_html_response,
     send_proxy_json,
@@ -110,19 +112,15 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
 
         def _read_json(self) -> tuple[dict[str, Any] | None, str | None]:
             try:
-                length = int(self.headers.get("Content-Length") or "0")
-            except ValueError:
-                return None, "invalid content length"
-            if length < 0 or length > MAX_JSON_BYTES:
-                return None, "request too large"
-            raw = self.rfile.read(length) if length else b"{}"
-            try:
-                parsed = json.loads(raw.decode("utf-8") or "{}")
-            except (UnicodeDecodeError, json.JSONDecodeError):
+                return read_json_object(self, max_bytes=MAX_JSON_BYTES), None
+            except JsonBodyError as exc:
+                if exc.code == "invalid_content_length":
+                    return None, "invalid content length"
+                if exc.code in {"negative_content_length", "body_too_large"}:
+                    return None, "request too large"
+                if exc.code == "non_object":
+                    return None, "JSON body must be an object"
                 return None, "invalid JSON body"
-            if not isinstance(parsed, dict):
-                return None, "JSON body must be an object"
-            return parsed, None
 
         def _send_data(self, raw_query: str) -> None:
             query = urllib.parse.parse_qs(raw_query, keep_blank_values=True)

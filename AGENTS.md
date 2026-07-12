@@ -456,6 +456,12 @@ primitive layer:
 - Send mutating JSON POSTs with `jsonHeaders()`.
 - Send mutating non-JSON POSTs, such as `audio/wav`, with
   `csrfHeaders({...})`.
+- Read JSON object bodies with `_common.read_json_object(handler,
+  max_bytes=...)`; the owning endpoint keeps its local, explicit cap and
+  translates `JsonBodyError` into its established response contract. Call the
+  reader only after the route allowlist and `guard_mutating_request()` have
+  accepted the request. Do not add response, logging, or CSRF policy to the
+  shared reader.
 - Route-check unknown GET paths before `guard_read_request()` so bogus
   paths return 404 without revealing Host / Fetch Metadata guard state.
   Call `guard_read_request()` before rendering or returning page data on
