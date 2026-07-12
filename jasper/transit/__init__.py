@@ -69,13 +69,13 @@ plumbing. Each numbered item is one logical edit point:
      shutdown, duck-typed, so a pool is reclaimed with no daemon edit.
   7. Install migration: add the new provider's env keys to the
      `keys=(...)` array in `migrate_transit_config` (in
-     `deploy/install.sh`). This list duplicates
-     `transit.all_env_keys()` plus the co-located Google Routes
-     travel-mode key (`JASPER_TRAVEL_DEFAULT_MODE`, owned by
+     `deploy/lib/install/env-migrations.sh`). This list is a superset of
+     `transit.all_env_keys()` because it also carries the co-located Google
+     Routes travel-mode key (`JASPER_TRAVEL_DEFAULT_MODE`, owned by
      `jasper/google_routes.py`, not any `TransitProvider`) — the
-     wizard already learns the transit-provider keys from Python, but
-     `install.sh` reads from a bash literal because it runs before
-     Python is available. Drift here is benign
+     wizard learns provider keys from Python while the shell migration owns a
+     literal mirror. A contract test keeps those surfaces aligned. Drift is
+     operationally survivable
      (operator-edited values stay in `jasper.env` instead of migrating
      to `transit.env`), but worth keeping in sync. (`JASPER_TRANSIT_CITIES`
      itself is a pack-level toggle, not a provider env key, so it is NOT
@@ -333,9 +333,8 @@ def covering(lat: float, lon: float) -> tuple[TransitProvider, ...]:
 
 def all_env_keys() -> tuple[str, ...]:
     """Every env variable owned by any registered provider, in stable
-    order. Used by the wizard (to know which keys it writes) and by
-    install.sh's migration (to know which keys to move from operator
-    env to wizard env)."""
+    order. The wizard consumes this directly; the shell-owned installer
+    migration carries a literal superset pinned by a contract test."""
     seen: list[str] = []
     for p in REGISTRY:
         for k in p.env_keys:

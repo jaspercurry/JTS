@@ -601,12 +601,11 @@ migrate_removed_output_dac_route() {
     fi
 }
 
-# Migrate stale transit env vars from /etc/jasper/jasper.env into the
-# wizard-owned /var/lib/jasper/transit.env. The wizard at /transit
-# owns every transit env variable; operators who paste those into
-# jasper.env (CI bootstrap, headless imaging, SSH-driven setup) get
-# them moved automatically so the wizard's file stays the single
-# source of truth.
+# Migrate the supported legacy provider keys, Google Routes travel-mode
+# default, and city-pack selection from /etc/jasper/jasper.env into the
+# wizard-owned /var/lib/jasper/transit.env. Wizard-only geocoding fields have
+# no legacy jasper.env migration path. The wizard file remains the runtime
+# source of truth because services load it after jasper.env.
 #
 # Idempotent. Safe on fresh installs (no-op) and on long-lived ones
 # (already-migrated keys just clean up the jasper.env residue).
@@ -659,7 +658,8 @@ migrate_transit_config() {
 
     # Migrate an operator-set JASPER_TRANSIT_CITIES out of jasper.env. It's the
     # pack-level toggle — NOT a provider env key, so deliberately not in the
-    # keys=() loop above (which mirrors transit.all_env_keys()). The daemon
+    # keys=() loop above (which is a superset of transit.all_env_keys() because
+    # it also carries Google Routes' JASPER_TRAVEL_DEFAULT_MODE). The daemon
     # reads it via os.environ so it works in either file, but leaving it in
     # jasper.env shadows the wizard, which reads transit.env and would render
     # the wrong toggle. Migrate even an EMPTY value: present-empty means "no

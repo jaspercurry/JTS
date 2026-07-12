@@ -13,12 +13,29 @@ presumptuous (no seed when no transit is configured).
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
+
+from jasper import transit
 
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_MIGRATIONS_LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
+
+
+def test_shell_migration_keys_cover_provider_registry_exactly() -> None:
+    text = ENV_MIGRATIONS_LIB.read_text(encoding="utf-8")
+    function = text.split("migrate_transit_config() {", 1)[1].split("\n}", 1)[0]
+    match = re.search(r"local keys=\(\n(?P<body>.*?)\n    \)", function, re.DOTALL)
+    assert match is not None
+    shell_keys = {line.strip() for line in match.group("body").splitlines()}
+
+    provider_keys = set(transit.all_env_keys())
+    assert provider_keys <= shell_keys
+    assert shell_keys - provider_keys == {"JASPER_TRAVEL_DEFAULT_MODE"}
+    assert "JASPER_TRANSIT_CITIES" not in shell_keys
+    assert 'grep -qE "^JASPER_TRANSIT_CITIES="' in function
 
 
 def _run_migrate(tmp_path: Path) -> subprocess.CompletedProcess[str]:
