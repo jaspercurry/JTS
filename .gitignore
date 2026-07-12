@@ -75,3 +75,9 @@ experiments/aec3-v2-deep-tune-spike/*.dylib
 # large/throwaway, regenerate via scripts/s0-sync-bench.sh. The harness
 # itself is tracked; only its captured run output is ignored.
 s0-sync-bench/
+
+# P0 multi-room feasibility-spike run output — machine/device-specific
+# Wi-Fi and Ethernet-reference stats, budgets, and captures. Regenerate with
+# scripts/multiroom-spike.sh; the harness and analyzer remain tracked.
+/multiroom-spike/
+/multiroom-spike-ethernet-reference/
