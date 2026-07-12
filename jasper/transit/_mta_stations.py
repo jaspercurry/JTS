@@ -16,14 +16,22 @@ Each consumer cares about a subset of fields:
   - provider uses `stop_id`, `name`, `borough`, `lines`, `lat`, `lon`
     (for haversine ranking in `find_stops_near`).
 
-The Station dataclass exposes all of them. Rows missing lat/lon are
-still loaded (`lat=lon=None`) so the runtime client can use them; the
-provider filters those out when building the haversine search.
+The Station dataclass exposes all of them. Rows with blank/non-numeric
+coordinates, or a legacy schema without lat/lon columns, are still loaded
+(`lat=lon=None`) so the runtime client can use them; the provider filters
+those out when building the haversine search.
 
-Exception safety: if the CSV is missing / corrupt / partial-write
-mid-deploy, `load_stations()` returns an empty tuple rather than
-raising. Import of the runtime client is on jasper-voice's critical
-path; a crashed import would mean no voice loop at all.
+Exception safety: failures while locating, opening, decoding, or iterating
+the bundled CSV make `load_stations()` return an empty tuple rather than
+raise. Import of the runtime client is on jasper-voice's critical path; a
+crashed import would mean no voice loop at all.
+
+This is an exception-safety boundary, not an integrity checker. Python's CSV
+reader is intentionally permissive: rows without a `stop_id` are skipped,
+blank/non-numeric or absent coordinate columns become `None`, and a parseable
+short row that still includes its coordinates can load with empty optional
+labels. The repository's refresh and deploy paths publish this package data
+atomically rather than relying on this loader to detect partial writes.
 """
 from __future__ import annotations
 
