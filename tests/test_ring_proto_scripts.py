@@ -439,7 +439,9 @@ def test_arm_ring_a_capture_device_matches_fanin_coupling_ssot() -> None:
     """The capture device arm-ring-a.sh + make-camilla-ring-config.sh --ring-a
     default to must match jasper.fanin_coupling.RING_CAPTURE_DEVICE — the SSOT
     the Rust writer and Python both read. A drift would arm a config CamillaDSP
-    resolves against a conf.d entry that does not exist."""
+    resolves against a conf.d entry that does not exist. The arm script must
+    also forward its selected device under the variable the config builder
+    actually reads, so a lab override cannot split the ALSA and Camilla names."""
     from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_WIRE_FORMAT
 
     arm_text = (RING_PROTO_DIR / "arm-ring-a.sh").read_text(encoding="utf-8")
@@ -453,6 +455,12 @@ def test_arm_ring_a_capture_device_matches_fanin_coupling_ssot() -> None:
         f"make-camilla-ring-config.sh --ring-a must pin the SSOT wire format "
         f"{RING_WIRE_FORMAT!r}"
     )
+    assert (
+        'JASPER_RING_PROTO_ALSA_DEVICE="${CAPTURE_DEVICE}" '
+        'bash "${RING_PROTO_DIR}/make-camilla-ring-config.sh" --ring-a'
+        in arm_text
+    )
+    assert 'JASPER_RING_PROTO_CAPTURE_DEVICE="${CAPTURE_DEVICE}"' not in arm_text
 
 
 def test_arm_ring_a_removes_stale_ring_before_fanin_restart() -> None:

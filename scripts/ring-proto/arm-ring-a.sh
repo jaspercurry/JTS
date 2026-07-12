@@ -369,7 +369,7 @@ echo ""
 # ---------------------------------------------------------------------
 echo "--- Step 6/7: build + load the Ring A hand Camilla config ---"
 
-if ! JASPER_RING_PROTO_CAPTURE_DEVICE="${CAPTURE_DEVICE}" bash "${RING_PROTO_DIR}/make-camilla-ring-config.sh" --ring-a; then
+if ! JASPER_RING_PROTO_ALSA_DEVICE="${CAPTURE_DEVICE}" bash "${RING_PROTO_DIR}/make-camilla-ring-config.sh" --ring-a; then
     fail_and_rollback "step 6 (make-camilla-ring-config.sh --ring-a)"
 fi
 
