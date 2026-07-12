@@ -1297,9 +1297,11 @@ mod tests {
         let (release_tx, release_rx) = mpsc::channel();
         let attacher = std::thread::spawn(move || {
             attach_existing_with_size_wait_hook(attach_fd, g, move |_, st| {
-                entered_tx
-                    .send((st.st_dev as u64, st.st_ino, st.st_size))
-                    .unwrap();
+                #[cfg(target_os = "macos")]
+                let device = st.st_dev as u64;
+                #[cfg(not(target_os = "macos"))]
+                let device = st.st_dev;
+                entered_tx.send((device, st.st_ino, st.st_size)).unwrap();
                 release_rx.recv().unwrap();
             })
         });
