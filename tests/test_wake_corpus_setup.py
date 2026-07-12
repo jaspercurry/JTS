@@ -2353,37 +2353,6 @@ def test_usb_mic_status_reports_hardware_agc(
     assert calls == [["amixer", "-c", "4", "get", "Auto Gain Control"]]
 
 
-def test_enable_bridge_outputs_writes_wizard_env_and_restarts(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
-    restarts: list[str] = []
-    monkeypatch.setattr(
-        bridge_session,
-        "restart_aec_bridge",
-        lambda: restarts.append("restart"),
-    )
-
-    wake_corpus_setup.enable_bridge_outputs_for_session(
-        include_dtln=True,
-        include_usb_mic=False,
-        include_usb_dtln=True,
-        include_aec3_sweep=True,
-    )
-
-    values = {
-        line.split("=", 1)[0]: line.split("=", 1)[1]
-        for line in bridge_path.read_text().splitlines()
-    }
-    assert values["JASPER_AEC_DTLN_ENABLED"] == "1"
-    assert values["JASPER_AEC_CORPUS_REF_ENABLED"] == "1"
-    assert values["JASPER_AEC_CORPUS_USB_ENABLED"] == "1"
-    assert values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] == "1"
-    assert values["JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED"] == "1"
-    assert values["JASPER_AEC_USB_MIC_DEVICE"] == "USB PnP Sound Device"
-    assert restarts == ["restart"]
-
-
 def test_restart_aec_bridge_resets_start_limit_before_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2407,25 +2376,6 @@ def test_restart_aec_bridge_resets_start_limit_before_restart(
         ((wake_corpus_setup.BRIDGE_UNIT,), "reset-failed"),
         ((wake_corpus_setup.BRIDGE_UNIT,), "restart"),
     ]
-
-
-def test_enable_bridge_outputs_preserves_system_usb_device(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    _, bridge_path = _use_tmp_bridge_env(
-        monkeypatch,
-        tmp_path,
-        system_env='JASPER_AEC_USB_MIC_DEVICE=Studio Mic\n',
-    )
-    monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
-
-    wake_corpus_setup.enable_bridge_outputs_for_session(
-        include_dtln=False,
-        include_usb_mic=True,
-        include_usb_dtln=False,
-    )
-
-    assert "JASPER_AEC_USB_MIC_DEVICE" not in bridge_path.read_text()
 
 
 def test_set_bridge_outputs_matches_selected_session_outputs(
@@ -2644,7 +2594,7 @@ def test_set_bridge_outputs_chip_profile_parks_production_dtln(
     assert values["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] == "1"
 
 
-def test_enable_bridge_outputs_rolls_back_when_restart_fails(
+def test_set_bridge_outputs_rolls_back_when_restart_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     _, bridge_path = _use_tmp_bridge_env(
@@ -2668,7 +2618,7 @@ def test_enable_bridge_outputs_rolls_back_when_restart_fails(
     )
 
     with pytest.raises(subprocess.CalledProcessError):
-        wake_corpus_setup.enable_bridge_outputs_for_session(
+        wake_corpus_setup.set_bridge_outputs_for_session(
             include_dtln=True,
             include_usb_mic=True,
             include_usb_dtln=True,

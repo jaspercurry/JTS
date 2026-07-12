@@ -1235,78 +1235,6 @@ def restart_unit(unit: str, timeout_sec: float = BRIDGE_RESTART_TIMEOUT_SEC) -> 
     _broker_restart_or_raise(unit, timeout_sec=timeout_sec)
 
 
-def enable_bridge_outputs_for_session(
-    *,
-    include_dtln: bool,
-    include_usb_mic: bool,
-    include_usb_dtln: bool,
-    include_aec3_sweep: bool = False,
-    aec3_sweep_source: str | None = None,
-) -> None:
-    """Persist requested bridge corpus outputs and restart the bridge.
-
-    This function only enables outputs. It deliberately does not turn
-    anything off when a later session leaves a box unchecked: disabling
-    a live bridge output is a separate operator decision, and the
-    recorder can simply ignore legs it is not subscribing to.
-    """
-    system_env = read_env_file(str(SYSTEM_ENV_PATH))
-    env_path = str(BRIDGE_CORPUS_ENV_PATH)
-    existed = BRIDGE_CORPUS_ENV_PATH.exists()
-    old_values = read_env_file(env_path)
-    values = dict(old_values)
-    sweep_source = (
-        _session_aec3_sweep_source(aec3_sweep_source)
-        if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
-    )
-    sweep_needs_usb = (
-        include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
-    )
-
-    if include_dtln:
-        values["JASPER_AEC_DTLN_ENABLED"] = "1"
-    needs_usb = include_usb_mic or include_usb_dtln or sweep_needs_usb
-    if needs_usb:
-        values["JASPER_AEC_CORPUS_REF_ENABLED"] = "1"
-        values["JASPER_AEC_CORPUS_USB_ENABLED"] = "1"
-        if (
-            "JASPER_AEC_USB_MIC_DEVICE" not in values
-            and "JASPER_AEC_USB_MIC_DEVICE" not in system_env
-        ):
-            values["JASPER_AEC_USB_MIC_DEVICE"] = DEFAULT_USB_MIC_DEVICE
-    if include_usb_dtln:
-        values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] = "1"
-    if include_aec3_sweep:
-        values[AEC3_SWEEP_ENV_FLAG] = "1"
-        values[AEC3_SWEEP_SOURCE_ENV] = sweep_source
-
-    write_env_file(env_path, values, mode=0o644)
-    try:
-        restart_aec_bridge()
-    except (
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        OSError,
-    ):
-        if existed:
-            write_env_file(env_path, old_values, mode=0o644)
-        else:
-            delete_env_file(env_path)
-        try:
-            restart_aec_bridge()
-        except (
-            subprocess.CalledProcessError,
-            subprocess.TimeoutExpired,
-            OSError,
-        ) as rollback_error:
-            logger.warning(
-                "bridge env rollback restart failed after corpus-output "
-                "enable failure: %s",
-                rollback_error,
-            )
-        raise
-
-
 def set_bridge_outputs_for_session(
     *,
     corpus_profile: str = PROFILE_STANDARD,
@@ -1319,8 +1247,8 @@ def set_bridge_outputs_for_session(
 ) -> bool:
     """Make recorder-owned bridge output overrides match a session.
 
-    Unlike the legacy enable helper, this treats the session toggle selection
-    as the desired test-mode bridge state. Production-owned settings in
+    This treats the session toggle selection as the desired test-mode bridge
+    state. Production-owned settings in
     /etc or the reconciler env are left alone; the recorder file only
     carries the additional outputs needed for the selected corpus legs.
     Returns True when the bridge was restarted.
