@@ -802,10 +802,16 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   tiling, zero padding, or noise-owned argmax enters the verdict. Interim
   bounded-four state is atomically persisted before playback by
   `active_speaker.repeat_admission`; bundles are forensic only. A restart
-  preserves its attempts: the explicit single-service startup claim aborts an
-  old active owner, while an uncertain `ready` final write stays blocked rather
-  than being guessed complete. The envelope and direct automatic-apply boundary
-  then require a new driver level check, so a refused/interrupted comparison set
+  preserves its attempts. The final measurement stores a compact repeat
+  projection rather than the process-local winning attempt. A measurement-write
+  failure moves `ready` to `aborted`; a failed admission-completion write does
+  the same with a distinct reason. A successful abort immediately drives a new
+  level check. If that abort write also fails, same-process `ready` stays
+  fail-closed, blocking replay and automatic apply until the next service-start
+  ownership claim retires the old owner. The
+  explicit single-service startup claim aborts an old `active` or `ready` owner
+  rather than guessing it complete. The envelope and direct automatic-apply
+  boundary then require a new driver level check, so an interrupted comparison set
   cannot exceed the bounded four by retrying. The durable attempt count is also
   the UI count. If attempt four fails in relay/playback transport, two already
   accepted deconvolved repeats finalize through the same canonical finalizer at

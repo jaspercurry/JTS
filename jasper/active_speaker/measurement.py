@@ -33,7 +33,7 @@ import math
 import os
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
@@ -1036,6 +1036,171 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
     )
 
 
+_DURABLE_REPEAT_SUMMARY_KEYS = (
+    "repeat_group_id",
+    "target",
+    "accepted",
+    "rejected",
+    "recaptured",
+    "needed_recapture",
+    "aggregate",
+    "spread_db_p90",
+    "confidence",
+    "admission_attempts",
+)
+_DURABLE_REPEAT_ENTRY_KEYS = (
+    "index",
+    "attempt",
+    "verdict",
+    "accepted",
+    "reject_reason",
+    "artifact_path",
+    "estimated_snr_db",
+    "clipping",
+    "above_validity_floor",
+    "level_dbfs",
+)
+_PROCESS_REPEAT_KEYS = frozenset({"aggregate_repeat"})
+
+
+def _repeat_int(value: Any, field: str, *, minimum: int = 0) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= 4
+    ):
+        raise ValueError(
+            f"repeat summary {field} must be an integer from {minimum} to 4"
+        )
+    return value
+
+
+def _repeat_number(value: Any, field: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"repeat summary {field} must be numeric or null")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"repeat summary {field} must be finite")
+    return result
+
+
+def _repeat_text(
+    value: Any, field: str, *, limit: int, optional: bool = False
+) -> str | None:
+    if optional and value is None:
+        return None
+    if not isinstance(value, str) or len(value) > limit:
+        raise ValueError(f"repeat summary {field} must be bounded text")
+    return value
+
+
+def _repeat_bool(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"repeat summary {field} must be a boolean")
+    return value
+
+
+def _repeat_artifact_path(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, (str, Path)):
+        raise ValueError("repeat summary artifact_path must be a path string or null")
+    result = str(value)
+    relative = PurePosixPath(result)
+    if (
+        not result
+        or len(result) > 512
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or relative.as_posix() != result
+    ):
+        raise ValueError(
+            "repeat summary artifact_path must be a canonical relative bundle path"
+        )
+    return result
+
+
+def _durable_repeat_summary(raw: Any) -> dict[str, Any] | None:
+    """Project process-local repeat aggregation onto its durable JSON schema."""
+
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("repeat summary must be an object or null")
+    required = (set(_DURABLE_REPEAT_SUMMARY_KEYS) - {"admission_attempts"}) | {
+        "per_repeat"
+    }
+    allowed = required | {"admission_attempts"} | _PROCESS_REPEAT_KEYS
+    if missing := required - set(raw):
+        raise ValueError(f"repeat summary missing fields: {sorted(missing)}")
+    if extra := set(raw) - allowed:
+        raise ValueError(f"repeat summary has unsupported fields: {sorted(extra)}")
+
+    entries = raw["per_repeat"]
+    if not isinstance(entries, list) or not 1 <= len(entries) <= 4:
+        raise ValueError("repeat summary per_repeat must contain 1 to 4 entries")
+    per_repeat = []
+    for item in entries:
+        if (
+            not isinstance(item, Mapping)
+            or set(item) != set(_DURABLE_REPEAT_ENTRY_KEYS)
+        ):
+            raise ValueError("repeat summary per_repeat entry schema is invalid")
+        per_repeat.append({
+            "index": _repeat_int(item["index"], "per_repeat.index"),
+            "attempt": _repeat_int(
+                item["attempt"], "per_repeat.attempt", minimum=1
+            ),
+            "verdict": _repeat_text(
+                item["verdict"], "per_repeat.verdict", limit=80, optional=True
+            ),
+            "accepted": _repeat_bool(item["accepted"], "per_repeat.accepted"),
+            "reject_reason": _repeat_text(
+                item["reject_reason"],
+                "per_repeat.reject_reason",
+                limit=80,
+                optional=True,
+            ),
+            "artifact_path": _repeat_artifact_path(item["artifact_path"]),
+            "estimated_snr_db": _repeat_number(
+                item["estimated_snr_db"], "per_repeat.estimated_snr_db"
+            ),
+            "clipping": _repeat_bool(item["clipping"], "per_repeat.clipping"),
+            "above_validity_floor": _repeat_bool(
+                item["above_validity_floor"], "per_repeat.above_validity_floor"
+            ),
+            "level_dbfs": _repeat_number(
+                item["level_dbfs"], "per_repeat.level_dbfs"
+            ),
+        })
+
+    summary = {
+        "repeat_group_id": _repeat_text(
+            raw["repeat_group_id"], "repeat_group_id", limit=120
+        ),
+        "target": _repeat_int(raw["target"], "target", minimum=1),
+        "accepted": _repeat_int(raw["accepted"], "accepted"),
+        "rejected": _repeat_int(raw["rejected"], "rejected"),
+        "recaptured": _repeat_bool(raw["recaptured"], "recaptured"),
+        "needed_recapture": _repeat_bool(
+            raw["needed_recapture"], "needed_recapture"
+        ),
+        "aggregate": _repeat_text(raw["aggregate"], "aggregate", limit=40),
+        "spread_db_p90": _repeat_number(
+            raw["spread_db_p90"], "spread_db_p90"
+        ),
+        "confidence": _repeat_text(raw["confidence"], "confidence", limit=20),
+        "per_repeat": per_repeat,
+    }
+    if "admission_attempts" in raw:
+        summary["admission_attempts"] = _repeat_int(
+            raw["admission_attempts"], "admission_attempts", minimum=1
+        )
+    return summary
+
+
 def record_driver_measurement(
     topology: OutputTopology,
     raw: Mapping[str, Any],
@@ -1163,9 +1328,7 @@ def record_driver_measurement(
         # rather than a single-shot capture. Per-repeat evidence beyond this
         # compact per_repeat[] summary (the full audio/curves) lives only in
         # the bundle's repeat_captures/ — this field never grows unbounded.
-        "repeats": (
-            dict(raw["repeats"]) if isinstance(raw.get("repeats"), Mapping) else None
-        ),
+        "repeats": _durable_repeat_summary(raw.get("repeats")),
     }
     persisted = _normalise_state(state, path)
     persisted["driver_measurements"] = [

@@ -622,19 +622,74 @@ def _finalize_driver_repeat_set(
         result=admission_result,
         status="ready",
     )
-    payload = record_driver_acoustic_capture(
-        topology,
-        preset,
-        placement_proof=winner.get("placement_proof"),
-        bundle_ref=final_bundle_ref,
-        repeats=aggregate,
-        **final_kwargs,
-    )
-    repeat_admission.complete(
-        comparison_set,
-        target_id=target_id,
-        target_fingerprint=target_fingerprint,
-    )
+    try:
+        payload = record_driver_acoustic_capture(
+            topology,
+            preset,
+            placement_proof=winner.get("placement_proof"),
+            bundle_ref=final_bundle_ref,
+            repeats=aggregate,
+            **final_kwargs,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        # ``finish(status="ready")`` above already consumed this audible
+        # attempt. Final persistence failure must stay terminal: publish an
+        # actionable abort without reopening reservation, then propagate the
+        # original exception to the request boundary. A new level/comparison
+        # run is the only supported recovery and starts again at attempt one.
+        try:
+            repeat_admission.abort_ready(
+                comparison_set,
+                target_id=target_id,
+                target_fingerprint=target_fingerprint,
+                reason="measurement_persistence_failed",
+            )
+        except (OSError, RuntimeError, ValueError) as abort_exc:
+            # If even the abort write fails, the durable state remains ``ready``
+            # and therefore still blocks replay. Service-start ownership claim
+            # retires an old-owner ready state after a crash/restart.
+            log_event(
+                logger,
+                "correction.crossover_repeat_abort_failed",
+                level=logging.ERROR,
+                target=target_id,
+                attempts=reservation_attempt,
+                failure_type=type(abort_exc).__name__,
+                origin_failure_type=type(exc).__name__,
+                reason="measurement_persistence_failed",
+            )
+        raise
+    # Keep completion outside the measurement-persistence recovery block so a
+    # completed measurement is never mislabeled as a measurement-write
+    # failure.  A failed admission completion is still actionable in this
+    # process: retire ``ready`` with its own reason. Only a second failed abort
+    # write leaves ``ready`` fail-closed for startup ownership recovery.
+    try:
+        repeat_admission.complete(
+            comparison_set,
+            target_id=target_id,
+            target_fingerprint=target_fingerprint,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        try:
+            repeat_admission.abort_ready(
+                comparison_set,
+                target_id=target_id,
+                target_fingerprint=target_fingerprint,
+                reason="repeat_completion_failed",
+            )
+        except (OSError, RuntimeError, ValueError) as abort_exc:
+            log_event(
+                logger,
+                "correction.crossover_repeat_abort_failed",
+                level=logging.ERROR,
+                target=target_id,
+                attempts=reservation_attempt,
+                failure_type=type(abort_exc).__name__,
+                origin_failure_type=type(exc).__name__,
+                reason="repeat_completion_failed",
+            )
+        raise
     repeat_store.clear_driver_repeats(key)
     payload["measurement_mode"] = winner.get("measurement_mode")
     payload["calibration_id"] = winner.get("calibration_id")

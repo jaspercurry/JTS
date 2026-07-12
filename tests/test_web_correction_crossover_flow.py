@@ -414,9 +414,22 @@ def test_driver_capture_threads_reference_axis_capture_geometry(monkeypatch, tmp
     assert seen == ["reference_axis", "near_field"]
 
 
-@pytest.mark.parametrize("final_write_fails", [False, True])
+@pytest.mark.parametrize(
+    ("final_write_fails", "abort_write_fails", "complete_write_fails"),
+    [
+        (False, False, False),
+        (True, False, False),
+        (True, True, False),
+        (False, False, True),
+        (False, True, True),
+    ],
+)
 def test_driver_capture_wires_three_repeats_before_one_durable_record(
-    monkeypatch, tmp_path, final_write_fails
+    monkeypatch,
+    tmp_path,
+    final_write_fails,
+    abort_write_fails,
+    complete_write_fails,
 ):
     topology = object()
     wav_path = tmp_path / "driver.wav"
@@ -493,6 +506,22 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
         "log_event",
         lambda _logger, event, **fields: repeat_events.append((event, fields)),
     )
+    if abort_write_fails:
+        monkeypatch.setattr(
+            repeat_admission,
+            "abort_ready",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("repeat admission state is read-only")
+            ),
+        )
+    if complete_write_fails:
+        monkeypatch.setattr(
+            repeat_admission,
+            "complete",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("repeat admission completion is read-only")
+            ),
+        )
 
     monkeypatch.setattr(calibration_level, "load_calibration_level_state", lambda: {})
     monkeypatch.setattr(
@@ -588,14 +617,15 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
 
     first = capture_attempt(1)
     second = capture_attempt(2)
-    if final_write_fails:
+    if final_write_fails or complete_write_fails:
         with pytest.raises(OSError, match="read-only"):
             capture_attempt(3)
         target_state = repeat_admission.snapshot(
             comparison_set, path=admission_path
         )["targets"]["mono:woofer"]
-        assert target_state["status"] == "ready"
-        with pytest.raises(ValueError, match="is ready"):
+        expected_status = "ready" if abort_write_fails else "aborted"
+        assert target_state["status"] == expected_status
+        with pytest.raises(ValueError, match=f"is {expected_status}"):
             repeat_admission.reserve(
                 comparison_set,
                 target_id="mono:woofer",
@@ -608,6 +638,42 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
             if event == "correction.crossover_repeat_attempt"
         ]
         assert [entry["attempt"] for entry in attempts] == [1, 2, 3]
+        aborts = [
+            fields
+            for event, fields in repeat_events
+            if event == "correction.crossover_repeat_aborted"
+        ]
+        abort_failures = [
+            fields
+            for event, fields in repeat_events
+            if event == "correction.crossover_repeat_abort_failed"
+        ]
+        if complete_write_fails:
+            assert len([call for call in calls if call.get("repeats") is not None]) == 1
+            reason = "repeat_completion_failed"
+        else:
+            reason = "measurement_persistence_failed"
+        if abort_write_fails:
+            assert aborts == []
+            assert len(abort_failures) == 1
+            assert abort_failures[0]["reason"] == reason
+            assert abort_failures[0]["failure_type"] == "OSError"
+        else:
+            assert len(aborts) == 1
+            assert aborts[0]["reason"] == reason
+            assert abort_failures == []
+            fresh_comparison = {
+                "comparison_set_id": "c" * 32,
+                "fingerprint": "d" * 64,
+            }
+            repeat_admission.activate(fresh_comparison, path=admission_path)
+            fresh = repeat_admission.reserve(
+                fresh_comparison,
+                target_id="mono:woofer",
+                target_fingerprint="fresh-target-fp",
+                path=admission_path,
+            )
+            assert fresh["attempt"] == 1
         return
     third = capture_attempt(3)
 
@@ -2172,6 +2238,53 @@ def test_ready_controller_blocks_apply_even_after_measurement_write():
     assert any(
         nudge["code"] == "crossover_repeat_persistence_interrupted"
         for nudge in env["nudges"]
+    )
+
+
+@pytest.mark.parametrize("controller_status", ["aborted", "refused"])
+def test_terminal_controller_blocks_apply_with_complete_candidate(controller_status):
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"] = {
+        "latest_driver_measurements": {
+            "mono:woofer": _driver_acoustic("woofer"),
+            "mono:tweeter": _driver_acoustic("tweeter"),
+        },
+        "latest_summed_validations": {},
+    }
+    status["setup"]["automatic_candidate"] = {"ready": True, "reason": None}
+    status["level_match"]["repeats"] = {
+        "targets": {},
+        "failures": {},
+        "durable": {
+            "targets": {
+                "mono:woofer": {
+                    "attempts": 3,
+                    "status": controller_status,
+                    "inflight": None,
+                    "results": [{"attempt": 3, "accepted": True}],
+                },
+                "mono:tweeter": {
+                    "attempts": 3,
+                    "status": "completed",
+                    "inflight": None,
+                    "results": [{"attempt": 3, "accepted": True}],
+                },
+            }
+        },
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match"
+    assert env["next_action"]["endpoint"] == "/correction/crossover/level-match"
+    assert env["next_action"]["id"] != "apply_automatic"
+    assert "cannot be resumed" in env["verdict_text"]
+    assert all(
+        nudge["code"] != "crossover_repeat_rejected" for nudge in env["nudges"]
     )
 
 

@@ -269,6 +269,8 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         for target in drivers
     }
     blocked_controller_targets = []
+    terminal_controller_targets = []
+    interrupted_controller_targets = []
     for target_id, entry in repeat_targets.items():
         if not isinstance(entry, Mapping) or target_id not in driver_target_ids:
             continue
@@ -282,11 +284,17 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         # when that measurement write happened just before the controller write
         # failed; a fresh level-check context safely resets the gate.
         final_write_incomplete = entry.get("status") == "ready"
-        if orphaned_inflight or final_write_incomplete:
+        terminal_set = entry.get("status") in {"aborted", "refused"}
+        if orphaned_inflight or final_write_incomplete or terminal_set:
             blocked_controller_targets.append(str(target_id))
+        if terminal_set:
+            terminal_controller_targets.append(str(target_id))
+        elif orphaned_inflight or final_write_incomplete:
+            interrupted_controller_targets.append(str(target_id))
     if blocked_controller_targets:
         level_ready = False
         done.discard("microphone")
+    if interrupted_controller_targets:
         nudges.append({
             "code": "crossover_repeat_persistence_interrupted",
             "severity": "warn",
@@ -302,9 +310,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             continue
         results = _list(entry.get("results"))
         candidate = _mapping(results[-1]) if results else {}
-        if candidate.get("accepted") is not True or entry.get("status") in {
-            "refused", "aborted"
-        }:
+        if candidate.get("accepted") is not True:
             latest_rejection = candidate
             latest_status = str(entry.get("status") or "")
     if latest_rejection or latest_status in {"refused", "aborted"}:
@@ -345,9 +351,14 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     elif blocked_controller_targets:
         screen = "microphone"
         verdict = (
-            "The repeat result is safely held, but its final persistence did "
-            "not complete. Run the driver level check again before measuring "
-            "or applying automatic trims."
+            "The repeat sequence ended and cannot be resumed. Run the driver "
+            "level check again before measuring or applying automatic trims."
+            if terminal_controller_targets
+            else (
+                "The repeat result is safely held, but its final persistence did "
+                "not complete. Run the driver level check again before measuring "
+                "or applying automatic trims."
+            )
         )
         action = {
             "id": "level_match",

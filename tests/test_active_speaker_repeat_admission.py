@@ -168,6 +168,76 @@ def test_new_process_owner_aborts_inflight_without_resetting_attempts(
         _reserve(path, comparison)
 
 
+def test_new_process_owner_aborts_ready_finalization_and_preserves_attempts(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "repeat.json"
+    comparison = _comparison()
+    admission.activate(comparison, path=path)
+    reservation = _reserve(path, comparison)
+    admission.finish(
+        comparison,
+        target_id="mono:woofer",
+        target_fingerprint="mono:woofer-fingerprint",
+        token=reservation["token"],
+        result={"accepted": True},
+        status="ready",
+        path=path,
+    )
+
+    monkeypatch.setattr(admission, "OWNER_ID", "new-process")
+    state = admission.claim_owner(path=path)
+    target = state["targets"]["mono:woofer"]
+    assert target["status"] == "aborted"
+    assert target["reason"] == "service_restarted_during_finalization"
+    assert target["attempts"] == 1
+    assert target["results"] == [{"attempt": 1, "accepted": True}]
+    with pytest.raises(ValueError, match="is aborted"):
+        _reserve(path, comparison)
+
+    fresh = _comparison("b")
+    admission.activate(fresh, path=path)
+    assert _reserve(path, fresh)["attempt"] == 1
+
+
+def test_finished_reservation_is_identified_without_replaying_failure(tmp_path):
+    path = tmp_path / "repeat.json"
+    comparison = _comparison()
+    admission.activate(comparison, path=path)
+    reservation = _reserve(path, comparison)
+    admission.finish(
+        comparison,
+        target_id="mono:woofer",
+        target_fingerprint="mono:woofer-fingerprint",
+        token=reservation["token"],
+        result={"accepted": True},
+        status="ready",
+        path=path,
+    )
+    admission.abort_ready(
+        comparison,
+        target_id="mono:woofer",
+        target_fingerprint="mono:woofer-fingerprint",
+        reason="measurement_persistence_failed",
+        path=path,
+    )
+
+    assert admission.reservation_is_finished(
+        comparison,
+        target_id="mono:woofer",
+        target_fingerprint="mono:woofer-fingerprint",
+        attempt=1,
+        path=path,
+    )
+    assert not admission.reservation_is_finished(
+        comparison,
+        target_id="mono:woofer",
+        target_fingerprint="mono:woofer-fingerprint",
+        attempt=2,
+        path=path,
+    )
+
+
 def test_failed_startup_owner_claim_keeps_status_unavailable_until_reset(
     tmp_path, monkeypatch
 ):

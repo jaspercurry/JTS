@@ -224,13 +224,19 @@ def claim_owner(*, path: str | Path | None = None) -> dict[str, Any]:
             aborted: list[tuple[str, dict[str, Any]]] = []
             for key, raw in targets.items():
                 entry = dict(raw)
+                prior_status = entry.get("status")
                 if (
                     entry.get("owner_id") != OWNER_ID
-                    and entry.get("status") == "active"
+                    and prior_status in {"active", "ready"}
                 ):
+                    reason = (
+                        "service_restarted_during_finalization"
+                        if prior_status == "ready"
+                        else "service_restarted"
+                    )
                     entry.update({
                         "status": "aborted",
-                        "reason": "service_restarted",
+                        "reason": reason,
                         "inflight": None,
                         "updated_at": _now(),
                     })
@@ -245,7 +251,7 @@ def claim_owner(*, path: str | Path | None = None) -> dict[str, Any]:
                         "correction.crossover_repeat_aborted",
                         target=target_id,
                         attempts=entry.get("attempts"),
-                        reason="service_restarted",
+                        reason=entry.get("reason"),
                     )
             _CLAIM_ERROR = None
             return state
@@ -390,6 +396,95 @@ def complete(
         state.update({"targets": targets, "updated_at": entry["updated_at"]})
         _write(target, state)
         return entry
+
+
+def abort_ready(
+    comparison_set: Mapping[str, Any],
+    *,
+    target_id: str,
+    target_fingerprint: str,
+    reason: str,
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Move ``ready`` to terminal ``aborted`` after finalization fails.
+
+    ``ready`` has already consumed the audible attempt and deliberately blocks
+    another reservation. If measurement persistence or the later completion
+    ledger write raises, the caller uses this transition before propagating the
+    original exception: attempts remain preserved, no fifth sweep can play,
+    and a new comparison/level run is the only supported recovery.
+    """
+
+    reason_id = str(reason or "").strip()
+    if not reason_id or len(reason_id) > 120:
+        raise ValueError("repeat finalization abort requires a bounded reason")
+    target = state_path(path)
+    with _locked(target):
+        state = _load(target)
+        _assert_comparison(state, comparison_set)
+        targets = dict(state["targets"])
+        entry = dict(targets.get(target_id) or {})
+        if (
+            entry.get("target_fingerprint") != target_fingerprint
+            or entry.get("owner_id") != OWNER_ID
+            or entry.get("status") != "ready"
+            or entry.get("inflight") is not None
+        ):
+            raise ValueError("repeat set is not ready for finalization abort")
+        entry.update({
+            "status": "aborted",
+            "reason": reason_id,
+            "updated_at": _now(),
+        })
+        targets[target_id] = entry
+        state.update({"targets": targets, "updated_at": entry["updated_at"]})
+        _write(target, state)
+        log_event(
+            logger,
+            "correction.crossover_repeat_aborted",
+            comparison_set_id=str(comparison_set.get("comparison_set_id") or ""),
+            target=target_id,
+            attempts=entry.get("attempts"),
+            reason=reason_id,
+        )
+        return entry
+
+
+def reservation_is_finished(
+    comparison_set: Mapping[str, Any],
+    *,
+    target_id: str,
+    target_fingerprint: str,
+    attempt: int,
+    path: str | Path | None = None,
+) -> bool:
+    """Return whether the exact audible reservation was already consumed.
+
+    Request-boundary recovery can observe an exception after a deeper layer
+    has durably finished or aborted the attempt.  Re-finishing that same token
+    would replace the useful original error with a misleading persistence
+    failure.  The authoritative ledger proves consumption with the target
+    binding, attempt counter, no inflight token, and a matching result entry.
+    """
+
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+        return False
+    target = state_path(path)
+    with _locked(target):
+        state = _load(target)
+        _assert_comparison(state, comparison_set)
+        entry = (state.get("targets") or {}).get(target_id)
+        if not isinstance(entry, Mapping):
+            return False
+        results = entry.get("results") or ()
+        latest = results[-1] if isinstance(results, list) and results else None
+        return bool(
+            entry.get("target_fingerprint") == target_fingerprint
+            and entry.get("attempts") == attempt
+            and entry.get("inflight") is None
+            and isinstance(latest, Mapping)
+            and latest.get("attempt") == attempt
+        )
 
 
 def snapshot(
