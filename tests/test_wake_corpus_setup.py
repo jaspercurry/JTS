@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -2626,6 +2627,103 @@ def test_set_bridge_outputs_rolls_back_when_restart_fails(
 
     assert bridge_path.read_text() == "JASPER_AEC_DTLN_ENABLED=0\n"
     assert attempts == 2  # failed new config, then restarted rollback config
+
+
+def test_disable_bridge_outputs_rolls_back_when_restart_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env=(
+            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
+            "JASPER_AEC_USB_MIC_DEVICE=Studio Mic\n"
+        ),
+    )
+    original = bridge_path.read_text()
+    attempts = 0
+
+    def fake_restart() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("bridge unavailable")
+
+    monkeypatch.setattr(bridge_session, "restart_aec_bridge", fake_restart)
+
+    with pytest.raises(OSError, match="bridge unavailable"):
+        wake_corpus_setup.disable_bridge_corpus_outputs()
+
+    assert bridge_path.read_text() == original
+    assert attempts == 2
+
+
+def test_bridge_env_rollback_deletes_new_file_and_logs_one_restart_failure(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path,
+) -> None:
+    env_path = tmp_path / "new-corpus.env"
+    attempts = 0
+
+    def restart() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("initial bridge restart failed")
+        raise subprocess.TimeoutExpired(["systemctl", "restart"], 1.0)
+
+    with caplog.at_level(logging.WARNING), pytest.raises(
+        OSError, match="initial bridge restart failed"
+    ):
+        bridge_session._write_env_and_restart_with_rollback(
+            env_path=str(env_path),
+            existed=False,
+            old_values={},
+            values={"JASPER_AEC_CORPUS_REF_ENABLED": "1"},
+            restart=restart,
+            failure_context="configure",
+        )
+
+    assert not env_path.exists()
+    assert attempts == 2
+    assert caplog.messages == [
+        "bridge env rollback restart failed after corpus-output configure "
+        "failure: Command '['systemctl', 'restart']' timed out after 1.0 seconds"
+    ]
+
+
+def test_disable_bridge_outputs_restarts_chip_stack_in_safe_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env=(
+            "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
+        ),
+    )
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        bridge_session,
+        "restart_unit",
+        lambda unit, timeout=wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC: (
+            restarts.append(unit)
+        ),
+    )
+    monkeypatch.setattr(
+        bridge_session,
+        "restart_aec_bridge",
+        lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
+    )
+
+    assert wake_corpus_setup.disable_bridge_corpus_outputs() is True
+
+    assert not bridge_path.exists()
+    assert restarts == [
+        wake_corpus_setup.OUTPUTD_UNIT,
+        wake_corpus_setup.AEC_INIT_UNIT,
+        wake_corpus_setup.BRIDGE_UNIT,
+    ]
 
 
 def test_disable_bridge_outputs_removes_overrides_and_preserves_device(
