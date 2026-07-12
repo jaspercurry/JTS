@@ -1003,6 +1003,139 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     ]
 
 
+def test_dtln_runtime_failure_degrades_once_and_primary_aec_continues(
+    monkeypatch, caplog, tmp_path,
+):
+    """A tertiary inference failure updates live health without flapping.
+
+    The primary AEC3 path must process every later frame, while DTLN is
+    attempted once, emits nothing, and reports one stable degradation event.
+    """
+    import socket as real_socket
+    from jasper.aec_engines import dtln as dtln_mod
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_EXPECTED_LEGS", "on,dtln")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+
+    aec_sock = _mock_socket()
+    raw_sock = _mock_socket()
+    raw0_sock = _mock_socket()
+    dtln_sock = _mock_socket()
+    monkeypatch.setattr(
+        real_socket,
+        "socket",
+        MagicMock(side_effect=[aec_sock, raw_sock, raw0_sock, dtln_sock]),
+    )
+
+    frames = [
+        bytes([i]) * (FRAME_SAMPLES * 2)
+        for i in range(1, 9)
+    ]
+    primary_engine = MagicMock()
+    primary_engine.process.side_effect = frames
+    dtln_engine = MagicMock()
+    dtln_engine.process.side_effect = RuntimeError("inference failed")
+    monkeypatch.setattr(
+        dtln_mod, "DTLNEngine", MagicMock(return_value=dtln_engine),
+    )
+    monkeypatch.setattr(dtln_mod, "default_model_dir", lambda: tmp_path)
+
+    with caplog.at_level("WARNING", logger=aec_bridge.logger.name):
+        _aec_loop(_AlwaysEmptyQ(), _ScriptedMicQ(frames), primary_engine)
+
+    assert primary_engine.process.call_count == len(frames)
+    assert aec_sock.sendto.call_count == 2
+    dtln_engine.process.assert_called_once()
+    dtln_engine.close.assert_called_once()
+    dtln_sock.sendto.assert_not_called()
+    dtln_sock.close.assert_called_once()
+
+    stats_path = tmp_path / "stats.json"
+    aec_bridge._bridge_stats.write_snapshot(stats_path)
+    stats = json.loads(stats_path.read_text())
+    dtln_status = stats["leg_engines"]["dtln"]
+    assert dtln_status == {
+        "enabled": True,
+        "loaded": False,
+        "error": "inference failed",
+    }
+    assert "dtln" not in stats["active_capture_plan"]["emitted_legs"]
+    assert "dtln" not in stats["active_capture_plan"]["ports"]
+    assert stats["active_capture_plan"]["expected_legs"] == ["on", "dtln"]
+    degradation_events = [
+        record.message for record in caplog.records
+        if "event=aec_bridge.leg_degraded" in record.message
+        and "leg=dtln" in record.message
+    ]
+    assert len(degradation_events) == 1
+    assert "phase=process" in degradation_events[0]
+    assert "action=disable" in degradation_events[0]
+
+
+@pytest.mark.parametrize(
+    ("dtln_size", "constructor_error", "expected_error"),
+    [
+        ("malformed", None, "invalid literal"),
+        ("256", RuntimeError("invalid ONNX graph"), "invalid ONNX graph"),
+    ],
+)
+def test_dtln_startup_failure_degrades_without_restarting_primary_aec(
+    monkeypatch, caplog, tmp_path,
+    dtln_size, constructor_error, expected_error,
+):
+    """Malformed optional config/models cannot enter the reboot ladder."""
+    import socket as real_socket
+    from jasper.aec_engines import dtln as dtln_mod
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
+    monkeypatch.setenv("JASPER_AEC_DTLN_SIZE", dtln_size)
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+
+    aec_sock = _mock_socket()
+    raw_sock = _mock_socket()
+    raw0_sock = _mock_socket()
+    monkeypatch.setattr(
+        real_socket,
+        "socket",
+        MagicMock(side_effect=[aec_sock, raw_sock, raw0_sock]),
+    )
+
+    frames = [
+        bytes([i]) * (FRAME_SAMPLES * 2)
+        for i in range(1, 5)
+    ]
+    primary_engine = MagicMock()
+    primary_engine.process.side_effect = frames
+    dtln_cls = MagicMock()
+    if constructor_error is not None:
+        dtln_cls.side_effect = constructor_error
+    monkeypatch.setattr(dtln_mod, "DTLNEngine", dtln_cls)
+    monkeypatch.setattr(dtln_mod, "default_model_dir", lambda: tmp_path)
+
+    with caplog.at_level("WARNING", logger=aec_bridge.logger.name):
+        _aec_loop(_AlwaysEmptyQ(), _ScriptedMicQ(frames), primary_engine)
+
+    assert primary_engine.process.call_count == len(frames)
+    aec_sock.sendto.assert_called_once()
+    stats_path = tmp_path / "stats.json"
+    aec_bridge._bridge_stats.write_snapshot(stats_path)
+    dtln_status = json.loads(stats_path.read_text())["leg_engines"]["dtln"]
+    assert dtln_status["enabled"] is True
+    assert dtln_status["loaded"] is False
+    assert expected_error in dtln_status["error"]
+    degradation_events = [
+        record.message for record in caplog.records
+        if "event=aec_bridge.leg_degraded" in record.message
+        and "leg=dtln" in record.message
+    ]
+    assert len(degradation_events) == 1
+    assert "phase=initialize" in degradation_events[0]
+    assert "action=continue_aec3" in degradation_events[0]
+
+
 # ---------------------------------------------------------------------------
 # Slow-drip stall watchdog (_MicStarvationWatchdog) — the rate-based detector
 # that catches an intermittent trickle the consecutive-empty check misses.

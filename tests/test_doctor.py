@@ -6162,6 +6162,8 @@ def test_assess_dtln_stats_load_failure_returns_fail_with_detail():
     )
     assert r is not None and r.status == "fail"
     assert "onnx missing" in r.detail
+    assert "engine unavailable" in r.detail
+    assert "could not load" not in r.detail
     assert ":9878" in r.detail  # names the unfed leg voice listens on
 
 

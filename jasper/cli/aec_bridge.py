@@ -86,6 +86,7 @@ Caveats this implementation does NOT yet address:
 """
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 import logging
 import os
@@ -526,15 +527,13 @@ class _BridgeStats:
         loaded: bool,
         error: str | None = None,
     ) -> None:
-        """Record an optional engine leg's init outcome in the snapshot.
+        """Record an optional engine leg's current runtime availability.
 
-        Written once at bridge startup; gives /run/jasper/
-        aec_bridge_stats.json an authoritative, journal-independent
-        answer to "is the DTLN leg actually running?" — a load failure
-        otherwise degrades the bridge silently while voice keeps
-        listening on a permanently-unfed UDP port. jasper-doctor's
-        check_aec_bridge_dtln_engine reads this first and only falls
-        back to journal parsing on older bridges."""
+        Gives /run/jasper/aec_bridge_stats.json an authoritative,
+        journal-independent answer to "is the DTLN leg actually running?"
+        across both initialization and later inference failures.
+        jasper-doctor's check_aec_bridge_dtln_engine reads this first and
+        only falls back to journal parsing on older bridges."""
         with self._lock:
             self._leg_engines[leg] = {
                 "enabled": enabled,
@@ -567,6 +566,29 @@ class _BridgeStats:
                 "mic_fingerprint": mic_fingerprint,
                 "dac_reference_fingerprint": dac_reference_fingerprint,
             }
+
+    def mark_leg_unavailable(self, leg: str, *, error: str) -> None:
+        """Atomically withdraw a failed runtime leg from live bridge truth.
+
+        Keep ``expected_legs`` intact so capture-plan validation reports the
+        promised leg as missing, while ``emitted_legs`` and ``ports`` describe
+        only outputs the bridge can still feed.
+        """
+        with self._lock:
+            self._leg_engines[leg] = {
+                "enabled": True,
+                "loaded": False,
+                "error": error,
+            }
+            emitted = self._active_capture_plan.get("emitted_legs")
+            if isinstance(emitted, list):
+                self._active_capture_plan["emitted_legs"] = [
+                    emitted_leg for emitted_leg in emitted
+                    if emitted_leg != leg
+                ]
+            ports = self._active_capture_plan.get("ports")
+            if isinstance(ports, dict):
+                ports.pop(leg, None)
 
     def inc(self, key: str, amount: int = 1) -> None:
         with self._lock:
@@ -1909,7 +1931,19 @@ def _aec_loop(  # noqa: PLR0915
                 "DTLN-aec engine enabled: size=%d, udp out=%s:%d",
                 dtln_size, config.out_host, config.out_port_dtln,
             )
-        except (FileNotFoundError, ImportError) as e:
+        except Exception as e:  # noqa: BLE001
+            # DTLN is an optional tertiary leg. Bad config, malformed ONNX,
+            # or another ordinary initialization failure must not crash-loop
+            # the healthy primary AEC3 bridge into systemd's reboot ladder.
+            if dtln_emitter is not None:
+                with suppress(Exception):
+                    dtln_emitter.close()
+                emitters.pop("dtln", None)
+                dtln_emitter = None
+            if dtln_engine is not None:
+                with suppress(Exception):
+                    dtln_engine.close()
+                dtln_engine = None
             # Degraded state lands in the stats snapshot so the doctor
             # can flag it long after this line ages out of the journal
             # window — voice keeps listening on the permanently-unfed
@@ -1921,6 +1955,10 @@ def _aec_loop(  # noqa: PLR0915
                 logger,
                 "aec_bridge.leg_degraded",
                 leg="dtln",
+                phase="initialize",
+                action="continue_aec3",
+                error_type=type(e).__name__,
+                error=str(e),
                 note=(
                     f"JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: {e}. "
                     "Continuing with AEC3 only."
@@ -2251,13 +2289,31 @@ def _aec_loop(  # noqa: PLR0915
                 try:
                     dtln_clean = dtln_engine.process(mic_bytes, ref_bytes)
                 except Exception as e:  # noqa: BLE001
-                    # Don't let a DTLN crash take the bridge down — log
-                    # and disable the parallel path. The AEC3 engine is
-                    # the production critical path; DTLN is observational.
-                    logger.exception(
-                        "DTLN-aec process() crashed; disabling DTLN path: %s", e,
-                    )
+                    # DTLN is observational; preserve the primary AEC3 path
+                    # and make this runtime transition authoritative for the
+                    # stats writer and doctor. Nulling the engine guarantees
+                    # one event rather than one warning per audio frame.
+                    failed_dtln_engine = dtln_engine
                     dtln_engine = None
+                    with suppress(Exception):
+                        failed_dtln_engine.close()
+                    failed_dtln_emitter = emitters.pop("dtln", None)
+                    if failed_dtln_emitter is not None:
+                        with suppress(Exception):
+                            failed_dtln_emitter.close()
+                    dtln_emitter = None
+                    _bridge_stats.mark_leg_unavailable("dtln", error=str(e))
+                    log_event(
+                        logger,
+                        "aec_bridge.leg_degraded",
+                        leg="dtln",
+                        phase="process",
+                        action="disable",
+                        error_type=type(e).__name__,
+                        error=str(e),
+                        level=logging.WARNING,
+                        exc_info=True,
+                    )
                     dtln_clean = b""
                 if dtln_clean:
                     dtln_emitter.emit(dtln_clean)
@@ -2399,10 +2455,8 @@ def _aec_loop(  # noqa: PLR0915
         if usb_dtln_engine is not None:
             usb_dtln_engine.close()
         for path in aec3_sweep_paths:
-            try:
+            with suppress(Exception):
                 path["engine"].close()
-            except Exception:  # noqa: BLE001
-                pass
         for w in (mic_wav, aec_wav, ref_wav):
             if w is not None:
                 try:
