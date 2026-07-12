@@ -322,10 +322,14 @@ class _GTFSRealtimeFeed:
 
 
 def _load_stations() -> dict[str, StationInfo]:
-    """Stop-id-keyed view of the bundled stations CSV. Defensive
-    against a corrupt/missing CSV (returns {} rather than raising) —
-    `jasper-voice` boots through SubwayClient construction, so a
-    crashed CSV parse would take down the whole voice loop."""
+    """Stop-id-keyed view of the bundled stations CSV.
+
+    Resource lookup, open, decode, or iteration failures become ``{}`` rather
+    than raising. The CSV reader remains permissive, so parseable incomplete
+    rows can survive with degraded optional metadata. ``jasper-voice`` boots
+    through subway provider import and ``SubwayClient`` construction; an
+    uncaught resource failure would take down the whole voice loop.
+    """
     return stations_by_id()
 
 
