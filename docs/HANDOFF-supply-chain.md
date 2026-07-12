@@ -143,7 +143,10 @@ Python dependency determinism is split by runtime target:
   `scripts/generate-pi-constraints.sh` drops the known Debian-only
   `flatbuffers==20181003210633` freeze value because PyPI cannot replay
   it; `onnxruntime` then resolves a published flatbuffers wheel during
-  deploy.
+  deploy. `tests/test_constraints_pi_resolvable.py` keeps the overlay in
+  lockstep with `uv.lock`, dry-runs the actual versioned pyproject
+  requirements, and separately resolves Linux aarch64 / Python 3.13 so
+  x86-only availability cannot make the deploy guard falsely green.
 
 This is one dependency-management story with platform-specific resolution
 artifacts where they matter: `uv.lock` for laptop and GitHub Actions

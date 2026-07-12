@@ -718,6 +718,8 @@ title = "Transit, Citi Bike, and travel-time tools"
 safety = "safe-ci"
 code = [
   "jasper/google_routes.py",
+  "jasper/subway.py",
+  "jasper/bus.py",
   "jasper/transit/**",
   "jasper/citibike.py",
   "jasper/tools/travel_routes.py",

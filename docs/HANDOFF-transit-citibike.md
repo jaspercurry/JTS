@@ -1,11 +1,36 @@
-# HANDOFF — Citi Bike transit integration
+# HANDOFF — NYC transit integrations
 
-Canonical reference for the Citi Bike (NYC + Jersey City + Hoboken)
-voice tool. If you're modifying `jasper/citibike.py`, the citibike
-provider, the `get_citibike_status` tool, or the Citi Bike card in
-the `/transit/` wizard, read this first. The same wizard also owns
-the Google Routes travel-time card described below because it reuses
-the saved speaker location as its origin.
+Canonical reference for the runtime ownership and resilience contracts of
+the subway, Citi Bike, and Google Routes transit paths. The `/transit/`
+wizard owns their saved configuration; provider modules own discovery and
+client construction; runtime clients own live-data parsing and caching.
+
+## NYC subway: primary API plus direct fallback
+
+`jasper.subway.SubwayClient` tries Subway Now first because its station
+endpoint aggregates all seven MTA feeds and therefore sees rerouted trains.
+When that request fails, JTS polls the relevant public MTA GTFS-Realtime feed
+directly. The fallback deliberately sees only the configured station's
+CSV-documented lines; that reroute limitation is the documented degradation,
+not an accidental parser difference.
+
+The fallback parses standard GTFS-Realtime wire fields with
+`gtfs-realtime-bindings`. JTS defines only MTA extension field 1001's
+`train_id` locally, because the standard trip id can repeat during the
+daylight-saving repeated hour and TripUpdate/VehiclePosition pairing must
+remain unambiguous. Pairing uses the final seven train-id characters, matching
+MTA's established prefix-tolerant contract. JTS does not depend on
+`nyct-gtfs`: that package's stale generated bindings hard-pin the unsupported
+protobuf 4.25.3 runtime.
+
+The tool response reports `source="subwaynow"` or `source="mta-gtfs"`.
+`tests/test_subway.py` pins the fallback with a reduced recording of real MTA
+wire bytes, duplicate-trip identity coverage, stale-feed rejection, and
+primary-to-fallback behavior. The detailed response contract and feed-group
+map remain closest to their implementation in `jasper/subway.py` and
+`jasper/tools/subway.py`.
+
+## Citi Bike
 
 ## What it does
 
@@ -101,6 +126,10 @@ multi-station picker + e-bike-only toggle and persists picks into
 
 | File | Role |
 |---|---|
+| [jasper/subway.py](../jasper/subway.py) | Subway Now client, direct MTA GTFS-Realtime parser, cache, and fallback policy |
+| [jasper/transit/providers/nyc_subway.py](../jasper/transit/providers/nyc_subway.py) | Subway provider config/discovery adapter |
+| [jasper/tools/subway.py](../jasper/tools/subway.py) | `get_subway_arrivals` tool and response contract |
+| [tests/test_subway.py](../tests/test_subway.py) | Primary/fallback behavior and recorded-wire parser coverage |
 | [jasper/citibike.py](../jasper/citibike.py) | GBFS fetcher (`fetch_feed`), TTL cache, `CitiBikeClient`, `StationStatus`, parsers |
 | [jasper/transit/providers/citibike.py](../jasper/transit/providers/citibike.py) | `_CitiBike` provider satisfying `TransitProvider`; owns the `JASPER_CITIBIKE_*` env keys (`env_keys` + `build_client`) and `find_stops_near` |
 | [jasper/tools/citibike.py](../jasper/tools/citibike.py) | `make_citibike_tools` factory; `get_citibike_status` async tool |
@@ -346,6 +375,6 @@ flag it on the second provider, do it on the third.
   the provider to inject context (system name in the response) so
   the LLM can disambiguate. Defer until two networks exist.
 
-Last verified: 2026-06-30 (file map re-checked while adding the Google Routes
-travel-time companion; Citi Bike ownership remains provider-local, and Routes
-keeps its billable key in `/var/lib/jasper-secrets/google_routes.env`)
+Last verified: 2026-07-11 (subway fallback ownership re-checked against
+`jasper/subway.py`; Citi Bike remains provider-local, and Routes keeps its
+billable key in `/var/lib/jasper-secrets/google_routes.env`)

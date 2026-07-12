@@ -16,16 +16,15 @@ Two data paths, primary + fallback:
    stop_id anyway). This is what Tidbyt's goodservice app and HA's MTA
    integration both use; see prior-art research at v2 review time.
 
-2. **nyct-gtfs direct** (api-endpoint.mta.info GTFS-RT protobuf) —
-   self-contained fallback used when Subway Now is slow/down. **Route-
-   keyed at the library layer** — each `NYCTFeed(line)` loads one of
-   MTA's 7 line-group feeds, and queries are filtered by that feed
-   group. We poll each unique feed for the station's CSV-documented
-   lines and union. **Reroutes are not visible on this path** — an N
-   at a D station would live in NQRW, which we wouldn't poll for a
-   D-only station. Acceptable degradation: Subway Now is the primary
-   for a reason, and reroutes are a rare overlap with Subway-Now
-   outages.
+2. **MTA GTFS-Realtime direct** (api-endpoint.mta.info protobuf) —
+   self-contained fallback used when Subway Now is slow/down. We parse
+   the standard GTFS-Realtime fields with MobilityData's maintained
+   bindings, poll each unique MTA line-group feed for the station's
+   CSV-documented lines, and union the results. **Reroutes are not
+   visible on this path** — an N at a D station would live in NQRW,
+   which we wouldn't poll for a D-only station. Acceptable degradation:
+   Subway Now is the primary for a reason, and reroutes are a rare
+   overlap with Subway-Now outages.
 
 Response shape (both paths):
 
@@ -41,7 +40,7 @@ Response shape (both paths):
       },
       ...
     ],
-    "source": "subwaynow" | "nyct-gtfs",
+    "source": "subwaynow" | "mta-gtfs",
   }
 
 Arrivals are sorted by ETA ascending, capped at 4. The voice model
@@ -61,6 +60,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
@@ -71,7 +71,7 @@ from .transit._mta_stations import Station as StationInfo, stations_by_id
 logger = logging.getLogger(__name__)
 
 
-# Lines → which protobuf feed they live in. Used by the nyct-gtfs fallback.
+# Lines → which protobuf feed they live in. Used by the direct MTA fallback.
 LINE_TO_FEED: dict[str, str] = {
     "A": "ace", "C": "ace", "E": "ace",
     "B": "bdfm", "D": "bdfm", "F": "bdfm", "M": "bdfm",
@@ -101,8 +101,218 @@ ARRIVAL_LIMIT = 4
 SUBWAYNOW_URL = "https://api.subwaynow.app/stops/{stop_id}"
 SUBWAYNOW_AGENT = "jts-jasper"
 # Tight timeout: if Subway Now is hanging, we'd rather fall through fast
-# than make the user wait. nyct-gtfs fallback will pick up the slack.
+# than make the user wait. The direct MTA fallback will pick up the slack.
 SUBWAYNOW_TIMEOUT = 1.5
+MTA_GTFS_TIMEOUT = 4.0
+_NYCT_TRIP_DESCRIPTOR_FIELD = 1001
+
+
+def _nyct_trip_descriptor_extension():
+    """Register the one NYCT extension field needed for stable trip identity.
+
+    The standard GTFS trip id can repeat during the daylight-saving repeated
+    hour. MTA's field 1001 carries the operations train id that disambiguates
+    those trips. Defining only that wire-compatible field keeps JTS on current
+    protobuf bindings without vendoring nyct-gtfs's stale generated package.
+    """
+    from google.protobuf import descriptor_pb2, descriptor_pool
+    from google.transit import gtfs_realtime_pb2
+
+    pool = descriptor_pool.Default()
+    try:
+        return pool.FindExtensionByNumber(
+            gtfs_realtime_pb2.TripDescriptor.DESCRIPTOR,
+            _NYCT_TRIP_DESCRIPTOR_FIELD,
+        )
+    except KeyError:
+        pass
+
+    field_type = descriptor_pb2.FieldDescriptorProto
+    schema = descriptor_pb2.FileDescriptorProto(
+        name="jasper-nyct-trip-identity.proto",
+        package="jasper.nyct",
+        syntax="proto2",
+        dependency=["gtfs-realtime.proto"],
+    )
+    message = schema.message_type.add(name="NyctTripDescriptor")
+    message.field.add(
+        name="train_id",
+        number=1,
+        label=field_type.LABEL_OPTIONAL,
+        type=field_type.TYPE_STRING,
+    )
+    schema.extension.add(
+        name="nyct_trip_descriptor",
+        number=_NYCT_TRIP_DESCRIPTOR_FIELD,
+        label=field_type.LABEL_OPTIONAL,
+        type=field_type.TYPE_MESSAGE,
+        type_name=".jasper.nyct.NyctTripDescriptor",
+        extendee=".transit_realtime.TripDescriptor",
+    )
+    try:
+        pool.AddSerializedFile(schema.SerializeToString())
+    except TypeError:
+        # Another first-load thread may have registered the same extension.
+        pass
+    return pool.FindExtensionByNumber(
+        gtfs_realtime_pb2.TripDescriptor.DESCRIPTOR,
+        _NYCT_TRIP_DESCRIPTOR_FIELD,
+    )
+
+
+@dataclass(frozen=True)
+class _StopTimeUpdate:
+    stop_id: str
+    arrival: datetime | None
+    departure: datetime | None
+
+
+@dataclass(frozen=True)
+class _Trip:
+    route_id: str
+    underway: bool
+    stop_time_updates: tuple[_StopTimeUpdate, ...]
+
+
+class _GTFSRealtimeFeed:
+    """Thin adapter over the standard GTFS-Realtime schema.
+
+    JTS only reads the feed timestamp, route id, vehicle timestamp,
+    stop id, and arrival/departure time. Keeping that parsing local
+    avoids nyct-gtfs's generated NYCT-extension bindings, which hard-pin
+    the end-of-life protobuf 4.25.3 runtime for APIs removed in protobuf
+    5. Unknown NYCT extension fields remain safely ignored by protobuf.
+    """
+
+    def __init__(self, line: str) -> None:
+        url = feed_url_for_line(line)
+        if url is None:
+            raise ValueError(f"unknown subway line: {line}")
+        self._url = url
+        self.last_generated: datetime | None = None
+        self._trips: tuple[_Trip, ...] = ()
+        self.refresh()
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> _GTFSRealtimeFeed:
+        """Build from a recorded feed without making a network call."""
+        feed = cls.__new__(cls)
+        feed._url = "recorded://mta-gtfs"
+        feed.last_generated = None
+        feed._trips = ()
+        feed._load(payload)
+        return feed
+
+    @staticmethod
+    def _trip_key(trip, nyct_extension) -> tuple[str, ...]:
+        if trip.HasExtension(nyct_extension):
+            train_id = trip.Extensions[nyct_extension].train_id
+            if train_id:
+                # Preserve nyct-gtfs's pairing contract: MTA may vary the
+                # train-id prefix between TripUpdate and VehiclePosition,
+                # while the final seven characters identify the train.
+                return ("nyct", trip.trip_id, train_id[-7:])
+        return (
+            "gtfs",
+            trip.trip_id,
+            trip.route_id,
+            trip.start_date,
+            trip.start_time,
+        )
+
+    @staticmethod
+    def _event_time(event) -> datetime | None:
+        if not event.HasField("time") or event.time <= 0:
+            return None
+        return datetime.fromtimestamp(event.time)
+
+    def _load(self, payload: bytes) -> None:
+        from google.transit import gtfs_realtime_pb2
+
+        nyct_extension = _nyct_trip_descriptor_extension()
+        message = gtfs_realtime_pb2.FeedMessage()
+        message.ParseFromString(payload)
+        if not message.HasField("header") or not message.header.HasField("timestamp"):
+            raise ValueError("MTA GTFS-Realtime feed has no header timestamp")
+
+        header_timestamp = int(message.header.timestamp)
+        self.last_generated = datetime.fromtimestamp(header_timestamp)
+
+        vehicle_timestamps: dict[tuple[str, ...], int] = {}
+        for entity in message.entity:
+            if not entity.HasField("vehicle"):
+                continue
+            vehicle = entity.vehicle
+            if not vehicle.HasField("trip") or not vehicle.HasField("timestamp"):
+                continue
+            vehicle_timestamps[
+                self._trip_key(vehicle.trip, nyct_extension)
+            ] = int(vehicle.timestamp)
+
+        trips: list[_Trip] = []
+        for entity in message.entity:
+            if not entity.HasField("trip_update"):
+                continue
+            update = entity.trip_update
+            if not update.HasField("trip"):
+                continue
+            trip = update.trip
+            vehicle_timestamp = vehicle_timestamps.get(
+                self._trip_key(trip, nyct_extension)
+            )
+            # Match nyct-gtfs's `underway=True` contract: MTA publishes
+            # VehiclePosition before some B-division departures, but future-
+            # dated positions are not underway. Allow one minute for clock skew.
+            underway = (
+                vehicle_timestamp is not None
+                and vehicle_timestamp <= header_timestamp + 60
+            )
+            stop_updates: list[_StopTimeUpdate] = []
+            for stop in update.stop_time_update:
+                arrival = self._event_time(stop.arrival) if stop.HasField("arrival") else None
+                departure = (
+                    self._event_time(stop.departure)
+                    if stop.HasField("departure")
+                    else None
+                )
+                stop_updates.append(
+                    _StopTimeUpdate(
+                        stop_id=stop.stop_id,
+                        arrival=arrival,
+                        departure=departure,
+                    )
+                )
+            trips.append(
+                _Trip(
+                    route_id=trip.route_id,
+                    underway=underway,
+                    stop_time_updates=tuple(stop_updates),
+                )
+            )
+        self._trips = tuple(trips)
+
+    def refresh(self) -> None:
+        response = httpx.get(self._url, timeout=MTA_GTFS_TIMEOUT)
+        response.raise_for_status()
+        self._load(response.content)
+
+    def filter_trips(
+        self,
+        *,
+        line_id: str,
+        headed_for_stop_id: str,
+        underway: bool,
+    ) -> list[_Trip]:
+        return [
+            trip
+            for trip in self._trips
+            if trip.route_id == line_id
+            and trip.underway is underway
+            and any(
+                stop.stop_id == headed_for_stop_id
+                for stop in trip.stop_time_updates
+            )
+        ]
 
 
 # The runtime arrivals client uses the same `Station` dataclass as
@@ -172,7 +382,7 @@ def feed_url_for_line(line: str) -> str | None:
 
 
 class SubwayClient:
-    """Subway Now (primary) + nyct-gtfs (fallback) subway arrivals.
+    """Subway Now (primary) + direct MTA GTFS fallback arrivals.
 
     Direction handling:
       - `direction="both"` or `""` with no configured default → both N+S
@@ -182,7 +392,7 @@ class SubwayClient:
 
     Line handling:
       - `line=""` → all lines stopping at the station (Subway Now path
-        sees reroutes; nyct-gtfs fallback covers the station's
+        sees reroutes; the MTA fallback covers the station's
         CSV-documented lines only)
       - `line="D"` → filter to that line post-fetch
     """
@@ -191,7 +401,7 @@ class SubwayClient:
         self,
         station_id: str,
         default_direction: str = "",
-        feed_factory=None,                  # injectable; defaults to nyct_gtfs.NYCTFeed
+        feed_factory=None,                  # injectable; defaults to _GTFSRealtimeFeed
         http_get=None,                      # injectable; defaults to httpx.get
         clock=None,                         # injectable; defaults to datetime.now
     ) -> None:
@@ -205,7 +415,7 @@ class SubwayClient:
         self._feed_factory = feed_factory
         self._http_get = http_get or self._default_http_get
         self._clock = clock or (lambda: datetime.now())
-        # nyct-gtfs feed cache: line -> (feed, last_refresh_monotonic)
+        # Direct MTA feed cache: line -> (feed, last_refresh_monotonic)
         self._feed_cache: dict[str, tuple[object, float]] = {}
         # Subway Now response cache: stop_id -> (json_dict, last_refresh_monotonic)
         self._sn_cache: dict[str, tuple[dict, float]] = {}
@@ -233,8 +443,8 @@ class SubwayClient:
         arrivals = self._arrivals_via_subwaynow(directions, line_filter)
         source = "subwaynow"
         if arrivals is None:
-            arrivals = self._arrivals_via_nyct_gtfs(directions, line_filter)
-            source = "nyct-gtfs"
+            arrivals = self._arrivals_via_mta_gtfs(directions, line_filter)
+            source = "mta-gtfs"
         if arrivals is None:
             log_event(
                 logger,
@@ -407,9 +617,9 @@ class SubwayClient:
         arrivals.sort(key=lambda a: a["minutes_from_now"])
         return arrivals[:ARRIVAL_LIMIT]
 
-    # --- nyct-gtfs fallback ---------------------------------------------
+    # --- direct MTA GTFS-Realtime fallback -------------------------------
 
-    def _arrivals_via_nyct_gtfs(
+    def _arrivals_via_mta_gtfs(
         self,
         directions: list[str],
         line_filter: str,
@@ -456,7 +666,7 @@ class SubwayClient:
                     logger,
                     "transit.subway.fetch.error",
                     station=self._station_id,
-                    source="nyct-gtfs",
+                    source="mta-gtfs",
                     feed=group,
                     err=repr(e),
                 )
@@ -546,8 +756,7 @@ class SubwayClient:
             except Exception as e:  # noqa: BLE001
                 logger.warning("feed refresh failed for %s: %s", line, e)
         if self._feed_factory is None:
-            from nyct_gtfs import NYCTFeed
-            feed = NYCTFeed(line)
+            feed = _GTFSRealtimeFeed(line)
         else:
             feed = self._feed_factory(line)
         self._feed_cache[line] = (feed, now_mono)
