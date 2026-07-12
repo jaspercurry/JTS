@@ -184,10 +184,13 @@ The product is three tiers:
   `handle_start` consult it (refuse while commissioning), and `commission-load`
   refuses while any of the three is active. Same guarantee (never two
   measurement flows at once), self-healing via the safe-playback TTL.
-- **Confidence/quality thresholds are hard-coded per domain** (room:
-  `acoustic_quality.py`; driver: `driver_acoustics.py`
-  `SILENT_PEAK_DBFS=-45`, `NULL_THRESHOLD_DB=6`, …) with no shared,
-  parameterized model.
+- ~~**Confidence/quality thresholds are hard-coded per domain with no shared,
+  parameterized model.**~~ **CLOSED (2026-07-12).**
+  `jasper.audio_measurement.quality_model.QualityModel` now owns the shared
+  capture-quality vocabulary, with `ROOM`, `DRIVER`, and `RAMP` profiles.
+  Room SNR and driver-acoustics thresholds remain domain-specific fields on
+  those profiles; callers no longer depend on compatibility aliases in
+  `quality.py`.
 - ~~**Evidence durability is inconsistent**: correction has schema-versioned
   per-session bundles; active-speaker uses one global JSON state file~~
   **PARTIALLY CLOSED (2026-07-11, active-crossover Slice 0).**
@@ -699,4 +702,4 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-11
+Last verified: 2026-07-12

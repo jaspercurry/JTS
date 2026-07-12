@@ -17,9 +17,9 @@ These tests pin exactly that:
    before extraction (golden values baked below). Any accidental change to the
    moved math moves a golden and fails here.
 2. Each :class:`QualityModel` profile (``ROOM`` / ``DRIVER`` / ``RAMP``) carries
-   exactly the pre-extraction threshold values, and the ``quality.py`` /
-   ``acoustic_quality.py`` / ``driver_acoustics.py`` module-level aliases still
-   equal them.
+   exactly the pre-extraction threshold values, and the module-level aliases
+   still consumed by ``acoustic_quality.py`` / ``driver_acoustics.py`` equal
+   them.
 3. ``assess_capture`` is byte-identical under the ROOM and DRIVER profiles for
    the same input — the driver capture path used room correction's
    ``assess_capture`` verbatim before extraction, so passing ``DRIVER`` must not
@@ -164,13 +164,8 @@ def test_quality_model_profiles_carry_preextraction_values():
     assert RAMP == ROOM
 
 
-def test_module_level_aliases_match_profiles():
-    """Back-compat aliases kept at the old constant names still resolve to the
-    profile values, so nothing referencing them silently drifts."""
-    assert quality.PEAK_TOO_LOW_DBFS == ROOM.peak_too_low_dbfs
-    assert quality.RMS_TOO_LOW_DBFS == ROOM.rms_too_low_dbfs
-    assert quality.CLIP_ABS_THRESHOLD == ROOM.clip_abs_threshold
-    assert quality.CLIP_FRACTION_FAIL == ROOM.clip_fraction_fail
+def test_consumed_module_level_aliases_match_profiles():
+    """Aliases still consumed across package boundaries stay profile-backed."""
     assert quality.DBFS_FLOOR == ROOM.dbfs_floor
 
     from jasper.correction import acoustic_quality
