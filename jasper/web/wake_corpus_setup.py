@@ -173,7 +173,6 @@ from jasper.wake_corpus.bridge_session import (  # noqa: F401 - re-exported
     build_session_audio_context,
     chip_aec_config_metadata,
     disable_bridge_corpus_outputs,
-    enable_bridge_outputs_for_session,
     enter_corpus_test_mode,
     exit_corpus_test_mode,
     missing_bridge_outputs_for_session,
