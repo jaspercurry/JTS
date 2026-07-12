@@ -914,7 +914,13 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   the inner commissioning rollback anchor, but it restores the file-backed
   production config path from entry after success, playback failure, exception,
   cancellation, or post-anchor load refusal. A transient unsaved inline audition
-  is deliberately not resurrected; the durable production config wins. The ramp's
+  is deliberately not resurrected; the durable production config wins. The
+  shared `CamillaController` bounds each synchronous websocket worker attempt,
+  and cancellation aborts then drains that worker before the controller lock is
+  released; it never retries the cancelled mutation. This transport property is
+  necessary but not itself rollback: `set_config_file_path` is two sequential
+  commands, so this outer transaction's retained production anchor remains the
+  authority after an ambiguous response. The ramp's
   `confirmed_roles` remains only ordering memory for woofer-before-tweeter; the
   `/sound/` card treats measurement-backed driver checks as the product truth,
   so stale ramp state alone cannot complete the
@@ -1849,8 +1855,9 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-12 (superseded readiness and per-driver topology-tone
-planner removal checked against the protected commission ramp and retained
+Last verified: 2026-07-12 (bounded CamillaDSP worker cancellation checked
+against the outer commissioning rollback transaction; superseded readiness and
+per-driver topology-tone planner removal checked against the protected commission ramp and retained
 summed-crossover planner; prior 2026-07-11 pass covered per-driver protected level tones and gain locks,
 relay placement acknowledgement + durable comparable capture-set contract,
 automatic excitation SSOT, room readiness, applied

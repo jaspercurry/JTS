@@ -477,6 +477,28 @@ Multiple guardrails sit on top:
 Don't bypass any of these. The user is volume-sensitive ("don't blow
 my eardrums out"); defense in depth is the design.
 
+### Bounded CamillaDSP control transport
+
+Long-running daemon control/read paths and `jasper-doctor` use
+`CamillaController`. The pinned pycamilladsp client is synchronous, so the
+controller gives each newly-created
+websocket a fixed two-second socket timeout and arms a fixed five-second abort
+watchdog around each worker attempt. An ordinary transport failure still gets one fresh
+connection retry (roughly ten seconds total); caller cancellation never retries
+a mutation. Cancellation aborts websocket-client's underlying socket to wake a
+blocked receive, drains the worker while retaining the controller lock, then
+forgets the client before propagating cancellation. This prevents a detached
+thread from applying an obsolete volume/config write after its caller has moved
+on. The AirPlay health sampler and `jasper-doctor` use the same boundary.
+The operator-only `jasper-aec-tune` helper and containment-bound experimental
+`satellite_validation` harness still construct pycamilladsp directly; they are
+not covered by this daemon availability guarantee.
+
+`set_config_file_path()` is a sequential `SetConfigFilePath` then `Reload`, not
+an atomic protocol. A higher-level DSP transaction that needs rollback must
+retain and restore its prior path; the transport timeout does not turn an
+ambiguous response into proof that a mutation did or did not land.
+
 ## AirPlay is always camilla-as-master
 
 shairport-sync exposes `SetAirplayVolume` as a method that should
@@ -621,4 +643,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-07-11 (measurement-scoped voice-reconciler guard checked against a synchronized JTS3 UMIK/Camilla run, renewable `MEASURE_PAUSE`, in-flight race coverage, STATUS observability, and focused coordinator/voice tests; prior 2026-07-01 pass covered TTS loudness safety; prior 2026-06-30 pass covered duck-deferred push-guard recovery; prior 2026-06-26 pass covered reconciler mute intent; prior 2026-06-22 pass covered volume-floor calibration; prior 2026-06-17 pass covered librespot state; prior 2026-06-14 pass covered active-speaker `volume_limit`; prior 2026-06-08 pass covered mute, source sync, push guards, mux, and fan-in TTS ceiling)
+Last verified: 2026-07-12 (bounded CamillaDSP socket/worker cancellation and retry contract checked against the pinned pycamilladsp/websocket-client implementation and controller tests; prior 2026-07-11 pass covered the measurement-scoped voice-reconciler guard against a synchronized JTS3 UMIK/Camilla run, renewable `MEASURE_PAUSE`, in-flight race coverage, STATUS observability, and focused coordinator/voice tests; prior 2026-07-01 pass covered TTS loudness safety; prior 2026-06-30 pass covered duck-deferred push-guard recovery; prior 2026-06-26 pass covered reconciler mute intent; prior 2026-06-22 pass covered volume-floor calibration; prior 2026-06-17 pass covered librespot state; prior 2026-06-14 pass covered active-speaker `volume_limit`; prior 2026-06-08 pass covered mute, source sync, push guards, mux, and fan-in TTS ceiling)

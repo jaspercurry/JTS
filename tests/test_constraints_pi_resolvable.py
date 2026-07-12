@@ -117,6 +117,10 @@ _CROSS_ECOSYSTEM_PIN_CHAIN: dict[str, str] = {
     "googleapis-common-protos": "1.74.0+ floor protobuf>=4.25.8",
     "proto-plus": "1.28.0+ floor protobuf>=4.25.8",
     "onnxruntime": "1.27.0+ floor protobuf>=4.25.8",
+    # CamillaController deliberately uses websocket-client's private _ws
+    # handle plus abort()/default-timeout semantics to stop and drain pinned
+    # pycamilladsp workers. CI and the Pi must exercise the same version.
+    "websocket-client": "private CamillaDSP abort/timeout transport contract",
 }
 
 

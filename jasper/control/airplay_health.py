@@ -1236,31 +1236,33 @@ class AirPlayHealthSampler:
     @staticmethod
     def _read_camilla_state(host: str, port: int) -> dict[str, Any] | None:
         try:
+            from ..camilla import CamillaController
             from ..camilla_config_contract import read_camilla_devices_config
-            from camilladsp import CamillaClient
 
-            client = CamillaClient(host, port)
-            client.connect()
-            try:
-                out = {
-                    "buffer_level": _as_int(client.query("GetBufferLevel")),
-                    "rate_adjust": _as_float(client.query("GetRateAdjust")),
-                    "capture_rate": _as_int(client.query("GetCaptureRate")),
-                }
+            async def read() -> tuple[dict[str, Any], str | None]:
+                controller = CamillaController(host, port)
                 try:
-                    config_path = str(client.config.file_path())
-                except Exception:  # noqa: BLE001
-                    config_path = None
-                if config_path:
-                    out["config_path"] = config_path
-                    devices = read_camilla_devices_config(config_path)
-                    if devices:
-                        out.update(devices)
-                return out
-            finally:
-                try:
-                    client.disconnect()
-                except Exception:  # noqa: BLE001
-                    pass
+                    status = await controller.get_runtime_status()
+                    if status is None or not all(
+                        key in status
+                        for key in (
+                            "buffer_level", "rate_adjust", "capture_rate",
+                        )
+                    ):
+                        raise OSError("incomplete CamillaDSP runtime status")
+                    config_path = await controller.get_config_file_path(
+                        best_effort=True,
+                    )
+                    return status, config_path
+                finally:
+                    await controller.close()
+
+            out, config_path = asyncio.run(read())
+            if config_path:
+                out["config_path"] = config_path
+                devices = read_camilla_devices_config(config_path)
+                if devices:
+                    out.update(devices)
+            return out
         except Exception:  # noqa: BLE001
             return None

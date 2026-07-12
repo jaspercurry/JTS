@@ -74,6 +74,70 @@ def _sampler(**kwargs) -> AirPlayHealthSampler:
     return AirPlayHealthSampler(**kwargs)
 
 
+def test_camilla_probe_uses_bounded_controller_and_reads_device_config(
+    monkeypatch,
+) -> None:
+    import jasper.camilla as camilla
+    import jasper.camilla_config_contract as contract
+
+    constructed: list[tuple[str, int]] = []
+    closed = 0
+
+    class Controller:
+        def __init__(self, host: str, port: int) -> None:
+            constructed.append((host, port))
+
+        async def get_runtime_status(self):
+            return {
+                "buffer_level": 31,
+                "rate_adjust": 1.0001,
+                "capture_rate": 48000,
+            }
+
+        async def get_config_file_path(self, *, best_effort: bool):
+            assert best_effort is True
+            return "/tmp/camilla.yml"
+
+        async def close(self):
+            nonlocal closed
+            closed += 1
+
+    monkeypatch.setattr(camilla, "CamillaController", Controller)
+    monkeypatch.setattr(
+        contract,
+        "read_camilla_devices_config",
+        lambda path: {"chunksize": 256} if path == "/tmp/camilla.yml" else None,
+    )
+
+    assert AirPlayHealthSampler._read_camilla_state("127.0.0.1", 1234) == {
+        "buffer_level": 31,
+        "rate_adjust": 1.0001,
+        "capture_rate": 48000,
+        "config_path": "/tmp/camilla.yml",
+        "chunksize": 256,
+    }
+    assert constructed == [("127.0.0.1", 1234)]
+    assert closed == 1
+
+
+def test_camilla_probe_rejects_incomplete_runtime_snapshot(monkeypatch) -> None:
+    import jasper.camilla as camilla
+
+    class Controller:
+        def __init__(self, _host: str, _port: int) -> None:
+            pass
+
+        async def get_runtime_status(self):
+            return {"buffer_level": 31}
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(camilla, "CamillaController", Controller)
+
+    assert AirPlayHealthSampler._read_camilla_state("127.0.0.1", 1234) is None
+
+
 class _FakeHaStatus:
     def snapshot(self) -> dict:
         return {
