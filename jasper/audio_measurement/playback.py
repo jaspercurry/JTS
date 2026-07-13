@@ -22,6 +22,7 @@ import math
 import os
 import stat
 import struct
+import sys
 import tempfile
 import uuid
 import wave
@@ -165,7 +166,6 @@ class _VerifiedWavSource:
     fd: int
     device: int
     inode: int
-    mtime_ns: int
     channels: int
     sample_width_bytes: int
     sample_rate_hz: int
@@ -312,6 +312,65 @@ def _write_all(fd: int, payload: bytes) -> None:
         view = view[written:]
 
 
+def _close_fd(fd: int, *, path: Path) -> WavSourceError | None:
+    try:
+        os.close(fd)
+    except OSError as exc:
+        cleanup = WavSourceError(
+            "verified WAV descriptor could not be closed",
+            code=WavSourceFailureCode.CLEANUP_FAILED,
+            wav_path=path,
+        )
+        cleanup.__cause__ = exc
+        return cleanup
+    return None
+
+
+def _unlink_snapshot(pathname: str, *, path: Path) -> WavSourceError | None:
+    try:
+        os.unlink(pathname)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        cleanup = WavSourceError(
+            "verified WAV temporary snapshot could not be removed",
+            code=WavSourceFailureCode.CLEANUP_FAILED,
+            wav_path=path,
+        )
+        cleanup.__cause__ = exc
+        return cleanup
+    return None
+
+
+def _preserve_primary_cleanup_failure(
+    primary: BaseException,
+    cleanup: WavSourceError,
+) -> None:
+    primary.add_note(f"suppressed verified WAV cleanup failure: {cleanup}")
+    log_event(
+        logger,
+        "audio_measurement.verified_wav_source",
+        result="cleanup_failed",
+        failure_code=cleanup.code.value,
+        error_type=type(cleanup.__cause__ or cleanup).__name__,
+        level=logging.WARNING,
+    )
+
+
+def _finish_cleanup(
+    primary: BaseException | None,
+    failures: list[WavSourceError],
+) -> None:
+    if not failures:
+        return
+    first, *remaining = failures
+    for extra in remaining:
+        first.add_note(f"additional verified WAV cleanup failure: {extra}")
+    if primary is None:
+        raise first from first.__cause__
+    _preserve_primary_cleanup_failure(primary, first)
+
+
 def _snapshot_verified_wav(
     source_fd: int,
     *,
@@ -324,6 +383,7 @@ def _snapshot_verified_wav(
     temporary_path: str | None = None
     memfd_create = getattr(os, "memfd_create", None)
     sealed = memfd_create is not None
+    completed = False
     try:
         if sealed:
             assert memfd_create is not None
@@ -379,28 +439,37 @@ def _snapshot_verified_wav(
             if hasattr(os, "O_NOFOLLOW"):
                 read_flags |= os.O_NOFOLLOW
             read_fd = os.open(temporary_path, read_flags)
-            os.close(snapshot_fd)
+            writable_fd = snapshot_fd
             snapshot_fd = read_fd
-            os.unlink(temporary_path)
+            cleanup = _close_fd(writable_fd, path=path)
+            if cleanup is not None:
+                raise cleanup
+            cleanup = _unlink_snapshot(temporary_path, path=path)
+            if cleanup is not None:
+                raise cleanup
             temporary_path = None
         return_fd = snapshot_fd
         snapshot_fd = None
+        completed = True
         return return_fd
     finally:
+        failures: list[WavSourceError] = []
         if snapshot_fd is not None:
-            os.close(snapshot_fd)
+            cleanup = _close_fd(snapshot_fd, path=path)
+            if cleanup is not None:
+                failures.append(cleanup)
         if temporary_path is not None:
-            try:
-                os.unlink(temporary_path)
-            except FileNotFoundError:
-                pass
+            cleanup = _unlink_snapshot(temporary_path, path=path)
+            if cleanup is not None:
+                failures.append(cleanup)
+        _finish_cleanup(None if completed else sys.exc_info()[1], failures)
 
 
 def _inspect_pcm_wav(fd: int, *, path: Path) -> tuple[int, int, int, int]:
     duplicate = os.dup(fd)
+    completed = False
     try:
-        with os.fdopen(duplicate, "rb") as raw:
-            duplicate = -1
+        with os.fdopen(duplicate, "rb", closefd=False) as raw:
             with wave.open(raw, "rb") as wav:
                 channels = wav.getnchannels()
                 sample_width = wav.getsampwidth()
@@ -455,19 +524,25 @@ def _inspect_pcm_wav(fd: int, *, path: Path) -> tuple[int, int, int, int]:
                         code=WavSourceFailureCode.INVALID_WAV,
                         wav_path=path,
                     )
+        os.lseek(fd, 0, os.SEEK_SET)
+        completed = True
+        return channels, sample_width, sample_rate, frame_count
     except WavSourceError:
         raise
     except (EOFError, OSError, wave.Error) as exc:
-        raise WavSourceError(
+        failure = WavSourceError(
             "measurement artifact is not a readable PCM WAV",
             code=WavSourceFailureCode.INVALID_WAV,
             wav_path=path,
-        ) from exc
+        )
+        failure.__cause__ = exc
+        raise failure from exc
     finally:
-        if duplicate >= 0:
-            os.close(duplicate)
-    os.lseek(fd, 0, os.SEEK_SET)
-    return channels, sample_width, sample_rate, frame_count
+        cleanup = _close_fd(duplicate, path=path)
+        _finish_cleanup(
+            None if completed else sys.exc_info()[1],
+            [] if cleanup is None else [cleanup],
+        )
 
 
 def _open_verified_wav_source(
@@ -491,14 +566,23 @@ def _open_verified_wav_source(
     directory_fd: int | None = None
     fd: int | None = None
     snapshot_fd: int | None = None
+    completed = False
     try:
         directory_fd = os.open(Path(bundle_dir), directory_flags)
         parts = artifact.relative_path.split("/")
         for part in parts[:-1]:
             next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
-            os.close(directory_fd)
+            previous_fd = directory_fd
             directory_fd = next_fd
+            cleanup = _close_fd(previous_fd, path=path)
+            if cleanup is not None:
+                raise cleanup
         fd = os.open(parts[-1], file_flags, dir_fd=directory_fd)
+        final_directory_fd = directory_fd
+        directory_fd = None
+        cleanup = _close_fd(final_directory_fd, path=path)
+        if cleanup is not None:
+            raise cleanup
         opened = os.fstat(fd)
         if not stat.S_ISREG(opened.st_mode):
             raise WavSourceError(
@@ -529,8 +613,11 @@ def _open_verified_wav_source(
                 code=WavSourceFailureCode.CONTENT_MISMATCH,
                 wav_path=path,
             )
-        os.close(fd)
+        source_fd = fd
         fd = None
+        cleanup = _close_fd(source_fd, path=path)
+        if cleanup is not None:
+            raise cleanup
         channels, sample_width, sample_rate, frame_count = _inspect_pcm_wav(
             snapshot_fd,
             path=path,
@@ -542,29 +629,39 @@ def _open_verified_wav_source(
             fd=snapshot_fd,
             device=verified.st_dev,
             inode=verified.st_ino,
-            mtime_ns=verified.st_mtime_ns,
             channels=channels,
             sample_width_bytes=sample_width,
             sample_rate_hz=sample_rate,
             frame_count=frame_count,
         )
         snapshot_fd = None
+        completed = True
         return source
     except WavSourceError:
         raise
     except OSError as exc:
-        raise WavSourceError(
+        failure = WavSourceError(
             "measurement WAV could not be opened without following links",
             code=_wav_source_error_code(exc),
             wav_path=path,
-        ) from exc
+        )
+        failure.__cause__ = exc
+        raise failure from exc
     finally:
+        failures: list[WavSourceError] = []
         if fd is not None:
-            os.close(fd)
+            cleanup = _close_fd(fd, path=path)
+            if cleanup is not None:
+                failures.append(cleanup)
         if snapshot_fd is not None:
-            os.close(snapshot_fd)
+            cleanup = _close_fd(snapshot_fd, path=path)
+            if cleanup is not None:
+                failures.append(cleanup)
         if directory_fd is not None:
-            os.close(directory_fd)
+            cleanup = _close_fd(directory_fd, path=path)
+            if cleanup is not None:
+                failures.append(cleanup)
+        _finish_cleanup(None if completed else sys.exc_info()[1], failures)
 
 
 def _verify_open_wav_source(source: _VerifiedWavSource) -> None:
@@ -572,12 +669,14 @@ def _verify_open_wav_source(source: _VerifiedWavSource) -> None:
         raise ValueError("verified WAV source is closed or invalid")
     try:
         current = os.fstat(source.fd)
+        # Content identity is the exact byte size and digest.  Do not use the
+        # snapshot mtime here: on Linux, a rejected write against a sealed
+        # memfd can still advance its metadata without changing any bytes.
         if (
             not stat.S_ISREG(current.st_mode)
             or current.st_dev != source.device
             or current.st_ino != source.inode
             or current.st_size != source.artifact.byte_size
-            or current.st_mtime_ns != source.mtime_ns
             or _sha256_fd(source.fd) != source.artifact.sha256
         ):
             raise WavSourceError(
@@ -620,6 +719,22 @@ async def _drain_blocking_task(
     return task.result(), cancellation
 
 
+def _close_verified_wav_source(source: _VerifiedWavSource) -> WavSourceError | None:
+    try:
+        source.close()
+    except WavSourceError as exc:
+        return exc
+    except OSError as exc:
+        cleanup = WavSourceError(
+            "verified WAV snapshot descriptor could not be closed",
+            code=WavSourceFailureCode.CLEANUP_FAILED,
+            wav_path=source.path,
+        )
+        cleanup.__cause__ = exc
+        return cleanup
+    return None
+
+
 @asynccontextmanager
 async def verified_wav_source(
     bundle_dir: str | Path,
@@ -632,21 +747,21 @@ async def verified_wav_source(
     )
     source, cancellation = await _drain_blocking_task(opening)
     if cancellation is not None:
-        source.close()
+        cleanup = _close_verified_wav_source(source)
+        if cleanup is not None:
+            _preserve_primary_cleanup_failure(cancellation, cleanup)
         raise cancellation
+    body_completed = False
     try:
         yield source
+        body_completed = True
     finally:
-        try:
-            source.close()
-        except WavSourceError:
-            raise
-        except OSError as exc:
-            raise WavSourceError(
-                "verified WAV snapshot descriptor could not be closed",
-                code=WavSourceFailureCode.CLEANUP_FAILED,
-                wav_path=source.path,
-            ) from exc
+        primary = None if body_completed else sys.exc_info()[1]
+        cleanup = _close_verified_wav_source(source)
+        if cleanup is not None:
+            if primary is None:
+                raise cleanup from cleanup.__cause__
+            _preserve_primary_cleanup_failure(primary, cleanup)
 
 
 def validate_wav_playback_request(

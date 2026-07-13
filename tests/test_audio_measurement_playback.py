@@ -213,9 +213,10 @@ async def test_verified_wav_refuses_changed_malformed_symlink_and_oversized_sour
 
 
 @pytest.mark.asyncio
-async def test_verified_wav_open_drains_cancellation_and_closes_late_fd(
+async def test_verified_wav_open_cancellation_survives_late_close_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     wav_path = tmp_path / "stimulus.wav"
     with wave.open(str(wav_path), "wb") as wav:
@@ -228,6 +229,7 @@ async def test_verified_wav_open_drains_cancellation_and_closes_late_fd(
     started = threading.Event()
     release = threading.Event()
     opened = []
+    original_close = playback._VerifiedWavSource.close
 
     def delayed_open(*args, **kwargs):
         source = original_open(*args, **kwargs)
@@ -240,16 +242,188 @@ async def test_verified_wav_open_drains_cancellation_and_closes_late_fd(
         async with playback.verified_wav_source(tmp_path, artifact):
             raise AssertionError("cancelled open yielded a source")
 
+    def close_then_fail(source):
+        original_close(source)
+        raise OSError("late snapshot close failed")
+
     monkeypatch.setattr(playback, "_open_verified_wav_source", delayed_open)
+    monkeypatch.setattr(playback._VerifiedWavSource, "close", close_then_fail)
+    caplog.set_level(logging.INFO, logger=playback.__name__)
     task = asyncio.create_task(consume())
     assert await asyncio.to_thread(started.wait, 5)
     task.cancel()
     await asyncio.sleep(0)
     assert task.done() is False
     release.set()
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError) as caught:
         await task
     assert opened[0].closed is True
+    assert any(
+        "suppressed verified WAV cleanup failure" in note
+        for note in caught.value.__notes__
+    )
+    assert "event=audio_measurement.verified_wav_source" in caplog.text
+    assert "result=cleanup_failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_verified_wav_close_failure_preserves_active_body_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    wav_path = tmp_path / "stimulus.wav"
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8_000)
+        wav.writeframes(b"\0\0" * 8_000)
+    artifact = _artifact_identity(wav_path)
+    original_close = playback._VerifiedWavSource.close
+    primary = RuntimeError("primary body failure")
+
+    def close_then_fail(source):
+        original_close(source)
+        raise OSError("snapshot close failed")
+
+    monkeypatch.setattr(playback._VerifiedWavSource, "close", close_then_fail)
+    caplog.set_level(logging.INFO, logger=playback.__name__)
+
+    with pytest.raises(RuntimeError) as caught:
+        async with playback.verified_wav_source(tmp_path, artifact):
+            raise primary
+
+    assert caught.value is primary
+    assert any(
+        "suppressed verified WAV cleanup failure" in note
+        for note in caught.value.__notes__
+    )
+    assert "event=audio_measurement.verified_wav_source" in caplog.text
+    assert "result=cleanup_failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_verified_wav_close_failure_is_typed_without_primary_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wav_path = tmp_path / "stimulus.wav"
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8_000)
+        wav.writeframes(b"\0\0" * 8_000)
+    artifact = _artifact_identity(wav_path)
+    original_close = playback._VerifiedWavSource.close
+
+    def close_then_fail(source):
+        original_close(source)
+        raise OSError("snapshot close failed")
+
+    monkeypatch.setattr(playback._VerifiedWavSource, "close", close_then_fail)
+
+    ambient = RuntimeError("ambient caller error")
+    try:
+        raise ambient
+    except RuntimeError as handled:
+        with pytest.raises(playback.WavSourceError) as caught:
+            async with playback.verified_wav_source(tmp_path, artifact):
+                pass
+        assert handled is ambient
+        assert not hasattr(handled, "__notes__")
+
+    assert caught.value.code is playback.WavSourceFailureCode.CLEANUP_FAILED
+    assert isinstance(caught.value.__cause__, OSError)
+
+
+@pytest.mark.asyncio
+async def test_verified_wav_internal_parse_cleanup_preserves_invalid_wav(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    wav_path = tmp_path / "malformed.wav"
+    wav_path.write_bytes(b"not a wave")
+    artifact = _artifact_identity(wav_path)
+    original_dup = playback.os.dup
+    original_close = playback.os.close
+    duplicate_fds: set[int] = set()
+    failed = False
+
+    def observed_dup(fd):
+        duplicate = original_dup(fd)
+        duplicate_fds.add(duplicate)
+        return duplicate
+
+    def close_then_fail(fd):
+        nonlocal failed
+        original_close(fd)
+        if fd in duplicate_fds and not failed:
+            failed = True
+            raise OSError("parse duplicate close failed")
+
+    monkeypatch.setattr(playback.os, "dup", observed_dup)
+    monkeypatch.setattr(playback.os, "close", close_then_fail)
+    caplog.set_level(logging.INFO, logger=playback.__name__)
+
+    with pytest.raises(playback.WavSourceError) as caught:
+        async with playback.verified_wav_source(tmp_path, artifact):
+            pass
+
+    assert failed is True
+    assert caught.value.code is playback.WavSourceFailureCode.INVALID_WAV
+    assert any(
+        "suppressed verified WAV cleanup failure" in note
+        for note in caught.value.__notes__
+    )
+    assert "event=audio_measurement.verified_wav_source" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_verified_wav_directory_close_failure_closes_open_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wav_path = tmp_path / "stimulus.wav"
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8_000)
+        wav.writeframes(b"\0\0" * 8_000)
+    artifact = _artifact_identity(wav_path)
+    original_open = playback.os.open
+    original_close = playback.os.close
+    directory_fds: set[int] = set()
+    file_fds: list[int] = []
+    failed = False
+
+    def observed_open(path, flags, *args, **kwargs):
+        fd = original_open(path, flags, *args, **kwargs)
+        if flags & os.O_DIRECTORY:
+            directory_fds.add(fd)
+        else:
+            file_fds.append(fd)
+        return fd
+
+    def close_then_fail(fd):
+        nonlocal failed
+        original_close(fd)
+        if fd in directory_fds and not failed:
+            failed = True
+            raise OSError("directory close failed")
+
+    monkeypatch.setattr(playback.os, "open", observed_open)
+    monkeypatch.setattr(playback.os, "close", close_then_fail)
+
+    with pytest.raises(playback.WavSourceError) as caught:
+        async with playback.verified_wav_source(tmp_path, artifact):
+            pass
+
+    assert failed is True
+    assert caught.value.code is playback.WavSourceFailureCode.CLEANUP_FAILED
+    assert file_fds
+    with pytest.raises(OSError):
+        os.fstat(file_fds[-1])
 
 
 @pytest.mark.asyncio
