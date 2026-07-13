@@ -738,14 +738,9 @@ pub struct Mixer {
     /// DLL, which is correct.
     host_clock_ladder_l0: Arc<AtomicBool>,
     host_clock_commanded_milli_ppm: Arc<AtomicI64>,
-    /// REVERSE host-clock signals for host-compliance REVALIDATION (servo thread →
-    /// mixer). `ladder_l2` = the DLL demoted to L2 (probe fail or mid-stream
-    /// demotion); `probe_result_code` = the servo's last probe verdict (0 none / 1
-    /// pass / 2 fail / 3 aborted). The mixer's per-period compliance tick reads
-    /// these to decide a one-strike revocation of a floor-primed proof. Stay at
-    /// their init (`false` / 0) when the servo is not running, so revalidation
-    /// never fires without a live DLL — same dependency as the decay tick.
-    host_clock_ladder_l2: Arc<AtomicBool>,
+    /// Explicit fallback cause from the host-clock controller. Host compliance
+    /// consumes this typed code directly; it never infers cause from L2 + probe.
+    host_clock_fallback_reason_code: Arc<AtomicU64>,
     host_clock_probe_result_code: Arc<AtomicU64>,
     /// REVERSE host-clock signal: the servo's last probe RESPONSE RATIO ×1000
     /// (i64-bits-in-u64, `PROBE_RATIO_NONE` sentinel = no verdict). The mixer
@@ -1380,9 +1375,9 @@ impl Mixer {
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
             host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
             // Reverse host-clock signals for host-compliance REVALIDATION. Init to
-            // the inert state (not-l2, no probe verdict) so a floor-primed session
+            // the inert state (no fallback, no probe verdict) so a floor-primed session
             // only revokes on a LIVE demotion/probe-fail from the servo.
-            host_clock_ladder_l2: Arc::new(AtomicBool::new(false)),
+            host_clock_fallback_reason_code: Arc::new(AtomicU64::new(0)),
             host_clock_probe_result_code: Arc::new(AtomicU64::new(0)),
             // Init to the None sentinel (no probe verdict) so a pre-servo period
             // records `None` rather than a stale zero ratio.
@@ -1429,6 +1424,9 @@ impl Mixer {
             output_frames: Arc::clone(&resampler.output_frames),
             locked: Arc::clone(&resampler.locked),
             present: Arc::clone(&direct_obs.present),
+            // Reuse the direct capture's existing monotonic successful-open
+            // counter as the sole capture-generation source of truth.
+            capture_generation: Arc::clone(&direct_obs.opens),
             // The resampler's LIVE correction ppm gauge (its `ratio_milli_ppm`,
             // milli-ppm i64-bits-in-u64) — the COMBO-mode probe/servo observable.
             // Owned/written by the resampler on the mixer thread; the servo thread
@@ -1445,7 +1443,7 @@ impl Mixer {
             commanded_milli_ppm: Arc::clone(&self.host_clock_commanded_milli_ppm),
             // The revalidation reverse signals — written by the servo, read by the
             // mixer's per-period compliance tick.
-            ladder_l2: Arc::clone(&self.host_clock_ladder_l2),
+            fallback_reason_code: Arc::clone(&self.host_clock_fallback_reason_code),
             probe_result_code: Arc::clone(&self.host_clock_probe_result_code),
             probe_response_ratio_milli: Arc::clone(&self.host_clock_probe_response_ratio_milli),
         })
@@ -1561,10 +1559,11 @@ impl Mixer {
             (self.host_clock_commanded_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0).abs();
         // 2d. Snapshot the REVERSE host-clock revalidation signals ONCE per period
         // for the host-compliance service below (same self-borrow avoidance as the
-        // decay signals). `ladder_l2` = probe-fail / mid-stream demotion;
-        // `probe_result_code` distinguishes a fresh probe FAIL from a later L2.
-        // Inert (false / 0) when the servo is not running.
-        let compliance_ladder_l2 = self.host_clock_ladder_l2.load(Ordering::Relaxed);
+        // decay signals). Cause is explicit; the compliance subsystem must not
+        // reconstruct it from a loose L2/probe combination.
+        let compliance_fallback_reason = crate::host_clock::decode_fallback_reason_code(
+            self.host_clock_fallback_reason_code.load(Ordering::Relaxed),
+        );
         let compliance_probe_code = self.host_clock_probe_result_code.load(Ordering::Relaxed);
         let compliance_probe_ratio = crate::host_clock::decode_response_ratio_milli(
             self.host_clock_probe_response_ratio_milli
@@ -1655,7 +1654,7 @@ impl Mixer {
         // period's fresh held-target / lock state.
         self.service_host_compliance(
             decay_l0,
-            compliance_ladder_l2,
+            compliance_fallback_reason,
             compliance_probe_code,
             compliance_probe_ratio,
         );
@@ -1773,7 +1772,7 @@ impl Mixer {
     fn service_host_compliance(
         &mut self,
         dll_l0: bool,
-        ladder_l2: bool,
+        fallback_reason: jasper_host_clock::FallbackReason,
         probe_code: u64,
         probe_response_ratio: Option<f64>,
     ) {
@@ -1816,13 +1815,18 @@ impl Mixer {
         // lock-edge bookkeeping. It re-samples `floor_primed` from the live proof at
         // the rising edge and returns the revoke decision plus the observed edges so
         // the proof machine's reset stays in lock-step with the tracker.
-        let step = hc.revalidation.step(
-            locked,
-            unlock_count,
-            probe_code,
-            ladder_l2,
-            floor_primed_now,
-        );
+        let step = hc
+            .revalidation
+            .step(locked, unlock_count, fallback_reason, floor_primed_now);
+        if step.raise_safe_ceiling {
+            // Local actuator loss is not host evidence. Raise only the current
+            // session cushion; retain the proof, strike count, and flag_present.
+            resampler.snap_decay_to_ceiling();
+            warn!(
+                "event=fanin.host_compliance.infrastructure_ceiling reason=actuator_unavailable path={} — current session raised to safe ceiling; proof retained",
+                hc.path.display(),
+            );
+        }
         if let Some(reason) = step.revoke {
             // A floor-primed revalidation failure. EVERY strike snaps the held
             // target back to the full ceiling so THIS session re-acquires deep and

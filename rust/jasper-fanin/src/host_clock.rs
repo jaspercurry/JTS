@@ -20,11 +20,9 @@
 //!    `PCM`.
 //! 2. [`build_obs`] — maps those atomics onto the shared [`Obs`], including the
 //!    resampler-derived setpoint (see below).
-//! 3. [`HostClockActuator`] — the fan-in pitch-ctl actuator: fail-soft open,
-//!    rate-limited write-error logs, and (unlike the deleted usbsink solo
-//!    daemon's actuator) a session-edge REOPEN so a boot-order race that
-//!    opened the ctl before the gadget bound does not leave every write a
-//!    no-op forever.
+//! 3. [`HostClockActuator`] — the fan-in pitch-ctl actuator: capture-generation
+//!    binding, forced-neutral readiness, fail-soft open/write recovery, and
+//!    rate-limited lifecycle logs.
 //! 4. [`run_host_clock_thread`] — the dedicated `fanin-host-clock` thread: a
 //!    100 ms sleep loop gated to `TICK_INTERVAL_MS`, single-writer by
 //!    construction (the `HostClock` and the ctl handle never leave it), with an
@@ -81,8 +79,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use jasper_host_clock::{
-    ctl_card_from_capture, ppm_to_ctl_value, Action, AlsaPitchCtl, HostClock, HostClockConfig,
-    Ladder, Obs, ObsMode, TICK_INTERVAL_MS,
+    ctl_card_from_capture, ppm_to_ctl_value, Action, AlsaPitchCtl, ControlStatus, FallbackReason,
+    HostClock, HostClockConfig, Ladder, Obs, ObsMode, PitchCtl, TICK_INTERVAL_MS,
 };
 
 /// The `event=` log-line namespace prefix for the fan-in ladder.
@@ -108,6 +106,10 @@ pub struct HostClockSignals {
     pub locked: Arc<AtomicBool>,
     /// USB DIRECT capture presence — the fan-in `host_connected` proxy.
     pub present: Arc<AtomicBool>,
+    /// Authoritative successful-open generation for the direct capture handle.
+    /// This is the existing `DirectObservability.opens` counter, not a duplicate
+    /// lifecycle counter.
+    pub capture_generation: Arc<AtomicU64>,
     /// The lane resampler's LIVE correction ppm (its rate-adjustment relative to
     /// nominal), in **milli-ppm** (ppm × 1000) stored as i64 bits in this
     /// `AtomicU64` — the SAME atomic the resampler already publishes for STATUS
@@ -135,17 +137,14 @@ pub struct HostClockSignals {
     /// i64 into an `AtomicU64`). The decay tick reads its magnitude for the
     /// cascade-stability guard.
     pub commanded_milli_ppm: Arc<AtomicI64>,
-    /// REVERSE signal (servo thread → mixer): 1 iff the DLL ladder is
-    /// `l2_fallback` — the probe FAILED or the host stopped honouring the command
-    /// (mid-stream demotion). The mixer's host-compliance revalidation reads this:
-    /// a floor-primed session whose ladder demotes to L2 is one strike →
-    /// snap-back + revoke the persisted proof.
-    pub ladder_l2: Arc<AtomicBool>,
+    /// REVERSE signal (servo thread → mixer): explicit [`FallbackReason`] code.
+    /// This is the sole cause signal consumed by host compliance; it never
+    /// reconstructs cause from ladder/probe combinations.
+    pub fallback_reason_code: Arc<AtomicU64>,
     /// REVERSE signal (servo thread → mixer): the servo's last probe verdict, as a
     /// stable code — `0` none/pending, `1` pass, `2` fail, `3` aborted (see
-    /// [`probe_result_code`]). Lets the revalidation distinguish a fresh probe
-    /// FAIL (`2`) from a mid-stream L2 demotion after a prior pass, so the revoke
-    /// reason is honest (`probe_fail` vs `dll_demotion`).
+    /// [`probe_result_code`]). Compliance uses a live PASS to reset a retained
+    /// strike; fallback cause comes only from `fallback_reason_code`.
     pub probe_result_code: Arc<AtomicU64>,
     /// REVERSE signal (servo thread → mixer): the servo's last probe RESPONSE
     /// RATIO ×1000, as an i64 bit-packed in this `AtomicU64` (same encoding as
@@ -191,6 +190,28 @@ pub fn probe_result_code(r: jasper_host_clock::ProbeResult) -> u64 {
         ProbeResult::Pass => 1,
         ProbeResult::Fail => 2,
         ProbeResult::Aborted => 3,
+    }
+}
+
+/// Stable atomic code for [`FallbackReason`]. Append, never renumber.
+pub fn fallback_reason_code(reason: FallbackReason) -> u64 {
+    match reason {
+        FallbackReason::None => 0,
+        FallbackReason::ProbeNoncompliant => 1,
+        FallbackReason::LostAuthority => 2,
+        FallbackReason::ActuatorUnavailable => 3,
+    }
+}
+
+/// Inverse of [`fallback_reason_code`]. Unknown values fail safely as local
+/// infrastructure rather than fabricating host-noncompliance evidence.
+pub fn decode_fallback_reason_code(code: u64) -> FallbackReason {
+    match code {
+        0 => FallbackReason::None,
+        1 => FallbackReason::ProbeNoncompliant,
+        2 => FallbackReason::LostAuthority,
+        3 => FallbackReason::ActuatorUnavailable,
+        _ => FallbackReason::ActuatorUnavailable,
     }
 }
 
@@ -273,6 +294,11 @@ fn should_log_ctl_error(last: Option<u64>, now_ms: u64) -> bool {
     last.map_or(true, |last| now_ms.saturating_sub(last) >= 10_000)
 }
 
+/// Bounded retry cadence for a missing/failed control handle. The servo itself
+/// ticks at 1 Hz, so this permits one open per tick and cannot spin. Fixed and
+/// test-pinned; hardware recovery must not depend on an env tuning knob.
+pub const CONTROL_REOPEN_INTERVAL_MS: u64 = 1_000;
+
 /// The fan-in pitch-ctl actuator: holds the real [`AlsaPitchCtl`] when the card
 /// opens, else `None` (fail-soft — the ladder still runs and publishes
 /// telemetry). Applies a ladder [`Action`], translating ppm → ctl integer and
@@ -286,113 +312,215 @@ fn should_log_ctl_error(last: Option<u64>, now_ms: u64) -> bool {
 /// (single-writer by construction), the same in-thread ctl ownership the
 /// deleted usbsink solo daemon (removed 2026-07-10, #1209) used.
 ///
-/// Fan-in delta from the deleted usbsink solo daemon: **session-edge reopen**.
-/// That daemon's gadget-up `ExecStartPre` guaranteed the card existed before
-/// it started, so its actuator opened once. Fan-in has no such ordering
-/// guarantee — a boot-order race (fan-in up before the gadget function binds)
-/// would leave the ctl `None` and every write a silent no-op forever, so
-/// every session would spuriously probe-fail into L2. So while `None`, we
-/// re-attempt the open on session rising edges, and on a late successful
-/// open the thread forces one neutralize before
-/// any command.
-struct HostClockActuator {
-    ctl: Option<AlsaPitchCtl>,
+/// The generic parameters keep the concrete `AlsaPitchCtl` thread-confined in
+/// production while allowing lifecycle tests to inject a fake handle/factory.
+/// No `Send` bound exists or is needed.
+struct HostClockActuator<C, F>
+where
+    C: PitchCtl,
+    F: FnMut(&str) -> Result<C, String>,
+{
+    ctl: Option<C>,
+    open_ctl: F,
     card: String,
     last_error_ms: Option<u64>,
+    last_refresh_attempt_ms: Option<u64>,
+    observed_capture_generation: Option<u64>,
+    control_generation: Option<u64>,
+    refreshes: u64,
+    open_failures: u64,
+    write_failures: u64,
+    readback_ctl_value: Option<i64>,
 }
 
-impl HostClockActuator {
-    /// Open the pitch ctl for `card` (derived from the direct-capture device).
-    /// Fail-soft: a missing card yields `ctl: None` (the ladder runs, writes
-    /// no-op) rather than an error. Called INSIDE the servo thread.
-    fn open(card: String) -> Self {
-        let ctl = Self::try_open(&card);
+impl<C, F> HostClockActuator<C, F>
+where
+    C: PitchCtl,
+    F: FnMut(&str) -> Result<C, String>,
+{
+    fn new(card: String, open_ctl: F) -> Self {
         Self {
-            ctl,
+            ctl: None,
+            open_ctl,
             card,
             last_error_ms: None,
+            last_refresh_attempt_ms: None,
+            observed_capture_generation: None,
+            control_generation: None,
+            refreshes: 0,
+            open_failures: 0,
+            write_failures: 0,
+            readback_ctl_value: None,
         }
     }
 
-    fn try_open(card: &str) -> Option<AlsaPitchCtl> {
-        match AlsaPitchCtl::open(card) {
-            Ok(ctl) => {
-                log::info!("event=fanin.host_clock_ctl_opened card={card}");
-                Some(ctl)
-            }
-            Err(e) => {
-                // Not fatal: the gadget may not be bound yet (fan-in has no
-                // gadget-up ExecStartPre — see the session-edge reopen below).
-                log::warn!("event=fanin.host_clock_ctl_error detail={e}");
-                None
-            }
+    fn status(&self, capture_generation: u64) -> ControlStatus {
+        ControlStatus {
+            capture_generation,
+            control_generation: self.control_generation,
+            refreshes: self.refreshes,
+            open_failures: self.open_failures,
+            write_failures: self.write_failures,
+            readback_ctl_value: self.readback_ctl_value,
         }
     }
 
-    /// True once the ctl is open. The thread skips the neutralize/apply path
-    /// with a no-op when this is false, but the ladder still ticks (telemetry).
-    fn is_open(&self) -> bool {
-        self.ctl.is_some()
+    fn invalidate(&mut self, now_ms: u64) {
+        self.ctl = None;
+        self.control_generation = None;
+        self.readback_ctl_value = None;
+        self.last_refresh_attempt_ms = Some(now_ms);
     }
 
-    /// Attempt to (re)open the ctl if it is currently closed. Called on session
-    /// rising edges. Returns `true` if this call transitioned closed→open (the
-    /// caller then forces one neutralize before any command).
-    fn reopen_if_closed(&mut self) -> bool {
-        if self.ctl.is_some() {
+    fn write_current(&mut self, value: i64) -> Result<(), String> {
+        let ctl = self
+            .ctl
+            .as_mut()
+            .ok_or_else(|| "pitch control unavailable".to_string())?;
+        ctl.write(value)?;
+        self.readback_ctl_value = ctl.read().ok().flatten();
+        Ok(())
+    }
+
+    /// Make the actuator trustworthy for `capture_generation`. A generation
+    /// edge always neutralizes and drops the old handle, even if that handle's
+    /// writes would still return success. The new generation is published only
+    /// after open + forced-neutral both succeed.
+    fn ensure_ready(&mut self, capture_generation: u64, now_ms: u64) -> bool {
+        if capture_generation == 0 {
+            if self.ctl.is_some() {
+                let _ = self.write_current(ppm_to_ctl_value(0.0));
+                self.invalidate(now_ms);
+            }
+            self.observed_capture_generation = Some(0);
             return false;
         }
-        self.ctl = Self::try_open(&self.card);
-        self.ctl.is_some()
+
+        let generation_changed = self.observed_capture_generation != Some(capture_generation);
+        if generation_changed {
+            let previous = self.observed_capture_generation;
+            self.observed_capture_generation = Some(capture_generation);
+            self.last_refresh_attempt_ms = None;
+            log::info!(
+                "event=fanin.host_clock_control_refresh_requested previous_capture_generation={} capture_generation={} control_generation={}",
+                previous.map_or_else(|| "none".to_string(), |v| v.to_string()),
+                capture_generation,
+                self.control_generation.map_or_else(|| "none".to_string(), |v| v.to_string()),
+            );
+        }
+
+        if self.control_generation == Some(capture_generation) && self.ctl.is_some() {
+            return true;
+        }
+
+        // A stale handle is never reused across a capture generation. Best-effort
+        // neutralize before replacement, then drop it regardless of write result.
+        if self.ctl.is_some() {
+            log::warn!(
+                "event=fanin.host_clock_generation_mismatch capture_generation={} control_generation={} action=neutralize_and_replace",
+                capture_generation,
+                self.control_generation.map_or_else(|| "none".to_string(), |v| v.to_string()),
+            );
+            if let Err(e) = self.write_current(ppm_to_ctl_value(0.0)) {
+                self.write_failures = self.write_failures.saturating_add(1);
+                if should_log_ctl_error(self.last_error_ms, now_ms) {
+                    self.last_error_ms = Some(now_ms);
+                    log::warn!(
+                        "event=fanin.host_clock_control_neutral_failure reason=generation_replacement capture_generation={} detail={}",
+                        capture_generation,
+                        e,
+                    );
+                }
+            }
+            self.ctl = None;
+            self.control_generation = None;
+            self.readback_ctl_value = None;
+        }
+
+        if self
+            .last_refresh_attempt_ms
+            .is_some_and(|last| now_ms.saturating_sub(last) < CONTROL_REOPEN_INTERVAL_MS)
+        {
+            return false;
+        }
+        self.last_refresh_attempt_ms = Some(now_ms);
+
+        let ctl = match (self.open_ctl)(&self.card) {
+            Ok(ctl) => ctl,
+            Err(e) => {
+                self.open_failures = self.open_failures.saturating_add(1);
+                if should_log_ctl_error(self.last_error_ms, now_ms) {
+                    self.last_error_ms = Some(now_ms);
+                    log::warn!(
+                        "event=fanin.host_clock_control_open_failure card={} capture_generation={} open_failures={} detail={}",
+                        self.card,
+                        capture_generation,
+                        self.open_failures,
+                        e,
+                    );
+                }
+                return false;
+            }
+        };
+        self.ctl = Some(ctl);
+        if let Err(e) = self.write_current(ppm_to_ctl_value(0.0)) {
+            self.write_failures = self.write_failures.saturating_add(1);
+            if should_log_ctl_error(self.last_error_ms, now_ms) {
+                self.last_error_ms = Some(now_ms);
+                log::warn!(
+                    "event=fanin.host_clock_control_neutral_failure reason=refresh capture_generation={} write_failures={} detail={}",
+                    capture_generation,
+                    self.write_failures,
+                    e,
+                );
+            }
+            self.invalidate(now_ms);
+            return false;
+        }
+
+        self.control_generation = Some(capture_generation);
+        self.refreshes = self.refreshes.saturating_add(1);
+        log::info!(
+            "event=fanin.host_clock_control_refresh_succeeded card={} capture_generation={} control_generation={} refreshes={} readback_ctl_value={}",
+            self.card,
+            capture_generation,
+            capture_generation,
+            self.refreshes,
+            self.readback_ctl_value.map_or_else(|| "none".to_string(), |v| v.to_string()),
+        );
+        true
     }
 
     /// Apply one ladder action, translating the commanded ppm to the ctl integer.
     /// A `None` ctl no-ops (fail-soft); a write error is logged at most once per
     /// ~10 s (`now_ms` is a monotonic clock so a flapping card cannot spam).
     ///
-    /// Device-loss handling (C, the ctl twin of the capture zombie fix): when the
-    /// gadget function is REBUILT underneath the servo (UDC rebind / usbsink
-    /// stop-start), the open ctl handle points at the destroyed card and every
-    /// write fails with ENODEV ("No such device (19)" — the observed
-    /// `event=fanin.host_clock_ctl_error`). We DROP the stale handle on that class
-    /// so the next session rising edge's `reopen_if_closed` re-opens it against the
-    /// rebuilt card (and forces one neutralize). Without this the handle stays
-    /// `Some` forever, `reopen_if_closed` early-returns, and the servo runs deaf.
-    fn apply(&mut self, action: Action, now_ms: u64) {
-        use jasper_host_clock::PitchCtl;
+    /// Every write failure invalidates readiness and drops the handle. The next
+    /// bounded `ensure_ready` tick reopens and neutralizes without waiting for a
+    /// user-visible session edge.
+    fn apply(&mut self, action: Action, now_ms: u64) -> bool {
         let Action::WritePitch { ppm, .. } = action;
         let value = ppm_to_ctl_value(ppm);
-        let Some(ctl) = self.ctl.as_mut() else {
-            return;
-        };
-        if let Err(e) = ctl.write(value) {
-            let device_lost = ctl_error_is_device_lost(&e);
+        if self.ctl.is_none() {
+            return false;
+        }
+        if let Err(e) = self.write_current(value) {
+            self.write_failures = self.write_failures.saturating_add(1);
             if should_log_ctl_error(self.last_error_ms, now_ms) {
                 self.last_error_ms = Some(now_ms);
                 log::warn!(
-                    "event=fanin.host_clock_ctl_error detail={e}{}",
-                    if device_lost {
-                        " action=drop_stale_handle (gadget rebuilt; will reopen on next session edge)"
-                    } else {
-                        ""
-                    }
+                    "event=fanin.host_clock_pitch_write_failure capture_generation={} control_generation={} write_failures={} detail={} action=invalidate_and_retry",
+                    self.observed_capture_generation.unwrap_or(0),
+                    self.control_generation.map_or_else(|| "none".to_string(), |v| v.to_string()),
+                    self.write_failures,
+                    e,
                 );
             }
-            if device_lost {
-                // Drop the stale handle so the session-edge reopen re-opens it.
-                self.ctl = None;
-            }
+            self.invalidate(now_ms);
+            return false;
         }
+        true
     }
-}
-
-/// True when a ctl write/open error string is the DEVICE-LOST class (ENODEV — the
-/// gadget card was rebuilt underneath the open handle). Pure string match so it is
-/// unit-testable without ALSA; the alsa crate's Display renders ENODEV as "No such
-/// device", and the kernel errno is 19. Matches either surface form.
-fn ctl_error_is_device_lost(msg: &str) -> bool {
-    let lower = msg.to_ascii_lowercase();
-    lower.contains("no such device") || lower.contains("(19)") || lower.contains("enodev")
 }
 
 /// The dedicated `fanin-host-clock` thread body (C5). Owns the [`HostClock`]
@@ -425,7 +553,7 @@ pub fn run_host_clock_thread(
     // Construct the ctl actuator INSIDE the thread: `AlsaPitchCtl` holds a
     // `!Send` `ElemValue`, so the handle can never cross a thread boundary. It
     // lives here and nowhere else (single-writer by construction).
-    let mut actuator = HostClockActuator::open(ctl_card);
+    let mut actuator = HostClockActuator::new(ctl_card, AlsaPitchCtl::open);
     let mut hc = HostClock::new(config);
     let start = Instant::now();
     let now_ms = |start: &Instant| start.elapsed().as_millis() as u64;
@@ -436,8 +564,13 @@ pub fn run_host_clock_thread(
     // originally guarded against stomping an active solo-mode usbsink
     // command during the coexistence window; that daemon was deleted
     // 2026-07-10, #1209.)
+    let capture_generation = signals.capture_generation.load(Ordering::Relaxed);
+    actuator.ensure_ready(capture_generation, now_ms(&start));
     if let Some(action) = hc.startup_neutralize() {
-        actuator.apply(action, now_ms(&start));
+        if actuator.status(capture_generation).ready() {
+            actuator.apply(action, now_ms(&start));
+        }
+        hc.set_control_status(actuator.status(capture_generation));
         log::info!("event=fanin.host_clock_pitch_reset reason=startup");
     }
     publish_fragment(&fragment, hc.status_fragment());
@@ -451,26 +584,14 @@ pub fn run_host_clock_thread(
     // final neutral ctl write + fragment publish, both idempotent and safe on a
     // partially-updated `hc`/`actuator`.
     let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut last_session = false;
         let mut last_tick = Instant::now();
         while !shutdown.load(Ordering::Relaxed) {
             if last_tick.elapsed() >= Duration::from_millis(TICK_INTERVAL_MS) {
                 let obs = build_obs(&signals);
-                // Session rising edge: if the ctl never opened (boot-order race),
-                // re-attempt now. On a late open, force ONE neutralize before any
-                // command so a stale pitch from a crashed predecessor is cleared.
-                let session = obs.host_connected && obs.playing && !obs.preempted;
-                if session && !last_session && !actuator.is_open() && actuator.reopen_if_closed() {
-                    actuator.apply(
-                        Action::WritePitch {
-                            ppm: 0.0,
-                            reset: true,
-                        },
-                        now_ms(&start),
-                    );
-                    log::info!("event=fanin.host_clock_pitch_reset reason=late_ctl_open");
-                }
-                last_session = session;
+                let capture_generation = signals.capture_generation.load(Ordering::Relaxed);
+                let tick_ms = now_ms(&start);
+                actuator.ensure_ready(capture_generation, tick_ms);
+                let control = actuator.status(capture_generation);
 
                 // Single-source-of-truth setpoint: re-pin the ladder's target to
                 // the resampler's LIVE held target every tick (the DEFAULT-OFF
@@ -481,8 +602,17 @@ pub fn run_host_clock_thread(
                 // gauge stays at the ceiling forever).
                 hc.set_target_fill_frames(signals.held_target_frames.load(Ordering::Relaxed) as f64);
 
-                for action in hc.tick(obs, now_ms(&start)) {
-                    actuator.apply(action, now_ms(&start));
+                let mut write_failed = false;
+                for action in hc.tick_with_control(obs, tick_ms, control) {
+                    if control.ready() && !actuator.apply(action, tick_ms) {
+                        write_failed = true;
+                    }
+                }
+                let post_write_status = actuator.status(capture_generation);
+                if write_failed {
+                    hc.invalidate_control(post_write_status);
+                } else {
+                    hc.set_control_status(post_write_status);
                 }
                 // Publish the REVERSE signals the mixer's per-period decay tick
                 // reads: whether the ladder is `l0_locked` (decay's steady-state
@@ -492,9 +622,10 @@ pub fn run_host_clock_thread(
                 signals
                     .ladder_l0
                     .store(hc.ladder() == Ladder::L0Locked, Ordering::Relaxed);
-                signals
-                    .ladder_l2
-                    .store(hc.ladder() == Ladder::L2Fallback, Ordering::Relaxed);
+                signals.fallback_reason_code.store(
+                    fallback_reason_code(hc.fallback_reason()),
+                    Ordering::Relaxed,
+                );
                 signals
                     .probe_result_code
                     .store(probe_result_code(hc.probe_result()), Ordering::Relaxed);
@@ -524,6 +655,7 @@ pub fn run_host_clock_thread(
     // host slaved. SIGKILL / watchdog is covered by the unit's combo-gated
     // ExecStopPost belt-and-braces (C6).
     actuator.apply(hc.neutralize_for_exit("shutdown"), now_ms(&start));
+    hc.set_control_status(actuator.status(signals.capture_generation.load(Ordering::Relaxed)));
     log::info!("event=fanin.host_clock_pitch_reset reason=shutdown");
     publish_fragment(&fragment, hc.status_fragment());
 
@@ -537,14 +669,15 @@ pub fn run_host_clock_thread(
     // `l0=false` / `commanded=0` makes the very next decay tick snap the cushion
     // back to the ceiling (`DecayFrozenReason::NotL0`) and hold it there.
     //
-    // Clear the L2 / probe-result reverse signals too: a stopped servo must not
-    // leave a stale `ladder_l2=true` that would make the mixer's compliance
-    // revalidation spuriously revoke a proof for a session whose ladder was fine
-    // when the daemon was told to stop. `not_l0` (from the l0=false above) already
-    // snaps the cushion back; revocation must be driven only by a LIVE L2/probe-
-    // fail signal, not by the servo shutting down.
+    // Clear the fallback-cause / probe-result reverse signals too: a stopped
+    // servo must not leave stale host evidence that could strike compliance.
+    // `not_l0` already snaps the cushion back; persistence decisions require a
+    // live explicit controller cause, not a stopped thread's last state.
     signals.ladder_l0.store(false, Ordering::Relaxed);
-    signals.ladder_l2.store(false, Ordering::Relaxed);
+    signals.fallback_reason_code.store(
+        fallback_reason_code(FallbackReason::None),
+        Ordering::Relaxed,
+    );
     signals.probe_result_code.store(
         probe_result_code(jasper_host_clock::ProbeResult::None),
         Ordering::Relaxed,
@@ -586,11 +719,12 @@ mod tests {
             output_frames: Arc::new(AtomicU64::new(0)),
             locked: Arc::new(AtomicBool::new(false)),
             present: Arc::new(AtomicBool::new(false)),
+            capture_generation: Arc::new(AtomicU64::new(1)),
             correction_milli_ppm: Arc::new(AtomicU64::new(0)),
             held_target_frames: Arc::new(AtomicU64::new(2048)),
             ladder_l0: Arc::new(AtomicBool::new(false)),
             commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
-            ladder_l2: Arc::new(AtomicBool::new(false)),
+            fallback_reason_code: Arc::new(AtomicU64::new(0)),
             probe_result_code: Arc::new(AtomicU64::new(0)),
             probe_response_ratio_milli: Arc::new(AtomicU64::new(PROBE_RATIO_NONE as u64)),
         }
@@ -737,72 +871,139 @@ mod tests {
         assert!(should_log_ctl_error(Some(0), 25_000));
     }
 
-    // ---- Actuator: fail-soft closed path ----------------------------------
-    //
-    // The actuator holds a concrete `AlsaPitchCtl` (`!Send`), so it cannot take
-    // a mock write handle; the write-through path is exercised on-device / by
-    // Linux CI. What IS unit-testable on any host is the fail-soft closed path:
-    // a bad card yields a closed actuator whose `apply` no-ops and whose
-    // `reopen_if_closed` re-fails without panicking (the boot-order-race safe
-    // degrade). `AlsaPitchCtl::open` returns `Err` for a nonexistent card on
-    // Linux CI and via the scratch-crate stub on macOS, so this runs everywhere.
+    // ---- Generation-bound actuator lifecycle ------------------------------
+
+    #[derive(Clone)]
+    struct FakeCtl {
+        writes: std::rc::Rc<std::cell::RefCell<Vec<i64>>>,
+        fail_next_write: std::rc::Rc<std::cell::Cell<bool>>,
+    }
+
+    impl PitchCtl for FakeCtl {
+        fn write(&mut self, value: i64) -> Result<(), String> {
+            if self.fail_next_write.replace(false) {
+                return Err("injected write failure".to_string());
+            }
+            self.writes.borrow_mut().push(value);
+            Ok(())
+        }
+
+        fn read(&mut self) -> Result<Option<i64>, String> {
+            Ok(self.writes.borrow().last().copied())
+        }
+    }
 
     #[test]
-    fn actuator_bad_card_is_closed_and_apply_no_ops() {
-        let mut a = HostClockActuator::open("hw:__jts_nonexistent_test_card__".to_string());
-        assert!(!a.is_open(), "a nonexistent card yields a closed actuator");
-        // apply on a closed ctl is a no-op (never touches AlsaPitchCtl::write).
-        a.apply(
+    fn generation_change_reopens_even_when_old_handle_writes_succeed() {
+        let writes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let opens = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let fail = std::rc::Rc::new(std::cell::Cell::new(false));
+        let factory = {
+            let writes = std::rc::Rc::clone(&writes);
+            let opens = std::rc::Rc::clone(&opens);
+            let fail = std::rc::Rc::clone(&fail);
+            move |_card: &str| {
+                opens.set(opens.get() + 1);
+                Ok(FakeCtl {
+                    writes: std::rc::Rc::clone(&writes),
+                    fail_next_write: std::rc::Rc::clone(&fail),
+                })
+            }
+        };
+        let mut a = HostClockActuator::new("hw:test".to_string(), factory);
+        assert!(a.ensure_ready(1, 0));
+        assert_eq!(a.status(1).control_generation, Some(1));
+        let writes_after_first_refresh = writes.borrow().len();
+
+        // Healthy same-generation ticks do not churn the handle or neutralize.
+        assert!(a.ensure_ready(1, 1_000));
+        assert_eq!(opens.get(), 1);
+        assert_eq!(writes.borrow().len(), writes_after_first_refresh);
+
+        // The old handle remains write-successful, but generation is authority:
+        // neutralize old, reopen, neutralize new, then bind generation 2.
+        assert!(a.ensure_ready(2, 2_000));
+        assert_eq!(opens.get(), 2);
+        assert_eq!(a.status(2).control_generation, Some(2));
+        assert_eq!(a.status(2).refreshes, 2);
+        assert_eq!(writes.borrow().len(), writes_after_first_refresh + 2);
+    }
+
+    #[test]
+    fn readiness_requires_successful_forced_neutral() {
+        let writes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let fail = std::rc::Rc::new(std::cell::Cell::new(true));
+        let factory = {
+            let writes = std::rc::Rc::clone(&writes);
+            let fail = std::rc::Rc::clone(&fail);
+            move |_card: &str| {
+                Ok(FakeCtl {
+                    writes: std::rc::Rc::clone(&writes),
+                    fail_next_write: std::rc::Rc::clone(&fail),
+                })
+            }
+        };
+        let mut a = HostClockActuator::new("hw:test".to_string(), factory);
+        assert!(!a.ensure_ready(1, 0));
+        assert!(!a.status(1).ready());
+        assert_eq!(a.status(1).write_failures, 1);
+        assert!(a.ensure_ready(1, CONTROL_REOPEN_INTERVAL_MS));
+        assert!(a.status(1).ready());
+    }
+
+    #[test]
+    fn open_failure_is_unavailable_and_retries_at_bounded_cadence() {
+        let opens = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let factory = {
+            let opens = std::rc::Rc::clone(&opens);
+            move |_card: &str| -> Result<FakeCtl, String> {
+                opens.set(opens.get() + 1);
+                Err("injected open failure".to_string())
+            }
+        };
+        let mut a = HostClockActuator::new("hw:test".to_string(), factory);
+        assert!(!a.ensure_ready(1, 0));
+        assert_eq!(a.status(1).open_failures, 1);
+        assert!(!a.ensure_ready(1, CONTROL_REOPEN_INTERVAL_MS - 1));
+        assert_eq!(opens.get(), 1, "no retry before the fixed cadence");
+        assert!(!a.ensure_ready(1, CONTROL_REOPEN_INTERVAL_MS));
+        assert_eq!(opens.get(), 2);
+    }
+
+    #[test]
+    fn any_pitch_write_failure_invalidates_and_schedules_reopen() {
+        let writes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let fail = std::rc::Rc::new(std::cell::Cell::new(false));
+        let opens = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let factory = {
+            let writes = std::rc::Rc::clone(&writes);
+            let fail = std::rc::Rc::clone(&fail);
+            let opens = std::rc::Rc::clone(&opens);
+            move |_card: &str| {
+                opens.set(opens.get() + 1);
+                Ok(FakeCtl {
+                    writes: std::rc::Rc::clone(&writes),
+                    fail_next_write: std::rc::Rc::clone(&fail),
+                })
+            }
+        };
+        let mut a = HostClockActuator::new("hw:test".to_string(), factory);
+        assert!(a.ensure_ready(1, 0));
+        fail.set(true);
+        assert!(!a.apply(
             Action::WritePitch {
                 ppm: 300.0,
                 reset: true,
             },
-            0,
-        );
-        assert!(!a.is_open());
-    }
-
-    #[test]
-    fn actuator_reopen_of_bad_card_stays_closed() {
-        let mut a = HostClockActuator::open("hw:__jts_nonexistent_test_card__".to_string());
-        // The bogus card can never open, so reopen returns false and the ctl
-        // stays None (writes keep no-op'ing — safe degrade, no spurious probe).
-        assert!(!a.reopen_if_closed());
-        assert!(!a.is_open());
-    }
-
-    // ---- Ctl device-loss classifier (C: gadget rebuilt underneath the handle) --
-    //
-    // The `apply` drop-on-ENODEV wiring needs a real open ctl + a write that fails
-    // ENODEV (gadget rebuilt), which is an on-device / Linux-CI condition. The pure
-    // classifier that DECIDES device-loss is unit-testable everywhere.
-
-    #[test]
-    fn ctl_error_device_lost_matches_enodev_surface_forms() {
-        // The observed error: elem_write against a rebuilt gadget card.
-        assert!(ctl_error_is_device_lost(
-            "elem_write(1000000): No such device (19)"
+            1_000,
         ));
-        // Case-insensitive + either surface form (message text or errno).
-        assert!(ctl_error_is_device_lost("NO SUCH DEVICE"));
-        assert!(ctl_error_is_device_lost("errno (19)"));
-        assert!(ctl_error_is_device_lost("ENODEV writing ctl"));
-    }
-
-    #[test]
-    fn ctl_error_device_lost_does_not_match_unrelated_errors() {
-        // An ordinary transient write error is NOT device-loss: we must NOT drop
-        // the handle (a healthy card with a one-off EINVAL keeps its open handle,
-        // and the rate-limited log covers it).
-        assert!(!ctl_error_is_device_lost(
-            "elem_write(1000000): Invalid argument"
-        ));
-        assert!(!ctl_error_is_device_lost(
-            "open ctl hw:UAC2Gadget: Permission denied"
-        ));
-        assert!(!ctl_error_is_device_lost("elem value: out of memory"));
-        // A "19" that is not the errno token must not false-positive.
-        assert!(!ctl_error_is_device_lost("wrote 190000 to ctl ok"));
+        assert!(!a.status(1).ready());
+        assert_eq!(a.status(1).write_failures, 1);
+        assert!(!a.ensure_ready(1, 1_999));
+        assert_eq!(opens.get(), 1);
+        assert!(a.ensure_ready(1, 2_000));
+        assert_eq!(opens.get(), 2);
+        assert!(a.status(1).ready());
     }
 
     // ---- Compliance-revalidation reverse-signal encoders -------------------
@@ -814,6 +1015,29 @@ mod tests {
         assert_eq!(probe_result_code(ProbeResult::Pass), 1);
         assert_eq!(probe_result_code(ProbeResult::Fail), 2);
         assert_eq!(probe_result_code(ProbeResult::Aborted), 3);
+    }
+
+    #[test]
+    fn fallback_reason_codes_are_stable_and_unknown_is_fail_safe() {
+        assert_eq!(fallback_reason_code(FallbackReason::None), 0);
+        assert_eq!(fallback_reason_code(FallbackReason::ProbeNoncompliant), 1);
+        assert_eq!(fallback_reason_code(FallbackReason::LostAuthority), 2);
+        assert_eq!(fallback_reason_code(FallbackReason::ActuatorUnavailable), 3);
+        for reason in [
+            FallbackReason::None,
+            FallbackReason::ProbeNoncompliant,
+            FallbackReason::LostAuthority,
+            FallbackReason::ActuatorUnavailable,
+        ] {
+            assert_eq!(
+                decode_fallback_reason_code(fallback_reason_code(reason)),
+                reason
+            );
+        }
+        assert_eq!(
+            decode_fallback_reason_code(999),
+            FallbackReason::ActuatorUnavailable
+        );
     }
 
     #[test]
