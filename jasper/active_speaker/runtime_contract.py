@@ -1566,18 +1566,7 @@ def classify_camilla_graph(
             details={"volume_limit_ok": bool(summary.get("volume_limit_ok"))},
         )
 
-    if issues and graph.allowed:
-        return GraphSafety(
-            classification=graph.classification,
-            allowed=False,
-            config_path=graph.config_path,
-            camilla_classification=graph.camilla_classification,
-            playback_device=graph.playback_device,
-            playback_channels=graph.playback_channels,
-            issues=tuple(issues) + graph.issues,
-            details=graph.details,
-        )
-    if issues and not graph.allowed:
+    if issues:
         return GraphSafety(
             classification=graph.classification,
             allowed=False,
