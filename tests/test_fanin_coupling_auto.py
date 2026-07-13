@@ -257,6 +257,22 @@ def test_gadget_present_false_when_config_missing(tmp_path):
     assert ca.usb_gadget_stack_present(str(tmp_path / "nope.txt")) is False
 
 
+def test_live_gadget_probe_prefers_installer_boot_config_override(
+    tmp_path, monkeypatch,
+):
+    installer_cfg = tmp_path / "installer-config.txt"
+    installer_cfg.write_text("dtparam=audio=on\n")
+    legacy_cfg = tmp_path / "legacy-config.txt"
+    legacy_cfg.write_text("dtoverlay=dwc2,dr_mode=peripheral\n")
+    monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(installer_cfg))
+    monkeypatch.setenv("JASPER_BOOT_CONFIG_PATH", str(legacy_cfg))
+
+    assert ca.read_boot_config_gadget_present() is False
+
+    monkeypatch.delenv("JTS_BOOT_CONFIG_FILE")
+    assert ca.read_boot_config_gadget_present() is True
+
+
 def test_resolved_choice_label():
     assert ca.resolved_choice_label("operator") == "operator"
     assert ca.resolved_choice_label(None) == "auto"
