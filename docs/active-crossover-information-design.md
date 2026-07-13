@@ -867,6 +867,14 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   The bounded measured
   delay *walk* (a value, not just a status) and post-apply verification
   remain separate, not-yet-built pieces of Slice 2.
+- The shared delay-walk substrate now includes a pure candidate/read-back
+  proof (`jasper.audio_measurement.delay_graph`): active-crossover and bass
+  hosts can bind the exact normalized predecessor graph to scope, topology,
+  crossover frequency, target delay filters, and the same frozen predecessor
+  the shared runner restores, then admit only
+  a non-negative bounded delay-only live graph diff with the JTS volume/gain
+  ceilings intact. No CamillaDSP host adapter, capture playback, walk
+  scheduling, geometry source, or three-way orchestration is wired yet.
 - ~~Automatic trim application must not reset a manually applied delay or
   inversion when no new alignment evidence exists.~~ Closed in Slice 0:
   manual tuning never consults alignment evidence for these two

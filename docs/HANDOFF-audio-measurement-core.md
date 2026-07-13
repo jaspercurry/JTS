@@ -134,6 +134,19 @@ The product is three tiers:
   still own the actual DSP mutation, exact restore, read-back, writer exclusion,
   and capture transport. The exhaustive runner preflights and refuses above 25
   candidates or beyond CamillaDSP's 20 ms delay ceiling before touching DSP.
+  `delay_graph.py` is the inert candidate/read-back seam beside that runner.
+  A host supplies the same `DspPredecessor` the F1 runner will restore, with
+  parsed CamillaDSP `active_raw` in its frozen state, plus a host-owned
+  target-to-delay-filter binding. `DelayGraphSnapshot` binds that predecessor
+  to scope, topology id, crossover frequency, and an exact snapshot
+  fingerprint. `confirm_delay_candidate` admits a live read-back
+  only when it is that predecessor with the requested target's millisecond
+  delay (through the shared four-decimal Camilla emitter quantization) as the
+  sole changed field. It separately refuses a missing or positive
+  `devices.volume_limit`, positive filter or mixer gain, malformed/unbounded
+  delay, stale scope/topology/Fc/fingerprint, and any other graph difference.
+  Both snapshots must come from parsed live read-back objects — an emitted-file
+  hash is not compared with CamillaDSP's normalized/default-expanded graph.
   Production CamillaDSP/web/persistence wiring is not shipped yet, and
   low-frequency bass walks require a separately reviewed adaptive scheduler
   before they are executable.
