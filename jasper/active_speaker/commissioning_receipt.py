@@ -133,6 +133,21 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
         raise CommissioningReceiptError(str(exc)) from exc
 
 
+def _canonical_json_bytes(value: Any, *, field_name: str) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise CommissioningReceiptError(
+            f"{field_name} must be canonical JSON: {exc}"
+        ) from exc
+
+
 def _strict_serialized_object(
     raw: Any,
     *,
@@ -441,7 +456,13 @@ class RequiredTargetPlan:
             topology = OutputTopology.from_mapping(value["topology"])
         except OutputTopologyError as exc:
             raise CommissioningReceiptError(str(exc)) from exc
-        if value["topology"] != topology.to_dict():
+        if _canonical_json_bytes(
+            value["topology"],
+            field_name="required target plan topology snapshot",
+        ) != _canonical_json_bytes(
+            topology.to_dict(),
+            field_name="required target plan canonical topology",
+        ):
             raise CommissioningReceiptError(
                 "required target plan topology snapshot is not canonical"
             )

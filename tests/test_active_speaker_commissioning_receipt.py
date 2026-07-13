@@ -387,6 +387,31 @@ def test_full_topology_receipt_round_trips_as_positive_room_authority():
     )
 
 
+@pytest.mark.parametrize(
+    ("path", "float_value"),
+    (
+        (("hardware", "physical_output_count"), 8.0),
+        (
+            ("speaker_groups", 0, "channels", 0, "physical_output_index"),
+            0.0,
+        ),
+    ),
+    ids=("physical-output-count", "physical-output-index"),
+)
+def test_topology_snapshot_rejects_int_to_float_shape_tamper(
+    path: tuple[str | int, ...],
+    float_value: float,
+):
+    payload = copy.deepcopy(_receipt().to_dict())
+    node = payload["target_plan"]["topology"]
+    for part in path[:-1]:
+        node = node[part]
+    node[path[-1]] = float_value
+
+    with pytest.raises(CommissioningReceiptError, match="snapshot is not canonical"):
+        CommissioningEligibilityReceipt.from_mapping(payload)
+
+
 def test_omitting_real_right_stereo_target_cannot_unlock_room():
     receipt = _receipt()
     assert [target.speaker_group_id for target in receipt.target_plan.targets] == [
