@@ -68,6 +68,7 @@ _UNCODIFIED = {
     #    are the canonical /var/lib/jasper (or /run, /usr) locations;
     #    the override exists for tests and ad-hoc diagnostics, never
     #    operator config.
+    "JASPER_ACTIVE_SPEAKER_PRESET",
     "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
     "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
     "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_RETENTION",
