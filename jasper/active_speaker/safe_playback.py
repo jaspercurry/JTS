@@ -20,6 +20,8 @@ from calendar import timegm
 from pathlib import Path
 from typing import Any, Callable
 
+from jasper.atomic_io import atomic_write_text
+
 from ._common import issue as _issue
 from .calibration_level import MIN_TEST_LEVEL_DBFS
 
@@ -55,10 +57,12 @@ def _state_path(path: str | Path | None = None) -> Path:
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    os.replace(tmp, path)
+    atomic_write_text(
+        path,
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        mode=0o640,
+        group_from_parent=True,
+    )
 
 
 def _base_state(*, now_epoch: float) -> dict[str, Any]:

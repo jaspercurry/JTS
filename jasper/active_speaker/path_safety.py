@@ -18,12 +18,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jasper.atomic_io import atomic_write_text
 from jasper.output_topology import OutputTopology, channel_identity_report
 
 from ._common import issue as _issue
@@ -169,18 +169,12 @@ def requirements_payload() -> dict[str, Any]:
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        tmp_name = handle.name
-        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    os.chmod(tmp_name, 0o640)
-    os.replace(tmp_name, path)
+    atomic_write_text(
+        path,
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        mode=0o640,
+        group_from_parent=True,
+    )
 
 
 def write_path_safety_evidence(
