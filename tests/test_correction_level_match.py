@@ -1092,6 +1092,124 @@ async def test_crossover_start_supplies_scheduler_ports(monkeypatch):
     assert seen["sleep"] is asyncio.sleep
 
 
+@pytest.mark.asyncio
+async def test_crossover_claimed_run_executes_its_frozen_env_config(
+    monkeypatch, tmp_path
+):
+    """Planning and backend execution share one exact persisted ramp config."""
+
+    from types import SimpleNamespace
+
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    seen = {}
+
+    async def fake_run(session, _geometry, **_ports):
+        seen["config"] = session.config
+        return SimpleNamespace(locked=False)
+
+    monkeypatch.setattr(LevelMatchSession, "run_for_geometry", fake_run)
+    monkeypatch.setenv("JASPER_RAMP_FEED_TIMEOUT_S", "7")
+    lease = CrossoverLevelLease(level_run_state_path=tmp_path / "run.json")
+    target = {
+        "target_id": "mono:woofer",
+        "target_fingerprint": "b" * 64,
+        "geometry": "near_field_driver:mono:woofer",
+    }
+    claim = lease.claim_level_match_run(
+        topology_id="topology-1",
+        protected_profile_fingerprint="a" * 64,
+        target=target,
+    )
+    monkeypatch.setenv("JASPER_RAMP_FEED_TIMEOUT_S", "30")
+    assert lease.mark_level_run_phone_armed(claim.run_id) is True
+
+    async def get_volume():
+        return -30.0
+
+    async def set_volume(_db):
+        return True
+
+    await lease.run_level_match(
+        target["geometry"],
+        run_token=claim.run_id,
+        level_run_id=claim.run_id,
+        get_main_volume_db=get_volume,
+        set_main_volume_db=set_volume,
+        play_continuous_tone=lambda: None,
+        cancel_tone=lambda: None,
+        read_status=lambda: {},
+        post_host_event=None,
+        noise_floor_dbfs=-60.0,
+    )
+
+    assert seen["config"].feed_timeout_s == 7.0
+    assert seen["config"] == claim.request.measurement_ramp()
+    assert lease.level_run_snapshot()["backend_started_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_crossover_explicit_claimed_run_id_fails_closed_when_stale(tmp_path):
+    from jasper.active_speaker.capture_geometry import driver_level_geometry
+    from jasper.active_speaker.crossover_level_run import CrossoverLevelRunError
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease(level_run_state_path=tmp_path / "run.json")
+    geometry = driver_level_geometry("mono", "woofer", "near_field")
+
+    async def get_volume():
+        return -30.0
+
+    async def set_volume(_db):
+        return True
+
+    with pytest.raises(CrossoverLevelRunError, match="does not own this armed run"):
+        await lease.run_level_match(
+            geometry,
+            run_token="c" * 32,
+            level_run_id="c" * 32,
+            get_main_volume_db=get_volume,
+            set_main_volume_db=set_volume,
+            play_continuous_tone=lambda: None,
+            cancel_tone=lambda: None,
+            read_status=lambda: {},
+            post_host_event=None,
+            noise_floor_dbfs=-60.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_crossover_claimed_run_must_match_relay_token(tmp_path):
+    from jasper.active_speaker.capture_geometry import driver_level_geometry
+    from jasper.active_speaker.crossover_level_run import CrossoverLevelRunError
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease(level_run_state_path=tmp_path / "run.json")
+    geometry = driver_level_geometry("mono", "woofer", "near_field")
+
+    async def get_volume():
+        return -30.0
+
+    async def set_volume(_db):
+        return True
+
+    with pytest.raises(
+        CrossoverLevelRunError, match="does not match the relay run token"
+    ):
+        await lease.run_level_match(
+            geometry,
+            run_token="relay-token",
+            level_run_id="c" * 32,
+            get_main_volume_db=get_volume,
+            set_main_volume_db=set_volume,
+            play_continuous_tone=lambda: None,
+            cancel_tone=lambda: None,
+            read_status=lambda: {},
+            post_host_event=None,
+            noise_floor_dbfs=-60.0,
+        )
+
+
 def test_session_level_match_snapshot_empty_before_run(tmp_path):
     sess = _make_session(tmp_path)
     snap = sess.level_match_snapshot()

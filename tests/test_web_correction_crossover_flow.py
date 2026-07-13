@@ -2044,7 +2044,7 @@ def test_crossover_envelope_passive_speaker_is_gated():
     }
     assert env["nudges"] == []
     assert "crossover" in env["verdict_text"].lower()
-    assert env["schema_version"] == 2
+    assert env["schema_version"] == 3
 
 
 def test_crossover_envelope_requires_protected_setup_first():
@@ -4261,6 +4261,92 @@ def test_live_relay_does_not_misclassify_its_inflight_repeat_as_orphaned():
     assert env["screen"] == "waiting"
     assert not any(
         nudge["code"] == "crossover_repeat_persistence_interrupted"
+        for nudge in env["nudges"]
+    )
+
+
+def test_durable_level_run_keeps_waiting_without_volatile_relay_state():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["level_match"]["run"] = {
+        "schema_version": 1,
+        "run_id": "a" * 32,
+        "phase": "awaiting_phone",
+        "phone_timeout": False,
+        "late_success": False,
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "waiting"
+    assert env["next_action"] is None
+    assert env["schema_version"] == 3
+
+
+def test_phone_timeout_keeps_exact_run_waiting_and_explains_correlation():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["level_match"]["run"] = {
+        "schema_version": 1,
+        "run_id": "a" * 32,
+        "phase": "running",
+        "phone_timeout": True,
+        "late_success": False,
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "waiting"
+    assert env["next_action"] is None
+    assert "same exact" in env["verdict_text"]
+    assert any(
+        nudge["code"] == "crossover_level_run_phone_timeout"
+        for nudge in env["nudges"]
+    )
+
+
+def test_late_success_is_visible_from_durable_run_state():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["level_match"]["run"] = {
+        "schema_version": 1,
+        "run_id": "a" * 32,
+        "phase": "succeeded",
+        "phone_timeout": True,
+        "late_success": True,
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match"
+    assert any(
+        nudge["code"] == "crossover_level_run_late_success"
+        for nudge in env["nudges"]
+    )
+
+
+def test_unavailable_level_run_state_refuses_retry_and_surfaces_diagnostics():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["level_match"]["run"] = {
+        "schema_version": 1,
+        "phase": "failed",
+        "terminal_reason": "state_unavailable",
+        "late_success": False,
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert env["next_action"] is None
+    assert "refusing" in env["verdict_text"]
+    assert any(
+        nudge["code"] == "crossover_level_run_state_unavailable"
         for nudge in env["nudges"]
     )
 
