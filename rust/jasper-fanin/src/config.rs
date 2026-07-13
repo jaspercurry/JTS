@@ -1190,6 +1190,42 @@ mod tests {
     }
 
     #[test]
+    fn default_fanin_socket_paths_are_reserved_from_impulse_tap() {
+        use crate::impulse_tap::{path_is_allowed, RESERVED_TAP_DIR_BASENAMES, TAP_PATH_DIR};
+
+        with_env(&[], || {
+            let cfg = Config::from_env().expect("defaults must parse");
+            let tts_socket_path = cfg
+                .tts_socket_path
+                .as_deref()
+                .expect("the default TTS socket must be enabled");
+
+            for raw_path in [cfg.control_socket_path.as_str(), tts_socket_path] {
+                let path = std::path::Path::new(raw_path);
+                assert_eq!(
+                    path.parent(),
+                    Some(std::path::Path::new(TAP_PATH_DIR)),
+                    "fan-in-owned socket must remain under the tap directory: {}",
+                    path.display()
+                );
+                let basename = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("fan-in socket default must have a UTF-8 basename");
+                assert!(
+                    RESERVED_TAP_DIR_BASENAMES.contains(&basename),
+                    "fan-in-owned socket basename must be reserved from TAP_ARM: {basename}"
+                );
+                assert!(
+                    !path_is_allowed(path),
+                    "TAP_ARM must reject fan-in-owned socket {}",
+                    path.display()
+                );
+            }
+        });
+    }
+
+    #[test]
     fn zero_dimension_falls_back_to_default_not_divide_by_zero() {
         // DA-0040: `sample_rate` and `period_frames` are load-bearing geometry
         // dimensions the mixer divides by (period ns/period, catchup-drain
