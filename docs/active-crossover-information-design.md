@@ -827,6 +827,17 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   the UI count. If attempt four fails in relay/playback transport, two already
   accepted deconvolved repeats finalize through the same canonical finalizer at
   reduced confidence; fewer than two refuses.
+- The Lane B fixed-reference orchestration is reachable: after near-field
+  completion, the server envelope owns a fixed tweeter-axis re-level and a
+  three-accepted-repeat target for every participating driver. A bounded fourth
+  attempt may replace a rejected capture; the lower kernel can retain a
+  two-accepted reduced-confidence aggregate for diagnosis, but automatic apply
+  refuses fewer than three accepted repeats in either geometry.
+  Geometry-specific level locks, repeat identities, relay acknowledgements, and
+  one shared envelope/direct-apply eligibility gate prevent
+  near-field/fixed-axis substitution or stale topology/profile evidence. Raw
+  calibrated replay inputs are retained for the still-pending
+  baffle-step/splice consumer.
 - Crossover frequency, family, and slope remain operator-owned rather than
   measured automatically.
 - The automatic success path requires a pre-apply combined listening check,

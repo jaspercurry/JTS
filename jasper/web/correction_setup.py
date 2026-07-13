@@ -49,6 +49,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -3163,10 +3164,125 @@ def _open_commissioning_bundle_for_level_match(
     )
 
 
+def _assert_crossover_reference_axis_level_action(
+    status: Mapping[str, Any],
+    *,
+    speaker_group_id: str,
+    role: str,
+) -> None:
+    """Require one fixed-axis level request to equal the server next action."""
+
+    from jasper.active_speaker.crossover_envelope import build_crossover_envelope
+
+    action_status = dict(status)
+    action_status["relay"] = None
+    expected_action = build_crossover_envelope(action_status).get("next_action")
+    expected_body = (
+        expected_action.get("body")
+        if isinstance(expected_action, Mapping)
+        else None
+    )
+    if (
+        not isinstance(expected_action, Mapping)
+        or expected_action.get("id") != "level_match_reference_axis_driver"
+        or not isinstance(expected_body, Mapping)
+        or expected_body.get("capture_geometry") != "reference_axis"
+        or str(expected_body.get("speaker_group_id") or "") != speaker_group_id
+        or str(expected_body.get("role") or "").lower() != role.lower()
+    ):
+        raise ValueError(
+            "the requested fixed-axis level check is not the server-owned next step"
+        )
+
+
+@asynccontextmanager
+async def _fixed_axis_level_identity_guard(
+    lease: Any,
+    *,
+    speaker_group_id: str,
+    role: str,
+    restore_volume: Callable[[], Awaitable[Any]],
+    emergency_attenuation: Callable[[], Awaitable[bool]],
+):
+    """Drain cancellation, make output safe, then roll back partial identity."""
+
+    from .correction_crossover_backend import LevelVolumeRestoreResult
+
+    async def drain(operation: Callable[[], Awaitable[Any]]) -> Any:
+        cleanup = asyncio.create_task(
+            asyncio.wait_for(operation(), timeout=5.0)
+        )
+        while True:
+            try:
+                return await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                # The outer exception remains active and is re-propagated when
+                # this async context exits. Repeated cancellation must not tear
+                # down the child task that is restoring/bounding audio output.
+                if cleanup.done():
+                    return cleanup.result()
+                continue
+
+    snapshot = (
+        getattr(lease, "relay_setup_binding", None),
+        getattr(lease, "input_device", None),
+        getattr(lease, "mic_calibration", None),
+        getattr(lease, "noise_floor_db", None),
+        getattr(lease, "context_id", None),
+    )
+    completed = False
+    try:
+        yield
+        completed = True
+    finally:
+        if not completed:
+            try:
+                try:
+                    restore_result = await drain(restore_volume)
+                except (OSError, RuntimeError, TimeoutError, ValueError):
+                    restore_result = LevelVolumeRestoreResult.FAILED
+                restore_safe = (
+                    restore_result is LevelVolumeRestoreResult.RESTORED
+                    or restore_result is LevelVolumeRestoreResult.NOT_REQUIRED
+                )
+                if not restore_safe:
+                    try:
+                        emergency_safe = (
+                            await drain(emergency_attenuation) is True
+                        )
+                    except (OSError, RuntimeError, TimeoutError, ValueError):
+                        emergency_safe = False
+                    if not emergency_safe:
+                        lease.mark_level_volume_unresolved(
+                            speaker_group_id,
+                            role,
+                        )
+                        log_event(
+                            logger,
+                            "correction.crossover_reference_axis_volume_unresolved",
+                            level=logging.CRITICAL,
+                            speaker_group_id=speaker_group_id,
+                            role=role,
+                        )
+            finally:
+                lease.discard_driver_level_outcome(
+                    speaker_group_id,
+                    role,
+                    capture_geometry="reference_axis",
+                )
+                (
+                    lease.relay_setup_binding,
+                    lease.input_device,
+                    lease.mic_calibration,
+                    lease.noise_floor_db,
+                    lease.context_id,
+                ) = snapshot
+
+
 def _handle_crossover_relay_level_match(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """POST /crossover/level-match: acquire the near-field Layer-A gain lease."""
+    """POST /crossover/level-match: acquire one geometry-scoped gain lease."""
     from jasper.capture_relay import correction_adapter
     from jasper.capture_relay.spec import build_level_ramp_spec
     from jasper.active_speaker.measurement import (
@@ -3196,6 +3312,11 @@ def _handle_crossover_relay_level_match(
     blocking = _crossover_blocking_phase()
     if blocking is not None:
         raise ValueError(f"another measurement is in progress ({blocking})")
+    raw = _read_json_body(handler)
+    requested_geometry = str(raw.get("capture_geometry") or "near_field").lower()
+    fixed_axis_request = requested_geometry == "reference_axis"
+    if requested_geometry not in {"near_field", "reference_axis"}:
+        raise ValueError("crossover level geometry is unsupported")
     status = correction_crossover_flow.ensure_automatic_measurement_profile(
         status,
         _run_async,
@@ -3284,14 +3405,67 @@ def _handle_crossover_relay_level_match(
         raise ValueError("this speaker has no active drivers to level match")
 
     prior = lease.level_match_snapshot(current_context_id=context_id)
-    continuing = (
-        prior.get("context_id") == context_id
-        and prior.get("targets") == level_targets
-        and prior.get("ready") is not True
-        and isinstance(prior.get("next_target"), dict)
-    )
-    target = dict(prior["next_target"]) if continuing else level_targets[0]
-    expected_level_identity = _relay_level_identity(lease) if continuing else None
+    if fixed_axis_request:
+        requested_group = str(raw.get("speaker_group_id") or "").strip()
+        requested_role = str(raw.get("role") or "").strip().lower()
+        _assert_crossover_reference_axis_level_action(
+            status,
+            speaker_group_id=requested_group,
+            role=requested_role,
+        )
+        target = next(
+            (
+                dict(item)
+                for item in level_targets
+                if item["speaker_group_id"] == requested_group
+                and item["role"] == requested_role
+            ),
+            None,
+        )
+        if target is None:
+            raise ValueError("the requested fixed-axis level target is not active")
+        from jasper.active_speaker.capture_geometry import (
+            comparison_set_valid,
+            driver_level_geometry,
+            reference_axis_driver_placement_instruction,
+        )
+
+        measurements = status.get("measurements")
+        fixed_comparison_set = (
+            measurements.get("active_comparison_set")
+            if isinstance(measurements, Mapping)
+            else None
+        )
+        if (
+            not isinstance(fixed_comparison_set, Mapping)
+            or not comparison_set_valid(fixed_comparison_set)
+            or fixed_comparison_set.get("topology_id") != topology.topology_id
+            or fixed_comparison_set.get("profile_context_id") != context_id
+        ):
+            raise ValueError(
+                "the near-field comparison set is no longer current; restart "
+                "the complete driver level check"
+            )
+        target["geometry"] = driver_level_geometry(
+            requested_group, requested_role, "reference_axis"
+        )
+        target["placement_instruction"] = (
+            reference_axis_driver_placement_instruction(requested_role)
+        )
+        continuing = False
+        expected_level_identity = (
+            _relay_level_identity(lease) if lease.input_device is not None else None
+        )
+    else:
+        fixed_comparison_set = None
+        continuing = (
+            prior.get("context_id") == context_id
+            and prior.get("targets") == level_targets
+            and prior.get("ready") is not True
+            and isinstance(prior.get("next_target"), dict)
+        )
+        target = dict(prior["next_target"]) if continuing else level_targets[0]
+        expected_level_identity = _relay_level_identity(lease) if continuing else None
     run_token = secrets.token_urlsafe(18)
     setup_binding_id = context_id
 
@@ -3318,8 +3492,15 @@ def _handle_crossover_relay_level_match(
 
     async def _prepare_driver_tone() -> dict[str, Any]:
         current_topology = load_output_topology()
+        current_status = backend.status_payload()
+        if fixed_axis_request:
+            _assert_crossover_reference_axis_level_action(
+                current_status,
+                speaker_group_id=str(target["speaker_group_id"]),
+                role=str(target["role"]),
+            )
         correction_crossover_flow.validate_current_level_target_context(
-            backend.status_payload(),
+            current_status,
             current_topology_id=current_topology.topology_id,
             expected_topology_id=topology.topology_id,
             expected_profile_context_id=context_id,
@@ -3346,7 +3527,7 @@ def _handle_crossover_relay_level_match(
         # `_run_relay_capture` has acquired the global relay slot before this
         # callback starts. A continuation preserves earlier driver locks; a
         # complete retune invalidates only after this run owns the slot.
-        if not continuing:
+        if not fixed_axis_request and not continuing:
             from jasper.active_speaker import repeat_admission
 
             repeat_admission.invalidate()
@@ -3359,30 +3540,97 @@ def _handle_crossover_relay_level_match(
                 topology_id=topology.topology_id,
             )
         lease.configure_targets(level_targets)
-        await _run_relay_level_match(
-            lease,
-            client,
-            pi_session,
-            geometry=str(target["geometry"]),
-            run_token=run_token,
-            setup_binding_id=setup_binding_id,
-            tone_frequency_hz=float(target["tone_frequency_hz"]),
-            prepare_tone=_prepare_driver_tone,
-            restore_tone=_restore_driver_tone,
-            expected_level_identity=expected_level_identity,
-            reuse_noise_floor=False,
-        )
-        binding = getattr(lease, "relay_setup_binding", None)
-        identity = _relay_level_identity(lease)
-        if (
-            binding is None
-            or not getattr(binding, "sha256", "")
-            or not identity.device_key
-        ):
-            raise ValueError(
-                "the level check did not produce a complete microphone binding; "
-                "run it again"
+
+        async def _restore_failed_fixed_axis_volume() -> Any:
+            return await lease.restore_level_match_volume(
+                lambda db: _camilla().set_volume_db(db, best_effort=False)
             )
+
+        async def _emergency_attenuate_failed_fixed_axis() -> bool:
+            return await lease.emergency_lower_level_match_volume(
+                lambda db: _camilla().set_volume_db(db, best_effort=False)
+            )
+
+        identity_guard = (
+            _fixed_axis_level_identity_guard(
+                lease,
+                speaker_group_id=str(target["speaker_group_id"]),
+                role=str(target["role"]),
+                restore_volume=_restore_failed_fixed_axis_volume,
+                emergency_attenuation=(
+                    _emergency_attenuate_failed_fixed_axis
+                ),
+            )
+            if fixed_axis_request
+            else nullcontext()
+        )
+        async with identity_guard:
+            await _run_relay_level_match(
+                lease,
+                client,
+                pi_session,
+                geometry=str(target["geometry"]),
+                run_token=run_token,
+                setup_binding_id=setup_binding_id,
+                tone_frequency_hz=float(target["tone_frequency_hz"]),
+                prepare_tone=_prepare_driver_tone,
+                restore_tone=_restore_driver_tone,
+                expected_level_identity=expected_level_identity,
+                reuse_noise_floor=False,
+            )
+            binding = getattr(lease, "relay_setup_binding", None)
+            identity = _relay_level_identity(lease)
+            if (
+                binding is None
+                or not getattr(binding, "sha256", "")
+                or not identity.device_key
+            ):
+                raise ValueError(
+                    "the level check did not produce a complete microphone binding; "
+                    "run it again"
+                )
+            if fixed_axis_request:
+                assert fixed_comparison_set is not None
+                actual_device_sha256 = hashlib.sha256(
+                    identity.device_key.encode("utf-8")
+                ).hexdigest()
+                expected_device_sha256 = str(
+                    fixed_comparison_set.get("device_sha256") or ""
+                )
+                expected_calibration_id = str(
+                    fixed_comparison_set.get("calibration_id") or ""
+                )
+                fixed_lock = lease.driver_sweep_locked_main_volume_db(
+                    str(target["speaker_group_id"]),
+                    str(target["role"]),
+                    capture_geometry="reference_axis",
+                )
+                if (
+                    actual_device_sha256 != expected_device_sha256
+                    or identity.calibration_id != expected_calibration_id
+                    or fixed_lock is None
+                ):
+                    raise ValueError(
+                        "the fixed-axis level check changed microphone identity, "
+                        "calibration, or failed to lock; use the comparison-set "
+                        "microphone and try again"
+                    )
+                lease.context_id = context_id
+                from jasper.audio_measurement.ramp import (
+                    LISTENING_POSITION_CAP_BUMP_DB,
+                    LISTENING_POSITION_CAP_CEIL_DB,
+                )
+
+                log_event(
+                    logger,
+                    "correction.crossover_reference_axis_level_locked",
+                    topology_id=topology.topology_id,
+                    target_id=target["target_id"],
+                    locked_main_volume_db=f"{fixed_lock:.1f}",
+                    cap_bump_db=f"{LISTENING_POSITION_CAP_BUMP_DB:.1f}",
+                    cap_ceil_db=f"{LISTENING_POSITION_CAP_CEIL_DB:.1f}",
+                )
+                return
         lease.context_id = context_id
         level_snapshot = lease.level_match_snapshot(current_context_id=context_id)
         if level_snapshot.get("ready") is not True:
@@ -3522,6 +3770,49 @@ def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any
     }
 
 
+def _assert_crossover_driver_action(
+    status: Mapping[str, Any],
+    *,
+    speaker_group_id: str,
+    role: str,
+    capture_geometry: str,
+) -> None:
+    """Require one driver request to equal the server envelope next step."""
+
+    from jasper.active_speaker.capture_geometry import DRIVER_CAPTURE_GEOMETRIES
+    from jasper.active_speaker.crossover_envelope import build_crossover_envelope
+
+    geometry = str(capture_geometry or "").lower()
+    if geometry not in DRIVER_CAPTURE_GEOMETRIES:
+        raise ValueError("driver capture geometry is unsupported")
+    action_status = dict(status)
+    action_status["relay"] = None
+    expected_action = build_crossover_envelope(action_status).get("next_action")
+    expected_body = (
+        expected_action.get("body")
+        if isinstance(expected_action, Mapping)
+        else None
+    )
+    expected_geometry = (
+        str(expected_body.get("capture_geometry") or "near_field").lower()
+        if isinstance(expected_body, Mapping)
+        else ""
+    )
+    if (
+        not isinstance(expected_action, Mapping)
+        or expected_action.get("id")
+        not in {"measure_driver", "measure_reference_axis_driver"}
+        or not isinstance(expected_body, Mapping)
+        or str(expected_body.get("kind") or "") != "driver"
+        or str(expected_body.get("speaker_group_id") or "") != speaker_group_id
+        or str(expected_body.get("role") or "").lower() != role.lower()
+        or expected_geometry != geometry
+    ):
+        raise ValueError(
+            "the requested driver capture is not the server-owned next step"
+        )
+
+
 def _handle_crossover_relay_capture(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
@@ -3534,7 +3825,8 @@ def _handle_crossover_relay_capture(
     new orchestrator. The `crossover_sweep` spec + `correction_crossover_flow`'s
     relay run-and-consume own the stimulus + analysis; this bridges the relay
     transport through the shared orchestrator. Body: `{kind: "driver"|"summed",
-    speaker_group_id, role (driver only)}`. ON-DEVICE: the acoustic capture is
+    speaker_group_id, role (driver only), capture_geometry (server-envelope
+    driver action only)}`. ON-DEVICE: the acoustic capture is
     not exercised hardware-free (same status as the room/sync relay — H2).
 
     Measurement mutual-exclusion is SERVER-computed twice, never client-supplied:
@@ -3557,6 +3849,10 @@ def _handle_crossover_relay_capture(
             "before starting a crossover relay capture"
         )
     raw = _read_json_body(handler)
+    kind_id = correction_crossover_flow.relay_kind_from_raw(raw)
+    requested_geometry_hint = str(
+        raw.get("capture_geometry") or "near_field"
+    ).lower()
     lease = correction_crossover_backend.level_lease()
     status = correction_crossover_backend.status_payload()
     applied_profile = status.get("applied_profile")
@@ -3600,8 +3896,14 @@ def _handle_crossover_relay_capture(
         or applied_crossover.get("valid") is not True
         or not isinstance(level, dict)
         or level.get("valid") is not True
-        or level.get("ready") is not True
         or str(level.get("context_id") or "") != profile_context_id
+        or (
+            level.get("ready") is not True
+            and not (
+                kind_id == "driver"
+                and requested_geometry_hint == "reference_axis"
+            )
+        )
     ):
         _run_async(
             lease.restore_level_match_volume(
@@ -3620,7 +3922,6 @@ def _handle_crossover_relay_capture(
         raw["measurement_mode"] = "phase_aware"
     else:
         raw["measurement_mode"] = "magnitude_only"
-    kind_id = correction_crossover_flow.relay_kind_from_raw(raw)
     from jasper.active_speaker.capture_geometry import comparison_set_valid
 
     measurements = status.get("measurements")
@@ -3645,6 +3946,27 @@ def _handle_crossover_relay_capture(
     target_rows = targets.get("drivers" if kind_id == "driver" else "summed") or []
     requested_group = str(raw.get("speaker_group_id") or "")
     requested_role = str(raw.get("role") or "").lower()
+    requested_geometry = (
+        str(raw.get("capture_geometry") or "near_field").lower()
+        if kind_id == "driver"
+        else "reference_axis"
+    )
+
+    def _assert_server_owned_driver_action(
+        current_status: Mapping[str, Any],
+    ) -> None:
+        if kind_id != "driver":
+            return
+        _assert_crossover_driver_action(
+            current_status,
+            speaker_group_id=requested_group,
+            role=requested_role,
+            capture_geometry=requested_geometry,
+        )
+
+    _assert_server_owned_driver_action(status)
+    if kind_id == "driver":
+        raw["capture_geometry"] = requested_geometry
     target = next(
         (
             item
@@ -3694,6 +4016,7 @@ def _handle_crossover_relay_capture(
             build_crossover_sweep_spec(
                 driver_label=driver_label,
                 driver_role=str(raw.get("role") or "summed"),
+                driver_capture_geometry=requested_geometry,
                 acknowledgement_binding=acknowledgement_binding,
                 stimulus_duration_ms=int(round(sweep_duration_s * 1000)),
                 ambient_duration_ms=int(
@@ -3741,6 +4064,7 @@ def _handle_crossover_relay_capture(
                 str(raw["role"]),
                 _get_capture_volume,
                 _set_capture_volume,
+                capture_geometry=requested_geometry,
             )
         return await lease.acquire_summed_sweep_volume(
             _get_capture_volume,
@@ -3765,10 +4089,21 @@ def _handle_crossover_relay_capture(
             "and reapply the speaker profile before listening."
         )
 
+    def _driver_locked_main_volume_db() -> float | None:
+        if kind_id != "driver":
+            return None
+        return lease.driver_sweep_locked_main_volume_db(
+            str(raw["speaker_group_id"]),
+            str(raw["role"]),
+            capture_geometry=requested_geometry,
+        )
+
     def _validate_current_context() -> None:
         current_topology = load_output_topology()
+        current_status = correction_crossover_backend.status_payload()
+        _assert_server_owned_driver_action(current_status)
         correction_crossover_flow.validate_current_capture_context(
-            correction_crossover_backend.status_payload(),
+            current_status,
             current_topology_id=current_topology.topology_id,
             expected_topology_id=topology.topology_id,
             expected_profile_context_id=profile_context_id,
@@ -3781,11 +4116,19 @@ def _handle_crossover_relay_capture(
 
     def _reserve_repeat_attempt() -> Mapping[str, Any]:
         from jasper.active_speaker import repeat_admission
+        from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+        repeat_target_id, repeat_target_fingerprint = driver_repeat_binding(
+            speaker_group_id=str(raw["speaker_group_id"]),
+            role=str(raw["role"]),
+            target_fingerprint=target_fingerprint,
+            capture_geometry=requested_geometry,
+        )
 
         return repeat_admission.reserve(
             comparison_set,
-            target_id=f"{raw['speaker_group_id']}:{raw['role']}",
-            target_fingerprint=target_fingerprint,
+            target_id=repeat_target_id,
+            target_fingerprint=repeat_target_fingerprint,
         )
 
     def _finish_failed_repeat_attempt(
@@ -3793,6 +4136,7 @@ def _handle_crossover_relay_capture(
     ) -> None:
         from jasper.active_speaker import repeat_admission
         from jasper.active_speaker import web_measurement
+        from jasper.active_speaker.capture_geometry import driver_repeat_binding
 
         # Recording owns the ready -> aborted transition when final measurement
         # or admission-completion persistence fails. A second failed abort may
@@ -3801,11 +4145,16 @@ def _handle_crossover_relay_capture(
         # but must not try to finish the consumed reservation a second time.
         # Match the exact target/fingerprint/attempt before treating it as the
         # same terminal finalization.
-        target_id = f"{raw['speaker_group_id']}:{raw['role']}"
+        target_id, repeat_target_fingerprint = driver_repeat_binding(
+            speaker_group_id=str(raw["speaker_group_id"]),
+            role=str(raw["role"]),
+            target_fingerprint=target_fingerprint,
+            capture_geometry=requested_geometry,
+        )
         if repeat_admission.reservation_is_finished(
             comparison_set,
             target_id=target_id,
-            target_fingerprint=target_fingerprint,
+            target_fingerprint=repeat_target_fingerprint,
             attempt=int(reservation.get("attempt") or 0),
         ):
             return
@@ -3820,6 +4169,7 @@ def _handle_crossover_relay_capture(
                 speaker_group_id=str(raw["speaker_group_id"]),
                 role=str(raw["role"]),
                 target_fingerprint=target_fingerprint,
+                capture_geometry=requested_geometry,
                 reservation=reservation,
                 failure_type=failure_type,
                 repeat_store=lease,
@@ -3830,7 +4180,7 @@ def _handle_crossover_relay_capture(
         repeat_admission.finish(
             comparison_set,
             target_id=target_id,
-            target_fingerprint=target_fingerprint,
+            target_fingerprint=repeat_target_fingerprint,
             token=str(reservation.get("token") or ""),
             result={
                 "accepted": False,
@@ -3851,6 +4201,9 @@ def _handle_crossover_relay_capture(
         validate_capture=_validate_capture,
         prepare_play=_prepare_capture_play,
         restore_play=_restore_capture_play,
+        driver_locked_main_volume_db=(
+            _driver_locked_main_volume_db if kind_id == "driver" else None
+        ),
         comparison_set=comparison_set,
         applied_profile=(
             applied_profile if isinstance(applied_profile, dict) else None

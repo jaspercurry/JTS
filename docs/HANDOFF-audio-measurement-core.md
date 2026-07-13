@@ -222,15 +222,32 @@ The product is three tiers:
   and `above_validity_floor is True`. Measurement state keeps near-field and
   fixed-axis latest-record indexes separate, so a later far-field capture cannot
   replace the near-field evidence used for level trims.
-- **Lane B fixed-axis capture foundation (2026-07-12, inert).** The shared
-  measurement layer now names geometry-scoped driver level locks, reuses the
-  listening-position `+15 dB` / hard `0 dB` ramp cap for a future fixed-axis
-  driver level action, and can thread the exact reasserted lock into the played
-  excitation ledger. The relay sweep spec also owns the fixed-axis instruction
-  and acknowledgement policy. These are optional primitives only: this slice
-  does not add an envelope action, route, UI, repeat sequence, or apply gate, so
-  current near-field commissioning behavior is unchanged. The first fixed-axis
-  capture remains unreachable until the orchestration slice lands.
+- **Lane B fixed-axis capture flow (2026-07-12).** After every driver's
+  near-field repeat set completes, the server-authored crossover envelope keeps
+  the microphone stationary on the tweeter reference axis, acquires a separate
+  safe level for each isolated driver, and targets three gated repeats through
+  the same relay/ambient/excitation/persistence kernel. A bounded fourth attempt
+  may replace a rejection; automatic apply requires three accepted repeats in
+  both geometries. The kernel may retain a two-accepted reduced-confidence
+  aggregate for diagnosis, but the shared apply gate refuses it. Near-field and
+  reference-axis attempts have distinct durable controller identities and
+  geometry-scoped level locks; neither can continue or complete the other.
+  The fixed-axis level uses the listening-position `+15 dB` / hard `0 dB` cap,
+  and its exact reasserted lock is part of the played excitation ledger.
+  Request geometry is only a hint until the route proves it equals the
+  envelope's next action; the relay acknowledgement policy is the authority at
+  playback and analysis. Wrong-mic and cancellation paths drain exact-volume
+  restoration even through repeated cancellation; if that fails, they attempt
+  the existing −60 dB emergency bound and surface a CRITICAL unresolved-safety
+  event plus retained `level_match.unresolved_volume_safety` status if both
+  operations fail. Partial process identity is always discarded;
+  service restarts preserve completed durable near-field work. The envelope and
+  direct automatic apply share one pure gate requiring the current comparison,
+  topology, protected profile, usable unclipped/gated acoustic evidence, and
+  exact completed near-field/reference-axis controller fingerprints for every
+  active driver. This slice still
+  does not perform baffle-step correction or splice the raw responses; that
+  consumer is Lane B's next slice.
 
   `acoustic.fr_curve` remains a peak-normalized display surface and must never
   be treated as physical splice evidence. Existing driver repeat artifacts now

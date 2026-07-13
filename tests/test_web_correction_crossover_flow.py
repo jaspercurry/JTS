@@ -558,20 +558,33 @@ def test_summed_capture_geometry_rejects_fabricated_or_stale_proof(
         (False, True, True),
     ],
 )
+@pytest.mark.parametrize("capture_geometry", ("near_field", "reference_axis"))
 def test_driver_capture_wires_three_repeats_before_one_durable_record(
     monkeypatch,
     tmp_path,
     final_write_fails,
     abort_write_fails,
     complete_write_fails,
+    capture_geometry,
 ):
     topology = object()
     wav_path = tmp_path / "driver.wav"
     wav_path.write_bytes(b"wav")
     comparison_set = dict(_COMPARISON_SET)
     target_fingerprint = "c" * 64
-    placement_proof = _placement_proof(
-        "driver_same_distance_v1", "woofer", target_fingerprint
+    policy_id = (
+        "driver_reference_axis_v1"
+        if capture_geometry == "reference_axis"
+        else "driver_same_distance_v1"
+    )
+    placement_proof = _placement_proof(policy_id, "woofer", target_fingerprint)
+    from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+    repeat_target_id, repeat_target_fingerprint = driver_repeat_binding(
+        speaker_group_id="mono",
+        role="woofer",
+        target_fingerprint=target_fingerprint,
+        capture_geometry=capture_geometry,
     )
     admission_path = tmp_path / "repeat-admission.json"
     monkeypatch.setenv(
@@ -687,7 +700,7 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
                 "outcome": "heard_correct_driver",
                     "acoustic": {
                         "verdict": "present",
-                        "capture_geometry": "near_field",
+                        "capture_geometry": capture_geometry,
                     "observed_mic_dbfs": -30.0 + index / 10.0,
                     "mic_clipping": False,
                     "snr": {
@@ -698,6 +711,21 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
                             "verdict": "ok",
                         },
                     },
+                    **(
+                        {
+                            "gating": {
+                                "applied": True,
+                                "f_valid_floor_hz": 150.0,
+                            },
+                            "overlap_levels": [{
+                                "fc_hz": 1000.0,
+                                "above_validity_floor": True,
+                                "usable": True,
+                            }],
+                        }
+                        if capture_geometry == "reference_axis"
+                        else {}
+                    ),
                 },
                 "excitation": {},
                 "placement_proof": kwargs.get("placement_proof"),
@@ -742,8 +770,8 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
     def capture_attempt(attempt):
         reservation = repeat_admission.reserve(
             comparison_set,
-            target_id="mono:woofer",
-            target_fingerprint=target_fingerprint,
+            target_id=repeat_target_id,
+            target_fingerprint=repeat_target_fingerprint,
             path=admission_path,
         )
         assert reservation["attempt"] == attempt
@@ -764,14 +792,14 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
             capture_attempt(3)
         target_state = repeat_admission.snapshot(
             comparison_set, path=admission_path
-        )["targets"]["mono:woofer"]
+        )["targets"][repeat_target_id]
         expected_status = "ready" if abort_write_fails else "aborted"
         assert target_state["status"] == expected_status
         with pytest.raises(ValueError, match=f"is {expected_status}"):
             repeat_admission.reserve(
                 comparison_set,
-                target_id="mono:woofer",
-                target_fingerprint=target_fingerprint,
+                target_id=repeat_target_id,
+                target_fingerprint=repeat_target_fingerprint,
                 path=admission_path,
             )
         attempts = [
@@ -831,7 +859,7 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
     assert third["measurement"]["repeats"]["accepted"] == 3
     assert third["acoustic"]["snr"] is not None
     assert repeat_admission.snapshot(comparison_set, path=admission_path)["targets"][
-        "mono:woofer"
+        repeat_target_id
     ]["status"] == "completed"
     assert len([call for call in calls if call.get("record") is not None]) == 3
     assert all(
@@ -857,7 +885,7 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
         assert analysis_input["response_amplitude"] == "recompute_from_raw_wav"
         assert analysis_input["display_fr_curve_peak_normalized"] is True
         assert analysis_input["sweep_meta"]["amplitude_dbfs"] == -12.0
-        assert analysis_input["capture_geometry"] == "near_field"
+        assert analysis_input["capture_geometry"] == capture_geometry
         assert analysis_input["ambient_duration_s"] == 12.0
         assert analysis_input["calibration"] is None
 
@@ -954,7 +982,9 @@ def test_driver_repeat_finalization_revalidates_winner_placement_context(
             comparison_set=_COMPARISON_SET,
             speaker_group_id="mono",
             role="woofer",
-            target_fingerprint=target_fingerprint,
+            topology_target_fingerprint=target_fingerprint,
+            repeat_target_id="mono:woofer",
+            repeat_target_fingerprint=target_fingerprint,
             reservation={"attempt": 3, "token": "reservation"},
             admission_result={"accepted": True},
             repeats=[{"bundle_dir": None}],
@@ -1146,6 +1176,7 @@ def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
         speaker_group_id="mono",
         role="woofer",
         target_fingerprint=target_fingerprint,
+        capture_geometry="near_field",
         reservation=fourth,
         failure_type="CaptureAborted",
         repeat_store=store,
@@ -1553,6 +1584,7 @@ def test_new_level_run_drops_prior_in_memory_comparison_context():
 def _envelope_status() -> dict:
     return {
         "active": True,
+        "topology": {"topology_id": "topology-1", "status": "configured"},
         "setup": {
             "active": True,
             "status": "ready",
@@ -1584,8 +1616,16 @@ def _envelope_status() -> dict:
         },
         "targets": {
             "drivers": [
-                {"speaker_group_id": "mono", "role": "woofer"},
-                {"speaker_group_id": "mono", "role": "tweeter"},
+                {
+                    "speaker_group_id": "mono",
+                    "role": "woofer",
+                    "target_fingerprint": "6" * 64,
+                },
+                {
+                    "speaker_group_id": "mono",
+                    "role": "tweeter",
+                    "target_fingerprint": "7" * 64,
+                },
             ],
             "summed": [{"speaker_group_id": "mono"}],
         },
@@ -1757,6 +1797,7 @@ def _placement_proof(policy: str, role: str, target_fingerprint: str) -> dict:
         "speaker_group_id": "mono",
         "role": role,
         "target_fingerprint": target_fingerprint,
+        "captured": True,
         "comparison_set_id": _COMPARISON_SET["comparison_set_id"],
         "comparison_set_fingerprint": _COMPARISON_SET["fingerprint"],
     }
@@ -1768,13 +1809,132 @@ def _driver_acoustic(role: str) -> dict:
         "speaker_group_id": "mono",
         "role": role,
         "target_fingerprint": target_fingerprint,
-        "acoustic": {"verdict": "present"},
+        "captured": True,
+        "mic_clipping": False,
+        "repeats": {
+            "target": 3,
+            "accepted": 3,
+            "admission_attempts": 3,
+        },
+        "acoustic": {
+            "verdict": "present",
+            "capture_geometry": "near_field",
+            "mic_clipping": False,
+            "gating": {
+                "applied": False,
+                "exempt_reason": "near_field",
+                "f_valid_floor_hz": None,
+            },
+            "overlap_levels": [{
+                "region_id": "woofer_tweeter",
+                "above_validity_floor": True,
+                "usable": True,
+            }],
+        },
         "placement_proof": _placement_proof(
             "driver_same_distance_v1",
             role,
             target_fingerprint,
         ),
     }
+
+
+def _reference_axis_driver_acoustic(role: str) -> dict:
+    target_fingerprint = ("6" if role == "woofer" else "7") * 64
+    return {
+        "speaker_group_id": "mono",
+        "role": role,
+        "target_fingerprint": target_fingerprint,
+        "captured": True,
+        "mic_clipping": False,
+        "repeats": {
+            "target": 3,
+            "accepted": 3,
+            "admission_attempts": 3,
+        },
+        "acoustic": {
+            "verdict": "present",
+            "capture_geometry": "reference_axis",
+            "mic_clipping": False,
+            "gating": {"applied": True, "f_valid_floor_hz": 320.0},
+            "overlap_levels": [
+                {
+                    "region_id": "woofer_tweeter",
+                    "above_validity_floor": True,
+                    "usable": True,
+                }
+            ],
+        },
+        "placement_proof": _placement_proof(
+            "driver_reference_axis_v1",
+            role,
+            target_fingerprint,
+        ),
+    }
+
+
+def _complete_reference_axis(status: dict) -> None:
+    status["measurements"]["summary"][
+        "latest_reference_axis_driver_measurements"
+    ] = {
+        "mono:woofer": _reference_axis_driver_acoustic("woofer"),
+        "mono:tweeter": _reference_axis_driver_acoustic("tweeter"),
+    }
+
+
+def _lock_reference_axis_driver(status: dict, role: str) -> None:
+    status["level_match"].setdefault("reference_axis_driver_locks", {})[
+        f"mono:{role}"
+    ] = -12.0
+
+
+def _completed_near_field_repeat_state(status: dict) -> None:
+    targets = {
+        f"mono:{role}": {
+            "target_fingerprint": ("6" if role == "woofer" else "7") * 64,
+            "status": "completed",
+            "attempts": 3,
+            "results": [
+                {"attempt": attempt, "accepted": True}
+                for attempt in (1, 2, 3)
+            ],
+        }
+        for role in ("woofer", "tweeter")
+    }
+    status["level_match"]["repeats"] = {
+        "targets": targets,
+        "failures": {},
+        "durable": {"status": "active", "targets": targets},
+    }
+
+
+def _completed_reference_axis_repeat_state(status: dict) -> None:
+    from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+    repeats = status["level_match"].setdefault(
+        "repeats", {"targets": {}, "failures": {}}
+    )
+    targets = repeats.setdefault("targets", {})
+    durable = repeats.setdefault("durable", {"status": "active", "targets": targets})
+    durable_targets = durable.setdefault("targets", targets)
+    for role in ("woofer", "tweeter"):
+        target_id, target_fingerprint = driver_repeat_binding(
+            speaker_group_id="mono",
+            role=role,
+            target_fingerprint=("6" if role == "woofer" else "7") * 64,
+            capture_geometry="reference_axis",
+        )
+        entry = {
+            "target_fingerprint": target_fingerprint,
+            "status": "completed",
+            "attempts": 3,
+            "results": [
+                {"attempt": attempt, "accepted": True}
+                for attempt in (1, 2, 3)
+            ],
+        }
+        targets[target_id] = entry
+        durable_targets[target_id] = entry
 
 
 def _summed_acoustic() -> dict:
@@ -2049,7 +2209,35 @@ def test_crossover_envelope_walks_level_drivers_apply_room():
     summary["latest_driver_measurements"]["mono:tweeter"] = _driver_acoustic(
         "tweeter"
     )
+    _completed_near_field_repeat_state(status)
     env = crossover_envelope.build_crossover_envelope(status)
+    assert env["next_action"] == {
+        "id": "level_match_reference_axis_driver",
+        "label": "Set fixed-axis woofer microphone level",
+        "endpoint": "/correction/crossover/level-match",
+        "body": {
+            "capture_geometry": "reference_axis",
+            "speaker_group_id": "mono",
+            "role": "woofer",
+        },
+    }
+    status["level_match"]["reference_axis_driver_locks"] = {
+        "mono:woofer": -10.0,
+    }
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "driver_reference_axis"
+    assert env["next_action"]["body"]["capture_geometry"] == "reference_axis"
+    summary["latest_reference_axis_driver_measurements"] = {
+        "mono:woofer": _reference_axis_driver_acoustic("woofer"),
+    }
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["next_action"]["id"] == "level_match_reference_axis_driver"
+    assert env["next_action"]["body"]["role"] == "tweeter"
+    status["level_match"]["reference_axis_driver_locks"]["mono:tweeter"] = -12.0
+    summary["latest_reference_axis_driver_measurements"]["mono:tweeter"] = (
+        _reference_axis_driver_acoustic("tweeter")
+    )
+    _completed_reference_axis_repeat_state(status)
     status["setup"]["automatic_candidate"] = {
         "ready": True,
         "reason": None,
@@ -2087,6 +2275,409 @@ def test_crossover_envelope_walks_level_drivers_apply_room():
     assert env["progress"] == {"position": 4, "total": 4}
 
 
+def test_driver_capture_geometry_must_match_server_owned_next_step():
+    from jasper.web import correction_setup
+
+    status = _envelope_status()
+    _locked_level(status)
+    correction_setup._assert_crossover_driver_action(
+        status,
+        speaker_group_id="mono",
+        role="woofer",
+        capture_geometry="near_field",
+    )
+    with pytest.raises(ValueError, match="server-owned next step"):
+        correction_setup._assert_crossover_driver_action(
+            status,
+            speaker_group_id="mono",
+            role="woofer",
+            capture_geometry="reference_axis",
+        )
+
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    _completed_near_field_repeat_state(status)
+    correction_setup._assert_crossover_reference_axis_level_action(
+        status,
+        speaker_group_id="mono",
+        role="woofer",
+    )
+    with pytest.raises(ValueError, match="server-owned next step"):
+        correction_setup._assert_crossover_reference_axis_level_action(
+            status,
+            speaker_group_id="mono",
+            role="tweeter",
+        )
+    _lock_reference_axis_driver(status, "woofer")
+    correction_setup._assert_crossover_driver_action(
+        status,
+        speaker_group_id="mono",
+        role="woofer",
+        capture_geometry="reference_axis",
+    )
+    with pytest.raises(ValueError, match="server-owned next step"):
+        correction_setup._assert_crossover_driver_action(
+            status,
+            speaker_group_id="mono",
+            role="woofer",
+            capture_geometry="near_field",
+        )
+
+
+def test_driver_repeat_bindings_are_geometry_scoped():
+    from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+    near = driver_repeat_binding(
+        speaker_group_id="mono",
+        role="woofer",
+        target_fingerprint="6" * 64,
+        capture_geometry="near_field",
+    )
+    fixed = driver_repeat_binding(
+        speaker_group_id="mono",
+        role="woofer",
+        target_fingerprint="6" * 64,
+        capture_geometry="reference_axis",
+    )
+
+    assert near == ("mono:woofer", "6" * 64)
+    assert fixed[0] == "reference_axis:mono:woofer"
+    assert fixed[1] != near[1]
+
+
+def test_restart_after_near_field_capture_returns_to_fixed_axis_level():
+    """Completed durable near-field work survives correction-web restart."""
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    status["level_match"] = {
+        "running": False,
+        "valid": False,
+        "ready": False,
+        "reference_axis_driver_locks": {},
+    }
+    _completed_near_field_repeat_state(status)
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match_reference_axis_driver"
+    assert env["next_action"]["body"] == {
+        "capture_geometry": "reference_axis",
+        "speaker_group_id": "mono",
+        "role": "woofer",
+    }
+
+
+def test_restart_refuses_stale_near_field_repeat_fingerprint():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    status["level_match"] = {
+        "running": False,
+        "valid": False,
+        "ready": False,
+        "reference_axis_driver_locks": {},
+    }
+    _completed_near_field_repeat_state(status)
+    status["level_match"]["repeats"]["durable"]["targets"]["mono:woofer"][
+        "target_fingerprint"
+    ] = "f" * 64
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match"
+
+
+def test_envelope_refuses_apply_without_fixed_axis_repeat_controller():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    _completed_near_field_repeat_state(status)
+    _complete_reference_axis(status)
+    status["setup"]["automatic_candidate"] = {"ready": True, "reason": None}
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match"
+    assert next(step for step in env["steps"] if step["id"] == "apply")[
+        "status"
+    ] == "pending"
+
+
+@pytest.mark.parametrize(
+    "summary_key",
+    ["latest_driver_measurements", "latest_reference_axis_driver_measurements"],
+)
+def test_envelope_refuses_fabricated_four_accepted_acoustic_repeats(summary_key):
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    _completed_near_field_repeat_state(status)
+    _complete_reference_axis(status)
+    _completed_reference_axis_repeat_state(status)
+    status["measurements"]["summary"][summary_key]["mono:woofer"]["repeats"][
+        "accepted"
+    ] = 4
+    status["setup"]["automatic_candidate"] = {
+        "ready": True,
+        "reason": None,
+        "candidate_fingerprint": "automatic-candidate",
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] != "apply"
+    assert next(step for step in env["steps"] if step["id"] == "apply")[
+        "status"
+    ] == "pending"
+
+
+def _guard_lease(discarded):
+    unresolved = []
+    return SimpleNamespace(
+        relay_setup_binding=None,
+        input_device=None,
+        mic_calibration=None,
+        noise_floor_db=None,
+        context_id=None,
+        discard_driver_level_outcome=lambda group, role, *, capture_geometry: (
+            discarded.append((group, role, capture_geometry))
+        ),
+        mark_level_volume_unresolved=lambda group, role: unresolved.append(
+            (group, role)
+        ),
+        unresolved_volume_safety=unresolved,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fixed_axis_guard_not_required_rolls_back_without_emergency():
+    from jasper.web.correction_crossover_backend import LevelVolumeRestoreResult
+    from jasper.web.correction_setup import _fixed_axis_level_identity_guard
+
+    discarded: list[tuple[str, str, str]] = []
+    emergency: list[str] = []
+    lease = _guard_lease(discarded)
+
+    async def restore_volume():
+        return LevelVolumeRestoreResult.NOT_REQUIRED
+
+    async def emergency_attenuation():
+        emergency.append("called")
+        return True
+
+    with pytest.raises(ValueError, match="wrong microphone"):
+        async with _fixed_axis_level_identity_guard(
+            lease,
+            speaker_group_id="mono",
+            role="woofer",
+            restore_volume=restore_volume,
+            emergency_attenuation=emergency_attenuation,
+        ):
+            lease.relay_setup_binding = "wrong-binding"
+            lease.input_device = {"device_id_hash": "wrong"}
+            raise ValueError("wrong microphone")
+
+    assert emergency == []
+    assert discarded == [("mono", "woofer", "reference_axis")]
+    assert lease.relay_setup_binding is None
+    assert lease.input_device is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "restore_result", [False, "failed", None, True, "unknown", "timeout"]
+)
+@pytest.mark.parametrize("emergency_result", [True, False, "exception"])
+async def test_fixed_axis_guard_failed_restore_uses_emergency_and_always_rolls_back(
+    restore_result, emergency_result, caplog
+):
+    from jasper.web.correction_crossover_backend import LevelVolumeRestoreResult
+    from jasper.web.correction_setup import _fixed_axis_level_identity_guard
+
+    discarded: list[tuple[str, str, str]] = []
+    lease = _guard_lease(discarded)
+    emergency: list[str] = []
+
+    async def restore_volume():
+        if restore_result == "timeout":
+            raise TimeoutError("bounded restore timed out")
+        return (
+            LevelVolumeRestoreResult.FAILED
+            if restore_result == "failed"
+            else restore_result
+        )
+
+    async def emergency_attenuation():
+        emergency.append("called")
+        if emergency_result == "exception":
+            raise RuntimeError("emergency attenuation unavailable")
+        return emergency_result
+
+    with pytest.raises(ValueError, match="wrong microphone"):
+        async with _fixed_axis_level_identity_guard(
+            lease,
+            speaker_group_id="mono",
+            role="woofer",
+            restore_volume=restore_volume,
+            emergency_attenuation=emergency_attenuation,
+        ):
+            lease.input_device = {"device_id_hash": "wrong"}
+            raise ValueError("wrong microphone")
+
+    assert emergency == ["called"]
+    assert discarded == [("mono", "woofer", "reference_axis")]
+    assert lease.input_device is None
+    unresolved = "event=correction.crossover_reference_axis_volume_unresolved"
+    assert (unresolved in caplog.text) is (emergency_result is not True)
+    assert bool(lease.unresolved_volume_safety) is (
+        emergency_result is not True
+    )
+
+
+@pytest.mark.asyncio
+async def test_fixed_axis_guard_drains_repeated_cancellation_before_rollback():
+    import asyncio
+
+    from jasper.web.correction_crossover_backend import LevelVolumeRestoreResult
+    from jasper.web.correction_setup import _fixed_axis_level_identity_guard
+
+    discarded: list[tuple[str, str, str]] = []
+    lease = _guard_lease(discarded)
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
+    emergency: list[str] = []
+
+    async def restore_volume():
+        restore_started.set()
+        await release_restore.wait()
+        return LevelVolumeRestoreResult.RESTORED
+
+    async def emergency_attenuation():
+        emergency.append("called")
+        return True
+
+    async def worker():
+        async with _fixed_axis_level_identity_guard(
+            lease,
+            speaker_group_id="mono",
+            role="woofer",
+            restore_volume=restore_volume,
+            emergency_attenuation=emergency_attenuation,
+        ):
+            lease.input_device = {"device_id_hash": "cancelled"}
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(worker())
+    await asyncio.sleep(0)
+    task.cancel()
+    await restore_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release_restore.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert emergency == []
+    assert discarded == [("mono", "woofer", "reference_axis")]
+    assert lease.input_device is None
+
+
+@pytest.mark.asyncio
+async def test_crossover_level_volume_restore_results_and_emergency_bound():
+    from jasper.audio_measurement.ramp import RampState
+    from jasper.web.correction_crossover_backend import (
+        CrossoverLevelLease,
+        EMERGENCY_SWEEP_VOLUME_DB,
+        LevelVolumeRestoreResult,
+    )
+
+    lease = CrossoverLevelLease()
+    assert (
+        await lease.restore_level_match_volume(lambda _db: None)
+        is LevelVolumeRestoreResult.NOT_REQUIRED
+    )
+
+    ramp = SimpleNamespace(
+        state=RampState.LOCKED,
+        restored=False,
+        original_main_volume_db=-21.0,
+    )
+    lease._active_outcome = SimpleNamespace(ramp=ramp)
+    attempted: list[float] = []
+
+    async def refuse(db):
+        attempted.append(db)
+        return False
+
+    assert (
+        await lease.restore_level_match_volume(refuse)
+        is LevelVolumeRestoreResult.FAILED
+    )
+    assert attempted == [-21.0]
+    assert ramp.restored is False
+
+    assert await lease.emergency_lower_level_match_volume(refuse) is False
+    assert attempted[-1] == EMERGENCY_SWEEP_VOLUME_DB
+    assert ramp.restored is False
+    lease.mark_level_volume_unresolved("mono", "woofer")
+    assert lease.level_match_snapshot()["unresolved_volume_safety"] == {
+        "status": "unresolved",
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "emergency_volume_db": EMERGENCY_SWEEP_VOLUME_DB,
+    }
+
+    async def accept(db):
+        attempted.append(db)
+        return True
+
+    assert await lease.emergency_lower_level_match_volume(accept) is True
+    assert attempted[-1] == EMERGENCY_SWEEP_VOLUME_DB
+    assert ramp.restored is True
+    assert lease.level_match_snapshot()["unresolved_volume_safety"] is None
+    assert (
+        await lease.restore_level_match_volume(accept)
+        is LevelVolumeRestoreResult.NOT_REQUIRED
+    )
+    restored_ramp = SimpleNamespace(
+        state=RampState.LOCKED,
+        restored=False,
+        original_main_volume_db=-18.0,
+    )
+    lease._active_outcome = SimpleNamespace(ramp=restored_ramp)
+    assert (
+        await lease.restore_level_match_volume(accept)
+        is LevelVolumeRestoreResult.RESTORED
+    )
+    assert attempted[-1] == -18.0
+    assert restored_ramp.restored is True
+
+
 def test_crossover_envelope_uses_applied_anchor_while_candidate_is_incomplete():
     from jasper.active_speaker import crossover_envelope
 
@@ -2097,7 +2688,11 @@ def test_crossover_envelope_uses_applied_anchor_while_candidate_is_incomplete():
             "status": "blocked",
             "revalidation": {"required": True},
         },
-        "protected_profile": {"status": "ready"},
+            "protected_profile": {
+                "status": "ready",
+                "source_fingerprint": "protected-profile",
+                "candidate_fingerprint": "protected-profile",
+            },
     })
     _locked_level(status)
     status["measurements"]["summary"]["latest_driver_measurements"] = {
@@ -2224,6 +2819,9 @@ def test_completed_automatic_measurement_explicitly_replaces_manual_profile():
         },
         "latest_summed_validations": {"mono": _summed_acoustic()},
     })
+    _completed_near_field_repeat_state(status)
+    _complete_reference_axis(status)
+    _completed_reference_axis_repeat_state(status)
     status["setup"]["automatic_candidate"] = {
         "ready": True,
         "reason": None,
@@ -2259,6 +2857,7 @@ def test_incomparable_automatic_evidence_never_offers_apply():
         "latest_summed_validations": {"mono": _summed_acoustic()},
         },
     }
+    _complete_reference_axis(status)
     status["setup"]["automatic_candidate"] = {
         "ready": False,
         "reason": "automatic_crossover_measurements_incomparable",
@@ -2339,6 +2938,9 @@ def test_applied_automatic_profile_can_run_a_fresh_sequential_retune():
 
     assert env["screen"] == "driver"
     assert env["next_action"]["body"]["role"] == "woofer"
+    assert next(step for step in env["steps"] if step["id"] == "apply")[
+        "status"
+    ] == "pending"
 
     status["measurements"]["summary"] = {
         "latest_driver_measurements": {
@@ -2347,6 +2949,9 @@ def test_applied_automatic_profile_can_run_a_fresh_sequential_retune():
         },
         "latest_summed_validations": {"mono": _summed_acoustic()},
     }
+    _completed_near_field_repeat_state(status)
+    _complete_reference_axis(status)
+    _completed_reference_axis_repeat_state(status)
     status["setup"]["automatic_candidate"] = {
         "ready": True,
         "reason": None,
@@ -2382,6 +2987,103 @@ def test_crossover_envelope_surfaces_server_owned_repeat_progress():
     assert env["next_action"]["label"] == "Measure woofer — repeat 3"
 
 
+def test_crossover_envelope_surfaces_fixed_axis_repeat_progress():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    _completed_near_field_repeat_state(status)
+    _lock_reference_axis_driver(status, "woofer")
+    status["level_match"]["repeats"]["targets"][
+        "reference_axis:mono:woofer"
+    ] = {
+        "attempts": 2,
+        "accepted": 2,
+        "target": 3,
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "driver_reference_axis"
+    assert "Repeat 3; 2 of 3 accepted" in env["verdict_text"]
+    assert env["next_action"]["label"] == "Measure fixed-axis woofer — repeat 3"
+
+
+@pytest.mark.parametrize("capture_geometry", ["near_field", "reference_axis"])
+def test_crossover_envelope_malformed_repeat_progress_fails_closed_without_500(
+    capture_geometry,
+):
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    if capture_geometry == "reference_axis":
+        status["measurements"]["summary"]["latest_driver_measurements"] = {
+            "mono:woofer": _driver_acoustic("woofer"),
+            "mono:tweeter": _driver_acoustic("tweeter"),
+        }
+        _completed_near_field_repeat_state(status)
+        _lock_reference_axis_driver(status, "woofer")
+        target_id = "reference_axis:mono:woofer"
+        expected_screen = "driver_reference_axis"
+    else:
+        target_id = "mono:woofer"
+        expected_screen = "driver"
+    repeats = status["level_match"].setdefault(
+        "repeats", {"targets": {}, "failures": {}}
+    )
+    repeats.setdefault("targets", {})[target_id] = {
+        "attempts": "three",
+        "accepted": {"bad": "shape"},
+        "target": -1,
+        "results": 7,
+    }
+    repeats["failures"] = 7
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == expected_screen
+    assert "stationary repeats" in env["verdict_text"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda record: record.pop("mic_clipping"),
+        lambda record: record["acoustic"].pop("mic_clipping"),
+        lambda record: record["acoustic"].update({"overlap_levels": []}),
+        lambda record: record["acoustic"]["gating"].update(
+            {"f_valid_floor_hz": None}
+        ),
+    ),
+)
+def test_fixed_axis_completion_fails_closed_on_malformed_evidence(mutate):
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    _completed_near_field_repeat_state(status)
+    _complete_reference_axis(status)
+    _lock_reference_axis_driver(status, "woofer")
+    record = status["measurements"]["summary"][
+        "latest_reference_axis_driver_measurements"
+    ]["mono:woofer"]
+    mutate(record)
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "driver_reference_axis"
+    assert env["next_action"]["body"]["role"] == "woofer"
+
+
 def test_durable_attempts_override_process_only_repeat_count():
     from jasper.active_speaker import crossover_envelope
 
@@ -2393,6 +3095,7 @@ def test_durable_attempts_override_process_only_repeat_count():
         },
         "targets": {
             "mono:woofer": {
+                "target_id": "mono:woofer",
                 "target_fingerprint": "target-fp",
                 "attempts": 3,
                 "status": "active",
@@ -2412,6 +3115,40 @@ def test_durable_attempts_override_process_only_repeat_count():
     assert env["next_action"]["label"] == "Measure woofer — repeat 4"
 
 
+@pytest.mark.parametrize(
+    "results",
+    (
+        7,
+        True,
+        {"attempt": 1, "accepted": True},
+        [7],
+        [{"attempt": 1, "accepted": True, "reject_reason": {"bad": "shape"}}],
+    ),
+)
+def test_durable_repeat_projection_malformed_results_fail_closed(results):
+    store = backend.CrossoverLevelLease()
+
+    store.set_durable_repeat_progress({
+        "targets": {
+            "mono:woofer": {
+                "target_id": "mono:woofer",
+                "target_fingerprint": "6" * 64,
+                "attempts": 3,
+                "status": "completed",
+                "inflight": None,
+                "results": results,
+            }
+        }
+    })
+
+    snapshot = store.repeat_snapshot()
+    durable = snapshot["durable"]["targets"]["mono:woofer"]
+    assert durable["status"] == "malformed"
+    assert durable["attempts"] == 0
+    assert durable["results"] == []
+    assert snapshot["targets"]["mono:woofer"]["accepted"] == 0
+
+
 @pytest.mark.asyncio
 async def test_automatic_apply_direct_post_refuses_unresolved_ready_controller(
     monkeypatch
@@ -2422,10 +3159,22 @@ async def test_automatic_apply_direct_post_refuses_unresolved_ready_controller(
         design_draft,
         measurement,
         repeat_admission,
+        setup_status,
     )
     from jasper import output_topology
 
-    topology = object()
+    topology = SimpleNamespace(topology_id="topology-1")
+    measurements = {
+        "active_comparison_set": dict(_COMPARISON_SET),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _driver_acoustic("woofer"),
+            },
+            "latest_reference_axis_driver_measurements": {
+                "mono:woofer": _reference_axis_driver_acoustic("woofer"),
+            },
+        },
+    }
     monkeypatch.setattr(output_topology, "load_output_topology", lambda: topology)
     monkeypatch.setattr(design_draft, "load_design_draft", lambda: {})
     monkeypatch.setattr(
@@ -2434,15 +3183,29 @@ async def test_automatic_apply_direct_post_refuses_unresolved_ready_controller(
     monkeypatch.setattr(
         measurement,
         "load_measurement_state",
-        lambda _topology: {"active_comparison_set": dict(_COMPARISON_SET)},
+        lambda _topology: measurements,
     )
     monkeypatch.setattr(
         measurement,
         "active_driver_targets",
-        lambda _topology: [{"target_id": "mono:woofer"}],
+        lambda _topology: [{
+            "target_id": "mono:woofer",
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "target_fingerprint": "6" * 64,
+        }],
     )
     monkeypatch.setattr(
         baseline_profile, "load_applied_baseline_profile_state", lambda: {}
+    )
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda: {
+            "protected_profile": {
+                "candidate_fingerprint": "protected-profile"
+            }
+        },
     )
     apply_calls = []
     monkeypatch.setattr(
@@ -2454,16 +3217,236 @@ async def test_automatic_apply_direct_post_refuses_unresolved_ready_controller(
         repeat_admission,
         "snapshot",
         lambda _comparison: {
-            "targets": {"mono:woofer": {"status": "ready"}}
+            "targets": {
+                "mono:woofer": {
+                    "status": "ready",
+                    "target_fingerprint": "6" * 64,
+                }
+            }
         },
     )
-    with pytest.raises(ValueError, match="persistence is incomplete"):
+    with pytest.raises(ValueError, match="persistence.*complete"):
         await backend.apply_profile(
             tuning_owner="automatic",
             expected_candidate_fingerprint="source-1",
             camilla_factory=lambda: object(),
         )
     assert apply_calls == []
+
+
+@pytest.mark.asyncio
+async def test_automatic_apply_refuses_missing_reference_axis_controller(monkeypatch):
+    from jasper.active_speaker import (
+        baseline_profile,
+        crossover_preview,
+        design_draft,
+        measurement,
+        repeat_admission,
+        setup_status,
+    )
+    from jasper import output_topology
+
+    topology = SimpleNamespace(topology_id="topology-1")
+    measurements = {
+        "active_comparison_set": dict(_COMPARISON_SET),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _driver_acoustic("woofer"),
+            },
+            "latest_reference_axis_driver_measurements": {
+                "mono:woofer": _reference_axis_driver_acoustic("woofer"),
+            },
+        },
+    }
+    monkeypatch.setattr(output_topology, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(design_draft, "load_design_draft", lambda: {})
+    monkeypatch.setattr(
+        crossover_preview, "load_crossover_preview", lambda **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        measurement,
+        "load_measurement_state",
+        lambda _topology: measurements,
+    )
+    monkeypatch.setattr(
+        measurement,
+        "active_driver_targets",
+        lambda _topology: [{
+            "target_id": "mono:woofer",
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "target_fingerprint": "6" * 64,
+        }],
+    )
+    monkeypatch.setattr(
+        baseline_profile, "load_applied_baseline_profile_state", lambda: {}
+    )
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda: {
+            "protected_profile": {
+                "candidate_fingerprint": "protected-profile"
+            }
+        },
+    )
+    monkeypatch.setattr(
+        repeat_admission,
+        "snapshot",
+        lambda _comparison: {
+            "targets": {
+                "mono:woofer": {
+                    "status": "completed",
+                    "target_fingerprint": "6" * 64,
+                }
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="fixed-axis.*complete"):
+        await backend.apply_profile(
+            tuning_owner="automatic",
+            expected_candidate_fingerprint="automatic-candidate",
+            camilla_factory=lambda: object(),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fabricated_four",
+    [None, "acoustic_near", "acoustic_fixed", "controller_near", "controller_fixed"],
+)
+async def test_automatic_apply_requires_exact_three_completed_geometry_bindings(
+    monkeypatch, fabricated_four
+):
+    from jasper.active_speaker import (
+        baseline_profile,
+        crossover_preview,
+        design_draft,
+        measurement,
+        repeat_admission,
+        setup_status,
+    )
+    from jasper.active_speaker.capture_geometry import driver_repeat_binding
+    from jasper import output_topology
+
+    topology = SimpleNamespace(topology_id="topology-1")
+    target = {
+        "target_id": "mono:woofer",
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "target_fingerprint": "6" * 64,
+    }
+    bindings = dict(
+        driver_repeat_binding(
+            speaker_group_id="mono",
+            role="woofer",
+            target_fingerprint="6" * 64,
+            capture_geometry=geometry,
+        )
+        for geometry in ("near_field", "reference_axis")
+    )
+    measurements = {
+        "active_comparison_set": dict(_COMPARISON_SET),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _driver_acoustic("woofer"),
+            },
+            "latest_reference_axis_driver_measurements": {
+                "mono:woofer": _reference_axis_driver_acoustic("woofer"),
+            },
+        },
+    }
+    if fabricated_four == "acoustic_near":
+        measurements["summary"]["latest_driver_measurements"]["mono:woofer"][
+            "repeats"
+        ]["accepted"] = 4
+    elif fabricated_four == "acoustic_fixed":
+        measurements["summary"]["latest_reference_axis_driver_measurements"][
+            "mono:woofer"
+        ]["repeats"]["accepted"] = 4
+    repeat_state = {
+        "targets": {
+            target_id: {
+                "status": "completed",
+                "target_fingerprint": fingerprint,
+                "attempts": 3,
+                "results": [
+                    {"attempt": attempt, "accepted": True}
+                    for attempt in (1, 2, 3)
+                ],
+            }
+            for target_id, fingerprint in bindings.items()
+        }
+    }
+    fabricated_controller = {
+        "controller_near": "mono:woofer",
+        "controller_fixed": "reference_axis:mono:woofer",
+    }.get(fabricated_four)
+    if fabricated_controller is not None:
+        repeat_state["targets"][fabricated_controller].update({
+            "attempts": 4,
+            "accepted": 4,
+            "target": 3,
+            "results": [
+                {"attempt": attempt, "accepted": True}
+                for attempt in (1, 2, 3, 4)
+            ],
+        })
+    monkeypatch.setattr(output_topology, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(design_draft, "load_design_draft", lambda: {})
+    monkeypatch.setattr(
+        crossover_preview, "load_crossover_preview", lambda **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        measurement,
+        "load_measurement_state",
+        lambda _topology: measurements,
+    )
+    monkeypatch.setattr(
+        measurement, "active_driver_targets", lambda _topology: [target]
+    )
+    monkeypatch.setattr(
+        repeat_admission,
+        "snapshot",
+        lambda _comparison: repeat_state,
+    )
+    monkeypatch.setattr(
+        baseline_profile, "load_applied_baseline_profile_state", lambda: {}
+    )
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda: {
+            "protected_profile": {
+                "candidate_fingerprint": "protected-profile"
+            }
+        },
+    )
+    calls = []
+
+    async def fake_apply(*_args, **_kwargs):
+        calls.append(True)
+        return {"status": "applied", "issues": []}
+
+    monkeypatch.setattr(baseline_profile, "apply_baseline_profile", fake_apply)
+
+    if fabricated_four is not None:
+        with pytest.raises(ValueError, match="must all be complete"):
+            await backend.apply_profile(
+                tuning_owner="automatic",
+                expected_candidate_fingerprint="automatic-candidate",
+                camilla_factory=lambda: object(),
+            )
+        assert calls == []
+    else:
+        payload = await backend.apply_profile(
+            tuning_owner="automatic",
+            expected_candidate_fingerprint="automatic-candidate",
+            camilla_factory=lambda: object(),
+        )
+        assert payload["status"] == "applied"
+        assert calls == [True]
 
 
 def test_crossover_envelope_requires_new_level_check_after_repeat_abort():

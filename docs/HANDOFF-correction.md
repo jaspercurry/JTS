@@ -122,7 +122,9 @@
   the shared substrate. After protected speaker setup, one server envelope
   exposes the real product choice: keep/edit the applied manual crossover and
   continue to Room, or enter automatic driver level matching (mic/calibration +
-  one near-field level per driver → each driver sweep → explicit trim replacement)
+  one near-field level per driver → each driver's near-field repeats → one
+  fixed-reference-axis re-level and gated repeat set per driver → explicit trim
+  replacement)
   and
   then continue to Room. The browser is a thin
   renderer/dispatcher: it has no local recorder and reads one envelope snapshot,
@@ -1144,7 +1146,8 @@ POST /sync/relay-capture     phone-mic relay transport for the sync marker
 POST /sync/apply             persist the accepted positive-only pair delay
 POST /sync/stop              stop playback and reset the sync walkthrough
 POST /sync/reset             reset the sync walkthrough (same safe stop path)
-POST /crossover/level-match  guided mic/calibration + near-field automatic level
+POST /crossover/level-match  guided mic/calibration + server-selected per-driver
+                             near-field or fixed-reference-axis automatic level
 POST /crossover/apply        atomically apply measured Layer A; restore gain lease
 POST /crossover/driver-test  start one protected per-driver audible test
 POST /crossover/driver-confirm record the protected driver-test result
@@ -1155,9 +1158,11 @@ POST /crossover/summed-capture-sweep start a bounded combined-driver stimulus
 POST /crossover/summed-capture body = WAV (audio/wav); analyze + record
                              active-speaker summed-crossover evidence
 POST /crossover/relay-capture body: {kind: driver|summed, speaker_group_id,
-                             role?}; phone-mic relay transport for one
+                             role?, capture_geometry?}; phone-mic relay transport for one
                              crossover sweep and the only production driver
                              evidence ingress (same record_*_capture analysis;
+                             driver geometry must equal the server envelope's
+                             next action at POST and armed time;
                              refuses while room/balance/sync
                              is active — server-computed at POST and
                              re-checked when the phone arms). ON-DEVICE:
@@ -2275,7 +2280,8 @@ Internal:
 ---
 
 Last verified: 2026-07-12 (full GET/POST route inventory rechecked against
-`correction_setup._POST_ROUTES` and `Handler.do_GET`; summed fixed-axis placement and relay metadata
+`correction_setup._POST_ROUTES` and `Handler.do_GET`; per-driver fixed-reference-axis
+orchestration, geometry-scoped repeats/apply gate, summed fixed-axis placement, and relay metadata
 transport rechecked against the Lane-E admission boundary; prior 2026-07-11
 pass covered driver-specific crossover level sequence,
 authenticated capture-page protocol v2 control data, and the placement/

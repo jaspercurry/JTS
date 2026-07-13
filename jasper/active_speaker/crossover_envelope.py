@@ -38,19 +38,34 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
-
-
 def _targets(status: Mapping[str, Any], kind: str) -> list[Mapping[str, Any]]:
-    return [
-        item for item in _list(_mapping(status.get("targets")).get(kind))
-        if isinstance(item, Mapping)
-    ]
+    from .crossover_eligibility import mapping_sequence
+
+    return list(mapping_sequence(_mapping(status.get("targets")).get(kind)))
 
 
 def _summary(status: Mapping[str, Any]) -> Mapping[str, Any]:
     return _mapping(_mapping(status.get("measurements")).get("summary"))
+
+
+def _driver_repeat_target_ids(target: Mapping[str, Any]) -> set[str]:
+    """Return controller ids without letting a malformed status crash the UI."""
+
+    group_id = str(target.get("speaker_group_id") or "")
+    role = str(target.get("role") or "")
+    physical_id = f"{group_id}:{role}"
+    from .capture_geometry import driver_repeat_binding
+
+    try:
+        fixed_id, _fingerprint = driver_repeat_binding(
+            speaker_group_id=group_id,
+            role=role,
+            target_fingerprint=str(target.get("target_fingerprint") or ""),
+            capture_geometry="reference_axis",
+        )
+    except ValueError:
+        return {physical_id}
+    return {physical_id, fixed_id}
 
 
 def _driver_record(status: Mapping[str, Any], target: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -59,27 +74,45 @@ def _driver_record(status: Mapping[str, Any], target: Mapping[str, Any]) -> Mapp
     return _mapping(latest.get(key))
 
 
+def _reference_axis_driver_record(
+    status: Mapping[str, Any], target: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    latest = _mapping(
+        _summary(status).get("latest_reference_axis_driver_measurements")
+    )
+    key = f"{target.get('speaker_group_id') or ''}:{target.get('role') or ''}"
+    return _mapping(latest.get(key))
+
+
 def _usable_driver_acoustic(
     record: Mapping[str, Any],
     active_comparison_set: Mapping[str, Any],
+    target: Mapping[str, Any],
 ) -> bool:
-    from .capture_geometry import (
-        DRIVER_PLACEMENT_POLICY_ID,
-        capture_proof_valid,
+    from .crossover_eligibility import driver_acoustic_usable
+
+    return driver_acoustic_usable(
+        record,
+        active_comparison_set,
+        target,
+        capture_geometry="near_field",
     )
 
-    acoustic = _mapping(record.get("acoustic"))
-    return bool(
-        acoustic.get("verdict") == "present"
-        and record.get("mic_clipping") is not True
-        and acoustic.get("mic_clipping") is not True
-        and capture_proof_valid(
-            record,
-            active_comparison_set,
-            policy_id=DRIVER_PLACEMENT_POLICY_ID,
-            role=str(record.get("role") or ""),
-            speaker_group_id=str(record.get("speaker_group_id") or ""),
-        )
+
+def _usable_reference_axis_driver_acoustic(
+    record: Mapping[str, Any],
+    active_comparison_set: Mapping[str, Any],
+    target: Mapping[str, Any],
+) -> bool:
+    """Require persisted, gated, repeat-aggregated fixed-axis evidence."""
+
+    from .crossover_eligibility import driver_acoustic_usable
+
+    return driver_acoustic_usable(
+        record,
+        active_comparison_set,
+        target,
+        capture_geometry="reference_axis",
     )
 
 
@@ -163,17 +196,63 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         if not _usable_driver_acoustic(
             _driver_record(status, target),
             active_comparison_set,
+            target,
+        )
+    ]
+    missing_reference_axis_drivers = [
+        target
+        for target in drivers
+        if not _usable_reference_axis_driver_acoustic(
+            _reference_axis_driver_record(status, target),
+            active_comparison_set,
+            target,
         )
     ]
     level_ready, level_state, level_running = _level_state(status)
+    durable_repeat = _mapping(
+        _mapping(_mapping(status.get("level_match")).get("repeats")).get("durable")
+    )
+    repeat_targets = _mapping(durable_repeat.get("targets"))
+    from .crossover_eligibility import driver_repeat_completed
     from .capture_geometry import comparison_set_valid
 
-    level_ready = level_ready and comparison_set_valid(active_comparison_set)
+    comparison_set_ready = comparison_set_valid(active_comparison_set)
     level_last = _mapping(_mapping(status.get("level_match")).get("last"))
     level_ramp = _mapping(level_last.get("ramp"))
     level_lock_kind = str(level_ramp.get("lock_kind") or "")
     setup_ready = _setup_ready(status)
     setup_contract = _mapping(status.get("setup"))
+    protected_profile = _mapping(setup_contract.get("protected_profile"))
+    profile_context_id = str(protected_profile.get("candidate_fingerprint") or "")
+    comparison_set_ready = bool(
+        comparison_set_ready
+        and profile_context_id
+        and active_comparison_set.get("profile_context_id") == profile_context_id
+    )
+    from .crossover_eligibility import automatic_measurement_eligibility
+
+    automatic_measurements = automatic_measurement_eligibility(
+        topology_id=str(_mapping(status.get("topology")).get("topology_id") or ""),
+        profile_context_id=profile_context_id,
+        driver_targets=drivers,
+        measurements=measurements,
+        repeat_state=durable_repeat,
+    )
+    # The comparison set durably carries the completed near-field locks and mic
+    # identity. After a correction-web restart it is sufficient authority to
+    # resume at the next fixed-axis re-level instead of replaying near-field.
+    completed_near_field = bool(drivers) and all(
+        driver_repeat_completed(
+            target,
+            repeat_targets,
+            capture_geometry="near_field",
+        )
+        for target in drivers
+    )
+    level_ready = bool(
+        (level_ready and comparison_set_ready)
+        or (comparison_set_ready and completed_near_field)
+    )
     applied_contract = _mapping(setup_contract.get("applied_crossover"))
     applied_ready = applied_contract.get("valid") is True
     applied_owner = str(applied_contract.get("owner") or "")
@@ -223,9 +302,12 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         done.add("speaker_setup")
     if level_ready:
         done.add("microphone")
-    if drivers and not missing_drivers:
+    if (
+        drivers
+        and automatic_measurements.ready
+    ):
         done.add("drivers")
-    if applied_ready:
+    if applied_ready and not automatic_remeasure:
         done.add("apply")
     if automatic_applied and not automatic_remeasure:
         done.update({"microphone", "drivers"})
@@ -256,9 +338,6 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             ),
         })
 
-    durable_repeat = _mapping(
-        _mapping(_mapping(status.get("level_match")).get("repeats")).get("durable")
-    )
     if durable_repeat.get("status") == "unavailable":
         level_ready = False
         done.discard("microphone")
@@ -270,11 +349,9 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "check again before another sweep."
             ),
         })
-    repeat_targets = _mapping(durable_repeat.get("targets"))
-    driver_target_ids = {
-        f"{target.get('speaker_group_id') or ''}:{target.get('role') or ''}"
-        for target in drivers
-    }
+    driver_target_ids = set().union(
+        *(_driver_repeat_target_ids(target) for target in drivers)
+    ) if drivers else set()
     blocked_controller_targets = []
     terminal_controller_targets = []
     interrupted_controller_targets = []
@@ -312,10 +389,12 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         })
     latest_rejection: Mapping[str, Any] = {}
     latest_status = ""
+    from .crossover_eligibility import finite_float, mapping_sequence
+
     for entry in repeat_targets.values():
         if not isinstance(entry, Mapping):
             continue
-        results = _list(entry.get("results"))
+        results = mapping_sequence(entry.get("results"))
         candidate = _mapping(results[-1]) if results else {}
         if candidate.get("accepted") is not True:
             latest_rejection = candidate
@@ -324,15 +403,17 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         reason = str(latest_rejection.get("reject_reason") or latest_status)
         if latest_rejection.get("clipping") is True:
             text = "The latest sweep clipped. Keep the microphone still and reduce the input gain."
-        elif isinstance(latest_rejection.get("snr_shortfall_db"), (int, float)):
+        elif (shortfall := finite_float(
+            latest_rejection.get("snr_shortfall_db")
+        )) is not None:
             band = str(latest_rejection.get("worst_band_id") or "required")
             text = (
-                f"The latest sweep needs {float(latest_rejection['snr_shortfall_db']):.1f} dB "
+                f"The latest sweep needs {shortfall:.1f} dB "
                 f"more SNR in the {band.replace('_', ' ')} band. Quiet the room and retry."
             )
         elif latest_rejection.get("above_validity_floor") is False:
-            floor = latest_rejection.get("validity_floor_hz")
-            suffix = f" ({float(floor):.0f} Hz floor)" if isinstance(floor, (int, float)) else ""
+            floor = finite_float(latest_rejection.get("validity_floor_hz"))
+            suffix = f" ({floor:.0f} Hz floor)" if floor is not None else ""
             text = f"The latest sweep is below the reliable frequency floor{suffix}. Recheck microphone placement."
         else:
             text = f"The latest sweep was not usable ({reason.replace('_', ' ')}). Keep the room quiet and retry."
@@ -507,22 +588,15 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         active_step = "microphone"
     elif missing_drivers:
         from .capture_geometry import driver_placement_instruction
+        from .crossover_eligibility import repeat_progress, render_repeat_progress
 
         target = missing_drivers[0]
         role = str(target.get("role") or "driver")
         target_id = f"{target.get('speaker_group_id') or ''}:{role}"
-        repeat_state = _mapping(
-            _mapping(_mapping(status.get("level_match")).get("repeats")).get(
-                "targets"
-            )
+        progress = repeat_progress(
+            _mapping(status.get("level_match")).get("repeats"), target_id
         )
-        repeat = _mapping(repeat_state.get(target_id))
-        repeat_failures = _mapping(
-            _mapping(_mapping(status.get("level_match")).get("repeats")).get(
-                "failures"
-            )
-        )
-        repeat_failure = _mapping(repeat_failures.get(target_id))
+        repeat_failure = progress.failure
         if repeat_failure:
             nudges.append({
                 "code": "driver_repeat_capture_refused",
@@ -534,14 +608,8 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                     "check again before measuring."
                 ),
             })
-        attempts = int(repeat.get("attempts") or 0)
-        accepted = int(repeat.get("accepted") or 0)
-        repeat_target = int(repeat.get("target") or 3)
-        repeat_copy = (
-            f" Repeat {attempts + 1}; {accepted} of {repeat_target} accepted so far."
-            if attempts
-            else f" JTS takes {repeat_target} stationary repeats."
-        )
+        attempts = progress.attempts
+        repeat_copy = render_repeat_progress(progress)
         if repeat_failure:
             screen = "microphone"
             verdict = (
@@ -578,6 +646,121 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 },
             }
             active_step = "drivers"
+    elif missing_reference_axis_drivers and not completed_near_field:
+        screen = "microphone"
+        verdict = (
+            "The near-field acoustics are saved, but their exact repeat ledger "
+            "is not complete for the current driver topology. Run the complete "
+            "driver level check again before moving the microphone to the "
+            "fixed reference axis."
+        )
+        action = {
+            "id": "level_match",
+            "label": "Restart driver level check",
+            "endpoint": "/correction/crossover/level-match",
+            "body": {},
+        }
+        active_step = "microphone"
+    elif missing_reference_axis_drivers:
+        from .capture_geometry import reference_axis_driver_placement_instruction
+        from .crossover_eligibility import repeat_progress, render_repeat_progress
+
+        target = missing_reference_axis_drivers[0]
+        group_id = str(target.get("speaker_group_id") or "")
+        role = str(target.get("role") or "driver")
+        repeat_target_id = f"reference_axis:{group_id}:{role}"
+        progress = repeat_progress(
+            _mapping(status.get("level_match")).get("repeats"), repeat_target_id
+        )
+        repeat_failure = progress.failure
+        reference_axis_locks = _mapping(
+            _mapping(status.get("level_match")).get(
+                "reference_axis_driver_locks"
+            )
+        )
+        physical_target_id = f"{group_id}:{role}"
+        reference_axis_level_locked = physical_target_id in reference_axis_locks
+        attempts = progress.attempts
+        repeat_copy = render_repeat_progress(progress)
+        if not reference_axis_level_locked:
+            screen = "microphone"
+            verdict = (
+                f"Keep the microphone on the fixed reference axis for the {role}. "
+                "JTS will set a new safe, non-clipping level for this distance "
+                "before the repeat sweeps."
+            )
+            action = {
+                "id": "level_match_reference_axis_driver",
+                "label": f"Set fixed-axis {role} microphone level",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {
+                    "capture_geometry": "reference_axis",
+                    "speaker_group_id": group_id,
+                    "role": role,
+                },
+            }
+            active_step = "microphone"
+        elif repeat_failure:
+            nudges.append({
+                "code": "reference_axis_repeat_capture_refused",
+                "severity": "warn",
+                "text": (
+                    "The fixed-axis repeat set did not produce enough valid "
+                    "evidence. Keep the microphone position unchanged, quiet "
+                    "the room, and restart the complete driver level check."
+                ),
+            })
+            screen = "microphone"
+            verdict = (
+                f"The bounded fixed-axis repeat set for the {role} cannot "
+                "continue. Its attempts were preserved; restart the driver "
+                "level check to create a fresh comparison-bound set."
+            )
+            action = {
+                "id": "level_match",
+                "label": f"Restart {role} driver level check",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {},
+            }
+            active_step = "microphone"
+        else:
+            screen = "driver_reference_axis"
+            verdict = (
+                f"Measure the {role} from the fixed reference axis. "
+                f"{reference_axis_driver_placement_instruction(role)} "
+                "JTS reuses the protected level and gates the response at "
+                f"the first room reflection.{repeat_copy}"
+            )
+            action = {
+                "id": "measure_reference_axis_driver",
+                "label": (
+                    f"Measure fixed-axis {role} — repeat {attempts + 1}"
+                    if attempts
+                    else f"Fix the mic on-axis, then measure {role}"
+                ),
+                "endpoint": "/correction/crossover/relay-capture",
+                "body": {
+                    "kind": "driver",
+                    "speaker_group_id": group_id,
+                    "role": role,
+                    "capture_geometry": "reference_axis",
+                },
+            }
+            active_step = "drivers"
+    elif not automatic_measurements.ready:
+        screen = "microphone"
+        verdict = (
+            "The current driver acoustics or their exact repeat ledger are not "
+            "complete for this protected topology and profile. Restart the "
+            "driver level check before applying automatic trims."
+        )
+        action = {
+            "id": "level_match",
+            "label": "Restart driver level check",
+            "endpoint": "/correction/crossover/level-match",
+            "body": {},
+        }
+        active_step = "microphone"
     elif automatic_candidate_ready:
         screen = "apply"
         replacing_manual = applied_ready and applied_owner == "manual"

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import hashlib
+import io
 import json
 import os
 from types import SimpleNamespace
@@ -1314,7 +1315,12 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         lambda *_args: "https://jts.local/correction/crossover/",
     )
 
-    payload = correction_setup._handle_crossover_relay_level_match(object())
+    body = json.dumps({"capture_geometry": "near_field"}).encode()
+    handler = SimpleNamespace(
+        headers={"Content-Length": str(len(body))},
+        rfile=io.BytesIO(body),
+    )
+    payload = correction_setup._handle_crossover_relay_level_match(handler)
 
     assert applied["owner"] == "manual"
     assert applied["candidate_fingerprint"] == "candidate-1"
@@ -1354,7 +1360,12 @@ def test_crossover_level_start_refuses_unsafe_legacy_preservation(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="Saved crossover inputs changed"):
-        correction_setup._handle_crossover_relay_level_match(object())
+        body = json.dumps({"capture_geometry": "near_field"}).encode()
+        handler = SimpleNamespace(
+            headers={"Content-Length": str(len(body))},
+            rfile=io.BytesIO(body),
+        )
+        correction_setup._handle_crossover_relay_level_match(handler)
 
 
 def test_open_commissioning_bundle_for_level_match_forwards_calibration_id(

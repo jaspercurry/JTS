@@ -199,9 +199,9 @@ one-shot host-event round trip.
   **shared dynamic cap** is the lower of `original + 12 dB` and **−3 dBFS**
   `main_volume`, with no upward floor for a quiet listening setting. Room's
   listening-position owner uses +15 dB / 0 dB because its stimulus is already
-  −12 dBFS. The inert fixed-reference crossover foundation names that same
-  listening-position policy for its future geometry-scoped level action; the
-  route/envelope orchestration lands separately. Existing 3 cm crossover
+  −12 dBFS. The fixed-reference crossover route now uses that same
+  listening-position policy for a geometry-scoped level action before each
+  driver's stationary far-field repeats. Existing 3 cm crossover
   near-field retains the tighter kernel default. It remains
   tighter than, and is not to be confused with, the independent 0 dB hard
   ceiling above. Terminal ramp snapshots expose sample-admission counts and
@@ -499,11 +499,9 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   `MeasurementSession.run_level_match` now RETAINS the run's
   `LevelMatchSession` in a single-flight, identity-guard-cleared slot and
   exposes `lock_level_match` / `cancel_level_match`, so a manual Lock/Cancel
-  reaches the running `RampController`. The `near_field_driver` geometry key +
-  these seams are the substrate for the flow's future level-match offer
-  before near-field captures; **no shipped surface makes that offer yet** (it
-  needs the level-match HTTP wiring — a P3b/P7 follow-up, kept out of this
-  pass rather than shipping a dead-end nudge with no endpoint behind it); (4)
+  reaches the running `RampController`. Geometry-scoped driver keys + these
+  seams now back the shipped near-field and fixed-reference-axis crossover
+  level actions; (4)
   a **parallel minimal** commissioning screen envelope
   (`active_speaker/crossover_envelope.py`, `GET /crossover/envelope`) aligned
   with the room flow's envelope-driven pattern — it composes the

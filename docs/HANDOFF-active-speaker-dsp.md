@@ -171,8 +171,13 @@
 > is the single driver-evidence ingress. `GET /correction/crossover/envelope`
 > (`active_speaker/crossover_envelope.py`) is a pure sequential screen envelope:
 > protected speaker setup → mic/calibration + one automatic near-field level per
-> driver → each driver's stationary repeat sequence → apply matched attenuation
-> trims → Room. The
+> driver → each driver's stationary near-field repeat sequence → keep the mic
+> fixed on the tweeter reference axis while each driver gets a separate safe
+> level and a target of three gated repeats → apply matched attenuation trims →
+> Room. One bounded fourth attempt may replace a rejected capture, but automatic
+> apply still requires three accepted repeats for both geometries. The lower
+> kernel can retain a two-accepted reduced-confidence aggregate for diagnosis;
+> it is not apply-eligible. The
 > browser has no second measurement
 > state machine or local recorder; passive
 > (`full_range_passive`) speakers get `active=False` (no driver/summed targets),

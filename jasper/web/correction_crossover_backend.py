@@ -17,6 +17,7 @@ import logging
 import math
 import threading
 from contextlib import contextmanager
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from jasper.active_speaker import web_commissioning, web_measurement
@@ -28,6 +29,14 @@ CamillaFactory = Callable[[], Any]
 
 if TYPE_CHECKING:
     from jasper.correction.level_match import LevelMatchOutcome, LevelMatchSession
+
+
+class LevelVolumeRestoreResult(str, Enum):
+    """Explicit outcome of an exact pre-level listening-volume restore."""
+
+    RESTORED = "restored"
+    NOT_REQUIRED = "not_required"
+    FAILED = "failed"
 
 
 class CrossoverLevelLease:
@@ -63,6 +72,7 @@ class CrossoverLevelLease:
         self._repeat_lock = threading.RLock()
         self._repeat_failures: dict[str, dict[str, Any]] = {}
         self._durable_repeat_progress: dict[str, Any] = {}
+        self._unresolved_level_volume_safety: dict[str, Any] | None = None
 
     def configure_targets(self, targets: Sequence[Mapping[str, Any]]) -> None:
         """Freeze one complete, protected per-driver level plan."""
@@ -150,7 +160,7 @@ class CrossoverLevelLease:
             if not callable(set_main_volume_db):
                 raise RuntimeError("crossover level match has no volume restore port")
             restored = await self.restore_level_match_volume(set_main_volume_db)
-            if not restored:
+            if restored is not LevelVolumeRestoreResult.RESTORED:
                 raise RuntimeError(
                     "crossover level locked, but the listening volume could "
                     "not be restored"
@@ -184,17 +194,24 @@ class CrossoverLevelLease:
             "correction.crossover_level_context_invalidated",
         )
 
-    async def restore_level_match_volume(self, set_main_volume_db: Any) -> bool:
+    async def restore_level_match_volume(
+        self, set_main_volume_db: Any
+    ) -> LevelVolumeRestoreResult:
         from jasper.audio_measurement.ramp import RampState
 
         async with self._restore_lock:
             outcome = self._active_outcome or self._last
             if outcome is None or outcome.ramp.state is not RampState.LOCKED:
-                return False
+                return LevelVolumeRestoreResult.NOT_REQUIRED
             ramp = outcome.ramp
             if ramp.restored or ramp.original_main_volume_db is None:
-                return False
-            applied = await set_main_volume_db(float(ramp.original_main_volume_db))
+                return LevelVolumeRestoreResult.NOT_REQUIRED
+            try:
+                applied = await set_main_volume_db(
+                    float(ramp.original_main_volume_db)
+                )
+            except (OSError, RuntimeError, ValueError):
+                applied = False
             if applied is False:
                 log_event(
                     logger,
@@ -202,15 +219,62 @@ class CrossoverLevelLease:
                     level=logging.ERROR,
                     to_db=f"{ramp.original_main_volume_db:.1f}",
                 )
-                return False
+                return LevelVolumeRestoreResult.FAILED
             ramp.restored = True
             self._active_outcome = None
+            self._unresolved_level_volume_safety = None
             log_event(
                 logger,
                 "correction.crossover_level_volume_restored",
                 to_db=f"{ramp.original_main_volume_db:.1f}",
             )
+            return LevelVolumeRestoreResult.RESTORED
+
+    async def emergency_lower_level_match_volume(
+        self, set_main_volume_db: Any
+    ) -> bool:
+        """Bound output when exact level-volume restoration has failed."""
+
+        from jasper.audio_measurement.ramp import RampState
+
+        async with self._restore_lock:
+            outcome = self._active_outcome or self._last
+            if outcome is None or outcome.ramp.state is not RampState.LOCKED:
+                return False
+            try:
+                applied = await set_main_volume_db(EMERGENCY_SWEEP_VOLUME_DB)
+            except (OSError, RuntimeError, ValueError):
+                applied = False
+            if applied is False:
+                log_event(
+                    logger,
+                    "correction.crossover_level_emergency_volume_failed",
+                    level=logging.ERROR,
+                    to_db=f"{EMERGENCY_SWEEP_VOLUME_DB:.1f}",
+                )
+                return False
+            outcome.ramp.restored = True
+            self._active_outcome = None
+            self._unresolved_level_volume_safety = None
+            log_event(
+                logger,
+                "correction.crossover_level_emergency_volume_applied",
+                level=logging.ERROR,
+                to_db=f"{EMERGENCY_SWEEP_VOLUME_DB:.1f}",
+            )
             return True
+
+    def mark_level_volume_unresolved(
+        self, speaker_group_id: str, role: str
+    ) -> None:
+        """Retain operator-visible state after exact and emergency restore fail."""
+
+        self._unresolved_level_volume_safety = {
+            "status": "unresolved",
+            "speaker_group_id": str(speaker_group_id),
+            "role": str(role),
+            "emergency_volume_db": EMERGENCY_SWEEP_VOLUME_DB,
+        }
 
     async def acquire_driver_sweep_volume(
         self,
@@ -495,44 +559,95 @@ class CrossoverLevelLease:
             return set(self._repeat_sessions)
 
     def set_durable_repeat_progress(self, payload: Mapping[str, Any]) -> None:
-        def public_result(value: Any) -> dict[str, Any]:
+        from jasper.active_speaker.crossover_eligibility import (
+            mapping_sequence,
+            nonnegative_int,
+        )
+
+        def public_result(value: Any) -> dict[str, Any] | None:
             if not isinstance(value, Mapping):
-                return {}
+                return None
+            attempt = nonnegative_int(value.get("attempt"))
+            accepted = value.get("accepted")
+            if not 1 <= attempt <= 4 or not isinstance(accepted, bool):
+                return None
+            public: dict[str, Any] = {
+                "attempt": attempt,
+                "accepted": accepted,
+            }
+            optional = (
+                "reject_reason",
+                "failure_type",
+                "estimated_snr_db",
+                "snr_verdict",
+                "worst_band_id",
+                "snr_shortfall_db",
+                "clipping",
+                "above_validity_floor",
+                "validity_floor_hz",
+                "phase",
+            )
+            for key in optional:
+                item = value.get(key)
+                if item is None:
+                    continue
+                if not isinstance(item, (str, int, float, bool)):
+                    return None
+                public[key] = item
+            return public
+
+        def malformed_entry() -> dict[str, Any]:
             return {
-                key: value.get(key)
-                for key in (
-                    "attempt",
-                    "accepted",
-                    "reject_reason",
-                    "failure_type",
-                    "estimated_snr_db",
-                    "snr_verdict",
-                    "worst_band_id",
-                    "snr_shortfall_db",
-                    "clipping",
-                    "above_validity_floor",
-                    "validity_floor_hz",
-                    "phase",
-                )
-                if value.get(key) is not None
+                "target_id": None,
+                "target_fingerprint": None,
+                "attempts": 0,
+                "status": "malformed",
+                "inflight": False,
+                "results": [],
+                "reason": "malformed_durable_repeat_state",
+                "updated_at": None,
             }
 
         def public_entry(value: Any) -> dict[str, Any]:
             if not isinstance(value, Mapping):
-                return {}
+                return malformed_entry()
+            attempts = nonnegative_int(value.get("attempts"))
+            raw_results = value.get("results")
+            result_items = mapping_sequence(raw_results)
+            results = [public_result(item) for item in result_items]
+            status = value.get("status")
+            target_id = value.get("target_id")
+            target_fingerprint = value.get("target_fingerprint")
+            reason = value.get("reason")
+            updated_at = value.get("updated_at")
+            inflight = value.get("inflight")
+            if (
+                not 1 <= attempts <= 4
+                or not isinstance(raw_results, (list, tuple))
+                or len(result_items) != len(raw_results)
+                or any(result is None for result in results)
+                or not isinstance(target_id, str)
+                or not target_id
+                or not isinstance(target_fingerprint, str)
+                or not target_fingerprint
+                or (reason is not None and not isinstance(reason, str))
+                or (updated_at is not None and not isinstance(updated_at, str))
+                or (inflight is not None and not isinstance(inflight, str))
+                or status
+                not in {"active", "ready", "completed", "refused", "aborted"}
+            ):
+                return malformed_entry()
             return {
-                "target_id": value.get("target_id"),
-                "target_fingerprint": value.get("target_fingerprint"),
-                "attempts": value.get("attempts"),
-                "status": value.get("status"),
+                "target_id": target_id,
+                "target_fingerprint": target_fingerprint,
+                "attempts": attempts,
+                "status": status,
                 # Boolean state is enough for orphan detection; the unguessable
                 # completion token and process owner never belong in /status.
-                "inflight": bool(value.get("inflight")),
-                "results": [
-                    public_result(item) for item in value.get("results") or ()
-                ],
-                "reason": value.get("reason"),
-                "updated_at": value.get("updated_at"),
+                "inflight": bool(inflight),
+                "results": results,
+                "reason": reason,
+                "updated_at": updated_at,
             }
 
         with self._repeat_lock:
@@ -584,6 +699,10 @@ class CrossoverLevelLease:
         )
 
         from jasper.active_speaker.repeat_admission import MAX_ATTEMPTS
+        from jasper.active_speaker.crossover_eligibility import (
+            mapping_sequence,
+            nonnegative_int,
+        )
 
         with self._repeat_lock:
             targets: dict[str, Any] = {}
@@ -614,12 +733,8 @@ class CrossoverLevelLease:
                 if not isinstance(raw, Mapping):
                     continue
                 entry = dict(raw)
-                results = [
-                    result
-                    for result in entry.get("results") or ()
-                    if isinstance(result, Mapping)
-                ]
-                attempts = int(entry.get("attempts") or 0)
+                results = list(mapping_sequence(entry.get("results")))
+                attempts = nonnegative_int(entry.get("attempts"))
                 accepted = sum(
                     1 for result in results if result.get("accepted") is True
                 )
@@ -656,6 +771,28 @@ class CrossoverLevelLease:
         )
         locks = self.driver_level_locks()
         missing = [target_id for target_id in self._targets if target_id not in locks]
+        from jasper.active_speaker.capture_geometry import driver_level_geometry
+
+        reference_axis_driver_locks: dict[str, float] = {}
+        for target_id, target in self._targets.items():
+            geometry = driver_level_geometry(
+                str(target.get("speaker_group_id") or ""),
+                str(target.get("role") or ""),
+                "reference_axis",
+            )
+            outcome = self._outcomes.get(geometry)
+            locked = (
+                outcome.ramp.locked_main_volume_db
+                if outcome is not None
+                else None
+            )
+            if (
+                not isinstance(locked, bool)
+                and isinstance(locked, (int, float))
+                and math.isfinite(float(locked))
+                and float(locked) <= 0
+            ):
+                reference_axis_driver_locks[target_id] = float(locked)
         return {
             "running": self._running is not None,
             "locks": self.level_lock_store.snapshot(),
@@ -664,6 +801,12 @@ class CrossoverLevelLease:
             "valid": context_valid,
             "targets": list(self._targets.values()),
             "driver_level_locks": locks,
+            "reference_axis_driver_locks": reference_axis_driver_locks,
+            "unresolved_volume_safety": (
+                dict(self._unresolved_level_volume_safety)
+                if self._unresolved_level_volume_safety is not None
+                else None
+            ),
             "missing_targets": missing,
             "next_target": self._targets.get(missing[0]) if missing else None,
             "ready": bool(self._targets) and not missing and context_valid,
@@ -686,10 +829,9 @@ def status_payload() -> dict[str, Any]:
     # Layer-A gate: only active (`active_2_way` / `active_3_way`) speakers have
     # driver/summed targets; a `full_range_passive` speaker has none, so
     # `active=False` is the honest "this speaker has no crossover to tune" flag
-    # FOR the envelope-driven page to consume when it lands (revision plan §1 —
-    # today `/crossover/envelope` gates on the same derivation; the shipped
-    # tab/JS do not read it yet). Derived from the already-computed targets —
-    # no extra topology read. Pinned by tests/test_web_correction_crossover_flow.py.
+    # for the envelope-driven page to consume. Derived from the already-computed
+    # targets — no extra topology read. Pinned by
+    # tests/test_web_correction_crossover_flow.py.
     targets_raw = payload.get("targets")
     targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
     driver_count = len(targets.get("drivers") or [])
@@ -776,23 +918,33 @@ async def apply_profile(
                 "crossover repeat safety state is unavailable; rerun the driver "
                 "level check before apply"
             ) from exc
+        from jasper.active_speaker.crossover_eligibility import (
+            automatic_measurement_eligibility,
+        )
         from jasper.active_speaker.measurement import active_driver_targets
+        from jasper.active_speaker.setup_status import (
+            read_active_speaker_setup_status,
+        )
 
-        repeat_targets = repeat_state.get("targets") or {}
-        required_target_ids = {
-            str(target.get("target_id") or "")
-            for target in active_driver_targets(topology)
-        }
-        unresolved = [
-            target_id
-            for target_id, entry in repeat_targets.items()
-            if not isinstance(entry, Mapping) or entry.get("status") != "completed"
-        ]
-        unresolved.extend(sorted(required_target_ids - set(repeat_targets)))
-        if unresolved:
+        setup = read_active_speaker_setup_status()
+        protected_profile = setup.get("protected_profile")
+        profile_context_id = (
+            str(protected_profile.get("candidate_fingerprint") or "")
+            if isinstance(protected_profile, Mapping)
+            else ""
+        )
+        eligibility = automatic_measurement_eligibility(
+            topology_id=topology.topology_id,
+            profile_context_id=profile_context_id,
+            driver_targets=active_driver_targets(topology),
+            measurements=measurements,
+            repeat_state=repeat_state,
+        )
+        if not eligibility.ready:
             raise ValueError(
-                "crossover repeat persistence is incomplete; rerun the driver "
-                "level check before automatic apply"
+                "current near-field and fixed-axis crossover evidence and "
+                "their exact repeat persistence must all be complete; resume "
+                "the guided driver measurements before automatic apply"
             )
     applied = load_applied_baseline_profile_state()
     legacy_manual_profile = (
