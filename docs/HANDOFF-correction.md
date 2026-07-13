@@ -1073,6 +1073,11 @@ GET  /crossover/envelope     commissioning screen envelope (dumb frontend):
                              {schema_version, screen, active, steps,
                              verdict_text, nudges, next_action, progress, relay}
 GET  /bass                   bass/subwoofer tuning placeholder page
+GET  /bass/status            read-only active bass-management corner/status
+GET  /balance                stereo-pair acoustic balance page
+GET  /balance/status         current balance walkthrough state
+GET  /sync                   stereo-pair acoustic timing page
+GET  /sync/status            current sync walkthrough/playback state
 GET  /healthz                liveness — "ok"
 GET  /status                 session + currently-loaded correction snapshot
                              ({state, peqs, autolevel, input_device,
@@ -1080,6 +1085,7 @@ GET  /status                 session + currently-loaded correction snapshot
                              correction_strategy, design_report,
                              current_correction: {path, session_id,
                              applied_at_epoch, peq_count} | null})
+GET  /envelope               room-correction screen envelope (dumb frontend)
 GET  /sessions               debug: 20 most-recent session bundles
 GET  /session-report?id=<id> read-only evidence report for one bundle
 GET  /calibration/models     supported calibrated mic providers/models
@@ -1124,8 +1130,28 @@ POST /test-tone              5-second 1 kHz tone through music chain
 POST /autolevel/start        ramp main_volume while tone plays
 POST /autolevel/lock         freeze main_volume at current ramp value
 POST /autolevel/cancel       abort ramp, restore pre-autolevel volume
+POST /balance/start          begin the pair-balance measurement window
+POST /balance/ramp           start/update the bounded balance listening ramp
+POST /balance/meter          read the active balance meter observation
+POST /balance/lock           lock the measured balance trim
+POST /balance/stop           stop and restore the balance walkthrough
+POST /balance/apply          persist and live-apply the accepted pair trim
+POST /balance/reset          stop/reset the balance walkthrough
+POST /sync/start             begin the pair-sync measurement window
+POST /sync/play              play the deterministic L/R timing marker
+POST /sync/analyze           body = WAV; analyze the captured marker delay
+POST /sync/relay-capture     phone-mic relay transport for the sync marker
+POST /sync/apply             persist the accepted positive-only pair delay
+POST /sync/stop              stop playback and reset the sync walkthrough
+POST /sync/reset             reset the sync walkthrough (same safe stop path)
 POST /crossover/level-match  guided mic/calibration + near-field automatic level
 POST /crossover/apply        atomically apply measured Layer A; restore gain lease
+POST /crossover/driver-test  start one protected per-driver audible test
+POST /crossover/driver-confirm record the protected driver-test result
+POST /crossover/driver-abort stop the driver test and restore the graph
+POST /crossover/summed-test  run the protected combined-driver listening test
+POST /crossover/driver-capture-sweep start a bounded per-driver capture stimulus
+POST /crossover/summed-capture-sweep start a bounded combined-driver stimulus
 POST /crossover/summed-capture body = WAV (audio/wav); analyze + record
                              active-speaker summed-crossover evidence
 POST /crossover/relay-capture body: {kind: driver|summed, speaker_group_id,
@@ -2248,7 +2274,8 @@ Internal:
 
 ---
 
-Last verified: 2026-07-12 (summed fixed-axis placement and relay metadata
+Last verified: 2026-07-12 (full GET/POST route inventory rechecked against
+`correction_setup._POST_ROUTES` and `Handler.do_GET`; summed fixed-axis placement and relay metadata
 transport rechecked against the Lane-E admission boundary; prior 2026-07-11
 pass covered driver-specific crossover level sequence,
 authenticated capture-page protocol v2 control data, and the placement/

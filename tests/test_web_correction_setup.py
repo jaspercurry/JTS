@@ -15,6 +15,7 @@ so a static render needs no hardware.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 import threading
 
 import pytest
@@ -295,7 +296,13 @@ def test_known_post_routes_reach_csrf_guard():
         "/interpret", "/propose", "/propose/apply",
     }
     assert known == correction_setup._POST_ROUTES
+    route_reference = (
+        Path(__file__).resolve().parents[1] / "docs" / "HANDOFF-correction.md"
+    ).read_text(encoding="utf-8")
     for route in sorted(known):
+        assert f"POST {route}" in route_reference, (
+            f"{route} is missing from the canonical correction route inventory"
+        )
         resp = _drive(route, method="POST", body=b"{}")
         assert b"403" in resp.split(b"\r\n", 1)[0], (
             f"{route} should reach the CSRF guard (403)"
