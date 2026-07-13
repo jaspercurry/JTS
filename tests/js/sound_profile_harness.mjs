@@ -938,7 +938,7 @@ async function testActiveSpeakerSetupTogglePersistsAcrossRender() {
   }
 
   harness.dispatchToggle({ "data-active-speaker-setup": true, open: true });
-  harness.dispatchClick({ "data-act": "refresh-output-topology" });
+  harness.dispatchClick({ "data-act": "browse-presets" });
   await harness.flush();
   await harness.flush();
 
