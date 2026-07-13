@@ -127,16 +127,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var activeSpeakerSetupOpen = false;
   var outputTemplateDraftAxes = {layout: '', speakerMode: ''};
   var driverResearch = {
-    inputs: {full_range: '', woofer: '', mid: '', tweeter: '', subwoofer: '', notes: ''},
+    inputs: {
+      full_range: '', woofer: '', mid: '', tweeter: '', subwoofer: '', notes: '',
+      target_models: {}
+    },
     settings: {drivers: {}, crossovers: {}},
     importText: '',
+    importedPayload: null,
     parsed: null,
     designDraft: null,
     error: '',
     dirty: false,
     saving: false,
     promptCopied: false,
-    promptSelected: false
+    promptSelected: false,
+    researchRequest: null
   };
   var crossoverPreview = {payload: null, preparing: false, error: ''};
   var ZERO_DETENT_DB = 0.1;
@@ -928,6 +933,38 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return (order[a] || 99) - (order[b] || 99);
     });
   }
+  function driverResearchTargets(topology) {
+    var allowedRoles = driverResearchRoles(topology);
+    var targets = [];
+    outputGroups(topology).forEach(function(group) {
+      (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
+        var role = String(channel.role || '');
+        if (allowedRoles.indexOf(role) < 0) return;
+        targets.push({
+          target_id: String(group.id || '') + ':' + role,
+          role: role,
+          group_id: String(group.id || ''),
+          group_label: String(group.label || group.id || 'Speaker'),
+          output_index: channel.physical_output_index,
+          output_label: channel.human_output_label ||
+            (channel.physical_output_index == null ? 'Unassigned output' :
+              physicalOutputLabel(topology, channel.physical_output_index))
+        });
+      });
+    });
+    return targets;
+  }
+  function targetModel(target, topology) {
+    var targetModels = driverResearch.inputs.target_models || {};
+    var explicit = String(targetModels[target.target_id] || '').trim();
+    if (explicit) return explicit;
+    var sameRole = driverResearchTargets(topology).filter(function(item) {
+      return item.role === target.role;
+    });
+    return sameRole.length === 1
+      ? String(driverResearch.inputs[target.role] || '').trim()
+      : '';
+  }
   function assignedOutputIndices(topology) {
     var used = {};
     outputGroups(topology).forEach(function(group) {
@@ -1026,11 +1063,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function crossoverSettingKey(pair) {
     return String(pair[0] || '') + ':' + String(pair[1] || '');
   }
-  function driverSetting(role) {
+  function driverSetting(targetId) {
     if (!driverResearch.settings.drivers) driverResearch.settings.drivers = {};
     var drivers = driverResearch.settings.drivers;
-    if (!drivers[role]) drivers[role] = {};
-    return drivers[role];
+    if (!drivers[targetId]) drivers[targetId] = {};
+    return drivers[targetId];
   }
   function crossoverSetting(pair) {
     if (!driverResearch.settings.crossovers) driverResearch.settings.crossovers = {};
@@ -1041,6 +1078,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function manualNumberValue(raw) {
     if (raw === '' || raw == null) return null;
+    if (typeof raw === 'boolean') return null;
     var value = Number(raw);
     return isFinite(value) ? value : null;
   }
@@ -1120,42 +1158,46 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     return draftCrossoverFrequency(pair);
   }
-  function driverForRole(role) {
+  function driverForTarget(target, topology) {
     var setting = driverResearch.settings && driverResearch.settings.drivers &&
-      driverResearch.settings.drivers[role] || {};
+      driverResearch.settings.drivers[target.target_id] || {};
     var drivers = designDraftDrivers();
     var draftDriver = {};
     for (var i = 0; i < drivers.length; i += 1) {
-      if (drivers[i] && String(drivers[i].role || '') === String(role)) {
+      if (drivers[i] && String(drivers[i].target_id || '') === target.target_id) {
         draftDriver = drivers[i];
         break;
       }
     }
+    if (!draftDriver.target_id) {
+      var sameRoleTargets = driverResearchTargets(topology).filter(function(item) {
+        return item.role === target.role;
+      });
+      if (sameRoleTargets.length === 1) {
+        for (var j = 0; j < drivers.length; j += 1) {
+          if (drivers[j] && !drivers[j].target_id &&
+              String(drivers[j].role || '') === target.role) {
+            draftDriver = drivers[j];
+            break;
+          }
+        }
+      }
+    }
     return Object.assign({}, draftDriver, setting, {
-      model: String(driverResearch.inputs[role] || setting.model || draftDriver.model || '').trim()
+      target_id: target.target_id,
+      role: target.role,
+      model: targetModel(target, topology) || setting.model || draftDriver.model || ''
     });
   }
-  function driverHasInfo(role) {
-    var driver = driverForRole(role);
-    return !!(driver.model ||
-      driver.sensitivity_db_2v83_1m != null ||
-      driver.nominal_impedance_ohm != null ||
-      driver.recommended_highpass_hz != null ||
-      driver.recommended_lowpass_hz != null ||
-      driver.do_not_test_below_hz != null ||
-      driver.gain_offset_db != null ||
-      driver.notes);
-  }
-  function driverHasSafetyNotes(role) {
-    var driver = driverForRole(role);
-    return !!(driver.recommended_highpass_hz != null ||
-      driver.recommended_lowpass_hz != null ||
-      driver.do_not_test_below_hz != null ||
-      driver.gain_offset_db != null ||
-      driver.notes);
-  }
   function driverSafetyNoteRoles(topology) {
-    return driverResearchRoles(topology).filter(driverHasSafetyNotes);
+    return driverResearchTargets(topology).filter(function(target) {
+      var driver = driverForTarget(target, topology);
+      return !!(driver.recommended_highpass_hz != null ||
+        driver.recommended_lowpass_hz != null ||
+        driver.do_not_test_below_hz != null ||
+        driver.gain_offset_db != null ||
+        driver.notes);
+    }).map(function(target) { return target.role; });
   }
   function workingCrossoverSummary(topology) {
     var pairs = activeCrossoverPairs(topology);
@@ -1213,7 +1255,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function driverResearchHasPreviewInputs(topology) {
     if (!topology || !outputGroups(topology).length) return false;
-    var rolesReady = driverResearchRoles(topology).every(driverHasInfo);
+    var rolesReady = driverResearchTargets(topology).every(function(target) {
+      var driver = driverForTarget(target, topology);
+      return !!(driver.model || driver.sensitivity_db_2v83_1m != null ||
+        driver.nominal_impedance_ohm != null || driver.recommended_highpass_hz != null ||
+        driver.recommended_lowpass_hz != null || driver.do_not_test_below_hz != null ||
+        driver.gain_offset_db != null || driver.notes);
+    });
     var pairs = activeCrossoverPairs(topology);
     var crossoversReady = pairs.length > 0 && pairs.every(function(pair) {
       return currentCrossoverFrequency(pair) != null;
@@ -1224,29 +1272,34 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!topology || !outputGroups(topology).length) {
       return 'Choose and save a speaker layout before previewing the active crossover.';
     }
-    var missingDrivers = driverResearchRoles(topology).filter(function(role) {
-      return !driverHasInfo(role);
+    var missingDrivers = driverResearchTargets(topology).filter(function(target) {
+      return !driverForTarget(target, topology).model;
     });
     if (missingDrivers.length) {
-      return 'Add driver info for ' + roleSentenceText(missingDrivers) +
+      return 'Add driver info for ' + missingDrivers.map(function(target) {
+        return target.group_label + ' ' + activeRoleLabel(target.role);
+      }).join(', ') +
         ' before previewing the active crossover.';
     }
     return 'Add crossover points before previewing the active crossover.';
   }
   function driverResearchPromptReady(topology) {
     if (!topology || !outputGroups(topology).length) return false;
-    return driverResearchRoles(topology).every(function(role) {
-      return !!String(driverResearch.inputs[role] || '').trim();
+    return driverResearchTargets(topology).every(function(target) {
+      return !!targetModel(target, topology);
     });
   }
-  function setManualDriverField(role, field, value) {
-    var setting = driverSetting(role);
+  function setManualDriverField(targetId, field, value) {
+    var setting = driverSetting(targetId);
     setting[field] = value;
     if (field === 'gain_offset_db') {
       setting.gain_offset_db_provenance = 'operator_pinned';
     }
     driverResearch.error = '';
     driverResearch.dirty = true;
+    driverResearch.researchRequest = null;
+    driverResearch.promptCopied = false;
+    driverResearch.promptSelected = false;
   }
   function setManualCrossoverField(pairKey, field, value) {
     if (!driverResearch.settings.crossovers[pairKey]) {
@@ -1272,12 +1325,61 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return 'Pick which driver is delayed for ' +
       humanRole(pair[0]) + ' / ' + humanRole(pair[1]) + ' before saving.';
   }
+  function safetyBandFromSetting(setting, prefix) {
+    var low = manualNumberValue(setting[prefix + '_min_hz']);
+    var high = manualNumberValue(setting[prefix + '_max_hz']);
+    return low != null && high != null ? [low, high] : null;
+  }
+  function protectionFiltersFromSetting(setting) {
+    return ['highpass', 'lowpass'].map(function(kind) {
+      var cutoff = manualNumberValue(setting['required_' + kind + '_cutoff_hz']);
+      var slope = manualNumberValue(
+        setting['required_' + kind + '_min_slope_db_per_octave']
+      );
+      if (cutoff == null && slope == null) return null;
+      return {
+        kind: kind,
+        cutoff_hz: cutoff,
+        minimum_slope_db_per_octave: slope,
+        family_or_equivalent:
+          setting['required_' + kind + '_family_or_equivalent'] ||
+          'equivalent_or_steeper'
+      };
+    }).filter(Boolean);
+  }
+  function cabinetFromSetting(setting) {
+    var out = {enclosure_kind: setting.enclosure_kind || 'unknown'};
+    [
+      'radiator_count',
+      'effective_radiating_diameter_mm',
+      'baffle_width_mm'
+    ].forEach(function(field) {
+      var value = manualNumberValue(setting[field]);
+      if (value != null) out[field] = value;
+    });
+    return out;
+  }
+  function levelDurationLimitsFromSetting(setting) {
+    var out = {};
+    [
+      'max_effective_peak_dbfs',
+      'max_sweep_duration_s',
+      'max_repeat_count',
+      'minimum_cooldown_s'
+    ].forEach(function(field) {
+      var value = manualNumberValue(setting[field]);
+      if (value != null) out[field] = value;
+    });
+    return out;
+  }
   function manualSettingsPayload(topology) {
-    var drivers = driverResearchRoles(topology).map(function(role) {
-      var setting = driverSetting(role);
+    var drivers = driverResearchTargets(topology).map(function(target) {
+      var role = target.role;
+      var setting = driverSetting(target.target_id);
       var out = {
+        target_id: target.target_id,
         role: role,
-        model: (driverResearch.inputs[role] || '').trim()
+        model: targetModel(target, topology)
       };
       [
         'sensitivity_db_2v83_1m',
@@ -1295,6 +1397,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           setting.gain_offset_db_provenance || 'operator_pinned';
       }
       if ((setting.notes || '').trim()) out.notes = String(setting.notes).trim();
+      var hardBand = safetyBandFromSetting(setting, 'hard_excitation');
+      var measurementBand = safetyBandFromSetting(setting, 'measurement');
+      var searchBand = safetyBandFromSetting(setting, 'crossover_search');
+      if (hardBand) out.hard_excitation_band_hz = hardBand;
+      if (measurementBand) out.measurement_band_hz = measurementBand;
+      if (searchBand) out.crossover_search_band_hz = searchBand;
+      out.required_protection_filters = protectionFiltersFromSetting(setting);
+      out.cabinet = cabinetFromSetting(setting);
+      var limits = levelDurationLimitsFromSetting(setting);
+      if (Object.keys(limits).length) out.level_duration_limits = limits;
       return out;
     }).filter(function(driver) {
       return driver.model ||
@@ -1304,6 +1416,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         driver.recommended_lowpass_hz != null ||
         driver.do_not_test_below_hz != null ||
         driver.gain_offset_db != null ||
+        driver.hard_excitation_band_hz ||
+        driver.measurement_band_hz ||
+        driver.crossover_search_band_hz ||
+        driver.required_protection_filters.length ||
         driver.notes;
     });
     var candidates = activeCrossoverPairs(topology).map(function(pair) {
@@ -1361,22 +1477,74 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     });
     var trims = sensitivityTrimsFromGap(sensitivities);
     Object.keys(trims).forEach(function(role) {
-      var setting = driverSetting(role);
+      var targetId = driversByRole[role] && driversByRole[role]._target_id;
+      if (!targetId) return;
+      var setting = driverSetting(targetId);
       if (manualNumberValue(setting.gain_offset_db) != null) return;  // keep explicit
       setting.gain_offset_db = trims[role];
       setting.gain_offset_db_provenance = 'sensitivity_estimate';
     });
   }
+  function applySafetyBandToSetting(setting, prefix, band) {
+    if (!Array.isArray(band) || band.length !== 2) return;
+    setting[prefix + '_min_hz'] = band[0];
+    setting[prefix + '_max_hz'] = band[1];
+  }
+  function applyDriverSafetyToSetting(driver, setting) {
+    applySafetyBandToSetting(setting, 'hard_excitation', driver.hard_excitation_band_hz);
+    applySafetyBandToSetting(setting, 'measurement', driver.measurement_band_hz);
+    applySafetyBandToSetting(setting, 'crossover_search', driver.crossover_search_band_hz);
+    (Array.isArray(driver.required_protection_filters)
+      ? driver.required_protection_filters : []).forEach(function(filter) {
+      if (!filter || (filter.kind !== 'highpass' && filter.kind !== 'lowpass')) return;
+      setting['required_' + filter.kind + '_cutoff_hz'] = filter.cutoff_hz;
+      setting['required_' + filter.kind + '_min_slope_db_per_octave'] =
+        filter.minimum_slope_db_per_octave;
+      setting['required_' + filter.kind + '_family_or_equivalent'] =
+        filter.family_or_equivalent || 'equivalent_or_steeper';
+    });
+    var cabinet = driver.cabinet || {};
+    if (cabinet.enclosure_kind) setting.enclosure_kind = cabinet.enclosure_kind;
+    if (cabinet.radiator_count != null) setting.radiator_count = cabinet.radiator_count;
+    if (cabinet.effective_radiating_diameter_mm != null) {
+      setting.effective_radiating_diameter_mm = cabinet.effective_radiating_diameter_mm;
+    }
+    if (cabinet.baffle_width_mm != null) setting.baffle_width_mm = cabinet.baffle_width_mm;
+    var limits = driver.level_duration_limits || {};
+    [
+      'max_effective_peak_dbfs',
+      'max_sweep_duration_s',
+      'max_repeat_count',
+      'minimum_cooldown_s'
+    ].forEach(function(field) {
+      if (limits[field] != null) setting[field] = limits[field];
+    });
+  }
   function applyDriverResearchToManualSettings(payload) {
     if (!payload || typeof payload !== 'object') return;
+    var topology = currentOutputTopology();
+    var targets = driverResearchTargets(topology);
     var driversByRole = {};
     (Array.isArray(payload.drivers) ? payload.drivers : []).forEach(function(driver) {
       if (!driver || !driver.role) return;
       var role = String(driver.role);
-      driversByRole[role] = driver;
-      if (driver.model && !driverResearch.inputs[role]) {
-        driverResearch.inputs[role] = String(driver.model);
+      var target = null;
+      if (driver.target_id) {
+        target = targets.find(function(item) {
+          return item.target_id === String(driver.target_id);
+        }) || null;
+      } else {
+        var roleTargets = targets.filter(function(item) { return item.role === role; });
+        if (roleTargets.length === 1) target = roleTargets[0];
       }
+      if (!target) return;
+      if (targets.filter(function(item) { return item.role === role; }).length === 1) {
+        driversByRole[role] = Object.assign({_target_id: target.target_id}, driver);
+      }
+      if (driver.model && !(driverResearch.inputs.target_models || {})[target.target_id]) {
+        driverResearch.inputs.target_models[target.target_id] = String(driver.model);
+      }
+      var targetSetting = driverSetting(target.target_id);
       [
         'sensitivity_db_2v83_1m',
         'nominal_impedance_ohm',
@@ -1385,12 +1553,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'do_not_test_below_hz',
         'gain_offset_db'
       ].forEach(function(field) {
-        if (driver[field] != null) driverSetting(role)[field] = driver[field];
+        if (driver[field] != null) targetSetting[field] = driver[field];
       });
       if (driver.gain_offset_db != null) {
-        driverSetting(role).gain_offset_db_provenance =
+        targetSetting.gain_offset_db_provenance =
           driver.gain_offset_db_provenance || 'research_estimate';
       }
+      applyDriverSafetyToSetting(driver, targetSetting);
     });
     // Pick ONE crossover per role-pair: the highest-confidence candidate with a
     // usable frequency (ties keep the first listed). The old code applied every
@@ -1436,62 +1605,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     proposeSensitivityTrims(driversByRole);
   }
   function driverResearchPrompt(topology) {
-    var roles = driverResearchRoles(topology);
-    var lines = roles.map(function(role) {
-      var name = (driverResearch.inputs[role] || '').trim();
-      return '- ' + role + ': ' + (name || '[user has not entered a model yet]');
-    });
-    var notes = (driverResearch.inputs.notes || '').trim();
-    return [
-      'You are helping configure a safe active crossover for a JTS Raspberry Pi speaker.',
-      '',
-      'Driver list:',
-      lines.join('\n'),
-      notes ? '\nUser notes:\n' + notes : '',
-      '',
-      'Research manufacturer datasheets and reputable measurements. Prefer primary manufacturer data.',
-      'Do not invent missing facts. Use null when a value is unknown. Include source URLs for every non-obvious claim.',
-      'Focus on safe starting points, not final tuning. Assume JTS will start test signals extremely quiet and the human must approve any listening result.',
-      'Keep each driver notes field concise: safety-relevant details only, 2048 characters or fewer; do not paste a full research report.',
-      '',
-      'Return only JSON with this shape:',
-      '{',
-      '  "artifact_schema_version": 1,',
-      '  "kind": "jts_active_crossover_driver_research",',
-      '  "drivers": [',
-      '    {',
-      '      "role": "full_range|woofer|mid|tweeter",',
-      '      "model": "string",',
-      '      "manufacturer": "string|null",',
-      '      "nominal_impedance_ohm": 8,',
-      '      "sensitivity_db_2v83_1m": 90,',
-      '      "usable_frequency_range_hz": [80, 5000],',
-      '      "recommended_highpass_hz": 80,',
-      '      "recommended_lowpass_hz": 2200,',
-      '      "do_not_test_below_hz": 1200,',
-      '      "gain_offset_db": -6,',
-      '      "notes": "safety-relevant summary, <= 2048 chars, not a full report",',
-      '      "sources": ["https://..."]',
-      '    }',
-      '  ],',
-      '  "crossover_candidates": [',
-      '    {',
-      '      "between_roles": ["woofer", "tweeter"],',
-      '      "frequency_hz": 1800,',
-      '      "filter_type": "Linkwitz-Riley",',
-      '      "slope_db_per_octave": 24,',
-      '      "confidence": "low|medium|high",',
-      '      "rationale": "why this is a safe starting point",',
-      '      "warnings": ["short warnings"]',
-      '    }',
-      '  ],',
-      '  "human_review": {',
-      '    "must_verify_wiring": true,',
-      '    "must_start_quiet": true,',
-      '    "needs_measurement_before_final": true',
-      '  }',
-      '}'
-    ].filter(Boolean).join('\n');
+    return driverResearchPromptReady(topology)
+      ? 'Copy prepares a versioned prompt bound to the current speaker outputs and driver models.'
+      : 'Enter every driver model before preparing the target-bound research prompt.';
   }
   function summarizeDriverResearchPayload(payload) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -1500,8 +1616,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (payload.kind !== 'jts_active_crossover_driver_research') {
       throw new Error('Driver research kind must be jts_active_crossover_driver_research.');
     }
-    if (Number(payload.artifact_schema_version) !== 1) {
-      throw new Error('Driver research artifact_schema_version must be 1.');
+    var schemaVersion = Number(payload.artifact_schema_version);
+    if (schemaVersion !== 1 && schemaVersion !== 2) {
+      throw new Error('Driver research artifact_schema_version must be 1 or 2.');
     }
     var drivers = Array.isArray(payload.drivers) ? payload.drivers : [];
     var candidates = Array.isArray(payload.crossover_candidates) ? payload.crossover_candidates : [];
@@ -1520,11 +1637,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         );
       }
     });
+    if (schemaVersion === 2 && !/^[0-9a-f]{64}$/.test(String(payload.request_fingerprint || ''))) {
+      throw new Error('Version 2 driver research must echo the request fingerprint.');
+    }
     return {
+      schemaVersion: schemaVersion,
       driverCount: drivers.length,
       candidateCount: candidates.length,
       roles: drivers.map(function(driver) { return driver.role || 'unknown'; })
         .filter(function(role, index, arr) { return arr.indexOf(role) === index; }),
+      unknownCount: drivers.reduce(function(count, driver) {
+        return count + (Array.isArray(driver.unknowns) ? driver.unknowns.length : 0);
+      }, 0),
+      provenanceFieldCount: drivers.reduce(function(count, driver) {
+        return count + Object.keys(driver.field_provenance || {}).length;
+      }, 0),
       warnings: candidates.reduce(function(out, candidate) {
         return out.concat(Array.isArray(candidate.warnings) ? candidate.warnings : []);
       }, []).slice(0, 4)
@@ -1579,18 +1706,31 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     ['full_range', 'woofer', 'mid', 'tweeter', 'subwoofer', 'notes'].forEach(function(key) {
       driverResearch.inputs[key] = inputs[key] || '';
     });
+    driverResearch.inputs.target_models = Object.assign({}, inputs.target_models || {});
     driverResearch.settings = {drivers: {}, crossovers: {}};
     var manual = payload.manual_settings || {};
     (Array.isArray(manual.drivers) ? manual.drivers : []).forEach(function(driver) {
       if (!driver || !driver.role) return;
       var role = String(driver.role);
-      if (driver.model && !driverResearch.inputs[role]) {
-        driverResearch.inputs[role] = String(driver.model);
+      var targetId = String(driver.target_id || '');
+      if (!targetId) {
+        var roleTargets = driverResearchTargets(currentOutputTopology()).filter(function(item) {
+          return item.role === role;
+        });
+        if (roleTargets.length === 1) targetId = roleTargets[0].target_id;
       }
-      driverResearch.settings.drivers[role] = Object.assign(
+      if (!targetId) return;
+      if (driver.model && !driverResearch.inputs.target_models[targetId]) {
+        driverResearch.inputs.target_models[targetId] = String(driver.model);
+      }
+      driverResearch.settings.drivers[targetId] = Object.assign(
         {},
-        driverResearch.settings.drivers[role] || {},
+        driverResearch.settings.drivers[targetId] || {},
         driver
+      );
+      applyDriverSafetyToSetting(
+        driver,
+        driverResearch.settings.drivers[targetId]
       );
     });
     (Array.isArray(manual.crossover_candidates) ? manual.crossover_candidates : [])
@@ -1608,19 +1748,23 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearch.importText = JSON.stringify(payload.driver_research, null, 2);
       try {
         driverResearch.parsed = summarizeDriverResearchPayload(payload.driver_research);
+        driverResearch.importedPayload = payload.driver_research;
         driverResearch.error = '';
       } catch (e) {
         driverResearch.parsed = null;
+        driverResearch.importedPayload = null;
         driverResearch.error = e.message;
       }
     } else {
       driverResearch.importText = '';
       driverResearch.parsed = null;
+      driverResearch.importedPayload = null;
       driverResearch.error = '';
     }
     driverResearch.dirty = false;
     driverResearch.promptCopied = false;
     driverResearch.promptSelected = false;
+    driverResearch.researchRequest = payload.driver_research_request || null;
   }
   async function fetchDesignDraft() {
     var resp = await fetch('./active-speaker/design-draft', {cache: 'no-store'});
@@ -2122,6 +2266,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var savedStatus = saved.status || '';
     var topology = currentOutputTopology();
     var safetyRoles = driverSafetyNoteRoles(topology);
+    var safetyProfile = saved.driver_safety_profile || {};
+    var safetyEvaluation = saved.driver_safety_profile_evaluation || {};
+    var safetyStatus = safetyEvaluation.status || safetyProfile.status || 'missing';
+    var safetyReady = safetyEvaluation.confirmed_and_current === true;
     var savedHtml =
       '<div class="driver-research__summary driver-research__summary--saved">' +
         '<span class="status-pill' + driverResearchWorkingStatusClass(savedStatus) + '">' +
@@ -2130,6 +2278,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         (safetyRoles.length ? '<p class="setting-row__hint">' + escapeHtml(
           'Driver safety notes captured for ' + roleSentenceText(safetyRoles) + '.'
         ) + '</p>' : '') +
+        '<p class="setting-row__hint">Safety profile: ' + escapeHtml(
+          safetyReady ? 'confirmed for the current outputs' :
+            (safetyStatus === 'stale' ? 'needs confirmation after an output change' :
+              (safetyStatus === 'incomplete' ? 'add the missing limits before confirmation' :
+                'review and confirm the visible limits'))
+        ) + '.</p>' +
       '</div>';
     if (driverResearch.error) {
       return savedHtml +
@@ -2148,6 +2302,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Imported driver notes for ' + roleSentenceText(summary.roles) +
         '. Review them before updating the working setup.'
       ) + '</p>' +
+      (summary.schemaVersion === 2 ? '<p class="setting-row__hint">' + escapeHtml(
+        'Target-bound research includes ' + summary.provenanceFieldCount +
+        ' sourced field assertions and ' + summary.unknownCount + ' explicit unknowns.'
+      ) + '</p>' : '<p class="setting-row__hint">Legacy research is advisory only and cannot satisfy the confirmed safety-profile contract by itself.</p>') +
       (summary.warnings.length ? '<div class="driver-research__notes">' +
         '<p class="setting-row__title">Review notes</p>' +
         '<ul>' + summary.warnings.map(function(warning) {
@@ -2155,37 +2313,116 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         }).join('') + '</ul></div>' : '') +
     '</div>';
   }
+  function driverSafetyNumberField(targetId, setting, field, label, options) {
+    options = options || {};
+    var value = setting[field];
+    return '<label class="driver-research__field">' +
+      '<span>' + escapeHtml(label) + '</span>' +
+      '<input type="number" inputmode="decimal" data-manual-driver="' +
+        escapeHtml(targetId) + '" data-manual-field="' + escapeHtml(field) + '" value="' +
+        escapeHtml(value == null ? '' : String(value)) + '"' +
+        (options.min == null ? '' : ' min="' + escapeHtml(String(options.min)) + '"') +
+        (options.max == null ? '' : ' max="' + escapeHtml(String(options.max)) + '"') +
+        (options.step == null ? '' : ' step="' + escapeHtml(String(options.step)) + '"') +
+        ' placeholder="' + escapeHtml(options.placeholder || '') + '">' +
+      '</label>';
+  }
+  function renderDriverSafetyLimits(targetId, setting, evidence) {
+    var open = manualNumberValue(setting.hard_excitation_min_hz) != null ||
+      manualNumberValue(setting.hard_excitation_max_hz) != null;
+    var enclosure = setting.enclosure_kind || 'unknown';
+    return '<details class="advanced driver-research__advanced"' + (open ? ' open' : '') + '>' +
+      '<summary>Safety limits and cabinet</summary>' +
+      '<p class="setting-row__hint">Hard limits are never-test-beyond edges. Measurement and crossover-search ranges must sit inside them. Filter cutoff and slope are separate because a crossover still passes some energy beyond its cutoff.</p>' +
+      '<div class="driver-research__fields">' +
+        driverSafetyNumberField(targetId, setting, 'hard_excitation_min_hz', 'Never test below', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'hard_excitation_max_hz', 'Never test above', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'measurement_min_hz', 'Measure from', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'measurement_max_hz', 'Measure through', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'crossover_search_min_hz', 'Try crossovers from', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'crossover_search_max_hz', 'Try crossovers through', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'required_highpass_cutoff_hz', 'Required high-pass cutoff', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'required_highpass_min_slope_db_per_octave', 'Minimum high-pass slope', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
+        '<label class="driver-research__field"><span>High-pass family / equivalent</span>' +
+          '<input type="text" data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="required_highpass_family_or_equivalent" value="' + escapeHtml(setting.required_highpass_family_or_equivalent || '') + '" placeholder="equivalent or steeper"></label>' +
+        driverSafetyNumberField(targetId, setting, 'required_lowpass_cutoff_hz', 'Required low-pass cutoff', {min: 1, placeholder: 'Hz'}) +
+        driverSafetyNumberField(targetId, setting, 'required_lowpass_min_slope_db_per_octave', 'Minimum low-pass slope', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
+        '<label class="driver-research__field"><span>Low-pass family / equivalent</span>' +
+          '<input type="text" data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="required_lowpass_family_or_equivalent" value="' + escapeHtml(setting.required_lowpass_family_or_equivalent || '') + '" placeholder="equivalent or steeper"></label>' +
+        '<label class="driver-research__field"><span>Enclosure</span>' +
+          '<select data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="enclosure_kind">' +
+            ['unknown', 'sealed', 'vented', 'passive_radiator', 'open_baffle', 'transmission_line']
+              .map(function(value) {
+                return '<option value="' + escapeHtml(value) + '"' +
+                  (enclosure === value ? ' selected' : '') + '>' +
+                  escapeHtml(value.replace(/_/g, ' ')) + '</option>';
+              }).join('') +
+          '</select></label>' +
+        driverSafetyNumberField(targetId, setting, 'radiator_count', 'Radiator count', {min: 1, max: 16, step: 1, placeholder: '1'}) +
+        driverSafetyNumberField(targetId, setting, 'effective_radiating_diameter_mm', 'Effective radiator diameter', {min: 1, placeholder: 'mm'}) +
+        driverSafetyNumberField(targetId, setting, 'baffle_width_mm', 'Baffle width', {min: 1, placeholder: 'mm'}) +
+        driverSafetyNumberField(targetId, setting, 'max_effective_peak_dbfs', 'Profile peak ceiling', {max: 0, placeholder: 'dBFS'}) +
+        driverSafetyNumberField(targetId, setting, 'max_sweep_duration_s', 'Longest sweep', {min: 0.1, placeholder: 'seconds'}) +
+        driverSafetyNumberField(targetId, setting, 'max_repeat_count', 'Most repeats', {min: 1, max: 16, step: 1, placeholder: 'count'}) +
+        driverSafetyNumberField(targetId, setting, 'minimum_cooldown_s', 'Minimum cooldown', {min: 0, placeholder: 'seconds'}) +
+      '</div>' +
+      ((evidence && Array.isArray(evidence.unknowns) && evidence.unknowns.length) ?
+        '<p class="setting-row__hint"><strong>Explicit unknowns:</strong> ' + escapeHtml(evidence.unknowns.join('; ')) + '</p>' : '') +
+      ((evidence && evidence.field_provenance && Object.keys(evidence.field_provenance).length) ?
+        '<div class="driver-research__notes"><p class="setting-row__title">Field provenance</p><ul>' +
+          Object.keys(evidence.field_provenance).map(function(field) {
+            var item = evidence.field_provenance[field] || {};
+            return '<li>' + escapeHtml(field + ': ' + (item.basis || 'basis unknown') +
+              ' [' + (item.confidence || 'unknown') + '] ' +
+              (Array.isArray(item.sources) ? item.sources.join(', ') : '')) + '</li>';
+          }).join('') + '</ul></div>' : '') +
+      '<p class="setting-row__hint">Unknown or unsupported cabinet geometry stays explicit. JTS will refuse low-frequency reconstruction rather than infer a port or passive radiator.</p>' +
+    '</details>';
+  }
   function renderManualDriverSettings(topology) {
-    var roles = driverResearchRoles(topology);
-    return '<div class="driver-settings">' + roles.map(function(role) {
-      var setting = driverSetting(role);
+    var targets = driverResearchTargets(topology);
+    var profileTargets = ((driverResearch.designDraft || {}).driver_safety_profile || {}).targets || [];
+    var importedTargets = (driverResearch.importedPayload &&
+      Array.isArray(driverResearch.importedPayload.drivers))
+      ? driverResearch.importedPayload.drivers : [];
+    return '<p class="setting-row__hint">Make/model and safety limits are saved per physical output. Crossover candidates remain shared by driver-role pair.</p>' +
+      '<div class="driver-settings">' + targets.map(function(target) {
+      var role = target.role;
+      var targetId = target.target_id;
+      var setting = driverSetting(targetId);
+      var evidence = profileTargets.find(function(item) {
+        return item && item.target_id === targetId;
+      }) || importedTargets.find(function(item) {
+        return item && item.target_id === targetId;
+      }) || {};
       return '<div class="driver-settings__row">' +
         '<label class="driver-research__field">' +
-          '<span>' + escapeHtml(driverResearchRoleLabel(role)) + '</span>' +
-          '<input type="text" data-driver-field="' + escapeHtml(role) + '" value="' +
-            escapeHtml(driverResearch.inputs[role] || '') + '" placeholder="Manufacturer and model">' +
+          '<span>' + escapeHtml(target.group_label + ' · ' + driverResearchRoleLabel(role) + ' · ' + target.output_label) + '</span>' +
+          '<input type="text" data-driver-target="' + escapeHtml(targetId) + '" value="' +
+            escapeHtml(targetModel(target, topology)) + '" placeholder="Manufacturer and model">' +
         '</label>' +
         '<label class="driver-research__field">' +
           '<span>Sensitivity</span>' +
-          '<input type="number" inputmode="decimal" data-manual-driver="' + escapeHtml(role) + '" ' +
+          '<input type="number" inputmode="decimal" data-manual-driver="' + escapeHtml(targetId) + '" ' +
             'data-manual-field="sensitivity_db_2v83_1m" value="' +
             escapeHtml(setting.sensitivity_db_2v83_1m == null ? '' : String(setting.sensitivity_db_2v83_1m)) +
             '" placeholder="dB">' +
         '</label>' +
         '<label class="driver-research__field">' +
-          '<span>Safe low limit</span>' +
-          '<input type="number" inputmode="numeric" min="1" data-manual-driver="' + escapeHtml(role) + '" ' +
+          '<span>Legacy advisory floor (not enforced)</span>' +
+          '<input type="number" inputmode="numeric" min="1" data-manual-driver="' + escapeHtml(targetId) + '" ' +
             'data-manual-field="do_not_test_below_hz" value="' +
             escapeHtml(setting.do_not_test_below_hz == null ? '' : String(setting.do_not_test_below_hz)) +
             '" placeholder="Hz">' +
         '</label>' +
         '<label class="driver-research__field">' +
           '<span>Level trim</span>' +
-          '<input type="number" inputmode="decimal" data-manual-driver="' + escapeHtml(role) + '" ' +
+          '<input type="number" inputmode="decimal" data-manual-driver="' + escapeHtml(targetId) + '" ' +
             'data-manual-field="gain_offset_db" value="' +
             escapeHtml(setting.gain_offset_db == null ? '' : String(setting.gain_offset_db)) +
             '" placeholder="dB">' +
         '</label>' +
+        renderDriverSafetyLimits(targetId, setting, evidence) +
       '</div>';
     }).join('') + '</div>';
   }
@@ -2293,7 +2530,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<div class="driver-research__panel">' +
           '<div class="row-between active-speaker-level__head">' +
             '<div><p class="setting-row__title">Research prompt</p>' +
-              '<p class="setting-row__hint">Enter driver models first, then copy the prompt.</p></div>' +
+              '<p class="setting-row__hint">Enter driver models first, then copy the prompt. ' +
+                'Research notes are limited to 2048 characters or fewer; do not paste a full research report.</p></div>' +
             '<button type="button" class="btn btn--ghost" data-act="copy-driver-research-prompt"' +
               (promptReady ? '' : ' disabled') + '>' +
               escapeHtml(promptButtonLabel) + '</button>' +
@@ -2342,6 +2580,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<button type="button" class="btn btn--ghost" data-act="save-driver-design"' +
           (saveDisabled ? ' disabled' : '') + '>' +
           escapeHtml(driverResearch.saving ? 'Saving' : 'Save values') +
+        '</button>' +
+        '<button type="button" class="btn btn--primary" data-act="confirm-driver-safety"' +
+          (saveDisabled ? ' disabled' : '') + '>' +
+          escapeHtml(driverResearch.saving ? 'Saving' : 'Confirm safety limits') +
         '</button>' +
       '</div>' +
       '<div class="driver-research__saved-summary">' + renderDriverResearchSummary({savedOnly: true}) + '</div>' +
@@ -2627,7 +2869,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         var outputLabel = channel.human_output_label ||
           (channel.physical_output_index == null ? 'Unassigned' :
             physicalOutputLabel(topology, channel.physical_output_index));
-        var model = (driverResearch.inputs && driverResearch.inputs[channel.role]) || '';
+        var model = targetModel({
+          target_id: String(group.id || '') + ':' + String(channel.role || ''),
+          role: String(channel.role || '')
+        }, topology);
         return '<div class="speaker-stack__driver" data-role="' + escapeHtml(channel.role || '') + '">' +
           '<strong>' + escapeHtml(humanRole(channel.role)) + '</strong>' +
           '<span>' + escapeHtml(outputLabel) + '</span>' +
@@ -2750,7 +2995,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
               '</option>';
           })
         ).join('');
-        var model = (driverResearch.inputs && driverResearch.inputs[channel.role]) || '';
+        var model = targetModel({
+          target_id: String(group.id || '') + ':' + String(channel.role || ''),
+          role: String(channel.role || '')
+        }, topology);
         var hardwareLabel = (group.label || group.id) + ' · ' + humanRole(channel.role) +
           (model ? ' · ' + model : '');
         return '<div class="output-role">' +
@@ -3769,6 +4017,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'copy-driver-research-prompt') { copyDriverResearchPrompt(t); }
     else if (act === 'parse-driver-research') { parseDriverResearchImport(); }
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
+    else if (act === 'confirm-driver-safety') {
+      saveDriverResearchDraft({confirmSafetyProfile: true});
+    }
     else if (act === 'prepare-crossover-preview') { prepareCrossoverPreview(); }
     else if (act === 'mark-output-identity') { updateOutputChannelIdentity(t); }
     else if (act === 'back-to-output-map') { backToOutputConfiguration(); }
@@ -3827,11 +4078,25 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
   });
   el('view-body').addEventListener('input', function(ev) {
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-target')) {
+      var driverTarget = ev.target.getAttribute('data-driver-target');
+      if (!driverResearch.inputs.target_models) driverResearch.inputs.target_models = {};
+      driverResearch.inputs.target_models[driverTarget] = ev.target.value;
+      driverResearch.error = '';
+      driverResearch.dirty = true;
+      driverResearch.researchRequest = null;
+      driverResearch.promptCopied = false;
+      driverResearch.promptSelected = false;
+      updateDriverResearchPromptPreview();
+      updateDriverResearchPromptButton();
+      return;
+    }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-field')) {
       var driverField = ev.target.getAttribute('data-driver-field');
       driverResearch.inputs[driverField] = ev.target.value;
       driverResearch.error = '';
       driverResearch.dirty = true;
+      driverResearch.researchRequest = null;
       driverResearch.promptCopied = false;
       driverResearch.promptSelected = false;
       updateDriverResearchPromptPreview();
@@ -3842,6 +4107,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearch.importText = ev.target.value;
       driverResearch.error = '';
       driverResearch.parsed = null;
+      driverResearch.importedPayload = null;
       driverResearch.dirty = true;
       updateDriverResearchImportSummary();
       return;
@@ -4877,6 +5143,23 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Add driver models before copying the research prompt.', true);
       return;
     }
+    try {
+      var response = await fetch('./active-speaker/driver-research-request', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          operator_inputs: driverResearch.inputs,
+          manual_settings: manualSettingsPayload(currentOutputTopology())
+        })
+      });
+      var payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'research prompt preparation failed');
+      prompt.value = String(payload.prompt || '');
+      driverResearch.researchRequest = payload.request || null;
+    } catch (e) {
+      status('Could not prepare the target-bound research prompt: ' + e.message, true);
+      return;
+    }
     var copied = await copyTextToClipboard(prompt.value, prompt);
     driverResearch.promptCopied = copied;
     driverResearch.promptSelected = !copied;
@@ -4897,6 +5180,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     try {
       var payload = JSON.parse(driverResearch.importText || '');
       driverResearch.parsed = summarizeDriverResearchPayload(payload);
+      driverResearch.importedPayload = payload;
       applyDriverResearchToManualSettings(payload);
       driverResearch.error = '';
       driverResearch.dirty = true;
@@ -4905,6 +5189,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Imported driver research. Review the visible values before updating the working setup.');
     } catch (e) {
       driverResearch.parsed = null;
+      driverResearch.importedPayload = null;
       driverResearch.error = e.message;
       status('Imported JSON needs review: ' + e.message, true);
     }
@@ -4942,9 +5227,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       try {
         researchPayload = JSON.parse(driverResearch.importText);
         driverResearch.parsed = summarizeDriverResearchPayload(researchPayload);
+        driverResearch.importedPayload = researchPayload;
+        if (driverResearch.parsed.schemaVersion === 2 &&
+            !driverResearch.researchRequest) {
+          researchPayload = null;
+          importWarning = 'Target-bound research was invalidated by a visible edit.';
+        }
         driverResearch.error = '';
       } catch (e) {
         driverResearch.parsed = null;
+        driverResearch.importedPayload = null;
         researchPayload = null;
         importWarning = e.message;
         driverResearch.error = manualPayload
@@ -4967,16 +5259,29 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         body: JSON.stringify({
           operator_inputs: driverResearch.inputs,
           manual_settings: manualPayload,
-          driver_research: researchPayload
+          driver_research_request: driverResearch.researchRequest,
+          driver_research: researchPayload,
+          confirm_safety_profile: options.confirmSafetyProfile === true,
+          expected_revision: Number((driverResearch.designDraft || {}).revision || 0)
         })
       });
       var payload = await resp.json();
+      if (resp.status === 409) {
+        ingestDesignDraft(payload, {force: true});
+        driverResearch.error = payload.error ||
+          'Speaker design changed in another tab. Review the refreshed values.';
+        status(driverResearch.error, true);
+        render();
+        return false;
+      }
       if (!resp.ok) throw new Error(payload.error || 'speaker design draft save failed');
       ingestDesignDraft(payload, {force: true});
       crossoverPreview.payload = null;
       crossoverPreview.error = '';
       if (options.nextStep) outputStepOverride = options.nextStep;
-      if (!options.forPreview) {
+      if (options.confirmSafetyProfile) {
+        status('Safety limits confirmed for the current physical outputs. This still does not authorize sound.');
+      } else if (!options.forPreview) {
         status(importWarning
           ? 'Working setup updated from visible fields. Imported JSON was not saved.'
           : 'Working setup updated. No filters are active and no sound was played.');
