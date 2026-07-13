@@ -467,6 +467,160 @@ as SNR:
   reduced-confidence or refused with "the room prevented a low-frequency
   decision here", never silently emitted.
 
+#### Low-frequency reconstruction contract: sealed single radiator v1
+
+The first reconstruction success path is deliberately narrower than the
+ordinary `near_field` capture label. That label and its placement proof are
+useful for repeat identity and level diagnostics, but they attest an operator
+instruction rather than a measured microphone distance. They are not by
+themselves reconstruction evidence.
+
+`sealed_single_radiator_v1` is the only admitted cabinet model. It requires all
+of the following immutable, positive geometry:
+
+- `enclosure_kind = sealed` and `radiator_count = 1`, with no port, passive
+  radiator, coupled second cone, or other acoustic source;
+- effective circular radiating diameter `D`, front-baffle width `w`, and
+  front-baffle height `h`, all in millimetres;
+- a near-field microphone distance `r_nf`, measured from the diaphragm/dust-cap
+  centre to the microphone capsule; and
+- a reference-axis distance `r_ff`, measured from the baffle plane to the
+  microphone capsule, and a known reflection-free validity floor, using the
+  same microphone/calibration identity and immutable applied crossover as the
+  near-field capture.
+
+The frozen version-1 safety profile remains the authority for enclosure kind,
+source count, effective diameter, and baffle width; it is not silently extended
+with baffle height. Height lives in a separately versioned, operator-confirmed
+`jts_active_speaker_reconstruction_geometry` artifact bound to the exact target
+id/fingerprint, topology fingerprint, and confirmed safety-profile
+fingerprint. Both distances live in immutable
+`jts_active_speaker_reconstruction_placement_proof` artifacts bound to their
+exact capture identity and the same context. They are numeric ruler
+measurements entered by the operator, not sensor claims. The current
+operator-attestation placement proof and its nominal 3 cm instruction cannot
+be reinterpreted or upgraded into either artifact.
+
+The model uses `a = D/2`, metres for the equations below, and `c = 343 m/s`.
+The near-field sample is valid only when `0 < r_nf < a/20`; the far-field
+sample is valid only when `r_ff > 6a`; and reconstructed near-field bins stop
+at `ka = 2πfa/c <= 0.8`. The distance rules follow the conservative ARTA
+free-field reconstruction procedure; the `ka <= 0.8` product threshold keeps
+a 20% margin inside Keele's low-frequency piston condition `ka < 1`. An
+operator acknowledgement without the persisted numeric ruler value, a nominal
+instruction, a driver model's frame diameter, or an inferred phone dimension
+never substitutes for a measurement.
+
+The selected cabinet correction is ARTA's rectangular-baffle low-frequency
+diffraction approximation. Define the square-equivalent baffle dimension
+
+`d_eq = w (h/w)^(1/3)`
+
+and `f0 = 34.16/d_eq` with metres and hertz. Convert the half-space near-field
+response to an on-axis full-space magnitude estimate with
+
+`B_db(f) = 20 log10 |(1 + j f/f0) / (2 + j f/f0)|`.
+
+This is a broad 4π-to-2π baffle-step model: its magnitude approaches -6 dB at
+low frequency and 0 dB at high frequency. It is not an edge-diffraction-ripple,
+off-axis, directivity, or arbitrary-box simulator. No fitted frequency-shaped
+correction may be learned from the overlap. A different enclosure/source shape
+needs its own reviewed reconstruction contract rather than a permissive flag.
+The spliced product is magnitude evidence only. It cannot supply relative
+phase, polarity, delay-walk, reverse-null, or shared-clock evidence; those stay
+separate prerequisites for candidate evaluation. Do not synthesize the model's
+complex phase. The later scalar overlap alignment subsumes absolute
+near-to-far distance scaling. The ARTA approximation is admitted only in its
+stated source-size domain, `1/40 <= (a/d_eq)^2 <= 1/10`.
+
+Splicing is deterministic and fail closed:
+
+1. Let `L` be the greatest of `1.25 * f_valid_floor` and both responses' lower
+   support bounds. Let `U` be the least of the near-field `ka = 0.8` limit and
+   both responses' upper support bounds. Refuse unless `U/L >= 2`.
+2. Select exactly one octave: `f_lo = min(max(f0, L), U/2)`, `f_hi = 2 f_lo`.
+   Refuse unless its overlap with the model transition `[f0, 2f0]` spans at
+   least 1/12 octave:
+   `log2(min(f_hi, 2f0) / max(f_lo, f0)) >= 1/12`. Resample both calibrated
+   responses at exactly the 13 points
+   `f_i = f_lo * 2^(i/12)`, for integer `i` from 0 through 12. Missing or
+   non-finite coverage is not extrapolated.
+3. Add `B_db` to the near-field level, then align it to the far-field
+   response with exactly one scalar: the median far-field-minus-corrected-
+   near-field level over the overlap. Do not peak-normalize either response.
+4. After scalar alignment, refuse unless the overlap residual has RMS no more
+   than 1.5 dB, maximum absolute error no more than 3.0 dB, and absolute
+   ordinary-least-squares slope against `log2(f)` no more than 1.5 dB/octave.
+   These are admission thresholds, not optimizer penalties. Both captures must
+   also carry affirmative admission/quality verdicts and at least 25 dB
+   magnitude-decision SNR throughout the selected octave.
+5. Blend level in dB across the complete overlap with
+   `x = log(f/f_lo) / log(f_hi/f_lo)` and
+   `w(x) = (1 - cos(πx))/2`: corrected near field has weight `1-w`, gated far
+   field has weight `w`. Below the overlap use corrected near field; above it
+   use gated far field. Preserve the source identities, scalar offset, model
+   version, bounds, residuals, and thresholds in the replay result.
+
+A successful reconstruction serializes these labels exactly:
+
+- `model_id = sealed_single_radiator_v1`;
+- `response_domain = magnitude_db_only`;
+- `amplitude_reference = played_excitation_normalized`;
+- `peak_normalized = false`;
+- `active_electrical_crossover_included = true`;
+- `natural_driver_plant_isolated = false`;
+- `phase_available = false`;
+- `authority = admitted`; and
+- `threshold_set_id = sealed_single_radiator_v1`.
+
+The result fingerprint covers those labels plus the numeric thresholds and
+input identities. `authority = admitted` is limited to the reconstructed
+magnitude evidence and does not confer candidate, apply, verification, receipt,
+or playback authority.
+
+The reconstruction capability exposes stable typed refusal slugs:
+
+- `reconstruction_profile_unconfirmed`, `reconstruction_profile_stale`,
+  `reconstruction_target_mismatch`, `reconstruction_topology_mismatch`,
+  `reconstruction_geometry_binding_mismatch`,
+  `reconstruction_placement_binding_mismatch`,
+  `reconstruction_applied_crossover_mismatch`, and
+  `reconstruction_calibration_mismatch`;
+- `reconstruction_capture_not_admitted`,
+  `reconstruction_capture_quality_refused`, and
+  `reconstruction_capture_snr_insufficient`;
+- `reconstruction_enclosure_unsupported`,
+  `reconstruction_source_count_unsupported`, `reconstruction_geometry_missing`,
+  and `reconstruction_geometry_model_domain_unsupported`;
+- `reconstruction_near_field_distance_missing`,
+  `reconstruction_near_field_distance_out_of_range`,
+  `reconstruction_far_field_distance_missing`, and
+  `reconstruction_far_field_distance_out_of_range`;
+- `reconstruction_far_field_validity_floor_unknown`,
+  `reconstruction_overlap_missing`, `reconstruction_overlap_too_narrow`,
+  `reconstruction_overlap_transition_uncovered`, and
+  `reconstruction_overlap_non_finite`;
+- `reconstruction_overlap_rms_exceeded`,
+  `reconstruction_overlap_peak_exceeded`,
+  `reconstruction_overlap_slope_exceeded`, and
+  `reconstruction_decision_band_uncovered`.
+
+A candidate decision that needs reconstructed lower-driver data must have
+continuous admitted coverage across its complete `[Fc/2, 2Fc]` scoring band.
+A refusal never falls back to an uncorrected near-field curve.
+
+Wave 2's historical B2b captures are permanently non-admitted legacy
+replay/debugging evidence. A strict replay may replay the exact current applied
+winner from its immutable WAV, excitation, calibration snapshot,
+placement proof, and applied crossover, normalizing only the declared scalar
+playback gain. That replay must say `authoritative = false`, must not synthesize
+the missing measured-distance or admission evidence, and cannot authorize a
+splice, candidate, apply, verification, or eligibility receipt. Synthetic
+fully admitted fixtures may exercise a pure candidate evaluator, but they do
+not change current product readiness: until real captures satisfy every gate,
+`ready = false`, no automatic candidate is persisted, and the UI does not
+offer **Replace with measured crossover**.
+
 Single-position capture also cannot observe vertical lobing: off-axis and
 directivity behavior are outside the single-position tier's evidence (First
 principles item 7 applies only where the measurement tier can observe it).
@@ -1099,6 +1253,9 @@ multi-position room-measurement guidance:
 - [Rane Note 160: Linkwitz–Riley crossovers and lobing error](https://www.ranecommercial.com/legacy/note160.html)
 - [KLIPPEL: transfer-function measurement](https://www.klippel.de/manuals/frequencyresponse-distortion/trf/trf.html)
 - [KLIPPEL: loudspeaker directivity measurement](https://klippel.de/training/attachments/training8/Training_8_Measurement_of_Loudspeaker_Directivity_en.pdf)
+- [D. B. Keele Jr.: Low-Frequency Loudspeaker Assessment by Nearfield
+  Sound-Pressure Measurement](https://pearl-hifi.com/06_Lit_Archive/14_Books_Tech_Papers/Keele_D_B/LF_Near-field_Measurement.pdf)
+- [ARTA Application Note 4: Loudspeaker Free-Field Response](https://www.artalabs.hr/AppNotes/AN4-FreeField-Rev03eng.pdf)
 - [REW: making measurements](https://www.roomeqwizard.com/help/help_en-GB/html/makingmeasurements.html)
 - [Dirac Live technical overview](https://www.dirac.com/wp-content/uploads/2024/06/Dirac-Live-a-technical-overview-white-paper.pdf)
 
@@ -1112,6 +1269,6 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-13 (Wave 1 contract-only foundation checked against the
-worktree; no live audio, DSP mutation, Room-gate behavior, or hardware behavior
-was changed or revalidated.)
+Last verified: 2026-07-13 (Wave 2 reconstruction contract checked against the
+worktree and cited measurement literature; no live audio, DSP mutation,
+Room-gate behavior, or hardware behavior was changed or revalidated.)
