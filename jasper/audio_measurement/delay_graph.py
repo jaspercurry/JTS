@@ -2,18 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pure live-graph proof for one null-walk delay candidate.
+"""Pure Camilla graph-content proof for one null-walk delay candidate.
 
-The shared null-walk chooses clock-exact candidate coordinates, but its two
-hosts own CamillaDSP mutation and read-back.  This module is the narrow safety
-boundary between those layers: it freezes the exact predecessor graph and
-proves that a live read-back is that graph with only the requested, bound
-``Delay.parameters.delay`` value changed.
+The shared null-walk chooses bounded candidate coordinates. Its active-speaker
+and bass-management hosts own the writer lock, apply, fresh ``active_raw``
+read-back, capture, evidence/run identity, and exact restore transaction. This
+module only proves content: a supplied graph is the bound zero-relative
+predecessor with exactly one requested lane delay changed.
 
-It performs no I/O and does not schedule a walk. Active-crossover and bass-
-management hosts parse CamillaDSP's ``active_raw`` YAML, pass the resulting
-mapping here, and retain ownership of apply, capture, restore, and writer-lock
-lifecycle.
+It performs no I/O, establishes no freshness or live authority, and does not
+schedule or consume a walk. A host can therefore use the same typed proof at
+either integration boundary without moving CamillaDSP ownership into the
+measurement core.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ DelayGraphFailureCode: TypeAlias = Literal[
     "candidate_invalid",
     "readback_invalid",
     "volume_limit_invalid",
-    "positive_gain_refused",
+    "lane_binding_invalid",
     "delay_filter_invalid",
     "delay_mismatch",
     "graph_mismatch",
@@ -51,7 +51,7 @@ DelayGraphFailureCode: TypeAlias = Literal[
 
 
 class DelayGraphProofError(NullWalkError):
-    """A typed fail-closed candidate/read-back refusal."""
+    """A typed fail-closed graph-content refusal."""
 
     def __init__(self, code: DelayGraphFailureCode, message: str) -> None:
         super().__init__(message)
@@ -62,15 +62,10 @@ def _refuse(code: DelayGraphFailureCode, message: str) -> NoReturn:
     raise DelayGraphProofError(code, message)
 
 
-def _finite_number(
-    value: Any, *, code: DelayGraphFailureCode, field_name: str
-) -> float:
-    if isinstance(value, bool):
-        _refuse(code, f"{field_name} must be numeric")
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        _refuse(code, f"{field_name} must be numeric")
+def _real_number(value: Any, *, code: DelayGraphFailureCode, field_name: str) -> float:
+    if type(value) not in {int, float}:
+        _refuse(code, f"{field_name} must be a real JSON number")
+    out = float(value)
     if not math.isfinite(out):
         _refuse(code, f"{field_name} must be finite")
     return out
@@ -83,7 +78,7 @@ def _scope(value: Any, *, code: DelayGraphFailureCode) -> DelayWalkScope:
 
 
 def _topology_id(value: Any, *, code: DelayGraphFailureCode) -> str:
-    out = str(value).strip() if isinstance(value, str) else ""
+    out = value.strip() if isinstance(value, str) else ""
     if not out:
         _refuse(code, "topology_id must be a non-empty string")
     return out
@@ -111,6 +106,20 @@ def _graph_fingerprint(graph: Mapping[str, Any]) -> str:
     return DspPredecessor({"graph": graph}).fingerprint
 
 
+def _require_volume_limit(
+    graph: Mapping[str, Any], *, code: DelayGraphFailureCode
+) -> None:
+    devices = graph.get("devices")
+    limit = devices.get("volume_limit") if isinstance(devices, Mapping) else None
+    limit_db = _real_number(
+        limit,
+        code=code,
+        field_name="devices.volume_limit",
+    )
+    if limit_db > 0.0:
+        _refuse(code, "devices.volume_limit must not exceed the 0 dB JTS ceiling")
+
+
 def _delay_filter_value(
     graph: Mapping[str, Any],
     filter_name: str,
@@ -122,9 +131,9 @@ def _delay_filter_value(
     if not isinstance(spec, Mapping) or spec.get("type") != "Delay":
         _refuse(code, f"bound filter {filter_name!r} is not a Delay filter")
     params = spec.get("parameters")
-    if not isinstance(params, Mapping) or str(params.get("unit") or "") != "ms":
+    if not isinstance(params, Mapping) or params.get("unit") != "ms":
         _refuse(code, f"bound filter {filter_name!r} must use milliseconds")
-    delay_ms = _finite_number(
+    delay_ms = _real_number(
         params.get("delay"),
         code=code,
         field_name=f"{filter_name}.parameters.delay",
@@ -134,92 +143,164 @@ def _delay_filter_value(
     return delay_ms
 
 
-def _require_graph_safety(
-    graph: Mapping[str, Any],
-    *,
-    invalid_code: DelayGraphFailureCode,
-) -> None:
-    devices = graph.get("devices")
-    limit = devices.get("volume_limit") if isinstance(devices, Mapping) else None
-    limit_db = _finite_number(
-        limit,
-        code="volume_limit_invalid",
-        field_name="devices.volume_limit",
-    )
-    if limit_db > 0.0:
-        _refuse(
-            "volume_limit_invalid",
-            "devices.volume_limit must not exceed the 0 dB JTS ceiling",
-        )
+@dataclass(frozen=True)
+class DelayLaneBinding:
+    """Host-owned target mapped to one graph-proven Camilla filter lane.
 
-    filters = graph.get("filters")
-    if not isinstance(filters, Mapping):
-        _refuse(invalid_code, "CamillaDSP graph has no filters mapping")
-    for name, raw_spec in filters.items():
-        if not isinstance(raw_spec, Mapping):
-            continue
-        params = raw_spec.get("parameters")
-        if not isinstance(params, Mapping) or "gain" not in params:
-            continue
-        gain_db = _finite_number(
-            params.get("gain"),
-            code="positive_gain_refused",
-            field_name=f"filters.{name}.parameters.gain",
+    ``identity_filter_name`` is a non-delay filter from the target's canonical
+    emitter-owned chain.  The owning host derives that name from its emitter
+    vocabulary and ``channel`` from its topology; the shared proof only checks
+    that the identity and delay filters occupy the same exact pipeline lane.
+    """
+
+    target: str
+    filter_name: str
+    identity_filter_name: str
+    channel: int
+
+    def __post_init__(self) -> None:
+        target = self.target.strip().lower() if isinstance(self.target, str) else ""
+        filter_name = (
+            self.filter_name.strip() if isinstance(self.filter_name, str) else ""
         )
-        if gain_db > 0.0:
+        identity_filter_name = (
+            self.identity_filter_name.strip()
+            if isinstance(self.identity_filter_name, str)
+            else ""
+        )
+        if not target or not filter_name or not identity_filter_name:
             _refuse(
-                "positive_gain_refused",
-                "delay audition graph contains a positive filter gain",
+                "lane_binding_invalid",
+                "delay lane target, delay filter, and identity filter must be "
+                "non-empty strings",
             )
+        if filter_name == identity_filter_name:
+            _refuse(
+                "lane_binding_invalid",
+                "delay lane identity filter must differ from its Delay filter",
+            )
+        if type(self.channel) is not int or self.channel < 0:
+            _refuse(
+                "lane_binding_invalid",
+                "delay lane channel must be a non-negative integer",
+            )
+        object.__setattr__(self, "target", target)
+        object.__setattr__(self, "filter_name", filter_name)
+        object.__setattr__(self, "identity_filter_name", identity_filter_name)
 
-    mixers = graph.get("mixers")
-    if not isinstance(mixers, Mapping):
-        return
-    for mixer_name, raw_mixer in mixers.items():
-        if not isinstance(raw_mixer, Mapping):
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target": self.target,
+            "filter_name": self.filter_name,
+            "identity_filter_name": self.identity_filter_name,
+            "channel": self.channel,
+        }
+
+
+def _pipeline_filter_occurrence(
+    graph: Mapping[str, Any],
+    filter_name: str,
+    *,
+    code: DelayGraphFailureCode,
+) -> tuple[int, int]:
+    pipeline = graph.get("pipeline")
+    if not isinstance(pipeline, list):
+        _refuse(code, "CamillaDSP graph has no pipeline list")
+
+    occurrences: list[tuple[int, int]] = []
+    for step_index, step in enumerate(pipeline):
+        if not isinstance(step, Mapping) or step.get("type") != "Filter":
             continue
-        mapping = raw_mixer.get("mapping")
-        if not isinstance(mapping, list):
+        names = step.get("names")
+        if not isinstance(names, list):
             continue
-        for destination in mapping:
-            if not isinstance(destination, Mapping):
-                continue
-            sources = destination.get("sources")
-            if not isinstance(sources, list):
-                continue
-            for source in sources:
-                if not isinstance(source, Mapping) or "gain" not in source:
-                    continue
-                gain_db = _finite_number(
-                    source.get("gain"),
-                    code="positive_gain_refused",
-                    field_name=f"mixers.{mixer_name}.mapping.sources.gain",
-                )
-                if gain_db > 0.0:
-                    _refuse(
-                        "positive_gain_refused",
-                        "delay audition graph contains a positive mixer gain",
-                    )
+        name_count = sum(name == filter_name for name in names)
+        if not name_count:
+            continue
+        channels = step.get("channels")
+        if not isinstance(channels, list) or not channels:
+            _refuse(code, f"bound filter {filter_name!r} has no channel lane")
+        for channel in channels:
+            if type(channel) is not int or channel < 0:
+                _refuse(code, "bound delay pipeline channel is invalid")
+            occurrences.extend((step_index, channel) for _ in range(name_count))
+
+    if len(occurrences) != 1:
+        _refuse(
+            code,
+            f"bound filter {filter_name!r} must occur on exactly one lane",
+        )
+    return occurrences[0]
+
+
+def _lane_proof(
+    graph: Mapping[str, Any],
+    binding: DelayLaneBinding,
+    *,
+    code: DelayGraphFailureCode,
+) -> dict[str, Any]:
+    _delay_filter_value(graph, binding.filter_name, code="delay_filter_invalid")
+    filters = graph.get("filters")
+    identity_spec = (
+        filters.get(binding.identity_filter_name)
+        if isinstance(filters, Mapping)
+        else None
+    )
+    identity_type = (
+        identity_spec.get("type") if isinstance(identity_spec, Mapping) else None
+    )
+    if (
+        not isinstance(identity_type, str)
+        or not identity_type.strip()
+        or identity_type == "Delay"
+    ):
+        _refuse(
+            code,
+            f"bound identity filter {binding.identity_filter_name!r} is not a "
+            "non-Delay filter",
+        )
+    delay_occurrence = _pipeline_filter_occurrence(
+        graph,
+        binding.filter_name,
+        code=code,
+    )
+    identity_occurrence = _pipeline_filter_occurrence(
+        graph,
+        binding.identity_filter_name,
+        code=code,
+    )
+    if delay_occurrence != identity_occurrence:
+        _refuse(
+            code,
+            f"bound delay filter {binding.filter_name!r} does not share the "
+            f"authoritative target lane with {binding.identity_filter_name!r}",
+        )
+    step_index, channel = delay_occurrence
+    if channel != binding.channel:
+        _refuse(
+            code,
+            f"bound filter {binding.filter_name!r} is on the wrong channel lane",
+        )
+    return {
+        **binding.to_dict(),
+        "pipeline_step_index": step_index,
+    }
 
 
 @dataclass(frozen=True, init=False)
 class DelayGraphSnapshot:
-    """F1 predecessor plus the one delay field a host may mutate.
+    """Zero-relative F1 predecessor plus two graph-proven delay lanes.
 
-    ``predecessor`` is the exact :class:`DspPredecessor` the null-walk runner
-    will later restore. Its frozen state must carry CamillaDSP's parsed,
-    normalized live graph under ``active_raw``; other host-owned restore data
-    (for example the durable config path) remains opaque and participates in
-    the same predecessor fingerprint.
+    The host stages both bound delay slots to numeric zero inside its outer
+    exact-restore transaction, reads back that graph, and freezes the same
+    :class:`DspPredecessor` the F1 runner will later restore.
     """
 
     scope: DelayWalkScope
     topology_id: str
     crossover_fc_hz: float
-    positive_delay_target: str
-    negative_delay_target: str
-    positive_delay_filter: str
-    negative_delay_filter: str
+    positive_lane: DelayLaneBinding
+    negative_lane: DelayLaneBinding
     _spec: NullWalkSpec = field(repr=False)
     _predecessor: DspPredecessor = field(repr=False)
     fingerprint: str
@@ -232,62 +313,98 @@ class DelayGraphSnapshot:
         *,
         scope: DelayWalkScope,
         topology_id: str,
-        positive_delay_filter: str,
-        negative_delay_filter: str,
+        positive_lane: DelayLaneBinding,
+        negative_lane: DelayLaneBinding,
         predecessor: DspPredecessor,
     ) -> None:
         if not isinstance(spec, NullWalkSpec):
             _refuse("snapshot_invalid", "spec must be NullWalkSpec")
         validated_scope = _scope(scope, code="snapshot_invalid")
         topology = _topology_id(topology_id, code="snapshot_invalid")
-        fc = spec.crossover_fc_hz
-        positive_target = spec.positive_delay_target
-        negative_target = spec.negative_delay_target
-        positive_filter = str(positive_delay_filter).strip()
-        negative_filter = str(negative_delay_filter).strip()
-        if (
-            not positive_target
-            or not negative_target
-            or positive_target == negative_target
+        if not isinstance(positive_lane, DelayLaneBinding) or not isinstance(
+            negative_lane, DelayLaneBinding
         ):
-            _refuse("snapshot_invalid", "delay targets must be non-empty and distinct")
-        if (
-            not positive_filter
-            or not negative_filter
-            or positive_filter == negative_filter
-        ):
-            _refuse("snapshot_invalid", "delay filters must be non-empty and distinct")
-
+            _refuse("lane_binding_invalid", "both delay lanes must be typed bindings")
+        if positive_lane.target != spec.positive_delay_target:
+            _refuse("lane_binding_invalid", "positive delay target binding is unknown")
+        if negative_lane.target != spec.negative_delay_target:
+            _refuse("lane_binding_invalid", "negative delay target binding is unknown")
+        if positive_lane.filter_name == negative_lane.filter_name:
+            _refuse("lane_binding_invalid", "delay lanes cannot share one filter")
+        if positive_lane.identity_filter_name == negative_lane.identity_filter_name:
+            _refuse(
+                "lane_binding_invalid",
+                "delay lanes cannot share one identity filter",
+            )
+        if {
+            positive_lane.filter_name,
+            negative_lane.filter_name,
+        } & {
+            positive_lane.identity_filter_name,
+            negative_lane.identity_filter_name,
+        }:
+            _refuse(
+                "lane_binding_invalid",
+                "delay and identity filter bindings must be distinct",
+            )
+        if positive_lane.channel == negative_lane.channel:
+            _refuse(
+                "lane_binding_invalid", "delay targets cannot share one channel lane"
+            )
         if not isinstance(predecessor, DspPredecessor):
             _refuse("snapshot_invalid", "predecessor must be DspPredecessor")
-        predecessor_state = predecessor.state
+
         frozen_graph = _frozen_json_mapping(
-            predecessor_state.get("active_raw"),
+            predecessor.state.get("active_raw"),
             code="snapshot_invalid",
             field_name="predecessor active_raw graph",
         )
-        _require_graph_safety(frozen_graph, invalid_code="snapshot_invalid")
-        _delay_filter_value(frozen_graph, positive_filter, code="delay_filter_invalid")
-        _delay_filter_value(frozen_graph, negative_filter, code="delay_filter_invalid")
+        _require_volume_limit(frozen_graph, code="volume_limit_invalid")
+        positive_proof = _lane_proof(
+            frozen_graph,
+            positive_lane,
+            code="lane_binding_invalid",
+        )
+        negative_proof = _lane_proof(
+            frozen_graph,
+            negative_lane,
+            code="lane_binding_invalid",
+        )
+        if (
+            _delay_filter_value(
+                frozen_graph,
+                positive_lane.filter_name,
+                code="delay_filter_invalid",
+            )
+            != 0.0
+            or _delay_filter_value(
+                frozen_graph,
+                negative_lane.filter_name,
+                code="delay_filter_invalid",
+            )
+            != 0.0
+        ):
+            _refuse(
+                "snapshot_invalid",
+                "zero-relative predecessor requires both bound delays at 0.0 ms",
+            )
+
         binding = DspPredecessor(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "kind": "jts_delay_graph_snapshot_binding",
                 "predecessor_fingerprint": predecessor.fingerprint,
                 "scope": validated_scope,
                 "topology_id": topology,
                 "spec": spec.to_dict(),
-                "positive_delay_filter": positive_filter,
-                "negative_delay_filter": negative_filter,
+                "lane_proofs": [positive_proof, negative_proof],
             }
         )
         object.__setattr__(self, "scope", validated_scope)
         object.__setattr__(self, "topology_id", topology)
-        object.__setattr__(self, "crossover_fc_hz", fc)
-        object.__setattr__(self, "positive_delay_target", positive_target)
-        object.__setattr__(self, "negative_delay_target", negative_target)
-        object.__setattr__(self, "positive_delay_filter", positive_filter)
-        object.__setattr__(self, "negative_delay_filter", negative_filter)
+        object.__setattr__(self, "crossover_fc_hz", spec.crossover_fc_hz)
+        object.__setattr__(self, "positive_lane", positive_lane)
+        object.__setattr__(self, "negative_lane", negative_lane)
         object.__setattr__(self, "_spec", spec)
         object.__setattr__(self, "_predecessor", predecessor)
         object.__setattr__(self, "fingerprint", binding.fingerprint)
@@ -303,7 +420,7 @@ class DelayGraphSnapshot:
 
 @dataclass(frozen=True)
 class DelayCandidateConfirmation:
-    """Proof that the live graph is one exact, context-bound delay candidate."""
+    """Content proof for one context-bound zero-relative candidate graph."""
 
     scope: DelayWalkScope
     topology_id: str
@@ -314,6 +431,7 @@ class DelayCandidateConfirmation:
     candidate_fingerprint: str
     readback_graph_fingerprint: str
     relative_delay_us: float
+    readback_relative_delay_us: float
     delay_target: str | None
     delay_filter: str | None
     delay_us: float
@@ -321,7 +439,7 @@ class DelayCandidateConfirmation:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "scope": self.scope,
             "topology_id": self.topology_id,
             "crossover_fc_hz": self.crossover_fc_hz,
@@ -331,6 +449,7 @@ class DelayCandidateConfirmation:
             "candidate_fingerprint": self.candidate_fingerprint,
             "readback_graph_fingerprint": self.readback_graph_fingerprint,
             "relative_delay_us": self.relative_delay_us,
+            "readback_relative_delay_us": self.readback_relative_delay_us,
             "delay_target": self.delay_target,
             "delay_filter": self.delay_filter,
             "delay_us": self.delay_us,
@@ -338,16 +457,16 @@ class DelayCandidateConfirmation:
         }
 
 
-def _candidate_filter(
+def _candidate_lane(
     snapshot: DelayGraphSnapshot,
     candidate: DelayCandidate,
-) -> str | None:
-    relative = _finite_number(
+) -> DelayLaneBinding | None:
+    relative = _real_number(
         candidate.relative_delay_us,
         code="candidate_invalid",
         field_name="relative_delay_us",
     )
-    delay_us = _finite_number(
+    delay_us = _real_number(
         candidate.delay_us,
         code="candidate_invalid",
         field_name="delay_us",
@@ -365,22 +484,15 @@ def _candidate_filter(
             "candidate_invalid",
             "candidate is outside the bound null-walk grid",
         ) from exc
-    if (
-        candidate.positive_delay_target != bounded.positive_delay_target
-        or candidate.negative_delay_target != bounded.negative_delay_target
-        or candidate.delay_target != bounded.delay_target
-        or not math.isclose(delay_us, bounded.delay_us, abs_tol=1e-6)
-    ):
+    if candidate != bounded:
         _refuse(
             "candidate_invalid", "candidate does not match the bound walk operation"
         )
-    if bounded.delay_target == snapshot.positive_delay_target:
-        delay_filter = snapshot.positive_delay_filter
-    elif bounded.delay_target == snapshot.negative_delay_target:
-        delay_filter = snapshot.negative_delay_filter
-    else:
-        delay_filter = None
-    return delay_filter
+    if bounded.delay_target == snapshot.positive_lane.target:
+        return snapshot.positive_lane
+    if bounded.delay_target == snapshot.negative_lane.target:
+        return snapshot.negative_lane
+    return None
 
 
 def confirm_delay_candidate(
@@ -393,12 +505,12 @@ def confirm_delay_candidate(
     expected_topology_id: str,
     expected_crossover_fc_hz: float,
 ) -> DelayCandidateConfirmation:
-    """Prove one live read-back is the exact requested delay-only graph.
+    """Prove supplied graph content is the exact requested delay audition.
 
-    The expected context arguments are the host's current request binding, not
-    values inferred from the graph. They prevent a valid-looking read-back from
-    being admitted for a stale topology, crossover region, scope, or entry DSP
-    state. Every refusal occurs before a host may capture null evidence.
+    Expected context values bind the proof content to the host request. They do
+    not prove the read-back is fresh, came from a live CamillaDSP instance, or
+    belongs to the current writer transaction; the F2b host must establish
+    those authorities before accepting this value as measurement evidence.
     """
 
     if not isinstance(snapshot, DelayGraphSnapshot):
@@ -406,7 +518,7 @@ def confirm_delay_candidate(
     if expected_snapshot_fingerprint != snapshot.fingerprint:
         _refuse(
             "snapshot_fingerprint_mismatch",
-            "delay candidate is not bound to the current graph snapshot",
+            "delay candidate is not bound to the graph snapshot",
         )
     scope = _scope(expected_scope, code="scope_mismatch")
     if scope != snapshot.scope:
@@ -414,89 +526,98 @@ def confirm_delay_candidate(
     topology = _topology_id(expected_topology_id, code="topology_mismatch")
     if topology != snapshot.topology_id:
         _refuse("topology_mismatch", "delay candidate belongs to a stale topology")
-    fc = _finite_number(
+    fc = _real_number(
         expected_crossover_fc_hz,
         code="crossover_mismatch",
         field_name="expected_crossover_fc_hz",
     )
     if fc != snapshot.crossover_fc_hz:
         _refuse("crossover_mismatch", "delay candidate belongs to another crossover")
-    fc = snapshot.crossover_fc_hz
     if not isinstance(candidate, DelayCandidate):
         _refuse("candidate_invalid", "candidate must be DelayCandidate")
-    delay_filter = _candidate_filter(snapshot, candidate)
+    lane = _candidate_lane(snapshot, candidate)
 
     readback = _frozen_json_mapping(
         readback_graph,
         code="readback_invalid",
-        field_name="live DSP read-back",
+        field_name="DSP graph read-back",
     )
-    _require_graph_safety(readback, invalid_code="readback_invalid")
-    _delay_filter_value(
+    _require_volume_limit(readback, code="volume_limit_invalid")
+    _lane_proof(readback, snapshot.positive_lane, code="lane_binding_invalid")
+    _lane_proof(readback, snapshot.negative_lane, code="lane_binding_invalid")
+    positive_ms = _delay_filter_value(
         readback,
-        snapshot.positive_delay_filter,
+        snapshot.positive_lane.filter_name,
         code="delay_filter_invalid",
     )
-    _delay_filter_value(
+    negative_ms = _delay_filter_value(
         readback,
-        snapshot.negative_delay_filter,
+        snapshot.negative_lane.filter_name,
         code="delay_filter_invalid",
     )
 
-    expected = snapshot.graph
-    expected_delay_ms = float(fmt(candidate.delay_us / 1000.0))
-    if delay_filter is not None:
-        filters = expected["filters"]
-        assert isinstance(filters, dict)
-        filter_spec = filters[delay_filter]
-        assert isinstance(filter_spec, dict)
-        params = filter_spec["parameters"]
-        assert isinstance(params, dict)
-        params["delay"] = expected_delay_ms
-
-    actual_delay_ms = (
-        _delay_filter_value(readback, delay_filter, code="delay_filter_invalid")
-        if delay_filter is not None
+    effective_delay_ms = float(fmt(candidate.delay_us / 1000.0))
+    requested_relative_us = (
+        math.copysign(
+            effective_delay_ms * 1000.0,
+            candidate.relative_delay_us,
+        )
+        if candidate.relative_delay_us
         else 0.0
     )
-    if delay_filter is not None and not math.isclose(
-        actual_delay_ms,
-        expected_delay_ms,
+    readback_relative_us = (positive_ms - negative_ms) * 1000.0
+    if not math.isclose(
+        readback_relative_us,
+        requested_relative_us,
         rel_tol=1e-9,
         abs_tol=1e-9,
     ):
         _refuse(
-            "delay_mismatch", "live DSP delay does not match the requested candidate"
+            "delay_mismatch",
+            "DSP graph relative delay does not match the requested candidate",
         )
+
+    expected = snapshot.graph
+    if lane is not None:
+        filters = expected["filters"]
+        assert isinstance(filters, dict)
+        filter_spec = filters[lane.filter_name]
+        assert isinstance(filter_spec, dict)
+        params = filter_spec["parameters"]
+        assert isinstance(params, dict)
+        params["delay"] = effective_delay_ms
     if _graph_fingerprint(readback) != _graph_fingerprint(expected):
         _refuse(
-            "graph_mismatch", "live DSP graph changed outside the bound delay field"
+            "graph_mismatch",
+            "DSP graph changed outside the exact zero-relative candidate content",
         )
 
     candidate_fingerprint = DspPredecessor(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "jts_delay_candidate_confirmation_request",
             "snapshot_fingerprint": snapshot.fingerprint,
             "predecessor_fingerprint": snapshot.predecessor_fingerprint,
             "scope": scope,
             "topology_id": topology,
-            "crossover_fc_hz": fc,
+            "crossover_fc_hz": snapshot.crossover_fc_hz,
             "candidate": candidate.to_dict(),
+            "readback_relative_delay_us": readback_relative_us,
         }
     ).fingerprint
     return DelayCandidateConfirmation(
         scope=scope,
         topology_id=topology,
-        crossover_fc_hz=fc,
+        crossover_fc_hz=snapshot.crossover_fc_hz,
         snapshot_fingerprint=snapshot.fingerprint,
         predecessor_fingerprint=snapshot.predecessor_fingerprint,
         predecessor_graph_fingerprint=snapshot.graph_fingerprint,
         candidate_fingerprint=candidate_fingerprint,
         readback_graph_fingerprint=_graph_fingerprint(readback),
         relative_delay_us=candidate.relative_delay_us,
+        readback_relative_delay_us=readback_relative_us,
         delay_target=candidate.delay_target,
-        delay_filter=delay_filter,
+        delay_filter=lane.filter_name if lane is not None else None,
         delay_us=candidate.delay_us,
-        effective_delay_us=expected_delay_ms * 1000.0,
+        effective_delay_us=effective_delay_ms * 1000.0,
     )

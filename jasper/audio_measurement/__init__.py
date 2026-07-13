@@ -38,9 +38,11 @@ Modules:
     timing-locked delay search contract shared by active-speaker and bass
     alignment; it consumes repeated gated null depths, never browser arrival
     times.
-  - :mod:`~jasper.audio_measurement.delay_graph` — the pure, typed live-readback
-    proof that a null-walk DSP candidate differs from its exact predecessor by
-    only one bounded non-negative delay field.
+  - :mod:`~jasper.audio_measurement.delay_graph` — the pure, typed graph-content
+    proof that a null-walk DSP candidate differs from a graph-proven,
+    zero-relative predecessor by only one bounded delay lane; each host supplies
+    its topology channel and emitter-owned lane identity, while orchestration
+    separately owns read-back freshness and transaction authority.
 
 Layer-specific logic — PEQ design, targets, correction strategy, the
 active-speaker verdicts, the web flows — stays in its owning package and

@@ -867,14 +867,24 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   The bounded measured
   delay *walk* (a value, not just a status) and post-apply verification
   remain separate, not-yet-built pieces of Slice 2.
-- The shared delay-walk substrate now includes a pure candidate/read-back
-  proof (`jasper.audio_measurement.delay_graph`): active-crossover and bass
-  hosts can bind the exact normalized predecessor graph to scope, topology,
-  crossover frequency, target delay filters, and the same frozen predecessor
-  the shared runner restores, then admit only
-  a non-negative bounded delay-only live graph diff with the JTS volume/gain
-  ceilings intact. No CamillaDSP host adapter, capture playback, walk
-  scheduling, geometry source, or three-way orchestration is wired yet.
+- The shared delay-walk substrate now includes a pure candidate graph-content
+  proof (`jasper.audio_measurement.delay_graph`). Active-crossover and bass
+  hosts share one typed lane proof while retaining their own authoritative
+  topology and emitter vocabularies: each target supplies its topology channel,
+  Delay filter, and a non-Delay identity filter from the same canonical chain.
+  A predecessor has both Delay lanes at numeric zero; the identity and Delay
+  filters must occur exactly once on the same declared pipeline lane; and a
+  candidate may change only one bounded delay while retaining a real
+  non-positive volume ceiling and every other graph value. The shared core does
+  not parse active-speaker or bass filter names. This is deliberately not proof
+  that the supplied
+  `active_raw` is live or fresh. The pending F2b host must hold the DSP writer
+  lock across apply → fresh read-back → typed confirmation, bind the result to
+  the current run and capture evidence, and pass it to the F1 runner. A
+  stale/replayed content-identical graph is therefore a named future host
+  contract gap, not a capability claimed by this slice. No CamillaDSP host
+  adapter, capture playback, walk scheduling, geometry source, or three-way
+  orchestration is wired yet.
 - ~~Automatic trim application must not reset a manually applied delay or
   inversion when no new alignment evidence exists.~~ Closed in Slice 0:
   manual tuning never consults alignment evidence for these two
