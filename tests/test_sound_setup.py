@@ -3770,7 +3770,7 @@ def test_sound_module_renders_first_active_crossover_step_without_scary_copy():
         pytest.skip("node not on PATH")
 
     proc = subprocess.run(
-        [_NODE, str(_SOUND_HARNESS), str(_SOUND_MODULE), "active-crossover-flow"],
+        [_NODE, str(_SOUND_HARNESS), str(_SOUND_MODULE)],
         capture_output=True,
         text=True,
         timeout=30,
@@ -3778,8 +3778,8 @@ def test_sound_module_renders_first_active_crossover_step_without_scary_copy():
     assert proc.returncode == 0, proc.stderr
     out = json.loads(proc.stdout.strip().splitlines()[-1])
 
-    assert out["ok"] is True
     assert {"activeCrossoverFirstStepRendered": True} in out["results"]
+    assert {"activeSpeakerSetupTogglePersistsAcrossRender": True} in out["results"]
 
 
 def test_sound_css_marks_live_sources_with_red_dots():

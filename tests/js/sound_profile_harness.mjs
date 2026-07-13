@@ -65,15 +65,17 @@ function classList() {
 function makeEl(id) {
   return {
     id, innerHTML: "", textContent: "", className: "", value: "", checked: false,
-    attrs: {}, style: {}, _listeners: {}, classList: classList(),
+    attrs: {}, style: {}, _listeners: {}, _listenerCapture: {}, classList: classList(),
     setAttribute(k, v) { this.attrs[k] = String(v); },
     getAttribute(k) {
       return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null;
     },
     hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
     removeAttribute(k) { delete this.attrs[k]; },
-    addEventListener(ev, fn) {
+    addEventListener(ev, fn, options) {
       (this._listeners[ev] = this._listeners[ev] || []).push(fn);
+      const capture = options === true || !!(options && options.capture);
+      (this._listenerCapture[ev] = this._listenerCapture[ev] || []).push(capture);
     },
     focus() { globalThis.document.activeElement = this; },
     select() {
@@ -582,11 +584,19 @@ function setupHarness(fetchHandler, options = {}) {
     const target = {
       open: attrs.open !== undefined ? attrs.open : true,
       getAttribute(name) { return attrs[name] || ""; },
-      matches() { return false; },
-      classList: { contains(name) { return name === "output-step"; } },
+      matches(selector) {
+        return selector === "[data-active-speaker-setup]" &&
+          Object.prototype.hasOwnProperty.call(attrs, "data-active-speaker-setup");
+      },
+      classList: {
+        contains(name) {
+          return name === "output-step" &&
+            Object.prototype.hasOwnProperty.call(attrs, "data-output-step");
+        },
+      },
     };
-    for (const fn of viewBody._listeners.toggle || []) {
-      fn({ target });
+    for (const [index, fn] of (viewBody._listeners.toggle || []).entries()) {
+      if (viewBody._listenerCapture.toggle?.[index]) fn({ target });
     }
     return target;
   };
@@ -918,6 +928,27 @@ async function testActiveCrossoverFirstStepRender() {
   excludes("saved crossover settings");
   excludes("Save crossover settings");
   return { activeCrossoverFirstStepRendered: true };
+}
+
+async function testActiveSpeakerSetupTogglePersistsAcrossRender() {
+  const harness = setupHarness(baseFetch());
+  await loadAndSetActiveState(harness);
+
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  if (initialHtml.includes("data-active-speaker-setup open")) {
+    fail("settled passive setup should start collapsed", { initialHtml });
+  }
+
+  harness.dispatchToggle({ "data-active-speaker-setup": true, open: true });
+  harness.dispatchClick({ "data-act": "browse-presets" });
+  await harness.flush();
+  await harness.flush();
+
+  const rerenderedHtml = harness.elements.get("view-body").innerHTML;
+  if (!rerenderedHtml.includes("data-active-speaker-setup open")) {
+    fail("opening speaker setup should survive the next render", { rerenderedHtml });
+  }
+  return { activeSpeakerSetupTogglePersistsAcrossRender: true };
 }
 
 async function testActiveRouteLimitsRenderedTemplates() {
@@ -4597,6 +4628,7 @@ results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testPassiveLayoutsDoNotExposeDirectDriverTestFlow());
 results.push(await testActiveCrossoverFirstStepRender());
+results.push(await testActiveSpeakerSetupTogglePersistsAcrossRender());
 results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testAppliedProfileEditContinueOpensProfileStep());
@@ -4647,4 +4679,4 @@ results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
 results.push(await testSubwooferDeadEndOffersWirelessCta());
 results.push(await testSubwooferWithSpareOutputHidesWirelessCta());
 
-console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));
+console.log(JSON.stringify(Object.assign({ results }, liveTabResult)));
