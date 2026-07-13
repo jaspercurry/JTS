@@ -147,7 +147,7 @@ pub const DEFAULT_TAP_PATH: &str = "/run/jasper-fanin/impulse-tap.jsonl";
 /// the pre-DSP TTS ingress socket — clobbering either would break a live audio
 /// surface. Kept in sync by hand with the config defaults in `config.rs`
 /// (`control_socket_path` / `tts_socket_path`), both of
-/// which live under this same dir; a pin test in `state.rs` ties them together.
+/// which live under this same dir; a pin test in `config.rs` ties them together.
 pub const RESERVED_TAP_DIR_BASENAMES: &[&str] = &["control.sock", "tts.sock"];
 
 /// One ingress detection, serialized as a single JSONL line by the publisher.

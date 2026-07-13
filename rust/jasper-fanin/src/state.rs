@@ -2313,28 +2313,4 @@ mod tests {
         client.read_to_string(&mut response).unwrap();
         assert!(response.starts_with("OK disarmed"), "got: {response}");
     }
-
-    /// Pin the fan-in reserved tap basenames against the config defaults they
-    /// mirror: control.sock / tts.sock all live under
-    /// /run/jasper-fanin, and a TAP_ARM must be rejected at each. If a config
-    /// default's basename ever changes, this fails loudly (the same
-    /// cross-constant discipline the usbsink crate uses for its own files).
-    #[test]
-    fn reserved_tap_basenames_match_fanin_socket_defaults() {
-        use crate::impulse_tap::{path_is_allowed, RESERVED_TAP_DIR_BASENAMES, TAP_PATH_DIR};
-        // The config defaults (control_socket_path / tts_socket_path) all
-        // resolve under TAP_PATH_DIR with these basenames.
-        for basename in ["control.sock", "tts.sock"] {
-            let path = std::path::Path::new(TAP_PATH_DIR).join(basename);
-            assert!(
-                RESERVED_TAP_DIR_BASENAMES.contains(&basename),
-                "{basename} must be reserved"
-            );
-            assert!(
-                !path_is_allowed(&path),
-                "TAP_ARM must reject fan-in's own file {}",
-                path.display()
-            );
-        }
-    }
 }
