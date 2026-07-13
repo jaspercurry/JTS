@@ -1074,18 +1074,12 @@ def test_revoked_then_relinked_recovers_without_daemon_restart():
     ))
 
     # Voice command 1: rebuild_fn returns "still revoked" → tool surfaces
-    # the signed-out message naming the account.
-    first = asyncio.run(tools["spotify_play"](query="Beyonce"))
-    assert "signed jasper out" in first.get("error", "")
-    # Voice command 2 must NOT be throttled by the rate-limit — patch
-    # _now to advance past the cooldown so this is deterministic.
-    with patch("jasper.spotify_router._now",
-               side_effect=[1000.0, 1000.0 + 31.0]):
-        # First _now() was already consumed by call 1; reset by patching
-        # is fine since we're not relying on absolute timestamps.
-        # Actually: easier to just bypass via the public api — reset the
-        # internal field to None so the next call retries.
-        router._last_refresh_attempt = None
+    # the signed-out message naming the account. Advance the same clock past
+    # the real cooldown before command 2 so the test exercises, rather than
+    # bypasses, Router's rate-limit comparison.
+    with patch("jasper.spotify_router._now", side_effect=[1000.0, 1031.0]):
+        first = asyncio.run(tools["spotify_play"](query="Beyonce"))
+        assert "signed jasper out" in first.get("error", "")
         with patch("jasper.tools.spotify.resolve_target") as resolve_mock:
             resolve_mock.return_value = MagicMock(
                 device_id="jts-device", stop_renderers=[],
