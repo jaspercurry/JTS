@@ -3624,6 +3624,14 @@ mod tests {
         assert_eq!(Ladder::L2Fallback.as_str(), "l2_fallback");
     }
 
+    #[test]
+    fn probe_result_tokens_match_contract() {
+        assert_eq!(ProbeResult::None.as_str(), "none");
+        assert_eq!(ProbeResult::Pass.as_str(), "pass");
+        assert_eq!(ProbeResult::Fail.as_str(), "fail");
+        assert_eq!(ProbeResult::Aborted.as_str(), "aborted");
+    }
+
     // ---- Ctl-write serialization (mock) ------------------------------------
 
     struct MockPitchCtl {
