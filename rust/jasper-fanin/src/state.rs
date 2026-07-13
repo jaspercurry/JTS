@@ -1681,6 +1681,19 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_json_renders_unavailable_output_delay_as_null() {
+        let server = make_test_server();
+        server
+            .output_delay_frames
+            .store(OUTPUT_DELAY_UNAVAILABLE, Ordering::Relaxed);
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&server.snapshot_json()).expect("STATUS parses");
+        assert!(parsed["output"]["snd_pcm_delay_frames"].is_null());
+        assert!(parsed["output"]["snd_pcm_delay_ms"].is_null());
+    }
+
+    #[test]
     fn snapshot_json_loopback_transport_has_no_pipe_block() {
         // Default coupling: transport=loopback, NO pipe block — byte-identical
         // observability to the pre-coupling daemon.
