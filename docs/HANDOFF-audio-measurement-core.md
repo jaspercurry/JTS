@@ -138,10 +138,12 @@ The product is three tiers:
   runner. Inside an outer exact-restore transaction, a host stages both delay
   lanes to numeric zero and supplies the same `DspPredecessor` the F1 runner
   will restore, with parsed CamillaDSP `active_raw` in its frozen state. Typed
-  bindings carry the owning host's topology channel plus one non-Delay identity
-  filter from that target's emitter-owned chain. They are admitted only when the
-  identity and Delay filters occur exactly once on the same declared pipeline
-  lane; unused, shared, duplicated, swapped, same-channel, or unknown-target
+  bindings carry the owning host's exact non-empty topology channel set plus one
+  non-Delay identity filter from that target's emitter-owned chain. Mono roles
+  use a one-channel tuple; stereo role chains can use sets such as `[0, 2]`.
+  Bindings are admitted only when the identity and Delay filters each occur in
+  exactly one shared pipeline step over that exact channel set; unused, extra,
+  missing, overlapping, duplicated, swapped, malformed, or unknown-target
   bindings refuse. The shared core does not parse scope-specific filter names.
   `DelayGraphSnapshot` fingerprints those graph-derived lane proofs with the
   scope, topology id, and complete walk spec. `confirm_delay_candidate` proves

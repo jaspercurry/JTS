@@ -36,6 +36,8 @@ def _graph(
     negative_filter: str,
     *,
     compensated_peq: bool = False,
+    positive_channels: tuple[int, ...] = (0,),
+    negative_channels: tuple[int, ...] = (1,),
 ) -> dict:
     filters = {
         positive_filter: {
@@ -97,10 +99,14 @@ def _graph(
         },
         "pipeline": [
             {"type": "Mixer", "name": "route"},
-            {"type": "Filter", "channels": [0], "names": positive_names},
             {
                 "type": "Filter",
-                "channels": [1],
+                "channels": list(positive_channels),
+                "names": positive_names,
+            },
+            {
+                "type": "Filter",
+                "channels": list(negative_channels),
                 "names": [NEGATIVE_IDENTITY_FILTER, negative_filter],
             },
         ],
@@ -137,14 +143,14 @@ def _snapshot(
             spec.positive_delay_target,
             positive_filter,
             POSITIVE_IDENTITY_FILTER,
-            0,
+            (0,),
         ),
         negative_lane=negative_lane
         or DelayLaneBinding(
             spec.negative_delay_target,
             negative_filter,
             NEGATIVE_IDENTITY_FILTER,
-            1,
+            (1,),
         ),
         predecessor=DspPredecessor(
             {
@@ -206,13 +212,13 @@ def test_named_consumers_share_typed_lane_content_proof(consumer: str):
                 spec.positive_delay_target,
                 "bass_positive_delay",
                 POSITIVE_IDENTITY_FILTER,
-                0,
+                (0,),
             ),
             negative_lane=DelayLaneBinding(
                 spec.negative_delay_target,
                 "bass_negative_delay",
                 NEGATIVE_IDENTITY_FILTER,
-                1,
+                (1,),
             ),
         )
 
@@ -240,10 +246,10 @@ def test_snapshot_reuses_exact_f1_predecessor_and_binds_lane_proof():
         scope=DRIVER_DELAY_WALK_SCOPE,
         topology_id="active-topology",
         positive_lane=DelayLaneBinding(
-            "upper", "as_positive_delay", POSITIVE_IDENTITY_FILTER, 0
+            "upper", "as_positive_delay", POSITIVE_IDENTITY_FILTER, (0,)
         ),
         negative_lane=DelayLaneBinding(
-            "lower", "as_negative_delay", NEGATIVE_IDENTITY_FILTER, 1
+            "lower", "as_negative_delay", NEGATIVE_IDENTITY_FILTER, (1,)
         ),
         predecessor=predecessor,
     )
@@ -251,6 +257,70 @@ def test_snapshot_reuses_exact_f1_predecessor_and_binds_lane_proof():
     assert snapshot.predecessor_fingerprint == predecessor.fingerprint
     assert snapshot.graph == predecessor.state["active_raw"]
     assert snapshot.fingerprint != predecessor.fingerprint
+
+
+def test_stereo_role_channel_sets_are_proven_and_normalized():
+    graph = _graph(
+        "as_positive_delay",
+        "as_negative_delay",
+        positive_channels=(0, 2),
+        negative_channels=(1, 3),
+    )
+    snapshot = _snapshot(
+        graph=graph,
+        positive_lane=DelayLaneBinding(
+            "upper", "as_positive_delay", POSITIVE_IDENTITY_FILTER, (2, 0)
+        ),
+        negative_lane=DelayLaneBinding(
+            "lower", "as_negative_delay", NEGATIVE_IDENTITY_FILTER, (3, 1)
+        ),
+    )
+
+    confirmation = _confirm(
+        snapshot,
+        snapshot._spec.dsp_candidate(100.0),
+        _readback(snapshot, positive_ms=0.1),
+    )
+
+    assert snapshot.positive_lane.channels == (0, 2)
+    assert snapshot.negative_lane.channels == (1, 3)
+    assert confirmation.readback_relative_delay_us == pytest.approx(100.0)
+
+
+@pytest.mark.parametrize(
+    ("positive_channels", "negative_channels"),
+    [
+        ((0,), (1, 3)),
+        ((0, 2, 4), (1, 3)),
+        ((1, 3), (0, 2)),
+        ((0, 0, 2), (1, 3)),
+        ((0, True), (1, 3)),
+    ],
+    ids=["missing", "extra", "swapped", "duplicate", "invalid"],
+)
+def test_stereo_role_proof_refuses_wrong_or_malformed_channel_sets(
+    positive_channels,
+    negative_channels,
+):
+    graph = _graph(
+        "as_positive_delay",
+        "as_negative_delay",
+        positive_channels=positive_channels,
+        negative_channels=negative_channels,
+    )
+
+    with pytest.raises(DelayGraphProofError) as caught:
+        _snapshot(
+            graph=graph,
+            positive_lane=DelayLaneBinding(
+                "upper", "as_positive_delay", POSITIVE_IDENTITY_FILTER, (0, 2)
+            ),
+            negative_lane=DelayLaneBinding(
+                "lower", "as_negative_delay", NEGATIVE_IDENTITY_FILTER, (1, 3)
+            ),
+        )
+
+    assert caught.value.code == "lane_binding_invalid"
 
 
 def test_positive_only_candidate_derives_signed_relative_delay():
@@ -419,34 +489,54 @@ def test_snapshot_refuses_unproven_or_duplicated_pipeline_lane(mutation):
     ("positive_lane", "negative_lane"),
     [
         (
-            DelayLaneBinding("other", "as_positive_delay", POSITIVE_IDENTITY_FILTER, 0),
-            DelayLaneBinding("lower", "as_negative_delay", NEGATIVE_IDENTITY_FILTER, 1),
+            DelayLaneBinding(
+                "other", "as_positive_delay", POSITIVE_IDENTITY_FILTER, (0,)
+            ),
+            DelayLaneBinding(
+                "lower", "as_negative_delay", NEGATIVE_IDENTITY_FILTER, (1,)
+            ),
         ),
         (
-            DelayLaneBinding("lower", "as_positive_delay", POSITIVE_IDENTITY_FILTER, 0),
-            DelayLaneBinding("upper", "as_negative_delay", NEGATIVE_IDENTITY_FILTER, 1),
+            DelayLaneBinding(
+                "lower", "as_positive_delay", POSITIVE_IDENTITY_FILTER, (0,)
+            ),
+            DelayLaneBinding(
+                "upper", "as_negative_delay", NEGATIVE_IDENTITY_FILTER, (1,)
+            ),
         ),
         (
-            DelayLaneBinding("upper", "as_positive_delay", POSITIVE_IDENTITY_FILTER, 0),
-            DelayLaneBinding("lower", "as_positive_delay", NEGATIVE_IDENTITY_FILTER, 1),
+            DelayLaneBinding(
+                "upper", "as_positive_delay", POSITIVE_IDENTITY_FILTER, (0,)
+            ),
+            DelayLaneBinding(
+                "lower", "as_positive_delay", NEGATIVE_IDENTITY_FILTER, (1,)
+            ),
         ),
         (
-            DelayLaneBinding("upper", "as_positive_delay", POSITIVE_IDENTITY_FILTER, 0),
-            DelayLaneBinding("lower", "as_negative_delay", NEGATIVE_IDENTITY_FILTER, 0),
+            DelayLaneBinding(
+                "upper", "as_positive_delay", POSITIVE_IDENTITY_FILTER, (0, 2)
+            ),
+            DelayLaneBinding(
+                "lower", "as_negative_delay", NEGATIVE_IDENTITY_FILTER, (2, 3)
+            ),
         ),
         (
             # Both Delay filters use their truthful graph channels. The
             # emitter-owned identity filters keep the semantic targets from
             # being swapped along with them.
-            DelayLaneBinding("upper", "as_negative_delay", POSITIVE_IDENTITY_FILTER, 1),
-            DelayLaneBinding("lower", "as_positive_delay", NEGATIVE_IDENTITY_FILTER, 0),
+            DelayLaneBinding(
+                "upper", "as_negative_delay", POSITIVE_IDENTITY_FILTER, (1,)
+            ),
+            DelayLaneBinding(
+                "lower", "as_positive_delay", NEGATIVE_IDENTITY_FILTER, (0,)
+            ),
         ),
     ],
     ids=[
         "unknown-target",
         "swapped-targets",
         "same-filter",
-        "same-lane",
+        "overlapping-channels",
         "swapped-filters",
     ],
 )
@@ -460,12 +550,22 @@ def test_snapshot_refuses_unknown_shared_same_or_swapped_lane_bindings(
     assert caught.value.code == "lane_binding_invalid"
 
 
-@pytest.mark.parametrize("channel", [True, -1, 0.0, "0"])
-def test_typed_lane_binding_rejects_noncanonical_channel(channel):
+@pytest.mark.parametrize(
+    "channels",
+    [(), (True,), (-1,), (0.0,), ("0",), (0, 0), [0], 0, None],
+)
+def test_typed_lane_binding_rejects_noncanonical_channels(channels):
     with pytest.raises(DelayGraphProofError) as caught:
-        DelayLaneBinding("upper", "delay", "identity", channel)
+        DelayLaneBinding("upper", "delay", "identity", channels)
 
     assert caught.value.code == "lane_binding_invalid"
+
+
+def test_typed_lane_binding_normalizes_immutable_channel_set():
+    binding = DelayLaneBinding("upper", "delay", "identity", (2, 0))
+
+    assert binding.channels == (0, 2)
+    assert binding.to_dict()["channels"] == [0, 2]
 
 
 @pytest.mark.parametrize(
@@ -477,7 +577,7 @@ def test_typed_lane_binding_rejects_invalid_identity_contract(
     identity_filter,
 ):
     with pytest.raises(DelayGraphProofError) as caught:
-        DelayLaneBinding("upper", delay_filter, identity_filter, 0)
+        DelayLaneBinding("upper", delay_filter, identity_filter, (0,))
 
     assert caught.value.code == "lane_binding_invalid"
 
