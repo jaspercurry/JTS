@@ -870,11 +870,13 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
 - The shared delay-walk substrate now includes a pure candidate graph-content
   proof (`jasper.audio_measurement.delay_graph`). Active-crossover and bass
   hosts share one typed lane proof while retaining their own authoritative
-  topology and emitter vocabularies: each target supplies its topology channel,
-  Delay filter, and a non-Delay identity filter from the same canonical chain.
-  A predecessor has both Delay lanes at numeric zero; the identity and Delay
-  filters must occur exactly once on the same declared pipeline lane; and a
-  candidate may change only one bounded delay while retaining a real
+  topology and emitter vocabularies: each target supplies its exact non-empty
+  topology channel set, Delay filter, and a non-Delay identity filter from the
+  same canonical chain. Mono roles use one-element sets; stereo role chains can
+  span channels such as `[0, 2]`. A predecessor has both Delay lanes at numeric
+  zero; the identity and Delay filters must each occur in exactly one shared
+  pipeline step over that exact channel set; and a candidate may change only
+  one bounded delay while retaining a real
   non-positive volume ceiling and every other graph value. The shared core does
   not parse active-speaker or bass filter names. This is deliberately not proof
   that the supplied

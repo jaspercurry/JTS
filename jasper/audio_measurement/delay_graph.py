@@ -145,18 +145,19 @@ def _delay_filter_value(
 
 @dataclass(frozen=True)
 class DelayLaneBinding:
-    """Host-owned target mapped to one graph-proven Camilla filter lane.
+    """Host-owned target mapped to one graph-proven Camilla channel set.
 
     ``identity_filter_name`` is a non-delay filter from the target's canonical
     emitter-owned chain.  The owning host derives that name from its emitter
-    vocabulary and ``channel`` from its topology; the shared proof only checks
-    that the identity and delay filters occupy the same exact pipeline lane.
+    vocabulary and ``channels`` from its topology; the shared proof only checks
+    that the identity and delay filters occupy the same exact pipeline step and
+    channel set.
     """
 
     target: str
     filter_name: str
     identity_filter_name: str
-    channel: int
+    channels: tuple[int, ...]
 
     def __post_init__(self) -> None:
         target = self.target.strip().lower() if isinstance(self.target, str) else ""
@@ -179,35 +180,43 @@ class DelayLaneBinding:
                 "lane_binding_invalid",
                 "delay lane identity filter must differ from its Delay filter",
             )
-        if type(self.channel) is not int or self.channel < 0:
+        if type(self.channels) is not tuple or not self.channels:
             _refuse(
                 "lane_binding_invalid",
-                "delay lane channel must be a non-negative integer",
+                "delay lane channels must be a non-empty tuple",
             )
+        if any(type(channel) is not int or channel < 0 for channel in self.channels):
+            _refuse(
+                "lane_binding_invalid",
+                "delay lane channels must be non-negative integers",
+            )
+        if len(set(self.channels)) != len(self.channels):
+            _refuse("lane_binding_invalid", "delay lane channels must be unique")
         object.__setattr__(self, "target", target)
         object.__setattr__(self, "filter_name", filter_name)
         object.__setattr__(self, "identity_filter_name", identity_filter_name)
+        object.__setattr__(self, "channels", tuple(sorted(self.channels)))
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "target": self.target,
             "filter_name": self.filter_name,
             "identity_filter_name": self.identity_filter_name,
-            "channel": self.channel,
+            "channels": list(self.channels),
         }
 
 
-def _pipeline_filter_occurrence(
+def _pipeline_filter_placement(
     graph: Mapping[str, Any],
     filter_name: str,
     *,
     code: DelayGraphFailureCode,
-) -> tuple[int, int]:
+) -> tuple[int, tuple[int, ...]]:
     pipeline = graph.get("pipeline")
     if not isinstance(pipeline, list):
         _refuse(code, "CamillaDSP graph has no pipeline list")
 
-    occurrences: list[tuple[int, int]] = []
+    placements: list[tuple[int, tuple[int, ...]]] = []
     for step_index, step in enumerate(pipeline):
         if not isinstance(step, Mapping) or step.get("type") != "Filter":
             continue
@@ -219,18 +228,20 @@ def _pipeline_filter_occurrence(
             continue
         channels = step.get("channels")
         if not isinstance(channels, list) or not channels:
-            _refuse(code, f"bound filter {filter_name!r} has no channel lane")
-        for channel in channels:
-            if type(channel) is not int or channel < 0:
-                _refuse(code, "bound delay pipeline channel is invalid")
-            occurrences.extend((step_index, channel) for _ in range(name_count))
+            _refuse(code, f"bound filter {filter_name!r} has no channel set")
+        if any(type(channel) is not int or channel < 0 for channel in channels):
+            _refuse(code, "bound delay pipeline channel set is invalid")
+        if len(set(channels)) != len(channels):
+            _refuse(code, "bound delay pipeline channels must be unique")
+        placement = (step_index, tuple(sorted(channels)))
+        placements.extend(placement for _ in range(name_count))
 
-    if len(occurrences) != 1:
+    if len(placements) != 1:
         _refuse(
             code,
-            f"bound filter {filter_name!r} must occur on exactly one lane",
+            f"bound filter {filter_name!r} must occur in exactly one pipeline step",
         )
-    return occurrences[0]
+    return placements[0]
 
 
 def _lane_proof(
@@ -259,27 +270,28 @@ def _lane_proof(
             f"bound identity filter {binding.identity_filter_name!r} is not a "
             "non-Delay filter",
         )
-    delay_occurrence = _pipeline_filter_occurrence(
+    delay_placement = _pipeline_filter_placement(
         graph,
         binding.filter_name,
         code=code,
     )
-    identity_occurrence = _pipeline_filter_occurrence(
+    identity_placement = _pipeline_filter_placement(
         graph,
         binding.identity_filter_name,
         code=code,
     )
-    if delay_occurrence != identity_occurrence:
+    if delay_placement != identity_placement:
         _refuse(
             code,
             f"bound delay filter {binding.filter_name!r} does not share the "
-            f"authoritative target lane with {binding.identity_filter_name!r}",
+            "authoritative target step and channel set with "
+            f"{binding.identity_filter_name!r}",
         )
-    step_index, channel = delay_occurrence
-    if channel != binding.channel:
+    step_index, channels = delay_placement
+    if channels != binding.channels:
         _refuse(
             code,
-            f"bound filter {binding.filter_name!r} is on the wrong channel lane",
+            f"bound filter {binding.filter_name!r} is on the wrong channel set",
         )
     return {
         **binding.to_dict(),
@@ -347,9 +359,9 @@ class DelayGraphSnapshot:
                 "lane_binding_invalid",
                 "delay and identity filter bindings must be distinct",
             )
-        if positive_lane.channel == negative_lane.channel:
+        if set(positive_lane.channels) & set(negative_lane.channels):
             _refuse(
-                "lane_binding_invalid", "delay targets cannot share one channel lane"
+                "lane_binding_invalid", "delay targets cannot share output channels"
             )
         if not isinstance(predecessor, DspPredecessor):
             _refuse("snapshot_invalid", "predecessor must be DspPredecessor")

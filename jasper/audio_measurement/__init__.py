@@ -41,8 +41,8 @@ Modules:
   - :mod:`~jasper.audio_measurement.delay_graph` — the pure, typed graph-content
     proof that a null-walk DSP candidate differs from a graph-proven,
     zero-relative predecessor by only one bounded delay lane; each host supplies
-    its topology channel and emitter-owned lane identity, while orchestration
-    separately owns read-back freshness and transaction authority.
+    its exact topology channel set and emitter-owned lane identity, while
+    orchestration separately owns read-back freshness and transaction authority.
 
 Layer-specific logic — PEQ design, targets, correction strategy, the
 active-speaker verdicts, the web flows — stays in its owning package and
