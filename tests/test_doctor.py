@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -3270,10 +3270,48 @@ def test_status_socket_byte_reader_owns_fragmented_protocol_and_cleanup(monkeypa
     payload = doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=1.25)
 
     assert payload == b'{"ok":true}'
-    assert fake.timeout == 1.25
+    assert 0 < fake.timeout <= 1.25
     assert fake.connected_path == "/run/test.sock"
     assert fake.sent == [b"STATUS\n"]
     assert fake.recv_sizes == [65536, 65536, 65536]
+    assert fake.closed is True
+
+
+def test_status_socket_byte_reader_accepts_exact_response_cap(monkeypatch):
+    cap = doctor.audio._STATUS_RESPONSE_MAX_BYTES
+    fake = _FakeSocket(chunks=[b"x" * cap, b""])
+    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
+
+    payload = doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=2.0)
+
+    assert len(payload) == cap
+    assert fake.closed is True
+
+
+def test_status_socket_byte_reader_rejects_response_over_cap(monkeypatch):
+    cap = doctor.audio._STATUS_RESPONSE_MAX_BYTES
+    fake = _FakeSocket(chunks=[b"x" * cap, b"y"])
+    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
+
+    with pytest.raises(OSError, match="exceeds byte limit"):
+        doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=2.0)
+
+    assert fake.closed is True
+
+
+def test_status_socket_byte_reader_enforces_total_deadline(monkeypatch):
+    fake = _FakeSocket(chunks=[b"x", b"y", b""])
+    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
+    monkeypatch.setattr(
+        doctor.audio.time,
+        "monotonic",
+        Mock(side_effect=[0.0, 0.0, 0.1, 0.2, 1.1]),
+    )
+
+    with pytest.raises(TimeoutError, match="deadline exceeded"):
+        doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=1.0)
+
+    assert fake.recv_sizes == [65536]
     assert fake.closed is True
 
 
@@ -3301,7 +3339,7 @@ def test_status_socket_strict_wrapper_and_lossy_caller_keep_decode_ownership(
     with pytest.raises(UnicodeDecodeError):
         doctor.audio._read_status_socket("/run/test.sock")
 
-    assert strict.timeout == 1.0
+    assert 0 < strict.timeout <= 1.0
     assert strict.closed is True
 
     lossy = _FakeSocket(payload=b'{"note":"\xff","tts":{"enabled":false}}')
@@ -3311,7 +3349,7 @@ def test_status_socket_strict_wrapper_and_lossy_caller_keep_decode_ownership(
 
     assert result.status == "ok"
     assert "disabled" in result.detail
-    assert lossy.timeout == 2.0
+    assert 0 < lossy.timeout <= 2.0
     assert lossy.closed is True
 
 
@@ -3327,7 +3365,8 @@ def test_check_fanin_service_keeps_one_bounded_status_retry(monkeypatch):
 
     assert result.status == "ok"
     assert pending == []
-    assert first.timeout == second.timeout == 2.0
+    assert 0 < first.timeout <= 2.0
+    assert 0 < second.timeout <= 2.0
     assert first.closed is True
     assert second.closed is True
 

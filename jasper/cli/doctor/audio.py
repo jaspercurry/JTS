@@ -982,6 +982,8 @@ _FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 
 _OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
 
+_STATUS_RESPONSE_MAX_BYTES = 1_048_576
+
 
 def _read_status_socket_bytes(socket_path: str, *, timeout: float) -> bytes:
     """Return the raw reply from a local JTS ``STATUS\n`` control socket.
@@ -990,15 +992,29 @@ def _read_status_socket_bytes(socket_path: str, *, timeout: float) -> bytes:
     retain their own retry, UTF-8/JSON parsing, and fail-versus-skip policy.
     """
 
+    deadline = time.monotonic() + timeout
+
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(timeout)
+        def set_remaining_timeout() -> None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("STATUS response deadline exceeded")
+            sock.settimeout(remaining)
+
+        set_remaining_timeout()
         sock.connect(socket_path)
+        set_remaining_timeout()
         sock.sendall(b"STATUS\n")
         chunks: list[bytes] = []
+        received = 0
         while True:
+            set_remaining_timeout()
             chunk = sock.recv(65536)
             if not chunk:
                 break
+            received += len(chunk)
+            if received > _STATUS_RESPONSE_MAX_BYTES:
+                raise OSError("STATUS response exceeds byte limit")
             chunks.append(chunk)
     return b"".join(chunks)
 
