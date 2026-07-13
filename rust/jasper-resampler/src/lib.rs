@@ -1233,6 +1233,19 @@ mod tests {
         assert!(minimum_safe_fill_frames(512, 500.0) > minimum_safe_fill_frames(256, 500.0));
     }
 
+    #[test]
+    fn clamp_i16_rounds_nearest_and_saturates_at_sample_bounds() {
+        assert_eq!(clamp_i16(1.49), 1);
+        assert_eq!(clamp_i16(1.5), 2);
+        assert_eq!(clamp_i16(-1.5), -2);
+        assert_eq!(clamp_i16(i16::MAX as f64), i16::MAX);
+        assert_eq!(clamp_i16(i16::MAX as f64 + 0.5), i16::MAX);
+        assert_eq!(clamp_i16(1.0e12), i16::MAX);
+        assert_eq!(clamp_i16(i16::MIN as f64), i16::MIN);
+        assert_eq!(clamp_i16(i16::MIN as f64 - 0.5), i16::MIN);
+        assert_eq!(clamp_i16(-1.0e12), i16::MIN);
+    }
+
     /// The pinned S32→S16 sign-boundary vector (C2). This is the SINGLE
     /// definition of the UAC2 narrowing math; both `jasper-usbsink-audio`'s
     /// bridge capture and `jasper-fanin`'s direct capture consume
