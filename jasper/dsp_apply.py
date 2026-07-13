@@ -458,6 +458,7 @@ async def apply_dsp_config(
     state_path: str | Path | None = None,
     lock_path: str | Path | None = None,
     acquire_lock: bool = True,
+    expected_candidate_sha256: str | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -472,6 +473,10 @@ async def apply_dsp_config(
     :func:`dsp_writer_lock`, so it can make a lock-protected decision and then
     use the same validation/reload/rollback lifecycle without re-entering the
     file lock.
+
+    When ``expected_candidate_sha256`` is provided, the candidate is hashed
+    again after validation and immediately before load. A changed file is
+    refused without asking CamillaDSP to load it.
     """
 
     candidate = Path(candidate_path)
@@ -543,6 +548,21 @@ async def apply_dsp_config(
                 _validation_failure_message(validation),
                 state,
             )
+
+        if expected_candidate_sha256 is not None:
+            state.phase = "proof"
+            state.config_sha256 = _sha256(candidate)
+            if (
+                not expected_candidate_sha256
+                or state.config_sha256 != expected_candidate_sha256
+            ):
+                state.result = "candidate_changed"
+                state.finished_at = _utc_now()
+                record_dsp_apply_state(state, state_path=state_path)
+                raise DspApplyError(
+                    "DSP candidate changed after validation and before load",
+                    state,
+                )
 
         state.phase = "load"
         record_dsp_apply_state(state, state_path=state_path)

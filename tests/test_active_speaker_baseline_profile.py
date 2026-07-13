@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import replace
 import logging
 from pathlib import Path
@@ -26,6 +27,7 @@ from jasper.active_speaker.baseline_profile import (
     _derive_corrections,
     _GAIN_SOURCE_TO_PROVENANCE,
     apply_baseline_profile,
+    baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
     recompose_applied_baseline_yaml,
@@ -700,6 +702,113 @@ def test_pairing_intent_change_does_not_invalidate_baseline_cache(
     assert cached["permissions"]["may_apply"] is True
 
 
+def test_graph_context_change_invalidates_baseline_cache(tmp_path: Path) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    first = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    changed = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+        state_path=state_path,
+        config_path=config_path,
+        capture_device="changed-capture",
+        validate=_valid_config,
+    )
+
+    assert first["status"] == "ready_to_apply"
+    assert changed["status"] == "ready_to_compile"
+    assert changed["recomposition_snapshot"]["capture_device"] == "changed-capture"
+    assert changed["candidate_fingerprint"] != first["candidate_fingerprint"]
+
+
+def test_baseline_source_binds_exact_normalized_preview_candidate(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    changed_preview = deepcopy(preview)
+    changed_preview["groups"][0]["crossovers"][0]["candidate"][
+        "confidence"
+    ] = "high"
+    measurements = _measurements(topology, tmp_path)
+
+    first = baseline_profile_mod._source_payload(
+        topology, draft, preview, measurements
+    )
+    changed = baseline_profile_mod._source_payload(
+        topology, draft, changed_preview, measurements
+    )
+
+    assert (
+        first["crossover_preview_fingerprint"]
+        != changed["crossover_preview_fingerprint"]
+    )
+    assert first["fingerprint"] != changed["fingerprint"]
+
+
+def test_candidate_identity_distinguishes_owner_and_graph_context(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    manual = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        tuning_owner="manual",
+    )
+    automatic = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        tuning_owner="automatic",
+    )
+
+    assert manual["source"]["fingerprint"] == automatic["source"]["fingerprint"]
+    assert manual["candidate_fingerprint"] != automatic["candidate_fingerprint"]
+
+    mutations = (
+        (("tuning_owner",), "automatic"),
+        (("corrections", "tweeter", "gain_db"), -7.0),
+        (("preset", "crossover_regions", 0, "fc_hz"), 2600.0),
+        (("playback_device",), "changed-playback"),
+        (("domain",), "driver"),
+        (("program_channel",), "left"),
+        (("driver_domain_pair_trim_db",), -2.0),
+        (("capture_device",), "changed-capture"),
+        (("capture_format",), "S24LE3"),
+    )
+    for path, value in mutations:
+        changed = deepcopy(manual)
+        target = changed["recomposition_snapshot"]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        assert baseline_candidate_fingerprint(changed) != manual["candidate_fingerprint"]
+
+
 def test_baseline_profile_blocks_until_summed_validation_exists(
     tmp_path: Path,
 ) -> None:
@@ -1186,6 +1295,174 @@ async def test_apply_baseline_profile_uses_shared_dsp_apply_transaction(
     assert recomposed == (tmp_path / "active_speaker_baseline.yml").read_text()
 
 
+async def test_apply_baseline_profile_refuses_stale_reviewed_candidate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    base_manual = {
+        "drivers": [
+            {"role": "woofer", "gain_offset_db": 0.0},
+            {"role": "tweeter", "gain_offset_db": -6.0},
+        ],
+        "crossover_candidates": _research()["crossover_candidates"],
+    }
+    draft_a = build_design_draft(
+        topology,
+        driver_research=_research(),
+        manual_settings=base_manual,
+        created_at="2026-06-14T12:00:00Z",
+    )
+    preview_a = build_crossover_preview(draft_a)
+    measurements = _measurements(topology, tmp_path)
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    candidate_a = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft_a,
+        crossover_preview=preview_a,
+        measurements=measurements,
+        write=False,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+    manual_b = deepcopy(base_manual)
+    manual_b["drivers"][1]["gain_offset_db"] = -7.0
+    draft_b = build_design_draft(
+        topology,
+        driver_research=_research(),
+        manual_settings=manual_b,
+        created_at="2026-06-14T12:00:00Z",
+    )
+    preview_b = build_crossover_preview(draft_b)
+    loads: list[str] = []
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+
+    async def load_config(path: str) -> bool:
+        loads.append(path)
+        return True
+
+    async def unexpected_bundle_write(*_args, **_kwargs):
+        pytest.fail("stale candidate refusal must not write the evidence bundle")
+
+    async def unexpected_candidate_verified() -> None:
+        pytest.fail("stale candidate refusal must not run pre-load side effects")
+
+    monkeypatch.setattr(
+        baseline_profile_mod,
+        "_record_apply_outcome_into_bundle",
+        unexpected_bundle_write,
+    )
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft_a,
+        crossover_preview=preview_a,
+        measurements=measurements,
+        load_config=load_config,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        expected_candidate_fingerprint=str(candidate_a["candidate_fingerprint"]),
+        on_candidate_verified=unexpected_candidate_verified,
+        refresh_inputs=lambda: (topology, draft_b, preview_b, measurements),
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["apply"] is None
+    assert loads == []
+    assert not state_path.exists()
+    assert not config_path.exists()
+    assert "baseline_candidate_fingerprint_mismatch" in {
+        issue["code"] for issue in payload["issues"]
+    }
+    assert (
+        payload["profile"]["candidate_fingerprint"]
+        != candidate_a["candidate_fingerprint"]
+    )
+
+
+async def test_apply_holds_writer_lock_and_refuses_config_race(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from contextlib import asynccontextmanager
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    reviewed = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+    real_lock = baseline_profile_mod.dsp_writer_lock
+    lock_held = False
+
+    @asynccontextmanager
+    async def observed_lock(config_dir):
+        nonlocal lock_held
+        async with real_lock(config_dir):
+            lock_held = True
+            try:
+                yield
+            finally:
+                lock_held = False
+
+    monkeypatch.setattr(baseline_profile_mod, "dsp_writer_lock", observed_lock)
+    validations = 0
+
+    def racing_validate(path: str | Path) -> CamillaConfigValidationResult:
+        nonlocal validations
+        assert lock_held is True
+        validations += 1
+        result = _valid_config(path)
+        if validations == 2:
+            target = Path(path)
+            target.write_text(
+                target.read_text(encoding="utf-8") + "# raced writer\n",
+                encoding="utf-8",
+            )
+        return result
+
+    loads: list[str] = []
+
+    async def load_config(path: str) -> bool:
+        assert lock_held is True
+        loads.append(path)
+        return True
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        state_path=state_path,
+        config_path=config_path,
+        validate=racing_validate,
+        expected_candidate_fingerprint=reviewed["candidate_fingerprint"],
+    )
+
+    assert payload["status"] == "apply_failed"
+    assert payload["apply"]["result"] == "candidate_changed"
+    assert validations == 2
+    assert loads == []
+    assert lock_held is False
+
+
 async def test_apply_baseline_profile_threads_capture_device(
     monkeypatch,
     tmp_path: Path,
@@ -1504,6 +1781,52 @@ async def test_new_candidate_cannot_overwrite_applied_graph_or_snapshot(
     assert retained["recomposition_snapshot"] == applied_snapshot
     assert retained["provisional"] is applied["profile"]["provisional"]
     assert candidate["applied_recomposition_profile"] == retained
+
+
+def test_applied_candidate_identity_is_rederived_from_frozen_snapshot(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    state_path = tmp_path / "baseline_profile.json"
+    candidate = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=state_path,
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    saved = dict(candidate)
+    saved["status"] = "applied"
+    saved["candidate_fingerprint"] = "declared-wrong"
+    state_path.write_text(json.dumps(saved), encoding="utf-8")
+    expected = baseline_candidate_fingerprint(saved)
+
+    frozen = load_applied_baseline_profile_state(state_path)
+    assert frozen is not None
+    assert frozen["candidate_fingerprint"] == expected
+    assert frozen["candidate_fingerprint"] != "declared-wrong"
+
+    rebuilt = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+        state_path=state_path,
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    assert rebuilt["candidate_fingerprint"] == expected
+    assert (
+        rebuilt["applied_recomposition_profile"]["candidate_fingerprint"]
+        == expected
+    )
 
 
 # --- Fail-safe level trim derived from the driver sensitivity gap -------------
@@ -3113,7 +3436,7 @@ async def test_apply_baseline_profile_success_emits_succeeded_with_fingerprints(
         )
 
     assert payload["status"] == "applied"
-    fingerprint = payload["profile"]["source"]["fingerprint"]
+    fingerprint = payload["profile"]["candidate_fingerprint"]
     succeeded = _events(caplog, "correction.crossover_apply_succeeded")
     assert len(succeeded) == 1
     message = succeeded[0]

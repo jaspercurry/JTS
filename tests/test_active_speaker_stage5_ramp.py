@@ -26,6 +26,7 @@ import pytest
 import yaml
 
 import jasper.active_speaker.startup_load as startup_load_mod
+import jasper.active_speaker.commission_ramp as commission_ramp_mod
 from jasper.active_speaker import (
     ActiveSpeakerPreset,
     COMMISSION_RAMP_MAX_LEVEL_DBFS,
@@ -920,16 +921,30 @@ def test_abort_ramp_rolls_back_and_resets(monkeypatch, tmp_path):
         tmp_path, monkeypatch, role="woofer"
     )
     assert step["status"] == "stepped"
+    real_rollback = commission_ramp_mod.rollback_driver_commissioning_config
+    lock_modes: list[bool] = []
+
+    async def rollback_spy(**kwargs):
+        lock_modes.append(kwargs.get("acquire_lock", True))
+        return await real_rollback(**kwargs)
+
+    monkeypatch.setattr(
+        commission_ramp_mod,
+        "rollback_driver_commissioning_config",
+        rollback_spy,
+    )
     out = asyncio.run(
         abort_ramp(
             load_config=cam.apply_running_config,
             commission_load_state_path=state_path,
             ramp_state_path_override=tmp_path / "ramp.json",
             safe_playback_state_path=tmp_path / "safe.json",
+            acquire_lock=False,
             validate=_valid_config,
         )
     )
     assert out["status"] == "aborted"
+    assert lock_modes == [False]
     assert cam.loaded_paths[-1] == staged_path
     ramp = load_ramp_state(state_path=tmp_path / "ramp.json")
     assert ramp["pending"] is None

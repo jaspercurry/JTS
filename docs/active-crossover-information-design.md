@@ -135,6 +135,17 @@ The applied crossover is authoritative for playback. The working crossover is
 authoritative for the form. The candidate records exactly what would be applied.
 The UI must never merge values from those states implicitly.
 
+The source fingerprint remains the compile-cache/freshness key. A distinct
+candidate identity covers the normalized preview plus the immutable
+recomposition snapshot: manual frequency, family/order, derived or preserved
+trim, polarity, delay, tuning owner, and playback/domain/capture context. Apply
+carries the candidate identity the user reviewed. Under the shared DSP writer
+lock, the backend recompiles and re-proves that identity, then re-hashes the
+written config immediately before load. If working state is already candidate
+B at that locked reread boundary, a request carrying reviewed candidate A is
+refused and the review refreshes. Once A is re-proven, only A's exact config
+hash may load; B can never load under A's confirmation.
+
 Working crossovers and candidates are strictly silent: the crossover preview
 emits no audio and no CamillaDSP YAML, may not stage or load a graph, and may
 not authorize playback (enforced today by

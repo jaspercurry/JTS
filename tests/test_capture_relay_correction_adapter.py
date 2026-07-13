@@ -1119,7 +1119,11 @@ def _legacy_crossover_level_status(*, preservation_ready: bool) -> dict:
         "active": True,
         "setup": {
             "status": "ready",
-            "protected_profile": {"source_fingerprint": "source-1"},
+            "baseline_profile": {"candidate_fingerprint": "candidate-1"},
+            "protected_profile": {
+                "source_fingerprint": "source-1",
+                "candidate_fingerprint": "candidate-1",
+            },
             "applied_crossover": {
                 "valid": False,
                 "reason": "active_applied_profile_snapshot_missing",
@@ -1194,7 +1198,10 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         **legacy,
         "setup": {
             **legacy["setup"],
-            "protected_profile": {"source_fingerprint": "c" * 64},
+            "protected_profile": {
+                "source_fingerprint": "c" * 64,
+                "candidate_fingerprint": "c" * 64,
+            },
             "applied_crossover": {
                 "valid": True,
                 "owner": "manual",
@@ -1212,8 +1219,11 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
     monkeypatch.setattr(backend, "status_payload", lambda: next(statuses))
     applied = {}
 
-    async def apply_profile(*, tuning_owner, camilla_factory):
+    async def apply_profile(
+        *, tuning_owner, expected_candidate_fingerprint, camilla_factory
+    ):
         applied["owner"] = tuning_owner
+        applied["candidate_fingerprint"] = expected_candidate_fingerprint
         applied["camilla_factory"] = camilla_factory
         return {"status": "applied", "issues": []}
 
@@ -1268,6 +1278,7 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
     payload = correction_setup._handle_crossover_relay_level_match(object())
 
     assert applied["owner"] == "manual"
+    assert applied["candidate_fingerprint"] == "candidate-1"
     assert registered["label"] == "level_ramp:crossover"
     assert registered["relay_base"] == "relay"
     assert registered["return_url"] == "https://jts.local/correction/crossover/"

@@ -2012,6 +2012,7 @@ async def rollback_driver_commissioning_config(
     *,
     load_config: PathLoader,
     state_path: str | Path | None = None,
+    acquire_lock: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -2067,6 +2068,7 @@ async def rollback_driver_commissioning_config(
             prior_config_path=None,
             get_current_config_path=None,
             load_config=load_config,
+            acquire_lock=acquire_lock,
             validate=validate,
         )
     except Exception as exc:  # noqa: BLE001

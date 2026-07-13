@@ -85,7 +85,7 @@ import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from jasper.log_event import log_event
 from jasper.output_topology import (
@@ -3803,6 +3803,7 @@ async def _active_speaker_commission_ramp_ack_payload(
 async def _active_speaker_commission_ramp_abort_payload(
     *,
     camilla_factory: Callable[[], Any],
+    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     """Hard Stop: roll back to the all-muted staged config and reset the ramp."""
 
@@ -3811,7 +3812,7 @@ async def _active_speaker_commission_ramp_abort_payload(
     tone_stop = _active_speaker_stop_commission_tone(reason="commission_abort")
     cam = camilla_factory()
     load_config, _, _ = commission_seams(cam)
-    payload = await abort_ramp(load_config=load_config)
+    payload = await abort_ramp(load_config=load_config, acquire_lock=acquire_lock)
     payload["tone_stop"] = tone_stop
     log_event(
         logger,
@@ -4415,7 +4416,7 @@ def _active_speaker_crossover_alignment_payload(
         setup.get("protected_profile") if isinstance(setup, dict) else None
     )
     expected_profile_context_id = (
-        str(protected_profile.get("source_fingerprint") or "")
+        str(protected_profile.get("candidate_fingerprint") or "")
         if isinstance(protected_profile, dict)
         and preset_matches_applied_profile(preset, applied_profile)
         else ""
@@ -4484,6 +4485,8 @@ def _active_speaker_baseline_profile_payload(
 
 async def _active_speaker_baseline_profile_apply_payload(
     *,
+    expected_candidate_fingerprint: str,
+    on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     camilla_factory: Callable[[], Any],
 ) -> dict[str, Any]:
     """Apply the active-speaker baseline profile through DSP apply."""
@@ -4497,6 +4500,18 @@ async def _active_speaker_baseline_profile_apply_payload(
     design_draft = load_design_draft()
     preview = load_crossover_preview(current_design_draft=design_draft)
     measurements = load_measurement_state(topology)
+
+    def refresh_inputs():
+        current_topology = load_output_topology()
+        current_draft = load_design_draft()
+        current_preview = load_crossover_preview(current_design_draft=current_draft)
+        return (
+            current_topology,
+            current_draft,
+            current_preview,
+            load_measurement_state(current_topology),
+        )
+
     cam = camilla_factory()
     payload = await apply_baseline_profile(
         topology,
@@ -4505,6 +4520,9 @@ async def _active_speaker_baseline_profile_apply_payload(
         measurements=measurements,
         load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
         get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
+        expected_candidate_fingerprint=expected_candidate_fingerprint,
+        on_candidate_verified=on_candidate_verified,
+        refresh_inputs=refresh_inputs,
     )
     if payload.get("status") == "applied":
         payload["source_selection_restore"] = _active_speaker_restore_auto_source(
@@ -4540,6 +4558,7 @@ def _active_speaker_output_safety_from_config_path(
 
 async def _active_speaker_finish_commissioning_payload(
     *,
+    expected_candidate_fingerprint: str,
     camilla_factory: Callable[[], Any],
 ) -> dict[str, Any]:
     """Backend-owned final handoff from commissioning to the active profile.
@@ -4549,36 +4568,72 @@ async def _active_speaker_finish_commissioning_payload(
     sequence, so the UI cannot wedge itself between "saved" and "applied".
     """
 
-    summed_stop = _active_speaker_stop_summed_test_tone(reason="finish_commissioning")
-    try:
-        from jasper.active_speaker.commission_ramp import load_ramp_state
-        from jasper.active_speaker.startup_load import load_commission_load_state
+    reviewed = _active_speaker_baseline_profile_payload(write=False)
+    if (
+        not expected_candidate_fingerprint
+        or str(reviewed.get("candidate_fingerprint") or "")
+        != expected_candidate_fingerprint
+    ):
+        issue = {
+            "severity": "blocker",
+            "code": "baseline_candidate_fingerprint_mismatch",
+            "message": (
+                "the crossover candidate changed after review; refresh and "
+                "review the current candidate before applying"
+            ),
+        }
+        reviewed = dict(reviewed)
+        reviewed["permissions"] = dict(reviewed.get("permissions") or {})
+        reviewed["permissions"]["may_apply"] = False
+        reviewed["issues"] = [*reviewed.get("issues", []), issue]
+        return {
+            "status": "blocked",
+            "profile": reviewed,
+            "apply": None,
+            "issues": reviewed["issues"],
+            "commissioning_cleanup": {"status": "not_attempted"},
+        }
 
-        ramp_state = load_ramp_state()
-        commission_load = load_commission_load_state()
-        cleanup_needed = isinstance(ramp_state.get("pending"), dict) or (
-            commission_load.get("status") == "loaded"
+    commissioning_cleanup: dict[str, Any] = {"status": "not_attempted"}
+
+    async def cleanup_after_locked_proof() -> None:
+        nonlocal commissioning_cleanup
+        summed_stop = _active_speaker_stop_summed_test_tone(
+            reason="finish_commissioning"
         )
-        if cleanup_needed:
-            commissioning_cleanup = await _active_speaker_commission_ramp_abort_payload(
-                camilla_factory=camilla_factory,
+        try:
+            from jasper.active_speaker.commission_ramp import load_ramp_state
+            from jasper.active_speaker.startup_load import load_commission_load_state
+
+            ramp_state = load_ramp_state()
+            commission_load = load_commission_load_state()
+            cleanup_needed = isinstance(ramp_state.get("pending"), dict) or (
+                commission_load.get("status") == "loaded"
             )
-        else:
-            commissioning_cleanup = {
-                "status": "idle",
-                "ramp": ramp_state,
-                "commission_load": commission_load,
-            }
-    except (OSError, RuntimeError, ValueError) as exc:
-        commissioning_cleanup = {"status": "error", "error": str(exc)}
+            if cleanup_needed:
+                ramp_cleanup = await _active_speaker_commission_ramp_abort_payload(
+                    camilla_factory=camilla_factory,
+                    acquire_lock=False,
+                )
+            else:
+                ramp_cleanup = {
+                    "status": "idle",
+                    "ramp": ramp_state,
+                    "commission_load": commission_load,
+                }
+        except (OSError, RuntimeError, ValueError) as exc:
+            ramp_cleanup = {"status": "error", "error": str(exc)}
+        commissioning_cleanup = {
+            "summed_test": summed_stop,
+            "ramp": ramp_cleanup,
+        }
 
     payload = await _active_speaker_baseline_profile_apply_payload(
+        expected_candidate_fingerprint=expected_candidate_fingerprint,
+        on_candidate_verified=cleanup_after_locked_proof,
         camilla_factory=camilla_factory,
     )
-    payload["commissioning_cleanup"] = {
-        "summed_test": summed_stop,
-        "ramp": commissioning_cleanup,
-    }
+    payload["commissioning_cleanup"] = commissioning_cleanup
     profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
     apply_state = payload.get("apply") if isinstance(payload.get("apply"), dict) else {}
     config = profile.get("config") if isinstance(profile.get("config"), dict) else {}
@@ -5142,6 +5197,9 @@ def _make_handler(
                     self._send_json(
                         asyncio.run(
                             _active_speaker_baseline_profile_apply_payload(
+                                expected_candidate_fingerprint=str(
+                                    raw.get("expected_candidate_fingerprint") or ""
+                                ),
                                 camilla_factory=camilla_factory,
                             )
                         )
@@ -5151,6 +5209,9 @@ def _make_handler(
                     self._send_json(
                         asyncio.run(
                             _active_speaker_finish_commissioning_payload(
+                                expected_candidate_fingerprint=str(
+                                    raw.get("expected_candidate_fingerprint") or ""
+                                ),
                                 camilla_factory=camilla_factory,
                             )
                         )

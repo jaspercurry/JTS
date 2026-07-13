@@ -156,6 +156,9 @@ def handle_apply(
     from . import correction_crossover_backend as backend
 
     tuning_owner = str(raw.get("tuning_owner") or "")
+    expected_candidate_fingerprint = str(
+        raw.get("expected_candidate_fingerprint") or ""
+    )
     if tuning_owner not in {"manual", "automatic"}:
         return {
             "status": "refused",
@@ -171,6 +174,7 @@ def handle_apply(
     payload = run_async(
         backend.apply_profile(
             tuning_owner=tuning_owner,
+            expected_candidate_fingerprint=expected_candidate_fingerprint,
             camilla_factory=camilla_factory,
         ),
         timeout=30.0,
@@ -468,6 +472,8 @@ def ensure_automatic_measurement_profile(
     reason = str(applied.get("reason") or "")
     preservation = setup.get("manual_preservation")
     preservation = preservation if isinstance(preservation, dict) else {}
+    baseline_profile = setup.get("baseline_profile")
+    baseline_profile = baseline_profile if isinstance(baseline_profile, dict) else {}
     if reason == "active_applied_profile_snapshot_missing":
         if preservation.get("ready") is not True:
             detail = str(
@@ -485,6 +491,9 @@ def ensure_automatic_measurement_profile(
         payload = run_async(
             backend.apply_profile(
                 tuning_owner="manual",
+                expected_candidate_fingerprint=str(
+                    baseline_profile.get("candidate_fingerprint") or ""
+                ),
                 camilla_factory=camilla_factory,
             ),
             timeout=30.0,
@@ -565,7 +574,7 @@ def validate_current_capture_context(
     if (
         setup.get("status") != "ready"
         or applied.get("valid") is not True
-        or str(protected.get("source_fingerprint") or "")
+        or str(protected.get("candidate_fingerprint") or "")
         != expected_profile_context_id
     ):
         raise ValueError(
@@ -655,7 +664,7 @@ def validate_current_level_target_context(
     if (
         setup.get("status") != "ready"
         or applied.get("valid") is not True
-        or str(protected.get("source_fingerprint") or "")
+        or str(protected.get("candidate_fingerprint") or "")
         != expected_profile_context_id
     ):
         raise ValueError(

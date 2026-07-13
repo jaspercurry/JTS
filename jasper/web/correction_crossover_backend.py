@@ -707,7 +707,7 @@ def status_payload() -> dict[str, Any]:
     # near-field gain reference.
     setup_profile = payload["setup"].get("protected_profile")
     current_context_id = (
-        str(setup_profile.get("source_fingerprint") or "") or None
+        str(setup_profile.get("candidate_fingerprint") or "") or None
         if isinstance(setup_profile, Mapping)
         else None
     )
@@ -743,6 +743,7 @@ def status_payload() -> dict[str, Any]:
 async def apply_profile(
     *,
     tuning_owner: str,
+    expected_candidate_fingerprint: str,
     camilla_factory: CamillaFactory,
 ) -> dict[str, Any]:
     """Atomically apply an explicitly manual or automatic Layer-A profile."""
@@ -801,6 +802,19 @@ async def apply_profile(
         and not isinstance(applied.get("recomposition_snapshot"), Mapping)
         else None
     )
+
+    def refresh_inputs():
+        current_topology = load_output_topology()
+        current_draft = load_design_draft()
+        current_preview = load_crossover_preview(current_design_draft=current_draft)
+        current_measurements = load_measurement_state(current_topology)
+        return (
+            current_topology,
+            current_draft,
+            current_preview,
+            current_measurements,
+        )
+
     cam = camilla_factory()
     try:
         payload = await apply_baseline_profile(
@@ -812,6 +826,8 @@ async def apply_profile(
             get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
             tuning_owner=tuning_owner,
             preserved_applied_profile=legacy_manual_profile,
+            expected_candidate_fingerprint=expected_candidate_fingerprint,
+            refresh_inputs=refresh_inputs,
         )
     finally:
         await _LEVEL_LEASE.restore_level_match_volume(
@@ -834,10 +850,13 @@ async def apply_profile(
     return payload
 
 
-async def apply_measured_profile(*, camilla_factory: CamillaFactory) -> dict[str, Any]:
+async def apply_measured_profile(
+    *, expected_candidate_fingerprint: str, camilla_factory: CamillaFactory
+) -> dict[str, Any]:
     """Compatibility wrapper for callers that explicitly apply measurements."""
     return await apply_profile(
         tuning_owner="automatic",
+        expected_candidate_fingerprint=expected_candidate_fingerprint,
         camilla_factory=camilla_factory,
     )
 

@@ -1481,6 +1481,9 @@ def test_crossover_module_is_a_thin_server_envelope_renderer():
     assert "schedulePoll(relayActive ? POLL_MS : null)" in source
     assert "renderActions(null);" in source
     assert "env.alternate_actions" in source
+    assert "baseline_candidate_fingerprint_mismatch" in source
+    assert "candidateChanged" in source
+    assert "await refresh();" in source
 
 
 # --- passive-gating: Layer A hidden for a full-range passive speaker ----------
@@ -1556,11 +1559,13 @@ def _envelope_status() -> dict:
             "acoustic_commissioning": {"allowed": False},
             "baseline_profile": {
                 "source_fingerprint": "source-1",
+                "candidate_fingerprint": "manual-candidate",
                 "revalidation": {"required": False},
             },
             "protected_profile": {
                 "status": "ready",
                 "source_fingerprint": "protected-profile",
+                "candidate_fingerprint": "protected-profile",
             },
             "applied_crossover": {
                 "valid": False,
@@ -1574,6 +1579,7 @@ def _envelope_status() -> dict:
             "automatic_candidate": {
                 "ready": False,
                 "reason": "automatic_crossover_measurements_incomplete",
+                "candidate_fingerprint": "automatic-candidate",
             },
         },
         "targets": {
@@ -1663,7 +1669,7 @@ def test_capture_context_revalidates_topology_profile_level_set_and_target():
     flow.validate_current_capture_context(status, **kwargs)
 
     stale = copy.deepcopy(status)
-    stale["setup"]["protected_profile"]["source_fingerprint"] = "changed"
+    stale["setup"]["protected_profile"]["candidate_fingerprint"] = "changed"
     with pytest.raises(ValueError, match="protected crossover setup changed"):
         flow.validate_current_capture_context(stale, **kwargs)
 
@@ -1706,7 +1712,7 @@ def test_level_target_context_revalidates_before_tone():
     flow.validate_current_level_target_context(status, **kwargs)
 
     changed = copy.deepcopy(status)
-    changed["setup"]["protected_profile"]["source_fingerprint"] = "changed"
+    changed["setup"]["protected_profile"]["candidate_fingerprint"] = "changed"
     with pytest.raises(ValueError, match="protected crossover setup changed"):
         flow.validate_current_level_target_context(changed, **kwargs)
 
@@ -1824,8 +1830,11 @@ def test_crossover_apply_requires_explicit_owner(monkeypatch):
 
     seen = {}
 
-    async def fake_apply_profile(*, tuning_owner, camilla_factory):
+    async def fake_apply_profile(
+        *, tuning_owner, expected_candidate_fingerprint, camilla_factory
+    ):
         seen["owner"] = tuning_owner
+        seen["fingerprint"] = expected_candidate_fingerprint
         return {"status": "applied", "issues": []}
 
     monkeypatch.setattr(backend, "apply_profile", fake_apply_profile)
@@ -1850,11 +1859,15 @@ def test_crossover_apply_requires_explicit_owner(monkeypatch):
     assert refused["status"] == "refused"
 
     payload, status = flow.handle_apply(
-        {"tuning_owner": "automatic"}, run_async, lambda: object()
+        {
+            "tuning_owner": "automatic",
+            "expected_candidate_fingerprint": "reviewed-candidate",
+        }, run_async, lambda: object()
     )
     assert status == 200
     assert payload["status"] == "applied"
     assert seen["owner"] == "automatic"
+    assert seen["fingerprint"] == "reviewed-candidate"
 
 
 def test_crossover_apply_refuses_while_relay_measurement_is_active(monkeypatch):
@@ -1913,14 +1926,19 @@ def test_explicit_crossover_apply_releases_room_correction_lock(
     )
     assert active_speaker_flow.active_phase() == "commissioning"
 
-    async def fake_apply_profile(*, tuning_owner, camilla_factory):
+    async def fake_apply_profile(
+        *, tuning_owner, expected_candidate_fingerprint, camilla_factory
+    ):
         return {"status": "applied", "issues": []}
 
     monkeypatch.setattr(
         correction_crossover_backend, "apply_profile", fake_apply_profile
     )
     payload, status = flow.handle_apply(
-        {"tuning_owner": tuning_owner},
+        {
+            "tuning_owner": tuning_owner,
+            "expected_candidate_fingerprint": f"{tuning_owner}-candidate",
+        },
         lambda awaitable, *, timeout: _run_coro(awaitable),
         lambda: object(),
     )
@@ -1945,7 +1963,9 @@ def test_failed_crossover_apply_preserves_commissioning_session(monkeypatch):
     from jasper.active_speaker import safe_playback
     from jasper.web import correction_crossover_backend as backend
 
-    async def fake_apply_profile(*, tuning_owner, camilla_factory):
+    async def fake_apply_profile(
+        *, tuning_owner, expected_candidate_fingerprint, camilla_factory
+    ):
         return {"status": "blocked", "issues": [{"code": "missing_evidence"}]}
 
     monkeypatch.setattr(backend, "apply_profile", fake_apply_profile)
@@ -1956,7 +1976,10 @@ def test_failed_crossover_apply_preserves_commissioning_session(monkeypatch):
     )
 
     payload, status = flow.handle_apply(
-        {"tuning_owner": "automatic"},
+        {
+            "tuning_owner": "automatic",
+            "expected_candidate_fingerprint": "automatic-candidate",
+        },
         lambda awaitable, *, timeout: _run_coro(awaitable),
         lambda: object(),
     )
@@ -1969,7 +1992,9 @@ def test_crossover_apply_close_failure_is_truthful_and_retryable(monkeypatch):
     from jasper.active_speaker import safe_playback
     from jasper.web import correction_crossover_backend as backend
 
-    async def fake_apply_profile(*, tuning_owner, camilla_factory):
+    async def fake_apply_profile(
+        *, tuning_owner, expected_candidate_fingerprint, camilla_factory
+    ):
         return {"status": "applied", "issues": []}
 
     monkeypatch.setattr(backend, "apply_profile", fake_apply_profile)
@@ -1980,7 +2005,10 @@ def test_crossover_apply_close_failure_is_truthful_and_retryable(monkeypatch):
     monkeypatch.setattr(safe_playback, "stop_safe_playback_session", fail_close)
 
     payload, status = flow.handle_apply(
-        {"tuning_owner": "automatic"},
+        {
+            "tuning_owner": "automatic",
+            "expected_candidate_fingerprint": "automatic-candidate",
+        },
         lambda awaitable, *, timeout: _run_coro(awaitable),
         lambda: object(),
     )
@@ -2025,6 +2053,7 @@ def test_crossover_envelope_walks_level_drivers_apply_room():
     status["setup"]["automatic_candidate"] = {
         "ready": True,
         "reason": None,
+        "candidate_fingerprint": "automatic-candidate",
     }
     env = crossover_envelope.build_crossover_envelope(status)
     assert env["screen"] == "apply"
@@ -2105,7 +2134,10 @@ def test_crossover_envelope_legacy_applied_profile_requires_explicit_reapply():
         "id": "keep_manual",
         "label": "Keep current manual crossover",
         "endpoint": "/correction/crossover/apply",
-        "body": {"tuning_owner": "manual"},
+        "body": {
+            "tuning_owner": "manual",
+            "expected_candidate_fingerprint": "manual-candidate",
+        },
     }
     assert [action["id"] for action in env["alternate_actions"]] == [
         "tune_automatic",
@@ -2195,6 +2227,7 @@ def test_completed_automatic_measurement_explicitly_replaces_manual_profile():
     status["setup"]["automatic_candidate"] = {
         "ready": True,
         "reason": None,
+        "candidate_fingerprint": "automatic-candidate",
     }
 
     env = crossover_envelope.build_crossover_envelope(status)
@@ -2204,7 +2237,10 @@ def test_completed_automatic_measurement_explicitly_replaces_manual_profile():
         "id": "replace_manual",
             "label": "Replace manual trims with automatic levels",
         "endpoint": "/correction/crossover/apply",
-        "body": {"tuning_owner": "automatic"},
+        "body": {
+            "tuning_owner": "automatic",
+            "expected_candidate_fingerprint": "automatic-candidate",
+        },
     }
 
 
@@ -2311,7 +2347,11 @@ def test_applied_automatic_profile_can_run_a_fresh_sequential_retune():
         },
         "latest_summed_validations": {"mono": _summed_acoustic()},
     }
-    status["setup"]["automatic_candidate"] = {"ready": True, "reason": None}
+    status["setup"]["automatic_candidate"] = {
+        "ready": True,
+        "reason": None,
+        "candidate_fingerprint": "automatic-candidate",
+    }
 
     env = crossover_envelope.build_crossover_envelope(status)
 
@@ -2419,7 +2459,9 @@ async def test_automatic_apply_direct_post_refuses_unresolved_ready_controller(
     )
     with pytest.raises(ValueError, match="persistence is incomplete"):
         await backend.apply_profile(
-            tuning_owner="automatic", camilla_factory=lambda: object()
+            tuning_owner="automatic",
+            expected_candidate_fingerprint="source-1",
+            camilla_factory=lambda: object(),
         )
     assert apply_calls == []
 
@@ -2466,7 +2508,11 @@ def test_ready_controller_blocks_apply_even_after_measurement_write():
         },
         "latest_summed_validations": {},
     }
-    status["setup"]["automatic_candidate"] = {"ready": True, "reason": None}
+    status["setup"]["automatic_candidate"] = {
+        "ready": True,
+        "reason": None,
+        "candidate_fingerprint": "automatic-candidate",
+    }
     status["level_match"]["repeats"] = {
         "targets": {
             "mono:woofer": {
@@ -2510,7 +2556,11 @@ def test_terminal_controller_blocks_apply_with_complete_candidate(controller_sta
         },
         "latest_summed_validations": {},
     }
-    status["setup"]["automatic_candidate"] = {"ready": True, "reason": None}
+    status["setup"]["automatic_candidate"] = {
+        "ready": True,
+        "reason": None,
+        "candidate_fingerprint": "automatic-candidate",
+    }
     status["level_match"]["repeats"] = {
         "targets": {},
         "failures": {},

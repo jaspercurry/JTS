@@ -1167,6 +1167,7 @@ async def abort_ramp(
     ramp_state_path_override: str | Path | None = None,
     commission_load_state_path: str | Path | None = None,
     safe_playback_state_path: str | Path | None = None,
+    acquire_lock: bool = True,
     validate: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Roll the running graph back to the all-muted staged config and reset the
@@ -1176,6 +1177,7 @@ async def abort_ramp(
     rollback = await rollback_driver_commissioning_config(
         load_config=load_config,
         state_path=commission_load_state_path,
+        acquire_lock=acquire_lock,
         **({"validate": validate} if validate is not None else {}),
     )
     ramp_payload = reset_ramp_state(state_path=ramp_state_path_override)
