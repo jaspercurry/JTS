@@ -769,6 +769,7 @@ class LevelMatchSession:
         controller = self._controller = RampController(
             session_id=self.session_id, config=self.config
         )
+        data: RampData | None
 
         if wait_for_armed:
             timeout = (

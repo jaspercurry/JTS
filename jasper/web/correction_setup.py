@@ -1066,13 +1066,16 @@ def _runtime_integrity_summary(sess: Any) -> dict[str, Any] | None:
         return None
 
 
-def _run_session_background_audio(
+async def _run_session_background_audio(
     sess: Any,
     operation: Callable[[], Awaitable[None]],
-) -> Awaitable[None]:
+) -> None:
     """Use the session-owned cancellable slot when the session provides it."""
     runner = getattr(sess, "run_background_audio_operation", None)
-    return runner(operation) if callable(runner) else operation()
+    if callable(runner):
+        await runner(operation)
+    else:
+        await operation()
 
 
 def _schedule_measurement_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
