@@ -982,19 +982,45 @@ _FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 
 _OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
 
+_STATUS_RESPONSE_MAX_BYTES = 1_048_576
 
-def _read_status_socket(socket_path: str) -> dict[str, object]:
+
+def _read_status_socket_bytes(socket_path: str, *, timeout: float) -> bytes:
+    """Return the raw reply from a local JTS ``STATUS\n`` control socket.
+
+    This helper owns only the shared socket lifecycle.  Callers deliberately
+    retain their own retry, UTF-8/JSON parsing, and fail-versus-skip policy.
+    """
+
+    deadline = time.monotonic() + timeout
+
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(1.0)
+        def set_remaining_timeout() -> None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("STATUS response deadline exceeded")
+            sock.settimeout(remaining)
+
+        set_remaining_timeout()
         sock.connect(socket_path)
+        set_remaining_timeout()
         sock.sendall(b"STATUS\n")
         chunks: list[bytes] = []
+        received = 0
         while True:
+            set_remaining_timeout()
             chunk = sock.recv(65536)
             if not chunk:
                 break
+            received += len(chunk)
+            if received > _STATUS_RESPONSE_MAX_BYTES:
+                raise OSError("STATUS response exceeds byte limit")
             chunks.append(chunk)
-    payload = b"".join(chunks).decode("utf-8")
+    return b"".join(chunks)
+
+
+def _read_status_socket(socket_path: str) -> dict[str, object]:
+    payload = _read_status_socket_bytes(socket_path, timeout=1.0).decode("utf-8")
     parsed = json.loads(payload)
     if not isinstance(parsed, dict):
         raise ValueError("STATUS response root is not an object")
@@ -1282,27 +1308,11 @@ def check_fanin_service() -> CheckResult:
     socket_path = "/run/jasper-fanin/control.sock"
     last_error: OSError | None = None
     for attempt in range(2):
-        sock: socket.socket | None = None
         try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(2.0)
-            sock.connect(socket_path)
-            sock.sendall(b"STATUS\n")
-            chunks: list[bytes] = []
-            while True:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            sock.close()
+            payload = _read_status_socket_bytes(socket_path, timeout=2.0)
             break
         except OSError as e:
             last_error = e
-            if sock is not None:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
             if attempt == 0:
                 time.sleep(0.1)
     else:
@@ -1315,7 +1325,7 @@ def check_fanin_service() -> CheckResult:
             f"check: journalctl -u jasper-fanin | tail",
         )
 
-    body = b"".join(chunks).decode("utf-8", errors="replace")
+    body = payload.decode("utf-8", errors="replace")
     try:
         data = json.loads(body)
     except json.JSONDecodeError as e:
@@ -1323,6 +1333,12 @@ def check_fanin_service() -> CheckResult:
             "jasper-fanin service",
             "fail",
             f"active but UDS STATUS returned invalid JSON: {e}",
+        )
+    if not isinstance(data, dict):
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            f"active but UDS STATUS root is {type(data).__name__}, expected object",
         )
 
     output = data.get("output", {})
@@ -1548,21 +1564,13 @@ def check_fanin_tts_drops() -> CheckResult:
     name = "fan-in TTS drops"
     socket_path = "/run/jasper-fanin/control.sock"
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            sock.settimeout(2.0)
-            sock.connect(socket_path)
-            sock.sendall(b"STATUS\n")
-            chunks: list[bytes] = []
-            while True:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-        finally:
-            sock.close()
-        data = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError) as e:
+        payload = _read_status_socket_bytes(socket_path, timeout=2.0)
+        data = json.loads(payload.decode("utf-8", errors="replace"))
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"STATUS response root is {type(data).__name__}, not object"
+            )
+    except (OSError, json.JSONDecodeError, ValueError) as e:
         return CheckResult(
             name,
             "ok",
@@ -2306,18 +2314,8 @@ def check_outputd_service() -> CheckResult:
             "Check: journalctl -u jasper-outputd",
         )
 
-    sock: socket.socket | None = None
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(2.0)
-        sock.connect(_OUTPUTD_STATUS_SOCKET)
-        sock.sendall(b"STATUS\n")
-        chunks: list[bytes] = []
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
+        payload = _read_status_socket_bytes(_OUTPUTD_STATUS_SOCKET, timeout=2.0)
     except OSError as e:
         return CheckResult(
             "jasper-outputd",
@@ -2326,14 +2324,8 @@ def check_outputd_service() -> CheckResult:
             "Without STATUS doctor cannot verify DAC ownership, buffers, "
             "xruns, or work-loop progress.",
         )
-    finally:
-        if sock is not None:
-            try:
-                sock.close()
-            except OSError:
-                pass
 
-    body = b"".join(chunks).decode("utf-8", errors="replace")
+    body = payload.decode("utf-8", errors="replace")
     try:
         data = json.loads(body)
     except json.JSONDecodeError as e:
@@ -2341,6 +2333,12 @@ def check_outputd_service() -> CheckResult:
             "jasper-outputd",
             "fail",
             f"active but STATUS returned invalid JSON: {e}",
+        )
+    if not isinstance(data, dict):
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"active but STATUS root is {type(data).__name__}, expected object",
         )
 
     if data.get("backend") != "alsa":
@@ -2835,32 +2833,22 @@ def check_aec_clock_drift() -> CheckResult:
     if active != "active":
         return CheckResult(label, "ok", "skipped — jasper-outputd not active")
 
-    sock: socket.socket | None = None
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(2.0)
-        sock.connect(_OUTPUTD_STATUS_SOCKET)
-        sock.sendall(b"STATUS\n")
-        chunks: list[bytes] = []
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
+        payload = _read_status_socket_bytes(_OUTPUTD_STATUS_SOCKET, timeout=2.0)
     except OSError as e:
         return CheckResult(label, "ok", f"skipped — STATUS unreachable: {e}")
-    finally:
-        if sock is not None:
-            try:
-                sock.close()
-            except OSError:
-                pass
 
-    body = b"".join(chunks).decode("utf-8", errors="replace")
+    body = payload.decode("utf-8", errors="replace")
     try:
         data = json.loads(body)
     except json.JSONDecodeError:
         return CheckResult(label, "ok", "skipped — STATUS returned invalid JSON")
+    if not isinstance(data, dict):
+        return CheckResult(
+            label,
+            "ok",
+            f"skipped — STATUS root is {type(data).__name__}, expected object",
+        )
 
     reference_outputs = data.get("reference_outputs")
     if not isinstance(reference_outputs, dict):

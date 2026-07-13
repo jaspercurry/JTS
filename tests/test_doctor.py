@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -2968,25 +2968,48 @@ def test_fanin_asound_wiring_fails_when_capture_shape_unpinned(monkeypatch, tmp_
 
 
 class _FakeSocket:
-    def __init__(self, payload: bytes = b"", error: OSError | None = None):
-        self._chunks = [payload, b""]
+    def __init__(
+        self,
+        payload: bytes = b"",
+        error: OSError | None = None,
+        *,
+        chunks: list[bytes] | None = None,
+        recv_error: OSError | None = None,
+    ):
+        self._chunks = list(chunks) if chunks is not None else [payload, b""]
         self._error = error
+        self._recv_error = recv_error
+        self.timeout = None
+        self.connected_path = None
+        self.sent: list[bytes] = []
+        self.recv_sizes: list[int] = []
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
 
     def settimeout(self, timeout):
-        pass
+        self.timeout = timeout
 
     def connect(self, path):
+        self.connected_path = path
         if self._error is not None:
             raise self._error
 
     def sendall(self, data):
-        pass
+        self.sent.append(data)
 
     def recv(self, size):
+        self.recv_sizes.append(size)
+        if self._recv_error is not None:
+            raise self._recv_error
         return self._chunks.pop(0)
 
     def close(self):
-        pass
+        self.closed = True
 
 
 def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
@@ -3212,6 +3235,8 @@ def _patch_fanin_status_socket(monkeypatch, payload: bytes):
         decoded = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return
+    if not isinstance(decoded, dict):
+        return
     content = decoded.get("content")
     if not isinstance(content, dict):
         return
@@ -3236,6 +3261,136 @@ def _patch_fanin_status_socket(monkeypatch, payload: bytes):
             }
         ),
     )
+
+
+def test_status_socket_byte_reader_owns_fragmented_protocol_and_cleanup(monkeypatch):
+    fake = _FakeSocket(chunks=[b'{"ok":', b"true}", b""])
+    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
+
+    payload = doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=1.25)
+
+    assert payload == b'{"ok":true}'
+    assert 0 < fake.timeout <= 1.25
+    assert fake.connected_path == "/run/test.sock"
+    assert fake.sent == [b"STATUS\n"]
+    assert fake.recv_sizes == [65536, 65536, 65536]
+    assert fake.closed is True
+
+
+def test_status_socket_byte_reader_accepts_exact_response_cap(monkeypatch):
+    cap = doctor.audio._STATUS_RESPONSE_MAX_BYTES
+    fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b""])
+    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
+
+    payload = doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=2.0)
+
+    assert len(payload) == cap
+    assert fake.recv_sizes == [65536] * 17
+    assert fake.closed is True
+
+
+def test_status_socket_byte_reader_rejects_response_over_cap(monkeypatch):
+    fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b"y"])
+    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
+
+    with pytest.raises(OSError, match="exceeds byte limit"):
+        doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=2.0)
+
+    assert fake.recv_sizes == [65536] * 17
+    assert fake.closed is True
+
+
+def test_status_socket_byte_reader_enforces_total_deadline(monkeypatch):
+    fake = _FakeSocket(chunks=[b"x", b"y", b""])
+    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
+    monkeypatch.setattr(
+        doctor.audio.time,
+        "monotonic",
+        Mock(side_effect=[0.0, 0.0, 0.1, 0.2, 1.1]),
+    )
+
+    with pytest.raises(TimeoutError, match="deadline exceeded"):
+        doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=1.0)
+
+    assert fake.recv_sizes == [65536]
+    assert fake.closed is True
+
+
+@pytest.mark.parametrize("failure_stage", ["connect", "recv"])
+def test_status_socket_byte_reader_closes_on_failure(monkeypatch, failure_stage):
+    error = OSError(f"{failure_stage} failed")
+    fake = _FakeSocket(
+        error=error if failure_stage == "connect" else None,
+        recv_error=error if failure_stage == "recv" else None,
+    )
+    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
+
+    with pytest.raises(OSError, match=f"{failure_stage} failed"):
+        doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=2.0)
+
+    assert fake.closed is True
+
+
+def test_status_socket_strict_wrapper_and_lossy_caller_keep_decode_ownership(
+    monkeypatch,
+):
+    strict = _FakeSocket(payload=b'{"note":"\xff"}')
+    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: strict)
+
+    with pytest.raises(UnicodeDecodeError):
+        doctor.audio._read_status_socket("/run/test.sock")
+
+    assert 0 < strict.timeout <= 1.0
+    assert strict.closed is True
+
+    lossy = _FakeSocket(payload=b'{"note":"\xff","tts":{"enabled":false}}')
+    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: lossy)
+
+    result = doctor.check_fanin_tts_drops()
+
+    assert result.status == "ok"
+    assert "disabled" in result.detail
+    assert 0 < lossy.timeout <= 2.0
+    assert lossy.closed is True
+
+
+def test_check_fanin_service_keeps_one_bounded_status_retry(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    monkeypatch.setattr(doctor.audio.time, "sleep", lambda _: None)
+    first = _FakeSocket(error=OSError("transient refusal"))
+    second = _FakeSocket(payload=_fanin_status_payload())
+    pending = [first, second]
+    monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: pending.pop(0))
+
+    result = doctor.check_fanin_service()
+
+    assert result.status == "ok"
+    assert pending == []
+    assert 0 < first.timeout <= 2.0
+    assert 0 < second.timeout <= 2.0
+    assert first.closed is True
+    assert second.closed is True
+
+
+@pytest.mark.parametrize(
+    ("check", "expected_status", "detail"),
+    [
+        (doctor.check_fanin_service, "fail", "expected object"),
+        (doctor.check_fanin_tts_drops, "ok", "not probed (ValueError)"),
+        (doctor.check_outputd_service, "fail", "expected object"),
+        (doctor.check_aec_clock_drift, "ok", "skipped"),
+    ],
+)
+def test_status_consumers_classify_non_object_root_without_crashing(
+    monkeypatch, check, expected_status, detail
+):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, b"[]")
+
+    result = check()
+
+    assert result.status == expected_status
+    assert detail in result.detail
 
 
 def test_check_fanin_service_ok_with_expected_status(monkeypatch):
