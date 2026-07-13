@@ -655,12 +655,15 @@
 > it can leave only through exact restore evidence.
 >
 > The exact positive `CommissioningEligibilityReceipt` derives its required
-> combined-speaker targets from the current `OutputTopology`. Each target must
+> combined-speaker targets from a current `OutputTopology` whose evaluated
+> status is `verified`; blocked or physically unverified output maps cannot
+> create target authority. Each target must
 > have exactly three distinct, admitted, fixed-reference-axis post-apply
 > captures in one commissioning session and threshold profile, plus a passing
 > typed verdict. The receipt binds the confirmed safety profile, applied
 > candidate, expected/fresh-readback normalized graph, exact predecessor, and
-> an honest retained-apply rollback outcome. Attempted/unknown mutation and
+> an honest retained-apply rollback outcome bound to the same operation,
+> mutation, and observed applied graph. Attempted/unknown mutation and
 > failed or performed rollback cannot mint a positive receipt. Exact rollback
 > state reuses `null_walk.DspPredecessor`; no generic graph-transaction
 > framework landed. Writer locking, live apply/readback, exact restoration,

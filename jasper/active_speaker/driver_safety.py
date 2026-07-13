@@ -951,24 +951,10 @@ def validate_driver_research_request(
         operator_inputs,
         manual_settings,
     )
-    current_by_target = {
-        str(target["target_id"]): target for target in expected.get("targets", [])
-    }
-    for target in canonical["targets"]:
-        requested_context = target.get("operator_declared_context") or {}
-        current_context = (
-            current_by_target.get(str(target["target_id"]), {}).get(
-                "operator_declared_context"
-            )
-            or {}
+    if _canonical_json(canonical) != _canonical_json(expected):
+        raise DriverSafetyProfileError(
+            "driver_research_request is stale for the current visible inputs"
         )
-        if any(
-            _canonical_json(current_context.get(key)) != _canonical_json(value)
-            for key, value in requested_context.items()
-        ):
-            raise DriverSafetyProfileError(
-                "driver_research_request operator-declared context is stale"
-            )
     return canonical
 
 

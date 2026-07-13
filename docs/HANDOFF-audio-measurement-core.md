@@ -85,10 +85,12 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   these shared identities. The lifecycle's
   `blocked_live_state_unknown` state prevents an attempted/unknown mutation from
   returning to an ordinary pre-mutation block without exact restore evidence.
-  A positive receipt requires every topology-derived combined active-speaker
+  A positive receipt requires an evaluated-`verified` topology and every
+  topology-derived combined active-speaker
   target to pass exactly three distinct admitted fixed-axis post-apply captures
   from one session/threshold profile, and binds the retained applied candidate,
-  fresh graph proof, predecessor, and honest rollback result. Those types are
+  fresh graph proof, predecessor, and rollback result bound to the same
+  operation, mutation, and observed applied graph. Those types are
   inert until the Active integration lane issues and persists them.
 
 Contract status is not current `/state`. Existing Active bundles remain

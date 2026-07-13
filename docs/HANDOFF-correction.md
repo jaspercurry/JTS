@@ -17,13 +17,16 @@
 - 🧱 **Wave 1 Active→Room receipt contract (types complete, production gate
   deliberately unchanged).** Active now owns a strict positive
   `CommissioningEligibilityReceipt` type whose required combined-speaker
-  targets are derived from the current `OutputTopology`. Each required target
+  targets are derived only from a current, evaluated-`verified`
+  `OutputTopology`; blocked or physically unverified output maps cannot create
+  positive target authority. Each required target
   must carry a passing post-apply verdict over exactly three distinct,
   excitation-admitted, fixed-reference-axis captures from one commissioning
   session and threshold profile. The receipt also binds the confirmed driver
   safety profile, exact applied candidate, expected and freshly read-back
   normalized graph, exact predecessor state, and an honest retained-apply
-  rollback outcome. An attempted/unknown mutation, a failed restore, or even a
+  rollback outcome bound to that same operation, mutation, and observed applied
+  graph. An attempted/unknown mutation, a failed restore, or even a
   successful rollback cannot mint this positive receipt.
 
   This is an inert contract in Wave 1. No Active production flow issues or
@@ -34,7 +37,8 @@
   snapshot, and `/correction/start` consumes that boolean. Neither path parses
   the receipt or requires its three-capture post-apply proof, so today's gate is
   fail-open relative to the stronger positive-receipt contract. The new
-  nine-state Active lifecycle is likewise not current `/state`. Lane C must add
+  nine-state Active lifecycle is likewise not current `/state`. The Active
+  integration lane must add
   writer-locked apply/readback/restore, receipt issuance/persistence, and the
   Room consumer together before this becomes authority. No generic graph
   transaction landed; exact rollback state reuses

@@ -4929,6 +4929,131 @@ async function testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop
   return { designConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop: true };
 }
 
+async function testDesignConflictPreservesUnsavedSafetyEdits() {
+  const posts = [];
+  const initial = {
+    status: "ready_for_review",
+    revision: 4,
+    summary: {},
+    operator_inputs: {
+      target_models: { "main:woofer": "Original W6", "main:tweeter": "Original T1" },
+    },
+    manual_settings: {
+      drivers: [
+        { target_id: "main:woofer", role: "woofer", model: "Original W6" },
+        {
+          target_id: "main:tweeter",
+          role: "tweeter",
+          model: "Original T1",
+          hard_excitation_band_hz: [5000, 22000],
+        },
+      ],
+      crossover_candidates: [],
+    },
+    driver_safety_profile: {
+      status: "confirmed",
+      targets: [{
+        target_id: "main:tweeter",
+        hard_excitation_band_hz: [5000, 22000],
+        field_provenance: {
+          hard_excitation_band_hz: {
+            confidence: "medium",
+            basis: "old saved evidence",
+            sources: ["https://example.test/old-tweeter"],
+          },
+        },
+      }],
+    },
+    driver_safety_profile_evaluation: {
+      status: "confirmed",
+      confirmed_and_current: true,
+    },
+  };
+  const fresh = {
+    status: "ready_for_review",
+    revision: 5,
+    error: "Speaker design changed in another session.",
+    summary: {},
+    operator_inputs: {
+      target_models: { "main:woofer": "Fresh W8", "main:tweeter": "Fresh T2" },
+    },
+    manual_settings: { drivers: [], crossover_candidates: [] },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method !== "POST") return Promise.resolve(response(initial));
+      const body = JSON.parse(options.body || "{}");
+      posts.push(body);
+      if (posts.length === 1) return Promise.resolve(response(fresh, false, 409));
+      return Promise.resolve(response({
+        ...fresh,
+        revision: 6,
+        error: "",
+        operator_inputs: body.operator_inputs,
+        manual_settings: body.manual_settings,
+        driver_safety_profile: { status: "unconfirmed", targets: [] },
+        driver_safety_profile_evaluation: {
+          status: "unconfirmed",
+          confirmed_and_current: false,
+        },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  if (!initialHtml.includes("confirmed for the current outputs") ||
+      !initialHtml.includes("old saved evidence")) {
+    fail("A clean confirmed draft must show its current confirmation and provenance", {
+      initialHtml,
+    });
+  }
+
+  harness.dispatchInput({
+    "data-manual-driver": "main:tweeter",
+    "data-manual-field": "hard_excitation_min_hz",
+  }, "5500");
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (posts.length !== 1) fail("A conflict must not retry without user action", { posts });
+  const conflictHtml = harness.elements.get("view-body").innerHTML;
+  for (const expected of [
+    'data-manual-field="hard_excitation_min_hz" value="5500"',
+    "Your unsaved edits were kept",
+    "needs confirmation after saving current edits",
+  ]) {
+    if (!conflictHtml.includes(expected)) {
+      fail("Conflict UI must retain and truthfully label unsaved safety edits", {
+        expected,
+        conflictHtml,
+      });
+    }
+  }
+  if (conflictHtml.includes("Fresh T2") || conflictHtml.includes("old saved evidence") ||
+      conflictHtml.includes("confirmed for the current outputs")) {
+    fail("Conflict UI must not replace edits or show stale authority", { conflictHtml });
+  }
+
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+  if (posts.length !== 2 || posts[1].expected_revision !== 5) {
+    fail("An explicit retry must reconcile against the fresh server revision", { posts });
+  }
+  const tweeter = posts[1].manual_settings.drivers.find(
+    (driver) => driver.target_id === "main:tweeter"
+  );
+  if (!tweeter || tweeter.hard_excitation_band_hz[0] !== 5500) {
+    fail("Explicit conflict retry must keep the local safety edit", { posts, tweeter });
+  }
+  return { designConflictPreservesUnsavedSafetyEdits: true };
+}
+
 const results = [];
 // Dead-end: a layout is drafted but no spare physical output exists for a LOCAL
 // subwoofer (the single-output Apple-dongle case). The card must keep the
@@ -5007,6 +5132,7 @@ results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy());
 results.push(await testStereoDriverValuesStayTargetSpecific());
 results.push(await testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop());
+results.push(await testDesignConflictPreservesUnsavedSafetyEdits());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
 results.push(await testManualCrossoverPayloadOmitsPolarityAndDelayWhenDefault());
 results.push(await testManualCrossoverPayloadEmitsPolarityAndZeroDelay());

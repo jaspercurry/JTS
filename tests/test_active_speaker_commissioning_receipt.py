@@ -170,6 +170,20 @@ def _proof(plan: RequiredTargetPlan) -> AppliedCandidateProof:
     )
 
 
+def _retained_rollback(proof: AppliedCandidateProof) -> CommissioningRollbackEvidence:
+    return CommissioningRollbackEvidence(
+        mutation_state="applied",
+        status="not_required",
+        evidence_kind="retained_apply",
+        operation_id=proof.operation_id,
+        mutation_fingerprint=proof.mutation_fingerprint,
+        observed_applied_graph_fingerprint=(
+            proof.observed_fresh_readback_graph.fingerprint
+        ),
+        predecessor_state=proof.predecessor_state,
+    )
+
+
 def _artifact(path: str, digest: str, *, session: str = SESSION_ID) -> ArtifactIdentity:
     return ArtifactIdentity(
         bundle_kind="jts_active_speaker_commissioning_authority",
@@ -340,12 +354,7 @@ def _receipt() -> CommissioningEligibilityReceipt:
             _target_verification(plan.targets[0], context=context, start=1),
             _target_verification(plan.targets[1], context=context, start=4),
         ),
-        rollback=CommissioningRollbackEvidence(
-            mutation_state="applied",
-            status="not_required",
-            evidence_kind="retained_apply",
-            predecessor_state=proof.predecessor_state,
-        ),
+        rollback=_retained_rollback(proof),
     )
 
 
@@ -373,6 +382,30 @@ def test_real_topology_factory_builds_combined_group_targets_and_compares_curren
         RequiredTargetPlan.from_topology(
             topology,
             placement_fingerprints=_placements(include_right=False),
+        )
+
+
+@pytest.mark.parametrize(
+    ("channel_index", "change"),
+    (
+        (0, {"identity_verified": False}),
+        (1, {"startup_muted": False}),
+    ),
+    ids=("identity-unverified", "tweeter-not-startup-muted"),
+)
+def test_target_plan_requires_verified_safe_topology(
+    channel_index: int,
+    change: dict[str, bool],
+) -> None:
+    payload = _stereo_topology().to_dict()
+    payload["speaker_groups"][0]["channels"][channel_index].update(change)
+    topology = OutputTopology.from_mapping(payload)
+
+    assert topology.evaluation()["status"] != "verified"
+    with pytest.raises(CommissioningReceiptError, match="verified output topology"):
+        RequiredTargetPlan.from_topology(
+            topology,
+            placement_fingerprints=_placements(),
         )
 
 
@@ -424,6 +457,41 @@ def test_omitting_real_right_stereo_target_cannot_unlock_room():
             applied_candidate=receipt.applied_candidate,
             commissioning_context_fingerprint=receipt.commissioning_context_fingerprint,
             post_apply_targets=(receipt.post_apply_targets[0],),
+            rollback=receipt.rollback,
+        )
+
+
+@pytest.mark.parametrize("changed_field", ("operation", "mutation", "graph"))
+def test_retained_rollback_cannot_cross_apply_operations(changed_field: str) -> None:
+    receipt = _receipt()
+    proof = receipt.applied_candidate
+    if changed_field == "operation":
+        changed = replace(proof, operation_id="lane-c-apply-2")
+    elif changed_field == "mutation":
+        changed = replace(proof, mutation_fingerprint=_hash("1"))
+    else:
+        graph = _normalized_graph("other-candidate")
+        changed = replace(
+            proof,
+            expected_normalized_graph=graph,
+            observed_fresh_readback_graph=NormalizedActiveRawIdentity(
+                graph.normalized_active_raw
+            ),
+        )
+    context = commissioning_context_fingerprint(
+        target_plan=receipt.target_plan,
+        applied_candidate=changed,
+    )
+
+    with pytest.raises(CommissioningReceiptError, match="retained verified apply"):
+        CommissioningEligibilityReceipt(
+            target_plan=receipt.target_plan,
+            applied_candidate=changed,
+            commissioning_context_fingerprint=context,
+            post_apply_targets=tuple(
+                _target_verification(target, context=context, start=1 + index * 3)
+                for index, target in enumerate(receipt.target_plan.targets)
+            ),
             rollback=receipt.rollback,
         )
 
@@ -639,12 +707,15 @@ def test_rollback_records_attempted_unknown_and_exact_restore_honestly():
         mutation_state="not_attempted",
         status="not_applicable",
         evidence_kind="no_mutation",
+        operation_id="lane-c-apply-blocked",
         failure_code="writer_lock_unavailable",
     )
     uncertain = CommissioningRollbackEvidence(
         mutation_state="attempted",
         status="unknown",
         evidence_kind="uncertain_mutation",
+        operation_id="lane-c-apply-unknown",
+        mutation_fingerprint=_hash("f"),
         predecessor_state=predecessor,
         failure_code="mutation_outcome_unknown",
     )
@@ -652,6 +723,8 @@ def test_rollback_records_attempted_unknown_and_exact_restore_honestly():
         mutation_state="unknown",
         status="restored",
         evidence_kind="exact_restore",
+        operation_id="lane-c-apply-restored",
+        mutation_fingerprint=_hash("f"),
         predecessor_state=predecessor,
         restored_state=ExactDspStateIdentity(predecessor.state),
         failure_code="candidate_readback_mismatch",
@@ -683,6 +756,7 @@ def test_no_mutation_rollback_refuses_post_mutation_failure_codes(failure_code: 
             mutation_state="not_attempted",
             status="not_applicable",
             evidence_kind="no_mutation",
+            operation_id="lane-c-apply-blocked",
             failure_code=failure_code,
         )
 
@@ -694,6 +768,8 @@ def test_rollback_failure_codes_match_status_and_evidence_kind():
             mutation_state="applied",
             status="restored",
             evidence_kind="exact_restore",
+            operation_id="lane-c-apply-restore",
+            mutation_fingerprint=_hash("f"),
             predecessor_state=predecessor,
             restored_state=ExactDspStateIdentity(predecessor.state),
             failure_code="rollback_apply_failed",
@@ -703,6 +779,8 @@ def test_rollback_failure_codes_match_status_and_evidence_kind():
             mutation_state="applied",
             status="failed",
             evidence_kind="uncertain_mutation",
+            operation_id="lane-c-apply-failed",
+            mutation_fingerprint=_hash("f"),
             predecessor_state=predecessor,
             failure_code="candidate_readback_mismatch",
         )
@@ -711,6 +789,8 @@ def test_rollback_failure_codes_match_status_and_evidence_kind():
             mutation_state="applied",
             status="failed",
             evidence_kind="uncertain_mutation",
+            operation_id="lane-c-apply-failed",
+            mutation_fingerprint=_hash("f"),
             predecessor_state=predecessor,
             failure_code="rollback_readback_failed",
         )
@@ -719,6 +799,8 @@ def test_rollback_failure_codes_match_status_and_evidence_kind():
             mutation_state="applied",
             status="unknown",
             evidence_kind="uncertain_mutation",
+            operation_id="lane-c-apply-unknown",
+            mutation_fingerprint=_hash("f"),
             predecessor_state=predecessor,
             failure_code="rollback_readback_mismatch",
         )

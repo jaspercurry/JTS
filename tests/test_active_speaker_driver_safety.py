@@ -350,7 +350,11 @@ def test_v2_research_refuses_stale_request_or_target_binding() -> None:
 
 def test_confirmed_profile_uses_visible_values_and_never_authorizes_audio() -> None:
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(topology, _operator_inputs())
+    request = build_driver_research_request(
+        topology,
+        _operator_inputs(),
+        _manual_settings(),
+    )
     research = _research_result(request)
 
     draft = build_design_draft(
@@ -724,7 +728,11 @@ def test_stereo_research_request_uses_exact_target_models() -> None:
 )
 def test_v2_research_refuses_role_or_model_mismatch(field: str, value: str) -> None:
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(topology, _operator_inputs())
+    request = build_driver_research_request(
+        topology,
+        _operator_inputs(),
+        _manual_settings(),
+    )
     research = _research_result(request)
     research["drivers"][1][field] = value
 
@@ -820,7 +828,11 @@ def test_sealed_cabinet_without_baffle_width_has_typed_refusal() -> None:
 
 def test_operator_override_drops_research_provenance_for_changed_field() -> None:
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(topology, _operator_inputs())
+    request = build_driver_research_request(
+        topology,
+        _operator_inputs(),
+        _manual_settings(),
+    )
     imported = build_design_draft(
         topology,
         driver_research_request=request,
@@ -976,7 +988,7 @@ def test_research_request_operator_context_stales_after_visible_edit() -> None:
 
     with pytest.raises(
         ActiveSpeakerDesignDraftError,
-        match="operator-declared context is stale",
+        match="stale for the current visible inputs",
     ):
         build_design_draft(
             topology,
@@ -984,3 +996,71 @@ def test_research_request_operator_context_stales_after_visible_edit() -> None:
             manual_settings=edited,
             operator_inputs=_operator_inputs(),
         )
+
+
+def test_research_request_stales_when_current_context_adds_a_safety_field() -> None:
+    topology = mono_output_topology(card_id=None)
+    original = _manual_settings()
+    original["drivers"][0].pop("cabinet")
+    request = build_driver_research_request(topology, _operator_inputs(), original)
+
+    with pytest.raises(
+        DriverSafetyProfileError,
+        match="stale for the current visible inputs",
+    ):
+        validate_driver_research_request(
+            request,
+            topology,
+            _operator_inputs(),
+            _manual_settings(),
+        )
+
+
+def test_research_request_stales_when_current_build_notes_change() -> None:
+    topology = mono_output_topology(card_id=None)
+    request = build_driver_research_request(
+        topology,
+        _operator_inputs(),
+        _manual_settings(),
+    )
+    changed_inputs = {**_operator_inputs(), "notes": "Vented production cabinet"}
+
+    with pytest.raises(
+        DriverSafetyProfileError,
+        match="stale for the current visible inputs",
+    ):
+        validate_driver_research_request(
+            request,
+            topology,
+            changed_inputs,
+            _manual_settings(),
+        )
+
+
+def test_later_confirmation_records_confirmation_time_not_draft_creation(
+    tmp_path: Path,
+) -> None:
+    topology = mono_output_topology(card_id=None)
+    path = tmp_path / "active_speaker_design_draft.json"
+    first = save_design_draft(
+        topology,
+        manual_settings=_manual_settings(),
+        operator_inputs=_operator_inputs(),
+        path=path,
+        created_at="2026-07-13T12:00:00Z",
+    )
+    confirmed = save_design_draft(
+        topology,
+        manual_settings=_manual_settings(),
+        operator_inputs=_operator_inputs(),
+        confirm_safety_profile=True,
+        path=path,
+        created_at="2026-07-13T12:05:00Z",
+    )
+
+    assert first["created_at"] == "2026-07-13T12:00:00Z"
+    assert confirmed["created_at"] == first["created_at"]
+    assert confirmed["updated_at"] == "2026-07-13T12:05:00Z"
+    assert confirmed["driver_safety_profile"]["confirmation"]["confirmed_at"] == (
+        "2026-07-13T12:05:00Z"
+    )

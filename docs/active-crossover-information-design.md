@@ -671,14 +671,17 @@ That prevents durable state from forgetting that the live graph may be
 uncertain.
 
 The positive `CommissioningEligibilityReceipt` is deliberately demanding. Its
-required targets are derived from the current `OutputTopology`'s combined active
-speaker groups, not supplied by the caller. Every required target must pass one
+required targets are derived from a current, evaluated-`verified`
+`OutputTopology`'s combined active speaker groups, not supplied by the caller;
+blocked or physically unverified maps cannot create target authority. Every
+required target must pass one
 post-apply verdict over exactly three distinct, admitted, fixed-reference-axis
 captures from one commissioning session and threshold profile. The receipt also
 binds the confirmed safety profile, applied candidate, expected and freshly read
 back normalized graph, exact predecessor state, and an honest retained-apply
-rollback outcome. A failed, restored, attempted, or unknown mutation cannot mint
-the positive receipt.
+rollback outcome bound to that same operation, mutation, and observed applied
+graph. A failed, restored, attempted, or unknown mutation cannot mint the
+positive receipt.
 
 These are inert types in Wave 1. Current Active bundles remain forensic and
 fail-soft, the new lifecycle is not the source of current `/state`, and no

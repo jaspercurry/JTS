@@ -1938,6 +1938,12 @@ def _active_speaker_driver_research_request_payload(
 
     if not isinstance(raw, dict):
         raise ValueError("driver research request must be an object")
+    allowed = {"operator_inputs", "manual_settings"}
+    unknown = sorted(str(key) for key in raw if key not in allowed)
+    if unknown:
+        raise ValueError(
+            "driver research request has unknown fields: " + ", ".join(unknown)
+        )
     topology = load_output_topology()
     operator_inputs = normalise_operator_inputs(raw.get("operator_inputs"))
     manual_settings = normalise_manual_settings(raw.get("manual_settings"))

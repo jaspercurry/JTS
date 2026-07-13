@@ -1536,6 +1536,11 @@ def test_driver_research_request_payload_is_target_bound_and_silent(
         "authorizes_playback": False,
         "research_is_advisory": True,
     }
+    with pytest.raises(ValueError, match="unknown fields: typo"):
+        sound_setup._active_speaker_driver_research_request_payload({
+            "operator_inputs": {},
+            "typo": "must not disappear silently",
+        })
 
 
 def test_active_speaker_crossover_preview_refreshes_current_output_topology(

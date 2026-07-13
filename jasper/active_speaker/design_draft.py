@@ -884,6 +884,7 @@ def build_design_draft(
     prior_safety_profile: Mapping[str, Any] | None = None,
     confirm_safety_profile: bool = False,
     created_at: str | None = None,
+    updated_at: str | None = None,
 ) -> dict[str, Any]:
     """Build a versioned, non-authoritative speaker design draft."""
 
@@ -985,7 +986,8 @@ def build_design_draft(
         status = "needs_research"
     else:
         status = "ready_for_review"
-    now = created_at or _utc_now()
+    now = updated_at or created_at or _utc_now()
+    created = created_at or now
     safety_profile = None
     safety_evaluation = evaluate_driver_safety_profile(None, topology).to_dict()
     if _active_crossover_pairs(topology):
@@ -1008,7 +1010,7 @@ def build_design_draft(
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": DESIGN_DRAFT_KIND,
         "status": status,
-        "created_at": now,
+        "created_at": created,
         "updated_at": now,
         "topology": topology.to_dict(include_evaluation=True),
         "operator_inputs": inputs,
@@ -1181,6 +1183,7 @@ def save_design_draft(
     target = _design_draft_path(path)
     with _DESIGN_DRAFT_WRITE_LOCK:
         prior = load_design_draft(target)
+        event_at = created_at or _utc_now()
         current_revision = prior.get("revision", 0)
         if expected_revision is not _REVISION_UNSET:
             if (
@@ -1208,14 +1211,15 @@ def save_design_draft(
                 else None
             ),
             confirm_safety_profile=confirm_safety_profile,
-            created_at=created_at
-            or (
-                prior.get("created_at") if prior.get("status") != "not_saved" else None
+            created_at=(
+                prior.get("created_at")
+                if prior.get("status") != "not_saved"
+                else event_at
             ),
+            updated_at=event_at,
         )
         draft["path"] = str(target)
         draft["revision"] = current_revision + 1
-        draft["updated_at"] = _utc_now() if created_at is None else draft["updated_at"]
         atomic_write_text(
             target,
             json.dumps(draft, indent=2, sort_keys=True) + "\n",

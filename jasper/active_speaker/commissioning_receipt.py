@@ -4,10 +4,10 @@
 
 """Strict Active-owned commissioning receipt for downstream Room gating.
 
-This is an inert authority model.  A later Lane-C shell will derive the exact
-target plan from the current topology, mint applied-graph/read-back/protection
-proof, and persist the receipt.  Nothing here reads files, mutates CamillaDSP,
-or changes the current Room gate.
+This is an inert authority model.  A later Active integration shell will derive
+the exact target plan from the current topology, mint applied-graph, read-back,
+and protection proof, and persist the receipt.  Nothing here reads files,
+mutates CamillaDSP, or changes the current Room gate.
 
 The current Active measurement bundles are intentionally fail-soft historical
 evidence and are **not** commissioning authority.  Wave 2 must create this
@@ -287,6 +287,10 @@ class RequiredTargetPlan:
         except OutputTopologyError as exc:  # pragma: no cover - typed input guards it
             raise CommissioningReceiptError(str(exc)) from exc
         object.__setattr__(self, "topology", topology)
+        if topology.evaluation().get("status") != "verified":
+            raise CommissioningReceiptError(
+                "required target plan requires a verified output topology"
+            )
         object.__setattr__(
             self, "topology_id", _text(self.topology_id, field_name="topology_id")
         )
@@ -619,6 +623,9 @@ class CommissioningRollbackEvidence:
     mutation_state: MutationState
     status: RollbackStatus
     evidence_kind: RollbackEvidenceKind
+    operation_id: str
+    mutation_fingerprint: str | None = None
+    observed_applied_graph_fingerprint: str | None = None
     predecessor_state: ExactDspStateIdentity | None = None
     restored_state: ExactDspStateIdentity | None = None
     failure_code: str | None = None
@@ -653,6 +660,23 @@ class CommissioningRollbackEvidence:
         object.__setattr__(self, "mutation_state", mutation_state)
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "evidence_kind", evidence_kind)
+        operation_id = _text(self.operation_id, field_name="operation_id")
+        mutation_fingerprint = (
+            None
+            if self.mutation_fingerprint is None
+            else _sha256(
+                self.mutation_fingerprint,
+                field_name="mutation_fingerprint",
+            )
+        )
+        observed_applied_graph_fingerprint = (
+            None
+            if self.observed_applied_graph_fingerprint is None
+            else _sha256(
+                self.observed_applied_graph_fingerprint,
+                field_name="observed_applied_graph_fingerprint",
+            )
+        )
         predecessor = self.predecessor_state
         restored = self.restored_state
         if predecessor is not None and not isinstance(
@@ -672,6 +696,8 @@ class CommissioningRollbackEvidence:
             if (
                 status != "not_applicable"
                 or evidence_kind != "no_mutation"
+                or mutation_fingerprint is not None
+                or observed_applied_graph_fingerprint is not None
                 or any(item is not None for item in (predecessor, restored))
                 or failure not in _PRE_MUTATION_ROLLBACK_FAILURE_CODES
             ):
@@ -682,6 +708,8 @@ class CommissioningRollbackEvidence:
             if (
                 mutation_state != "applied"
                 or evidence_kind != "retained_apply"
+                or mutation_fingerprint is None
+                or observed_applied_graph_fingerprint is None
                 or predecessor is None
                 or restored is not None
                 or failure is not None
@@ -693,6 +721,7 @@ class CommissioningRollbackEvidence:
             if (
                 mutation_state not in {"attempted", "applied", "unknown"}
                 or evidence_kind != "exact_restore"
+                or mutation_fingerprint is None
                 or predecessor is None
                 or restored is None
                 or restored.fingerprint != predecessor.fingerprint
@@ -705,6 +734,7 @@ class CommissioningRollbackEvidence:
             if (
                 mutation_state not in {"attempted", "applied", "unknown"}
                 or evidence_kind != "uncertain_mutation"
+                or mutation_fingerprint is None
                 or predecessor is None
                 or (
                     restored is not None
@@ -719,6 +749,7 @@ class CommissioningRollbackEvidence:
             if (
                 mutation_state not in {"attempted", "applied", "unknown"}
                 or evidence_kind != "uncertain_mutation"
+                or mutation_fingerprint is None
                 or predecessor is None
                 or restored is not None
                 or failure not in _UNKNOWN_ROLLBACK_FAILURE_CODES
@@ -730,6 +761,13 @@ class CommissioningRollbackEvidence:
             raise CommissioningReceiptError(
                 "post-attempt mutation cannot use not_applicable rollback"
             )
+        object.__setattr__(self, "operation_id", operation_id)
+        object.__setattr__(self, "mutation_fingerprint", mutation_fingerprint)
+        object.__setattr__(
+            self,
+            "observed_applied_graph_fingerprint",
+            observed_applied_graph_fingerprint,
+        )
         object.__setattr__(self, "failure_code", failure)
         object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
 
@@ -740,6 +778,11 @@ class CommissioningRollbackEvidence:
             "mutation_state": self.mutation_state,
             "status": self.status,
             "evidence_kind": self.evidence_kind,
+            "operation_id": self.operation_id,
+            "mutation_fingerprint": self.mutation_fingerprint,
+            "observed_applied_graph_fingerprint": (
+                self.observed_applied_graph_fingerprint
+            ),
             "predecessor_state": (
                 self.predecessor_state.to_dict()
                 if self.predecessor_state is not None
@@ -763,6 +806,9 @@ class CommissioningRollbackEvidence:
                 "mutation_state",
                 "status",
                 "evidence_kind",
+                "operation_id",
+                "mutation_fingerprint",
+                "observed_applied_graph_fingerprint",
                 "predecessor_state",
                 "restored_state",
                 "failure_code",
@@ -788,6 +834,11 @@ class CommissioningRollbackEvidence:
             mutation_state=_raw(value, "mutation_state"),
             status=_raw(value, "status"),
             evidence_kind=_raw(value, "evidence_kind"),
+            operation_id=_raw(value, "operation_id"),
+            mutation_fingerprint=_raw(value, "mutation_fingerprint"),
+            observed_applied_graph_fingerprint=_raw(
+                value, "observed_applied_graph_fingerprint"
+            ),
             predecessor_state=predecessor,
             restored_state=restored,
             failure_code=_raw(value, "failure_code"),
@@ -1304,6 +1355,11 @@ class CommissioningEligibilityReceipt:
             self.rollback.mutation_state != "applied"
             or self.rollback.status != "not_required"
             or self.rollback.evidence_kind != "retained_apply"
+            or self.rollback.operation_id != self.applied_candidate.operation_id
+            or self.rollback.mutation_fingerprint
+            != self.applied_candidate.mutation_fingerprint
+            or self.rollback.observed_applied_graph_fingerprint
+            != self.applied_candidate.observed_fresh_readback_graph.fingerprint
             or self.rollback.predecessor_state is None
             or self.rollback.predecessor_state.fingerprint
             != self.applied_candidate.predecessor_state.fingerprint

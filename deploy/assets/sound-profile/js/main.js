@@ -138,6 +138,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     designDraft: null,
     error: '',
     dirty: false,
+    safetyDirty: false,
+    editedDriverTargets: {},
     saving: false,
     promptCopied: false,
     promptSelected: false,
@@ -1313,6 +1315,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     driverResearch.error = '';
     driverResearch.dirty = true;
+    driverResearch.safetyDirty = true;
+    driverResearch.editedDriverTargets[targetId] = true;
     driverResearch.researchRequest = null;
     driverResearch.promptCopied = false;
     driverResearch.promptSelected = false;
@@ -1778,6 +1782,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearch.error = '';
     }
     driverResearch.dirty = false;
+    driverResearch.safetyDirty = false;
+    driverResearch.editedDriverTargets = {};
     driverResearch.promptCopied = false;
     driverResearch.promptSelected = false;
     driverResearch.researchRequest = payload.driver_research_request || null;
@@ -2285,7 +2291,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var safetyProfile = saved.driver_safety_profile || {};
     var safetyEvaluation = saved.driver_safety_profile_evaluation || {};
     var safetyStatus = safetyEvaluation.status || safetyProfile.status || 'missing';
-    var safetyReady = safetyEvaluation.confirmed_and_current === true;
+    var safetyReady = !driverResearch.safetyDirty &&
+      safetyEvaluation.confirmed_and_current === true;
     var savedHtml =
       '<div class="driver-research__summary driver-research__summary--saved">' +
         '<span class="status-pill' + driverResearchWorkingStatusClass(savedStatus) + '">' +
@@ -2296,9 +2303,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         ) + '</p>' : '') +
         '<p class="setting-row__hint">Safety profile: ' + escapeHtml(
           safetyReady ? 'confirmed for the current outputs' :
+            (driverResearch.safetyDirty ? 'needs confirmation after saving current edits' :
             (safetyStatus === 'stale' ? 'needs confirmation after an output change' :
               (safetyStatus === 'incomplete' ? 'add the missing limits before confirmation' :
-                'review and confirm the visible limits'))
+                'review and confirm the visible limits')))
         ) + '.</p>' +
       '</div>';
     if (driverResearch.error) {
@@ -2397,20 +2405,26 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderManualDriverSettings(topology) {
     var targets = driverResearchTargets(topology);
-    var profileTargets = ((driverResearch.designDraft || {}).driver_safety_profile || {}).targets || [];
-    var importedTargets = (driverResearch.importedPayload &&
-      Array.isArray(driverResearch.importedPayload.drivers))
-      ? driverResearch.importedPayload.drivers : [];
+    var profileTargets = driverResearch.safetyDirty ? [] :
+      (((driverResearch.designDraft || {}).driver_safety_profile || {}).targets || []);
+    var importedEvidence = driverResearch.importedPayload;
+    var importedEvidenceCurrent = importedEvidence &&
+      (Number(importedEvidence.artifact_schema_version || 1) !== 2 ||
+        !!driverResearch.researchRequest);
+    var importedTargets = (importedEvidenceCurrent &&
+      Array.isArray(importedEvidence.drivers))
+      ? importedEvidence.drivers : [];
     return '<p class="setting-row__hint">Make/model and safety limits are saved per physical output. Crossover candidates remain shared by driver-role pair.</p>' +
       '<div class="driver-settings">' + targets.map(function(target) {
       var role = target.role;
       var targetId = target.target_id;
       var setting = driverSetting(targetId);
-      var evidence = profileTargets.find(function(item) {
+      var evidence = driverResearch.editedDriverTargets[targetId] ? {} :
+        (profileTargets.find(function(item) {
         return item && item.target_id === targetId;
       }) || importedTargets.find(function(item) {
         return item && item.target_id === targetId;
-      }) || {};
+      }) || {});
       return '<div class="driver-settings__row">' +
         '<label class="driver-research__field">' +
           '<span>' + escapeHtml(target.group_label + ' · ' + driverResearchRoleLabel(role) + ' · ' + target.output_label) + '</span>' +
@@ -4100,6 +4114,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearch.inputs.target_models[driverTarget] = ev.target.value;
       driverResearch.error = '';
       driverResearch.dirty = true;
+      driverResearch.safetyDirty = true;
+      driverResearch.editedDriverTargets[driverTarget] = true;
       driverResearch.researchRequest = null;
       driverResearch.promptCopied = false;
       driverResearch.promptSelected = false;
@@ -4112,6 +4128,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearch.inputs[driverField] = ev.target.value;
       driverResearch.error = '';
       driverResearch.dirty = true;
+      driverResearch.safetyDirty = true;
       driverResearch.researchRequest = null;
       driverResearch.promptCopied = false;
       driverResearch.promptSelected = false;
@@ -4713,6 +4730,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.touched = true;
     outputTopology.error = '';
     driverResearch.dirty = true;
+    driverResearch.safetyDirty = true;
     crossoverPreview.payload = null;
     crossoverPreview.error = '';
     render();
@@ -5200,6 +5218,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       applyDriverResearchToManualSettings(payload);
       driverResearch.error = '';
       driverResearch.dirty = true;
+      driverResearch.safetyDirty = true;
+      driverResearch.editedDriverTargets = {};
       driverResearch.promptCopied = false;
       driverResearch.promptSelected = false;
       status('Imported driver research. Review the visible values before updating the working setup.');
@@ -5283,9 +5303,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       var payload = await resp.json();
       if (resp.status === 409) {
-        ingestDesignDraft(payload, {force: true});
-        driverResearch.error = payload.error ||
-          'Speaker design changed in another tab. Review the refreshed values.';
+        var keptLocalEdits = driverResearch.dirty;
+        ingestDesignDraft(payload, {force: !keptLocalEdits});
+        var conflictMessage = payload.error || 'Speaker design changed in another tab.';
+        driverResearch.error = keptLocalEdits
+          ? conflictMessage + ' Your unsaved edits were kept; review and save again.'
+          : conflictMessage + ' Review the refreshed values.';
         status(driverResearch.error, true);
         render();
         return false;
