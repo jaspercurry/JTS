@@ -273,7 +273,12 @@ outputd/fan-in xruns. Without that declaration, the artifact records
 `route_health_anomaly` and doctor rejects the low-latency claim. With the
 declaration, the artifact writer and doctor still compare live Rust bridge
 period/ring state and fan-in USB resampler lock/target state against the route
-identity; any mismatch records/fails the claim as live route-health drift.
+identity. The artifact writer is intentionally strict mid-stream: an unlocked
+resampler fails artifact creation. Doctor evaluates stored certification in the
+box's steady state: when fan-in explicitly reports the direct lane
+`health:"idle"`, `locked:false` is expected and does not invalidate the artifact;
+capturing, broken, or unknown lane health remains strict. Static identity,
+including the configured resampler target, must still match while idle.
 `jasper-route-latency-harness analyze` prints exactly this delta (every
 nonzero usbsink/fan-in/outputd counter change across the measurement
 window) and states whether the declaration *would* be justified — it never
@@ -2049,7 +2054,12 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-11 (recorded the 2026-07-11 promotion cert result in
+Last verified: 2026-07-13 (re-verified the route artifact/doctor live-state
+contract against `jasper/audio_validation.py`, `jasper/cli/doctor/audio.py`, and
+fan-in's canonical `direct.health` idle/capturing/broken classifier; doctor now
+tolerates only the activity-dependent idle unlock while artifact creation stays
+strict and static target identity still matches). Prior 2026-07-11: recorded the
+2026-07-11 promotion cert result in
 "Current Production Route" and "Productization Plan", tightened the cert-gate
 mentions from p95<=48/p99<=60 to the certified p95<=40/p99<=42 ms budget, and
 noted the config_mismatch re-cert requirement; re-verified against

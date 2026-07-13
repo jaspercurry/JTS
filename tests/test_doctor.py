@@ -3940,6 +3940,93 @@ def test_route_latency_evidence_passes_certified_promotion_artifact(
     assert "artifact_status=pass" in r.detail
 
 
+def test_route_latency_evidence_passes_certified_artifact_while_lane_idle(
+    monkeypatch,
+    tmp_path,
+):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            )
+        },
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_mode="solo",
+    )
+    identity = plan.route_latency_identity()
+    artifact = audio_validation.make_route_latency_artifact(
+        route_id=audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K,
+        source_id="usbsink",
+        dac_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_config_hash=plan.route_config_hash,
+        camilla_config_hash=str(identity["camilla_config_hash"]),
+        fanin_resampler_config=identity["fanin_resampler_config"],
+        outputd_config=identity["outputd_config"],
+        rust_bridge_config=identity["rust_bridge_config"],
+        uac2_gadget_attrs=identity["uac2_gadget_attrs"],
+        p95_ms=38.0,
+        p99_ms=41.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        impulse_spacing_jittered=True,
+    )
+    artifact_dir = tmp_path / "artifacts"
+    audio_validation.write_artifact(artifact, directory=artifact_dir)
+    bridge = identity["rust_bridge_config"]
+    state_path = tmp_path / "usbsink-state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "implementation": bridge["implementation"],
+                "period_frames": bridge["period_frames"],
+                "ring": {"capacity_periods": bridge["ring_periods"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    real_path = Path
+    monkeypatch.setattr(
+        doctor.audio,
+        "Path",
+        lambda value: state_path
+        if value == "/run/jasper-usbsink/state.json"
+        else real_path(value),
+    )
+    resampler = identity["fanin_resampler_config"]
+    expected_target = (
+        resampler["target_frames"] + resampler["warmup_cushion_frames"]
+    )
+    monkeypatch.setattr(
+        doctor.audio,
+        "_read_status_socket",
+        lambda _path: {
+            "inputs": [
+                {
+                    "label": "usbsink",
+                    "source": "direct",
+                    "direct": {"health": "idle"},
+                    "resampler": {
+                        "locked": False,
+                        "target_fill_frames": expected_target,
+                    },
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+    monkeypatch.setenv("JASPER_AUDIO_VALIDATION_DIR", str(artifact_dir))
+
+    r = doctor.check_route_latency_evidence()
+
+    assert r.status == "ok"
+    assert "artifact_status=pass" in r.detail
+    assert "live_fanin_resampler_unlocked" not in r.detail
+
+
 def test_route_latency_evidence_fails_live_state_mismatch(
     monkeypatch,
     tmp_path,
