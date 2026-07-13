@@ -1689,8 +1689,15 @@ mod tests {
 
         let parsed: serde_json::Value =
             serde_json::from_str(&server.snapshot_json()).expect("STATUS parses");
-        assert!(parsed["output"]["snd_pcm_delay_frames"].is_null());
-        assert!(parsed["output"]["snd_pcm_delay_ms"].is_null());
+        let output = parsed["output"].as_object().expect("output object");
+        assert_eq!(
+            output.get("snd_pcm_delay_frames"),
+            Some(&serde_json::Value::Null),
+        );
+        assert_eq!(
+            output.get("snd_pcm_delay_ms"),
+            Some(&serde_json::Value::Null),
+        );
     }
 
     #[test]
