@@ -92,6 +92,44 @@ def test_bundle_export_refuses_empty_bundle(tmp_path: Path):
         bundle_tools.export_bundle(bundle_dir, tmp_path / "exported")
 
 
+def test_bundle_calibration_reader_allows_absent_file(tmp_path: Path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+
+    assert bundle_tools._load_bundle_calibration(bundle_dir) is None
+
+
+@pytest.mark.parametrize(
+    "contents",
+    (
+        "{",
+        "[]",
+        "{}",
+        '{"curve": null}',
+        '{"curve": []}',
+        '{"curve": "invalid"}',
+        '{"curve": {}}',
+        json.dumps({
+            "curve": {
+                "freqs_hz": [20.0, "1000"],
+                "correction_db": [0.0, 0.0],
+            }
+        }),
+    ),
+)
+def test_bundle_calibration_reader_rejects_present_malformed_file(
+    tmp_path: Path,
+    contents: str,
+):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "mic_calibration.json").write_text(contents)
+
+    with pytest.raises(bundle_tools.BundleToolError) as exc:
+        bundle_tools._load_bundle_calibration(bundle_dir)
+    assert "mic_calibration.json" in str(exc.value)
+
+
 @pytest.mark.asyncio
 async def test_snr_estimate_is_recorded_in_capture_quality(tmp_path: Path):
     sess = await _complete_one_position_bundle(tmp_path)

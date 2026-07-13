@@ -82,7 +82,6 @@ CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
 _SENSITIVITY_TRIM_EPS_DB = 0.05
 # Floor for any single attenuation, mirroring the explicit-gain clamp below.
 _MAX_ATTENUATION_DB = -60.0
-_EXCITATION_MATCH_TOLERANCE_DB = 0.05
 
 # Canonical per-parameter provenance vocabulary (SC-3). ``RECOMMENDED_START``
 # is reserved for future profile prefills; no code path in this module emits
@@ -231,8 +230,9 @@ def _effective_excitation_dbfs(record: Any) -> float | None:
     """Return a verified analyzer excitation, or ``None`` (fail closed).
 
     The excitation artifact is a small gain ledger owned by the capture record:
-    generated sweep peak + the role-varying commissioning gain = the effective
-    digital drive (the remaining commissioning gains are common and cancel).
+    generated sweep peak + the role-varying commissioning gain + any exact
+    server-owned main-volume lock = the effective digital drive (the remaining
+    commissioning gains are common and cancel).
     We recompute the total instead of trusting a loose scalar, which makes the
     evidence independently auditable and lets captures made through different
     applied role trims be normalized onto one common 0 dB reference. The quiet
@@ -240,35 +240,14 @@ def _effective_excitation_dbfs(record: Any) -> float | None:
     """
     if not isinstance(record, Mapping):
         return None
-    ledger = record.get("excitation")
-    if (
-        not isinstance(ledger, Mapping)
-        or ledger.get("schema_version") != 1
-        or ledger.get("scope") not in {
-            "sweep_plus_role_varying_commission_gain",
-            "sweep_plus_role_gain_and_driver_level_lock",
-        }
-    ):
-        return None
-    sweep_peak = _finite_float(ledger.get("sweep_peak_dbfs"))
-    commissioning_gain = _finite_float(ledger.get("commissioning_gain_db"))
-    locked_main_volume = (
-        _finite_float(ledger.get("locked_main_volume_db"))
-        if ledger.get("scope") == "sweep_plus_role_gain_and_driver_level_lock"
-        else 0.0
+    from .crossover_contract import verified_driver_excitation
+
+    verified = verified_driver_excitation(record.get("excitation"))
+    return (
+        float(verified["effective_peak_dbfs"])
+        if isinstance(verified, Mapping)
+        else None
     )
-    declared_effective = _finite_float(ledger.get("effective_peak_dbfs"))
-    if (
-        sweep_peak is None
-        or commissioning_gain is None
-        or locked_main_volume is None
-        or declared_effective is None
-    ):
-        return None
-    computed = sweep_peak + commissioning_gain + locked_main_volume
-    if abs(computed - declared_effective) > _EXCITATION_MATCH_TOLERANCE_DB:
-        return None
-    return computed
 
 
 def _measured_level_trims(

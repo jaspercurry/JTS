@@ -19,6 +19,95 @@ from ._common import REGION_FC_MATCH_TOLERANCE_HZ
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
 TUNING_OWNERS = frozenset({"manual", "automatic"})
+DRIVER_EXCITATION_MATCH_TOLERANCE_DB = 0.05
+_DRIVER_EXCITATION_SCOPES = frozenset({
+    "sweep_plus_role_varying_commission_gain",
+    "sweep_plus_role_gain_and_driver_level_lock",
+})
+
+
+def verified_driver_excitation(value: Any) -> dict[str, Any] | None:
+    """Audit arithmetic and attenuation-only bounds for one driver ledger."""
+
+    if not isinstance(value, Mapping):
+        return None
+    scope = value.get("scope")
+    if (
+        type(value.get("schema_version")) is not int
+        or value.get("schema_version") != 1
+        or not isinstance(scope, str)
+        or scope not in _DRIVER_EXCITATION_SCOPES
+    ):
+        return None
+
+    def number(name: str) -> float | None:
+        raw = value.get(name)
+        if (
+            isinstance(raw, bool)
+            or not isinstance(raw, (int, float))
+            or not math.isfinite(float(raw))
+        ):
+            return None
+        return float(raw)
+
+    sweep_peak = number("sweep_peak_dbfs")
+    commissioning_gain = number("commissioning_gain_db")
+    effective = number("effective_peak_dbfs")
+    if scope == "sweep_plus_role_gain_and_driver_level_lock":
+        locked_main_volume = number("locked_main_volume_db")
+    else:
+        if "locked_main_volume_db" in value:
+            return None
+        locked_main_volume = 0.0
+    if any(
+        item is None
+        for item in (sweep_peak, commissioning_gain, effective, locked_main_volume)
+    ):
+        return None
+    assert sweep_peak is not None
+    assert commissioning_gain is not None
+    assert effective is not None
+    assert locked_main_volume is not None
+    canonical_effective = sweep_peak + commissioning_gain + locked_main_volume
+    if (
+        abs(canonical_effective - effective)
+        > DRIVER_EXCITATION_MATCH_TOLERANCE_DB
+    ):
+        return None
+    scalar_playback_gain = commissioning_gain + locked_main_volume
+    if (
+        sweep_peak > 0.0
+        or commissioning_gain > 0.0
+        or locked_main_volume > 0.0
+        or canonical_effective > 0.0
+        or effective > 0.0
+        or scalar_playback_gain > 0.0
+    ):
+        return None
+    for name in ("gain_source", "baseline_id", "topology_id", "role"):
+        if name in value and (
+            not isinstance(value[name], str) or not value[name].strip()
+        ):
+            return None
+    result = {
+        "schema_version": 1,
+        "scope": scope,
+        "sweep_peak_dbfs": sweep_peak,
+        "commissioning_gain_db": commissioning_gain,
+        "effective_peak_dbfs": canonical_effective,
+        # Deconvolution removes sweep amplitude. Replay removes only this
+        # scalar role/main-volume gain; the applied electrical crossover,
+        # protection, and filter response remain in the measured response.
+        "scalar_playback_gain_db": scalar_playback_gain,
+        **{
+            name: value[name]
+            for name in ("gain_source", "baseline_id", "topology_id", "role")
+            if name in value
+        },
+    }
+    if scope == "sweep_plus_role_gain_and_driver_level_lock":
+        result["locked_main_volume_db"] = locked_main_volume
+    return result
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

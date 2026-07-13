@@ -147,9 +147,18 @@ def _raw_capture_paths(bundle_dir: Path) -> list[Path]:
 
 def _load_bundle_calibration(bundle_dir: Path) -> calibration.CalibrationCurve | None:
     payload = _read_json(bundle_dir / "mic_calibration.json")
-    if not payload or not isinstance(payload.get("curve"), dict):
+    if payload is None:
         return None
-    return calibration.CalibrationCurve.from_dict(payload["curve"])
+    if not isinstance(payload.get("curve"), dict):
+        raise BundleToolError(
+            "mic_calibration.json must contain a calibration curve object"
+        )
+    try:
+        return calibration.CalibrationCurve.from_dict(payload["curve"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BundleToolError(
+            f"mic_calibration.json contains an invalid calibration curve: {exc}"
+        ) from exc
 
 
 def inspect_bundle(
