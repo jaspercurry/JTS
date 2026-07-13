@@ -4,14 +4,14 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`01713826`): 2026-07-12.
+Last reconciled against `main` (`22230cf8`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 474
-- **fixed**: 193
+- **open**: 380
+- **fixed**: 284
 - **in-progress**: 0
-- **mooted**: 9
+- **mooted**: 12
 - **deferred**: 1
 
 ## Ledger
@@ -54,61 +54,61 @@ Last reconciled against `main` (`01713826`): 2026-07-12.
 | DA-0028 | `jasper/web/bluetooth_setup.py` :: _start_pair_stream / _drive | should-fix | W5 | **fixed** | unexpected pair-driver failures now emit one structured error with traceback — #1301 |
 | DA-0031 | `jasper/web/rooms_setup.py` :: _self_addresses / _lan_target / _post_groupi | should-fix | W5 | **fixed** | package-shared rooms control helpers now expose a tested public boundary — #1309 |
 | DA-0032 | `jasper/web/sound_setup.py` :: :177 | should-fix | W5 | **fixed** | all 92 structured sound events use canonical rendering with fidelity guards — #1310 |
-| DA-0033 | `jasper/web/sound_setup.py` :: Handler.do_POST | should-fix | W5 | **open** | — |
-| DA-0038 | `jasper/web/wifi_setup.py` :: do_POST | should-fix | W5 | **open** | — |
+| DA-0033 | `jasper/web/sound_setup.py` :: Handler.do_POST | should-fix | W5 | **fixed** | POST dispatch failures contained without secondary responses; invalid lengths rejected before reads — #1312 |
+| DA-0038 | `jasper/web/wifi_setup.py` :: do_POST | should-fix | W5 | **fixed** | mutation outcomes observable; malformed bodies rejected and secret-bearing failures scrubbed — #1317 |
 | DA-0042 | `scripts/_extract_wake_corpus.py` :: main --force deletion boundary | should-fix | W5 | **fixed** | positive ownership proof + lexical/resolved/filesystem-identity guards — #1291 |
 | DA-0043 | `scripts/doc-freshness.sh` :: :28-37, epoch_days_ago | should-fix | W5 | **fixed** | help is parsed before the optional threshold and prints the complete doc block — #1306 |
 | DA-0044 | `scripts/multiroom-spike.sh` :: usage() :528-532 | should-fix | W5 | **fixed** | help/no-action paths print the complete safety and operation block — #1306 |
 | DA-0045 | `scripts/s0-sync-bench.sh` :: :660,:674 | should-fix | W5 | **fixed** | help/no-action paths share complete portable usage extraction — #1306 |
 | DA-0046 | `scripts/s0-sync-measure.py` :: run_soak:304 | should-fix | W5 | **fixed** | drained or unavailable buffer telemetry now fails clock lock without crashing — #1307 |
 | DA-0047 | `capture-page/js/level-events.js` :: LevelStreamer | should-fix | W1 | **fixed** | level-ramp protocol wired into the shipped capture page — #1202 |
-| DA-0048 | `deploy/assets/sound-profile/js/main.js` :: fmtDbfs :193, toneSummary :1600, outputStart | should-fix | W1 | **open** | — |
-| DA-0049 | `deploy/install.sh` :: camilla_config_has_safe_volume_limit | should-fix | W1 | **open** | — |
-| DA-0050 | `jasper/accessories/registry.py` :: Device / KNOWN_DEVICES | should-fix | W1 | **open** | — |
+| DA-0048 | `deploy/assets/sound-profile/js/main.js` :: fmtDbfs :193, toneSummary :1600, outputStart | should-fix | W1 | **fixed** | declaration-only commissioning helpers and permanently inert client state removed — #1313 |
+| DA-0049 | `deploy/install.sh` :: camilla_config_has_safe_volume_limit | should-fix | W1 | **fixed** | unreachable installer guard removed; checked-in Camilla YAML safety pin made fail-closed — #1314 |
+| DA-0050 | `jasper/accessories/registry.py` :: Device / KNOWN_DEVICES | should-fix | W1 | **fixed** | obsolete migration aliases removed; plural RemoteProfile identity remains sole registry boundary — #1316 |
 | DA-0051 | `jasper/accessories/registry.py` :: RemoteProfile.capabilities / CAP_* | should-fix | W1 | **open** | — |
-| DA-0052 | `jasper/active_speaker/readiness.py` :: build_playback_readiness | should-fix | W1 | **open** | — |
-| DA-0053 | `jasper/active_speaker/runtime_contract.py` :: running_graph_violations | should-fix | W1 | **open** | — |
-| DA-0054 | `jasper/active_speaker/tone_plan.py` :: build_safe_tone_plan | should-fix | W1 | **open** | — |
-| DA-0055 | `jasper/active_speaker/topology_tone.py` :: build_topology_tone_plan | should-fix | W1 | **open** | — |
-| DA-0056 | `jasper/audio_measurement/quality.py` :: :32-39 | should-fix | W1 | **open** | — |
-| DA-0057 | `jasper/bluetooth/adapter.py` :: start_discovery | should-fix | W1 | **open** | — |
+| DA-0052 | `jasper/active_speaker/readiness.py` :: build_playback_readiness | should-fix | W1 | **fixed** | superseded playback-readiness module removed; commission ramp remains live owner — #1318 |
+| DA-0053 | `jasper/active_speaker/runtime_contract.py` :: running_graph_violations | should-fix | W1 | **fixed** | unused lossy graph projection removed; structured graph classification retained — #1315 |
+| DA-0054 | `jasper/active_speaker/tone_plan.py` :: build_safe_tone_plan | should-fix | W1 | **fixed** | unreachable preset-era tone planner removed; live protected planners retained — #1321 |
+| DA-0055 | `jasper/active_speaker/topology_tone.py` :: build_topology_tone_plan | should-fix | W1 | **fixed** | unreachable per-driver planner removed; summed-crossover planner remains live owner — #1318 |
+| DA-0056 | `jasper/audio_measurement/quality.py` :: :32-39 | should-fix | W1 | **fixed** | unused threshold compatibility aliases removed; QualityModel remains sole threshold boundary — #1319 |
+| DA-0057 | `jasper/bluetooth/adapter.py` :: start_discovery | should-fix | W1 | **fixed** | ephemeral-client discovery helpers removed; long-lived BluetoothEngine owns discovery — #1320 |
 | DA-0058 | `jasper/capture_relay/spec.py` :: build_level_ramp_spec | should-fix | W1 | **fixed** | correction flow now builds and runs the relay level ramp — #1202 |
-| DA-0059 | `jasper/control/aec_endpoints.py` :: _chip_aec_available / _mic_status | should-fix | W1 | **open** | — |
-| DA-0060 | `jasper/correction/target.py` :: HOUSE_CURVE_PRESETS | should-fix | W1 | **open** | — |
-| DA-0061 | `jasper/mics/xvf3800.py` :: ensure_capture_open | should-fix | W1 | **open** | — |
-| DA-0062 | `jasper/sound/camilla_yaml.py` :: validate_camilla_config | should-fix | W1 | **open** | — |
+| DA-0059 | `jasper/control/aec_endpoints.py` :: _chip_aec_available / _mic_status | should-fix | W1 | **fixed** | dead wrappers removed; live capability reuses one probe and validated registry plan — #1323 |
+| DA-0060 | `jasper/correction/target.py` :: HOUSE_CURVE_PRESETS | should-fix | W1 | **fixed** | unreachable duplicate preset table removed; strategy registry owns profile policy — #1328 |
+| DA-0061 | `jasper/mics/xvf3800.py` :: ensure_capture_open | should-fix | W1 | **fixed** | unreachable Python mutator removed; Bash reconciler remains sole runtime writer — #1322 |
+| DA-0062 | `jasper/sound/camilla_yaml.py` :: validate_camilla_config | should-fix | W1 | **fixed** | unused boolean validator shim removed; dsp_apply retains typed validation ownership — #1326 |
 | DA-0063 | `jasper/sound/runtime.py` :: stage_lean_capture_config | should-fix | W1 | **mooted** | lean runtime pipeline deleted on main — #1200 |
-| DA-0064 | `jasper/volume_coordinator.py` :: VolumeCoordinator.__init__ :202-204,243-245; | should-fix | W1 | **open** | — |
+| DA-0064 | `jasper/volume_coordinator.py` :: VolumeCoordinator.__init__ :202-204,243-245; | should-fix | W1 | **fixed** | never-populated observer-task state removed; VolumeObserver retains task ownership — #1324 |
 | DA-0065 | `jasper/volume_coordinator.py` :: _busctl_call_method | should-fix | W1 | **fixed** | dead AirPlay DBus helper removed; subprocess prohibition pinned behaviorally — #1290 |
-| DA-0066 | `jasper/volume_persistence.py` :: regress_if_stale | should-fix | W1 | **open** | — |
-| DA-0067 | `jasper/wake_corpus/bridge_session.py` :: enable_bridge_outputs_for_session:1173 | should-fix | W1 | **open** | — |
-| DA-0068 | `jasper/web/sound_setup.py` :: _active_speaker_arm_payload | should-fix | W1 | **open** | — |
-| DA-0069 | `multiroom-spike/stats-flac-300ms.json` :: multiroom-spike/ (6 files) | should-fix | W1 | **open** | — |
+| DA-0066 | `jasper/volume_persistence.py` :: regress_if_stale | should-fix | W1 | **fixed** | unreachable legacy dB boot regressor removed; listening-level path remains canonical — #1325 |
+| DA-0067 | `jasper/wake_corpus/bridge_session.py` :: enable_bridge_outputs_for_session:1173 | should-fix | W1 | **fixed** | additive legacy bridge writer removed; exact-state capture-plan seam retained — #1329 |
+| DA-0068 | `jasper/web/sound_setup.py` :: _active_speaker_arm_payload | should-fix | W1 | **fixed** | orphaned arm helper removed; live audible paths arm at their safety owners — #1327 |
+| DA-0069 | `multiroom-spike/stats-flac-300ms.json` :: multiroom-spike/ (6 files) | should-fix | W1 | **fixed** | invalid device-bearing spike artifacts deleted and root outputs ignored — #1330 |
 | DA-0070 | `rust/jasper-host-clock/src/lib.rs` :: HostClock::raw_demand_ppm | should-fix | W1 | **fixed** | inert private field removed; raw local demand still drives L1/L2 — #1288 |
-| DA-0071 | `rust/jasper-outputd/src/core.rs` :: OutputCore::add_reference_consumer / drain_r | should-fix | W1 | **open** | — |
-| DA-0072 | `rust/jasper-outputd/src/reference.rs` :: ReferenceFanout::add_consumer/drain_consumer | should-fix | W1 | **open** | — |
-| DA-0073 | `scripts/aec-probe-usb-delay.sh` :: module:1-440 | should-fix | W1 | **open** | — |
-| DA-0074 | `scripts/airplay-receiver-timing-proof.py` :: main:738 | should-fix | W1 | **open** | — |
+| DA-0071 | `rust/jasper-outputd/src/core.rs` :: OutputCore::add_reference_consumer / drain_r | should-fix | W1 | **fixed** | retired named reference-consumer API removed; real side outputs unchanged — #1332 |
+| DA-0072 | `rust/jasper-outputd/src/reference.rs` :: ReferenceFanout::add_consumer/drain_consumer | should-fix | W1 | **fixed** | unused reference queue registry and statistics removed — #1332 |
+| DA-0073 | `scripts/aec-probe-usb-delay.sh` :: module:1-440 | should-fix | W1 | **fixed** | unsafe orphan USB-delay probe deleted; canonical bounded timing tools retained — #1331 |
+| DA-0074 | `scripts/airplay-receiver-timing-proof.py` :: main:738 | should-fix | W1 | **fixed** | experiment converted to bounded passive proof with topology/privacy/health gates — #1341 |
 | DA-0075 | `tests/js/sound_profile_harness.mjs` :: measurementAudioPreamble / import stripping | should-fix | W1 | **fixed** | stale mic shim removed; known-import stripping narrowed + self-probed — #1289 |
-| DA-0152 | `AGENTS.md` :: Profile guardian — self-heal after filesyste | should-fix | W3 | **open** | — |
-| DA-0153 | `c/jts-ring-ioplug/jts_ring_shm.c` :: jts_ring_writer_open / jts_ring_reader_open | should-fix | W3 | **open** | — |
-| DA-0154 | `deploy/assets/bluetooth/bluetooth.css` :: .spinner / @keyframes bt-spin:208-227 | should-fix | W3 | **open** | — |
-| DA-0155 | `deploy/assets/correction/js/crossover/main.js` :: fetchJSON():44 / postWav():54 | should-fix | W3 | **open** | — |
-| DA-0156 | `deploy/assets/home-assistant/home-assistant.css` :: .row-version / .discover-list:15,44,50,57-58 | should-fix | W3 | **open** | — |
-| DA-0157 | `deploy/assets/sound-profile/sound.css` :: .toggle block, lines 836-852 | should-fix | W3 | **open** | — |
-| DA-0158 | `deploy/assets/tools/js/main.js` :: load/onToggle/onApply | should-fix | W3 | **open** | — |
-| DA-0159 | `deploy/assets/wake-corpus/js/main.js` :: LEG_LABELS | should-fix | W3 | **open** | — |
-| DA-0160 | `deploy/bin/jasper-camilla-crossover-guard` :: :95-148 (inline probe + REPAIR block) | should-fix | W3 | **open** | — |
-| DA-0161 | `deploy/bin/jasper-dac-init` :: detect_apple_cards() / resolve_cards() (:20- | should-fix | W3 | **open** | — |
-| DA-0162 | `deploy/install.sh` :: install_deps / install_streambox_deps | should-fix | W3 | **open** | — |
-| DA-0163 | `deploy/lib/install/systemd-units.sh` :: install_systemd_units | should-fix | W3 | **open** | — |
-| DA-0164 | `deploy/nginx-jasper-streambox.conf` :: location /wifi/ | should-fix | W3 | **open** | — |
-| DA-0165 | `deploy/systemd/jts-audio.slice` :: :8 | should-fix | W3 | **open** | — |
-| DA-0166 | `firmware/dial/src/discovery.cpp` :: discoverControlEndpoint | should-fix | W3 | **open** | — |
-| DA-0167 | `jasper/active_speaker/camilla_yaml.py` :: emit_active_speaker_driver_domain_config (du | should-fix | W3 | **open** | — |
-| DA-0168 | `jasper/active_speaker/crossover_preview.py` :: _ACTIVE_ROLE_PAIRS | should-fix | W3 | **open** | — |
+| DA-0152 | `AGENTS.md` :: Profile guardian — self-heal after filesyste | should-fix | W3 | **fixed** | duplicated guardian narrative compressed to operational contract with canonical handoff link — #1335 |
+| DA-0153 | `c/jts-ring-ioplug/jts_ring_shm.c` :: jts_ring_writer_open / jts_ring_reader_open | should-fix | W3 | **fixed** | create/attach state machine consolidated with bounded live-creator and reclaim races — #1349 |
+| DA-0154 | `deploy/assets/bluetooth/bluetooth.css` :: .spinner / @keyframes bt-spin:208-227 | should-fix | W3 | **fixed** | shared spinner geometry/motion promoted to canonical app stylesheet — #1337 |
+| DA-0155 | `deploy/assets/correction/js/crossover/main.js` :: fetchJSON():44 / postWav():54 | should-fix | W3 | **fixed** | duplicated response parsing migrated to shared getJSON protocol owner — #1338 |
+| DA-0156 | `deploy/assets/home-assistant/home-assistant.css` :: .row-version / .discover-list:15,44,50,57-58 | should-fix | W3 | **fixed** | undefined Home Assistant token fallbacks replaced with canonical tokens/literals — #1336 |
+| DA-0157 | `deploy/assets/sound-profile/sound.css` :: .toggle block, lines 836-852 | should-fix | W3 | **fixed** | competing sound-page toggle removed in favor of canonical native-checkbox component — #1339 |
+| DA-0158 | `deploy/assets/tools/js/main.js` :: load/onToggle/onApply | should-fix | W3 | **fixed** | duplicated tools mutation/restart state machine extracted into one helper — #1340 |
+| DA-0159 | `deploy/assets/wake-corpus/js/main.js` :: LEG_LABELS | should-fix | W3 | **fixed** | Python-owned leg labels serialized through escaped island; browser duplicate removed — #1342 |
+| DA-0160 | `deploy/bin/jasper-camilla-crossover-guard` :: :95-148 (inline probe + REPAIR block) | should-fix | W3 | **fixed** | duplicated Camilla dead-pipe repair extracted into one staged guard library — #1351 |
+| DA-0161 | `deploy/bin/jasper-dac-init` :: detect_apple_cards() / resolve_cards() (:20- | should-fix | W3 | **fixed** | Apple dongle detection and card resolution moved to one sourced library — #1343 |
+| DA-0162 | `deploy/install.sh` :: install_deps / install_streambox_deps | should-fix | W3 | **fixed** | shared native renderer dependency set now has one install owner — #1348 |
+| DA-0163 | `deploy/lib/install/systemd-units.sh` :: install_systemd_units | should-fix | W3 | **fixed** | full and streambox profiles converge on shared support and transactional staging owners — #1344 |
+| DA-0164 | `deploy/nginx-jasper-streambox.conf` :: location /wifi/ | should-fix | W3 | **fixed** | both nginx profiles now cover the complete bounded Wi-Fi rollback window — #1346 |
+| DA-0165 | `deploy/systemd/jts-audio.slice` :: :8 | should-fix | W3 | **fixed** | canonical OOM map covers explicit units/drop-ins and exact no-swap slice membership — #1347 |
+| DA-0166 | `firmware/dial/src/discovery.cpp` :: discoverControlEndpoint | should-fix | W3 | **fixed** | dial/AMOLED control discovery moved behind one manifest-owned firmware library — #1350 |
+| DA-0167 | `jasper/active_speaker/camilla_yaml.py` :: emit_active_speaker_driver_domain_config (du | should-fix | W3 | **fixed** | solo-baseline and driver-domain emitters share one correction safety gate — #1354 |
+| DA-0168 | `jasper/active_speaker/crossover_preview.py` :: _ACTIVE_ROLE_PAIRS | should-fix | W3 | **fixed** | one ordered role-pair contract now feeds design gating and preview generation — #1352 |
 | DA-0169 | `jasper/active_speaker/design_draft.py` :: _normalise_driver | should-fix | W3 | **open** | — |
-| DA-0170 | `jasper/active_speaker/measurement.py` :: _latest_current_summed_records / _latest_cur | should-fix | W3 | **open** | — |
+| DA-0170 | `jasper/active_speaker/measurement.py` :: _latest_current_summed_records / _latest_cur | should-fix | W3 | **mooted** | crossover pairing made the selectors intentionally divergent — #1345/#1353 |
 | DA-0171 | `jasper/active_speaker/runtime_contract.py` :: classify_camilla_graph:1568-1589 | should-fix | W3 | **open** | — |
 | DA-0172 | `jasper/active_speaker/safe_playback.py` :: _atomic_write_json | should-fix | W3 | **open** | — |
 | DA-0173 | `jasper/active_speaker/staging.py` :: _atomic_write_json:114-126 | should-fix | W3 | **open** | — |
@@ -117,17 +117,17 @@ Last reconciled against `main` (`01713826`): 2026-07-12.
 | DA-0176 | `jasper/active_speaker/startup_load.py` :: _atomic_write_json / _base_state / _commissi | should-fix | W3 | **open** | — |
 | DA-0177 | `jasper/active_speaker/web_measurement.py` :: capture_preset (line 255) | should-fix | W3 | **open** | — |
 | DA-0178 | `jasper/audio_runtime_plan.py` :: _resolve_profile_floor_int / _resolve_output | should-fix | W3 | **open** | — |
-| DA-0179 | `jasper/audio_validation.py` :: write_artifact:663 / write_latest_pointer:69 | should-fix | W3 | **open** | — |
+| DA-0179 | `jasper/audio_validation.py` :: write_artifact:663 / write_latest_pointer:69 | should-fix | W3 | **fixed** | both diagnostic publishers use one domain serializer and canonical atomic writer — #1360 |
 | DA-0180 | `jasper/cli/aec_bridge.py` :: _ref_thread (1095-1214) / _outputd_ref_udp_t | should-fix | W3 | **open** | — |
-| DA-0181 | `jasper/cli/aec_tune.py` :: main (--mic-device default) | should-fix | W3 | **open** | — |
+| DA-0181 | `jasper/cli/aec_tune.py` :: main (--mic-device default) | should-fix | W3 | **fixed** | registry-derived XVF capture identity and WAV-layout validation — #1412 |
 | DA-0182 | `jasper/cli/doctor/audio.py` :: _read_status_socket:978 | should-fix | W3 | **open** | — |
-| DA-0183 | `jasper/cli/wake_score.py` :: walk_corpus/parse_quadrant vs recording_back | should-fix | W3 | **open** | — |
-| DA-0184 | `jasper/cli/xvf_firmware_update.py` :: _write_state | should-fix | W3 | **open** | — |
-| DA-0185 | `jasper/control/aec_endpoints.py` :: _LEG_DEFAULT_RAW | should-fix | W3 | **open** | — |
-| DA-0186 | `jasper/control/server.py` :: _post_grouping_set | should-fix | W3 | **open** | — |
-| DA-0187 | `jasper/control/server.py` :: _sync_aec_module / _sync_dial_module / _sync | should-fix | W3 | **open** | — |
-| DA-0188 | `jasper/control/shairport_supervisor.py` :: run / start_supervisor / snapshot | should-fix | W3 | **open** | — |
-| DA-0189 | `jasper/control/volume_ops.py` :: SPOTIFY_OAUTH_CALLBACK_BASE / _spotify_redir | should-fix | W3 | **open** | — |
+| DA-0183 | `jasper/cli/wake_score.py` :: walk_corpus/parse_quadrant vs recording_back | should-fix | W3 | **fixed** | shared condition mapping restores ambient traversal and scoring — #1362 |
+| DA-0184 | `jasper/cli/xvf_firmware_update.py` :: _write_state | should-fix | W3 | **fixed** | firmware status uses canonical atomic writer with deterministic 0644 mode — #1363 |
+| DA-0185 | `jasper/control/aec_endpoints.py` :: _LEG_DEFAULT_RAW | should-fix | W3 | **fixed** | wake-leg defaults derived from control owner and pinned across reconciler/installer writers — #1364 |
+| DA-0186 | `jasper/control/server.py` :: _post_grouping_set | should-fix | W3 | **fixed** | optional grouping scalars parsed through one pure typed request seam — #1365 |
+| DA-0187 | `jasper/control/server.py` :: _sync_aec_module / _sync_dial_module / _sync | should-fix | W3 | **fixed** | mutable control mirrors removed; state remains at subsystem owners — #1366 |
+| DA-0188 | `jasper/control/shairport_supervisor.py` :: run / start_supervisor / snapshot | should-fix | W3 | **fixed** | three supervisors share bounded runtime mechanics while retaining local policy — #1368 |
+| DA-0189 | `jasper/control/volume_ops.py` :: SPOTIFY_OAUTH_CALLBACK_BASE / _spotify_redir | should-fix | W3 | **fixed** | Spotify OAuth module now owns callback base and default redirect construction — #1367 |
 | DA-0190 | `jasper/correction/acceptance.py` :: _env_float / _env_int | should-fix | W3 | **open** | — |
 | DA-0191 | `jasper/correction/evidence.py` :: _position_summary | should-fix | W3 | **open** | — |
 | DA-0192 | `jasper/correction/runtime_integrity.py` :: MEM_AVAILABLE_WARN_MB | should-fix | W3 | **open** | — |
@@ -137,7 +137,7 @@ Last reconciled against `main` (`01713826`): 2026-07-12.
 | DA-0196 | `jasper/cues/factory.py` :: build_cue_tts_backend :38 | should-fix | W3 | **open** | — |
 | DA-0197 | `jasper/fanin/coupling_auto.py` :: usb_gadget_stack_present | should-fix | W3 | **open** | — |
 | DA-0198 | `jasper/fanin/coupling_reconcile.py` :: _arm_ring | should-fix | W3 | **open** | — |
-| DA-0199 | `jasper/fanin/coupling_reconcile.py` :: _transport_pipe_shape_ok | should-fix | W3 | **open** | — |
+| DA-0199 | `jasper/fanin/coupling_reconcile.py` :: _transport_pipe_shape_ok | should-fix | W3 | **mooted** | transport-pipe path and shape validator deleted; legacy value now fails safe to loopback — #1266 |
 | DA-0200 | `jasper/home_assistant.py` :: read_ha_env_file | should-fix | W3 | **open** | — |
 | DA-0201 | `jasper/multiroom/active_leader_config.py` :: _camilla | should-fix | W3 | **open** | — |
 | DA-0202 | `jasper/multiroom/runtime_balance.py` :: PAIR_BALANCE_FILTER | should-fix | W3 | **open** | — |
@@ -149,52 +149,52 @@ Last reconciled against `main` (`01713826`): 2026-07-12.
 | DA-0208 | `jasper/speaker_name.py` :: write_state | should-fix | W3 | **open** | — |
 | DA-0209 | `jasper/transit/providers/nyc_bus.py` :: NYC_BBOX | should-fix | W3 | **open** | — |
 | DA-0210 | `jasper/volume_coordinator.py` :: _bluez_alsa_active_transport_path :2186-2207 | should-fix | W3 | **open** | — |
-| DA-0211 | `jasper/volume_coordinator.py` :: _dispatch :607-677; apply_active_source_tran | should-fix | W3 | **open** | — |
-| DA-0212 | `jasper/wake_corpus/bridge_session.py` :: set_bridge_outputs_for_session:1245 | should-fix | W3 | **open** | — |
-| DA-0213 | `jasper/web/bluetooth_setup.py` :: _read_json | should-fix | W3 | **open** | — |
-| DA-0214 | `jasper/web/correction_setup.py` :: _dispatch_balance :3230-3244 / _dispatch_syn | should-fix | W3 | **open** | — |
-| DA-0215 | `jasper/web/correction_setup.py` :: _reset_accepts_target_config_path / _auto_re | should-fix | W3 | **open** | — |
-| DA-0216 | `jasper/web/google_setup.py` :: _redirect | should-fix | W3 | **open** | — |
+| DA-0211 | `jasper/volume_coordinator.py` :: _dispatch :607-677; apply_active_source_tran | should-fix | W3 | **fixed** | repeated source-push-failure transactions consolidated behind one fail-closed helper — #1369 |
+| DA-0212 | `jasper/wake_corpus/bridge_session.py` :: set_bridge_outputs_for_session:1245 | should-fix | W3 | **fixed** | shared recorder env write/restart/rollback transaction centralized — #1370 |
+| DA-0213 | `jasper/web/bluetooth_setup.py` :: _read_json | should-fix | W3 | **fixed** | bounded object reader preserves local caps and response policy — #1376 |
+| DA-0214 | `jasper/web/correction_setup.py` :: _dispatch_balance :3230-3244 / _dispatch_syn | should-fix | W3 | **fixed** | balance/sync starts share one lock-scoped active-session blocker — #1371 |
+| DA-0215 | `jasper/web/correction_setup.py` :: _reset_accepts_target_config_path / _auto_re | should-fix | W3 | **fixed** | reset/auto-revert capability checks consolidated into one helper — #1372 |
+| DA-0216 | `jasper/web/google_setup.py` :: _redirect | should-fix | W3 | **fixed** | Google/Spotify legacy query-message redirects share one compatibility helper — #1373 |
 | DA-0217 | `jasper/web/sources_setup.py` :: _send_json | should-fix | W3 | **open** | — |
 | DA-0218 | `jasper/web/wake_setup.py` :: _read_json_body | should-fix | W3 | **open** | — |
-| DA-0219 | `rust/jasper-fanin/src/impulse_tap.rs` :: module (whole file) vs rust/jasper-usbsink-a | should-fix | W3 | **open** | — |
-| DA-0220 | `rust/jasper-fanin/src/xrun_log.rs` :: escape_json (:232) | should-fix | W3 | **open** | — |
+| DA-0219 | `rust/jasper-fanin/src/impulse_tap.rs` :: module (whole file) vs rust/jasper-usbsink-a | should-fix | W3 | **mooted** | solo USB capture and second impulse-tap module deleted; fan-in is the sole remaining copy — #1209 |
+| DA-0220 | `rust/jasper-fanin/src/xrun_log.rs` :: escape_json (:232) | should-fix | W3 | **fixed** | control bytes now use one canonical JSON escaping path — #1379 |
 | DA-0221 | `rust/jasper-host-clock/src/lib.rs` :: HostClock::begin_probe / HostClock::restart_ | should-fix | W3 | **open** | — |
 | DA-0222 | `rust/jasper-outputd/src/alsa_backend.rs` :: AlsaBackend::read_content_available (L220) / | should-fix | W3 | **open** | — |
-| DA-0223 | `rust/jasper-resampler/src/lib.rs` :: minimum_safe_fill_frames :88 | should-fix | W3 | **open** | — |
-| DA-0224 | `scripts/_audit_wake_events.py` :: load_wav():29-40, rms():43-46 | should-fix | W3 | **open** | — |
-| DA-0225 | `scripts/_run_wake_training_phase0.py` :: _safe_to_remove_output:95 | should-fix | W3 | **open** | — |
-| DA-0226 | `scripts/chip-aec-baseline-check.sh` :: daemon_set_mode/set_bypass/prompt | should-fix | W3 | **open** | — |
-| DA-0227 | `scripts/multiroom-spike.sh` :: make_chirp_remote() :247-271 | should-fix | W3 | **open** | — |
-| DA-0228 | `scripts/prepare-wake-livekit-smoke.sh` :: :20-33 | should-fix | W3 | **open** | — |
-| DA-0229 | `scripts/ring-proto/arm-ring-a.sh` :: :373 | should-fix | W3 | **open** | — |
+| DA-0223 | `rust/jasper-resampler/src/lib.rs` :: minimum_safe_fill_frames :88 | should-fix | W3 | **fixed** | outputd delegates its resampler fill floor to the canonical formula — #1385 |
+| DA-0224 | `scripts/_audit_wake_events.py` :: load_wav():29-40, rms():43-46 | should-fix | W3 | **fixed** | offline wake analyzers share one numerically pinned RMS metric — #1387 |
+| DA-0225 | `scripts/_run_wake_training_phase0.py` :: _safe_to_remove_output:95 | should-fix | W3 | **fixed** | three destructive wake callers share fail-closed self-bound ownership guard — #1374 |
+| DA-0226 | `scripts/chip-aec-baseline-check.sh` :: daemon_set_mode/set_bypass/prompt | should-fix | W3 | **fixed** | shared experiment lifecycle + signal-safe restoration — #1391 |
+| DA-0227 | `scripts/multiroom-spike.sh` :: make_chirp_remote() :247-271 | should-fix | W3 | **fixed** | canonical raw/WAV broadband click generator — #1395 |
+| DA-0228 | `scripts/prepare-wake-livekit-smoke.sh` :: :20-33 | should-fix | W3 | **fixed** | offline wake wrappers share one worktree-aware Python resolver — #1388 |
+| DA-0229 | `scripts/ring-proto/arm-ring-a.sh` :: :373 | should-fix | W3 | **fixed** | Ring A forwards the selected capture PCM under the builder-owned env key — #1378 |
 | DA-0230 | `scripts/s0-sync-measure.py` :: read_wav_mono:72-108 | should-fix | W3 | **open** | — |
-| DA-0231 | `scripts/switch-gemini-model.sh` :: :28-29 | should-fix | W3 | **open** | — |
-| DA-0232 | `scripts/switch-gemini-model.sh` :: :35-36 | should-fix | W3 | **open** | — |
-| DA-0233 | `tests/test_active_speaker_bringup.py` :: _topology | should-fix | W3 | **open** | — |
-| DA-0234 | `tests/test_active_speaker_startup_load.py` :: _topology:59 | should-fix | W3 | **open** | — |
+| DA-0231 | `scripts/switch-gemini-model.sh` :: :28-29 | should-fix | W3 | **fixed** | laptop Pi scripts share canonical host/user resolution through `_lib.sh` — #1381 |
+| DA-0232 | `scripts/switch-gemini-model.sh` :: :35-36 | should-fix | W3 | **fixed** | Gemini aliases resolve from the installed catalog and update the effective selector owner — #1389 |
+| DA-0233 | `tests/test_active_speaker_bringup.py` :: _topology | should-fix | W3 | **fixed** | canonical active-speaker topology fixture — #1394 |
+| DA-0234 | `tests/test_active_speaker_startup_load.py` :: _topology:59 | should-fix | W3 | **fixed** | canonical active-speaker topology fixture — #1394 |
 | DA-0235 | `tests/test_build_wake_negative_feature_bank.py` :: FakeExtractor / _write_wav / _write_bundle | should-fix | W3 | **open** | — |
-| DA-0236 | `tests/test_correction_session.py` :: _make_session | should-fix | W3 | **open** | — |
-| DA-0237 | `tests/test_install_core_audio_graph_loop.py` :: EXPECTED_DSTS | should-fix | W3 | **open** | — |
-| DA-0238 | `tests/test_voice_daemon_defects.py` :: :19-34 (httpx/sounddevice/rapidfuzz sys.modu | should-fix | W3 | **open** | — |
-| DA-0239 | `tests/test_wake_corpus_setup.py` :: _serve_in_thread helper, 23 call sites e.g.  | should-fix | W3 | **open** | — |
-| DA-0240 | `tests/test_web_airplay_setup.py` :: _FakeHandler | should-fix | W3 | **open** | — |
-| DA-0241 | `jasper/route_latency/mic_readers.py` :: build_mic_reader | should-fix | W4 | **open** | — |
-| DA-0242 | `deploy/assets/chat/js/views.js` :: dateValueToSince():122 / sinceToDateValue(): | should-fix | W4 | **open** | — |
-| DA-0243 | `deploy/bin/jasper-deploy-health` :: main() / REQUIRED_ACTIVE_UNITS / _status_jso | should-fix | W4 | **open** | — |
-| DA-0244 | `jasper/accessories/wiim_remote_mic.py` :: _find_voice_characteristic | should-fix | W4 | **open** | — |
-| DA-0245 | `jasper/active_speaker/commission_wiring.py` :: resolve_commission_inputs:70 | should-fix | W4 | **open** | — |
-| DA-0246 | `jasper/bluetooth/engine.py` :: _auto_stop_scan | should-fix | W4 | **open** | — |
-| DA-0247 | `jasper/bluetooth/scan.py` :: DeviceObserver | should-fix | W4 | **open** | — |
-| DA-0248 | `jasper/cli/aec_tune.py` :: DELAY_FILE / main | should-fix | W4 | **open** | — |
-| DA-0249 | `jasper/cli/doctor/audio.py` :: check_loopback:263 / check_fanin_binary_inst | should-fix | W4 | **open** | — |
-| DA-0250 | `jasper/cli/doctor/satellites.py` :: check_dial_heartbeat | should-fix | W4 | **open** | — |
-| DA-0251 | `jasper/peering/discovery.py` :: PeerDiscovery._handle_change | should-fix | W4 | **open** | — |
-| DA-0252 | `jasper/transit/_mta_stations.py` :: load_stations | should-fix | W4 | **open** | — |
-| DA-0253 | `jasper/voice/openai_session.py` :: OpenAIRealtimeConnection._reconnect_with_bac | should-fix | W4 | **open** | — |
-| DA-0254 | `jasper/web/speaker_setup.py` :: _apply_name / _write_bluez_main_conf_name | should-fix | W4 | **open** | — |
+| DA-0236 | `tests/test_correction_session.py` :: _make_session | should-fix | W3 | **fixed** | isolated shared session fixture with lazy config ownership — #1393 |
+| DA-0237 | `tests/test_install_core_audio_graph_loop.py` :: EXPECTED_DSTS | should-fix | W3 | **fixed** | asserted destinations cover the full shared install table with set equality — #1203 |
+| DA-0238 | `tests/test_voice_daemon_defects.py` :: :19-34 (httpx/sounddevice/rapidfuzz sys.modu | should-fix | W3 | **fixed** | removed import-time dependency poisoning + AST ratchet — #1398 |
+| DA-0239 | `tests/test_wake_corpus_setup.py` :: _serve_in_thread helper, 23 call sites e.g.  | should-fix | W3 | **fixed** | function-scoped live-server fixture + bounded teardown — #1396 |
+| DA-0240 | `tests/test_web_airplay_setup.py` :: _FakeHandler | should-fix | W3 | **fixed** | faithful shared wizard handler double — #1397 |
+| DA-0241 | `jasper/route_latency/mic_readers.py` :: build_mic_reader | should-fix | W4 | **fixed** | direct UDP/ALSA factory and reader contract coverage — #1399 |
+| DA-0242 | `deploy/assets/chat/js/views.js` :: dateValueToSince():122 / sinceToDateValue(): | should-fix | W4 | **fixed** | exact-source Node coverage for Gregorian/local-date conversions — #1400 |
+| DA-0243 | `deploy/bin/jasper-deploy-health` :: main() / REQUIRED_ACTIVE_UNITS / _status_jso | should-fix | W4 | **fixed** | profile/source-intent-aware bounded deploy health — #1404 |
+| DA-0244 | `jasper/accessories/wiim_remote_mic.py` :: _find_voice_characteristic | should-fix | W4 | **fixed** | fail-closed unique WiiM voice-report identity — #1403 |
+| DA-0245 | `jasper/active_speaker/commission_wiring.py` :: resolve_commission_inputs:70 | should-fix | W4 | **fixed** | explicit-preset, ready-design, and blocked-fallback contract coverage — #1408 |
+| DA-0246 | `jasper/bluetooth/engine.py` :: _auto_stop_scan | should-fix | W4 | **fixed** | bounded fail-closed scan lifecycle and serialized shared-bus recovery — #1409 |
+| DA-0247 | `jasper/bluetooth/scan.py` :: DeviceObserver | should-fix | W4 | **fixed** | bounded device-observer subscriptions, stale-callback guards, and battery-task cleanup — #1405 |
+| DA-0248 | `jasper/cli/aec_tune.py` :: DELAY_FILE / main | should-fix | W4 | **fixed** | diagnostic-only tuning with bounded transactional cleanup and volatile rollback — #1412 |
+| DA-0249 | `jasper/cli/doctor/audio.py` :: check_loopback:263 / check_fanin_binary_inst | should-fix | W4 | **fixed** | hardware-free loopback and fan-in installation-check contracts — #1406 |
+| DA-0250 | `jasper/cli/doctor/satellites.py` :: check_dial_heartbeat | should-fix | W4 | **fixed** | exception, never-seen, recent, and long-idle activity contracts — #1410 |
+| DA-0251 | `jasper/peering/discovery.py` :: PeerDiscovery._handle_change | should-fix | W4 | **fixed** | fail-soft record parsing and FIFO identity-change bookkeeping — #1411 |
+| DA-0252 | `jasper/transit/_mta_stations.py` :: load_stations | should-fix | W4 | **fixed** | real missing/open/decode fallback tests and truthful permissive-CSV contract — #1413 |
+| DA-0253 | `jasper/voice/openai_session.py` :: OpenAIRealtimeConnection._reconnect_with_bac | should-fix | W4 | **fixed** | exact-threshold OpenAI reconnect escalation and rate-limit contract — #1414 |
+| DA-0254 | `jasper/web/speaker_setup.py` :: _apply_name / _write_bluez_main_conf_name | should-fix | W4 | **fixed** | atomic fail-soft BlueZ publication and complete rename-surface convergence — #1416 |
 | DA-0255 | `jasper/web/sync_flow.py` :: handle_start / active_phase / handle_status | should-fix | W4 | **open** | `handle_play` now directly covered by race and happy-path tests in #1239; start/analyze/active-phase coverage remains |
-| DA-0256 | `rust/jasper-dual-dac-lab/src/main.rs` :: fill_identity (:1029-1062) | should-fix | W4 | **open** | — |
+| DA-0256 | `rust/jasper-dual-dac-lab/src/main.rs` :: fill_identity (:1029-1062) | should-fix | W4 | **fixed** | exact-rate validation and silent non-aligned final-period tail — #1418 |
 | DA-0257 | `rust/jasper-fanin/src/impulse_tap.rs` :: RESERVED_TAP_DIR_BASENAMES (:148) | should-fix | W4 | **open** | — |
 | DA-0258 | `rust/jasper-outputd/src/state.rs` :: OutputdState::snapshot_json | should-fix | W4 | **open** | — |
 | DA-0259 | `rust/jasper-outputd/src/state.rs` :: StateServer::handle_connection | should-fix | W4 | **open** | — |
@@ -291,7 +291,7 @@ Last reconciled against `main` (`01713826`): 2026-07-12.
 | DA-0350 | `jasper/flight_recorder.py` :: RingFlushHandler.flush_buffer | nit | W5 | **open** | — |
 | DA-0351 | `jasper/google_creds.py` :: GoogleRegistry.save | nit | W5 | **open** | — |
 | DA-0352 | `jasper/mics/__init__.py` :: PROFILES | nit | W5 | **open** | — |
-| DA-0353 | `jasper/mics/xvf3800.py` :: is_recommended_firmware | nit | W5 | **open** | — |
+| DA-0353 | `jasper/mics/xvf3800.py` :: is_recommended_firmware | nit | W5 | **fixed** | independently dead firmware predicate removed alongside unreachable mixer mutator — #1322 |
 | DA-0354 | `jasper/multiroom/config.py` :: _format_roster | nit | W5 | **open** | — |
 | DA-0355 | `jasper/multiroom/reconcile.py` :: _write_outputd_env:1066-1101 | nit | W5 | **open** | — |
 | DA-0356 | `jasper/music_sources.py` :: is_music_source | nit | W5 | **open** | — |
@@ -382,7 +382,7 @@ Last reconciled against `main` (`01713826`): 2026-07-12.
 | DA-0513 | `jasper/active_speaker/playback.py` :: _bounded_int | nit | W3 | **open** | — |
 | DA-0514 | `jasper/active_speaker/runtime_contract.py` :: _statefile_config_path | nit | W3 | **open** | — |
 | DA-0515 | `jasper/active_speaker/startup_load.py` :: SCHEMA_VERSION (line 64) | nit | W3 | **open** | — |
-| DA-0516 | `jasper/active_speaker/tone_plan.py` :: _clamp_int | nit | W3 | **open** | — |
+| DA-0516 | `jasper/active_speaker/tone_plan.py` :: _clamp_int | nit | W3 | **fixed** | lossy target-output helpers removed with obsolete preset-era planner — #1321 |
 | DA-0517 | `jasper/active_speaker/web_commissioning.py` :: _commission_tone_signal_plan | nit | W3 | **open** | — |
 | DA-0518 | `jasper/active_speaker/web_commissioning.py` :: _issue | nit | W3 | **open** | — |
 | DA-0519 | `jasper/aec_sweep.py` :: write_aec3_sweep_config | nit | W3 | **open** | — |
@@ -501,7 +501,7 @@ Last reconciled against `main` (`01713826`): 2026-07-12.
 | DA-0636 | `tests/test_voice_daemon_end_turn_reentry.py` :: class _FakeTurn | nit | W3 | **open** | — |
 | DA-0637 | `tests/test_wake_corpus_setup.py` :: test_index_html_is_valid_shape, test_render_ | nit | W3 | **open** | — |
 | DA-0638 | `tests/test_wake_corpus_setup.py` :: test_metadata_written_per_session:418 (+9 re | nit | W3 | **open** | — |
-| DA-0639 | `tests/test_web_speaker_setup.py` :: _FakeHandler | nit | W3 | **open** | — |
+| DA-0639 | `tests/test_web_speaker_setup.py` :: _FakeHandler | nit | W3 | **fixed** | duplicate of DA-0240; subsumed by shared wizard handler — #1397 |
 | DA-0640 | `tests/test_web_wifi_setup.py` :: _make_request | nit | W3 | **open** | — |
 | DA-0641 | `tests/test_wifi_setup_guardian_hooks.py` :: _mock_proc / _scripted_nmcli | nit | W3 | **open** | — |
 | DA-0642 | `tests/voice_eval/regression/test_spotify.py` :: _playback_skip / _ha_action_skip / _require_ | nit | W3 | **open** | — |
@@ -543,10 +543,10 @@ Last reconciled against `main` (`01713826`): 2026-07-12.
 | DA-0002 | `jasper/capture_relay/alignment.py` :: assert_alignment_confident | blocker | W0 | **deferred** | owner-decision: per-flow seam, require=False first — #1214 (body) |
 | DA-0001 | `deploy/assets/rooms/js/main.js` :: makeBondCard().sync() — appendChildren call  | blocker | W0 | **fixed** | ReferenceError fixed + regression test — #1214 |
 | DA-0076 | `AGENTS.md` :: "Cue regeneration" paragraph, Voice provider | should-fix | W2 | **fixed** | doc corrected — #1216 |
-| DA-0077 | `AGENTS.md` :: Transit "Adding transit" checklist item 7 (~ | should-fix | W2 | **fixed** | doc corrected — #1216 |
+| DA-0077 | `AGENTS.md` :: Transit "Adding transit" checklist item 7 (~ | should-fix | W2 | **fixed** | migration ownership and CITY_PACKS extension guidance corrected and contract-tested — #1333 |
 | DA-0078 | `BRINGUP.md` :: lines 988, 1045-1051, 1114-1115 (XVF firmwar | should-fix | W2 | **fixed** | doc corrected — #1216 |
 | DA-0079 | `PLAN.md` :: "T5.1 — StartLimitAction=reboot (shipped PR  | should-fix | W2 | **fixed** | doc corrected — #1216 |
-| DA-0080 | `PLAN.md` :: :239 (## Wake-word reliability — AEC tuning  | should-fix | W2 | **fixed** | doc corrected — #1216 |
+| DA-0080 | `PLAN.md` :: :239 (## Wake-word reliability — AEC tuning  | should-fix | W2 | **fixed** | stale threshold TODO replaced with shipped 0.30 contract and parity guard — #1334 |
 | DA-0081 | `README.md` :: "What's installed and at what cost" table +  | should-fix | W2 | **fixed** | doc corrected — #1216 |
 | DA-0082 | `SECURITY.md` :: "Current Security Model" paragraph (~line 40 | should-fix | W2 | **fixed** | doc corrected — #1216 |
 | DA-0083 | `c/jts-ring-ioplug/pcm_jts_ring.c` :: :26-28 | should-fix | W2 | **fixed** | doc corrected — #1217 |
