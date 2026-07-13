@@ -614,6 +614,67 @@
 > [`active-crossover-information-design.md`](active-crossover-information-design.md)
 > "Current implementation gap summary".
 
+> **Update, 2026-07-13 (Wave 1 commissioning contracts; silent and inert):**
+> the `/sound/` design draft now carries a revisioned hardware-research and
+> driver-safety contract without changing an audible path. The server builds a
+> version-1 `jts_active_crossover_driver_research_request` for every physical
+> active-driver target. A version-2 research result must echo the request and
+> the exact target id/fingerprint, role, and make/model. Legacy version-1
+> research remains advisory prefill only. The operator reviews and may edit all
+> safety fields in `/sound/`; confirmation freezes one version-1
+> `jts_active_speaker_driver_safety_profile` per current target set. Changes to
+> target/topology/output, driver style, make/model, or visible values make the
+> confirmation stale. Research provenance is retained only when the visible
+> value still equals the researched value; an edited value is an explicit
+> operator override. The profile's `authorizes_playback` is always `false`.
+>
+> This confirmed safety profile is not the older code-owned
+> `driver_protection_profile` used to bound tone/ramp policy, and it is not the
+> physical/software-guard fact stored by `/active-speaker/channel-protection`.
+> Future audible adapters must intersect all applicable authorities and prove
+> fresh protected graph state; Wave 1 does not wire the new profile to signal
+> generation, playback, graph loading, or normal output.
+>
+> `jasper.audio_measurement.excitation_admission` adds the pure second half of
+> the boundary: strict, content-addressed request/limits/protection-evidence and
+> allow/refuse values bound to the exact target, confirmed profile, composed
+> authority, excitation plan, band, effective peak, duration, and repeat count.
+> Fingerprints are content identities, not signatures. The trusted Active
+> adapter still has to intersect code/profile/plan limits, bind normalized
+> generator and effective-peak inputs, derive fresh protection evidence from
+> readback, and rerun admission immediately before playback. There are no live
+> producers or consumers in this slice.
+>
+> The Active-owned commissioning lifecycle now defines the nine states
+> `unconfigured`, `protected`, `measured`, `candidate_ready`,
+> `applied_unverified`, `verified`, `blocked`,
+> `blocked_live_state_unknown`, and `rolled_back`, with typed evidence on every
+> positive transition. `blocked_live_state_unknown` is deliberately distinct:
+> after a mutation call begins, an attempted or unknown outcome cannot recover
+> through ordinary pre-mutation `blocked` and forget an uncertain live graph;
+> it can leave only through exact restore evidence.
+>
+> The exact positive `CommissioningEligibilityReceipt` derives its required
+> combined-speaker targets from the current `OutputTopology`. Each target must
+> have exactly three distinct, admitted, fixed-reference-axis post-apply
+> captures in one commissioning session and threshold profile, plus a passing
+> typed verdict. The receipt binds the confirmed safety profile, applied
+> candidate, expected/fresh-readback normalized graph, exact predecessor, and
+> an honest retained-apply rollback outcome. Attempted/unknown mutation and
+> failed or performed rollback cannot mint a positive receipt. Exact rollback
+> state reuses `null_walk.DspPredecessor`; no generic graph-transaction
+> framework landed. Writer locking, live apply/readback, exact restoration,
+> receipt issuance/persistence, and Room consumption remain the later
+> integration lane.
+>
+> Current `active_speaker/bundles.py` evidence remains forensic/fail-soft. The
+> new lifecycle is not current `/state`, and `active_speaker.setup_status` plus
+> `/correction/start` still use the legacy topology-current applied
+> recomposition snapshot. They do not parse the new receipt and are therefore
+> intentionally fail-open relative to its stronger post-apply proof until the
+> producer and Room consumer change together. No hardware behavior was changed
+> or revalidated by this contract-only slice.
+
 ## Current Operational Truth
 
 Active speaker DSP is a separate layer from room correction and from
@@ -1919,7 +1980,10 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-13 (frozen applied-preset startup anchor, durable
+Last verified: 2026-07-13 (Wave 1 target-bound research, visible confirmed
+driver-safety profile, excitation admission, nine-state lifecycle, exact
+eligibility receipt, and the deliberate no-live-consumer boundary checked
+contract-only; no hardware behavior revalidated. Frozen applied-preset startup anchor, durable
 crossover-volume intent, confirmed recovery,
 and relay lease ownership checked; bounded CamillaDSP worker cancellation checked
 against the outer commissioning rollback transaction; superseded readiness and

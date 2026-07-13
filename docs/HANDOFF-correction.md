@@ -14,6 +14,32 @@
 
 ## Status
 
+- 🧱 **Wave 1 Active→Room receipt contract (types complete, production gate
+  deliberately unchanged).** Active now owns a strict positive
+  `CommissioningEligibilityReceipt` type whose required combined-speaker
+  targets are derived from the current `OutputTopology`. Each required target
+  must carry a passing post-apply verdict over exactly three distinct,
+  excitation-admitted, fixed-reference-axis captures from one commissioning
+  session and threshold profile. The receipt also binds the confirmed driver
+  safety profile, exact applied candidate, expected and freshly read-back
+  normalized graph, exact predecessor state, and an honest retained-apply
+  rollback outcome. An attempted/unknown mutation, a failed restore, or even a
+  successful rollback cannot mint this positive receipt.
+
+  This is an inert contract in Wave 1. No Active production flow issues or
+  persists the receipt; current Active bundles remain forensic/fail-soft. Room's
+  production start gate is intentionally unchanged:
+  `active_speaker.setup_status` still derives
+  `room_correction_allowed` from the topology-current applied recomposition
+  snapshot, and `/correction/start` consumes that boolean. Neither path parses
+  the receipt or requires its three-capture post-apply proof, so today's gate is
+  fail-open relative to the stronger positive-receipt contract. The new
+  nine-state Active lifecycle is likewise not current `/state`. Lane C must add
+  writer-locked apply/readback/restore, receipt issuance/persistence, and the
+  Room consumer together before this becomes authority. No generic graph
+  transaction landed; exact rollback state reuses
+  `audio_measurement.null_walk.DspPredecessor`. No hardware behavior was changed
+  or revalidated by this slice.
 - ✅ **P2 — relay-closed level-match ramp (hardware + software complete).**
   The settle-based `RampController` /
   `MeasurementRamp` kernel lives in
@@ -2296,7 +2322,9 @@ Internal:
 
 ---
 
-Last verified: 2026-07-13 (full GET/POST route inventory rechecked against
+Last verified: 2026-07-13 (Wave 1 Active eligibility-receipt shape and the
+deliberately unchanged applied-snapshot-derived Room gate checked
+contract-only; no hardware behavior revalidated. Full GET/POST route inventory rechecked against
 `correction_setup._POST_ROUTES` and `Handler.do_GET`; durable crossover-volume
 recovery and route gating; per-driver fixed-reference-axis orchestration;
 geometry-scoped repeats/apply gate; summed fixed-axis placement and relay metadata

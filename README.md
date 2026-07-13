@@ -278,7 +278,12 @@ runs automatically only when the configured AEC mic is present with
   full-range speakers skip the driver test). See
   [docs/HANDOFF-sound-preferences.md](docs/HANDOFF-sound-preferences.md)
   for the composition contract, profile semantics, and observability
-  hooks.
+  hooks. The same card now has a silent, per-physical-target hardware-research
+  flow: version-2 results must echo a server-authored request, every safety
+  value remains visible/editable, and operator confirmation produces an inert
+  safety-profile fingerprint. Research and the confirmed profile are not
+  playback permission; live excitation/graph integration remains a later
+  active-crossover slice.
 - ✅ Speaker-name wizard at `http://jts.local/speaker/` — one display
   name for AirPlay, Spotify Connect, Bluetooth, and USB Audio. Defaults
   to `JTS`; the URL remains the hostname chosen in Imager
@@ -892,12 +897,15 @@ reference. Currently:
   how to add a new reactive or proactive cue. Start here when a
   failure path needs to "say something" rather than fall silent.
 - [`HANDOFF-audio-measurement-core.md`](docs/HANDOFF-audio-measurement-core.md)
-  — **Living architecture + product plan** (2026-06-19) for the shared
+  — **Living architecture + product plan** for the shared
   audio measurement/calibration core that room correction, active-crossover
   calibration, and pair/leader-follower balance all build on: the layered
   calibration product (L0 fail-closed crossover / L1 phone-mic level match /
   L2 calibrated-mic FR-phase), the multi-volume verdict, and a strangler-fig
-  refactor roadmap (kernel extraction + single GraphValidator). The
+  refactor roadmap. Wave 1 adds pure exact excitation admission, neutral
+  artifact/capture/replay identities, and exact DSP-state identity while
+  deliberately leaving existing bundles, playback, persistence, and Room
+  gates unchanged. The
   output/measurement-side sibling of `HANDOFF-audio-capability-platform.md`.
 - [`HANDOFF-correction-revision-plan.md`](docs/HANDOFF-correction-revision-plan.md) —
   execution plan of record for the layered correction/tuning revision
@@ -910,8 +918,10 @@ reference. Currently:
   calibrated mic ingest, configurable correction strategies,
   design-audit bundles, replay-grade analysis artifacts,
   `jasper-correction-bundle` inspect/export/FIR-inspect tooling, PEQ
-  generation, CamillaDSP hot-swap. Active workstream — read the Status
-  section first to see which phase is in flight.
+  generation, CamillaDSP hot-swap. Its Status section also records the inert
+  Wave 1 Active eligibility-receipt contract and the deliberate fact that
+  production Room still gates from the legacy applied recomposition snapshot,
+  not that receipt. Active workstream — read Status first.
 - [`HANDOFF-sound-preferences.md`](docs/HANDOFF-sound-preferences.md)
   — `/sound/` preference-EQ layer: Off / Saved / Draft live source,
   stock curves, five-band Simple EQ + exclusive PEQ editing, named custom
@@ -938,14 +948,15 @@ reference. Currently:
   "more bass" / "brighter," and safe reversible EQ layered separately
   from room correction.
 - [`HANDOFF-active-speaker-dsp.md`](docs/HANDOFF-active-speaker-dsp.md)
-  — Active speaker DSP / crossover commissioning workstream
-  planning baseline (2026-05-25, updated 2026-05-26). Canonical
+  — Active speaker DSP / crossover commissioning workstream. Canonical
   handoff for future JTS hardware where CamillaDSP directly drives
   woofer/mid/tweeter amplifier channels: speaker-baseline layer,
   strict room-correction/preference separation, 2-way/3-way preset
   model, safe bring-up, channel-map hazards, TTS/cue bypass risk,
   near-field/null-depth/gated measurement triad, LR/IIR-first default,
-  and delay/null verification.
+  and delay/null verification. The Wave 1 section defines the target-bound
+  research and visible confirmed safety profile, nine-state lifecycle, exact
+  positive Room-eligibility receipt, and the no-live-consumer boundary.
 - [`HANDOFF-distributed-active.md`](docs/HANDOFF-distributed-active.md) —
   **Design-of-record (proposed 2026-06-20)** for running an active
   speaker's driver-domain crossover (Layer A) as a wireless **follower**,
@@ -961,6 +972,8 @@ reference. Currently:
   one shared crossover model, explicit overwrite/apply/rollback semantics,
   fixed-axis driver measurement, observability, ownership boundaries, and the
   simple delivery path from level matching through full crossover design.
+  Includes the Wave 1 contract foundation and clearly separates those inert
+  identities from current playback, `/state`, and Room-gate behavior.
 - [`dual-apple-dac-lab.md`](docs/dual-apple-dac-lab.md) —
   Lab-only runbook for validating two Apple USB-C to 3.5 mm adapters
   as one stereo DAC per speaker. Keeps the experiment outside the
