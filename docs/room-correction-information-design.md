@@ -194,7 +194,12 @@ Conditional sections are decided by the server from the same snapshot as the
 rest of the envelope. For example, `reports` appears only when the session store
 has a report; the browser does not render an empty first-run panel. The tuning
 section appears only on screens with evidence worth explaining and only when the
-server offers it.
+server offers it. Report discovery is a static-edge concern: the handler may
+look it up while building idle or result envelopes, but never on the active
+900 ms status-poll path. `jasper.correction.envelope` receives the already
+computed availability fact and remains pure. R1 must not add a bundle scan,
+cache, or index to the hot path merely to decide whether this optional section
+is visible.
 
 The R1 migration deletes the six screen-independent legacy containers rather
 than hiding them again: the relay explanatory panel and dead Start control, the
@@ -215,7 +220,7 @@ small bounded set of choices without changing the meaning of the run.
 | Positions | Six | “Measuring 6 positions” | Nothing; may choose another supported count under Change |
 | Target | Flat | “with the flat target” | Nothing; may choose a small named target under Change |
 | Strategy | Balanced, cuts-only | Named in Change and the report | Nothing on the normal path |
-| Main-seat repeat | One Room-owned policy for both transports | Any added trust-check capture and why it exists | Nothing unless an expert override is retained |
+| Main-seat repeat | Enabled for both transports | One automatic trust-check capture at the main seat and why it exists | Nothing |
 | Mic calibration | Reuse a valid existing setup digest | Selected mic/calibration and any limitation | Act only when selection or calibration needs attention |
 | Placement | Server sequences distinct listening positions | One actionable placement at a time | Move the phone/mic, then continue |
 | Verification | Return to the main seat | Verification is a fresh like-for-like capture | Continue when placed |
@@ -229,8 +234,12 @@ Room-owned `DEFAULT_TARGET_PROFILE_ID` and
 may become a second default.
 
 Relay and local capture must also agree on the main-seat trust repeat. The
-current transport-dependent values are a defect to remove, not an intentional
-product distinction.
+single owner is `jasper.correction.session.DEFAULT_REPEAT_MAIN_POSITION = True`.
+Session creation, `/start`, relay and local flows, envelope copy, and tests all
+consume it; no transport or browser fallback may invert it. The repeat is an
+additional trust-check capture at the main seat, not a seventh distinct
+listening position. The current transport-dependent values are a defect to
+remove, not an intentional product distinction.
 
 ## Blockers, nudges, and typed failures
 
@@ -288,11 +297,16 @@ speaker could not continue this step. Try again.” They never become `POST ... 
 ## Returning-user state
 
 The Room wizard persists the last confirmed position count, target, and strategy
-in a versioned, wizard-owned file under `/var/lib/jasper/`. A fresh install seeds
-that file with the safe defaults and `has_saved_choices=false`; the first
-successful run atomically records the confirmed choices and changes the marker
-to true. The server validates and pre-applies those choices before building the
-disclosed defaults. Browser local storage is not an authority.
+in the versioned, wizard-owned
+`/var/lib/jasper/correction/preferences.json`. A fresh install seeds that exact
+path with the safe defaults and `has_saved_choices=false`, owned by
+`root:jasper` at mode `0660`. The installer creates it only when absent and
+never overwrites an existing valid or corrupt file. Wizard writes use a
+same-directory temporary file, validation, `fsync`, and atomic replace; they
+restore mode `0660` and group `jasper` after replacement. The first successful
+run records the confirmed choices and changes the marker to true. The server
+validates and pre-applies those choices before building the disclosed defaults.
+Browser local storage is not an authority.
 
 The product distinguishes these states:
 
@@ -305,8 +319,12 @@ The product distinguishes these states:
 | Incomplete prior run | No invented continuation; show the last durable applied state and start a fresh run after safe recovery. |
 
 Writes are atomic and bounded. Absence, unknown schema versions, or invalid
-values fail visibly to disclosed defaults. The file records user choices, not
-capture blobs, applied DSP authority, or another tab's state.
+values fail visibly to disclosed defaults. Reading never silently repairs or
+overwrites a corrupt file. When a later successful run replaces invalid state,
+the wizard first retains one bounded diagnostic sidecar at
+`preferences.json.corrupt`, replacing the older sidecar if necessary. The file
+records user choices, not capture blobs, applied DSP authority, or another tab's
+state.
 
 ## Relay-first capture and one phone handoff
 
@@ -359,10 +377,15 @@ explained in copy:
 
 Today the legacy Assertive strategy exceeds the intended −10 dB / Q 1.0–8.0
 household bounds, so it is excluded from the household **Change** surface until
-R5 brings it inside those bounds. If an expert strategy is then exposed, its
-positive-boost behavior is named explicitly and the +3.0 dB total ceiling still
-applies. “Cuts-only default” must never be presented as “all strategies are
-zero-boost.”
+R5 brings it inside those bounds. R1 owns the exclusion through one Room-owned
+`HOUSEHOLD_CORRECTION_STRATEGY_IDS = ("safe", "balanced")` allowlist in
+`jasper.correction.strategy`. Both rendered options and `/start` validation
+consume that allowlist; browser-only hiding is not an authorization boundary.
+R5 may add Assertive only in the same change that brings it inside the household
+bounds and re-proves them with guard tests. If an expert strategy is then
+exposed, its positive-boost behavior is named explicitly and the +3.0 dB total
+ceiling still applies. “Cuts-only default” must never be presented as “all
+strategies are zero-boost.”
 
 No Room phase correction or FIR design is authorized by this specification.
 When an actually applied bundle carries FIR metadata from an imported artifact,
@@ -489,9 +512,11 @@ The intended Room product is complete only when:
 5. One relay handoff remains valid through level, all listening positions, and
    verification, with version/run/device/calibration binding intact.
 6. Six is owned by one Room constant and used by every server/browser path;
-   flat and balanced use their existing Room default constants.
+   flat and balanced use their existing Room default constants; the rendered
+   strategy choices and `/start` accept the same household allowlist.
 7. Missing/corrupt returning-user state is visible and safely falls back to
-   disclosed defaults; valid state is pre-applied and named.
+   disclosed defaults; valid state is pre-applied and named; install never
+   overwrites existing preference state.
 8. No raw route/status/exception/session error reaches homeowner copy.
 9. The default result always shows the deterministic verdict and helped/hurt
    proof; the LLM/UI cannot override it.
