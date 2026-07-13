@@ -66,6 +66,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
+use jasper_host_clock::FallbackReason;
 use serde::{Deserialize, Serialize};
 
 /// The persistence schema version. Bump ONLY on an incompatible field change; a
@@ -99,10 +100,9 @@ pub struct HostCompliance {
     /// (an operator retuned the floor knob between sessions), the proof is treated
     /// as stale ([`HostCompliance::valid_for`]).
     pub floor_frames: u64,
-    /// Consecutive floor-primed sessions that failed revalidation. Incremented in
-    /// the record just before the file is deleted on a strike, so a fetched file
-    /// captured mid-delete shows the strike; in the steady state the on-disk value
-    /// is always 0 (proof present) or the file is absent (proof revoked).
+    /// Consecutive floor-primed sessions whose *terminal* probe verdict failed
+    /// revalidation. The first session persists `1` while retaining the proof;
+    /// the second deletes the file. A passing session resets it to `0`.
     pub consecutive_failures: u32,
 }
 
@@ -267,7 +267,8 @@ pub struct ProofSignals {
 pub enum RevokeReason {
     /// The servo's per-session compliance probe returned FAIL.
     ProbeFail,
-    /// The DLL ladder demoted to L2 (probe fail OR mid-stream demotion evidence).
+    /// A host trusted in L0 lost authority under sustained saturated correction.
+    /// Terminal probe noncompliance has its own `ProbeFail` reason.
     DllDemotion,
     /// A CONFIRMED churn cycle: an early-window underfill unlock FOLLOWED BY a
     /// relock within the confirmation horizon — proof the host is still delivering
@@ -354,54 +355,14 @@ pub fn classify_strike(reason: RevokeReason, current_failures: u32) -> StrikeAct
     }
 }
 
-/// The per-tick IMMEDIATE-trigger inputs for a floor-primed session, sampled by
-/// the mixer from the servo reverse signals. These are the triggers that revoke on
-/// the CURRENT lock the period the evidence appears: a LIVE probe FAIL and a live
-/// L2 demotion. The third trigger — the early-window underfill unlock — is NOT
-/// here: it is a two-phase discriminator (arm on the unlock, confirm on a relock)
-/// owned by [`RevalidationTracker`]'s state machine, because a bare terminal
-/// unlock (a stream that just ended) must NOT be a strike.
-#[derive(Debug, Clone, Copy)]
-pub struct RevalidationSignals {
-    /// The servo's last probe verdict as a code (`2` == FAIL; see
-    /// `host_clock::probe_result_code`). A fresh probe FAIL is the strongest
-    /// evidence the host is not honouring the pitch command.
-    pub probe_result_code: u64,
-    /// Whether the `probe_result_code` was produced by a probe that ran DURING the
-    /// current lock (i.e. it is a LIVE verdict, not one carried over from a prior
-    /// session). The servo deliberately leaves `probe_result = Fail` across a
-    /// session boundary (`jasper_host_clock::end_session` only overwrites a verdict
-    /// that was actively measuring), so a fresh lock on a NEW, compliant host would
-    /// otherwise read the previous host's stale FAIL and spuriously revoke. A live
-    /// probe FAIL always coincides with the ladder sitting at L2 (the fail
-    /// transitions to `L2Fallback` and holds there until the idle boundary
-    /// re-promotes to `Probing`), so the mixer sets this from `ladder_l2`; a stale
-    /// FAIL sits in `Probing` with `ladder_l2 == false` and is ignored.
-    pub probe_verdict_is_live: bool,
-    /// The DLL ladder demoted to L2 (probe-fail-into-L2 OR a mid-stream demotion).
-    pub ladder_l2: bool,
-}
-
-/// Decide whether a floor-primed session's IMMEDIATE revalidation triggers FAIL
-/// this period, and if so, why. Ordering is by directness of evidence: a fresh
-/// (LIVE) probe FAIL first, then a live L2 demotion. Returns `None` when neither
-/// immediate trigger fires (the early-unlock churn discriminator is decided
-/// separately in [`RevalidationTracker::step`]). PURE — the mixer enacts the
-/// returned reason (snap-back + revoke); this only decides. `probe_fail` is the
-/// exact `host_clock::probe_result_code` FAIL value (2), kept a plain literal here
-/// so the pure module needs no dependency on the host_clock adapter.
-///
-/// The probe-FAIL trigger is gated on `probe_verdict_is_live` so a STALE FAIL left
-/// on the reverse signal from a prior session's non-compliant host cannot revoke a
-/// fresh lock on a new, compliant host before its own probe completes.
-pub fn compute_revoke_reason(s: RevalidationSignals) -> Option<RevokeReason> {
-    const PROBE_RESULT_FAIL: u64 = 2;
-    if s.probe_result_code == PROBE_RESULT_FAIL && s.probe_verdict_is_live {
-        Some(RevokeReason::ProbeFail)
-    } else if s.ladder_l2 {
-        Some(RevokeReason::DllDemotion)
-    } else {
-        None
+/// Map the controller's explicit fallback cause onto the existing persistence
+/// policy. No probe/ladder inference lives here: a retryable first attempt never
+/// publishes a fallback cause, while local actuator loss maps to no host strike.
+pub fn compute_revoke_reason(reason: FallbackReason) -> Option<RevokeReason> {
+    match reason {
+        FallbackReason::None | FallbackReason::ActuatorUnavailable => None,
+        FallbackReason::ProbeNoncompliant => Some(RevokeReason::ProbeFail),
+        FallbackReason::LostAuthority => Some(RevokeReason::DllDemotion),
     }
 }
 
@@ -502,6 +463,9 @@ pub struct RevalidationTracker {
     /// Advances every period while armed regardless of lock state (the arm→relock
     /// gap is spent unlocked/priming); compared against `confirm_horizon_periods`.
     periods_since_arm: u64,
+    /// Previous explicit controller cause, for one-shot infrastructure-ceiling
+    /// behavior without render-period spam.
+    last_fallback_reason: FallbackReason,
 }
 
 /// The tracker's decision for one render period: the revocation outcome plus the
@@ -511,6 +475,9 @@ pub struct RevalidationTracker {
 pub struct RevalidationStep {
     /// Revoke the persisted proof now (snap back + delete + observability), or not.
     pub revoke: Option<RevokeReason>,
+    /// Raise only the current session to the safe ceiling while retaining the
+    /// persisted proof and its strike count.
+    pub raise_safe_ceiling: bool,
     /// This period was the idle→lock rising edge (a fresh session begins).
     pub rising_edge: bool,
     /// This period was the lock→unlock falling edge (the session ends).
@@ -540,6 +507,7 @@ impl RevalidationTracker {
             confirm_horizon_periods,
             pending_strike_armed: false,
             periods_since_arm: 0,
+            last_fallback_reason: FallbackReason::None,
         }
     }
 
@@ -568,10 +536,11 @@ impl RevalidationTracker {
     /// The mixer enacts a returned `revoke` (snap-back + file delete +
     /// observability). Pure: no I/O, no clock.
     ///
-    /// Three revoke triggers, two shapes:
-    ///  - IMMEDIATE (`ProbeFail`, `DllDemotion`): direct host-non-compliance
-    ///    evidence via [`compute_revoke_reason`] — revoke on the current lock the
-    ///    period the evidence appears.
+    /// Three strike triggers, two shapes:
+    ///  - IMMEDIATE (`ProbeFail`, `DllDemotion`): explicit host-non-compliance
+    ///    evidence via [`compute_revoke_reason`] — return the strike on the
+    ///    current lock the period the evidence appears. The mixer applies the
+    ///    existing cause-specific one-/two-session persistence policy.
     ///  - TWO-PHASE (`EarlyUnlock`): the churn discriminator. An early-window
     ///    underfill unlock ARMS a pending strike; a RELOCK within
     ///    `confirm_horizon_periods` CONFIRMS it (revoke). A pending strike whose
@@ -590,25 +559,30 @@ impl RevalidationTracker {
         &mut self,
         locked: bool,
         unlock_count: u64,
-        probe_result_code: u64,
-        ladder_l2: bool,
+        fallback_reason: FallbackReason,
         floor_primed_now: bool,
     ) -> RevalidationStep {
         let rising_edge = locked && !self.was_locked;
         let falling_edge = !locked && self.was_locked;
 
+        let raise_safe_ceiling = fallback_reason == FallbackReason::ActuatorUnavailable
+            && self.last_fallback_reason != FallbackReason::ActuatorUnavailable;
+        self.last_fallback_reason = fallback_reason;
+
+        // Infrastructure fallback retains the proof but this lock is no longer a
+        // floor-primed revalidation candidate: the mixer raises it to the ceiling.
+        // Clear pending churn evidence so the recovery relock cannot turn a local
+        // actuator outage into a false host strike.
+        if fallback_reason == FallbackReason::ActuatorUnavailable {
+            self.floor_primed = false;
+            self.pending_strike_armed = false;
+        }
+
         let mut revoke = None;
         if self.floor_primed && !self.revoked_this_lock {
-            // (1) IMMEDIATE triggers (probe FAIL / L2 demotion) — unchanged. A LIVE
-            // probe FAIL always coincides with the ladder at L2; a stale carryover
-            // FAIL sits in Probing (`ladder_l2 == false`) and is ignored so a fresh
-            // lock on a new compliant host is not revoked on a previous host's
-            // verdict.
-            revoke = compute_revoke_reason(RevalidationSignals {
-                probe_result_code,
-                probe_verdict_is_live: ladder_l2,
-                ladder_l2,
-            });
+            // (1) Immediate host evidence from the controller's explicit cause.
+            // Retryable first failures and actuator outages never map to revoke.
+            revoke = compute_revoke_reason(fallback_reason);
 
             // (2) EarlyUnlock CHURN discriminator. A strike ARMS only on the
             // FALLING edge (`unlock_for_underfill` bumps `unlock_count` in the same
@@ -685,7 +659,9 @@ impl RevalidationTracker {
             self.periods_since_lock = 0;
             self.unlock_baseline_at_lock = unlock_count;
             self.revoked_this_lock = false;
-            self.floor_primed = floor_primed_now && revoke.is_none();
+            self.floor_primed = floor_primed_now
+                && revoke.is_none()
+                && fallback_reason != FallbackReason::ActuatorUnavailable;
         }
         self.was_locked = locked;
         if locked {
@@ -696,6 +672,7 @@ impl RevalidationTracker {
         }
         RevalidationStep {
             revoke,
+            raise_safe_ceiling,
             rising_edge,
             falling_edge,
         }
@@ -1339,18 +1316,14 @@ mod tests {
         assert_eq!(RevokeReason::EarlyUnlock.as_str(), "early_unlock");
     }
 
-    fn healthy() -> RevalidationSignals {
-        RevalidationSignals {
-            probe_result_code: 1, // pass
-            probe_verdict_is_live: true,
-            ladder_l2: false,
-        }
-    }
-
     #[test]
     fn compute_revoke_reason_healthy_session_never_revokes() {
-        // Neither immediate trigger fires on a passing probe / non-L2 ladder.
-        assert_eq!(compute_revoke_reason(healthy()), None);
+        assert_eq!(compute_revoke_reason(FallbackReason::None), None);
+        assert_eq!(
+            compute_revoke_reason(FallbackReason::ActuatorUnavailable),
+            None,
+            "local infrastructure is never host evidence"
+        );
     }
 
     #[test]
@@ -1360,61 +1333,34 @@ mod tests {
         // no combination of the immediate inputs can produce EarlyUnlock here. This
         // is a mutation guard: a refactor that folded the old unlock branch back in
         // would resurrect the terminal-unlock false-revoke.
-        for probe in [0u64, 1, 2, 3] {
-            for live in [false, true] {
-                for l2 in [false, true] {
-                    let r = compute_revoke_reason(RevalidationSignals {
-                        probe_result_code: probe,
-                        probe_verdict_is_live: live,
-                        ladder_l2: l2,
-                    });
-                    assert_ne!(
-                        r,
-                        Some(RevokeReason::EarlyUnlock),
-                        "compute_revoke_reason must never decide EarlyUnlock \
-                         (probe={probe} live={live} l2={l2})"
-                    );
-                }
-            }
+        for reason in [
+            FallbackReason::None,
+            FallbackReason::ProbeNoncompliant,
+            FallbackReason::LostAuthority,
+            FallbackReason::ActuatorUnavailable,
+        ] {
+            assert_ne!(
+                compute_revoke_reason(reason),
+                Some(RevokeReason::EarlyUnlock),
+                "compute_revoke_reason must never decide EarlyUnlock"
+            );
         }
     }
 
     #[test]
     fn compute_revoke_reason_probe_fail_takes_precedence() {
-        // A fresh (LIVE) probe FAIL (code 2) revokes as ProbeFail even if L2 is also
-        // set. A live probe fail always coincides with L2, so both are set here.
-        let s = RevalidationSignals {
-            probe_result_code: 2,
-            probe_verdict_is_live: true,
-            ladder_l2: true,
-        };
-        assert_eq!(compute_revoke_reason(s), Some(RevokeReason::ProbeFail));
-    }
-
-    #[test]
-    fn compute_revoke_reason_ignores_stale_probe_fail() {
-        // A STALE probe FAIL (code 2) that was NOT produced during the current lock
-        // must not revoke: the servo leaves `probe_result=Fail` across a session
-        // boundary, and a fresh lock on a NEW compliant host would otherwise read
-        // that carryover and revoke before its own probe runs. `probe_verdict_is_live`
-        // is false (the ladder is back in Probing, `ladder_l2=false`), so no revoke.
-        let stale = RevalidationSignals {
-            probe_result_code: 2,
-            probe_verdict_is_live: false,
-            ladder_l2: false,
-        };
-        assert_eq!(compute_revoke_reason(stale), None);
+        assert_eq!(
+            compute_revoke_reason(FallbackReason::ProbeNoncompliant),
+            Some(RevokeReason::ProbeFail)
+        );
     }
 
     #[test]
     fn compute_revoke_reason_l2_demotion_after_pass() {
-        // No fresh probe fail, but the DLL demoted mid-stream → DllDemotion.
-        let s = RevalidationSignals {
-            probe_result_code: 1,
-            probe_verdict_is_live: false,
-            ladder_l2: true,
-        };
-        assert_eq!(compute_revoke_reason(s), Some(RevokeReason::DllDemotion));
+        assert_eq!(
+            compute_revoke_reason(FallbackReason::LostAuthority),
+            Some(RevokeReason::DllDemotion)
+        );
     }
 
     #[test]
@@ -1501,12 +1447,11 @@ mod tests {
     // `HOST_COMPLIANCE_CHURN_CONFIRM_SECS` via `ms_to_periods`.
     const CONFIRM: u64 = 8;
 
-    /// A locked healthy tick (probe passed, ladder L0, no churn). Returns the four
-    /// resampler/servo args; the fifth `step` arg (`floor_primed_now`) is passed
+    /// A locked healthy tick (no fallback, no churn). Returns the three
+    /// resampler/controller args; `floor_primed_now` is passed
     /// explicitly at each call site to make the per-lock prime state visible.
-    fn ok_lock(unlock_count: u64) -> (bool, u64, u64, bool) {
-        // (locked, unlock_count, probe_code=pass, ladder_l2=false)
-        (true, unlock_count, 1, false)
+    fn ok_lock(unlock_count: u64) -> (bool, u64, FallbackReason) {
+        (true, unlock_count, FallbackReason::None)
     }
 
     /// Build a floor-primed tracker with the test window + horizon.
@@ -1520,16 +1465,16 @@ mod tests {
         // an underfill unlock inside the early window (then a relock) just re-earns
         // the proof. `floor_primed_now=false` (no live proof) is the cold signal.
         let mut t = RevalidationTracker::new(false, EARLY_WINDOW, CONFIRM);
-        let (l, u, p, l2) = ok_lock(0);
-        assert_eq!(t.step(l, u, p, l2, false).revoke, None);
+        let (l, u, reason) = ok_lock(0);
+        assert_eq!(t.step(l, u, reason, false).revoke, None);
         // Underfill unlock (falling edge, count advances): no arm (cold) → no revoke.
-        assert_eq!(t.step(false, 1, 1, false, false).revoke, None);
+        assert_eq!(t.step(false, 1, FallbackReason::None, false).revoke, None);
         assert!(
             !t.pending_strike_armed(),
             "a cold session never arms a strike"
         );
         // Even a fast relock does not confirm anything on a cold lane.
-        assert_eq!(t.step(true, 1, 1, false, false).revoke, None);
+        assert_eq!(t.step(true, 1, FallbackReason::None, false).revoke, None);
     }
 
     #[test]
@@ -1543,12 +1488,12 @@ mod tests {
         let mut t = primed_tracker();
         // A ~2 s stream: lock cleanly for a few periods (baseline unlock_count = 0).
         for _ in 0..3 {
-            let (l, u, p, l2) = ok_lock(0);
-            assert_eq!(t.step(l, u, p, l2, true).revoke, None);
+            let (l, u, reason) = ok_lock(0);
+            assert_eq!(t.step(l, u, reason, true).revoke, None);
         }
         // Stream ends → underfill unlock on the falling edge. This ARMS a strike but
         // does NOT revoke (no relock yet).
-        let end = t.step(false, 1, 1, false, true);
+        let end = t.step(false, 1, FallbackReason::None, true);
         assert_eq!(
             end.revoke, None,
             "a terminal stream-end unlock must NOT revoke — it only arms a pending strike"
@@ -1563,7 +1508,7 @@ mod tests {
         // the strike must expire, still no revoke.
         for _ in 0..CONFIRM {
             assert_eq!(
-                t.step(false, 1, 1, false, true).revoke,
+                t.step(false, 1, FallbackReason::None, true).revoke,
                 None,
                 "no relock → the pending strike never confirms"
             );
@@ -1582,17 +1527,17 @@ mod tests {
         // once, on the confirming relock.
         let mut t = primed_tracker();
         for _ in 0..3 {
-            let (l, u, p, l2) = ok_lock(0);
-            assert_eq!(t.step(l, u, p, l2, true).revoke, None);
+            let (l, u, reason) = ok_lock(0);
+            assert_eq!(t.step(l, u, reason, true).revoke, None);
         }
         // Underfill unlock → arm (no revoke yet).
-        assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        assert_eq!(t.step(false, 1, FallbackReason::None, true).revoke, None);
         assert!(t.pending_strike_armed());
         // A couple of priming periods still unlocked, inside the horizon.
-        assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        assert_eq!(t.step(false, 1, FallbackReason::None, true).revoke, None);
         // RELOCK within the horizon → confirm. `floor_primed_now` is still true (the
         // mixer clears flag_present only AFTER step returns).
-        let relock = t.step(true, 1, 1, false, true);
+        let relock = t.step(true, 1, FallbackReason::None, true);
         assert_eq!(
             relock.revoke,
             Some(RevokeReason::EarlyUnlock),
@@ -1612,24 +1557,24 @@ mod tests {
         // relock does not confirm. No revoke; the proof survives.
         let mut t = primed_tracker();
         for _ in 0..3 {
-            let (l, u, p, l2) = ok_lock(0);
-            assert_eq!(t.step(l, u, p, l2, true).revoke, None);
+            let (l, u, reason) = ok_lock(0);
+            assert_eq!(t.step(l, u, reason, true).revoke, None);
         }
         // Arm on the underfill (periods_since_arm resets to 0, then increments to 1
         // at the bottom of this same period).
-        assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        assert_eq!(t.step(false, 1, FallbackReason::None, true).revoke, None);
         assert!(t.pending_strike_armed());
         // Stay unlocked for exactly CONFIRM more periods → periods_since_arm exceeds
         // the horizon and the strike expires WITHOUT a relock.
         for _ in 0..CONFIRM {
-            assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+            assert_eq!(t.step(false, 1, FallbackReason::None, true).revoke, None);
         }
         assert!(
             !t.pending_strike_armed(),
             "the strike expired one period past the horizon"
         );
         // The (late) relock now finds no armed strike → no confirm, no revoke.
-        let relock = t.step(true, 1, 1, false, true);
+        let relock = t.step(true, 1, FallbackReason::None, true);
         assert_eq!(
             relock.revoke, None,
             "a relock just outside the confirmation horizon must not revoke"
@@ -1653,17 +1598,17 @@ mod tests {
         let mut t = primed_tracker();
         // Lock A: settle, then an underfill unlock arms a strike inside the window.
         for _ in 0..3 {
-            let (l, u, p, l2) = ok_lock(0);
-            assert_eq!(t.step(l, u, p, l2, true).revoke, None);
+            let (l, u, reason) = ok_lock(0);
+            assert_eq!(t.step(l, u, reason, true).revoke, None);
         }
-        assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        assert_eq!(t.step(false, 1, FallbackReason::None, true).revoke, None);
         assert!(
             t.pending_strike_armed(),
             "Lock A's underfill armed a strike"
         );
         // No relock: the strike expires one period past the confirmation horizon.
         for _ in 0..CONFIRM {
-            assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+            assert_eq!(t.step(false, 1, FallbackReason::None, true).revoke, None);
         }
         assert!(
             !t.pending_strike_armed(),
@@ -1671,7 +1616,7 @@ mod tests {
         );
         // Lock B: a genuinely-fresh rising edge (unlock_count unchanged from A's
         // terminal). It must neither revoke nor RE-ARM a phantom strike.
-        let relock = t.step(true, 1, 1, false, true);
+        let relock = t.step(true, 1, FallbackReason::None, true);
         assert_eq!(
             relock.revoke, None,
             "a fresh lock after an expired strike must not revoke"
@@ -1692,14 +1637,14 @@ mod tests {
         // one revoke across the whole storm.
         let mut t = primed_tracker();
         for _ in 0..3 {
-            let (l, u, p, l2) = ok_lock(0);
-            assert_eq!(t.step(l, u, p, l2, true).revoke, None);
+            let (l, u, reason) = ok_lock(0);
+            assert_eq!(t.step(l, u, reason, true).revoke, None);
         }
         // Cycle 1: unlock (arm) → relock (confirm → revoke #1). flag_present still
         // true across this relock (the mixer clears it AFTER step returns).
-        assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        assert_eq!(t.step(false, 1, FallbackReason::None, true).revoke, None);
         assert_eq!(
-            t.step(true, 1, 1, false, true).revoke,
+            t.step(true, 1, FallbackReason::None, true).revoke,
             Some(RevokeReason::EarlyUnlock),
             "the first confirmed churn cycle revokes"
         );
@@ -1710,12 +1655,18 @@ mod tests {
         let mut uc = 2u64;
         for _cycle in 0..5 {
             // Underfill unlock (count advances), proof now absent.
-            if t.step(false, uc, 1, false, false).revoke.is_some() {
+            if t.step(false, uc, FallbackReason::None, false)
+                .revoke
+                .is_some()
+            {
                 extra_revokes += 1;
             }
             uc += 1;
             // Relock, proof still absent.
-            if t.step(true, uc, 1, false, false).revoke.is_some() {
+            if t.step(true, uc, FallbackReason::None, false)
+                .revoke
+                .is_some()
+            {
                 extra_revokes += 1;
             }
             uc += 1;
@@ -1734,17 +1685,17 @@ mod tests {
         let mut t = primed_tracker();
         // Hold lock past the early window (live proof present every period).
         for _ in 0..(EARLY_WINDOW + 5) {
-            let (l, u, p, l2) = ok_lock(0);
-            assert_eq!(t.step(l, u, p, l2, true).revoke, None);
+            let (l, u, reason) = ok_lock(0);
+            assert_eq!(t.step(l, u, reason, true).revoke, None);
         }
         // Underfill outside the window: no arm, no revoke.
-        assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        assert_eq!(t.step(false, 1, FallbackReason::None, true).revoke, None);
         assert!(
             !t.pending_strike_armed(),
             "an out-of-window underfill must not arm a strike"
         );
         // Even a fast relock does not confirm (nothing was armed).
-        assert_eq!(t.step(true, 1, 1, false, true).revoke, None);
+        assert_eq!(t.step(true, 1, FallbackReason::None, true).revoke, None);
     }
 
     #[test]
@@ -1753,8 +1704,8 @@ mod tests {
         // immediately on the current lock — the two-phase EarlyUnlock path does not
         // gate the direct host-non-compliance triggers.
         let mut t = primed_tracker();
-        assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
-        let step = t.step(true, 0, 2, true, true);
+        assert_eq!(t.step(true, 0, FallbackReason::None, true).revoke, None);
+        let step = t.step(true, 0, FallbackReason::ProbeNoncompliant, true);
         assert_eq!(step.revoke, Some(RevokeReason::ProbeFail));
     }
 
@@ -1763,30 +1714,46 @@ mod tests {
         // A mid-stream L2 demotion (no fresh probe fail) revokes as DllDemotion,
         // immediately while locked — unchanged by the churn discriminator.
         let mut t = primed_tracker();
-        assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
+        assert_eq!(t.step(true, 0, FallbackReason::None, true).revoke, None);
         assert_eq!(
-            t.step(true, 0, 1, true, true).revoke,
+            t.step(true, 0, FallbackReason::LostAuthority, true).revoke,
             Some(RevokeReason::DllDemotion)
         );
     }
 
     #[test]
-    fn tracker_ignores_stale_probe_fail_on_fresh_lock() {
-        // The stale-verdict trap: a fresh lock on a new compliant host must NOT
-        // revoke on a previous session's carried-over FAIL. The servo leaves
-        // `probe_result=Fail` across a session boundary but the ladder is back in
-        // Probing (`ladder_l2=false`), so the FAIL is not live and no revoke fires.
+    fn tracker_actuator_unavailable_raises_ceiling_once_without_host_strike() {
         let mut t = primed_tracker();
-        // Fresh lock: probe_code is a STALE 2 but ladder_l2 is false (re-probing).
+        assert_eq!(t.step(true, 0, FallbackReason::None, true).revoke, None);
+        let outage = t.step(true, 0, FallbackReason::ActuatorUnavailable, true);
+        assert!(outage.raise_safe_ceiling);
+        assert_eq!(outage.revoke, None);
+        assert!(!t.revoked_this_lock());
+        let repeated = t.step(true, 0, FallbackReason::ActuatorUnavailable, true);
+        assert!(
+            !repeated.raise_safe_ceiling,
+            "one action per outage episode"
+        );
+        assert_eq!(repeated.revoke, None);
+        let recovered = t.step(true, 0, FallbackReason::None, true);
+        assert!(!recovered.raise_safe_ceiling);
+        assert_eq!(recovered.revoke, None);
+    }
+
+    #[test]
+    fn tracker_ignores_stale_probe_fail_on_fresh_lock() {
+        // The stale-verdict trap is structurally gone: compliance sees the
+        // controller's live fallback cause, not a carried probe-result value.
+        let mut t = primed_tracker();
         for _ in 0..5 {
             assert_eq!(
-                t.step(true, 0, 2, false, true).revoke,
+                t.step(true, 0, FallbackReason::None, true).revoke,
                 None,
                 "a stale (not-L2-corroborated) probe FAIL must not revoke a fresh lock"
             );
         }
         // When the new probe finishes and passes, all clear — still no revoke.
-        assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
+        assert_eq!(t.step(true, 0, FallbackReason::None, true).revoke, None);
     }
 
     #[test]
@@ -1796,15 +1763,16 @@ mod tests {
         // latch. (Uses probe fail, which stays live across the relock here because the
         // test keeps floor_primed_now=true to exercise the latch, not the lifecycle.)
         let mut t = primed_tracker();
-        assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
+        assert_eq!(t.step(true, 0, FallbackReason::None, true).revoke, None);
         assert_eq!(
-            t.step(true, 0, 2, true, true).revoke,
+            t.step(true, 0, FallbackReason::ProbeNoncompliant, true)
+                .revoke,
             Some(RevokeReason::ProbeFail)
         );
         assert!(t.revoked_this_lock());
         // Lose lock (session ends), then re-lock (rising edge) — latch clears.
-        let _ = t.step(false, 0, 1, false, true);
-        let relock = t.step(true, 0, 1, false, true);
+        let _ = t.step(false, 0, FallbackReason::None, true);
+        let relock = t.step(true, 0, FallbackReason::None, true);
         assert!(relock.rising_edge);
         assert!(
             !t.revoked_this_lock(),
@@ -1812,7 +1780,8 @@ mod tests {
         );
         // A new live probe fail on the RE-locked session revokes again.
         assert_eq!(
-            t.step(true, 0, 2, true, true).revoke,
+            t.step(true, 0, FallbackReason::ProbeNoncompliant, true)
+                .revoke,
             Some(RevokeReason::ProbeFail),
             "a re-proven session can strike again — the latch is per-lock"
         );
@@ -1832,29 +1801,33 @@ mod tests {
 
         // Session A: lock with the live proof STILL ABSENT (floor_primed_now=false).
         for _ in 0..3 {
-            assert_eq!(t.step(true, 0, 1, false, false).revoke, None);
+            assert_eq!(t.step(true, 0, FallbackReason::None, false).revoke, None);
         }
         // An early churn cycle on the cold session must NOT revoke — nothing to
         // distrust; the session is proving from scratch. It arms nothing (cold) and
         // ends UNLOCKED so session B below begins with a fresh rising edge.
-        assert_eq!(t.step(false, 1, 1, false, false).revoke, None); // unlock (no arm — cold)
+        assert_eq!(t.step(false, 1, FallbackReason::None, false).revoke, None); // unlock (no arm — cold)
         assert_eq!(
-            t.step(true, 1, 1, false, false).revoke,
+            t.step(true, 1, FallbackReason::None, false).revoke,
             None,
             "a cold (not floor-primed) relock never revokes"
         );
-        assert_eq!(t.step(false, 2, 1, false, false).revoke, None); // session A ends (unlocked)
+        assert_eq!(t.step(false, 2, FallbackReason::None, false).revoke, None); // session A ends (unlocked)
 
         // Session A wrote its proof; session B LOCKS FRESH (rising edge) with the
         // proof now LIVE (floor_primed_now=true). The rising edge latches
         // floor_primed=true; these clean periods do not revoke.
         for _ in 0..3 {
-            assert_eq!(t.step(true, 2, 1, false, true).revoke, None);
+            assert_eq!(t.step(true, 2, FallbackReason::None, true).revoke, None);
         }
         // The SAME early churn cycle now revokes — session B was floor-primed.
-        assert_eq!(t.step(false, 3, 1, false, true).revoke, None, "arm");
         assert_eq!(
-            t.step(true, 3, 1, false, true).revoke,
+            t.step(false, 3, FallbackReason::None, true).revoke,
+            None,
+            "arm"
+        );
+        assert_eq!(
+            t.step(true, 3, FallbackReason::None, true).revoke,
             Some(RevokeReason::EarlyUnlock),
             "a floor-primed session B (proof live at its rising edge) revalidates + revokes"
         );
@@ -1867,21 +1840,22 @@ mod tests {
         // NO one-strike revalidation — it descends + re-proves like any cold lane.
         let mut t = primed_tracker();
         // Floor-primed session: a live probe fail revokes.
-        assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
+        assert_eq!(t.step(true, 0, FallbackReason::None, true).revoke, None);
         assert_eq!(
-            t.step(true, 0, 2, true, true).revoke,
+            t.step(true, 0, FallbackReason::ProbeNoncompliant, true)
+                .revoke,
             Some(RevokeReason::ProbeFail)
         );
         // Session ends; the mixer cleared flag_present on the revoke, so the next
         // lock sees floor_primed_now=false.
-        let _ = t.step(false, 0, 1, false, false);
+        let _ = t.step(false, 0, FallbackReason::None, false);
         for _ in 0..3 {
-            assert_eq!(t.step(true, 0, 1, false, false).revoke, None);
+            assert_eq!(t.step(true, 0, FallbackReason::None, false).revoke, None);
         }
         // An early churn cycle on this re-proving session does NOT revoke.
-        assert_eq!(t.step(false, 1, 1, false, false).revoke, None);
+        assert_eq!(t.step(false, 1, FallbackReason::None, false).revoke, None);
         assert_eq!(
-            t.step(true, 1, 1, false, false).revoke,
+            t.step(true, 1, FallbackReason::None, false).revoke,
             None,
             "the session after a revoke is not floor-primed, so it never revokes"
         );
@@ -1898,20 +1872,24 @@ mod tests {
         // the ceiling — matching the flag the mixer is about to clear.
         let mut t = primed_tracker();
         for _ in 0..3 {
-            assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
+            assert_eq!(t.step(true, 0, FallbackReason::None, true).revoke, None);
         }
-        assert_eq!(t.step(false, 1, 1, false, true).revoke, None, "arm");
         assert_eq!(
-            t.step(true, 1, 1, false, true).revoke,
+            t.step(false, 1, FallbackReason::None, true).revoke,
+            None,
+            "arm"
+        );
+        assert_eq!(
+            t.step(true, 1, FallbackReason::None, true).revoke,
             Some(RevokeReason::EarlyUnlock),
             "confirm on the relock"
         );
         // Lock B continues with the proof now cleared (floor_primed_now=false). A
         // fresh underfill+relock on lock B must NOT revoke again — lock B latched
         // floor_primed=false on the confirming edge, so it never revalidates.
-        assert_eq!(t.step(false, 2, 1, false, false).revoke, None);
+        assert_eq!(t.step(false, 2, FallbackReason::None, false).revoke, None);
         assert_eq!(
-            t.step(true, 2, 1, false, false).revoke,
+            t.step(true, 2, FallbackReason::None, false).revoke,
             None,
             "lock B is not floor-primed after the confirmed revoke — no second strike"
         );
@@ -1981,7 +1959,7 @@ mod tests {
 
         // A healthy locked period → no revoke.
         assert_eq!(
-            t.step(r.is_locked(), r.unlock_count(), 1, false, true)
+            t.step(r.is_locked(), r.unlock_count(), FallbackReason::None, true)
                 .revoke,
             None,
             "a healthy locked period does not revoke"
@@ -1992,7 +1970,7 @@ mod tests {
             r.render_period(&mut out);
             assert!(r.is_locked());
             assert_eq!(
-                t.step(r.is_locked(), r.unlock_count(), 1, false, true)
+                t.step(r.is_locked(), r.unlock_count(), FallbackReason::None, true)
                     .revoke,
                 None
             );
@@ -2003,7 +1981,7 @@ mod tests {
         let mut armed = false;
         for _ in 0..64 {
             r.render_period(&mut out);
-            let s = t.step(r.is_locked(), r.unlock_count(), 1, false, true);
+            let s = t.step(r.is_locked(), r.unlock_count(), FallbackReason::None, true);
             assert_eq!(s.revoke, None, "the arming underfill must not revoke");
             if !r.is_locked() {
                 assert!(
@@ -2029,7 +2007,7 @@ mod tests {
         for _ in 0..64 {
             r.push_input(&real_tone(PERIOD * 4));
             r.render_period(&mut out);
-            let s = t.step(r.is_locked(), r.unlock_count(), 1, false, true);
+            let s = t.step(r.is_locked(), r.unlock_count(), FallbackReason::None, true);
             if let Some(reason) = s.revoke {
                 revoked = Some(reason);
                 assert!(
@@ -2060,14 +2038,14 @@ mod tests {
 
         // A healthy locked period, then starve to the underfill unlock (arm).
         assert_eq!(
-            t.step(r.is_locked(), r.unlock_count(), 1, false, true)
+            t.step(r.is_locked(), r.unlock_count(), FallbackReason::None, true)
                 .revoke,
             None
         );
         let mut armed = false;
         for _ in 0..64 {
             r.render_period(&mut out);
-            let s = t.step(r.is_locked(), r.unlock_count(), 1, false, true);
+            let s = t.step(r.is_locked(), r.unlock_count(), FallbackReason::None, true);
             assert_eq!(s.revoke, None, "the arming underfill must not revoke");
             if !r.is_locked() {
                 armed = true;
@@ -2087,7 +2065,7 @@ mod tests {
             r.render_period(&mut out);
             assert!(!r.is_locked(), "no input → the lane stays unlocked");
             assert_eq!(
-                t.step(r.is_locked(), r.unlock_count(), 1, false, true)
+                t.step(r.is_locked(), r.unlock_count(), FallbackReason::None, true)
                     .revoke,
                 None,
                 "a terminal stream-end (no relock) never revokes through the wiring"
@@ -2157,7 +2135,7 @@ mod tests {
 
         // Healthy locked period → no revoke.
         assert_eq!(
-            t.step(r.is_locked(), r.unlock_count(), 1, false, true)
+            t.step(r.is_locked(), r.unlock_count(), FallbackReason::None, true)
                 .revoke,
             None
         );
@@ -2166,7 +2144,7 @@ mod tests {
         let mut armed = false;
         for _ in 0..64 {
             r.render_period(&mut out);
-            let s = t.step(r.is_locked(), r.unlock_count(), 1, false, true);
+            let s = t.step(r.is_locked(), r.unlock_count(), FallbackReason::None, true);
             assert_eq!(s.revoke, None, "the arming underfill must not revoke");
             if !r.is_locked() {
                 assert!(r.unlock_count() > baseline_unlocks);
@@ -2182,7 +2160,7 @@ mod tests {
         for _ in 0..64 {
             r.push_input(&real_tone(PERIOD * 4));
             r.render_period(&mut out);
-            let s = t.step(r.is_locked(), r.unlock_count(), 1, false, true);
+            let s = t.step(r.is_locked(), r.unlock_count(), FallbackReason::None, true);
             if let Some(reason) = s.revoke {
                 revoked = Some(reason);
                 assert!(s.rising_edge, "the revoke lands on the relock");

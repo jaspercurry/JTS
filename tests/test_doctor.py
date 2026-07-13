@@ -3077,6 +3077,90 @@ def _fanin_status_payload(
     }).encode()
 
 
+def _host_clock_status(
+    *,
+    ladder="l0_locked",
+    reason=None,
+    ready=True,
+    capture_generation=4,
+    control_generation=4,
+    phase=None,
+    attempt=1,
+    retries=0,
+):
+    return {
+        "host_clock": {
+            "enabled": True,
+            "ladder": ladder,
+            "fallback_reason": reason,
+            "actuator": {
+                "ready": ready,
+                "capture_generation": capture_generation,
+                "control_generation": control_generation,
+                "refreshes": 4,
+                "open_failures": 0,
+                "write_failures": 1,
+            },
+            "probe": {
+                "phase": phase,
+                "attempt": attempt,
+                "max_attempts": 2,
+                "final_result": "pass" if ladder == "l0_locked" else "none",
+                "retries": retries,
+            },
+        }
+    }
+
+
+def test_host_clock_doctor_ok_for_l0_and_bounded_retry():
+    l0 = doctor.audio._host_clock_health_from_status(_host_clock_status())
+    assert l0.status == "ok"
+    assert "ladder=l0_locked" in l0.detail
+
+    retry = doctor.audio._host_clock_health_from_status(
+        _host_clock_status(
+            ladder="probing", phase="retry_wait", attempt=2, retries=1
+        )
+    )
+    assert retry.status == "ok"
+    assert "phase=retry_wait" in retry.detail
+    assert "attempt=2/2" in retry.detail
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["probe_noncompliant", "lost_authority", "actuator_unavailable"],
+)
+def test_host_clock_doctor_warns_with_exact_l2_reason(reason):
+    result = doctor.audio._host_clock_health_from_status(
+        _host_clock_status(ladder="l2_fallback", reason=reason)
+    )
+    assert result.status == "warn"
+    assert f"fallback_reason={reason}" in result.detail
+
+
+def test_host_clock_doctor_warns_on_unavailable_or_generation_mismatch():
+    unavailable = doctor.audio._host_clock_health_from_status(
+        _host_clock_status(
+            ladder="l2_fallback",
+            reason="actuator_unavailable",
+            ready=False,
+            control_generation=None,
+        )
+    )
+    assert unavailable.status == "warn"
+    assert "actuator unavailable/mismatched" in unavailable.detail
+    assert "capture_generation=4" in unavailable.detail
+    assert "control_generation=None" in unavailable.detail
+
+    mismatch = doctor.audio._host_clock_health_from_status(
+        _host_clock_status(control_generation=3)
+    )
+    assert mismatch.status == "warn"
+    assert "capture_generation=4" in mismatch.detail
+    assert "control_generation=3" in mismatch.detail
+
+
 def _outputd_status_payload(
     *,
     backend: str = "alsa",

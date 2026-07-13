@@ -632,6 +632,62 @@ Combo host-clock telemetry:
 curl -s http://jts.local:8780/state | jq .audio_graph.fanin.host_clock
 ```
 
+### Capture/control generations and actuator self-heal
+
+The direct PCM and the pitch control are one logical actuator generation but
+remain thread-confined: the mixer thread owns capture and publishes its existing
+monotonic `direct.opens` counter as `capture_generation`; the `fanin-host-clock`
+thread owns the concrete `!Send` ALSA ctl handle and every pitch write. No ALSA
+handle crosses a thread boundary and the render loop does no lifecycle I/O.
+
+`L0_LOCKED` is trustworthy only while `capture_generation == control_generation`
+and the actuator is ready. A capture reopen invalidates the old ctl generation
+even if writes to that handle still report success. The host-clock thread then:
+
+1. best-effort neutralizes and drops the old handle;
+2. opens a fresh ctl against the rebuilt card;
+3. forces neutral on the new handle; and
+4. only then publishes the new `control_generation` as ready.
+
+Open, forced-neutral, or later pitch-write failure leaves the actuator unready,
+increments the corresponding counter, and retries opening at a fixed 1 Hz while
+capture exists. This is infrastructure unavailability, not evidence that the
+host ignores feedback: the controller holds neutral in `L2_FALLBACK` with
+`fallback_reason="actuator_unavailable"`, consumes no probe attempt, and
+automatically re-probes the same active stream when the matching control
+generation becomes ready. A host-caused terminal L2 remains latched for the
+stream; only an idle boundary or a genuinely new capture generation re-arms it.
+
+Every normal exit, idle edge, generation replacement, retry transition, and L2
+entry commands neutral. The systemd `ExecStopPost` belt remains the SIGKILL/OOM
+backstop. Successful write readback is diagnostic only; generation equality and
+the forced-neutral lifecycle are the correctness boundary.
+
+Stable transition logs are `event=fanin.host_clock_control_refresh_requested`,
+`..._control_refresh_succeeded`, `..._control_open_failure`,
+`..._control_neutral_failure`, `..._pitch_write_failure`, and
+`..._generation_mismatch`. Open/write failures are rate-limited; counters remain
+cumulative in STATUS.
+
+**Retry constant and 2026-07-13 hardware evidence.** `PROBE_RETRY_SETTLE_SECS=10`
+and `MAX_PROBE_ATTEMPTS=2` are fixed code constants, not environment knobs. On
+jts.local the rebuilt ctl was openable/neutral in 1–2 s, while the inner
+resampler correction needed roughly 10 s to leave the post-restart rail; 10 s is
+therefore the smallest measured whole-plant recovery interval with margin, and a
+single retry bounds total disturbance. A canonical deploy caught a dead capture
+handle and an old-ctl neutral write failing `ENODEV`; capture/control both advanced
+to generation 2 and attempt 1 passed (`response_ratio=1.115`). A coordinated
+active-stream fan-in restart reproduced the target false-fail signature exactly:
+attempt 1 saw baseline=step=−500 ppm (`response_ratio=0`), stayed nonterminal in
+`retry_wait`, then attempt 2 passed at 3.206 and returned to L0. A live gadget
+rebuild advanced direct `opens` 1→2 and control 1→2, then attempt 1 passed at
+0.963 without a fan-in restart. The independent control-node-negative test could
+not create "capture alive, ctl absent": ALSA needs that node to resolve the named
+`hw:UAC2Gadget` PCM, so the reversible outage correctly produced capture
+generation 0 and an unavailable-actuator doctor warning instead. Active-stream
+unavailable/recovery remains pinned by the fake actuator lifecycle tests; do not
+add a production fault-injection knob to manufacture it.
+
 ### Per-session probe and the await-lock gate
 
 **Per-session probe rationale**: the host OS or the playing application can
@@ -639,10 +695,13 @@ change between sessions (a Mac unplugged and a Windows box plugged in later;
 an app that opens the endpoint in a mode that pins the rate). Compliance is
 therefore re-measured on every `(host_connected && playing)` edge rather than
 trusted once at boot — a probe commands a bounded step (default +300 ppm for
-a 4 s baseline + 6 s step window) and measures the observable's response (the
+a 4 s baseline + 15 s step window in the surviving `Correction` mode) and
+measures the observable's response (the
 fill-slope in `Fill` mode, the resampler-correction mean in `Correction` mode —
-see "Observable mode" above); a response under half the commanded step demotes
-straight to `L2_FALLBACK` (neutral pitch) without ever entering `L0_LOCKED`.
+see "Observable mode" above). A response under half the commanded step is
+ambiguous once: attempt 1 neutralizes and enters a fixed 10 s `retry_wait`; only
+attempt 2 may produce terminal `L2_FALLBACK` without entering `L0_LOCKED`.
+Lifecycle failures abort a measurement without consuming an attempt.
 
 **The probe does NOT baseline at the session edge — it waits for the lane to
 leave its warmup ramp first.** A session begins the instant audio starts
@@ -681,17 +740,23 @@ for a real baseline/step measurement cut short.
 
 ### Ladder states
 
-`DISABLED -> PROBING (await-lock -> baseline -> step) -> L0_LOCKED <-> L1_WARN`,
-with any state falling to `L2_FALLBACK` on non-compliance evidence (probe
-failure, or a sustained saturated-command + adverse-slope condition
-mid-stream). The **await-lock** sub-phase holds neutral from the session rising
-edge until the lane leaves its warmup ramp (locked for the 2 s settle), so the
-baseline measures clock drift rather than the fill ramp; lock loss in any later
-sub-phase returns to await-lock (no demotion). `L2_FALLBACK` only re-attempts
-`PROBING` at the next idle boundary (stream stop / host disconnect) — it does
-not free-run a demonstrably non-compliant host mid-session. `L1_WARN` is a
-locked-but-watch state (unusually high sustained raw, unclamped demand) with no
-functional difference from `L0_LOCKED` beyond the doctor/telemetry surfacing.
+`DISABLED -> PROBING (await-lock -> baseline -> step -> optional retry_wait) ->
+L0_LOCKED <-> L1_WARN`, with terminal evidence falling to `L2_FALLBACK`. The
+**await-lock** sub-phase holds neutral from the session rising edge until the
+lane leaves its warmup ramp (locked for the 2 s settle), so the baseline measures
+clock drift rather than the fill ramp; lock loss in any later measurement phase
+returns to await-lock without spending an attempt. The first completed failed
+measurement is `last_attempt_result="retryable_fail"`, keeps `final_result`
+unset, holds neutral for the fixed 10 s recovery interval, then performs exactly
+one more attempt. There is no periodic probe loop.
+
+Terminal host evidence reports `fallback_reason="probe_noncompliant"` after the
+second failed attempt or `"lost_authority"` after a sustained saturated-command
++ adverse-slope condition mid-stream. Those causes stay latched until an idle
+boundary or a new capture generation. `"actuator_unavailable"` is the distinct
+infrastructure L2 described above and may recover on the same stream. `L1_WARN`
+is a locked-but-watch state with no functional difference from `L0_LOCKED`
+beyond doctor/telemetry surfacing.
 
 ### Host-compliance persistence — prime at floor (DEFAULT-OFF, rides the decay flag)
 
@@ -756,14 +821,24 @@ revalidation-failure escape below — it always re-acquires deep. The same
 re-samples at each rising edge (below), so the snap destination and the
 revalidation gate can never disagree.
 
-**Revalidation triggers (one strike for evidence, two for a probe measurement).**
-The servo's per-session probe (the #1142 post-lock `AwaitLock` gate) runs on EVERY
-session start — that IS the revalidation. For a floor-primed session, three
-triggers can revoke the proof: a LIVE probe FAIL, a DLL demotion to L2, and a
-CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
-`RevalidationTracker` (`host_compliance.rs`), driven each render period by
-`mixer::service_host_compliance` from the resampler's live `is_locked()` /
-`unlock_count()`.
+**Revalidation consumes the explicit fallback cause, not ladder shape.** The
+servo's per-session probe (the #1142 post-lock `AwaitLock` gate) runs on EVERY
+session start — that IS the revalidation. For a floor-primed session, host-caused
+`probe_noncompliant` is the existing retained-first/two-session strike,
+`lost_authority` is immediate positive evidence and revokes, and a CONFIRMED
+early-window CHURN cycle (below) still revokes. Infrastructure-caused
+`actuator_unavailable` is not host evidence: it raises the current session to the
+safe ceiling once, retains the proof and strike count, and recovery re-probes the
+same stream without turning the local outage into a churn revoke. The
+revalidation runs in the pure `RevalidationTracker` (`host_compliance.rs`),
+driven each render period by `mixer::service_host_compliance` from the resampler's
+live `is_locked()` / `unlock_count()` and the explicit `FallbackReason`.
+
+| `host_clock.fallback_reason` | Meaning | Current-session cushion | Persisted proof |
+|---|---|---|---|
+| `probe_noncompliant` | Both bounded attempts measured no pitch response | ceiling | retain on first failed session; revoke on second consecutive failed session |
+| `lost_authority` | L0 saturated with adverse slope | ceiling | revoke immediately |
+| `actuator_unavailable` | Local ctl open/neutral/write lifecycle failed or generations mismatch | ceiling once per outage episode | retain; do not change strike count |
 
 > **Two-strike probe fail (jts.local 2026-07-03).** A probe FAIL is a
 > MEASUREMENT, not proof the host changed — the lock-gated probe can spuriously
@@ -776,16 +851,18 @@ CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
 > occurs. (An earlier CORRECTION-mode unrailed-settle guard also targeted this, but
 > was REMOVED 2026-07-05 — it deadlocked beyond-authority hosts whose correction
 > rails steady-state; see the settle-guard bullet in the productization section.)
-> Even so,
-> costing the household the ~2.5-min
-> descent on ONE ambiguous read is the wrong trade. So a probe fail is
-> handled by the pure `classify_strike` (`PROBE_FAIL_STRIKE_LIMIT = 2`): the FIRST
+> Even so, costing the household the ~2.5-min descent on ONE ambiguous read is
+> the wrong trade. There are now two bounded ambiguity layers: the first failed
+> measurement is retried once inside the same stream and never reaches persisted
+> compliance; only a terminal two-attempt `probe_noncompliant` verdict enters the
+> policy here. That terminal per-session fail is handled by the pure
+> `classify_strike` (`PROBE_FAIL_STRIKE_LIMIT = 2`): the FIRST
 > fail RETAINS the proof, persisting an incremented `consecutive_failures` (and
 > leaving `flag_present` TRUE), and only the SECOND consecutive fail — two
 > independent sessions disagreeing with the proof, which IS a host change worth
 > distrusting — deletes it. A probe PASS resets the counter to 0 (persisted, via
 > `on_pass_reset` on a live pass at L0, and also naturally via the clean
-> descent-settle re-write's `on_written`). **`DllDemotion` and a confirmed
+> descent-settle re-write's `on_written`). **`lost_authority` and a confirmed
 > `EarlyUnlock` churn cycle stay ONE-strike** — they are direct positive evidence
 > the floor itself is failing on this host, not an ambiguous probe read. The mixer
 > emits `event=fanin.host_compliance.strike_retained` (proof kept, counter bumped),
@@ -803,7 +880,8 @@ CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
 > so its NEXT session's session-boundary snap still lands at the FLOOR and it primes
 > at the floor again. This is the point of the two-strike design: one bad
 > measurement must NOT cost the floor. `flag_present` is only cleared on an actual
-> REVOKE (delete) — the second consecutive fail, a DLL demotion, or a confirmed
+> REVOKE (delete) — the second consecutive failed session, explicit
+> `lost_authority`, or a confirmed
 > churn — after which the next snap lands at the ceiling and the session descends +
 > re-proves, exactly as before. STATUS surfaces the counter as
 > `resampler.compliance.consecutive_failures`.
@@ -977,10 +1055,10 @@ the one where `locked` is already false (a `locked`-only window gate would make 
 unreachable). Arming is gated on the unlock count actually ADVANCING, so an idle `reset()`
 (host pause — `unlock_count` unchanged) does not arm, and a subsequent resume-relock is a
 clean new session, not a confirmed churn. (2) A probe FAIL only revokes when it is LIVE —
-the servo leaves `probe_result=Fail` across a session boundary, so a fresh lock on a new
-compliant host reads the stale FAIL until its own probe runs; the tracker gates on the
-ladder sitting at L2 (which always accompanies a live fail) so a stale carryover FAIL
-(ladder back in `Probing`, `ladder_l2=false`) is ignored. (3) The revoke-before-relock
+the servo leaves attempt telemetry across a session boundary, so a fresh lock must not
+reinterpret stale state before its own probe runs; the tracker keys only on the explicit
+live `fallback_reason=probe_noncompliant`, never a generic `ladder_l2` boolean or inferred
+probe code. (3) The revoke-before-relock
 ORDERING is pinned (interaction with #1154's snap-destination SSOT): on the relock that
 CONFIRMS a churn strike, `step` latches `floor_primed=false` even though `floor_primed_now`
 is still true, because the mixer clears `flag_present` right after `step` returns. This
@@ -997,8 +1075,9 @@ resets on every fresh lock, so a re-proven session can strike again if the host 
 misbehaves — both are per-lock, not per-daemon-lifetime. On any strike the mixer snaps the
 held target back to the full ceiling via the **unconditional** escape
 (`snap_decay_to_ceiling`, distinct from the proof-honouring session-boundary snap). What it
-does to the FILE then depends on `classify_strike`: a DELETE revoke (DLL demotion, confirmed
-churn, or the SECOND consecutive probe fail) clears `flag_present`, removes the file, and
+does to the FILE then depends on `classify_strike`: a DELETE revoke (explicit
+`lost_authority`, confirmed churn, or the SECOND consecutive failed session) clears
+`flag_present`, removes the file, and
 logs `event=fanin.host_compliance.revoked reason=…`; a RETAIN strike (the FIRST probe fail)
 persists a bumped `consecutive_failures`, LEAVES `flag_present` true (so the next session
 still primes), and logs `event=fanin.host_compliance.strike_retained`. The normal descent
@@ -1203,6 +1282,18 @@ truth for the checklist.
   partition: which fires first for a given rebuild is timing-dependent (the ~1 s
   probe cadence is shorter than the ~2 s zero-avail threshold, so a rebuild under a
   live stream is usually caught by the probe first).
+- `host_clock.actuator` reports `ready`, `capture_generation`,
+  `control_generation`, cumulative `refreshes` / `open_failures` /
+  `write_failures`, and best-effort `readback_ctl_value`. `host_clock.probe`
+  reports `phase`, `attempt`, `max_attempts`, last-attempt result/ratio, final
+  result/ratio, lifetime `retries`, and `waiting_for_lock`; the legacy
+  `last_result`/`response_ratio` pair remains additive compatibility telemetry and
+  carries only the final verdict. `host_clock.fallback_reason` is null outside L2
+  and otherwise one of `probe_noncompliant`, `lost_authority`, or
+  `actuator_unavailable`.
+- The flat `USB host clock` doctor check warns on an unavailable/mismatched
+  actuator or persistent L2 and names the exact cause and generations. A bounded
+  probe or `retry_wait` with a ready matching actuator is recovery, not a warning.
 - Bridge STATUS/state.json gains additive `"standby":true|false` (schema_version
   stays 1); in standby `playing:false`, `rms_dbfs:-120`, ring/counters zero, and
   `host_connected` is best-effort from sysfs (`/sys/class/udc/*/state ==
@@ -1250,13 +1341,14 @@ truth for the checklist.
   `card_gen_reopens` counts one per real rebuild. **On-device obligation:** this
   premise (STATUS ioctl trips across a real rebuild while `avail_update` stays
   `Ok(0)`) is kernel behavior no unit test can pin — confirm `card_gen_reopens`
-  ticks across a `systemctl restart jasper-usbsink` on jts.local, and that the box
-  self-heals (no manual fan-in restart). The host-clock servo's ctl handle is NOT
-  poked from this edge (its `!Send` actuator lives in the `fanin-host-clock` thread
-  and never crosses a thread boundary); the same rebuild makes its next ctl write
-  fail with ENODEV, which drops the stale handle (`event=fanin.host_clock_ctl_error
-  ... action=drop_stale_handle`) so the next session edge re-opens it against the
-  rebuilt card — the ctl's independent self-heal, unchanged.
+  ticks across a gadget-function restart on jts.local, and that the box self-heals
+  (no manual fan-in restart). `direct.opens` is also the capture-generation signal
+  consumed by the host-clock thread. The mixer never touches the ctl handle; the
+  generation edge tells the owning thread to neutralize/drop/reopen/force-neutral
+  and publish a matching control generation. This remains correct even if the old
+  handle's next write appears successful. On the measured jts.local rebuild the
+  stale neutral write failed `ENODEV`, capture advanced 1→2, control advanced 1→2,
+  and the same stream re-probed to L0 without restarting fan-in.
 
 ### Impulse tap moves to fan-in (C4)
 
@@ -2054,11 +2146,13 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-13 (re-verified the route artifact/doctor live-state
+Last verified: 2026-07-13 (re-verified the host-clock capture/control generation
+lifecycle, bounded same-stream retry, explicit fallback causes, compliance
+actions, STATUS/doctor contract, canonical deploy, coordinated restart, and live
+gadget rebuild on jts.local; also re-verified the route artifact/doctor live-state
 contract against `jasper/audio_validation.py`, `jasper/cli/doctor/audio.py`, and
-fan-in's canonical `direct.health` idle/capturing/broken classifier; doctor now
-tolerates only the activity-dependent idle unlock while artifact creation stays
-strict and static target identity still matches). Prior 2026-07-11: recorded the
+fan-in's canonical `direct.health` idle/capturing/broken classifier). Prior
+2026-07-11: recorded the
 2026-07-11 promotion cert result in
 "Current Production Route" and "Productization Plan", tightened the cert-gate
 mentions from p95<=48/p99<=60 to the certified p95<=40/p99<=42 ms budget, and

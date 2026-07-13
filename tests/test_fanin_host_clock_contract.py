@@ -53,10 +53,16 @@ _ENV_EXAMPLE = _REPO / ".env.example"
 # CORRECTION-mode observable (0 while disabled). Combo boxes get exactly this shape
 # under /state.audio_graph.fanin.host_clock.
 _PINNED_HOST_CLOCK_FRAGMENT = (
-    '{"enabled":false,"ladder":"disabled","obs_mode":"correction","pitch_ppm_commanded":0.0,'
+    '{"enabled":false,"ladder":"disabled","fallback_reason":null,"obs_mode":"correction",'
+    '"pitch_ppm_commanded":0.0,'
     '"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,'
     '"dll":{"err_frames":0.00,"locked":false},'
-    '"probe":{"last_result":"none","response_ratio":null,"waiting_for_lock":false},'
+    '"actuator":{"ready":false,"capture_generation":0,"control_generation":null,'
+    '"refreshes":0,"open_failures":0,"write_failures":0,"readback_ctl_value":null},'
+    '"probe":{"phase":null,"attempt":1,"max_attempts":2,'
+    '"last_attempt_result":"none","last_attempt_response_ratio":null,'
+    '"final_result":"none","final_response_ratio":null,'
+    '"last_result":"none","response_ratio":null,"retries":0,"waiting_for_lock":false},'
     '"demotions":0,"transitions":0,"last_transition_reason":"startup"}'
 )
 
@@ -257,6 +263,54 @@ def test_audio_graph_fanin_host_clock_none_when_fanin_status_not_a_dict():
     )
     assert graph is not None
     assert graph["fanin"]["host_clock"] is None
+
+
+def test_generation_lifecycle_and_bounded_retry_contract_is_explicit():
+    adapter = _fanin_host_clock_text()
+    shared = _SHARED_HOST_CLOCK_RS.read_text(encoding="utf-8")
+    mixer = (_REPO / "rust" / "jasper-fanin" / "src" / "mixer.rs").read_text(
+        encoding="utf-8"
+    )
+    compliance = (
+        _REPO / "rust" / "jasper-fanin" / "src" / "host_compliance.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "capture_generation: Arc<AtomicU64>" in adapter
+    assert "capture_generation: Arc::clone(&direct_obs.opens)" in mixer, (
+        "direct successful-open count must remain the capture-generation SSOT"
+    )
+    assert "self.control_generation == Some(capture_generation)" in adapter
+    assert "event=fanin.host_clock_generation_mismatch" in adapter
+    assert "event=fanin.host_clock_control_refresh_succeeded" in adapter
+    assert "pub const CONTROL_REOPEN_INTERVAL_MS: u64 = 1_000;" in adapter
+    assert "pub const MAX_PROBE_ATTEMPTS: u32 = 2;" in shared
+    assert "pub const PROBE_RETRY_SETTLE_SECS: u64 = 10;" in shared
+    assert "ProbePhase::RetryWait" in shared
+    assert 'Some("probe_noncompliant")' in shared
+    assert 'Some("lost_authority")' in shared
+    assert 'Some("actuator_unavailable")' in shared
+
+    assert "host_clock_fallback_reason_code" in mixer
+    assert "decode_fallback_reason_code" in mixer
+    assert "compute_revoke_reason(fallback_reason)" in compliance
+    assert "probe_verdict_is_live" not in compliance
+    assert "ladder_l2" not in compliance, (
+        "compliance cause must be explicit, never inferred from L2 + probe result"
+    )
+
+
+def test_host_clock_thread_boundary_is_data_only_and_thread_confined():
+    adapter = _fanin_host_clock_text()
+    signals_start = adapter.index("pub struct HostClockSignals")
+    signals_end = adapter.index("pub const PROBE_RATIO_NONE", signals_start)
+    signals = adapter[signals_start:signals_end]
+    assert "pub pcm" not in signals.lower()
+    assert "pub mixer" not in signals.lower()
+    assert "pub actuator" not in signals.lower()
+    assert "Arc<Atomic" in signals
+    assert "HostClockActuator::new(ctl_card, AlsaPitchCtl::open)" in adapter, (
+        "the concrete !Send ALSA handle must be constructed inside its owning thread"
+    )
 
 
 # --------------------------------------------------------------------------

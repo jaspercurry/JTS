@@ -1550,6 +1550,100 @@ def check_fanin_service() -> CheckResult:
         f"{tts_detail}",
     )
 
+
+def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
+    """Classify fan-in's additive host-clock state without touching hardware."""
+    label = "USB host clock"
+    host_clock = data.get("host_clock")
+    if not isinstance(host_clock, dict):
+        return CheckResult(
+            label,
+            "warn",
+            "fan-in STATUS has no host_clock object; deploy current jasper-fanin",
+        )
+    if host_clock.get("enabled") is not True:
+        return CheckResult(label, "ok", "disabled (no host-clock health claim)")
+
+    ladder = str(host_clock.get("ladder") or "unknown")
+    reason_value = host_clock.get("fallback_reason")
+    reason = str(reason_value) if reason_value is not None else "none"
+    actuator = host_clock.get("actuator")
+    probe = host_clock.get("probe")
+    if not isinstance(actuator, dict):
+        return CheckResult(label, "warn", "enabled but actuator telemetry is missing")
+    if not isinstance(probe, dict):
+        return CheckResult(label, "warn", "enabled but probe telemetry is missing")
+
+    ready = actuator.get("ready") is True
+    capture_generation = actuator.get("capture_generation")
+    control_generation = actuator.get("control_generation")
+    generations_match = (
+        isinstance(capture_generation, int)
+        and capture_generation > 0
+        and control_generation == capture_generation
+    )
+    counters = (
+        f"refreshes={actuator.get('refreshes', '?')}, "
+        f"open_failures={actuator.get('open_failures', '?')}, "
+        f"write_failures={actuator.get('write_failures', '?')}"
+    )
+
+    if not ready or not generations_match:
+        return CheckResult(
+            label,
+            "warn",
+            f"actuator unavailable/mismatched: ladder={ladder}, "
+            f"fallback_reason={reason}, capture_generation={capture_generation}, "
+            f"control_generation={control_generation}, ready={ready}; {counters}. "
+            "Audio remains on the direct resampler fallback; check "
+            "`journalctl -u jasper-fanin | grep host_clock_control` and the UAC2 gadget.",
+        )
+
+    if ladder == "l2_fallback":
+        return CheckResult(
+            label,
+            "warn",
+            f"persistent L2 fallback: fallback_reason={reason}, "
+            f"capture_generation={capture_generation}, control_generation={control_generation}; "
+            f"{counters}. Stop/start creates a new session; a gadget generation "
+            "change self-heals automatically.",
+        )
+
+    phase = probe.get("phase")
+    attempt = probe.get("attempt")
+    max_attempts = probe.get("max_attempts")
+    if ladder == "probing":
+        # Await-lock, baseline, step, and the single retry wait are expected,
+        # bounded acquisition states—not permanent doctor failures.
+        return CheckResult(
+            label,
+            "ok",
+            f"recovering: phase={phase}, attempt={attempt}/{max_attempts}, "
+            f"generations={capture_generation}/{control_generation}; {counters}",
+        )
+
+    return CheckResult(
+        label,
+        "ok",
+        f"ladder={ladder}, generations={capture_generation}/{control_generation}, "
+        f"probe_final={probe.get('final_result')}, retries={probe.get('retries')}; {counters}",
+    )
+
+
+@doctor_check(order=51.52, group="audio")
+def check_fanin_host_clock() -> CheckResult:
+    """Report persistent USB host-clock recovery/fallback with exact cause."""
+    try:
+        data = _read_status_socket(_FANIN_STATUS_SOCKET)
+    except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as e:
+        # Reachability belongs to the preceding mandatory fan-in service check.
+        return CheckResult(
+            "USB host clock",
+            "ok",
+            f"not probed ({type(e).__name__}); see jasper-fanin service check",
+        )
+    return _host_clock_health_from_status(data)
+
 @doctor_check(order=51.5, group="audio")
 def check_fanin_tts_drops() -> CheckResult:
     """Dropped TTS audio at fan-in's pending budget means garbled replies.

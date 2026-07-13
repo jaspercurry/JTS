@@ -525,12 +525,12 @@ def test_servo_thread_exit_clears_reverse_signals():
     The exit path (graceful shutdown OR caught panic) neutralizes the pitch ctl so
     the host free-runs. It must ALSO clear the outer-loop signals the mixer's decay
     tick + compliance revalidation read (`ladder_l0`, `commanded_milli_ppm`, and —
-    since the host-compliance persistence landed — `ladder_l2`, `probe_result_code`,
+    since the host-compliance persistence landed — `fallback_reason_code`, `probe_result_code`,
     `probe_response_ratio_milli`). Otherwise a dead thread leaves `ladder_l0=true`
-    frozen (driving the thin-cushion free-run churn loop) OR a stale `ladder_l2=true`
-    / probe FAIL that would make the compliance revalidation spuriously REVOKE a
+    frozen (driving the thin-cushion free-run churn loop) OR a stale host fallback
+    cause / probe FAIL that would make compliance spuriously REVOKE a
     proof for a session whose ladder was fine when the daemon was told to stop —
-    revocation must be driven only by a LIVE L2/probe-fail signal, not by the servo
+    revocation must be driven only by a LIVE explicit cause, not by the servo
     shutting down. All stores sit AFTER the `catch_unwind` block so they run on both
     exit paths.
     """
@@ -549,10 +549,12 @@ def test_servo_thread_exit_clears_reverse_signals():
         "servo-thread exit must clear commanded_milli_ppm"
     )
     # The three compliance-revalidation reverse signals must clear on exit too, so a
-    # stopped servo cannot leave a stale L2 / probe FAIL that revokes a good proof.
-    assert "signals.ladder_l2.store(false, Ordering::Relaxed)" in exit_tail, (
-        "servo-thread exit must clear ladder_l2 so a dead thread cannot leave the "
-        "compliance revalidation reading a stale l2=true (→ spurious revoke)"
+    # stopped servo cannot leave a stale fallback cause / probe FAIL.
+    assert "signals.fallback_reason_code" in exit_tail, (
+        "servo-thread exit must clear the explicit fallback cause"
+    )
+    assert "fallback_reason_code(FallbackReason::None)" in exit_tail, (
+        "servo-thread exit must store the no-fallback code"
     )
     assert "signals.probe_result_code.store(" in exit_tail, (
         "servo-thread exit must clear probe_result_code (→ ProbeResult::None) so a "
