@@ -334,6 +334,63 @@ def test_route_live_state_issues_detect_runtime_mismatches():
     assert "live_fanin_resampler_mismatch:usbsink:target_fill_frames" in issues
 
 
+def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested():
+    identity = {
+        "fanin_resampler_config": {
+            "enabled": True,
+            "lane": "usbsink",
+            "target_frames": 512,
+            "warmup_cushion_frames": 1536,
+        },
+    }
+
+    def status(health: str, *, target_fill_frames: int = 2048):
+        return {
+            "inputs": [
+                {
+                    "label": "usbsink",
+                    "source": "direct",
+                    "direct": {"health": health},
+                    "resampler": {
+                        "locked": False,
+                        "target_fill_frames": target_fill_frames,
+                    },
+                }
+            ]
+        }
+
+    # Artifact creation uses the strict default: a measurement-time artifact
+    # cannot certify an idle/unlocked lane.
+    assert route_live_state_issues(
+        identity,
+        fanin_status=status("idle"),
+    ) == ("live_fanin_resampler_unlocked:usbsink",)
+
+    # Doctor may assess stored certification while the box is explicitly idle.
+    assert route_live_state_issues(
+        identity,
+        fanin_status=status("idle"),
+        allow_idle_resampler_unlocked=True,
+    ) == ()
+
+    # Capturing/broken/unknown are not idle, so an unlocked live lane remains a
+    # failure even when the doctor policy is enabled.
+    for health in ("capturing", "broken", ""):
+        assert route_live_state_issues(
+            identity,
+            fanin_status=status(health),
+            allow_idle_resampler_unlocked=True,
+        ) == ("live_fanin_resampler_unlocked:usbsink",)
+
+    # The configured target is identity, not activity state, and must still
+    # match while idle.
+    assert route_live_state_issues(
+        identity,
+        fanin_status=status("idle", target_fill_frames=1536),
+        allow_idle_resampler_unlocked=True,
+    ) == ("live_fanin_resampler_mismatch:usbsink:target_fill_frames",)
+
+
 def test_assess_route_latency_artifact_fails_mismatched_hash(tmp_path):
     artifact = make_route_latency_artifact(
         route_id="usb_low_latency_48k",

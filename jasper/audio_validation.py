@@ -50,6 +50,7 @@ from .audio_runtime_plan import (
 )
 from .control import client as control
 from .env_load import parse_env_file
+from .fanin.combo_health import DIRECT_HEALTH_IDLE
 from .log_event import log_event
 
 
@@ -440,13 +441,18 @@ def route_live_state_issues(
     *,
     usbsink_state: Mapping[str, Any] | None = None,
     fanin_status: Mapping[str, Any] | None = None,
+    allow_idle_resampler_unlocked: bool = False,
 ) -> tuple[str, ...]:
     """Return live runtime mismatches that invalidate route-latency promotion.
 
     Route artifacts bind measurements to the intended route identity. Promotion
     also needs the current daemons to be running that identity: Rust bridge
     period/ring settings and the fan-in USB resampler lock/target are live
-    timing facts, not just config promises.
+    timing facts, not just config promises. Artifact creation keeps the strict
+    default because its measurement window must have a live, locked resampler.
+    Doctor may allow an unlocked resampler only when fan-in explicitly reports
+    the direct lane as idle; static identity such as the configured target is
+    still checked in that state.
     """
 
     issues: list[str] = []
@@ -487,7 +493,17 @@ def route_live_state_issues(
             if not isinstance(resampler, Mapping):
                 issues.append(f"live_fanin_resampler_missing:{lane}")
             else:
-                if resampler.get("locked") is not True:
+                direct = lane_status.get("direct")
+                lane_is_explicitly_idle = (
+                    isinstance(direct, Mapping)
+                    and direct.get("health") == DIRECT_HEALTH_IDLE
+                )
+                idle_unlock_allowed = (
+                    allow_idle_resampler_unlocked
+                    and lane_is_explicitly_idle
+                    and resampler.get("locked") is False
+                )
+                if resampler.get("locked") is not True and not idle_unlock_allowed:
                     issues.append(f"live_fanin_resampler_unlocked:{lane}")
                 expected_target = _int_or_none(
                     resampler_expected.get("target_frames"),

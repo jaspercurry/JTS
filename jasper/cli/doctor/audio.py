@@ -1057,6 +1057,14 @@ def _route_live_state_issues_for_doctor(plan: object) -> tuple[str, ...]:
                     identity,
                     usbsink_state=usbsink_state,
                     fanin_status=fanin_status,
+                    # A valid promotion artifact certifies the installed route,
+                    # not a promise that an idle USB host keeps the activity-
+                    # dependent resampler lock asserted forever. fan-in's
+                    # direct.health is the canonical idle/capturing/broken
+                    # classifier; the shared helper remains fail-closed unless
+                    # that field says exactly "idle". The artifact writer does
+                    # not opt in and therefore stays strict mid-stream.
+                    allow_idle_resampler_unlocked=True,
                 ),
             )
         )
