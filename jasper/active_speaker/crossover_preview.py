@@ -59,6 +59,35 @@ def _design_draft_fingerprint(design_draft: Mapping[str, Any]) -> str:
         "topology": design_draft.get("topology"),
         "operator_inputs": design_draft.get("operator_inputs"),
         "driver_research": design_draft.get("driver_research"),
+        "manual_settings": design_draft.get("manual_settings"),
+    }
+    raw = json.dumps(stable, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def crossover_preview_fingerprint(preview: Mapping[str, Any]) -> str:
+    """Fingerprint the exact normalized preview content that can compile.
+
+    Volatile persistence/UI metadata is deliberately excluded. Every field
+    consumed by protected staging is included, including the normalized driver
+    and crossover candidate payloads. ``source.preview_fingerprint`` itself is
+    excluded so a saved preview can carry and re-prove this identity.
+    """
+
+    source = _as_mapping(preview.get("source")) or {}
+    stable = {
+        "artifact_schema_version": preview.get("artifact_schema_version"),
+        "kind": preview.get("kind"),
+        "status": preview.get("status"),
+        "source": {
+            "design_draft_status": source.get("design_draft_status"),
+            "topology_id": source.get("topology_id"),
+            "design_draft_fingerprint": source.get("design_draft_fingerprint"),
+        },
+        "drivers": preview.get("drivers"),
+        "groups": preview.get("groups"),
+        "permissions": preview.get("permissions"),
+        "safety": preview.get("safety"),
     }
     raw = json.dumps(stable, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -551,7 +580,7 @@ def build_crossover_preview(
     else:
         status = "ready_for_protected_staging"
 
-    return {
+    preview = {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": CROSSOVER_PREVIEW_KIND,
         "status": status,
@@ -605,6 +634,8 @@ def build_crossover_preview(
             else "Review the crossover preview, then stage a protected startup config in a separate step."
         ),
     }
+    preview["source"]["preview_fingerprint"] = crossover_preview_fingerprint(preview)
+    return preview
 
 
 def _stale_preview(
@@ -633,6 +664,21 @@ def _validate_preview_freshness(
     preview: Mapping[str, Any],
     current_design_draft: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
+    source = _as_mapping(preview.get("source")) or {}
+    declared_preview_fingerprint = source.get("preview_fingerprint")
+    actual_preview_fingerprint = crossover_preview_fingerprint(preview)
+    if (
+        not declared_preview_fingerprint
+        or declared_preview_fingerprint != actual_preview_fingerprint
+    ):
+        return _stale_preview(
+            preview,
+            code="crossover_preview_content_mismatch",
+            message=(
+                "saved crossover preview content no longer matches its frozen "
+                "candidate; prepare a fresh crossover preview"
+            ),
+        )
     if current_design_draft is None:
         return dict(preview)
     if current_design_draft.get("status") in {"not_saved", "unreadable"}:
@@ -642,7 +688,6 @@ def _validate_preview_freshness(
             message="current design draft is unavailable; prepare a fresh crossover preview",
         )
 
-    source = _as_mapping(preview.get("source")) or {}
     expected = source.get("design_draft_fingerprint")
     actual = _design_draft_fingerprint(current_design_draft)
     if expected != actual:

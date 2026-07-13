@@ -553,15 +553,25 @@ def test_rollback_reloads_the_staged_all_muted_config(monkeypatch, tmp_path):
         tmp_path, monkeypatch, role="woofer"
     )
     assert result["load"]["status"] == "loaded"
+    real_apply = startup_load_mod.apply_dsp_config
+    lock_modes: list[bool] = []
+
+    async def apply_spy(*args, **kwargs):
+        lock_modes.append(kwargs.get("acquire_lock", True))
+        return await real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(startup_load_mod, "apply_dsp_config", apply_spy)
 
     rollback = asyncio.run(
         rollback_driver_commissioning_config(
             load_config=cam.apply_running_config,
             state_path=state_path,
+            acquire_lock=False,
             validate=_valid_config,
         )
     )
     assert rollback["rollback"]["status"] == "rolled_back"
+    assert lock_modes == [False]
     # The last thing loaded into the running graph is the all-muted staged config.
     assert cam.loaded_paths[-1] == staged_path
     state = load_commission_load_state(state_path=state_path)

@@ -3206,7 +3206,7 @@ def _handle_crossover_relay_level_match(
     setup = raw_setup if isinstance(raw_setup, dict) else {}
     raw_setup_profile = setup.get("protected_profile")
     setup_profile = raw_setup_profile if isinstance(raw_setup_profile, dict) else {}
-    context_id = str(setup_profile.get("source_fingerprint") or "") or None
+    context_id = str(setup_profile.get("candidate_fingerprint") or "") or None
     if context_id is None:
         raise ValueError(
             "protected speaker setup has no stable profile identity; reapply it "
@@ -3578,7 +3578,7 @@ def _handle_crossover_relay_capture(
         setup.get("protected_profile") if isinstance(setup, dict) else None
     )
     profile_context_id = (
-        str(protected_profile.get("source_fingerprint") or "")
+        str(protected_profile.get("candidate_fingerprint") or "")
         if isinstance(protected_profile, dict)
         else ""
     )

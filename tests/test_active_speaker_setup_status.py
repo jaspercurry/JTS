@@ -11,7 +11,10 @@ from types import SimpleNamespace
 import pytest
 
 import jasper.active_speaker.setup_status as setup_mod
-from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
+from jasper.active_speaker.baseline_profile import (
+    baseline_candidate_fingerprint,
+    build_baseline_profile_candidate,
+)
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.measurement import (
     active_driver_targets,
@@ -139,6 +142,7 @@ def _applied_acoustic_profile(
         "provisional": not measured,
     }
     if with_snapshot:
+        profile["candidate_fingerprint"] = "candidate-fp"
         preset = json.loads(
             Path(
                 "jasper/active_speaker/presets/"
@@ -353,12 +357,12 @@ def test_active_speaker_allows_room_correction_only_after_acoustic_commissioning
     }
     # room_correction_allowed mirrors acoustic_commissioning.allowed exactly
     # in the wired /state payload (design doc "Runtime surface"), and the
-    # applied profile's source fingerprint is surfaced for correlation.
+    # applied candidate identity is surfaced for graph-context correlation.
     assert status["commissioning"]["room_correction_allowed"] is True
     assert status["commissioning"]["room_correction_allowed"] == (
         status["acoustic_commissioning"]["allowed"]
     )
-    assert status["commissioning"]["applied_profile_fingerprint"] == "source-fp"
+    assert status["commissioning"]["applied_profile_fingerprint"] == "candidate-fp"
     # status="applied" with may_apply already false and no open comparison
     # set falls through every specific phase branch to idle.
     assert status["commissioning"]["phase"] == "idle"
@@ -482,9 +486,10 @@ def test_legacy_applied_profile_is_safe_but_requires_snapshot_reapply(
     assert status["protected_profile"] == {
         "available": True,
         "status": "ready",
-        "config_path": str(config_path),
-        "source_fingerprint": "source-fp",
-        "topology_current": True,
+            "config_path": str(config_path),
+            "source_fingerprint": "source-fp",
+            "candidate_fingerprint": None,
+            "topology_current": True,
         "provisional": False,
         "recomposition_snapshot_available": False,
     }
@@ -662,6 +667,8 @@ def test_active_speaker_setup_rederives_baseline_freshness(
 
     saved = json.loads(baseline_state_path.read_text(encoding="utf-8"))
     saved["status"] = "applied"
+    saved["candidate_fingerprint"] = "declared-wrong"
+    expected_applied_fingerprint = baseline_candidate_fingerprint(saved)
     baseline_state_path.write_text(json.dumps(saved), encoding="utf-8")
 
     ready = setup_mod.read_active_speaker_setup_status(
@@ -671,6 +678,20 @@ def test_active_speaker_setup_rederives_baseline_freshness(
     assert ready["configured"] is True
     assert ready["volume_allowed"] is True
     assert ready["grouping_allowed"] is True
+    assert (
+        ready["protected_profile"]["candidate_fingerprint"]
+        == expected_applied_fingerprint
+    )
+    assert (
+        ready["commissioning"]["applied_profile_fingerprint"]
+        == expected_applied_fingerprint
+    )
+    assert ready["baseline_profile"]["candidate_fingerprint"]
+    assert ready["automatic_candidate"]["candidate_fingerprint"]
+    assert (
+        ready["baseline_profile"]["candidate_fingerprint"]
+        != ready["automatic_candidate"]["candidate_fingerprint"]
+    )
 
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",

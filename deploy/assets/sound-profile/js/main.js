@@ -5637,10 +5637,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     });
     render();
     try {
+      var expectedCandidateFingerprint = String(
+        profile.candidate_fingerprint || ''
+      );
       var resp = await fetch('./active-speaker/baseline-profile/save-and-apply', {
         method: 'POST',
         headers: jsonHeaders(),
-        body: '{}'
+        body: JSON.stringify({
+          expected_candidate_fingerprint: expectedCandidateFingerprint
+        })
       });
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'active profile save/apply failed');

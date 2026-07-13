@@ -57,6 +57,7 @@ def _applied_profile() -> dict:
     return {
         "status": "applied",
         "baseline_id": "baseline-test",
+        "candidate_fingerprint": "protected-profile",
         "source": {"fingerprint": "protected-profile"},
         "recomposition_snapshot": {
             "topology_id": "test-topology",

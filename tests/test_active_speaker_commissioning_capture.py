@@ -100,6 +100,7 @@ def _alignment_applied_profile(
     return {
         "status": "applied",
         "baseline_id": "baseline-test",
+        "candidate_fingerprint": "protected-profile",
         "source": {"fingerprint": "protected-profile"},
         "recomposition_snapshot": {
             "topology_id": resolved_topology_id,

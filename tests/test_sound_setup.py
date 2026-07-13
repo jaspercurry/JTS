@@ -794,6 +794,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "fetch('./active-speaker/measurements'" in js
     assert "fetch('./active-speaker/baseline-profile'" in js
     assert "fetch('./active-speaker/baseline-profile/save-and-apply'" in js
+    assert "expected_candidate_fingerprint: expectedCandidateFingerprint" in js
     assert "fetch('./active-speaker/baseline-profile/apply'" not in js
     assert "data-act=\"refresh-active-speaker\"" not in js
     assert "data-act=\"save-driver-design\"" in js
@@ -1136,6 +1137,7 @@ def test_crossover_alignment_preview_binds_current_protected_profile(
             "protected_profile": {
                 "status": "ready",
                 "source_fingerprint": "applied-profile-fingerprint",
+                "candidate_fingerprint": "applied-profile-fingerprint",
             }
         },
     )
@@ -3282,7 +3284,10 @@ def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
 
 
 async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
-    async def fake_apply_baseline_profile(_topology, **_kwargs):
+    apply_kwargs = {}
+
+    async def fake_apply_baseline_profile(_topology, **kwargs):
+        apply_kwargs.update(kwargs)
         return {
             "status": "applied",
             "apply": {"result": "success"},
@@ -3324,10 +3329,12 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
     )
 
     payload = await sound_setup._active_speaker_baseline_profile_apply_payload(
+        expected_candidate_fingerprint="reviewed-candidate",
         camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
     )
 
     assert mux_commands == ["AUTO"]
+    assert apply_kwargs["expected_candidate_fingerprint"] == "reviewed-candidate"
     assert payload["source_selection_restore"]["status"] == "ok"
     assert payload["source_selection_restore"]["state"]["mode"] == "auto"
 
@@ -3337,10 +3344,18 @@ async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
 ):
     baseline_path = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
     apply_calls = 0
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_baseline_profile_payload",
+        lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
+    )
 
-    async def fake_apply_baseline_profile(_topology, **_kwargs):
+    async def fake_apply_baseline_profile(_topology, **kwargs):
         nonlocal apply_calls
         apply_calls += 1
+        callback = kwargs.get("on_candidate_verified")
+        if callback is not None:
+            await callback()
         return {
             "status": "applied",
             "profile": {
@@ -3394,6 +3409,7 @@ async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
     )
 
     payload = await sound_setup._active_speaker_finish_commissioning_payload(
+        expected_candidate_fingerprint="reviewed-candidate",
         camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
     )
 
@@ -3409,6 +3425,80 @@ async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
     }
 
 
+async def test_active_speaker_finish_stale_candidate_skips_cleanup(monkeypatch):
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_baseline_profile_payload",
+        lambda **_kwargs: {
+            "candidate_fingerprint": "current-candidate",
+            "permissions": {"may_apply": True},
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: pytest.fail("stale apply must not stop the summed test"),
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_baseline_profile_apply_payload",
+        lambda **_kwargs: pytest.fail("stale apply must not start DSP apply"),
+    )
+
+    payload = await sound_setup._active_speaker_finish_commissioning_payload(
+        expected_candidate_fingerprint="stale-candidate",
+        camilla_factory=lambda: pytest.fail("stale apply must not open CamillaDSP"),
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["commissioning_cleanup"] == {"status": "not_attempted"}
+    assert payload["issues"][-1]["code"] == (
+        "baseline_candidate_fingerprint_mismatch"
+    )
+
+
+async def test_active_speaker_finish_race_refusal_skips_cleanup(monkeypatch):
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_baseline_profile_payload",
+        lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: pytest.fail("refused apply must not stop the summed test"),
+    )
+    seen = {}
+
+    async def refuse_after_locked_refresh(**kwargs):
+        seen.update(kwargs)
+        return {
+            "status": "blocked",
+            "profile": {"candidate_fingerprint": "newer-candidate"},
+            "apply": None,
+            "issues": [
+                {"code": "baseline_candidate_fingerprint_mismatch"}
+            ],
+        }
+
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_baseline_profile_apply_payload",
+        refuse_after_locked_refresh,
+    )
+
+    payload = await sound_setup._active_speaker_finish_commissioning_payload(
+        expected_candidate_fingerprint="reviewed-candidate",
+        camilla_factory=lambda: pytest.fail("refused apply must not open CamillaDSP"),
+    )
+
+    assert seen["expected_candidate_fingerprint"] == "reviewed-candidate"
+    assert callable(seen["on_candidate_verified"])
+    assert payload["status"] == "blocked"
+    assert payload["commissioning_cleanup"] == {"status": "not_attempted"}
+
+
 async def test_active_speaker_finish_commissioning_clears_pending_ramp(
     monkeypatch,
     tmp_path: Path,
@@ -3421,6 +3511,11 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
     )
 
     baseline_path = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_baseline_profile_payload",
+        lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
+    )
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE",
         str(tmp_path / "ramp.json"),
@@ -3446,8 +3541,23 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
             "last_action": "late_step",
         }
     )
+    real_abort = sound_setup._active_speaker_commission_ramp_abort_payload
+    lock_modes: list[bool] = []
 
-    async def fake_apply_baseline_profile(_topology, **_kwargs):
+    async def abort_spy(**kwargs):
+        lock_modes.append(kwargs.get("acquire_lock", True))
+        return await real_abort(**kwargs)
+
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_commission_ramp_abort_payload",
+        abort_spy,
+    )
+
+    async def fake_apply_baseline_profile(_topology, **kwargs):
+        callback = kwargs.get("on_candidate_verified")
+        if callback is not None:
+            await callback()
         return {
             "status": "applied",
             "profile": {
@@ -3487,11 +3597,13 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
     )
 
     payload = await sound_setup._active_speaker_finish_commissioning_payload(
+        expected_candidate_fingerprint="reviewed-candidate",
         camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
     )
 
     assert payload["status"] == "applied"
     assert payload["commissioning_cleanup"]["ramp"]["status"] == "aborted"
+    assert lock_modes == [False]
     assert load_ramp_state()["pending"] is None
 
 

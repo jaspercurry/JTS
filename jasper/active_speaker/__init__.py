@@ -150,6 +150,7 @@ from .crossover_preview import (
     CROSSOVER_PREVIEW_KIND,
     CROSSOVER_PREVIEW_PATH_ENV,
     build_crossover_preview,
+    crossover_preview_fingerprint,
     load_crossover_preview,
     save_crossover_preview,
 )
@@ -210,6 +211,7 @@ from .measurement import (
 )
 from .baseline_profile import (
     BASELINE_PROFILE_KIND,
+    baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
     apply_baseline_profile,
     baseline_config_path,
@@ -368,6 +370,8 @@ __all__ = [
     "build_bringup_preflight",
     "build_design_draft",
     "build_crossover_preview",
+    "crossover_preview_fingerprint",
+    "baseline_candidate_fingerprint",
     "build_baseline_profile_candidate",
     "build_driver_commission_load_preflight",
     "build_startup_load_preflight",

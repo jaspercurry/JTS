@@ -34,6 +34,7 @@ from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
     apply_dsp_config,
+    dsp_writer_lock,
     validate_camilla_config,
 )
 from jasper.log_event import log_event
@@ -52,6 +53,7 @@ from .crossover_contract import (
     crossover_snapshot_state,
     legacy_manual_preservation_state,
 )
+from .crossover_preview import crossover_preview_fingerprint
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
     active_playback_route_capability,
@@ -127,6 +129,23 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
+    """Identify the exact immutable Layer-A candidate, not its cache source."""
+
+    source = candidate.get("source")
+    snapshot = candidate.get("recomposition_snapshot")
+    return _fingerprint({
+        "artifact_schema_version": candidate.get("artifact_schema_version"),
+        "kind": candidate.get("kind"),
+        "source_fingerprint": (
+            source.get("fingerprint") if isinstance(source, Mapping) else None
+        ),
+        "recomposition_snapshot": (
+            dict(snapshot) if isinstance(snapshot, Mapping) else None
+        ),
+    })
+
+
 def topology_config_fingerprint(topology: OutputTopology) -> str:
     """Fingerprint only topology fields that determine emitted DSP config."""
     return _fingerprint({
@@ -163,10 +182,10 @@ def _source_payload(
         "topology_fingerprint": topology_config_fingerprint(topology),
         "design_draft_updated_at": design_draft.get("updated_at"),
         "crossover_preview_updated_at": crossover_preview.get("updated_at"),
-        "crossover_preview_fingerprint": (
-            (crossover_preview.get("source") or {}).get("design_draft_fingerprint")
-            if isinstance(crossover_preview.get("source"), Mapping)
-            else None
+        # Bind the exact normalized candidate that protected staging consumes,
+        # not merely the design draft it came from.
+        "crossover_preview_fingerprint": crossover_preview_fingerprint(
+            crossover_preview
         ),
         "measurements_updated_at": measurements.get("updated_at"),
         "measurement_summary_fingerprint": _fingerprint(measurement_summary),
@@ -856,12 +875,23 @@ def _frozen_applied_profile(
     applied = _applied_profile_anchor(saved)
     if applied is None:
         return None
+    snapshot = applied.get("recomposition_snapshot")
+    # candidate_fingerprint is derived data, not an authority. Older saved
+    # profiles may omit it and a partially written/corrupt profile may carry a
+    # value that no longer identifies its immutable snapshot. Always migrate
+    # or repair it from the exact source + snapshot content consumers trust.
+    candidate_fingerprint = (
+        baseline_candidate_fingerprint(applied)
+        if isinstance(snapshot, Mapping)
+        else None
+    )
     return {
         "artifact_schema_version": applied.get("artifact_schema_version"),
         "kind": applied.get("kind"),
         "status": "applied",
         "baseline_id": applied.get("baseline_id"),
         "applied_at": applied.get("applied_at"),
+        "candidate_fingerprint": candidate_fingerprint,
         "source": dict(applied.get("source") or {}),
         "config": dict(applied.get("config") or {}),
         "corrections": dict(applied.get("corrections") or {}),
@@ -874,11 +904,7 @@ def _frozen_applied_profile(
         # it here lets an older sensitivity-only profile masquerade as a
         # measured profile on every consumer of the frozen view.
         "provisional": bool(applied.get("provisional")),
-        "recomposition_snapshot": (
-            dict(applied["recomposition_snapshot"])
-            if isinstance(applied.get("recomposition_snapshot"), Mapping)
-            else None
-        ),
+        "recomposition_snapshot": dict(snapshot) if isinstance(snapshot, Mapping) else None,
     }
 
 
@@ -1086,14 +1112,30 @@ def build_baseline_profile_candidate(
         playback_device=playback_device,
     )
     saved = _load_saved_state(state_target)
-    applied_anchor = _applied_profile_anchor(saved)
-    applied_source = (
-        applied_anchor.get("source")
-        if isinstance(applied_anchor, Mapping)
-        and isinstance(applied_anchor.get("source"), Mapping)
+    candidate_graph_context = {
+        "playback_device": resolved_playback_device,
+        "domain": "driver" if driver_domain else "full",
+        "program_channel": program_channel if driver_domain else None,
+        "driver_domain_pair_trim_db": (
+            driver_domain_pair_trim_db if driver_domain else 0.0
+        ),
+        "capture_device": capture_device,
+        "capture_format": capture_format,
+    }
+    saved_snapshot = (
+        saved.get("recomposition_snapshot")
+        if isinstance(saved, Mapping)
+        and isinstance(saved.get("recomposition_snapshot"), Mapping)
         else {}
     )
-    applied_profile_context_id = str(applied_source.get("fingerprint") or "")
+    applied_anchor = _applied_profile_anchor(saved)
+    applied_profile_context_id = ""
+    if isinstance(applied_anchor, Mapping):
+        applied_snapshot = applied_anchor.get("recomposition_snapshot")
+        if isinstance(applied_snapshot, Mapping):
+            # Never trust the persisted derived field for evidence admission.
+            # Re-derive the context from the applied immutable graph inputs.
+            applied_profile_context_id = baseline_candidate_fingerprint(applied_anchor)
     applied_config = (
         applied_anchor.get("config")
         if isinstance(applied_anchor, Mapping)
@@ -1131,9 +1173,14 @@ def build_baseline_profile_candidate(
         and isinstance(saved.get("source"), Mapping)
         and saved["source"].get("fingerprint") == source["fingerprint"]
         and str(saved.get("tuning_owner") or "manual") == tuning_owner
+        and all(
+            saved_snapshot.get(key) == value
+            for key, value in candidate_graph_context.items()
+        )
         and Path(str((saved.get("config") or {}).get("path") or "")).exists()
     ):
         out = dict(saved)
+        out["candidate_fingerprint"] = baseline_candidate_fingerprint(out)
         out["config"] = dict(out.get("config") or {})
         out["config"]["exists"] = True
         issues = [
@@ -1554,11 +1601,11 @@ def build_baseline_profile_candidate(
             "corrections_provenance": correction_meta["corrections_provenance"],
             "level_match": correction_meta["level_match"],
             "tuning_owner": tuning_owner,
-            "playback_device": resolved_playback_device,
-            "domain": "driver" if driver_domain else "full",
+            **candidate_graph_context,
         },
     }
     payload = finalize(payload)
+    payload["candidate_fingerprint"] = baseline_candidate_fingerprint(payload)
     if write:
         atomic_write_text(
             state_target,
@@ -1865,6 +1912,67 @@ async def apply_baseline_profile(
     driver_domain_pair_trim_db: float = 0.0,
     tuning_owner: str = "manual",
     preserved_applied_profile: Mapping[str, Any] | None = None,
+    expected_candidate_fingerprint: str | None = None,
+    on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
+    refresh_inputs: Callable[
+        [],
+        tuple[
+            OutputTopology,
+            Mapping[str, Any],
+            Mapping[str, Any],
+            Mapping[str, Any],
+        ],
+    ] | None = None,
+    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
+        validate_camilla_config
+    ),
+) -> dict[str, Any]:
+    """Serialize candidate proof, compile, load, confirmation, and rollback."""
+
+    async with dsp_writer_lock(baseline_config_path(config_path).parent):
+        if refresh_inputs is not None:
+            topology, design_draft, crossover_preview, measurements = refresh_inputs()
+        return await _apply_baseline_profile_locked(
+            topology,
+            design_draft=design_draft,
+            crossover_preview=crossover_preview,
+            measurements=measurements,
+            load_config=load_config,
+            get_current_config_path=get_current_config_path,
+            state_path=state_path,
+            config_path=config_path,
+            capture_device=capture_device,
+            capture_format=capture_format,
+            driver_domain=driver_domain,
+            program_channel=program_channel,
+            driver_domain_pair_trim_db=driver_domain_pair_trim_db,
+            tuning_owner=tuning_owner,
+            preserved_applied_profile=preserved_applied_profile,
+            expected_candidate_fingerprint=expected_candidate_fingerprint,
+            on_candidate_verified=on_candidate_verified,
+            validate=validate,
+        )
+
+
+async def _apply_baseline_profile_locked(
+    topology: OutputTopology,
+    *,
+    design_draft: Mapping[str, Any],
+    crossover_preview: Mapping[str, Any],
+    measurements: Mapping[str, Any],
+    load_config: Callable[[str], Awaitable[bool]],
+    get_current_config_path: Callable[[], Awaitable[str | None]] | None = None,
+    state_path: str | Path | None = None,
+    config_path: str | Path | None = None,
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
+    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    driver_domain: bool = False,
+    program_channel: str | None = None,
+    driver_domain_pair_trim_db: float = 0.0,
+    tuning_owner: str = "manual",
+    preserved_applied_profile: Mapping[str, Any] | None = None,
+    expected_candidate_fingerprint: str | None = None,
+    on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -1885,23 +1993,64 @@ async def apply_baseline_profile(
     """
 
     state_target = baseline_profile_state_path(state_path)
-    candidate = build_baseline_profile_candidate(
-        topology,
-        design_draft=design_draft,
-        crossover_preview=crossover_preview,
-        measurements=measurements,
-        write=True,
-        state_path=state_target,
-        config_path=config_path,
-        capture_device=capture_device,
-        capture_format=capture_format,
-        driver_domain=driver_domain,
-        program_channel=program_channel,
-        driver_domain_pair_trim_db=driver_domain_pair_trim_db,
-        tuning_owner=tuning_owner,
-        preserved_applied_profile=preserved_applied_profile,
-        validate=validate,
-    )
+
+    def build_candidate(*, write: bool) -> dict[str, Any]:
+        return build_baseline_profile_candidate(
+            topology,
+            design_draft=design_draft,
+            crossover_preview=crossover_preview,
+            measurements=measurements,
+            write=write,
+            state_path=state_target,
+            config_path=config_path,
+            capture_device=capture_device,
+            capture_format=capture_format,
+            driver_domain=driver_domain,
+            program_channel=program_channel,
+            driver_domain_pair_trim_db=driver_domain_pair_trim_db,
+            tuning_owner=tuning_owner,
+            preserved_applied_profile=preserved_applied_profile,
+            validate=validate,
+        )
+
+    def matches_expected(candidate: Mapping[str, Any]) -> bool:
+        actual = baseline_candidate_fingerprint(candidate)
+        return bool(
+            expected_candidate_fingerprint
+            and actual
+            and expected_candidate_fingerprint == actual
+        )
+
+    async def refuse_stale(candidate: Mapping[str, Any]) -> dict[str, Any]:
+        refused = dict(candidate)
+        refused["permissions"] = dict(refused.get("permissions") or {})
+        refused["permissions"]["may_apply"] = False
+        refused["issues"] = [
+            *refused.get("issues", []),
+            _issue(
+                "blocker",
+                "baseline_candidate_fingerprint_mismatch",
+                (
+                    "the crossover candidate changed after review; refresh and "
+                    "review the current candidate before applying"
+                ),
+            ),
+        ]
+        return {
+            "status": "blocked",
+            "profile": refused,
+            "apply": None,
+            "issues": refused["issues"],
+        }
+
+    if expected_candidate_fingerprint is not None:
+        reviewed_candidate = build_candidate(write=False)
+        if not matches_expected(reviewed_candidate):
+            return await refuse_stale(reviewed_candidate)
+
+    candidate = build_candidate(write=True)
+    if expected_candidate_fingerprint is not None and not matches_expected(candidate):
+        return await refuse_stale(candidate)
     snapshot_state = crossover_snapshot_state(
         candidate,
         expected_topology_id=topology.topology_id,
@@ -1949,7 +2098,11 @@ async def apply_baseline_profile(
             ],
         }
 
+    if on_candidate_verified is not None:
+        await on_candidate_verified()
+
     graph_fingerprint = (candidate.get("source") or {}).get("fingerprint")
+    candidate_identity = candidate.get("candidate_fingerprint")
     log_event(
         logger,
         "correction.crossover_apply_started",
@@ -1958,6 +2111,7 @@ async def apply_baseline_profile(
         tuning_owner=tuning_owner,
         topology_id=topology.topology_id,
         graph_fingerprint=graph_fingerprint,
+        candidate_fingerprint=candidate_identity,
     )
     try:
         apply_state = await apply_dsp_config(
@@ -1965,6 +2119,10 @@ async def apply_baseline_profile(
             candidate_path=str((candidate.get("config") or {}).get("path")),
             load_config=load_config,
             get_current_config_path=get_current_config_path,
+            acquire_lock=False,
+            expected_candidate_sha256=str(
+                (candidate.get("config") or {}).get("sha256") or ""
+            ),
             validate=validate,
         )
     except DspApplyError as exc:
@@ -2046,16 +2204,11 @@ async def apply_baseline_profile(
         topology_id=topology.topology_id,
         tuning_owner=tuning_owner,
         graph_fingerprint=graph_fingerprint,
-        # Nothing in this apply mutates `source`, so the candidate and the
-        # now-applied graph share one fingerprint value today -- see the
-        # comment on _source_payload for why that field is the "did the
-        # inputs change" identity. Two field names are kept (matching the
-        # documented graph_fingerprint/candidate_fingerprint/
-        # applied_fingerprint vocabulary) so a future apply step that DOES
-        # diverge the applied graph from the candidate has somewhere to put
-        # the different value without renaming anything here.
-        candidate_fingerprint=graph_fingerprint,
-        applied_fingerprint=graph_fingerprint,
+        # Apply loads this exact frozen candidate without transforming it, so
+        # candidate and applied identities are equal. ``graph_fingerprint``
+        # remains the separate source/cache context identifier.
+        candidate_fingerprint=candidate_identity,
+        applied_fingerprint=candidate_identity,
         applied_at=applied["applied_at"],
     )
     await _record_apply_outcome_into_bundle(

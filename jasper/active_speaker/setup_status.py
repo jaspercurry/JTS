@@ -301,9 +301,9 @@ def _derive_commissioning_summary(
         else None
     )
 
-    applied_profile_fingerprint = _mapping(
-        (applied_profile or {}).get("source")
-    ).get("fingerprint")
+    applied_profile_fingerprint = (applied_profile or {}).get(
+        "candidate_fingerprint"
+    )
 
     # Standalone approximation of "is there a valid applied Layer-A graph the
     # room can correct against" -- read_active_speaker_setup_status overwrites
@@ -563,6 +563,7 @@ def read_active_speaker_setup_status(
             "path": str(baseline_profile_state_path(baseline_state_path)),
             "config_path": config.get("path"),
             "source_fingerprint": source.get("fingerprint"),
+            "candidate_fingerprint": profile.get("candidate_fingerprint"),
             "provisional": bool(profile.get("provisional")),
             "revalidation": dict(revalidation),
             "issues": profile_issues,
@@ -621,6 +622,11 @@ def read_active_speaker_setup_status(
             "status": "ready" if protected_ready else "unavailable",
             "config_path": protected_config_path or None,
             "source_fingerprint": protected_source.get("fingerprint"),
+            "candidate_fingerprint": (
+                protected_profile.get("candidate_fingerprint")
+                if isinstance(protected_profile, Mapping)
+                else None
+            ),
             "topology_current": protected_topology_current,
             "provisional": bool(
                 protected_profile.get("provisional")
@@ -708,6 +714,11 @@ def read_active_speaker_setup_status(
             measurement_summary=summary,
             active_comparison_set=measurements.get("active_comparison_set"),
         )
+    )
+    automatic_candidate["candidate_fingerprint"] = (
+        automatic_profile.get("candidate_fingerprint")
+        if isinstance(automatic_profile, Mapping)
+        else None
     )
     if profile_summary is not None:
         profile_summary["automatic_candidate"] = automatic_candidate

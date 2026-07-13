@@ -234,14 +234,14 @@ def summed_decision_evidence_state(
     # hand-built/legacy record can carry a persuasive null while saying nothing
     # about the gain, delay, or polarity that actually drove the loudspeakers.
     applied_profile = _mapping(expected_applied_profile)
-    applied_source = _mapping(applied_profile.get("source"))
     applied_snapshot = _mapping(applied_profile.get("recomposition_snapshot"))
     expected_corrections = _mapping(applied_snapshot.get("corrections"))
     expected_topology_id = applied_snapshot.get("topology_id")
     expected_baseline_id = applied_profile.get("baseline_id")
     if (
         applied_profile.get("status") != "applied"
-        or applied_source.get("fingerprint") != expected_profile_context_id
+        or applied_profile.get("candidate_fingerprint")
+        != expected_profile_context_id
         or not isinstance(expected_topology_id, str)
         or not expected_topology_id
         or not isinstance(expected_baseline_id, str)

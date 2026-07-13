@@ -5,11 +5,15 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
+
+import pytest
 
 from jasper.active_speaker import (
     CROSSOVER_PREVIEW_KIND,
     build_crossover_preview,
+    crossover_preview_fingerprint,
     load_crossover_preview,
     save_crossover_preview,
 )
@@ -71,6 +75,97 @@ def _draft(
         driver_research=_research() if research is _DEFAULT_RESEARCH else research,
         created_at="2026-06-10T12:00:00Z",
     )
+
+
+def _manual_draft() -> dict:
+    return build_design_draft(
+        _topology(),
+        driver_research=_research(),
+        manual_settings={
+            "drivers": [
+                {"role": "woofer", "gain_offset_db": 0.0},
+                {"role": "tweeter", "gain_offset_db": -6.0},
+            ],
+            "crossover_candidates": [{
+                "between_roles": ["woofer", "tweeter"],
+                "frequency_hz": 2500,
+                "filter_type": "Linkwitz-Riley",
+                "slope_db_per_octave": 24,
+                "confidence": "medium",
+                "lower_polarity": "non-inverted",
+                "upper_polarity": "non-inverted",
+                "delay_ms": 0.4,
+                "delay_target_role": "tweeter",
+            }],
+        },
+        created_at="2026-06-10T12:00:00Z",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("frequency_hz", 2600),
+        ("slope_db_per_octave", 48),
+        ("upper_polarity", "inverted"),
+        ("delay_ms", 0.5),
+        ("gain_offset_db", -7.0),
+    ],
+    ids=("fc", "order", "polarity", "delay", "trim"),
+)
+def test_manual_candidate_mutation_invalidates_saved_preview(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    base = _manual_draft()
+    path = tmp_path / "preview.json"
+    saved = save_crossover_preview(
+        base, path=path, created_at="2026-06-10T12:30:00Z"
+    )
+    changed_manual = deepcopy(base["manual_settings"])
+    if field == "gain_offset_db":
+        changed_manual["drivers"][1][field] = value
+    else:
+        changed_manual["crossover_candidates"][0][field] = value
+    changed = build_design_draft(
+        _topology(),
+        driver_research=_research(),
+        manual_settings=changed_manual,
+        created_at="2026-06-10T12:00:00Z",
+    )
+
+    loaded = load_crossover_preview(path, current_design_draft=changed)
+    current = build_crossover_preview(
+        changed, created_at="2026-06-10T12:30:00Z"
+    )
+
+    assert loaded["status"] == "stale"
+    assert "crossover_preview_stale_design_draft" in {
+        issue["code"] for issue in loaded["issues"]
+    }
+    assert (
+        saved["source"]["design_draft_fingerprint"]
+        != current["source"]["design_draft_fingerprint"]
+    )
+    assert crossover_preview_fingerprint(saved) != crossover_preview_fingerprint(
+        current
+    )
+
+
+def test_saved_preview_rejects_candidate_content_tampering(tmp_path: Path) -> None:
+    draft = _manual_draft()
+    path = tmp_path / "preview.json"
+    saved = save_crossover_preview(
+        draft, path=path, created_at="2026-06-10T12:30:00Z"
+    )
+    saved["groups"][0]["crossovers"][0]["candidate"]["frequency_hz"] = 2700
+    path.write_text(json.dumps(saved), encoding="utf-8")
+
+    loaded = load_crossover_preview(path, current_design_draft=draft)
+
+    assert loaded["status"] == "stale"
+    assert "crossover_preview_content_mismatch" in {
+        issue["code"] for issue in loaded["issues"]
+    }
 
 
 def test_crossover_preview_builds_no_audio_filter_intent() -> None:

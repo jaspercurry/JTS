@@ -181,6 +181,13 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     automatic_candidate = _mapping(setup_contract.get("automatic_candidate"))
     automatic_candidate_ready = automatic_candidate.get("ready") is True
     manual_preservation = _mapping(setup_contract.get("manual_preservation"))
+    manual_candidate_fingerprint = str(
+        _mapping(setup_contract.get("baseline_profile")).get("candidate_fingerprint")
+        or ""
+    )
+    automatic_candidate_fingerprint = str(
+        automatic_candidate.get("candidate_fingerprint") or ""
+    )
     legacy_reapply = _legacy_applied_profile_needs_reapply(status)
     active_comparison_set_id = str(
         active_comparison_set.get("comparison_set_id") or ""
@@ -378,7 +385,10 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "id": "keep_manual",
                 "label": "Keep current manual crossover",
                 "endpoint": "/correction/crossover/apply",
-                "body": {"tuning_owner": "manual"},
+                "body": {
+                    "tuning_owner": "manual",
+                    "expected_candidate_fingerprint": manual_candidate_fingerprint,
+                },
             }
             alternate_actions = [{
                 "id": "tune_automatic",
@@ -596,7 +606,10 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 )
             ),
             "endpoint": "/correction/crossover/apply",
-            "body": {"tuning_owner": "automatic"},
+            "body": {
+                "tuning_owner": "automatic",
+                "expected_candidate_fingerprint": automatic_candidate_fingerprint,
+            },
         }
         active_step = "apply"
     else:

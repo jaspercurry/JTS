@@ -144,7 +144,26 @@ async function runAction(action, button) {
     setStatus(response && response.relay ? 'Phone capture is ready.' : 'Updated.', 'ok');
     await refresh();
   } catch (error) {
-    setStatus(error && error.message ? error.message : String(error), 'bad');
+    const issues = error && error.body && Array.isArray(error.body.issues)
+      ? error.body.issues : [];
+    const candidateChanged = error && error.status === 409 && issues.some(
+      (issue) => issue && issue.code === 'baseline_candidate_fingerprint_mismatch'
+    );
+    if (candidateChanged) {
+      setStatus('The crossover candidate changed. Refreshing the review…', 'bad');
+      try {
+        await refresh();
+        setStatus('Crossover review refreshed. Review the current candidate.', '');
+      } catch (refreshError) {
+        setStatus(
+          refreshError && refreshError.message
+            ? refreshError.message : String(refreshError),
+          'bad'
+        );
+      }
+    } else {
+      setStatus(error && error.message ? error.message : String(error), 'bad');
+    }
   } finally {
     busy = false;
     // If relay registration succeeded but refresh failed, keep the old action
