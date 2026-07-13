@@ -82,11 +82,40 @@ COMMISSIONING_FAILURE_CODES = frozenset(
     }
 )
 
+_PRE_MUTATION_FAILURE_CODES = frozenset(
+    {
+        "protection_missing",
+        "measurement_failed",
+        "candidate_scoring_failed",
+        "writer_lock_unavailable",
+        "candidate_apply_failed_before_mutation",
+    }
+)
+_POST_MUTATION_FAILURE_CODES = (
+    COMMISSIONING_FAILURE_CODES - _PRE_MUTATION_FAILURE_CODES
+)
+_PRE_MUTATION_FAILURES_BY_STATE: Mapping[str, frozenset[str]] = {
+    "unconfigured": frozenset({"protection_missing"}),
+    "protected": frozenset({"measurement_failed"}),
+    "measured": frozenset({"candidate_scoring_failed"}),
+    "candidate_ready": frozenset(
+        {"writer_lock_unavailable", "candidate_apply_failed_before_mutation"}
+    ),
+    "rolled_back": frozenset({"protection_missing"}),
+}
+
 _ALLOWED_TRANSITIONS: Mapping[str, frozenset[str]] = {
     "unconfigured": frozenset({"protected", "blocked"}),
     "protected": frozenset({"unconfigured", "measured", "blocked"}),
     "measured": frozenset({"protected", "candidate_ready", "blocked"}),
-    "candidate_ready": frozenset({"measured", "applied_unverified", "blocked"}),
+    "candidate_ready": frozenset(
+        {
+            "measured",
+            "applied_unverified",
+            "blocked",
+            "blocked_live_state_unknown",
+        }
+    ),
     # Once mutation begins, an uncertain failure gets a distinct durable state.
     # It cannot fall through the ordinary pre-mutation blocked recovery ladder.
     "applied_unverified": frozenset(
@@ -207,6 +236,25 @@ class CommissioningTransition:
         if not failure_state and failure is not None:
             raise CommissioningLifecycleError(
                 "only a blocked transition may carry a failure code"
+            )
+        if to_state == "blocked" and failure not in _PRE_MUTATION_FAILURE_CODES:
+            raise CommissioningLifecycleError(
+                "post-mutation failure requires blocked_live_state_unknown"
+            )
+        if (
+            to_state == "blocked"
+            and failure
+            not in _PRE_MUTATION_FAILURES_BY_STATE.get(from_state, frozenset())
+        ):
+            raise CommissioningLifecycleError(
+                f"failure code is incompatible with {from_state} -> blocked"
+            )
+        if (
+            to_state == "blocked_live_state_unknown"
+            and failure not in _POST_MUTATION_FAILURE_CODES
+        ):
+            raise CommissioningLifecycleError(
+                "blocked_live_state_unknown requires a post-mutation failure code"
             )
         object.__setattr__(self, "from_state", from_state)
         object.__setattr__(self, "to_state", to_state)

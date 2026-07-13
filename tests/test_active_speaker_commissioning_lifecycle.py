@@ -155,6 +155,41 @@ def test_post_mutation_failure_retains_uncertain_live_state_until_exact_restore(
         )
 
 
+def test_candidate_apply_uncertainty_cannot_use_recoverable_blocked_state():
+    uncertain = _transition(
+        "candidate_ready",
+        "blocked_live_state_unknown",
+        "uncertain_mutation_evidence",
+        "a",
+        failure_code="mutation_outcome_unknown",
+    )
+    assert uncertain.to_state == "blocked_live_state_unknown"
+
+    with pytest.raises(
+        CommissioningLifecycleError,
+        match="post-mutation failure requires blocked_live_state_unknown",
+    ):
+        _transition(
+            "candidate_ready",
+            "blocked",
+            "failure_evidence",
+            "b",
+            failure_code="mutation_outcome_unknown",
+        )
+
+    with pytest.raises(
+        CommissioningLifecycleError,
+        match="post-mutation failure code",
+    ):
+        _transition(
+            "candidate_ready",
+            "blocked_live_state_unknown",
+            "uncertain_mutation_evidence",
+            "c",
+            failure_code="candidate_apply_failed_before_mutation",
+        )
+
+
 def test_pre_mutation_blocked_recovery_and_failure_codes_are_closed():
     blocked = _transition(
         "measured",
@@ -179,6 +214,15 @@ def test_pre_mutation_blocked_recovery_and_failure_codes_are_closed():
             "failure_evidence",
             "d",
             failure_code="free_form_failure",
+        )
+
+    with pytest.raises(CommissioningLifecycleError, match="incompatible"):
+        _transition(
+            "unconfigured",
+            "blocked",
+            "failure_evidence",
+            "e",
+            failure_code="candidate_apply_failed_before_mutation",
         )
 
 

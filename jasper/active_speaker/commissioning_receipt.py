@@ -32,7 +32,7 @@ from jasper.audio_measurement.evidence_identity import (
     json_fingerprint,
 )
 from jasper.audio_measurement.excitation_admission import ExcitationAdmission
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import OutputTopology, OutputTopologyError
 
 from .measurement import active_summed_targets
 
@@ -69,6 +69,36 @@ ROLLBACK_FAILURE_CODES = frozenset(
         "rollback_readback_failed",
         "rollback_readback_mismatch",
     }
+)
+
+_PRE_MUTATION_ROLLBACK_FAILURE_CODES = frozenset(
+    {
+        "writer_lock_unavailable",
+        "candidate_apply_failed_before_mutation",
+    }
+)
+_POST_MUTATION_TRIGGER_FAILURE_CODES = frozenset(
+    {
+        "mutation_outcome_unknown",
+        "fresh_readback_failed",
+        "candidate_readback_mismatch",
+        "protection_proof_failed",
+        "post_apply_verification_failed",
+    }
+)
+_ROLLBACK_OPERATION_FAILURE_CODES = frozenset(
+    {
+        "rollback_apply_failed",
+        "rollback_readback_failed",
+        "rollback_readback_mismatch",
+    }
+)
+_FAILED_ROLLBACK_FAILURE_CODES = _ROLLBACK_OPERATION_FAILURE_CODES - {
+    "rollback_readback_failed"
+}
+_UNKNOWN_ROLLBACK_FAILURE_CODES = (
+    _POST_MUTATION_TRIGGER_FAILURE_CODES
+    | (_ROLLBACK_OPERATION_FAILURE_CODES - _FAILED_ROLLBACK_FAILURE_CODES)
 )
 
 
@@ -223,12 +253,25 @@ class RequiredVerificationTarget:
 class RequiredTargetPlan:
     """Canonical exact target set derived from one immutable topology."""
 
+    topology: OutputTopology
     topology_id: str
     topology_fingerprint: str
     targets: tuple[RequiredVerificationTarget, ...]
     fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.topology, OutputTopology):
+            raise CommissioningReceiptError("topology must be OutputTopology")
+        # Store the same canonical snapshot that is fingerprinted and serialized.
+        # In-memory topology ``status`` may still be the operator's draft hint,
+        # while ``to_dict`` derives the current evaluated status.  Round-tripping
+        # once prevents that non-authoritative hint from making typed equality
+        # differ after an otherwise byte-identical receipt reload.
+        try:
+            topology = OutputTopology.from_mapping(self.topology.to_dict())
+        except OutputTopologyError as exc:  # pragma: no cover - typed input guards it
+            raise CommissioningReceiptError(str(exc)) from exc
+        object.__setattr__(self, "topology", topology)
         object.__setattr__(
             self, "topology_id", _text(self.topology_id, field_name="topology_id")
         )
@@ -252,12 +295,49 @@ class RequiredTargetPlan:
             raise CommissioningReceiptError(
                 "required targets must be unique and in canonical order"
             )
+        if self.topology_id != self.topology.topology_id:
+            raise CommissioningReceiptError(
+                "required target plan topology id does not match its topology snapshot"
+            )
+        expected_topology_fingerprint = _topology_authority_fingerprint(self.topology)
+        if self.topology_fingerprint != expected_topology_fingerprint:
+            raise CommissioningReceiptError(
+                "required target plan topology fingerprint does not match its snapshot"
+            )
+        summed_targets = active_summed_targets(self.topology)
+        expected_targets = {
+            str(target["speaker_group_id"]): (
+                _combined_active_group_target_id(str(target["speaker_group_id"])),
+                _sha256(
+                    target.get("group_fingerprint"),
+                    field_name="active summed target fingerprint",
+                ),
+            )
+            for target in summed_targets
+        }
+        observed_groups = {target.speaker_group_id for target in self.targets}
+        if not expected_targets or observed_groups != set(expected_targets):
+            raise CommissioningReceiptError(
+                "required targets must exactly equal active summed topology targets"
+            )
+        for target in self.targets:
+            expected_target_id, expected_target_fingerprint = expected_targets[
+                target.speaker_group_id
+            ]
+            if (
+                target.target_id != expected_target_id
+                or target.target_fingerprint != expected_target_fingerprint
+            ):
+                raise CommissioningReceiptError(
+                    "required target identity does not match the topology snapshot"
+                )
         object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
 
     def _core(self) -> dict[str, Any]:
         return {
             "schema_version": 1,
             "kind": "jts_active_required_target_plan",
+            "topology": self.topology.to_dict(),
             "topology_id": self.topology_id,
             "topology_fingerprint": self.topology_fingerprint,
             "targets": [target.to_dict() for target in self.targets],
@@ -322,6 +402,7 @@ class RequiredTargetPlan:
                 "current topology has no combined active speaker group targets"
             )
         return cls(
+            topology=topology,
             topology_id=topology.topology_id,
             topology_fingerprint=_topology_authority_fingerprint(topology),
             targets=targets,
@@ -349,12 +430,23 @@ class RequiredTargetPlan:
         value = _strict_serialized_object(
             raw,
             kind="jts_active_required_target_plan",
-            fields=frozenset({"topology_id", "topology_fingerprint", "targets"}),
+            fields=frozenset(
+                {"topology", "topology_id", "topology_fingerprint", "targets"}
+            ),
         )
         targets = value["targets"]
         if type(targets) is not list:
             raise CommissioningReceiptError("required targets must be a list")
+        try:
+            topology = OutputTopology.from_mapping(value["topology"])
+        except OutputTopologyError as exc:
+            raise CommissioningReceiptError(str(exc)) from exc
+        if value["topology"] != topology.to_dict():
+            raise CommissioningReceiptError(
+                "required target plan topology snapshot is not canonical"
+            )
         result = cls(
+            topology=topology,
             topology_id=_raw(value, "topology_id"),
             topology_fingerprint=_raw(value, "topology_fingerprint"),
             targets=tuple(
@@ -560,10 +652,10 @@ class CommissioningRollbackEvidence:
                 status != "not_applicable"
                 or evidence_kind != "no_mutation"
                 or any(item is not None for item in (predecessor, restored))
-                or failure is None
+                or failure not in _PRE_MUTATION_ROLLBACK_FAILURE_CODES
             ):
                 raise CommissioningReceiptError(
-                    "failed-before-mutation requires not_applicable and a failure code"
+                    "failed-before-mutation requires a pre-mutation failure code"
                 )
         elif status == "not_required":
             if (
@@ -583,10 +675,10 @@ class CommissioningRollbackEvidence:
                 or predecessor is None
                 or restored is None
                 or restored.fingerprint != predecessor.fingerprint
-                or failure is None
+                or failure not in _POST_MUTATION_TRIGGER_FAILURE_CODES
             ):
                 raise CommissioningReceiptError(
-                    "restored rollback requires exact predecessor and failure code"
+                    "restored rollback requires exact predecessor and its mutation failure"
                 )
         elif status == "failed":
             if (
@@ -597,10 +689,10 @@ class CommissioningRollbackEvidence:
                     restored is not None
                     and restored.fingerprint == predecessor.fingerprint
                 )
-                or failure is None
+                or failure not in _FAILED_ROLLBACK_FAILURE_CODES
             ):
                 raise CommissioningReceiptError(
-                    "failed rollback cannot claim exact predecessor restoration"
+                    "failed rollback requires a rollback-operation failure code"
                 )
         elif status == "unknown":
             if (
@@ -608,7 +700,7 @@ class CommissioningRollbackEvidence:
                 or evidence_kind != "uncertain_mutation"
                 or predecessor is None
                 or restored is not None
-                or failure is None
+                or failure not in _UNKNOWN_ROLLBACK_FAILURE_CODES
             ):
                 raise CommissioningReceiptError(
                     "unknown mutation outcome requires predecessor and failure evidence"
@@ -932,6 +1024,13 @@ class PostApplyTargetVerification:
         if len(admission_fingerprints) != 1:
             raise CommissioningReceiptError(
                 "post-apply repeats must share one exact excitation admission"
+            )
+        if any(
+            proof.admission.request.repeat_count != POST_APPLY_REQUIRED_REPEATS
+            for proof in self.admitted_captures
+        ):
+            raise CommissioningReceiptError(
+                "post-apply admission repeat count must equal required captures"
             )
         capture_ids = [capture.capture_id for capture in captures]
         raw_artifacts = [capture.raw_artifact.fingerprint for capture in captures]

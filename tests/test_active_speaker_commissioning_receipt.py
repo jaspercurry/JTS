@@ -12,6 +12,7 @@ from dataclasses import replace
 import pytest
 
 from jasper.active_speaker.commissioning_receipt import (
+    POST_APPLY_REQUIRED_REPEATS,
     POST_APPLY_VERIFICATION_ALGORITHM_ID,
     POST_APPLY_VERIFICATION_ALGORITHM_VERSION,
     AdmittedCaptureProof,
@@ -184,12 +185,13 @@ def _admission(
     *,
     safety_profile_fingerprint: str = "a" * 64,
     protection_evidence: bool = True,
+    repeat_count: int = POST_APPLY_REQUIRED_REPEATS,
 ) -> ExcitationAdmission:
     limits = ExcitationLimits(
         permitted_band=FrequencyBand(500, 10_000),
         maximum_effective_peak_dbfs=-12,
         maximum_duration_s=8,
-        maximum_repeat_count=3,
+        maximum_repeat_count=max(POST_APPLY_REQUIRED_REPEATS, repeat_count),
         target_fingerprint=target_fingerprint,
         safety_profile_fingerprint=safety_profile_fingerprint,
         protection_requirement_fingerprint=_hash("c"),
@@ -199,7 +201,7 @@ def _admission(
         band=FrequencyBand(1_000, 8_000),
         effective_peak_dbfs=-18,
         duration_s=4,
-        repeat_count=2,
+        repeat_count=repeat_count,
         target_fingerprint=target_fingerprint,
         safety_profile_fingerprint=safety_profile_fingerprint,
         authority_fingerprint=limits.fingerprint,
@@ -250,9 +252,10 @@ def _capture(
     context: str,
     session: str = SESSION_ID,
     capture_id: str | None = None,
+    repeat_count: int = POST_APPLY_REQUIRED_REPEATS,
 ) -> CaptureIdentity:
     prefix = f"post_apply/{target.speaker_group_id}_{index}"
-    admission = _admission(target.target_fingerprint)
+    admission = _admission(target.target_fingerprint, repeat_count=repeat_count)
     return CaptureIdentity(
         consumer_id="active_crossover",
         measurement_kind="active_crossover_post_apply",
@@ -273,12 +276,15 @@ def _capture(
 
 
 def _admitted(
-    capture: CaptureIdentity, *, session: str = SESSION_ID
+    capture: CaptureIdentity,
+    *,
+    session: str = SESSION_ID,
+    repeat_count: int = POST_APPLY_REQUIRED_REPEATS,
 ) -> AdmittedCaptureProof:
     return AdmittedCaptureProof(
         capture=capture,
         commissioning_session_id=session,
-        admission=_admission(capture.target_fingerprint),
+        admission=_admission(capture.target_fingerprint, repeat_count=repeat_count),
     )
 
 
@@ -288,9 +294,16 @@ def _target_verification(
     context: str,
     start: int,
     session: str = SESSION_ID,
+    repeat_count: int = POST_APPLY_REQUIRED_REPEATS,
 ) -> PostApplyTargetVerification:
     captures = tuple(
-        _capture(index, target=target, context=context, session=session)
+        _capture(
+            index,
+            target=target,
+            context=context,
+            session=session,
+            repeat_count=repeat_count,
+        )
         for index in range(start, start + 3)
     )
     return PostApplyTargetVerification(
@@ -306,7 +319,8 @@ def _target_verification(
         threshold_profile_fingerprint=THRESHOLD_PROFILE,
         verdict="passed",
         admitted_captures=tuple(
-            _admitted(capture, session=session) for capture in captures
+            _admitted(capture, session=session, repeat_count=repeat_count)
+            for capture in captures
         ),
     )
 
@@ -386,6 +400,17 @@ def test_omitting_real_right_stereo_target_cannot_unlock_room():
             commissioning_context_fingerprint=receipt.commissioning_context_fingerprint,
             post_apply_targets=(receipt.post_apply_targets[0],),
             rollback=receipt.rollback,
+        )
+
+
+def test_self_declared_partial_plan_cannot_reuse_real_stereo_topology_authority():
+    full = _plan()
+    with pytest.raises(CommissioningReceiptError, match="exactly equal"):
+        RequiredTargetPlan(
+            topology=full.topology,
+            topology_id=full.topology_id,
+            topology_fingerprint=full.topology_fingerprint,
+            targets=(full.targets[0],),
         )
 
 
@@ -507,6 +532,19 @@ def test_target_repeats_require_one_exact_admission_and_receipt_profile():
         )
 
 
+@pytest.mark.parametrize("repeat_count", [2, 4])
+def test_target_repeats_bind_exact_admission_repeat_count(repeat_count: int):
+    receipt = _receipt()
+    target = receipt.target_plan.targets[0]
+    with pytest.raises(CommissioningReceiptError, match="admission repeat count"):
+        _target_verification(
+            target,
+            context=receipt.commissioning_context_fingerprint,
+            start=8,
+            repeat_count=repeat_count,
+        )
+
+
 def test_target_and_receipt_enforce_unique_capture_ids_raws_and_one_session():
     receipt = _receipt()
     left = receipt.post_apply_targets[0]
@@ -602,6 +640,63 @@ def test_rollback_records_attempted_unknown_and_exact_restore_honestly():
         replace(restored, restored_state=_predecessor("wrong"))
     with pytest.raises(CommissioningReceiptError, match="unsupported rollback"):
         replace(uncertain, failure_code="free_form_failure")
+
+
+@pytest.mark.parametrize(
+    "failure_code",
+    [
+        "mutation_outcome_unknown",
+        "fresh_readback_failed",
+        "rollback_apply_failed",
+        "rollback_readback_failed",
+        "rollback_readback_mismatch",
+    ],
+)
+def test_no_mutation_rollback_refuses_post_mutation_failure_codes(failure_code: str):
+    with pytest.raises(CommissioningReceiptError, match="pre-mutation failure"):
+        CommissioningRollbackEvidence(
+            mutation_state="not_attempted",
+            status="not_applicable",
+            evidence_kind="no_mutation",
+            failure_code=failure_code,
+        )
+
+
+def test_rollback_failure_codes_match_status_and_evidence_kind():
+    predecessor = _predecessor()
+    with pytest.raises(CommissioningReceiptError, match="mutation failure"):
+        CommissioningRollbackEvidence(
+            mutation_state="applied",
+            status="restored",
+            evidence_kind="exact_restore",
+            predecessor_state=predecessor,
+            restored_state=ExactDspStateIdentity(predecessor.state),
+            failure_code="rollback_apply_failed",
+        )
+    with pytest.raises(CommissioningReceiptError, match="rollback-operation"):
+        CommissioningRollbackEvidence(
+            mutation_state="applied",
+            status="failed",
+            evidence_kind="uncertain_mutation",
+            predecessor_state=predecessor,
+            failure_code="candidate_readback_mismatch",
+        )
+    with pytest.raises(CommissioningReceiptError, match="rollback-operation"):
+        CommissioningRollbackEvidence(
+            mutation_state="applied",
+            status="failed",
+            evidence_kind="uncertain_mutation",
+            predecessor_state=predecessor,
+            failure_code="rollback_readback_failed",
+        )
+    with pytest.raises(CommissioningReceiptError, match="failure evidence"):
+        CommissioningRollbackEvidence(
+            mutation_state="applied",
+            status="unknown",
+            evidence_kind="uncertain_mutation",
+            predecessor_state=predecessor,
+            failure_code="rollback_readback_mismatch",
+        )
 
 
 @pytest.mark.parametrize(
