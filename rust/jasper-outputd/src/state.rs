@@ -2176,6 +2176,11 @@ mod tests {
         response
     }
 
+    fn parse_snapshot_json(snapshot: &str) -> serde_json::Value {
+        serde_json::from_str(snapshot)
+            .unwrap_or_else(|error| panic!("complete STATUS snapshot must be valid JSON: {error}"))
+    }
+
     #[test]
     fn state_server_wire_contract_returns_valid_json_for_status_trim_and_errors() {
         let cfg = Config {
@@ -2186,9 +2191,7 @@ mod tests {
         let state = Arc::new(OutputdState::new(&cfg));
         let server = test_state_server(Arc::clone(&state));
 
-        let status: serde_json::Value =
-            serde_json::from_str(exchange_command(&server, b"STATUS\n").trim())
-                .expect("the complete hand-built STATUS snapshot must be valid JSON");
+        let status = parse_snapshot_json(exchange_command(&server, b"STATUS\n").trim());
         assert_eq!(status["backend"].as_str(), Some("alsa"));
 
         let applied: serde_json::Value = serde_json::from_str(
@@ -2319,6 +2322,7 @@ mod tests {
         );
 
         let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
         for needle in [
             r#""backend":"alsa""#,
             r#""content":{"source":"alsa","pcm":"outputd_content_capture""#,
@@ -2387,6 +2391,7 @@ mod tests {
         });
 
         let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
         for needle in [
             r#""sink_mode":"dual_apple""#,
             r#""dual_apple":{"dac_a_pcm":"hw:CARD=A,DEV=0""#,
@@ -2406,6 +2411,7 @@ mod tests {
         // Solo (lane unconfigured): just enabled:false — zero noise.
         let state = OutputdState::new(&test_config());
         let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
         assert!(
             j.contains(r#""dac_content":{"enabled":false}"#),
             "missing quiet disabled block in {j}"
@@ -2432,6 +2438,7 @@ mod tests {
             read_failures: 5,
         });
         let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
         for needle in [
             r#""dac_content":{"enabled":true"#,
             r#""trim_db":-3.5"#,
@@ -2458,6 +2465,7 @@ mod tests {
         // noise, and the content source stays "alsa".
         let state = OutputdState::new(&test_config());
         let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
         assert!(
             j.contains(r#""shm_ring":{"enabled":false}"#),
             "missing quiet disabled shm_ring block in {j}"
@@ -2492,6 +2500,7 @@ mod tests {
             ..RingMetrics::default()
         });
         let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
         for needle in [
             r#""content":{"source":"shm_ring""#,
             // Ring B honesty contract: content.ring reports the TRUE Ring B
@@ -2538,6 +2547,7 @@ mod tests {
             ..RingMetrics::default()
         });
         let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
         for needle in [
             r#""occupancy":1"#,
             r#""frames_read":2048"#,
@@ -2593,6 +2603,7 @@ mod tests {
     fn snapshot_json_tts_disabled_is_quiet_and_enabled_is_full() {
         let state = OutputdState::new(&test_config());
         let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
         assert!(
             j.contains(r#""tts":{"enabled":false}"#),
             "missing quiet disabled tts block in {j}"
@@ -2604,6 +2615,7 @@ mod tests {
         metrics.flushed_frames.store(7, Ordering::Relaxed);
         state.set_tts("/run/jasper-outputd/tts.sock".to_string(), metrics);
         let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
         for needle in [
             r#""tts":{"enabled":true"#,
             r#""socket":"/run/jasper-outputd/tts.sock""#,
