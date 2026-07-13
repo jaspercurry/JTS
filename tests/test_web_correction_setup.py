@@ -15,6 +15,7 @@ so a static render needs no hardware.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 import threading
 
 import pytest
@@ -275,7 +276,8 @@ def test_known_post_routes_reach_csrf_guard():
         "/test-tone", "/autolevel/start", "/autolevel/lock",
         "/autolevel/cancel", "/upload-noise", "/upload-capture",
         "/calibration/fetch", "/calibration/upload", "/apply", "/reset",
-        "/session/delete", "/relay/level-match", "/relay/verify",
+        "/session/delete", "/relay/level-match", "/relay/capture",
+        "/relay/verify",
         "/balance/start", "/balance/ramp", "/balance/meter",
         "/balance/lock", "/balance/stop", "/balance/apply",
         "/balance/reset",
@@ -289,7 +291,19 @@ def test_known_post_routes_reach_csrf_guard():
         # P6 tuning-LLM routes.
         "/interpret", "/propose", "/propose/apply",
     }
-    for route in known:
+    assert known == correction_setup._POST_ROUTES
+    route_reference = (
+        Path(__file__).resolve().parents[1] / "docs" / "HANDOFF-correction.md"
+    ).read_text(encoding="utf-8")
+    inventory = route_reference.split("**Concrete shape (current):**", 1)[1]
+    inventory = inventory.split("HTTPS fallback", 1)[0]
+    documented_posts = {
+        line.split()[1]
+        for line in inventory.splitlines()
+        if line.startswith("POST /")
+    }
+    assert documented_posts == known
+    for route in sorted(known):
         resp = _drive(route, method="POST", body=b"{}")
         assert b"403" in resp.split(b"\r\n", 1)[0], (
             f"{route} should reach the CSRF guard (403)"
