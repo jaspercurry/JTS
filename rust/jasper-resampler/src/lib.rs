@@ -1316,6 +1316,28 @@ mod tests {
         );
     }
 
+    /// Overflow drops the oldest complete frames, reports the exact overrun,
+    /// and leaves the newest stereo window readable in channel order.
+    #[test]
+    fn audio_ring_overflow_drops_oldest_and_keeps_newest_frames() {
+        let mut ring = AudioRing::new(3, 2).unwrap();
+        let samples = [10, -10, 20, -20, 30, -30, 40, -40, 50, -50];
+
+        let dropped = ring.push_interleaved(&samples);
+
+        assert_eq!(dropped, 2);
+        assert_eq!(ring.fill_frames(), 3);
+        assert_eq!(ring.read_frame(), 2);
+        assert_eq!(ring.write_frame(), 5);
+        assert_eq!(ring.sample(1, 0), 0, "dropped history is unreadable");
+        assert_eq!(ring.sample(2, 0), 30);
+        assert_eq!(ring.sample(2, 1), -30);
+        assert_eq!(ring.sample(3, 0), 40);
+        assert_eq!(ring.sample(3, 1), -40);
+        assert_eq!(ring.sample(4, 0), 50);
+        assert_eq!(ring.sample(4, 1), -50);
+    }
+
     /// `trim_to` drops the OLDEST frames down to the target fill and keeps the
     /// NEWEST — the standing-fill trim primitive. The retained window is the
     /// most-recently-written frames; the dropped count is `fill - target`.
