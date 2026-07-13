@@ -1105,8 +1105,10 @@ def validate_manual_target_bindings(
     targets = active_driver_targets(topology)
     by_id = {str(target["target_id"]): target for target in targets}
     by_role: dict[str, list[str]] = {}
-    for target in targets:
-        by_role.setdefault(str(target["role"]), []).append(str(target["target_id"]))
+    for physical_target in targets:
+        by_role.setdefault(str(physical_target["role"]), []).append(
+            str(physical_target["target_id"])
+        )
     resolved_targets: set[str] = set()
     legacy_roles: set[str] = set()
     for index, driver in enumerate(manual_settings.get("drivers", [])):
