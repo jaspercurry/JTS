@@ -128,6 +128,15 @@ It treats playback as emission of an **already-admitted** artifact and does not
 turn a Wave 1 request, identity, fingerprint, or planning result into authority.
 No Active or browser flow was adopted in this extraction.
 
+For an exact feature-manifest artifact, `verified_wav_source()` resolves the
+relative path without following links, requires a regular uncompressed PCM WAV
+under the 64 MiB / 90-second / 192 kHz bounds, and checks size plus SHA-256 while
+copying into a sealed memory descriptor (or an unlinked, read-only fallback).
+`play_verified_wav()` reverifies and emits that immutable snapshot through its
+inherited descriptor, so later in-place writes and path replacement cannot swap
+the bytes. These primitives establish content identity only; they do not grant
+admission or choose policy, device, or locking.
+
 `jasper.correction.playback` remains the Room-owned compatibility wrapper. It
 retains `correction_substream`, `/var/lib/jasper/correction/tones`, the existing
 `play_sweep`, `_ensure_tone_wav`, `TonePlayer`, and `play_test_tone` call shapes,
@@ -1055,10 +1064,10 @@ to de-risk Phase 3.
 Last verified: 2026-07-13 (Wave 2 neutral artifact-manifest, playback, and
 admission-artifact ownership; exact Room byte/schema/path compatibility; Room
 playback shim; deterministic tone bytes; bounded diagnostic/cleanup behavior;
-canonical admission marker and generation/playback path roles; crash-durable
-no-replace persistence; and no-bundle-migration/no-backfill/no-Active-adoption
-boundaries checked hardware-free. No hardware behavior revalidated. Wave 1
-excitation/evidence identities and `null_walk.DspPredecessor` reuse remain
-contract-only. Crossover adapter volume-lease participation and
-measurement-flow admission ownership rechecked against correction, balance,
-sync, and the coordinator mutex)
+content-bound immutable-snapshot WAV emission; canonical admission marker and
+generation/playback path roles; crash-durable no-replace persistence; and
+no-bundle-migration/no-backfill/no-Active-adoption boundaries checked
+hardware-free. No hardware behavior revalidated. Wave 1 excitation/evidence
+identities and `null_walk.DspPredecessor` reuse remain contract-only. Crossover
+adapter volume-lease participation and measurement-flow admission ownership
+rechecked against correction, balance, sync, and the coordinator mutex)

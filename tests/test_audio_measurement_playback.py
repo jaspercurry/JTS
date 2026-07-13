@@ -5,9 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import inspect
 import logging
+import os
+import threading
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -15,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from jasper.audio_measurement import playback
+from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.correction import playback as correction_playback
 
 
@@ -27,6 +31,22 @@ class _ExitedProcess:
 
     async def wait(self) -> int:
         return self.returncode
+
+
+def _artifact_identity(
+    path: Path,
+    *,
+    relative_path: str | None = None,
+    byte_size: int | None = None,
+) -> ArtifactIdentity:
+    raw = path.read_bytes()
+    return ArtifactIdentity(
+        bundle_kind="test_measurement",
+        bundle_id="session-1",
+        relative_path=relative_path or path.name,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        byte_size=len(raw) if byte_size is None else byte_size,
+    )
 
 
 @pytest.mark.asyncio
@@ -67,6 +87,169 @@ async def test_play_wav_uses_stable_argv_and_returns_completion(
     )
     assert "event=audio_measurement.playback" in caplog.text
     assert "result=completed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_verified_wav_uses_same_open_content_bound_fd_after_path_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wav_path = tmp_path / "stimulus.wav"
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8_000)
+        wav.writeframes(b"\0\0" * 8_000)
+    artifact = _artifact_identity(wav_path)
+    calls = []
+
+    async def create(*args, **kwargs):
+        calls.append((args, kwargs))
+        inherited_fd = kwargs["pass_fds"][0]
+        assert os.pread(inherited_fd, 4, 0) == b"RIFF"
+        return _ExitedProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    async with playback.verified_wav_source(tmp_path, artifact) as source:
+        source_fd = source.fd
+        wav_path.unlink()
+        result = await playback.play_verified_wav(
+            source,
+            alsa_device="test_pcm",
+            timeout_s=2.0,
+        )
+
+    assert calls[0][0][-1] == f"/proc/self/fd/{source_fd}"
+    assert calls[0][1]["pass_fds"] == (source_fd,)
+    assert result.wav_path == wav_path
+
+
+@pytest.mark.asyncio
+async def test_verified_wav_emits_immutable_snapshot_despite_in_place_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wav_path = tmp_path / "stimulus.wav"
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8_000)
+        wav.writeframes(b"\0\0" * 8_000)
+    artifact = _artifact_identity(wav_path)
+
+    async def create(*_args, **kwargs):
+        inherited_fd = kwargs["pass_fds"][0]
+        mutated = bytearray(wav_path.read_bytes())
+        mutated[-1] ^= 0x01
+        wav_path.write_bytes(mutated)
+        emitted = os.pread(inherited_fd, artifact.byte_size, 0)
+        assert hashlib.sha256(emitted).hexdigest() == artifact.sha256
+        assert hashlib.sha256(wav_path.read_bytes()).hexdigest() != artifact.sha256
+        return _ExitedProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    async with playback.verified_wav_source(tmp_path, artifact) as source:
+        with pytest.raises(OSError) as immutable_error:
+            os.pwrite(source.fd, b"x", artifact.byte_size - 1)
+        assert immutable_error.value.errno in {errno.EBADF, errno.EPERM}
+        await playback.play_verified_wav(
+            source,
+            alsa_device="test_pcm",
+            timeout_s=2.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_verified_wav_refuses_changed_malformed_symlink_and_oversized_sources(
+    tmp_path: Path,
+) -> None:
+    changed = tmp_path / "changed.wav"
+    with wave.open(str(changed), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8_000)
+        wav.writeframes(b"\0\0" * 8_000)
+    changed_identity = _artifact_identity(changed)
+    changed.write_bytes(changed.read_bytes()[:-1] + b"x")
+    with pytest.raises(playback.WavSourceError) as changed_error:
+        async with playback.verified_wav_source(tmp_path, changed_identity):
+            pass
+    assert changed_error.value.code is playback.WavSourceFailureCode.CONTENT_MISMATCH
+
+    malformed = tmp_path / "malformed.wav"
+    malformed.write_bytes(b"not-wave")
+    with pytest.raises(playback.WavSourceError) as malformed_error:
+        async with playback.verified_wav_source(
+            tmp_path,
+            _artifact_identity(malformed),
+        ):
+            pass
+    assert malformed_error.value.code is playback.WavSourceFailureCode.INVALID_WAV
+
+    target = tmp_path / "target.wav"
+    target.write_bytes(changed_identity.byte_size * b"\0")
+    link = tmp_path / "linked.wav"
+    link.symlink_to(target.name)
+    link_identity = ArtifactIdentity(
+        bundle_kind="test_measurement",
+        bundle_id="session-1",
+        relative_path=link.name,
+        sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+        byte_size=target.stat().st_size,
+    )
+    with pytest.raises(playback.WavSourceError) as link_error:
+        async with playback.verified_wav_source(tmp_path, link_identity):
+            pass
+    assert link_error.value.code is playback.WavSourceFailureCode.UNSAFE_PATH
+
+    oversized = _artifact_identity(
+        malformed,
+        byte_size=playback.MAX_VERIFIED_WAV_BYTES + 1,
+    )
+    with pytest.raises(playback.WavSourceError) as oversized_error:
+        async with playback.verified_wav_source(tmp_path, oversized):
+            pass
+    assert oversized_error.value.code is playback.WavSourceFailureCode.RESOURCE_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_verified_wav_open_drains_cancellation_and_closes_late_fd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wav_path = tmp_path / "stimulus.wav"
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8_000)
+        wav.writeframes(b"\0\0" * 8_000)
+    artifact = _artifact_identity(wav_path)
+    original_open = playback._open_verified_wav_source
+    started = threading.Event()
+    release = threading.Event()
+    opened = []
+
+    def delayed_open(*args, **kwargs):
+        source = original_open(*args, **kwargs)
+        opened.append(source)
+        started.set()
+        release.wait(timeout=5)
+        return source
+
+    async def consume() -> None:
+        async with playback.verified_wav_source(tmp_path, artifact):
+            raise AssertionError("cancelled open yielded a source")
+
+    monkeypatch.setattr(playback, "_open_verified_wav_source", delayed_open)
+    task = asyncio.create_task(consume())
+    assert await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert task.done() is False
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert opened[0].closed is True
 
 
 @pytest.mark.asyncio
@@ -514,9 +697,12 @@ def test_correction_compatibility_surface_preserves_types_and_defaults() -> None
     assert correction_playback.PlaybackError is playback.PlaybackError
     assert correction_playback.PlaybackFailureCode is playback.PlaybackFailureCode
     assert issubclass(correction_playback.TonePlayer, playback.TonePlayer)
-    assert inspect.signature(correction_playback.play_sweep).parameters[
-        "alsa_device"
-    ].default == "correction_substream"
+    assert (
+        inspect.signature(correction_playback.play_sweep)
+        .parameters["alsa_device"]
+        .default
+        == "correction_substream"
+    )
     assert inspect.signature(correction_playback._ensure_tone_wav).parameters[
         "cache_dir"
     ].default == Path("/var/lib/jasper/correction/tones")
