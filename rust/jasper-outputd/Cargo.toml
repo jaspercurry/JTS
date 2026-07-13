@@ -36,6 +36,12 @@ libc = "0.2"
 # Plain-thread signal handling for clean systemd stop.
 signal-hook = "0.4"
 
+[dev-dependencies]
+# Parse the hand-built STATUS payload in wire-contract tests. Runtime stays
+# allocation-conscious and dependency-free at the JSON serialization boundary;
+# tests use serde_json as the independent grammar oracle.
+serde_json = "1"
+
 [profile.release]
 opt-level = 3
 lto = "fat"

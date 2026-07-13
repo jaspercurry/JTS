@@ -549,6 +549,13 @@ What exists:
   journal spam. The dashboard labels the two xrun
   counters as content/DAC, since a content-capture recovery is a
   different risk from a physical-output recovery.
+  Outputd's local control socket accepts one newline-delimited command per
+  connection. Command reads are capped at 256 bytes and at a two-second total
+  monotonic deadline (not a resettable per-byte timeout); oversized, invalid
+  UTF-8, and slow-trickle requests receive bounded JSON errors without
+  `handle_failed` journal spam. This protects the single observability/control
+  thread from local slowloris or allocation abuse and never runs on the DAC
+  write loop.
   Outputd also exposes passive DAC/chip-reference timing diagnostics
   for AEC bring-up: `dac.snd_pcm_delay_*` and
   `reference_outputs.chip_ref_writer.*` report DAC presentation delay,
@@ -1456,7 +1463,9 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-07-12 (historical readiness entry marked superseded by the
+Last verified: 2026-07-12 (outputd control-socket command cap/deadline and
+STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
+historical readiness entry marked superseded by the
 protected commission ramp; prior 2026-07-10 pass covered optional-reference failure isolation and full
 transport coherence rechecked against `rust/jasper-outputd`,
 `jasper.audio_runtime_plan`, `jasper.camilla_config_contract`,
