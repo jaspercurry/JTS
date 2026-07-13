@@ -3279,23 +3279,25 @@ def test_status_socket_byte_reader_owns_fragmented_protocol_and_cleanup(monkeypa
 
 def test_status_socket_byte_reader_accepts_exact_response_cap(monkeypatch):
     cap = doctor.audio._STATUS_RESPONSE_MAX_BYTES
-    fake = _FakeSocket(chunks=[b"x" * cap, b""])
+    fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b""])
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
 
     payload = doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=2.0)
 
     assert len(payload) == cap
+    assert fake.recv_sizes == [65536] * 17
     assert fake.closed is True
 
 
 def test_status_socket_byte_reader_rejects_response_over_cap(monkeypatch):
     cap = doctor.audio._STATUS_RESPONSE_MAX_BYTES
-    fake = _FakeSocket(chunks=[b"x" * cap, b"y"])
+    fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b"y"])
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
 
     with pytest.raises(OSError, match="exceeds byte limit"):
         doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=2.0)
 
+    assert fake.recv_sizes == [65536] * 17
     assert fake.closed is True
 
 
