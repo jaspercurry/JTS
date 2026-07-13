@@ -891,9 +891,9 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   consumers of that capture-pipe branch are now gone — the lean-lane variant
   (`/run/jasper-usbsink/lean.pipe`, with `restore_buffered_config` as its runtime
   sibling) was deleted in the USB dead-pipeline sweep, and transport_pipe itself
-  was deleted 2026-07-11 — so the guard's `/run` capture-pipe repair is now
-  **vestigial**. The guard's remaining live job is the Snapcast bonded
-  PLAYBACK-pipe protection described above; that half stays.
+  was deleted 2026-07-11. The guard's dead `/run` capture-pipe repair branch was
+  then deleted; its remaining live job is the Snapcast bonded PLAYBACK-pipe
+  protection described above.
   **PR-2 (built 2026-06-11):** outputd grew a TTS server
   (`rust/jasper-outputd/src/tts.rs`) speaking fanin's exact newline-framed
   wire protocol (GAIN / PREPARE_ASSISTANT / SEGMENT_* / AUDIO /

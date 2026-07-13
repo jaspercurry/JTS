@@ -269,11 +269,10 @@ deleted in the USB dead-pipeline sweep — see the callout below.)
 > `apply_lean_capture_config` / `restore_buffered_config`,
 > `lean_capture_kwargs`, `DEFAULT_LEAN_CAPTURE_FIFO`, and the `JASPER_LEAN_LANE`
 > env / the `fifo` value of `JASPER_USBSINK_OUTPUT_MODE`. The text below is
-> archaeology of the design. The `jasper-camilla-pipe-guard` dangling-capture
-> floor survives, but after the 2026-07-11 transport_pipe deletion its
-> capture-pipe branch has no live consumer (both the lean lane and
-> transport_pipe are gone); it stays for its Snapcast PLAYBACK-pipe protection,
-> so the capture-pipe half is now vestigial.
+> archaeology of the design. The `jasper-camilla-pipe-guard` survives solely
+> for its live Snapcast PLAYBACK-pipe protection; its dead RawFile CAPTURE-pipe
+> branch was deleted after the 2026-07-11 transport_pipe removal left it with
+> no consumer.
 
 The lean lane is the low-latency music path for a **single, exclusive, wired**
 source (USB audio input): the source writes a named pipe, CamillaDSP
@@ -338,7 +337,7 @@ reports outputd's empty/partial/reopen/read-failure counters and pipe occupancy;
 (`fanin.env` + `outputd.env`) and the loaded CamillaDSP capture/playback graph
 disagree (the half-applied / crash-loop precursor).
 
-**Dangling-lean strand — two-layer floor (2026-06).** A crash BETWEEN
+**Historical dangling-lean strand — two-layer floor (2026-06).** A crash BETWEEN
 enter-lean and leave-lean can leave CamillaDSP's persisted `--statefile`
 pointing at the lean RawFile config while its `/run` capture pipe is gone (the
 producer reverted to the aloop lane). A camilla restart then reloads the
@@ -347,12 +346,11 @@ this: (1) **runtime** — `restore_buffered_config` (leave-lean) re-points off
 lean whenever the LIVE camilla config OR the on-disk statefile names lean, so it
 no longer no-ops on the live read alone (`event=sound.lean_leave trigger=strand`
 when the on-disk statefile drove the repair); (2) **boot-time floor** —
-`jasper-camilla-pipe-guard` (ExecStartPre) inspects the statefile config's
-RawFile CAPTURE filename and, if it is an absent `/run` pipe, re-points the
-statefile to the base config before camilla launches
-(`event=camilla_pipe_guard.repaired reason=capture_pipe_absent`). The pipe-guard
-is the durable floor: even if the runtime path is skipped (process killed before
-leave-lean), the next restart cannot crash-loop.
+`jasper-camilla-pipe-guard` (ExecStartPre) inspected the statefile config's
+RawFile CAPTURE filename and, if it was an absent `/run` pipe, re-pointed the
+statefile to the base config before camilla launched. That capture branch was
+deleted after both its lean-lane and transport_pipe consumers were removed; the
+guard remains for the independent Snapcast PLAYBACK-pipe failure class.
 **Test gap:** the string tests assert `type: RawFile` (+ `File` absent); the real
 `camilladsp --check` gate runs on-device (the deploy's sound reconcile, now
 env-hydrated so it sees the persisted coupling — [`jasper.cli.sound`](../jasper/cli/sound.py)).

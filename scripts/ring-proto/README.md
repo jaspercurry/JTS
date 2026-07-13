@@ -272,17 +272,13 @@ whatever is currently live and writes one new file.
 
 `jasper-camilla-pipe-guard` runs as `ExecStartPre=` on every
 `jasper-camilla` restart and repairs the statefile to a safe base config
-if the LIVE config's `playback` (or `capture`) block names a dead
-runtime pipe under `/run/`. It keys on a literal `filename:` key inside
-the `playback:`/`capture:` block. The ring config's playback block is
-`type: Alsa, device: jts_ring_playback` — an ALSA device, not a File
-sink, so it has no `filename:` key at all. Verified by hand against the
-guard's own `awk` extraction against a real generated ring config during
-this branch's development: the extraction returns empty, and the guard
-logs `event=camilla_pipe_guard.ok reason=solo_config` and exits without
-touching anything. This mirrors exactly how the guard already treats the
-live product config today (`outputd_content_playback` is also an ALSA
-device, not a File sink).
+if the statefile-selected config's `playback` block names the configured
+Snapcast FIFO and that FIFO is dead. The ring config's playback block is
+`type: Alsa, device: jts_ring_playback` — an ALSA device, not the Snapcast
+File sink, so it has no `filename:` key at all. The guard logs
+`event=camilla_pipe_guard.ok reason=solo_config` and exits without touching
+anything. This mirrors exactly how it treats the ordinary product config
+(`outputd_content_playback` is also an ALSA device, not a File sink).
 
 ### Re-measure with the route-latency harness
 
