@@ -199,9 +199,10 @@
   microphone setup. Crossover level matching walks every active driver in order,
   binds each tone frequency to that driver's protected applied-preset passband,
   and names the canonical 3 cm position for that exact radiator instead of
-  referring to instructions on another page. The driver ESS playback graph and
-  its analysis preset are both frozen from that same immutable applied snapshot;
-  mutable `/sound/` draft edits cannot change an in-flight measurement. The
+  referring to instructions on another page. When automatic measurement must
+  stage or restage its all-muted startup/rollback anchor, it uses the same
+  immutable applied snapshot as the driver ESS playback graph and analysis
+  preset; it does not reread mutable `/sound/` draft edits. The
   explicit crossover apply route is also refused while the shared relay slot is
   starting or awaiting the phone, so graph apply cannot race measurement
   playback or its rollback. Summed alignment captures use the distinct
