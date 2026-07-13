@@ -735,6 +735,64 @@ async def test_session_run_level_match_stores_geometry_lock(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stop_after_locked_waits_for_terminal_ack_then_restores(tmp_path):
+    """Terminal RampState is not lifecycle completion or restore authority."""
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
+    clock = Clock()
+    terminal_waiting = asyncio.Event()
+    release_terminal = asyncio.Event()
+    held_terminal_once = False
+
+    async def controlled_sleep(delay: float) -> None:
+        nonlocal held_terminal_once
+        clock.t += max(delay, 0.01)
+        await asyncio.sleep(0)
+        level_session = sess._level_match_session
+        controller = level_session._controller if level_session else None
+        if (
+            not held_terminal_once
+            and delay == LevelMatchSession.TERMINAL_POST_SPACING_S
+            and controller is not None
+            and controller.data.state is RampState.LOCKED
+        ):
+            held_terminal_once = True
+            terminal_waiting.set()
+            await release_terminal.wait()
+
+    running = asyncio.create_task(
+        sess.run_level_match(
+            MicGeometry.LISTENING_POSITION.value,
+            get_main_volume_db=chain.get_vol,
+            set_main_volume_db=chain.set_vol,
+            play_continuous_tone=chain.tone,
+            cancel_tone=chain.cancel_tone,
+            read_status=chain.read_status,
+            post_host_event=chain.post_host_event,
+            noise_floor_dbfs=chain.nf,
+            clock=clock.now,
+            sleep=controlled_sleep,
+        )
+    )
+    await terminal_waiting.wait()
+    assert chain._vol != pytest.approx(-30.0)
+
+    intent = await sess.begin_autolevel_reset()
+    stopping = asyncio.create_task(sess.stop_background_audio_for_reset())
+    await asyncio.sleep(0)
+    assert not stopping.done()
+    release_terminal.set()
+
+    assert await stopping is True
+    outcome = await running
+    assert outcome.ramp.state is RampState.LOCKED
+    assert sess._last_level_match is outcome
+    assert outcome.ramp.restored is True
+    assert chain._vol == pytest.approx(-30.0)
+    assert await sess.end_autolevel_reset(intent) is True
+
+
+@pytest.mark.asyncio
 async def test_room_session_accepts_stable_bounded_low_level(tmp_path):
     """A quiet external amp can proceed only with explicit degraded evidence."""
     sess = _make_session(tmp_path)

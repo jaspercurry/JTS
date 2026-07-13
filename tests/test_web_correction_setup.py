@@ -23,6 +23,16 @@ import pytest
 from jasper.web import correction_setup
 
 
+_CORRECTION_MODULE = (
+    Path(__file__).resolve().parents[1]
+    / "deploy" / "assets" / "correction" / "js" / "main.js"
+)
+
+
+def _module_js() -> str:
+    return _CORRECTION_MODULE.read_text()
+
+
 def test_run_async_timeout_cancels_loop_task():
     import asyncio
     import concurrent.futures
@@ -124,37 +134,44 @@ def test_render_back_link_is_absolute_http():
     assert 'href="http://jts.local/"' in html
 
 
-def test_render_preserves_workflow_anchors():
-    """Every DOM id the relocated module drives must still be present in the
-    server-rendered shell."""
+def test_render_has_one_root_for_each_envelope_section():
     html = _render()
-    for anchor in (
-        'id="start"',
-        'id="current-correction"',
-        'id="input-device-select"',
-        'id="mic-model-select"',
-        'id="constraints"',
-        'id="measure-section"',
-        'id="state-badge"',
-        'id="run-measurement"',
-        'id="autolevel"',
-        'id="apply-correction"',
-        'id="verify-correction"',
-        'id="reset-correction"',
-        'id="chart"',
-        'id="peq-list"',
-        'id="measurement-reports"',
-        'id="session-report"',
+    section_ids = {
+        "current-correction", "run-defaults", "readiness-blocker",
+        "capture-handoff", "placement", "capture-setup",
+        "local-certificate-warning", "level-check", "position-capture",
+        "measurement-review", "apply-status", "verification",
+        "result-proof", "tuning", "reports",
+    }
+    for section_id in section_ids:
+        assert html.count(f'data-envelope-section="{section_id}"') == 1
+
+    for deleted_id in (
+        "relay-panel", "relay-start-capture", "advanced-correction-options",
+        "mic-panel", "measurement-reports", "measure-section",
+        "run-measurement", "apply-correction", "verify-correction",
+        "repeat-position", "continue-position", "start",
     ):
-        assert anchor in html, anchor
+        assert f'id="{deleted_id}"' not in html
 
 
-def test_render_keeps_cert_install_disclosure():
-    """The Safari "Not Private" cert-install help is load-bearing for the
-    HTTPS-only page and must survive the restyle."""
+def test_render_keeps_only_plain_local_certificate_warning():
     html = _render()
-    assert "/jts-root-ca.crt" in html
-    assert "Certificate Trust Settings" in html
+    assert "browser will warn about the speaker's local certificate" in html
+    assert "/jts-root-ca.crt" not in html
+    assert "Certificate Trust Settings" not in html
+    assert "mkcert" not in html
+    assert 'id="readiness-blocker-action" class="btn hidden" href=""' in html
+    assert 'id="readiness-blocker-action" class="btn" href="/sound/"' not in html
+
+
+def test_browser_has_no_screen_visibility_or_forward_action_policy_mirror():
+    js = _module_js()
+    assert "SCREEN_SECTIONS" not in js
+    assert "WIZARD_FORWARD_ACTION_BY_STATE" not in js
+    assert "wizardProvidesForwardAction" not in js
+    assert "showScreenSections" not in js
+    assert "SUPPORTED_ENVELOPE_SCHEMA = 6" in js
 
 
 def test_render_escapes_hostname():
@@ -275,6 +292,7 @@ def test_known_post_routes_reach_csrf_guard():
         "/start", "/next-position", "/repeat-position", "/verify",
         "/test-tone", "/autolevel/start", "/autolevel/lock",
         "/autolevel/cancel", "/upload-noise", "/upload-capture",
+        "/local-capture/setup",
         "/calibration/fetch", "/calibration/upload", "/apply", "/reset",
         "/session/delete", "/relay/level-match", "/relay/capture",
         "/relay/verify",

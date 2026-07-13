@@ -306,6 +306,9 @@ def session_snapshot(session: Any) -> dict[str, Any]:
         "correction_strategy": _correction_strategy_payload(session),
         "input_device": session.input_device,
         "capture_transport": getattr(session, "capture_transport", "local"),
+        "local_capture_setup_bound": bool(
+            getattr(session, "local_capture_setup_bound", False)
+        ),
         "mic_calibration": _mic_calibration_payload(session),
         "browser_audio_report": session.browser_audio_report,
         # Point-in-time copies: these containers can mutate while a

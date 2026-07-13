@@ -4,21 +4,13 @@
 
 // Room correction — measurement + DSP wizard.
 //
-// Static ES module served from /assets/correction/js/ (revalidated by
-// nginx, same delivery model as /system/ and /sound/). Relocated VERBATIM
-// from the previously-inline IIFE in jasper/web/correction_setup.py; the
-// only changes are mechanical: (a) the CSRF helpers (csrfHeaders /
-// jsonHeaders) and the confirm/alert dialog (jtsConfirm / jtsAlert) are now
-// imported from the shared modules instead of being string-substituted /
-// inlined at render time, and (b) REQUIRED_SR is the literal 48000 (was the
-// __REQUIRED_SR__ Python substitution). The getUserMedia mic capture, the
-// AudioWorklet RMS/capture pipeline, the /status polling state machine, the
-// autolevel ramp, the sweep upload flow, and the canvas chart math are
-// UNCHANGED — this page can only be fully exercised on real Pi hardware
-// (HTTPS secure context + mic + CamillaDSP), so it was moved, not
-// refactored. The IIFE wrapper is kept so the body's var/function
-// declarations are byte-for-byte the original. See
-// docs/HANDOFF-management-ui.md (restyle-in-place) and
+// Static ES module served from /assets/correction/js/ (revalidated by nginx,
+// same delivery model as /system/ and /sound/). GET /envelope owns the exact
+// whole-page section order and single forward action; this module validates
+// and renders that closed contract while /status continues to drive capture,
+// upload, autolevel, and safety-control mechanics. The getUserMedia,
+// AudioWorklet, local/relay capture, and canvas paths still require a real Pi
+// browser pass (HTTPS secure context + mic + CamillaDSP). See
 // docs/HANDOFF-correction.md.
 import { csrfHeaders, jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
@@ -38,16 +30,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     pageRoot && pageRoot.dataset.captureRelayEnabled === '1'
   );
   var relayMode = relayConfigured;
-  var relayPanel = document.getElementById('relay-panel');
+  var captureHandoffCopy = document.getElementById('capture-handoff-copy');
   var relayStatus = document.getElementById('relay-status');
   var relayLinkRow = document.getElementById('relay-link-row');
   var relayTapLink = document.getElementById('relay-tap-link');
-  var relayStartBtn = document.getElementById('relay-start-capture');
   var localCaptureFallbackBtn = document.getElementById('local-capture-fallback');
-  var localInputRow = document.getElementById('local-input-row');
-  var localInputHint = document.getElementById('local-input-hint');
-  var micPanel = document.getElementById('mic-panel');
-  var startBtn = document.getElementById('start');
   var inputDeviceSelect = document.getElementById('input-device-select');
   var refreshInputsBtn = document.getElementById('refresh-inputs');
   var micModelSelect = document.getElementById('mic-model-select');
@@ -86,29 +73,23 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var browserAudioReport = document.getElementById('browser-audio-report');
   var levelBar = document.getElementById('level-bar-fill');
   var levelReadout = document.getElementById('level-db');
-  var measureSection = document.getElementById('measure-section');
-  var stateBadge = document.getElementById('state-badge');
-  var stateDetail = document.getElementById('state-detail');
+  var envelopeSections = document.getElementById('envelope-sections');
+  var measurementReview = document.getElementById('measurement-review');
+  var resultProof = document.getElementById('result-proof');
   var qualityBanner = document.getElementById('quality-banner');
-  var autolevelBtn = document.getElementById('autolevel');
   var autolevelLockBtn = document.getElementById('autolevel-lock');
   var autolevelCancelBtn = document.getElementById('autolevel-cancel');
   var autolevelStatus = document.getElementById('autolevel-status');
   var autolevelLine = document.getElementById('autolevel-line');
   var autolevelDetail = document.getElementById('autolevel-detail');
   var autolevelHint = document.getElementById('autolevel-hint');
-  var runBtn = document.getElementById('run-measurement');
-  var repeatBtn = document.getElementById('repeat-position');
-  var continueBtn = document.getElementById('continue-position');
-  var applyBtn = document.getElementById('apply-correction');
-  var verifyBtn = document.getElementById('verify-correction');
   var resetBtn = document.getElementById('reset-correction');
   var cancelMeasureBtn = document.getElementById('cancel-measurement');
+  var emergencyStopActive = false;
   var measurementOptions = document.getElementById('measurement-options');
+  var changeRunDefaultsBtn = document.getElementById('change-run-defaults');
   var positionsSelect = document.getElementById('positions-select');
   var repeatMainPosition = document.getElementById('repeat-main-position');
-  var repeatMainPositionRow = document.getElementById('repeat-main-position-row');
-  var repeatMainPositionHint = document.getElementById('repeat-main-position-hint');
   var targetSelect = document.getElementById('target-select');
   var strategySelect = document.getElementById('strategy-select');
   var positionPrompt = document.getElementById('position-prompt');
@@ -135,7 +116,16 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var workletNode = null;
   var pollTimer = null;
   var sessionId = null;
-  var currentState = null;
+  var runTransportLocked = false;
+  var localCaptureSetupBound = false;
+  var localRunOwnedByThisTab = false;
+  var localRunOwnerSessionId = null;
+  var wizardActionInFlight = false;
+  var envelopeRequestGeneration = 0;
+  var noiseCaptureCompletion = null;
+  var noiseCaptureResolve = null;
+  var noiseCaptureReject = null;
+  var noiseCaptureTimeout = null;
   var lastResult = null;
   var lastVerify = null;
   var inVerifyMode = false;
@@ -185,23 +175,36 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     'Set up', 'Measure', 'Review', 'Apply', 'Verify', 'Done',
   ];
 
-  // Screen -> which existing workflow sections are visible. The router owns
-  // top-level phase visibility; applyButtonPolicy still governs the
-  // fine-grained mechanism buttons inside measure-section. Sections not
-  // listed for a screen are hidden by the router. `measure` is the big
-  // workflow block (mic-level, options, action buttons, result); it stays
-  // visible from the mic step through result so the capture UI the browser
-  // drives is reachable. `result` shows the frequency-response review.
-  var SCREEN_SECTIONS = {
-    idle:   { measure: false, result: false },
-    mic:    { measure: true,  result: false },
-    level:  { measure: true,  result: false },
-    sweep:  { measure: true,  result: false },
-    review: { measure: true,  result: true },
-    apply:  { measure: true,  result: true },
-    verify: { measure: true,  result: true },
-    result: { measure: true,  result: true },
+  var SUPPORTED_ENVELOPE_SCHEMA = 6;
+  var KNOWN_ENVELOPE_SCREENS = {
+    idle: true, mic: true, level: true, sweep: true,
+    review: true, apply: true, verify: true, result: true,
   };
+  var KNOWN_ACTION_ENDPOINTS = {
+    '/start': true,
+    '/next-position': true,
+    '/repeat-position': true,
+    '/local-capture/setup': true,
+    '/autolevel/start': true,
+    '/upload-noise': true,
+    '/apply': true,
+    '/verify': true,
+    '/relay/level-match': true,
+    '/relay/capture': true,
+    '/relay/verify': true,
+  };
+  var KNOWN_SECTION_IDS = [
+    'current-correction', 'run-defaults', 'readiness-blocker',
+    'capture-handoff', 'placement', 'capture-setup',
+    'local-certificate-warning', 'level-check', 'position-capture',
+    'measurement-review', 'apply-status', 'verification', 'result-proof',
+    'tuning', 'reports',
+  ];
+  var sectionNodes = {};
+  KNOWN_SECTION_IDS.forEach(function (sectionId) {
+    var node = document.querySelector('[data-envelope-section="' + sectionId + '"]');
+    if (node) sectionNodes[sectionId] = node;
+  });
 
   // For the three audio-processing flags (echoCancellation,
   // noiseSuppression, autoGainControl), iOS Safari often returns
@@ -267,7 +270,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       return;
     }
     var tapLink = relay.tap_link || '';
-    if (tapLink && relayTapLink) {
+    if (relay.status === 'awaiting_phone' && tapLink && relayTapLink) {
       relayTapLink.href = tapLink;
       hideEl(relayLinkRow, false);
     } else {
@@ -287,51 +290,33 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   function setRelayMode(enabled) {
     relayMode = !!enabled;
-    hideEl(relayPanel, !relayMode);
-    // The server envelope owns the one primary action.  Keep the legacy relay
-    // Start control retired so it cannot compete with Start/Level/Measure.
-    hideEl(relayStartBtn, true);
-    hideEl(runBtn, relayMode);
-    hideEl(micPanel, relayMode);
-    hideEl(measurementOptions, relayMode);
-    hideEl(localInputRow, relayMode);
-    hideEl(localInputHint, relayMode);
-    hideEl(startBtn, relayMode);
-    hideEl(constraintsBlock, relayMode);
-    hideEl(autolevelBtn, relayMode);
+    if (captureHandoffCopy) {
+      captureHandoffCopy.textContent = relayMode
+        ? 'Continue on the phone while the speaker coordinates each capture.'
+        : 'This device will capture the microphone signal locally.';
+    }
+    hideEl(localCaptureFallbackBtn, !relayMode);
     hideEl(autolevelLockBtn, true);
     hideEl(autolevelCancelBtn, true);
     hideEl(autolevelStatus, true);
     hideEl(autolevelHint, relayMode);
-    if (repeatMainPosition) {
-      repeatMainPosition.checked = !relayMode;
-      repeatMainPosition.disabled = relayMode;
-    }
-    hideEl(repeatMainPositionRow, relayMode);
-    hideEl(repeatMainPositionHint, relayMode);
     if (relayMode) {
       stopMicStream();
-      measureSection.classList.remove('hidden');
-      runBtn.textContent = 'Start phone measurement';
-      continueBtn.textContent = 'Create next phone capture';
-      autolevelBtn.disabled = true;
-      runBtn.disabled = false;
-      if (relayStartBtn) {
-        relayStartBtn.textContent = 'Start';
-        relayStartBtn.disabled = false;
-      }
-      setRelayStatus('Ready to create a phone capture link.', 'idle');
+      setRelayStatus('', 'idle');
     } else {
-      hideEl(runBtn, false);
-      hideEl(micPanel, false);
-      hideEl(measurementOptions, false);
-      runBtn.textContent = 'Run measurement';
-      continueBtn.textContent = 'Continue to next position';
       renderRelayCapture(null);
       setRelayStatus('', 'idle');
-      runBtn.disabled = true;
-      if (relayStartBtn) relayStartBtn.disabled = true;
-      autolevelBtn.disabled = true;
+    }
+  }
+
+  function setRunTransportLocked(locked) {
+    runTransportLocked = !!locked;
+    if (changeRunDefaultsBtn) changeRunDefaultsBtn.disabled = runTransportLocked;
+    if (runTransportLocked) {
+      hideEl(measurementOptions, true);
+      hideEl(localCaptureFallbackBtn, true);
+    } else {
+      hideEl(localCaptureFallbackBtn, !relayMode);
     }
   }
 
@@ -609,7 +594,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     return 'Captured device “' + (capturedLabel || 'default') + '” looks like ' +
       'this phone’s built-in mic, but you loaded a ' +
       selectedCalibrationMeta.label + ' calibration. Select the USB ' +
-      'measurement mic under Input device, then Start mic capture again.';
+      'measurement mic under Input device, then choose Allow microphone again.';
   }
 
   function renderConstraints(actual, problems) {
@@ -647,12 +632,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         problems.join(', ') +
         '. The measurement will refuse to start in this state.';
       errBanner.classList.remove('hidden');
-      runBtn.disabled = true;
-      autolevelBtn.disabled = true;
     } else {
       errBanner.classList.add('hidden');
-      runBtn.disabled = false;
-      autolevelBtn.disabled = false;
     }
     renderBrowserAudioLocal(actual, problems);
   }
@@ -691,15 +672,85 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         : '');
   }
 
-  async function startMicCapture() {
-    if (!inputDeviceSelect.value) {
-      jtsAlert('Pick a microphone first. Tap “Refresh microphones” (and ' +
-        'replug the USB mic if it is not listed), then choose your ' +
-        'measurement mic under Input device.');
-      return;
+  var LOCAL_CAPTURE_MEMORY_KEY = 'jts-room-local-capture-v1';
+
+  function readLocalCaptureMemory() {
+    try {
+      var raw = window.sessionStorage &&
+        window.sessionStorage.getItem(LOCAL_CAPTURE_MEMORY_KEY);
+      var parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (_e) {
+      return null;
     }
-    startBtn.disabled = true;
-    startBtn.textContent = 'Capturing…';
+  }
+
+  function rememberLocalCapture(deviceId) {
+    try {
+      if (!window.sessionStorage || !sessionId) return;
+      window.sessionStorage.setItem(LOCAL_CAPTURE_MEMORY_KEY, JSON.stringify({
+        session_id: sessionId,
+        device_id: deviceId || null,
+        calibration_id: selectedCalibrationId || null
+      }));
+    } catch (_e) {}
+  }
+
+  function syncSessionMechanics(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return;
+    var serverSessionId = snapshot.session_id
+      ? String(snapshot.session_id) : null;
+    localCaptureSetupBound = snapshot.local_capture_setup_bound === true;
+    var liveRun = snapshot.state !== 'idle' && snapshot.state !== 'failed';
+    var remembered = readLocalCaptureMemory();
+    var matchingMemory = remembered && remembered.session_id === serverSessionId
+      ? remembered : null;
+    if (liveRun && snapshot.capture_transport !== 'relay') {
+      // Only the tab that received /start may perform the one-shot local bind.
+      // A different stale tab can observe the live session, but must not adopt
+      // its identity and attach an arbitrary microphone to it.
+      localRunOwnedByThisTab = !!matchingMemory ||
+        localRunOwnerSessionId === serverSessionId;
+      sessionId = localRunOwnedByThisTab ? serverSessionId : null;
+    } else {
+      localRunOwnedByThisTab = false;
+      sessionId = serverSessionId;
+    }
+    if (liveRun) {
+      setRelayMode(snapshot.capture_transport === 'relay');
+    }
+    setRunTransportLocked(liveRun);
+    if (matchingMemory) {
+      selectedCalibrationId = matchingMemory.calibration_id || null;
+    }
+  }
+
+  async function refreshSessionMechanics() {
+    var snapshot = await fetchStatus();
+    syncSessionMechanics(snapshot);
+    return snapshot;
+  }
+
+  async function startMicCapture() {
+    try {
+      await refreshSessionMechanics();
+    } catch (_e) {
+      jtsAlert('The speaker could not confirm the current measurement. Try again.');
+      return false;
+    }
+    if (!relayMode && !localRunOwnedByThisTab) {
+      jtsAlert('This measurement was started in another tab. Return to that tab, ' +
+        'or cancel the measurement and start again here.');
+      return false;
+    }
+    var remembered = readLocalCaptureMemory();
+    var matchingMemory = remembered && remembered.session_id === sessionId
+      ? remembered : null;
+    if (localCaptureSetupBound && !matchingMemory) {
+      jtsAlert('This tab no longer has the microphone identity for the active run. ' +
+        'Cancel this measurement and start again.');
+      return false;
+    }
     stopMicStream();
 
     try {
@@ -707,9 +758,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       ctx = new Ctor({sampleRate: REQUIRED_SR});
     } catch (e) {
       jtsAlert('Could not create AudioContext: ' + e.message);
-      startBtn.disabled = false;
-      startBtn.textContent = 'Start mic capture';
-      return;
+      return false;
     }
 
     var stream;
@@ -723,7 +772,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // Always pin the exact device. Without {exact} Safari silently falls
     // back to the built-in mic, which is how an iMM-6C calibration ended up
     // applied to iPhone-mic audio.
-    audioConstraints.deviceId = {exact: inputDeviceSelect.value};
+    var desiredDeviceId = inputDeviceSelect.value ||
+      (matchingMemory && matchingMemory.device_id) || '';
+    if (desiredDeviceId) audioConstraints.deviceId = {exact: desiredDeviceId};
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: audioConstraints,
@@ -738,13 +789,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       } else {
         jtsAlert('Microphone permission denied or unavailable: ' + e.message);
       }
-      startBtn.disabled = false;
-      startBtn.textContent = 'Start mic capture';
-      return;
+      return false;
     }
 
     constraintsBlock.classList.remove('hidden');
-    measureSection.classList.remove('hidden');
 
     var settings = stream.getAudioTracks()[0].getSettings();
     var trackLabel = stream.getAudioTracks()[0].label || '';
@@ -757,6 +805,23 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       deviceId: settings.deviceId || inputDeviceSelect.value || '',
       label: trackLabel
     };
+    if (!desiredDeviceId && !localCaptureSetupBound) {
+      // Safari reveals the real USB device list only after a permission grant.
+      // Treat this first default stream as discovery only; never commit it as
+      // the run's one-shot microphone identity.
+      stopMicStream();
+      await populateInputDevices();
+      jtsAlert('Microphones are now available. Select the one you want, then ' +
+        'choose Allow microphone again.');
+      return false;
+    }
+    if (desiredDeviceId && actual.deviceId &&
+        actual.deviceId !== desiredDeviceId) {
+      stopMicStream();
+      jtsAlert('The browser opened a different microphone than the one bound ' +
+        'to this run. Cancel the measurement and start again.');
+      return false;
+    }
     await populateInputDevices(actual.deviceId);
     selectedInputDevice = selectedInputDeviceMetadata(actual);
     maybeInferCalibrationModel(actual.label);
@@ -805,8 +870,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     try {
       await ctx.audioWorklet.addModule(blobUrl);
     } catch (e) {
+      stopMicStream();
       jtsAlert('AudioWorklet load failed: ' + e.message);
-      return;
+      return false;
+    } finally {
+      URL.revokeObjectURL(blobUrl);
     }
     var src = ctx.createMediaStreamSource(stream);
     workletNode = new AudioWorkletNode(ctx, 'm');
@@ -828,9 +896,50 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // No mic→destination connection — would create a feedback loop
     // on the smart speaker that's the listening target.
 
-    startBtn.textContent = 'Capturing (mic level live below)';
+    rememberLocalCapture(actual.deviceId || desiredDeviceId);
+    if (!localCaptureSetupBound) {
+      var boundSetup = null;
+      var bindError = null;
+      var bindPayload = {
+        session_id: sessionId,
+        calibration_id: selectedCalibrationId,
+        input_device: selectedInputDevice
+      };
+      // A response can be lost after the server commits the binding. The server
+      // treats this exact identity retry as idempotent; keep the browser retry
+      // bounded so a real rejection never becomes a request loop.
+      for (var bindAttempt = 0; bindAttempt < 2; bindAttempt++) {
+        try {
+          boundSetup = await postJson('local-capture/setup', bindPayload);
+          bindError = null;
+          break;
+        } catch (e) {
+          bindError = e;
+          if (bindAttempt === 0) {
+            await new Promise(function (resolve) { setTimeout(resolve, 200); });
+          }
+        }
+      }
+      if (bindError) {
+        console.warn('local capture setup bind failed', bindError);
+        stopMicStream();
+        jtsAlert('The speaker could not use that microphone setup. Try again.');
+        return false;
+      }
 
+      if (boundSetup && boundSetup.state === 'needs_noise_capture') {
+        localCaptureSetupBound = true;
+        pollState();
+      }
+    }
     await acquireWakeLock();
+    return true;
+  }
+
+  async function ensureLocalCaptureReady() {
+    if (relayMode) return false;
+    if (workletNode && micStream) return true;
+    return await startMicCapture();
   }
 
   // iOS auto-releases the screen wake lock when the tab is backgrounded, which
@@ -851,9 +960,16 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   function setStateBadge(state, detail) {
-    stateBadge.className = 'state-badge ' + state;
-    stateBadge.textContent = state;
-    stateDetail.textContent = detail || '';
+    // Whole-page progress/copy comes from the server envelope. Keep raw
+    // mechanism details out of the DOM; typed homeowner failures replace
+    // this generic sentence in the next R1 slice.
+    if (state === 'failed') {
+      console.warn('room-correction mechanism failed', detail || '');
+      if (wizardVerdict) {
+        wizardVerdict.textContent =
+          'The speaker could not continue this step. Try again.';
+      }
+    }
   }
 
   function qualityReports(payload) {
@@ -917,6 +1033,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     return 'flat';
   }
 
+  function setCurrentCorrectionTone(tone) {
+    currentCorrectionBanner.classList.remove('applied', 'custom', 'flat');
+    currentCorrectionBanner.classList.add(tone);
+  }
+
   function renderCurrentCorrection(cc, config) {
     // `cc` is the parsed JTS room-correction descriptor. When a correction is
     // applied JTS formats the live PEQ count + timestamp client-side (dynamic
@@ -924,7 +1045,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // label/message; the browser renders it rather than re-deriving per-kind
     // strings that have drifted from the backend.
     if (cc && cc.applied_at_epoch) {
-      currentCorrectionBanner.className = 'applied';
+      setCurrentCorrectionTone('applied');
       var when = formatAppliedAt(cc.applied_at_epoch);
       var count = cc.peq_count || 0;
       var noun = count === 1 ? 'filter' : 'filters';
@@ -935,7 +1056,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       return;
     }
     var kind = config && config.kind || '';
-    currentCorrectionBanner.className = correctionBannerClass(kind);
+    setCurrentCorrectionTone(correctionBannerClass(kind));
     currentCorrectionLabel.textContent =
       (config && (config.message || config.label)) ||
       'No correction applied — speaker is flat.';
@@ -953,7 +1074,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       var s = await fetchStatus();
       renderCurrentCorrection(s.current_correction, s.current_config);
     } catch (e) {
-      currentCorrectionBanner.className = 'flat';
+      setCurrentCorrectionTone('flat');
       currentCorrectionLabel.textContent =
         'Could not read current correction: ' + e.message;
       currentCorrectionResetBtn.classList.add('hidden');
@@ -1057,110 +1178,32 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // next_action === null means a browser-driven or terminal step: no button.
   function renderPrimaryAction(nextAction) {
     if (!wizardNextBtn) return;
+    if (wizardActionInFlight) {
+      wizardNextBtn.classList.add('hidden');
+      wizardNextBtn.disabled = true;
+      return;
+    }
     if (!nextAction || !nextAction.endpoint) {
       wizardNextBtn.classList.add('hidden');
       wizardNextBtn.textContent = '';
       wizardNextBtn.removeAttribute('data-endpoint');
       return;
     }
-    wizardNextBtn.textContent = String(nextAction.label || 'Continue');
+    wizardNextBtn.textContent = String(nextAction.label);
     wizardNextBtn.setAttribute('data-endpoint', String(nextAction.endpoint));
     wizardNextBtn.disabled = false;   // nudges never gate the action
     wizardNextBtn.classList.remove('hidden');
   }
 
-  // The forward endpoint the wizard's next_action carries for each session
-  // state — a client mirror of envelope._NEXT_ACTION keyed by state (idle,
-  // verified, and failed all forward to /start: "Start measuring" /
-  // "Measure again"). Two consumers: (a) wizardProvidesForwardAction below
-  // (legacy-button subordination), (b) retireStaleWizardAction (staleness
-  // detection when an envelope refresh fails mid-flow). States absent from
-  // this map (capture screens, transients like analyzing) expect NO wizard
-  // forward action, so a displayed one is treated as stale on an outage.
-  var WIZARD_FORWARD_ACTION_BY_STATE = {
-    idle: '/start',
-    needs_next_position: '/next-position',
-    ready: '/apply',
-    applied: '/verify',
-    verified: '/start',
-    failed: '/start',
-  };
-
-  // True iff the wizard is CURRENTLY showing exactly this forward action:
-  // chrome visible, button visible, the displayed data-endpoint matches,
-  // and the static map agrees it belongs to the current state (so a stale
-  // button left over from the previous state never counts).
-  // applyButtonPolicy uses this to subordinate the legacy in-section
-  // Apply/Verify buttons — requiring the *displayed* endpoint to match
-  // makes the suppression correct-by-construction: if the envelope path is
-  // down, cold-load failed, or the shown action is stale after a state
-  // advance, this returns false and the legacy button stays as the fallback
-  // (never strand the user). Ordering note: on a transition the /status
-  // policy pass runs before the async envelope render lands, so the legacy
-  // button may show for one fetch (~50 ms) and is then retired by
-  // reconcileLegacyPrimaryButtons — a brief correct-action overlap, never a
-  // wrong single action.
-  function wizardProvidesForwardAction(endpoint) {
-    if (!wizardChrome || wizardChrome.classList.contains('hidden')) return false;
-    if (!wizardNextBtn || wizardNextBtn.classList.contains('hidden')) return false;
-    if (wizardNextBtn.getAttribute('data-endpoint') !== endpoint) return false;
-    return WIZARD_FORWARD_ACTION_BY_STATE[currentState] === endpoint;
-  }
-
-  // Mid-flow envelope-only outage repair: the session advanced but the
-  // envelope refresh failed, so the chrome may still display the PREVIOUS
-  // state's action (e.g. "Apply" after the session already reached
-  // applied). A stale action pointing at the wrong endpoint is worse than
-  // no wizard action — hide it, so the legacy in-section button (already
-  // re-surfaced by applyButtonPolicy this cycle, since
-  // wizardProvidesForwardAction saw the mismatch) is the single, correct
-  // action. A displayed action that still matches the current state is
-  // left alone (e.g. /start is right for idle, verified, and failed).
-  function retireStaleWizardAction() {
-    if (!wizardNextBtn || wizardNextBtn.classList.contains('hidden')) return;
-    var displayed = wizardNextBtn.getAttribute('data-endpoint');
-    var expected = WIZARD_FORWARD_ACTION_BY_STATE[currentState] || null;
-    if (relayMode && currentState === 'needs_noise_capture' &&
-        (displayed === '/relay/level-match' || displayed === '/relay/capture')) {
-      return;
-    }
-    if (relayMode && currentState === 'applied' &&
-        (displayed === '/relay/level-match' || displayed === '/relay/verify')) {
-      return;
-    }
-    if (displayed !== expected) {
-      renderPrimaryAction(null);
-    }
-  }
-
-  // Hide the legacy in-section Apply/Verify buttons when the wizard's single
-  // primary action now owns them. Called after an envelope render so the
-  // suppression reflects the freshly-shown chrome regardless of the
-  // applyButtonPolicy-vs-async-render order within a poll cycle. Only hides
-  // (never shows) — applyButtonPolicy is still the authority on when a
-  // button may appear; this just removes the duplicate once the wizard is up.
-  function reconcileLegacyPrimaryButtons() {
-    if (applyBtn && wizardProvidesForwardAction('/apply')) {
-      applyBtn.classList.add('hidden');
-    }
-    var wizardEndpoint = wizardNextBtn && wizardNextBtn.getAttribute('data-endpoint');
-    if (verifyBtn && (wizardProvidesForwardAction('/verify') ||
-        (relayMode && (wizardEndpoint === '/relay/level-match' ||
-          wizardEndpoint === '/relay/verify')))) {
-      verifyBtn.classList.add('hidden');
-    }
-    if (relayMode && wizardProvidesForwardAction('/next-position')) {
-      continueBtn.classList.add('hidden');
-      if (relayStartBtn) relayStartBtn.disabled = true;
-    }
-  }
-
   // Delegated click for the wizard primary action. Reads the endpoint from
   // the data-* attribute the router set (no interpolated inline handler).
   async function onWizardNextClick() {
+    if (wizardActionInFlight) return;
     var ep = wizardNextBtn.getAttribute('data-endpoint');
     if (!ep) return;
+    wizardActionInFlight = true;
     wizardNextBtn.disabled = true;
+    wizardNextBtn.classList.add('hidden');
     try {
       if (ep === '/start') {
         await startMeasurement();
@@ -1170,14 +1213,33 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         await startRelayCaptureForCurrentPosition();
       } else if (ep === '/relay/verify') {
         await startRelayVerify();
-      } else if (relayMode && ep === '/next-position') {
+      } else if (ep === '/next-position') {
         await continueToNextPosition();
+      } else if (ep === '/repeat-position') {
+        await repeatMainSeat();
+      } else if (ep === '/local-capture/setup') {
+        await startMicCapture();
+      } else if (ep === '/autolevel/start') {
+        if (!(await ensureLocalCaptureReady())) {
+          throw new Error('local microphone capture is not ready');
+        }
+        await startAutolevel();
+      } else if (ep === '/upload-noise') {
+        if (!(await ensureLocalCaptureReady())) {
+          throw new Error('local microphone capture is not ready');
+        }
+        await capturePreSweepNoise();
+      } else if (ep === '/apply') {
+        await applyCorrection(wizardNextBtn);
+      } else if (ep === '/verify') {
+        await startVerify(wizardNextBtn);
       } else {
-        await postJson(ep.replace(/^\/+/, ''), {});
+        throw new Error('unsupported room-correction action');
       }
     } catch (e) {
       setStateBadge('failed', e.message);
     } finally {
+      wizardActionInFlight = false;
       wizardNextBtn.disabled = false;
     }
     pollState();
@@ -1187,20 +1249,72 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     refreshCurrentCorrection();
   }
 
-  // Show/hide the top-level workflow sections for the current screen. The
-  // router owns phase visibility; applyButtonPolicy still governs the
-  // mechanism buttons inside measure-section. Unknown screens fall back to
-  // showing the measure section (never strand the user with nothing).
-  // `curves` is the envelope's own curves object — the SINGLE source for the
-  // review/result chart visibility (never client-side state like lastResult,
-  // which is empty after a mid-flow page reload even though the server has a
-  // measured curve): no measured curve -> no chart frame; envelope measured
-  // curve -> chart shown before drawEnvelopeCurves draws into it.
-  function showScreenSections(screen, curves) {
-    var spec = SCREEN_SECTIONS[screen] || { measure: true, result: false };
-    hideEl(measureSection, !spec.measure);
+  function validateEnvelope(env) {
+    if (!env || env.schema_version !== SUPPORTED_ENVELOPE_SCHEMA) {
+      throw new Error('unsupported room-correction envelope');
+    }
+    if (!KNOWN_ENVELOPE_SCREENS[String(env.screen || '')]) {
+      throw new Error('unknown room-correction screen');
+    }
+    if (!Array.isArray(env.sections) || env.sections.length === 0) {
+      throw new Error('room-correction sections missing');
+    }
+    var seen = {};
+    env.sections.forEach(function (sectionId) {
+      if (typeof sectionId !== 'string' || !sectionNodes[sectionId] || seen[sectionId]) {
+        throw new Error('unknown or duplicate room-correction section');
+      }
+      seen[sectionId] = true;
+    });
+    if (env.next_action !== null) {
+      var action = env.next_action;
+      if (!action || typeof action.label !== 'string' || !action.label.trim() ||
+          !KNOWN_ACTION_ENDPOINTS[String(action.endpoint || '')]) {
+        throw new Error('unknown room-correction action');
+      }
+    }
+    return env;
+  }
+
+  function renderEnvelopeFailure() {
+    Object.keys(sectionNodes).forEach(function (sectionId) {
+      sectionNodes[sectionId].classList.add('hidden');
+    });
+    renderPrimaryAction(null);
+    if (wizardChrome) wizardChrome.classList.remove('hidden');
+    if (wizardVerdict) {
+      wizardVerdict.textContent =
+        'The speaker could not refresh this step. Wait a moment and try again.';
+    }
+    renderNudges([]);
+  }
+
+  // The server supplies both membership and order. This renderer knows only
+  // the closed section vocabulary and moves those DOM roots into the exact
+  // order received; it contains no screen-to-section policy.
+  function renderSections(sections, curves) {
+    Object.keys(sectionNodes).forEach(function (sectionId) {
+      sectionNodes[sectionId].classList.add('hidden');
+    });
+    sections.forEach(function (sectionId) {
+      var node = sectionNodes[sectionId];
+      envelopeSections.appendChild(node);
+      node.classList.remove('hidden');
+    });
+
+    // Review and result use one neutral evidence subtree. The selected
+    // server section owns its host; no two section names alias one DOM root.
+    if (sections.indexOf('measurement-review') !== -1) {
+      measurementReview.appendChild(resultSection);
+      measurementReview.appendChild(resetBtn);
+    } else if (sections.indexOf('result-proof') !== -1) {
+      resultProof.appendChild(resultSection);
+      resultProof.appendChild(resetBtn);
+    } else if (sections.indexOf('apply-status') !== -1) {
+      sectionNodes['apply-status'].appendChild(resetBtn);
+    }
     var haveResult = !!(curves && curves.measured);
-    hideEl(resultSection, !(spec.result && haveResult));
+    hideEl(resultSection, !haveResult);
   }
 
   // The envelope router. Renders the full wizard chrome from one envelope
@@ -1214,13 +1328,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     renderNudges(env.nudges);
     renderPrimaryAction(env.next_action);
     renderProgress(env.progress);
-    showScreenSections(env.screen, env.curves || {});
-    // The chrome is now visible with its primary action, so retire any
-    // duplicate legacy in-section Apply/Verify button the earlier
-    // applyButtonPolicy pass may have shown before this async render landed
-    // (the envelope render can arrive after applyButtonPolicy in a poll
-    // cycle). Idempotent; keeps the single-primary-action contract.
-    reconcileLegacyPrimaryButtons();
+    renderSections(env.sections, env.curves || {});
     // On the review/result screens the envelope carries the honest,
     // server-smoothed curves + Pi-classified two-tone fill. Draw them into
     // the shared canvas via drawEnvelopeCurves so the "what your room is
@@ -1233,16 +1341,17 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   // P6: render the tuning-assistant affordance from the envelope's
   // tuning_llm block ({offered, available, provider, model?, nudge?}).
-  // Hidden unless offered (a measurement screen). When offered but the
-  // household has no OpenAI key, show only the nudge. When available,
-  // show the two per-tap actions. Fail-soft: a missing block hides it.
+  // Whole-section visibility is owned only by renderSections(). This function
+  // fills the section's internals: when offered but the household has no
+  // OpenAI key, show only the nudge; when available, show the two per-tap
+  // actions. A missing block clears both internal affordances.
   function renderTuning(block) {
     if (!tuningPanel) return;
     if (!block || !block.offered) {
-      tuningPanel.classList.add('hidden');
+      tuningActions.classList.add('hidden');
+      tuningNudge.classList.add('hidden');
       return;
     }
-    tuningPanel.classList.remove('hidden');
     if (block.available) {
       tuningNudge.classList.add('hidden');
       tuningActions.classList.remove('hidden');
@@ -1508,7 +1617,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (env.fill_segments && env.fill_segments.length && curves.verify) {
       payload.verify_before_after = { fill_segments: env.fill_segments };
     }
-    // result-section visibility is owned by showScreenSections (gated on
+    // result-section visibility is owned by renderSections (gated on
     // these same envelope curves), which renderEnvelope ran just before
     // this — the canvas is already laid out; no second un-hide here.
     void canvas.offsetWidth;   // force layout so getBoundingClientRect is real
@@ -1517,27 +1626,29 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   // Fetch the screen envelope once and render it. Increments a probe-visible
   // counter so the harness can prove the fetch-once-per-state-change
-  // discipline. Fail-soft: an envelope fetch error never disturbs the
-  // /status mechanism path (the chrome just keeps its last render).
+  // discipline. A failed or unsupported envelope keeps the /status
+  // mechanism path alive but clears every user-facing section and action.
   async function refreshEnvelope() {
     envelopeFetchCount += 1;
+    var requestGeneration = ++envelopeRequestGeneration;
     try {
-      var resp = await fetch(endpoint('envelope'), { cache: 'no-store' });
+      var envelopePath = 'envelope?capture_transport=' +
+        (relayMode ? 'relay' : 'local');
+      var resp = await fetch(endpoint(envelopePath), { cache: 'no-store' });
       if (!resp.ok) throw new Error('envelope ' + resp.status);
-      var env = await resp.json();
+      var env = validateEnvelope(await resp.json());
+      if (requestGeneration !== envelopeRequestGeneration) return;
       lastEnvelopeState = env.state;
       envelopeRetryArmed = true;   // success re-arms one retry credit
       renderEnvelope(env);
       scheduleEnvelopePoll(env.screen);
     } catch (e) {
-      // Chrome degrades to its last good render; mechanism path is
-      // unaffected. Two repairs: (1) if the displayed primary action no
-      // longer matches the session state (mid-flow envelope-only outage),
-      // retire it so the legacy fallback is the single correct action;
-      // (2) spend the one retry credit so a transient blip (a 503 during a
-      // deploy restart) self-heals without hot-polling a static screen.
+      if (requestGeneration !== envelopeRequestGeneration) return;
+      // Fail closed immediately: no stale action or section policy survives
+      // an unsupported/malformed envelope. Spend one retry credit so a
+      // transient deploy restart can self-heal without creating a loop.
       console.warn('envelope refresh failed', e);
-      retireStaleWizardAction();
+      renderEnvelopeFailure();
       if (envelopeRetryArmed) {
         envelopeRetryArmed = false;
         if (envelopeTimer) clearTimeout(envelopeTimer);
@@ -1894,6 +2005,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         delete sessionReport.dataset.sessionId;
       }
       await loadSessionReports();
+      envelopeRetryArmed = true;
+      await refreshEnvelope();
     } catch (e) {
       sessionReport.className = 'session-report blocked';
       sessionReport.textContent = 'Could not delete bundle: ' + e.message;
@@ -2445,8 +2558,30 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   // -- Workflow --
 
+  function finishNoiseCapture(error) {
+    if (noiseCaptureTimeout) clearTimeout(noiseCaptureTimeout);
+    noiseCaptureTimeout = null;
+    var resolve = noiseCaptureResolve;
+    var reject = noiseCaptureReject;
+    noiseCaptureCompletion = null;
+    noiseCaptureResolve = null;
+    noiseCaptureReject = null;
+    if (error) {
+      if (reject) reject(error);
+    } else if (resolve) {
+      resolve();
+    }
+  }
+
   function capturePreSweepNoise() {
-    if (!workletNode) return;
+    if (!workletNode) {
+      return Promise.reject(new Error('local microphone capture is not ready'));
+    }
+    if (noiseCaptureCompletion) return noiseCaptureCompletion;
+    noiseCaptureCompletion = new Promise(function (resolve, reject) {
+      noiseCaptureResolve = resolve;
+      noiseCaptureReject = reject;
+    });
     captureMode = 'noise';
     setStateBadge('needs_noise_capture', 'recording room noise…');
     workletNode.port.postMessage('startCapture');
@@ -2455,12 +2590,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         workletNode.port.postMessage('stopCapture');
       }
     }, 700);
+    noiseCaptureTimeout = setTimeout(function () {
+      captureMode = 'discard';
+      if (workletNode) workletNode.port.postMessage('stopCapture');
+      finishNoiseCapture(new Error('the room-noise capture did not finish'));
+    }, 5000);
+    return noiseCaptureCompletion;
   }
 
   function resetMeasurementUiForStart() {
-    continueBtn.classList.add('hidden');
-    applyBtn.classList.add('hidden');
-    verifyBtn.classList.add('hidden');
     resetBtn.classList.add('hidden');
     resultSection.classList.add('hidden');
     positionPrompt.classList.add('hidden');
@@ -2508,13 +2646,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     } catch (e) {
       setStateBadge('failed', e.message);
       setRelayStatus(e.message, 'bad');
-      runBtn.disabled = false;
     }
   }
 
   async function startRelayCaptureForCurrentPosition() {
     setRelayStatus('Creating phone capture link…', 'idle');
-    if (relayStartBtn) relayStartBtn.disabled = true;
     renderRelayCapture({status: 'starting'});
     try {
       var resp = await postJson('relay/capture', {});
@@ -2523,9 +2659,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     } catch (e) {
       setStateBadge('failed', e.message);
       setRelayStatus(e.message, 'bad');
-      runBtn.disabled = false;
-      if (relayStartBtn) relayStartBtn.disabled = false;
-      continueBtn.disabled = false;
     }
   }
 
@@ -2543,17 +2676,14 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   async function startRelayMeasurement() {
-    runBtn.disabled = true;
-    if (relayStartBtn) relayStartBtn.disabled = true;
     resetMeasurementUiForStart();
     try {
       var resp = await postJson('start', measurementStartPayload());
       sessionId = resp.session_id;
+      setRunTransportLocked(true);
     } catch (e) {
       setStateBadge('failed', e.message);
       setRelayStatus(e.message, 'bad');
-      runBtn.disabled = false;
-      if (relayStartBtn) relayStartBtn.disabled = false;
       return;
     }
     await startRelayLevelMatch();
@@ -2570,30 +2700,29 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       jtsAlert(mismatch);
       return;
     }
-    runBtn.disabled = true;
     resetMeasurementUiForStart();
     try {
       var resp = await postJson('start', measurementStartPayload());
       sessionId = resp.session_id;
+      localRunOwnedByThisTab = true;
+      localRunOwnerSessionId = sessionId;
+      rememberLocalCapture(null);
+      setRunTransportLocked(true);
     } catch (e) {
       setStateBadge('failed', e.message);
-      runBtn.disabled = false;
       return;
     }
-    capturePreSweepNoise();
     pollState();
   }
 
   async function continueToNextPosition() {
-    // Hide + disable Continue immediately so a double-tap can't fire
-    // a second /next-position before the server transitions out of
-    // NEEDS_NEXT_POSITION. (A user hit this in first-pass testing
-    // — race between a double-tap and the worklet's stopCapture
-    // → upload → state-transition cycle.)
-    continueBtn.classList.add('hidden');
-    continueBtn.disabled = true;
+    // The envelope-owned wizard button is disabled by its dispatcher before
+    // this runs, preventing a second /next-position double-tap.
     positionPrompt.classList.add('hidden');
     setStateBadge('preparing', 'pausing music…');
+    if (!relayMode && !(await ensureLocalCaptureReady())) {
+      throw new Error('local microphone capture is not ready');
+    }
     try {
       await postJson('next-position', {});
     } catch (e) {
@@ -2606,22 +2735,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       await startRelayCaptureForCurrentPosition();
       return;
     }
-    capturePreSweepNoise();
+    await capturePreSweepNoise();
     pollState();
   }
 
-  async function relayPrimaryAction() {
-    if (currentState === 'needs_next_position') {
-      await continueToNextPosition();
-      return;
-    }
-    await startMeasurement();
-  }
-
   async function repeatMainSeat() {
-    repeatBtn.classList.add('hidden');
-    repeatBtn.disabled = true;
     setStateBadge('preparing', 'preparing repeat sweep…');
+    if (!relayMode && !(await ensureLocalCaptureReady())) {
+      throw new Error('local microphone capture is not ready');
+    }
     captureMode = 'repeat';
     if (workletNode) workletNode.port.postMessage('startCapture');
     try {
@@ -2630,7 +2752,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       captureMode = 'discard';
       if (workletNode) workletNode.port.postMessage('stopCapture');
       setStateBadge('failed', e.message);
-      repeatBtn.disabled = false;
       return;
     }
     pollState();
@@ -2673,8 +2794,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   async function startAutolevel() {
-    autolevelBtn.disabled = true;
-    runBtn.disabled = true;
     autolevelStatus.classList.remove('hidden');
     autolevelLockBtn.classList.remove('hidden');
     autolevelCancelBtn.classList.remove('hidden');
@@ -2758,8 +2877,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       autolevelLine.textContent = 'Auto-level failed: ' + e.message;
       autolevelLockBtn.classList.add('hidden');
       autolevelCancelBtn.classList.add('hidden');
-      autolevelBtn.disabled = false;
-      runBtn.disabled = false;
       return;
     }
 
@@ -2783,13 +2900,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         } else if (al.status === 'maxed_out') {
           var capStr = (al.cap_db != null) ? al.cap_db.toFixed(0) : '?';
           autolevelLine.textContent =
-            '✓ Leveled to ' + capStr + ' dB — the safe maximum for this room. ' +
-            'You can measure now.';
+            'Level check stopped at ' + capStr + ' dB — the safe software maximum.';
           autolevelDetail.textContent =
             'The mic read ' + latestMicRmsDb.toFixed(0) + ' dBFS (target ' +
             targetBand.low.toFixed(0) + '..' + targetBand.high.toFixed(0) + ' dBFS), ' +
-            'so auto-level couldn’t confirm by ear. If the tone sounded reasonable, ' +
-            'just tap Run measurement. To go louder, turn up your amplifier and retry.';
+            'so no measurement level was locked. Raise the external amplifier a little, ' +
+            'then retry the level check.';
         } else if (al.status === 'cancelled') {
           autolevelLine.textContent = 'Auto-level cancelled — speaker volume restored.';
           autolevelDetail.textContent = '';
@@ -2815,8 +2931,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     autolevelCancelBtn.onclick = prevCancelHandler;
     autolevelLockBtn.classList.add('hidden');
     autolevelCancelBtn.classList.add('hidden');
-    autolevelBtn.disabled = false;
-    runBtn.disabled = false;
   }
 
   async function cancelAutolevel() {
@@ -2827,8 +2941,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   }
 
-  async function startVerify() {
-    verifyBtn.disabled = true;
+  async function startVerify(triggerBtn) {
+    if (triggerBtn) triggerBtn.disabled = true;
+    if (!relayMode && !(await ensureLocalCaptureReady())) {
+      if (triggerBtn) triggerBtn.disabled = false;
+      throw new Error('local microphone capture is not ready');
+    }
     inVerifyMode = true;
     setStateBadge('verifying', 'pausing music for re-measurement…');
     captureMode = 'verify';
@@ -2839,11 +2957,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       captureMode = 'discard';
       if (workletNode) workletNode.port.postMessage('stopCapture');
       setStateBadge('failed', e.message);
-      verifyBtn.disabled = false;
+      if (triggerBtn) triggerBtn.disabled = false;
       inVerifyMode = false;
       return;
     }
-    verifyBtn.disabled = false;
+    if (triggerBtn) triggerBtn.disabled = false;
     pollState();
   }
 
@@ -2856,56 +2974,35 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   function applyButtonPolicy(state, autolevelStatus) {
     // Default: everything hidden / disabled.
     positionPrompt.classList.add('hidden');
-    repeatBtn.classList.add('hidden');
-    repeatBtn.disabled = false;
-    continueBtn.classList.add('hidden');
-    continueBtn.disabled = false;
-    applyBtn.classList.add('hidden');
-    applyBtn.disabled = false;
-    verifyBtn.classList.add('hidden');
-    verifyBtn.disabled = false;
     resetBtn.classList.add('hidden');
     resetBtn.disabled = false;
     cancelMeasureBtn.classList.add('hidden');
     cancelMeasureBtn.disabled = false;
-    if (relayStartBtn) relayStartBtn.disabled = true;
+    emergencyStopActive = false;
     autolevelLockBtn.classList.add('hidden');
     autolevelLockBtn.disabled = false;
     autolevelCancelBtn.classList.add('hidden');
     autolevelCancelBtn.disabled = false;
-    // Run + Auto-level: enabled only when nothing is in flight.
-    // Disabled during measurement, autolevel ramp, etc.
-    var idleStates = ['idle', 'ready', 'applied', 'verified', 'failed'];
-    var sessionIdle = idleStates.indexOf(state) !== -1;
     var autolevelRamping = autolevelStatus === 'ramping';
-    // Show Cancel only where the session is genuinely *waiting* on the user or
-    // browser and no background task is about to overwrite the state. During
-    // preparing/sweeping/analyzing/verifying a fire-and-forget sweep/analysis
-    // task is running; /reset would race it (the task sets AWAITING_CAPTURE
-    // *after* reset's IDLE) and the server now rejects it outright, so Cancel
-    // would appear to fail. Those phases take seconds and land in a waiting
-    // state on their own, where Cancel is shown. needs_noise_capture is a
-    // waiting state too: the browser auto-records pre-sweep room noise, and if
-    // mic permission is denied or the tab is backgrounded the upload never
-    // arrives — without Cancel here the user was stranded until the
-    // server-side watchdog fired (~120 s).
+    // The persistent shell owns the emergency action outside the envelope.
+    // Audio-producing preparation/sweep/verify phases use Stop: the server
+    // cancels and reaps their exact playback task before graph rollback.
+    // ANALYZING is intentionally absent (no audio is playing and its worker
+    // must finish coherently). Parked browser/user states use Cancel.
     var cancellableStates = [
+      'preparing', 'sweeping', 'verifying',
       'needs_noise_capture',
       'awaiting_capture', 'awaiting_repeat_capture', 'awaiting_verify_capture',
       'needs_next_position', 'needs_repeat_capture',
     ];
     if (cancellableStates.indexOf(state) !== -1) {
+      emergencyStopActive = (
+        state === 'preparing' || state === 'sweeping' || state === 'verifying'
+      );
+      cancelMeasureBtn.textContent = emergencyStopActive
+        ? 'Stop measurement'
+        : 'Cancel measurement';
       cancelMeasureBtn.classList.remove('hidden');
-    }
-    runBtn.disabled = !sessionIdle || autolevelRamping;
-    autolevelBtn.disabled = !sessionIdle || autolevelRamping;
-    if (relayMode) {
-      autolevelBtn.disabled = true;
-      hideEl(autolevelBtn, true);
-      if (relayStartBtn) {
-        if (sessionIdle) relayStartBtn.textContent = 'Start';
-        relayStartBtn.disabled = !sessionIdle;
-      }
     }
     // Per-state additions:
     if (autolevelRamping && !relayMode) {
@@ -2917,34 +3014,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
     if (state === 'needs_next_position') {
       positionPrompt.classList.remove('hidden');
-      continueBtn.classList.remove('hidden');
-      if (relayMode && relayStartBtn) {
-        relayStartBtn.textContent = 'Create next phone capture';
-        relayStartBtn.disabled = false;
-      }
-      runBtn.disabled = true;
-      autolevelBtn.disabled = true;
     } else if (state === 'needs_repeat_capture') {
       positionPrompt.classList.remove('hidden');
       positionCurrent.textContent = '1';
       positionTotal.textContent = '1';
-      if (!relayMode) repeatBtn.classList.remove('hidden');
-      runBtn.disabled = true;
-      autolevelBtn.disabled = true;
     } else if (state === 'ready') {
-      // The stepped-wizard primary action (GET /envelope's next_action) now
-      // owns "Apply correction". Only fall back to the legacy in-section
-      // Apply button when the wizard isn't providing it (envelope path down
-      // / cold-load fetch failure) — so the user is never stranded without
-      // an apply path. Reset has no wizard equivalent, so it always shows.
-      if (!wizardProvidesForwardAction('/apply')) {
-        applyBtn.classList.remove('hidden');
-      }
       resetBtn.classList.remove('hidden');
     } else if (state === 'applied' || state === 'verified') {
-      // Same subordination for "Verify" — the wizard owns it; the legacy
-      // button is the fallback when the wizard isn't showing it.
-      if (!relayMode && !wizardProvidesForwardAction('/verify')) verifyBtn.classList.remove('hidden');
       resetBtn.classList.remove('hidden');
     }
   }
@@ -2978,7 +3054,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (pollTimer) clearTimeout(pollTimer);
     try {
       var s = await fetchStatus();
-      currentState = s.state;
+      syncSessionMechanics(s);
       renderRelayStatusFromSnapshot(s);
       var detail = s.error || '';
       if (s.total_positions > 1 && s.current_position !== undefined &&
@@ -3045,14 +3121,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         verifySummary.classList.remove('hidden');
         return;
       }
-      if (s.state === 'ready' || s.state === 'applied' || s.state === 'failed') {
+      if (s.state === 'idle' || s.state === 'ready' ||
+          s.state === 'applied' || s.state === 'verified' ||
+          s.state === 'failed') {
         return;
       }
       // Mid-flight states: keep polling.
       pollTimer = setTimeout(pollState, 500);
     } catch (e) {
       setStateBadge('failed', e.message);
-      runBtn.disabled = false;
     }
   }
 
@@ -3078,12 +3155,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
           throw new Error('upload-noise → ' + noiseResp.status + ': ' + noiseMsg);
         }
         await noiseResp.json();
+        finishNoiseCapture(null);
         pollState();
       } catch (e) {
         captureMode = 'discard';
         if (workletNode) workletNode.port.postMessage('stopCapture');
+        finishNoiseCapture(e);
         setStateBadge('failed', e.message);
-        runBtn.disabled = false;
       }
       return;
     }
@@ -3143,15 +3221,14 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
-      runBtn.disabled = false;
       try {
         renderQuality(await fetchStatus());
       } catch (ignored) {}
     }
   }
 
-  async function applyCorrection() {
-    applyBtn.disabled = true;
+  async function applyCorrection(triggerBtn) {
+    if (triggerBtn) triggerBtn.disabled = true;
     setStateBadge('analyzing', 'applying to CamillaDSP…');
     try {
       await postJson('apply', {});
@@ -3159,7 +3236,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     } catch (e) {
       setStateBadge('failed', e.message);
     } finally {
-      applyBtn.disabled = false;
+      if (triggerBtn) triggerBtn.disabled = false;
     }
     refreshCurrentCorrection();
   }
@@ -3184,7 +3261,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // the UI without SSH. The server-side watchdog also auto-recovers after
   // ~2 min; this is the instant manual path.
   async function cancelMeasurement() {
-    if (!(await jtsConfirm('Cancel this measurement and restore the speaker?', {danger: true}))) {
+    // Active audio is an emergency control: the first tap must dispatch the
+    // server-side stop/reap path immediately. Parked-state cancellation keeps
+    // its destructive confirmation because no audio needs urgent silencing.
+    if (!emergencyStopActive && !(await jtsConfirm(
+      'Cancel this measurement and restore the speaker?',
+      {danger: true},
+    ))) {
       return;
     }
     cancelMeasureBtn.disabled = true;
@@ -3216,7 +3299,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     refreshInputsBtn.disabled = false;
   }
 
-  startBtn.addEventListener('click', function () { startMicCapture(); });
   refreshInputsBtn.addEventListener('click', function () { detectMicrophones(); });
   if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
     navigator.mediaDevices.addEventListener('devicechange', function () {
@@ -3226,11 +3308,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   inputDeviceSelect.addEventListener('change', function () {
     var opt = inputDeviceSelect.options[inputDeviceSelect.selectedIndex];
     maybeInferCalibrationModel(opt ? opt.textContent : '');
-    if (micStream) {
-      startMicCapture().catch(function (e) {
-        setStateBadge('failed', e.message);
-      });
-    }
   });
   micModelSelect.addEventListener('change', function () { updateMicCalibrationRows(); });
   micSerialInput.addEventListener('input', function () { invalidateLoadedCalibration(); });
@@ -3241,18 +3318,19 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   uploadCalibrationBtn.addEventListener('click', function () { uploadCalibration(); });
   if (localCaptureFallbackBtn) {
     localCaptureFallbackBtn.addEventListener('click', function () {
+      if (runTransportLocked) return;
       setRelayMode(false);
-      detectMicrophones();
+      populateInputDevices();
+      envelopeRetryArmed = true;
+      refreshEnvelope();
     });
   }
-  if (relayStartBtn) {
-    relayStartBtn.addEventListener('click', function () { relayPrimaryAction(); });
+  if (changeRunDefaultsBtn) {
+    changeRunDefaultsBtn.addEventListener('click', function () {
+      if (runTransportLocked) return;
+      measurementOptions.classList.toggle('hidden');
+    });
   }
-  runBtn.addEventListener('click', function () { startMeasurement(); });
-  repeatBtn.addEventListener('click', function () { repeatMainSeat(); });
-  continueBtn.addEventListener('click', function () { continueToNextPosition(); });
-  applyBtn.addEventListener('click', function () { applyCorrection(); });
-  verifyBtn.addEventListener('click', function () { startVerify(); });
   resetBtn.addEventListener('click', function () { resetCorrection(); });
   cancelMeasureBtn.addEventListener('click', function () { cancelMeasurement(); });
   if (tuningInterpretBtn) tuningInterpretBtn.addEventListener('click', function () { onTuningInterpret(); });
@@ -3264,7 +3342,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       acquireWakeLock();
     }
   });
-  autolevelBtn.addEventListener('click', function () { startAutolevel(); });
   autolevelCancelBtn.addEventListener('click', function () { cancelAutolevel(); });
   currentCorrectionResetBtn.addEventListener('click', function () { resetFromBanner(); });
   if (wizardNextBtn) {
@@ -3283,21 +3360,20 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   });
 
-  // Auto-detect microphones on landing only for the local same-origin capture
-  // flow. Relay-configured boxes start with the cloud phone-capture flow, so
-  // this controller tab must not ask for mic permission unless the user chooses
-  // the local fallback.
+  // Landing never asks for microphone permission. Local capture requests it
+  // only after /start exposes the server-owned Allow microphone action; the
+  // refresh control is likewise inside that post-Start setup section.
   if (relayConfigured) {
     setRelayMode(true);
-    pollState();
   } else {
     if (!window.isSecureContext && currentPathname().indexOf('/correction/') === 0) {
       window.location.href = '/correction/proceed/room';
       return;
     }
     setRelayMode(false);
-    detectMicrophones();
+    populateInputDevices();
   }
+  pollState();
   updateMicCalibrationRows();
   refreshCurrentCorrection();
   // Initial paint of the stepped-wizard chrome from the server envelope.

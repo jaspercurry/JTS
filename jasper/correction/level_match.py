@@ -722,6 +722,12 @@ class LevelMatchSession:
         self.store = store
         self.config = config or MeasurementRamp.from_env()
         self._controller: RampController | None = None
+        # Lifecycle cancellation is wider than RampController.cancel(): the
+        # retained session exists while waiting for the phone to arm and after
+        # the kernel publishes a terminal state but is still completing relay
+        # acknowledgement. Stop must await both edges, never infer cleanup from
+        # the public RampState alone.
+        self._cancel_requested = False
 
     async def run_for_geometry(
         self,
@@ -771,7 +777,21 @@ class LevelMatchSession:
                 else armed_timeout_s
             )
             armed_deadline = clock() + timeout
-            while not feed.check_armed():
+            while True:
+                if self._cancel_requested:
+                    data = RampData(state=RampState.CANCELLED)
+                    log_event(
+                        logger,
+                        "level_match_done",
+                        session=self.session_id,
+                        geometry=geometry,
+                        state=RampState.CANCELLED.value,
+                        reason="cancelled_before_phone_armed",
+                    )
+                    break
+                if feed.check_armed():
+                    data = None
+                    break
                 if clock() >= armed_deadline:
                     outcome = LevelMatchOutcome(
                         geometry=geometry,
@@ -792,25 +812,35 @@ class LevelMatchSession:
                     )
                     return outcome
                 await sleep(self.ARMED_POLL_S)
+        else:
+            data = None
 
-        async def next_samples() -> list[LevelSample]:
-            samples = await feed.next_samples()
-            if feed.aborted_reason is not None:
-                # Latched cancel — re-posted each tick until the kernel exits.
-                feed.post_ramp_signal("abort_ack", feed.aborted_reason)
-                await controller.cancel()
-            return samples
+        # Cancellation owns admission even when the phone's armed update and
+        # Stop arrive in the same scheduler turn. RampController.run() resets
+        # its own kernel-local cancel flag, so this lifecycle check must happen
+        # immediately before entering the volume/tone owner.
+        if data is None and self._cancel_requested:
+            data = RampData(state=RampState.CANCELLED)
 
-        data = await controller.run(
-            get_main_volume_db=get_main_volume_db,
-            set_main_volume_db=set_main_volume_db,
-            play_continuous_tone=play_continuous_tone,
-            cancel_tone=cancel_tone,
-            next_samples=next_samples,
-            noise_floor_dbfs=noise_floor_dbfs,
-            clock=clock,
-            sleep=sleep,
-        )
+        if data is None:
+            async def next_samples() -> list[LevelSample]:
+                samples = await feed.next_samples()
+                if feed.aborted_reason is not None:
+                    # Latched cancel — re-posted each tick until the kernel exits.
+                    feed.post_ramp_signal("abort_ack", feed.aborted_reason)
+                    await controller.cancel()
+                return samples
+
+            data = await controller.run(
+                get_main_volume_db=get_main_volume_db,
+                set_main_volume_db=set_main_volume_db,
+                play_continuous_tone=play_continuous_tone,
+                cancel_tone=cancel_tone,
+                next_samples=next_samples,
+                noise_floor_dbfs=noise_floor_dbfs,
+                clock=clock,
+                sleep=sleep,
+            )
 
         lock: MeasurementLevelLock | None = None
         if data.state is RampState.LOCKED:
@@ -854,4 +884,12 @@ class LevelMatchSession:
         return await self._controller.lock() if self._controller else False
 
     async def cancel(self) -> bool:
-        return await self._controller.cancel() if self._controller else False
+        # The owning MeasurementSession retains this object only while its task
+        # is live, so True means "lifecycle cancellation accepted; await the
+        # owner". This remains true before arming and after terminal RampState,
+        # when hard task cancellation would respectively hang or interrupt the
+        # exact listening-volume restore.
+        self._cancel_requested = True
+        if self._controller is not None:
+            await self._controller.cancel()
+        return True

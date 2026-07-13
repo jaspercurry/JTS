@@ -9,8 +9,8 @@ into the full correction wizard, so this file pins both browser-facing
 HTML/JS contracts and real HTTP dispatch:
 
   1. Page render — hostname substitutes through, sample-rate constant
-     reaches the JS, the WiiM-style placement advice is present, the
-     CA-download link is present.
+     reaches the JS, the placement advice is present, and the local
+     certificate guidance stays to one sentence.
   2. Healthz returns plain-text "ok" so systemd / curl probes work.
   3. End-to-end via a real ThreadingHTTPServer to confirm the routes
      dispatch from real HTTP — same shape as test_voice_setup.
@@ -21,6 +21,7 @@ the original Phase 0 pins.
 from __future__ import annotations
 
 import io
+import inspect
 import json
 from types import SimpleNamespace
 import threading
@@ -57,8 +58,7 @@ def _module_js() -> str:
 def test_render_page_substitutes_hostname():
     body = correction_setup._render_page("acoustic-lab.local").decode()
     assert "acoustic-lab.local" in body
-    # The hostname appears in the cert-download link href; if it didn't
-    # substitute the page would show literal "__HOSTNAME__".
+    # The hostname appears in the absolute HTTP dashboard back link.
     assert "__HOSTNAME__" not in body
 
 
@@ -113,19 +113,19 @@ def test_capture_relay_ui_contract_is_wired():
     body = correction_setup._render_page("jts.local").decode()
     js = _module_js()
 
-    assert 'id="relay-panel"' in body
-    assert 'id="relay-start-capture"' in body
+    assert 'data-envelope-section="capture-handoff"' in body
+    assert 'id="relay-panel"' not in body
+    assert 'id="relay-start-capture"' not in body
     assert 'id="relay-tap-link"' in body
     assert "postJson('relay/capture'" in js
-    assert "relayStartBtn.addEventListener('click'" in js
     assert "function endpoint(path)" in js
     assert "return '/correction/' + path;" in js
     assert "if (relayConfigured)" in js
     assert "detectMicrophones();" in js
     assert "repeat_main_position: relayMode" in js
-    assert "function relayPrimaryAction()" in js
-    assert "currentState === 'needs_next_position'" in js
-    assert "relayStartBtn.textContent = 'Create next phone capture'" in js
+    assert "function relayPrimaryAction()" not in js
+    assert "KNOWN_ACTION_ENDPOINTS" in js
+    assert "env.sections" in js
     assert "window.location.href = '/correction/proceed/room';" in js
 
 
@@ -419,16 +419,11 @@ def test_render_page_delegates_correction_when_bonded_follower(monkeypatch):
     assert 'meta name="jts-csrf" content="csrf-token"' in body
 
 
-def test_render_page_includes_ca_download_link():
-    """The cert-trust dance is the load-bearing first-time-user step;
-    the fallback link to the CA must always be visible. Pin the URL
-    shape so a stylesheet refactor doesn't accidentally drop the
-    anchor."""
+def test_render_page_removes_certificate_install_guide():
     body = correction_setup._render_page("jts.local").decode()
-    assert 'href="http://jts.local/jts-root-ca.crt"' in body
-    # Mention "Certificate Trust Settings" so the user knows the right
-    # iOS panel name.
-    assert "Certificate Trust Settings" in body
+    assert 'href="http://jts.local/jts-root-ca.crt"' not in body
+    assert "Certificate Trust Settings" not in body
+    assert "browser will warn about the speaker's local certificate" in body
 
 
 def test_render_page_home_link_returns_to_plain_http():
@@ -451,6 +446,266 @@ def test_read_json_body_rejects_invalid_content_length():
 
     with pytest.raises(correction_setup.BadRequest, match="Content-Length"):
         correction_setup._read_json_body(Handler())
+
+
+def test_local_capture_setup_rejects_a_stale_session_before_binding(monkeypatch):
+    from jasper.correction.session import SessionState
+
+    payload = json.dumps({
+        "session_id": "old-run",
+        "input_device": {"browser_label": "USB mic", "sample_rate": 48000},
+    }).encode()
+    handler = SimpleNamespace(
+        headers={"Content-Length": str(len(payload))},
+        rfile=io.BytesIO(payload),
+    )
+    sess = SimpleNamespace(
+        session_id="current-run",
+        capture_transport="local",
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+
+    with pytest.raises(correction_setup.RequestConflict, match="no longer current"):
+        correction_setup._handle_local_capture_setup(handler)
+
+
+def test_local_capture_setup_sanitizes_and_binds_current_session(monkeypatch):
+    from jasper.correction.session import SessionState
+
+    payload = json.dumps({
+        "session_id": "current-run",
+        "input_device": {
+            "device_id": "browser-secret-id",
+            "browser_label": "USB measurement microphone",
+            "sample_rate": 48000,
+            "channel_count": 1,
+            "echo_cancellation": False,
+            "noise_suppression": False,
+            "auto_gain_control": False,
+        },
+    }).encode()
+    handler = SimpleNamespace(
+        headers={"Content-Length": str(len(payload))},
+        rfile=io.BytesIO(payload),
+    )
+
+    class Session:
+        session_id = "current-run"
+        capture_transport = "local"
+        state = SessionState.NEEDS_NOISE_CAPTURE
+        input_device = None
+        mic_calibration = None
+
+        async def bind_local_capture_setup(self, *, mic_calibration, input_device):
+            self.mic_calibration = mic_calibration
+            self.input_device = input_device
+            return {"level": "ok", "failed": False}
+
+    sess = Session()
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+
+    result = correction_setup._handle_local_capture_setup(handler)
+
+    assert result["state"] == "needs_noise_capture"
+    assert result["browser_audio_report"] == {"level": "ok", "failed": False}
+    assert sess.input_device["device_id_hash"]
+    assert "browser-secret-id" not in str(sess.input_device)
+
+
+def test_local_noise_upload_rejects_unbound_setup_before_reading_body(monkeypatch):
+    from jasper.correction.session import SessionState
+
+    handler = SimpleNamespace(
+        headers={"Content-Length": "4"},
+        rfile=io.BytesIO(b"WAVE"),
+    )
+    sess = SimpleNamespace(
+        capture_transport="local",
+        local_capture_setup_bound=False,
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+
+    with pytest.raises(correction_setup.RequestConflict, match="bind the local"):
+        correction_setup._handle_upload_noise(handler)
+
+    assert handler.rfile.tell() == 0
+
+
+@pytest.mark.parametrize("status", ["idle", "cancelled", "maxed_out", "error"])
+def test_local_noise_upload_requires_completed_level_lock_before_body(
+    status,
+    monkeypatch,
+):
+    from jasper.correction.session import (
+        AutolevelData,
+        AutolevelStatus,
+        SessionState,
+    )
+
+    handler = SimpleNamespace(
+        headers={"Content-Length": "4"},
+        rfile=io.BytesIO(b"WAVE"),
+    )
+    sess = SimpleNamespace(
+        capture_transport="local",
+        local_capture_setup_bound=True,
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+        autolevel=AutolevelData(status=AutolevelStatus(status)),
+        autolevel_run_in_progress=False,
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+
+    with pytest.raises(correction_setup.RequestConflict, match="lock the measurement"):
+        correction_setup._handle_upload_noise(handler)
+
+    assert handler.rfile.tell() == 0
+
+
+def test_local_noise_upload_rearms_watchdog_on_async_loop_before_body(
+    tmp_path,
+    monkeypatch,
+):
+    import asyncio
+    from jasper.correction.session import (
+        AutolevelData,
+        AutolevelStatus,
+        SessionState,
+    )
+
+    events = []
+
+    class Session:
+        capture_transport = "local"
+        local_capture_setup_bound = True
+        state = SessionState.NEEDS_NOISE_CAPTURE
+        current_position = 0
+        total_positions = 1
+        session_id = "local-run"
+        noise_reports = []
+        acoustic_quality = None
+        autolevel = AutolevelData(status=AutolevelStatus.LOCKED)
+        autolevel_run_in_progress = False
+
+        async def resume_capture_timeout_on_loop(self):
+            events.append("resume-on-loop")
+
+        def noise_capture_path_for_position(self, _position):
+            return tmp_path / "noise.wav"
+
+        async def on_noise_capture_uploaded(self, _path):
+            events.append("noise-accepted")
+
+    sess = Session()
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup,
+        "_read_wav_body",
+        lambda _handler: events.append("body-read") or b"WAVE",
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda coro, timeout: asyncio.run(coro),
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_schedule_measurement_sweep",
+        lambda *_args, **_kwargs: events.append("sweep-scheduled"),
+    )
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+
+    correction_setup._handle_upload_noise(SimpleNamespace())
+
+    assert events == [
+        "resume-on-loop",
+        "body-read",
+        "noise-accepted",
+        "sweep-scheduled",
+    ]
+
+
+def test_local_autolevel_rejects_unbound_setup_before_audio_side_effects(
+    monkeypatch,
+):
+    from jasper.correction.session import SessionState
+
+    sess = SimpleNamespace(
+        capture_transport="local",
+        local_capture_setup_bound=False,
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+
+    with pytest.raises(correction_setup.RequestConflict, match="must be complete"):
+        correction_setup._handle_autolevel_start(SimpleNamespace())
+
+
+def test_local_autolevel_rejects_stale_restart_after_lock(monkeypatch):
+    from jasper.correction.session import (
+        AutolevelData,
+        AutolevelStatus,
+        SessionState,
+    )
+
+    sess = SimpleNamespace(
+        capture_transport="local",
+        local_capture_setup_bound=True,
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+        autolevel=AutolevelData(status=AutolevelStatus.LOCKED),
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+
+    with pytest.raises(correction_setup.RequestConflict, match="already locked"):
+        correction_setup._handle_autolevel_start(SimpleNamespace())
+
+
+def test_autolevel_start_reserves_run_before_outer_orchestration():
+    source = inspect.getsource(correction_setup._handle_autolevel_start)
+
+    assert source.index("reserve_autolevel_run()") < source.index(
+        "asyncio.run_coroutine_threadsafe"
+    )
+    assert "release_autolevel_run_reservation(reserved)" in source
+
+
+@pytest.mark.parametrize("prior_status", ["cancelled", "error"])
+def test_autolevel_retry_waits_for_a_new_run_identity(prior_status):
+    class Data:
+        def __init__(self, status):
+            self.status = status
+
+        def snapshot(self):
+            return {"status": self.status}
+
+    class Future:
+        cancelled = False
+
+        def done(self):
+            return False
+
+        def cancel(self):
+            self.cancelled = True
+
+    previous = Data(prior_status)
+    current = Data("ramping")
+    sess = SimpleNamespace(autolevel=previous)
+    future = Future()
+    timer = threading.Timer(0.05, lambda: setattr(sess, "autolevel", current))
+    timer.start()
+    try:
+        result = correction_setup._wait_for_new_autolevel_run(
+            sess,
+            previous,
+            future,
+            timeout_s=0.5,
+        )
+    finally:
+        timer.cancel()
+
+    assert result == {"status": "ramping"}
+    assert future.cancelled is False
 
 
 def test_read_wav_body_rejects_invalid_content_length():
@@ -486,7 +741,7 @@ def test_render_page_includes_placement_advice():
     body = correction_setup._render_page("jts.local").decode()
     assert "screen up" in body or "screen-up" in body
     assert "bottom edge" in body
-    assert "no case" in body or "out of any case" in body
+    assert "remove its case" in body
 
 
 def test_render_page_requests_constraints_explicitly():
@@ -512,7 +767,7 @@ def test_render_page_includes_mic_picker_and_calibration_controls():
     assert "miniDSP UMIK-1" in body
     js = _module_js()
     assert "enumerateDevices" in js
-    assert "audioConstraints.deviceId = {exact: inputDeviceSelect.value}" in js
+    assert "audioConstraints.deviceId = {exact: desiredDeviceId}" in js
     assert "calibration/fetch" in js
     assert "calibration/upload" in js
     assert "calibration_id: selectedCalibrationId" in js
@@ -579,7 +834,7 @@ def test_verify_capture_starts_before_server_sweep_request():
     the server-side sweep. Otherwise the verification recording can miss
     the first part of playback on real hardware."""
     body = _module_js()
-    start = body.index("async function startVerify()")
+    start = body.index("async function startVerify(triggerBtn)")
     end = body.index("// Centralised button-state policy", start)
     fn = body[start:end]
     assert fn.index("postMessage('startCapture')") < fn.index(
@@ -587,6 +842,141 @@ def test_verify_capture_starts_before_server_sweep_request():
     )
     assert "captureMode = 'discard'" in fn
     assert "postMessage('stopCapture')" in fn
+
+
+def test_local_capture_binds_realized_input_before_level_matching():
+    """The server reserves the run before local mic permission. Once the
+    browser knows the realized device, it must bind that identity to the live
+    session before level matching. Noise recording is a later, separate
+    server-owned action."""
+    body = _module_js()
+    start = body.index("async function startMicCapture()")
+    end = body.index("// iOS auto-releases", start)
+    fn = body[start:end]
+    assert fn.index("refreshSessionMechanics()") < fn.index("getUserMedia")
+    assert fn.index(".getSettings()") < fn.index(
+        "postJson('local-capture/setup'"
+    )
+    assert "capturePreSweepNoise()" not in fn
+    assert "session_id: sessionId" in fn
+    assert "input_device: selectedInputDevice" in fn
+    assert "calibration_id: selectedCalibrationId" in fn
+    assert "bindAttempt < 2" in fn
+    assert "postJson('local-capture/setup', bindPayload)" in fn
+    assert "LOCAL_CAPTURE_MEMORY_KEY" in body
+    assert "rememberLocalCapture(actual.deviceId || desiredDeviceId)" in fn
+    assert "if (!localCaptureSetupBound)" in fn
+    assert "actual.deviceId !== desiredDeviceId" in fn
+    assert fn.index("if (!desiredDeviceId && !localCaptureSetupBound)") < fn.index(
+        "postJson('local-capture/setup'"
+    )
+    discovery = fn.split(
+        "if (!desiredDeviceId && !localCaptureSetupBound)", 1
+    )[1].split("if (desiredDeviceId", 1)[0]
+    assert "stopMicStream()" in discovery
+    assert "await populateInputDevices()" in discovery
+
+    start = body.index("async function startMeasurement()")
+    end = body.index("async function continueToNextPosition()", start)
+    start_fn = body[start:end]
+    assert "capturePreSweepNoise()" not in start_fn
+    assert start_fn.index("sessionId = resp.session_id") < start_fn.index(
+        "setRunTransportLocked(true)"
+    )
+
+    relay_start = body.split("async function startRelayMeasurement()", 1)[1]
+    relay_start = relay_start.split("async function startMeasurement()", 1)[0]
+    assert relay_start.index("sessionId = resp.session_id") < relay_start.index(
+        "setRunTransportLocked(true)"
+    )
+    assert "rememberLocalCapture(null)" in start_fn
+    assert "localRunOwnerSessionId = sessionId" in start_fn
+
+    action_start = body.index("async function onWizardNextClick()")
+    action_end = body.index("function validateEnvelope", action_start)
+    action_fn = body[action_start:action_end]
+    assert "ep === '/autolevel/start'" in action_fn
+    assert "ep === '/upload-noise'" in action_fn
+    assert action_fn.index("ep === '/autolevel/start'") < action_fn.index(
+        "ep === '/upload-noise'"
+    )
+    assert "wizardNextBtn.classList.add('hidden')" in action_fn
+    upload_branch = action_fn.split("ep === '/upload-noise'", 1)[1].split(
+        "} else if", 1
+    )[0]
+    assert "await capturePreSweepNoise()" in upload_branch
+    assert "wizardActionInFlight" in action_fn
+
+
+def test_local_resume_reacquires_mic_before_advancing_capture_states():
+    js = _module_js()
+    next_position = js.split(
+        "async function continueToNextPosition()", 1
+    )[1].split("async function repeatMainSeat()", 1)[0]
+    repeat = js.split(
+        "async function repeatMainSeat()", 1
+    )[1].split("function computeTargetBand", 1)[0]
+    verify = js.split(
+        "async function startVerify(triggerBtn)", 1
+    )[1].split("function applyButtonPolicy", 1)[0]
+
+    for block in (next_position, repeat, verify):
+        assert "await ensureLocalCaptureReady()" in block
+
+
+def test_local_permission_is_requested_only_after_start_setup_action():
+    js = _module_js()
+    landing = js.split("// Landing never asks for microphone permission.", 1)[1]
+    landing = landing.split("updateMicCalibrationRows();", 1)[0]
+    fallback = js.split("localCaptureFallbackBtn.addEventListener", 1)[1]
+    fallback = fallback.split("if (changeRunDefaultsBtn)", 1)[0]
+
+    assert "detectMicrophones();" not in landing
+    assert "detectMicrophones();" not in fallback
+    assert "populateInputDevices();" in landing
+    assert "populateInputDevices();" in fallback
+    assert "pollState();" in landing
+
+
+def test_live_status_locks_transport_and_restores_tab_session_identity():
+    js = _module_js()
+    sync = js.split("function syncSessionMechanics(snapshot)", 1)[1]
+    sync = sync.split("async function refreshSessionMechanics", 1)[0]
+    poll = js.split("async function pollState()", 1)[1]
+    poll = poll.split("async function onCaptureReady", 1)[0]
+
+    assert "serverSessionId = snapshot.session_id" in sync
+    assert "remembered.session_id === serverSessionId" in sync
+    assert "localRunOwnedByThisTab = !!matchingMemory" in sync
+    assert "localRunOwnerSessionId === serverSessionId" in sync
+    assert "sessionId = localRunOwnedByThisTab ? serverSessionId : null" in sync
+    assert "snapshot.local_capture_setup_bound === true" in sync
+    assert "setRelayMode(snapshot.capture_transport === 'relay')" in sync
+    assert "setRunTransportLocked(liveRun)" in sync
+    assert poll.index("syncSessionMechanics(s)") < poll.index(
+        "renderRelayStatusFromSnapshot(s)"
+    )
+
+
+def test_local_capture_resource_failures_clean_up_stream_and_blob_url():
+    js = _module_js()
+    fn = js.split("async function startMicCapture()", 1)[1]
+    fn = fn.split("// iOS auto-releases", 1)[0]
+    worklet = fn.split("await ctx.audioWorklet.addModule(blobUrl)", 1)[1]
+    worklet = worklet.split("var src =", 1)[0]
+
+    assert "stopMicStream()" in worklet
+    assert "URL.revokeObjectURL(blobUrl)" in worklet
+
+
+def test_relay_tap_link_is_visible_only_while_waiting_for_phone():
+    js = _module_js()
+    start = js.index("function renderRelayCapture(relay)")
+    end = js.index("function setRelayMode", start)
+    fn = js[start:end]
+
+    assert "relay.status === 'awaiting_phone'" in fn
+    assert "relay.status === 'complete'" in fn
 
 
 def test_render_page_does_not_loop_mic_back_to_speaker():
@@ -651,11 +1041,11 @@ def test_render_page_includes_autolevel_controls():
     finding — speaker-to-iPhone-at-couch path attenuation can leave
     the mic below the lock band even at max safe volume)."""
     body = correction_setup._render_page("jts.local").decode()
-    # All three control buttons present (start + manual-lock + cancel) — markup.
-    assert 'id="autolevel"' in body
+    # The envelope owns the sole forward action. Only the in-ramp manual lock
+    # and safety cancel stay inside the level section.
+    assert 'id="autolevel"' not in body
     assert 'id="autolevel-lock"' in body
     assert 'id="autolevel-cancel"' in body
-    assert "Auto-level" in body
     assert "Lock now" in body
     # JS handlers exist + target the right endpoints (now in the module).
     js = _module_js()
@@ -669,6 +1059,32 @@ def test_render_page_includes_autolevel_controls():
     assert "AUTOLEVEL_SNR_DESIRED_HIGH" in js
     # Preflight noise-floor measurement step is present.
     assert "Measuring room noise" in js
+    assert "You can measure now" not in js
+    assert "no measurement level was locked" in js
+
+
+def test_cancel_measurement_lives_in_always_visible_wizard_chrome():
+    body = correction_setup._render_page("jts.local").decode()
+    chrome_start = body.index('id="wizard-chrome"')
+    chrome_end = body.index("</section>", chrome_start)
+    cancel = body.index('id="cancel-measurement"')
+    capture_start = body.index('id="position-capture"')
+    capture_end = body.index("</section>", capture_start)
+
+    assert chrome_start < cancel < chrome_end
+    assert not capture_start < cancel < capture_end
+    assert 'id="wizard-chrome" class="wizard-chrome hidden"' not in body
+
+
+def test_report_delete_refreshes_envelope_section_membership():
+    js = _module_js()
+    start = js.index("async function deleteSessionBundle(sessionId)")
+    end = js.index("async function loadSessionReport(sessionId)", start)
+    fn = js[start:end]
+
+    assert fn.index("await loadSessionReports()") < fn.index(
+        "await refreshEnvelope()"
+    )
 
 
 def test_render_page_includes_strategy_and_design_audit_controls():
@@ -702,7 +1118,8 @@ def test_render_page_includes_read_only_measurement_reports():
     body = correction_setup._render_page("jts.local").decode()
     # Section containers stay in the page; the report fetch/render/strings
     # moved into the module.
-    assert 'id="measurement-reports"' in body
+    assert 'data-envelope-section="reports"' in body
+    assert 'id="measurement-reports"' not in body
     assert 'id="session-history"' in body
     assert 'id="session-report"' in body
     js = _module_js()
@@ -716,7 +1133,7 @@ def test_render_page_includes_read_only_measurement_reports():
 def test_render_page_includes_noise_and_repeat_capture_flow():
     body = correction_setup._render_page("jts.local").decode()
     assert 'id="repeat-main-position"' in body  # markup stays in the page
-    assert 'id="repeat-position"' in body
+    assert 'id="repeat-position"' not in body
     js = _module_js()  # the capture/upload flow moved to the module
     assert "capturePreSweepNoise" in js
     assert "upload-noise" in js
@@ -770,7 +1187,7 @@ def test_render_page_amp_message_is_generic_not_tpa3255():
     body = correction_setup._render_page("jts.local").decode()
     js = _module_js()
     combined = (body + js).lower()
-    assert "turn up your amplifier" in combined or "turn up your amp" in combined
+    assert "raise the external amplifier" in combined
     assert "TPA3255" not in body
     assert "TPA3255" not in js
 
@@ -785,29 +1202,19 @@ def test_render_page_placement_advice_says_head_height():
     assert "on the seat" not in body
 
 
-def test_render_page_continue_button_hidden_outside_needs_next_position():
-    """Bug a user hit: Continue button stayed visible during the next
-    sweep and a double-tap fired /next-position from the wrong
-    state. Fix is the central applyButtonPolicy that hides everything
-    by default and re-shows per state."""
+def test_next_position_is_only_an_envelope_owned_action():
     body = _module_js()  # behaviour relocated to the static ES module
-    assert "applyButtonPolicy" in body
-    # Default is hidden + disabled.
-    assert "continueBtn.classList.add('hidden')" in body
-    assert "continueBtn.disabled = false" in body
-    # Re-shown only in needs_next_position branch.
-    assert "needs_next_position" in body
+    html = correction_setup._render_page("jts.local").decode()
+    assert 'id="continue-position"' not in html
+    assert "ep === '/next-position'" in body
+    assert "await continueToNextPosition()" in body
 
 
-def test_render_page_cert_section_is_optional_not_a_warning():
-    """First-pass UX framed the cert install as 'cert trouble?' which
-    misled users into thinking it was a fallback. The corrected
-    framing is 'optional: silence the warning' — explicit that the
-    page works without it."""
+def test_render_page_certificate_copy_is_one_plain_sentence():
     body = correction_setup._render_page("jts.local").decode()
-    assert "Optional: silence" in body
-    # Negative pin.
-    assert "Cert trust trouble" not in body
+    assert body.count("browser will warn about the speaker's local certificate") == 1
+    assert "Optional: silence" not in body
+    assert "Profile Downloaded" not in body
 
 
 # ---------- Test-tone backend (jasper.correction.playback) ------------------
@@ -1235,6 +1642,59 @@ def test_e2e_correction_posts_require_csrf():
         server.server_close()
 
 
+def test_e2e_local_setup_and_noise_conflicts_are_client_errors(monkeypatch):
+    def missing_calibration(_handler):
+        raise FileNotFoundError("unknown microphone calibration")
+
+    def unbound_noise(_handler):
+        raise correction_setup.RequestConflict("bind the local microphone first")
+
+    def unbound_level(_handler):
+        raise correction_setup.RequestConflict("bind before level matching")
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_handle_local_capture_setup",
+        missing_calibration,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_handle_upload_noise",
+        unbound_noise,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_handle_autolevel_start",
+        unbound_level,
+    )
+    server, base = _start_server()
+    try:
+        request_with_csrf(
+            base,
+            "/local-capture/setup",
+            b"{}",
+            content_type="application/json",
+            expect_status=400,
+        )
+        request_with_csrf(
+            base,
+            "/upload-noise",
+            b"WAVE",
+            content_type="audio/wav",
+            expect_status=409,
+        )
+        request_with_csrf(
+            base,
+            "/autolevel/start",
+            b"{}",
+            content_type="application/json",
+            expect_status=409,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_sync_analyze_rejects_oversized_capture_before_body_read():
     handler_cls = correction_setup._make_handler({"hostname": "jts.local"})
     handler = handler_cls.__new__(handler_cls)
@@ -1402,6 +1862,96 @@ def test_reset_restores_listening_volume_when_reset_raises(monkeypatch):
     assert restored == [-18.0]
 
 
+def test_reset_quiesces_audio_under_intent_before_resolving_graph(monkeypatch):
+    """No ramp/sweep write may land after reset resolves or reloads its graph."""
+    from jasper.correction.session import AutolevelData, AutolevelStatus, SessionState
+
+    order: list[str] = []
+
+    class _FakeSession:
+        session_id = "ramping-reset"
+        state = SessionState.NEEDS_NOISE_CAPTURE
+        # Terminal status with active cleanup reproduces the original race:
+        # Reset must key off run ownership, not the public status enum.
+        autolevel = AutolevelData(status=AutolevelStatus.LOCKED)
+        autolevel_run_in_progress = True
+        reset_intent = object()
+
+        async def begin_autolevel_reset(self):
+            order.append("intent-and-ramp-quiesced")
+            self.autolevel.status = AutolevelStatus.CANCELLED
+            return self.reset_intent
+
+        async def stop_background_audio_for_reset(self):
+            order.append("sweep-cancelled-and-reaped")
+            return True
+
+        async def end_autolevel_reset(self, intent):
+            assert intent is self.reset_intent
+            order.append("intent-released")
+            return True
+
+        async def reset(self, set_cb, **kwargs):
+            order.append("reset")
+
+    sess = _FakeSession()
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup, "_camilla", lambda: _volume_recording_cam([])
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_resolve_reset_target",
+        lambda *_args: order.append("resolve") or Path("/tmp/reset.yml"),
+    )
+
+    correction_setup._handle_reset(None)
+
+    assert order == [
+        "intent-and-ramp-quiesced",
+        "sweep-cancelled-and-reaped",
+        "resolve",
+        "reset",
+        "intent-released",
+    ]
+
+
+def test_reset_releases_intent_when_audio_quiescence_fails(monkeypatch):
+    """A failed Stop never wedges every later reset behind a leaked intent."""
+    from jasper.correction.session import SessionState
+
+    order: list[str] = []
+
+    class _FakeSession:
+        session_id = "quiescence-failure"
+        state = SessionState.SWEEPING
+        reset_intent = object()
+
+        async def begin_autolevel_reset(self):
+            order.append("intent")
+            return self.reset_intent
+
+        async def stop_background_audio_for_reset(self):
+            order.append("stop")
+            raise RuntimeError("audio cleanup failed")
+
+        async def end_autolevel_reset(self, intent):
+            assert intent is self.reset_intent
+            order.append("intent-released")
+            return True
+
+    sess = _FakeSession()
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup, "_camilla", lambda: _volume_recording_cam([])
+    )
+
+    with pytest.raises(RuntimeError, match="audio cleanup failed"):
+        correction_setup._handle_reset(None)
+
+    assert order == ["intent", "stop", "intent-released"]
+
+
 def test_maybe_restore_main_volume_swallows_restore_failure():
     # The restore runs inside apply/reset's finally; a failed restore must not
     # raise (which would mask the original apply/reset error).
@@ -1488,6 +2038,12 @@ def test_needs_noise_capture_offers_cancel_in_ui():
     js = _module_js()
     block = js.split("var cancellableStates = [", 1)[1].split("]", 1)[0]
     assert "'needs_noise_capture'" in block
+    assert "'preparing', 'sweeping', 'verifying'" in block
+    policy = js.split("function applyButtonPolicy", 1)[1]
+    policy = policy.split("function renderRelayStatusFromSnapshot", 1)[0]
+    assert "cancellableStates.indexOf(state) !== -1" in policy
+    assert "!(autolevelRamping && !relayMode)" not in policy
+    assert "'Stop measurement'" in policy
 
 
 def test_e2e_reset_while_busy_returns_409(monkeypatch):

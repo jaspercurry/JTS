@@ -239,9 +239,10 @@ _CAPTURE_TIMEOUT_STATES = frozenset({
 # States reset() refuses, because a fire-and-forget sweep/analysis task is
 # actively running and will set the next state AFTER reset() sets IDLE —
 # leaving the session looking reset for an instant and then jumping back.
-# These are exactly the states the wizard never offers Cancel / Reset from
-# (see cancellableStates in correction/js/main.js), so rejecting them here
-# breaks no UI affordance; it only fences a stale/buggy client off the race.
+# Direct reset still refuses these states. The persistent emergency Stop in
+# correction/js/main.js first cancels and reaps the identity-guarded background
+# audio task, moves the session to FAILED, and only then invokes reset; a stale
+# client that skips that quiescence seam remains fenced off the race.
 # Every settled, parked, or wedged state (idle / needs_* / awaiting_* / ready
 # / applied / verified / failed) still resets, so the escape hatch keeps
 # working when the user actually needs it.
@@ -380,6 +381,9 @@ class MeasurementSession:
         self._autolevel_controller = AutolevelController(
             session_id=self.session_id,
         )
+        self._autolevel_gate_obj: asyncio.Lock | None = None
+        self._autolevel_reset_intent: object | None = None
+        self._background_audio_task: asyncio.Task[Any] | None = None
 
         # P2 relay-closed level match. The settle-based RampController (shared
         # kernel) is the generalization of AutolevelController; the browser-locked
@@ -399,6 +403,7 @@ class MeasurementSession:
         # occupied and clears it identity-guarded, so an overlapping run can
         # never orphan a live ramp from its Cancel seam.
         self._level_match_session: LevelMatchSession | None = None
+        self._level_match_task: asyncio.Task[Any] | None = None
         # Cleanup may be triggered by relay failure, reset, and apply at nearly
         # the same time.  Serialize the write + restored flag so the lease is
         # released exactly once and a failed CamillaDSP write remains retryable.
@@ -407,6 +412,10 @@ class MeasurementSession:
         # state machine remains transport-agnostic; the server envelope uses
         # this marker only to choose the correct thin adapter action.
         self.capture_transport = "local"
+        # The local browser learns its realized device only after `/start`.
+        # This one-shot guard prevents a stale tab or later position from
+        # changing capture identity after the run has been admitted.
+        self._local_capture_setup_bound = False
 
         # Single-slot guard that abandons stranded browser-capture states and
         # refuses reset while a fire-and-forget sweep/analysis task is active.
@@ -472,6 +481,17 @@ class MeasurementSession:
         self._autolevel_controller.data = data
 
     @property
+    def autolevel_run_in_progress(self) -> bool:
+        """Whether local level matching still owns or may write audio state."""
+        return self._autolevel_controller.run_in_progress
+
+    @property
+    def _autolevel_gate(self) -> asyncio.Lock:
+        if self._autolevel_gate_obj is None:
+            self._autolevel_gate_obj = asyncio.Lock()
+        return self._autolevel_gate_obj
+
+    @property
     def _main_volume_setter(
         self,
     ) -> Callable[[float], Awaitable[Any]] | None:
@@ -492,6 +512,11 @@ class MeasurementSession:
     def capture_timeout_sec(self, timeout_sec: float) -> None:
         self._state_guard.capture_timeout_sec = float(timeout_sec)
 
+    @property
+    def local_capture_setup_bound(self) -> bool:
+        """Whether the one-shot local browser identity has been accepted."""
+        return self._local_capture_setup_bound
+
     # ------------------------------------------------------------------
     # Internal helpers.
     # ------------------------------------------------------------------
@@ -511,12 +536,16 @@ class MeasurementSession:
         self._state_guard.cancel_capture_timeout()
 
     def suspend_capture_timeout(self) -> None:
-        """Pause the local upload watchdog during human-paced relay setup."""
+        """Pause the upload watchdog during human-paced capture setup."""
         self._state_guard.cancel_capture_timeout()
 
     def resume_capture_timeout(self) -> None:
         """Restore the watchdog for the session's current capture state."""
         self._state_guard.on_transition(self.state)
+
+    async def resume_capture_timeout_on_loop(self) -> None:
+        """Re-arm the watchdog on the session's owning asyncio loop."""
+        self.resume_capture_timeout()
 
     async def _set_state(self, state: SessionState, **extra: Any) -> None:
         prev = self.state
@@ -773,23 +802,107 @@ class MeasurementSession:
             await asyncio.sleep(0.02)
         return False
 
+    async def run_background_audio_operation(
+        self,
+        operation: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Run one cancellable sweep operation in an identity-guarded slot."""
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("background audio operation has no asyncio task")
+        async with self._autolevel_gate:
+            if self._autolevel_reset_intent is not None:
+                raise SessionBusyError("room-correction reset is in progress")
+            current = self._background_audio_task
+            if current is not None and not current.done():
+                raise SessionBusyError("measurement audio is already running")
+            self._background_audio_task = task
+        try:
+            await operation()
+        finally:
+            async with self._autolevel_gate:
+                if self._background_audio_task is task:
+                    self._background_audio_task = None
+
+    async def stop_background_audio_for_reset(self) -> bool:
+        """Cancel and reap every Room audio owner before graph rollback."""
+        current_task = asyncio.current_task()
+        async with self._autolevel_gate:
+            background_task = self._background_audio_task
+            level_task = self._level_match_task
+            level_session = self._level_match_session
+            tasks = [
+                task
+                for task in dict.fromkeys((background_task, level_task))
+                if task is not None and not task.done()
+            ]
+        if current_task in tasks:
+            raise RuntimeError("background audio operation cannot stop itself")
+        if not tasks:
+            return False
+
+        # A live ramp owns volume writes. Ask its controller to exit through
+        # the click-free fade + exact listening-volume restore, then await that
+        # owner task. Before the controller exists (or after it is terminal),
+        # task cancellation is safe because no ramp write remains outstanding.
+        level_stopping_gracefully = False
+        if (
+            level_task is not None
+            and not level_task.done()
+            and level_session is not None
+        ):
+            level_stopping_gracefully = await level_session.cancel()
+
+        for task in tasks:
+            if task is not level_task or not level_stopping_gracefully:
+                task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        async with self._lock:
+            if self._state_guard.is_reset_busy(self.state):
+                self.error = "measurement stopped"
+                await self._set_state(
+                    SessionState.FAILED,
+                    reason="emergency_stop",
+                )
+        return True
+
     async def _fail(self, message: str) -> None:
         self._cancel_capture_timeout()
-        self.error = message
-        self.state = SessionState.FAILED
-        self._emit("error", {"message": message})
-        logger.error("session %s failed: %s", self.session_id, message)
+        owned_intent: object | None = None
+        async with self._autolevel_gate:
+            if self._autolevel_reset_intent is None:
+                owned_intent = object()
+                self._autolevel_reset_intent = owned_intent
+            reservation = self._autolevel_controller.reservation_token
         try:
-            self._write_info_json()
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "bundle info.json write failed (state=%s)", self.state.value,
-            )
-        # A failed measurement must not strand the speaker at the loud
-        # autolevel level — the web apply/reset handlers, which normally
-        # restore it, never run on this path (watchdog timeout, analysis
-        # error, etc.).
-        await self._restore_listening_volume_if_ramped()
+            if self.autolevel_run_in_progress:
+                await self.cancel_autolevel_and_wait()
+            if reservation is not None:
+                await self._autolevel_controller.wait_for_run_reservation_release(
+                    reservation,
+                )
+            self.error = message
+            self.state = SessionState.FAILED
+            self._emit("error", {"message": message})
+            logger.error("session %s failed: %s", self.session_id, message)
+            try:
+                self._write_info_json()
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "bundle info.json write failed (state=%s)", self.state.value,
+                )
+            # A failed measurement must not strand the speaker at the loud
+            # autolevel level — the web apply/reset handlers, which normally
+            # restore it, never run on this path (watchdog timeout, analysis
+            # error, etc.).
+            await self._restore_listening_volume_if_ramped()
+        finally:
+            if owned_intent is not None:
+                await self.end_autolevel_reset(owned_intent)
 
     async def _restore_listening_volume_if_ramped(self) -> None:
         """Restore main_volume to the pre-autolevel listening level when a
@@ -1334,6 +1447,75 @@ class MeasurementSession:
                 position=self.current_position,
                 total_positions=self.total_positions,
             )
+
+    async def bind_local_capture_setup(
+        self,
+        *,
+        mic_calibration: CalibrationRecord | None,
+        input_device: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Bind the realized local-browser input before its first upload.
+
+        The server-owned flow asks the household to choose/authorize the local
+        microphone after ``/start``. Keep that late setup on the live session
+        instead of leaving the pre-authorization ``None`` values as the bundle
+        and analysis authority. Only the parked pre-sweep state is mutable;
+        relay setup continues through its own versioned binding path.
+        """
+        report = browser_audio.assess_browser_audio_path(
+            input_device=input_device,
+            expected_sample_rate=self.cfg.sample_rate,
+            has_mic_calibration=mic_calibration is not None,
+        ).to_dict()
+        if report.get("failed") is True:
+            raise ValueError(
+                report.get("summary")
+                or "browser audio path is not safe for measurement"
+            )
+
+        async with self._lock:
+            if self.capture_transport != "local":
+                raise RuntimeError("local capture setup is unavailable for this run")
+            if self.state != SessionState.NEEDS_NOISE_CAPTURE:
+                raise RuntimeError(
+                    "cannot bind local capture setup from state "
+                    f"{self.state.value}"
+                )
+            if self.current_position != 0 or self.position_magnitudes:
+                raise RuntimeError(
+                    "local capture setup cannot change after measurement begins"
+                )
+            if self._local_capture_setup_bound:
+                current_calibration_id = getattr(
+                    self.mic_calibration, "calibration_id", None
+                )
+                requested_calibration_id = getattr(
+                    mic_calibration, "calibration_id", None
+                )
+                if (
+                    self.input_device == dict(input_device)
+                    and current_calibration_id == requested_calibration_id
+                ):
+                    return dict(self.browser_audio_report)
+                raise RuntimeError(
+                    "local capture setup cannot change after it is bound"
+                )
+            self.mic_calibration = mic_calibration
+            self.input_device = dict(input_device)
+            self.browser_audio_report = report
+            self._local_capture_setup_bound = True
+            self._emit(
+                "local_capture_setup",
+                {
+                    "calibrated": mic_calibration is not None,
+                    "browser_audio_level": str(report.get("level") or ""),
+                },
+            )
+            try:
+                self._write_info_json()
+            except Exception:  # noqa: BLE001
+                logger.exception("bundle info.json write failed (local capture setup)")
+        return report
 
     async def on_noise_capture_uploaded(self, noise_wav_path: Path) -> None:
         """Persist the pre-sweep silence WAV and derive noise floors."""
@@ -2335,6 +2517,7 @@ class MeasurementSession:
     async def run_autolevel(
         self,
         *,
+        reservation_token: object | None = None,
         get_main_volume_db: Callable[[], Awaitable[float]],
         set_main_volume_db: Callable[[float], Awaitable[Any]],
         play_continuous_tone: Callable[[], Awaitable[Any]],
@@ -2367,9 +2550,9 @@ class MeasurementSession:
           - MAXED_OUT:  ramp reached end_db without lock — speaker /
                         amp combo too quiet (or iOS Safari is silent-
                         AGC'ing the mic readout, which has happened
-                        in the field). main_volume stays at end_db;
-                        UI tells user to turn up amp OR use the
-                        manual Lock button.
+                        in the field). main_volume is restored and the UI
+                        tells the user to raise the external amplifier and
+                        retry; no measurement lock is minted.
           - CANCELLED:  client called /autolevel/cancel OR safety
                         timeout fired. main_volume restored to
                         `original_main_volume_db`.
@@ -2414,6 +2597,7 @@ class MeasurementSession:
         dBFS that blasted the user.
         """
         await self._autolevel_controller.run(
+            reservation_token=reservation_token,
             get_main_volume_db=get_main_volume_db,
             set_main_volume_db=set_main_volume_db,
             play_continuous_tone=play_continuous_tone,
@@ -2436,10 +2620,70 @@ class MeasurementSession:
         running."""
         return await self._autolevel_controller.lock()
 
+    async def reserve_autolevel_run(self) -> object | None:
+        """Atomically validate phase and reserve one exact local ramp."""
+        retryable = {
+            AutolevelStatus.IDLE,
+            AutolevelStatus.CANCELLED,
+            AutolevelStatus.ERROR,
+            AutolevelStatus.MAXED_OUT,
+        }
+        async with self._autolevel_gate:
+            if (
+                self._autolevel_reset_intent is not None
+                or self.capture_transport != "local"
+                or self.state != SessionState.NEEDS_NOISE_CAPTURE
+                or not self.local_capture_setup_bound
+                or self.autolevel.status not in retryable
+            ):
+                return None
+            return await self._autolevel_controller.reserve_run()
+
+    async def release_autolevel_run_reservation(self, token: object) -> bool:
+        """Release one exact adapter slot after outer orchestration exits."""
+        async with self._autolevel_gate:
+            return await self._autolevel_controller.release_run_reservation(token)
+
+    async def begin_autolevel_reset(self) -> object:
+        """Block new Room audio and quiesce the active local ramp generation."""
+        intent = object()
+        async with self._autolevel_gate:
+            if self._autolevel_reset_intent is not None:
+                raise SessionBusyError("room-correction reset is already in progress")
+            self._autolevel_reset_intent = intent
+            reservation = self._autolevel_controller.reservation_token
+        try:
+            if self.autolevel_run_in_progress:
+                await self.cancel_autolevel_and_wait(timeout_s=35.0)
+            if reservation is not None:
+                await self._autolevel_controller.wait_for_run_reservation_release(
+                    reservation,
+                    timeout_s=35.0,
+                )
+            return intent
+        except BaseException:
+            # The caller has no token to release when begin itself fails.
+            # Roll back our exact intent so a timeout/cancellation cannot wedge
+            # every future Stop behind "reset already in progress".
+            await asyncio.shield(self.end_autolevel_reset(intent))
+            raise
+
+    async def end_autolevel_reset(self, intent: object) -> bool:
+        """Release only the reset intent created by :meth:`begin_autolevel_reset`."""
+        async with self._autolevel_gate:
+            if intent is not self._autolevel_reset_intent:
+                return False
+            self._autolevel_reset_intent = None
+            return True
+
     async def cancel_autolevel(self) -> bool:
         """Signal the running autolevel task to abort and restore
         the original main_volume."""
         return await self._autolevel_controller.cancel()
+
+    async def cancel_autolevel_and_wait(self, *, timeout_s: float = 5.0) -> bool:
+        """Cancel a running ramp and await its listening-volume restore."""
+        return await self._autolevel_controller.cancel_and_wait(timeout_s=timeout_s)
 
     # ------------------------------------------------------------------
     # Level match (P2, relay-closed settle-based ramp).
@@ -2482,6 +2726,9 @@ class MeasurementSession:
         asyncio clock; tests inject fakes.
         """
         loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("level match has no asyncio task")
         # Single-flight: one level match at a time per measurement session
         # (mirrors the /autolevel/start handler's "already in progress" guard —
         # AutolevelController is a PERMANENT controller so it needs no slot,
@@ -2489,42 +2736,38 @@ class MeasurementSession:
         # overlapping run would stomp the retained slot and the first's clear
         # would then orphan the second's live ramp from its Lock/Cancel seam —
         # the one state where a dead Cancel matters (a live volume ramp).
-        if self._level_match_session is not None:
-            raise RuntimeError("level match already in progress")
-        prior = self._last_level_match
-        if (
-            prior is not None
-            and prior.ramp.state is RampState.LOCKED
-            and prior.ramp.restored is not True
-        ):
-            raise RuntimeError(
-                "measurement level is already locked; finish or cancel the "
-                "current measurement before checking it again"
+        async with self._autolevel_gate:
+            if self._autolevel_reset_intent is not None:
+                raise SessionBusyError("room-correction reset is in progress")
+            if self._level_match_session is not None:
+                raise RuntimeError("level match already in progress")
+            prior = self._last_level_match
+            if (
+                prior is not None
+                and prior.ramp.state is RampState.LOCKED
+                and prior.ramp.restored is not True
+            ):
+                raise RuntimeError(
+                    "measurement level is already locked; finish or cancel the "
+                    "current measurement before checking it again"
+                )
+            # Retain both the run adapter and its exact owner task so a
+            # Lock/Cancel/Reset can reach it without racing a replacement.
+            session = LevelMatchSession(
+                session_id=self.session_id,
+                store=self.level_lock_store,
+                # A room sweep has substantial deconvolution/averaging gain and
+                # its downstream quality model still rejects unusable captures.
+                # At a stable low cap, preserve explicitly degraded evidence;
+                # never relax trust, clip, spread, liveness, or timeout guards.
+                config=MeasurementRamp.from_env(
+                    allow_bounded_low_level=True,
+                    cap_bump_db=LISTENING_POSITION_CAP_BUMP_DB,
+                    cap_ceil_db=LISTENING_POSITION_CAP_CEIL_DB,
+                ),
             )
-        # Retain the run's session so a Lock/Cancel from the flow can reach the
-        # running RampController while the ramp is in flight. The clear is
-        # identity-guarded (belt and braces under the single-flight refusal):
-        # only the run that owns the slot may empty it.
-        session = LevelMatchSession(
-            session_id=self.session_id,
-            store=self.level_lock_store,
-            # A room sweep has substantial deconvolution/averaging gain and its
-            # downstream quality model still rejects unusable captures.  When
-            # the external amplifier leaves a stable, AGC-off listening-position
-            # tone below the preferred window at the safe cap, retain that
-            # evidence as an explicitly degraded lock instead of dead-ending the
-            # room flow.  The shared ramp keeps the same 10 dB trust, clip,
-            # spread, liveness, timeout, and exact-volume-restore guards.  The
-            # safety argument is that room alone gets more main-volume travel
-            # while the stimulus remains -12 dBFS; downstream capture-quality
-            # findings are additional evidence, not this ramp's backstop.
-            config=MeasurementRamp.from_env(
-                allow_bounded_low_level=True,
-                cap_bump_db=LISTENING_POSITION_CAP_BUMP_DB,
-                cap_ceil_db=LISTENING_POSITION_CAP_CEIL_DB,
-            ),
-        )
-        self._level_match_session = session
+            self._level_match_session = session
+            self._level_match_task = task
         try:
             outcome = await session.run_for_geometry(
                 geometry,
@@ -2542,8 +2785,11 @@ class MeasurementSession:
                 armed_timeout_s=armed_timeout_s,
             )
         finally:
-            if self._level_match_session is session:
-                self._level_match_session = None
+            async with self._autolevel_gate:
+                if self._level_match_session is session:
+                    self._level_match_session = None
+                if self._level_match_task is task:
+                    self._level_match_task = None
         self._last_level_match = outcome
         if outcome.locked:
             # A level check owns the loud target only while its tone window is
