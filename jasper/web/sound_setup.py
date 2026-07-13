@@ -1847,14 +1847,6 @@ def _active_speaker_stop_payload() -> dict[str, Any]:
     return state
 
 
-def _active_speaker_preset():
-    from jasper.active_speaker.tone_plan import load_active_speaker_preset
-
-    return load_active_speaker_preset(
-        os.environ.get("JASPER_ACTIVE_SPEAKER_PRESET") or None
-    )
-
-
 def _active_speaker_bringup_preflight_payload() -> dict[str, Any]:
     """Return guided-vs-manual active-speaker bring-up readiness."""
 
