@@ -51,7 +51,7 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the Wave 2 manifest, playback, and admission worktrees, 2026-07-13)
+## Current state (verified against the Wave 2 manifest, playback, admission, and guarded-playback worktrees, 2026-07-13)
 
 ### Wave 1 contract-only foundation (2026-07-13)
 
@@ -188,9 +188,34 @@ and only persists an allowed playback-role artifact. It does not infer temporal
 freshness from fingerprint inequality; the guarded host establishes freshness
 by doing the live readback and call in that order without releasing its guard.
 A resulting capture points to that final artifact, not the generation artifact.
-The guarded Shared playback entry point that will enforce this ordering is a
-later Wave 2 integration slice; these value and persistence APIs alone are not
-permission to play.
+`admitted_playback.play_admitted_wav()` is the guarded production composition:
+the feature records its generated WAV in its own manifest, calls
+`bind_generated_excitation_wav()` to create the schema-version-1 binding between
+that exact `ArtifactIdentity`, generation artifact, and plan, and persists the
+binding with its feature state. There is no free WAV pathname in the production
+gate. Shared opens the manifest-relative artifact without following symlinks,
+requires a regular uncompressed PCM WAV under the 64 MiB / 90-second / 192 kHz
+bounds, checks size + SHA-256 + exact admitted duration before the fresh issuer,
+copies the verified bytes into a sealed memory descriptor (or an unlinked,
+read-only fallback), and reverifies that immutable snapshot immediately before
+passing its descriptor to `aplay`. Later in-place writes and path replacement
+cannot swap the emitted stimulus after admission.
+
+The feature supplies one async issuer rather than precomputed proof values; the
+entry point verifies generation authority, invokes that issuer exactly once,
+immediately re-admits, durably persists and rereads the playback-role artifact,
+and only then calls the neutral WAV emitter. The feature must hold its existing
+DSP writer/playback guard across the whole await. Shared does not acquire the
+lock or interpret the graph. Repeated cancellation during threaded persistence
+is drained before it is reported, so publication cannot finish later after the
+caller believes the operation stopped. If persistence completed, the typed
+`PlaybackAdmissionCancelled` carries the verified artifact and records whether
+audio may have started. Cancellation before spawn proves no audio ran;
+cancellation during playback has an uncertain/active emission outcome. Both
+consume the one-shot path and require a new generation admission/id for retry.
+Refusal, stale proof, malformed content, and every failed/unknown persistence or
+final-readback result emit no audio. The guarded boundary logs one correlated
+terminal result with closed failure classes and no proof content.
 
 Historical captures have no admission route through this API.
 `refuse_historical_evidence()` raises the typed, stable
@@ -1061,13 +1086,16 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-13 (Wave 2 neutral artifact-manifest, playback, and
-admission-artifact ownership; exact Room byte/schema/path compatibility; Room
-playback shim; deterministic tone bytes; bounded diagnostic/cleanup behavior;
-content-bound immutable-snapshot WAV emission; canonical admission marker and
-generation/playback path roles; crash-durable no-replace persistence; and
-no-bundle-migration/no-backfill/no-Active-adoption boundaries checked
-hardware-free. No hardware behavior revalidated. Wave 1 excitation/evidence
-identities and `null_walk.DspPredecessor` reuse remain contract-only. Crossover
-adapter volume-lease participation and measurement-flow admission ownership
-rechecked against correction, balance, sync, and the coordinator mutex)
+Last verified: 2026-07-13 (Wave 2 neutral artifact-manifest, playback,
+admission-artifact, and guarded-playback ownership; exact Room byte/schema/path
+compatibility; Room playback shim; deterministic tone bytes; bounded
+diagnostic/cleanup behavior; canonical admission marker and
+generation/playback path roles; crash-durable no-replace persistence;
+content-bound immutable-snapshot WAV emission; cancellation-drained playback
+re-admission with explicit pre-audio/possibly-started outcomes; closed
+guarded-playback terminal events; and no-bundle-migration/no-backfill/
+no-Active-adoption boundaries checked hardware-free. No hardware behavior
+revalidated. Wave 1 excitation/evidence identities and
+`null_walk.DspPredecessor` reuse remain contract-only. Crossover adapter
+volume-lease participation and measurement-flow admission ownership rechecked
+against correction, balance, sync, and the coordinator mutex)
