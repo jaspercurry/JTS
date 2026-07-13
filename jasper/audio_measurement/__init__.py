@@ -40,6 +40,9 @@ Modules:
   - :mod:`~jasper.audio_measurement.excitation_artifacts` — fail-closed,
     canonical admission persistence plus independent playback re-admission;
     existing and historical evidence cannot be promoted into authority.
+  - :mod:`~jasper.audio_measurement.admitted_playback` — guarded composition of
+    a caller-issued fresh protection readback, playback-role re-admission, and
+    the policy-free WAV emitter.
   - :mod:`~jasper.audio_measurement.bundles` — the neutral artifact-manifest
     writer/reader shared by feature-owned Room and Active evidence bundles.
   - :mod:`~jasper.audio_measurement.playback` — production WAV/tone emission,
