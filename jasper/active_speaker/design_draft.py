@@ -172,120 +172,99 @@ def _frequency_range(raw: Any, field_name: str) -> list[float] | None:
     return [low, high]
 
 
-def _normalise_driver(raw: Any) -> dict[str, Any]:
-    raw = _mapping(raw, "driver")
+def _normalise_driver_common(
+    raw: Any,
+    prefix: str,
+    *,
+    require_model: bool,
+    include_sources: bool,
+    gain_provenance_default: str,
+) -> dict[str, Any]:
+    raw = _mapping(raw, prefix)
     gain_offset_db = _finite_float(
         raw.get("gain_offset_db"),
-        "driver.gain_offset_db",
+        f"{prefix}.gain_offset_db",
     )
     driver: dict[str, Any] = {
-        "role": _role(raw.get("role"), "driver.role"),
-        "model": _text(raw.get("model"), "driver.model", required=True, max_chars=120),
-        "manufacturer": _text(raw.get("manufacturer"), "driver.manufacturer", max_chars=120),
-        "nominal_impedance_ohm": _positive_float(
-            raw.get("nominal_impedance_ohm"),
-            "driver.nominal_impedance_ohm",
+        "role": _role(raw.get("role"), f"{prefix}.role"),
+        "model": _text(
+            raw.get("model"),
+            f"{prefix}.model",
+            required=require_model,
+            max_chars=120,
         ),
-        "sensitivity_db_2v83_1m": _finite_float(
-            raw.get("sensitivity_db_2v83_1m"),
-            "driver.sensitivity_db_2v83_1m",
-        ),
-        "usable_frequency_range_hz": _frequency_range(
-            raw.get("usable_frequency_range_hz"),
-            "driver.usable_frequency_range_hz",
-        ),
-        "recommended_highpass_hz": _positive_float(
-            raw.get("recommended_highpass_hz"),
-            "driver.recommended_highpass_hz",
-        ),
-        "recommended_lowpass_hz": _positive_float(
-            raw.get("recommended_lowpass_hz"),
-            "driver.recommended_lowpass_hz",
-        ),
-        "do_not_test_below_hz": _positive_float(
-            raw.get("do_not_test_below_hz"),
-            "driver.do_not_test_below_hz",
-        ),
-        "gain_offset_db": gain_offset_db,
-        "gain_offset_db_provenance": (
-            _gain_offset_provenance(
-                raw.get("gain_offset_db_provenance"),
-                "driver.gain_offset_db_provenance",
-                default="research_estimate",
-            )
-            if gain_offset_db is not None
-            else None
-        ),
-        "notes": _text(
-            raw.get("notes"),
-            "driver.notes",
-            max_chars=MAX_DRIVER_NOTE_CHARS,
-        ),
-        "sources": _string_list(raw.get("sources"), "driver.sources"),
-    }
-    return {key: value for key, value in driver.items() if value not in (None, [])}
-
-
-def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
-    raw = _mapping(raw, "manual_settings.driver")
-    gain_offset_db = _finite_float(
-        raw.get("gain_offset_db"),
-        "manual_settings.driver.gain_offset_db",
-    )
-    driver: dict[str, Any] = {
-        "role": _role(raw.get("role"), "manual_settings.driver.role"),
-        "model": _text(raw.get("model"), "manual_settings.driver.model", max_chars=120),
         "manufacturer": _text(
             raw.get("manufacturer"),
-            "manual_settings.driver.manufacturer",
+            f"{prefix}.manufacturer",
             max_chars=120,
         ),
         "nominal_impedance_ohm": _positive_float(
             raw.get("nominal_impedance_ohm"),
-            "manual_settings.driver.nominal_impedance_ohm",
+            f"{prefix}.nominal_impedance_ohm",
         ),
         "sensitivity_db_2v83_1m": _finite_float(
             raw.get("sensitivity_db_2v83_1m"),
-            "manual_settings.driver.sensitivity_db_2v83_1m",
+            f"{prefix}.sensitivity_db_2v83_1m",
         ),
         "usable_frequency_range_hz": _frequency_range(
             raw.get("usable_frequency_range_hz"),
-            "manual_settings.driver.usable_frequency_range_hz",
+            f"{prefix}.usable_frequency_range_hz",
         ),
         "recommended_highpass_hz": _positive_float(
             raw.get("recommended_highpass_hz"),
-            "manual_settings.driver.recommended_highpass_hz",
+            f"{prefix}.recommended_highpass_hz",
         ),
         "recommended_lowpass_hz": _positive_float(
             raw.get("recommended_lowpass_hz"),
-            "manual_settings.driver.recommended_lowpass_hz",
+            f"{prefix}.recommended_lowpass_hz",
         ),
         "do_not_test_below_hz": _positive_float(
             raw.get("do_not_test_below_hz"),
-            "manual_settings.driver.do_not_test_below_hz",
+            f"{prefix}.do_not_test_below_hz",
         ),
         "gain_offset_db": gain_offset_db,
-        # Legacy manual values had no provenance. Preserve them as pinned: an
-        # upgrade must never silently replace an attenuation the operator may
-        # have chosen for driver safety. New UI-generated sensitivity proposals
-        # explicitly send ``sensitivity_estimate`` and remain supersedable by
-        # acoustic measurement.
         "gain_offset_db_provenance": (
             _gain_offset_provenance(
                 raw.get("gain_offset_db_provenance"),
-                "manual_settings.driver.gain_offset_db_provenance",
-                default="operator_pinned",
+                f"{prefix}.gain_offset_db_provenance",
+                default=gain_provenance_default,
             )
             if gain_offset_db is not None
             else None
         ),
         "notes": _text(
             raw.get("notes"),
-            "manual_settings.driver.notes",
+            f"{prefix}.notes",
             max_chars=MAX_DRIVER_NOTE_CHARS,
         ),
     }
+    if include_sources:
+        driver["sources"] = _string_list(raw.get("sources"), f"{prefix}.sources")
     return {key: value for key, value in driver.items() if value not in (None, [])}
+
+
+def _normalise_driver(raw: Any) -> dict[str, Any]:
+    return _normalise_driver_common(
+        raw,
+        "driver",
+        require_model=True,
+        include_sources=True,
+        gain_provenance_default="research_estimate",
+    )
+
+
+def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
+    # Legacy manual values had no provenance. Preserve them as pinned: an
+    # upgrade must never silently replace an attenuation the operator may have
+    # chosen for driver safety. New UI-generated sensitivity proposals send
+    # ``sensitivity_estimate`` and remain supersedable by acoustic measurement.
+    return _normalise_driver_common(
+        raw,
+        "manual_settings.driver",
+        require_model=False,
+        include_sources=False,
+        gain_provenance_default="operator_pinned",
+    )
 
 
 def _normalise_candidate(raw: Any) -> dict[str, Any]:
