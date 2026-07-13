@@ -65,15 +65,17 @@ function classList() {
 function makeEl(id) {
   return {
     id, innerHTML: "", textContent: "", className: "", value: "", checked: false,
-    attrs: {}, style: {}, _listeners: {}, classList: classList(),
+    attrs: {}, style: {}, _listeners: {}, _listenerCapture: {}, classList: classList(),
     setAttribute(k, v) { this.attrs[k] = String(v); },
     getAttribute(k) {
       return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null;
     },
     hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
     removeAttribute(k) { delete this.attrs[k]; },
-    addEventListener(ev, fn) {
+    addEventListener(ev, fn, options) {
       (this._listeners[ev] = this._listeners[ev] || []).push(fn);
+      const capture = options === true || !!(options && options.capture);
+      (this._listenerCapture[ev] = this._listenerCapture[ev] || []).push(capture);
     },
     focus() { globalThis.document.activeElement = this; },
     select() {
@@ -593,8 +595,8 @@ function setupHarness(fetchHandler, options = {}) {
         },
       },
     };
-    for (const fn of viewBody._listeners.toggle || []) {
-      fn({ target });
+    for (const [index, fn] of (viewBody._listeners.toggle || []).entries()) {
+      if (viewBody._listenerCapture.toggle?.[index]) fn({ target });
     }
     return target;
   };
