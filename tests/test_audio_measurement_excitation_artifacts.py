@@ -181,6 +181,46 @@ def test_authority_is_new_exclusive_canonical_and_private(tmp_path: Path) -> Non
     assert caught.value.code is AdmissionArtifactErrorCode.AUTHORITY_ALREADY_EXISTS
 
 
+def test_one_session_authority_persists_multiple_unique_attempts(
+    tmp_path: Path,
+) -> None:
+    authority = _authority(tmp_path)
+    admission = _admission()
+    admission_ids = ("combined-main-repeat-1", "combined-main-repeat-2")
+
+    generations = tuple(
+        persist_generation_admission(
+            authority,
+            admission_id=admission_id,
+            admission=admission,
+        )
+        for admission_id in admission_ids
+    )
+    playbacks = tuple(
+        readmit_and_persist_playback_admission(
+            authority,
+            generation,
+            current_limits=admission.limits,
+            current_protection_evidence=_evidence(admission.limits, PLAYBACK_PROOF),
+        )
+        for generation in generations
+    )
+
+    assert {generation.authority for generation in generations} == {authority}
+    assert {generation.admission_id for generation in generations} == set(
+        admission_ids
+    )
+    for generation, playback in zip(generations, playbacks, strict=True):
+        assert playback.artifact is not None
+        assert playback.artifact.generation.authority == authority
+        assert playback.artifact.generation.admission_id == generation.admission_id
+        assert read_playback_admission(
+            authority,
+            generation,
+            playback.artifact.artifact,
+        ) == playback.artifact
+
+
 def test_authority_requires_a_feature_owned_existing_parent(tmp_path: Path) -> None:
     missing_parent = tmp_path / "missing"
 

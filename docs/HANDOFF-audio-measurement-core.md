@@ -51,7 +51,7 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the Wave 2 manifest, playback, admission, and guarded-playback worktrees, 2026-07-13)
+## Current state (verified against the merged Wave 2 manifest, playback, admission, and guarded-playback implementation, 2026-07-13)
 
 ### Wave 1 contract-only foundation (2026-07-13)
 
@@ -163,13 +163,14 @@ owning-event-loop-thread API; it makes no cross-thread promise.
 
 `excitation_artifacts.py` is the narrow production persistence bridge around the frozen
 schema-version-1 `ExcitationAdmission`. `create_admission_authority()` creates
-a dedicated admission-authority directory exclusively and persists its
-canonical marker; it refuses every existing directory instead of upgrading
-evidence already there. Its feature-owned parent must already exist; Shared
-does not create feature/session ancestors. This directory is not a feature
-session envelope: the feature still owns its manifest, retention, capture
-storage, and bundle-root resolution, and records the returned marker/artifact
-identities in that state.
+one dedicated admission-authority directory exclusively per fresh production
+feature session/bundle and persists its canonical marker; each capture or retry
+then uses a unique `admission_id` inside that authority. Creation refuses every
+existing directory instead of upgrading evidence already there. Its
+feature-owned parent must already exist; Shared does not create feature/session
+ancestors. This directory is not a feature session envelope: the feature still
+owns its manifest, retention, capture storage, and bundle-root resolution, and
+records the returned marker/artifact identities in that state.
 Generation and playback decisions are separately persisted at the enforced
 `admission/v1/generation/<id>.json` and
 `admission/v1/playback/<id>.json` path roles. Their compact, sorted bytes are
@@ -217,6 +218,12 @@ caller believes the operation stopped. If persistence completed, the typed
 audio may have started. Cancellation before spawn proves no audio ran;
 cancellation during playback has an uncertain/active emission outcome. Both
 consume the one-shot path and require a new generation admission/id for retry.
+`PlaybackAdmissionFailed` provides the same verified artifact and retry rule for
+every ordinary failure after playback admission persists. A final immutable-WAV
+verification or `aplay` start failure proves no audio ran; timeout, process/wait
+failure, and cleanup failure after completed playback report that audio may
+have started. The correlated terminal event carries the artifact SHA and the
+same possible-audio value.
 Refusal, stale proof, malformed content, and every failed/unknown persistence or
 final-readback result emit no audio. The guarded boundary logs one correlated
 terminal result with closed failure classes and no proof content.
@@ -1097,10 +1104,12 @@ pending exact Active receipt authority; deterministic tone bytes; bounded
 diagnostic/cleanup behavior; canonical admission marker and
 generation/playback path roles; crash-durable no-replace persistence;
 content-bound immutable-snapshot WAV emission; cancellation-drained playback
-re-admission with explicit pre-audio/possibly-started outcomes; closed
-guarded-playback terminal events; and no-bundle-migration/no-backfill/
-no-Active-adoption boundaries checked hardware-free. No hardware behavior
-revalidated. Wave 1 excitation/evidence identities and
+re-admission with explicit pre-audio/possibly-started cancellation and failure
+outcomes carrying the persisted artifact; one authority per fresh session with
+unique attempt ids; closed guarded-playback terminal events; and
+no-bundle-migration/no-backfill/no-Active-adoption boundaries checked
+hardware-free. No hardware behavior revalidated. Wave 1 excitation/evidence
+identities and
 `null_walk.DspPredecessor` reuse remain contract-only. Crossover adapter
 volume-lease participation and measurement-flow admission ownership rechecked
 against correction, balance, sync, and the coordinator mutex)

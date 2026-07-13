@@ -26,6 +26,7 @@ from jasper.audio_measurement.admitted_playback import (
     GeneratedStimulusError,
     GeneratedStimulusFailureCode,
     PlaybackAdmissionCancelled,
+    PlaybackAdmissionFailed,
     PlaybackAdmissionRefused,
     bind_generated_excitation_wav,
     play_admitted_wav,
@@ -907,7 +908,7 @@ async def test_snapshot_close_failure_has_one_typed_failed_terminal_event(
     monkeypatch.setattr(guarded, "play_verified_wav", complete_playback)
     caplog.set_level(logging.INFO, logger=guarded.__name__)
 
-    with pytest.raises(WavSourceError) as caught:
+    with pytest.raises(PlaybackAdmissionFailed) as caught:
         await play_admitted_wav(
             tmp_path,
             stimulus=stimulus,
@@ -918,8 +919,17 @@ async def test_snapshot_close_failure_has_one_typed_failed_terminal_event(
             timeout_s=12,
         )
 
-    assert caught.value.code is WavSourceFailureCode.CLEANUP_FAILED
-    assert isinstance(caught.value.__cause__, OSError)
+    assert caught.value.requires_new_generation is True
+    assert caught.value.audio_may_have_started is True
+    assert caught.value.admission == read_playback_admission(
+        authority,
+        generation,
+        caught.value.admission.artifact,
+    )
+    assert isinstance(caught.value.failure, WavSourceError)
+    assert caught.value.failure.code is WavSourceFailureCode.CLEANUP_FAILED
+    assert isinstance(caught.value.failure.__cause__, OSError)
+    assert caught.value.__cause__ is caught.value.failure
     terminal = [
         record.message
         for record in caplog.records
@@ -930,6 +940,8 @@ async def test_snapshot_close_failure_has_one_typed_failed_terminal_event(
     assert len(terminal) == 1
     assert "result=failed" in terminal[0]
     assert "failure_code=source_cleanup_failed" in terminal[0]
+    assert f"artifact_sha256={caught.value.admission.artifact.sha256}" in terminal[0]
+    assert "audio_may_have_started=true" in terminal[0]
 
 
 @pytest.mark.asyncio
@@ -1012,7 +1024,7 @@ async def test_playback_failure_and_cancellation_have_correlated_terminal_events
 
     monkeypatch.setattr(guarded, "play_verified_wav", fail_playback)
     caplog.set_level(logging.INFO, logger=guarded.__name__)
-    with pytest.raises(PlaybackError):
+    with pytest.raises(PlaybackAdmissionFailed) as failed:
         await play_admitted_wav(
             tmp_path,
             stimulus=stimulus,
@@ -1022,6 +1034,16 @@ async def test_playback_failure_and_cancellation_have_correlated_terminal_events
             alsa_device="measurement_lane",
             timeout_s=12,
         )
+    assert failed.value.requires_new_generation is True
+    assert failed.value.audio_may_have_started is False
+    assert failed.value.admission == read_playback_admission(
+        authority,
+        generation,
+        failed.value.admission.artifact,
+    )
+    assert isinstance(failed.value.failure, PlaybackError)
+    assert failed.value.failure.code is PlaybackFailureCode.START_FAILED
+    assert failed.value.__cause__ is failed.value.failure
     _assert_boundary_log(
         caplog,
         result="failed",
@@ -1069,6 +1091,97 @@ async def test_playback_failure_and_cancellation_have_correlated_terminal_events
         failure_code=AdmittedPlaybackFailureCode.CANCELLED_DURING_AUDIO,
         bundle_id=authority2.bundle_id,
         admission_id=generation2.admission_id,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "audio_may_have_started"),
+    [
+        (
+            PlaybackError(
+                "aplay exited after partial playback",
+                code=PlaybackFailureCode.PROCESS_FAILED,
+                wav_path=Path("stimulus.wav"),
+                alsa_device="measurement_lane",
+                returncode=1,
+            ),
+            True,
+        ),
+        (
+            PlaybackError(
+                "aplay timed out after partial playback",
+                code=PlaybackFailureCode.TIMEOUT,
+                wav_path=Path("stimulus.wav"),
+                alsa_device="measurement_lane",
+            ),
+            True,
+        ),
+        (
+            PlaybackError(
+                "aplay wait failed after spawn",
+                code=PlaybackFailureCode.WAIT_FAILED,
+                wav_path=Path("stimulus.wav"),
+                alsa_device="measurement_lane",
+            ),
+            True,
+        ),
+        (
+            WavSourceError(
+                "immutable source changed during final verification",
+                code=WavSourceFailureCode.CONTENT_MISMATCH,
+                wav_path=Path("stimulus.wav"),
+            ),
+            False,
+        ),
+    ],
+)
+async def test_post_persistence_failure_preserves_admission_and_audio_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: Exception,
+    audio_may_have_started: bool,
+):
+    authority, limits, generation = _generation(tmp_path)
+    _path, stimulus = _wav(tmp_path, generation)
+
+    async def fail_playback(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(guarded, "play_verified_wav", fail_playback)
+    caplog.set_level(logging.INFO, logger=guarded.__name__)
+
+    with pytest.raises(PlaybackAdmissionFailed) as caught:
+        await play_admitted_wav(
+            tmp_path,
+            stimulus=stimulus,
+            authority=authority,
+            generation=generation,
+            issue_current_inputs=_issuer(limits),
+            alsa_device="measurement_lane",
+            timeout_s=12,
+        )
+
+    assert caught.value.requires_new_generation is True
+    assert caught.value.audio_may_have_started is audio_may_have_started
+    assert caught.value.failure is failure
+    assert caught.value.__cause__ is failure
+    assert caught.value.admission == read_playback_admission(
+        authority,
+        generation,
+        caught.value.admission.artifact,
+    )
+    terminal = [
+        record.message
+        for record in caplog.records
+        if "event=audio_measurement.admitted_playback" in record.message
+        and "result=failed" in record.message
+    ]
+    assert len(terminal) == 1
+    assert f"artifact_sha256={caught.value.admission.artifact.sha256}" in terminal[0]
+    assert (
+        f"audio_may_have_started={str(audio_may_have_started).lower()}" in terminal[0]
     )
 
 
