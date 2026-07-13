@@ -582,8 +582,16 @@ function setupHarness(fetchHandler, options = {}) {
     const target = {
       open: attrs.open !== undefined ? attrs.open : true,
       getAttribute(name) { return attrs[name] || ""; },
-      matches() { return false; },
-      classList: { contains(name) { return name === "output-step"; } },
+      matches(selector) {
+        return selector === "[data-active-speaker-setup]" &&
+          Object.prototype.hasOwnProperty.call(attrs, "data-active-speaker-setup");
+      },
+      classList: {
+        contains(name) {
+          return name === "output-step" &&
+            Object.prototype.hasOwnProperty.call(attrs, "data-output-step");
+        },
+      },
     };
     for (const fn of viewBody._listeners.toggle || []) {
       fn({ target });
@@ -918,6 +926,27 @@ async function testActiveCrossoverFirstStepRender() {
   excludes("saved crossover settings");
   excludes("Save crossover settings");
   return { activeCrossoverFirstStepRendered: true };
+}
+
+async function testActiveSpeakerSetupTogglePersistsAcrossRender() {
+  const harness = setupHarness(baseFetch());
+  await loadAndSetActiveState(harness);
+
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  if (initialHtml.includes("data-active-speaker-setup open")) {
+    fail("settled passive setup should start collapsed", { initialHtml });
+  }
+
+  harness.dispatchToggle({ "data-active-speaker-setup": true, open: true });
+  harness.dispatchClick({ "data-act": "refresh-output-topology" });
+  await harness.flush();
+  await harness.flush();
+
+  const rerenderedHtml = harness.elements.get("view-body").innerHTML;
+  if (!rerenderedHtml.includes("data-active-speaker-setup open")) {
+    fail("opening speaker setup should survive the next render", { rerenderedHtml });
+  }
+  return { activeSpeakerSetupTogglePersistsAcrossRender: true };
 }
 
 async function testActiveRouteLimitsRenderedTemplates() {
@@ -4597,6 +4626,7 @@ results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testPassiveLayoutsDoNotExposeDirectDriverTestFlow());
 results.push(await testActiveCrossoverFirstStepRender());
+results.push(await testActiveSpeakerSetupTogglePersistsAcrossRender());
 results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testAppliedProfileEditContinueOpensProfileStep());
@@ -4647,4 +4677,4 @@ results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
 results.push(await testSubwooferDeadEndOffersWirelessCta());
 results.push(await testSubwooferWithSpareOutputHidesWirelessCta());
 
-console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));
+console.log(JSON.stringify(Object.assign({ results }, liveTabResult)));
