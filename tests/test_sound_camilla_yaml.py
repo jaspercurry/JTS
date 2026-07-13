@@ -11,10 +11,6 @@ from jasper.sound.camilla_yaml import (
 )
 from jasper.sound.profile import SimpleEq, SoundProfile
 
-# A File-capture pipe path for exercising the clockless File-capture emit
-# shape (the transport_pipe / ring coupling feeds this in production).
-_FILE_CAPTURE_PIPE = "/run/jasper-fanin/camilla.pipe"
-
 
 def test_sound_config_preserves_room_peqs_before_preference_eq():
     profile = SoundProfile(
@@ -546,117 +542,11 @@ def test_channel_delays_reject_negative_or_non_finite_values():
         )
 
 
-# ---- File-CAPTURE emit shape (transport_pipe / ring coupling) -------------
-
-
-def test_file_capture_emits_file_capture_shape():
-    """The named-pipe CAPTURE shape — capture type RawFile (a named pipe),
-    playback type Alsa (the REAL DAC), enable_rate_adjust true, an async
-    resampler so the DAC clock can discipline the clockless capture, and the
-    0 dB ceiling preserved. The mirror of the File-SINK *playback* path.
-
-    Capture is `RawFile`, NOT `File`: CamillaDSP v4 has no `File` capture
-    variant, so the old `type: File` here produced a config the DSP rejected
-    with "unknown variant `File`" (caught on jts5 / CamillaDSP 4.1.3,
-    2026-06-27). `File` remains the correct *playback*-sink type."""
-    yaml = emit_sound_config(
-        SoundProfile(enabled=False),
-        capture_pipe_path=_FILE_CAPTURE_PIPE,
-        playback_device="hw:DAC8x,0",
-        enable_rate_adjust=True,
-        resampler_type="AsyncSinc",
-        chunksize=2048,
-        target_level=4096,
-    )
-    assert "type: RawFile" in yaml
-    # The invalid capture variant must never reappear (the regression).
-    assert "type: File" not in yaml
-    assert f'filename: "{_FILE_CAPTURE_PIPE}"' in yaml
-    assert "type: Alsa" in yaml
-    assert 'device: "hw:DAC8x,0"' in yaml
-    assert "enable_rate_adjust: true" in yaml
-    assert "resampler:" in yaml
-    assert "type: AsyncSinc" in yaml
-    assert "profile: Balanced" in yaml
-    assert "volume_limit: 0.0" in yaml
-    assert "chunksize: 2048" in yaml
-    assert "target_level: 4096" in yaml
-
-
-def test_file_capture_resampler_line_absent_on_solo_default():
-    """Byte-contract: the resampler line appears ONLY when requested, so
-    every existing (ALSA-capture, no-resampler) caller is byte-identical."""
+def test_solo_default_uses_alsa_capture_without_resampler():
     yaml = emit_sound_config(SoundProfile(enabled=False))
     assert "resampler:" not in yaml
     assert "type: Alsa" in yaml
     assert "type: File" not in yaml
-
-
-def test_file_capture_rejects_rate_adjust_off():
-    """Fail LOUD: a File capture with rate_adjust off would free-run against
-    the DAC (no clock on capture, no compensator) — the Stage-1 hazard."""
-    import pytest
-
-    with pytest.raises(ValueError, match="requires enable_rate_adjust=True"):
-        emit_sound_config(
-            SoundProfile(enabled=False),
-            capture_pipe_path=_FILE_CAPTURE_PIPE,
-            enable_rate_adjust=False,
-            resampler_type="AsyncSinc",
-        )
-
-
-def test_file_capture_rejects_non_async_resampler():
-    """Fail LOUD: enable_rate_adjust on a clockless File capture has nothing
-    to steer without an async resampler — reject a fixed/sync resampler and
-    reject the no-resampler case."""
-    import pytest
-
-    with pytest.raises(ValueError, match="requires an async resampler"):
-        emit_sound_config(
-            SoundProfile(enabled=False),
-            capture_pipe_path=_FILE_CAPTURE_PIPE,
-            enable_rate_adjust=True,
-            resampler_type="Synchronous",
-        )
-    with pytest.raises(ValueError, match="requires an async resampler"):
-        emit_sound_config(
-            SoundProfile(enabled=False),
-            capture_pipe_path=_FILE_CAPTURE_PIPE,
-            enable_rate_adjust=True,
-            resampler_type=None,
-        )
-
-
-def test_file_capture_rejects_combined_pipe_in_and_pipe_out():
-    """A File-in/File-out config has no clock anywhere — refuse it. The
-    capture guard is placed above the sink guard so this raises its own
-    message first."""
-    import pytest
-
-    with pytest.raises(ValueError, match="cannot be combined"):
-        emit_sound_config(
-            SoundProfile(enabled=False),
-            capture_pipe_path=_FILE_CAPTURE_PIPE,
-            playback_pipe_path="/run/jasper-snapserver/snapfifo",
-            enable_rate_adjust=True,
-            resampler_type="AsyncSinc",
-        )
-
-
-def test_file_capture_keeps_zero_db_ceiling_guard():
-    """The 0 dB ceiling guard fires on the File-capture path too (it runs
-    before any branch in emit_sound_config)."""
-    import pytest
-
-    with pytest.raises(ValueError, match="must not exceed 0 dB"):
-        emit_sound_config(
-            SoundProfile(enabled=False),
-            capture_pipe_path=_FILE_CAPTURE_PIPE,
-            enable_rate_adjust=True,
-            resampler_type="AsyncSinc",
-            volume_limit_db=1.0,
-        )
 
 
 # --- ring flat config emitter (shm_ring statefile seed, P2) -------------------

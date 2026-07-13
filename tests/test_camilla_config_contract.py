@@ -8,18 +8,12 @@ from jasper.camilla_config_contract import (
     DEFAULT_CHUNKSIZE,
     DEFAULT_TARGET_LEVEL,
     PeqFilter,
-    file_capture_resampler_yaml,
     parse_camilla_devices_config,
     resolve_camilla_chunksize,
     resolve_camilla_target_level,
     snd_aloop_rate_adjust_oscillation_reason,
     total_positive_boost_db,
 )
-
-# A File-capture pipe path for exercising the clockless File-capture emit
-# shape (the transport_pipe / ring coupling feeds this in production).
-_FILE_CAPTURE_PIPE = "/run/jasper-fanin/camilla.pipe"
-
 
 def test_camilla_latency_knobs_default_to_literals_when_unset():
     """G7: with the env vars unset and no profile floor the resolvers return the
@@ -392,8 +386,8 @@ def test_parse_camilla_devices_config_ignores_nested_volume_limit() -> None:
 
 
 # --- G8: snd-aloop rate_adjust + async-resampler oscillation guard ---
-# The MIRROR of the lean-lane File-capture guard. The documented failure is the
-# metastable AirPlay-dropout oscillation when a snd-aloop capture
+# The documented failure is the metastable AirPlay-dropout oscillation when a
+# snd-aloop capture
 # (plug:jasper_capture / hw:Loopback) at capture-rate == playback-rate runs BOTH
 # enable_rate_adjust AND an async resampler — CamillaDSP's adjuster fights the
 # loopback's own rate tracking. The safe shape is enable_rate_adjust true AND no
@@ -425,8 +419,10 @@ def test_guard_flags_async_resampler_on_snd_aloop_capture():
     safe = _standard_sound_config()
     oscillating = safe.replace(
         "  enable_rate_adjust: true",
-        "  enable_rate_adjust: true"
-        + file_capture_resampler_yaml("AsyncSinc", "Balanced"),
+        "  enable_rate_adjust: true\n"
+        "  resampler:\n"
+        "    type: AsyncSinc\n"
+        "    profile: Balanced",
     )
     reason = snd_aloop_rate_adjust_oscillation_reason(oscillating)
     assert reason is not None
@@ -434,17 +430,20 @@ def test_guard_flags_async_resampler_on_snd_aloop_capture():
     assert "AsyncSinc" in reason
 
 
-def test_guard_ignores_file_capture_config():
-    """A File-capture config legitimately pairs enable_rate_adjust with an
-    async resampler — it is clockless and has its OWN guard. The snd-aloop guard
-    must not fire on it (its capture is a File pipe, not the loopback)."""
-    file_capture = _standard_sound_config(
-        capture_pipe_path=_FILE_CAPTURE_PIPE,
-        enable_rate_adjust=True,
-        resampler_type="AsyncSinc",
-    )
-    # it DOES carry one — but on a File capture
-    assert "resampler:" in file_capture
+def test_guard_ignores_stale_raw_file_capture_config():
+    """The snd-aloop guard ignores a stale legacy RawFile capture config."""
+    file_capture = """devices:
+  samplerate: 48000
+  enable_rate_adjust: true
+  resampler:
+    type: AsyncSinc
+    profile: Balanced
+  capture:
+    type: RawFile
+    channels: 2
+    filename: "/run/jasper-fanin/camilla.pipe"
+    format: S32_LE
+"""
     assert snd_aloop_rate_adjust_oscillation_reason(file_capture) is None
 
 

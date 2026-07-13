@@ -362,6 +362,10 @@ class _ActiveGraphCarrier:
             if room_peqs is None
             else list(room_peqs)
         )
+        # shm_ring is solo-stereo-only; active baselines keep their roleful ALSA
+        # capture/playback graph. Accept the shared carrier keyword for interface
+        # uniformity, but do not thread it into active recomposition.
+        del fanin_coupling_capture_kwargs
         # By here the carrier has proven this is a SOLO active baseline (bonded
         # members refused above).
         yaml = _recompose_active_baseline_with_eq(
@@ -369,7 +373,6 @@ class _ActiveGraphCarrier:
             room_peqs=room_peqs,
             output_trim_db=output_trim_db,
             out_path=out_path,
-            coupling_capture_kwargs=fanin_coupling_capture_kwargs,
         )
         return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))
 
@@ -419,7 +422,6 @@ def _recompose_active_baseline_with_eq(
     room_peqs: list | None = None,
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
-    coupling_capture_kwargs: dict | None = None,
 ):
     """Recompose the SOLO active baseline with ``profile``'s preference EQ
     inserted pre-split, returning the emitted YAML (written to ``out_path`` when
@@ -435,12 +437,6 @@ def _recompose_active_baseline_with_eq(
     imports are lazy: this only runs for a speaker that already IS an active
     baseline, so the active-speaker + sound-profile deps stay out of the base
     wizard path.
-
-    ``coupling_capture_kwargs`` is the SHARED fan-in→Camilla coupling's capture
-    kwargs for the active baseline path (``{}`` / ``None`` for the default
-    loopback coupling, byte-identical to today). End-to-end transport-pipe mode
-    is refused before this helper because the active output side has not been
-    designed.
     """
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
@@ -456,15 +452,6 @@ def _recompose_active_baseline_with_eq(
     topology = load_output_topology()
     applied_profile = load_applied_baseline_profile_state()
     preference_filters = build_sound_filters(profile)
-    # The active emitter hardcodes enable_rate_adjust: true on its roleful graph
-    # (it is always DAC-paced), so it takes only the legacy File-capture identity
-    # keys — capture_pipe_path + async resampler — NOT stereo-path-only
-    # playback/transport keys.
-    active_coupling_kwargs = {
-        k: v
-        for k, v in (coupling_capture_kwargs or {}).items()
-        if k in {"capture_pipe_path", "resampler_type", "resampler_profile"}
-    }
     yaml, issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied_profile or {},
@@ -472,7 +459,6 @@ def _recompose_active_baseline_with_eq(
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
         out_path=out_path,
-        **active_coupling_kwargs,
     )
     if yaml is None:
         detail = (issues[0].get("message") if issues else None) or (

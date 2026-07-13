@@ -26,7 +26,6 @@ from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
-    DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
     FilterSpec,
     PeqFilter,
 )
@@ -1603,9 +1602,6 @@ def recompose_applied_baseline_yaml(
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
-    capture_pipe_path: str | None = None,
-    resampler_type: str | None = None,
-    resampler_profile: str = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit Layer A strictly from the immutable applied-profile snapshot.
 
@@ -1687,9 +1683,6 @@ def recompose_applied_baseline_yaml(
             applied_profile.get("baseline_id")
             or f"baseline-{_safe_id(topology.topology_id)}"
         ),
-        capture_pipe_path=capture_pipe_path,
-        resampler_type=resampler_type,
-        resampler_profile=resampler_profile,
     )
     return yaml, []
 
@@ -1704,9 +1697,6 @@ def recompose_baseline_yaml(
     output_trim_db: float = 0.0,
     playback_device: str | None = None,
     out_path: str | Path | None = None,
-    capture_pipe_path: str | None = None,
-    resampler_type: str | None = None,
-    resampler_profile: str = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit the active-speaker baseline YAML for the current accepted
     evidence, with optional program-domain room PEQ / preference EQ inserted
@@ -1744,13 +1734,8 @@ def recompose_baseline_yaml(
     role-varying capture (the round-trip loopback) belongs to the driver-domain
     emit on build/apply, where ``capture_device`` lives.
 
-    The fan-in program tap is either the default ALSA snd-aloop capture
-    (``capture_pipe_path`` unset — byte-identical to today) OR a legacy
-    File-capture lane (``capture_pipe_path`` + ``resampler_type`` set, threaded
-    from the graph carrier). Either way Layer A is rebuilt from the canonical
-    evidence and unchanged; only the program-domain capture block differs.
-    ``enable_rate_adjust`` is intentionally NOT a parameter — the active graph
-    hardcodes it true, so a File capture additionally needs the async resampler.
+    The fan-in program tap is the ALSA snd-aloop capture. Layer A is rebuilt
+    from the canonical evidence and unchanged.
 
     **Gate scope (intentionally a subset of the candidate builder).** This only
     re-checks what it needs to EMIT a structurally-valid baseline — playback
@@ -1809,9 +1794,6 @@ def recompose_baseline_yaml(
         output_trim_db=output_trim_db,
         out_path=out_path,
         baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
-        capture_pipe_path=capture_pipe_path,
-        resampler_type=resampler_type,
-        resampler_profile=resampler_profile,
     )
     return yaml, []
 

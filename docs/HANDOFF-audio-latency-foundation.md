@@ -245,8 +245,8 @@ plan for fan-in output-buffer set/unset/floor decisions, adaptive lab target,
 and coupling route-support policy. Mux's adaptive-buffer consumer uses the
 plan's `decide_source_low_latency_route` source-exclusivity decision. Sound
 runtime asks the plan for shared fan-in coupling capture kwargs
-(`fanin_coupling_capture_kwargs`), so the RawFile/AsyncSinc shape does not live
-in separate staged/live/reconcile code paths. The carrier also asks the plan's
+(`fanin_coupling_capture_kwargs`): loopback returns no overrides and `shm_ring`
+returns the paired ALSA device/format kwargs. The carrier also asks the plan's
 `apply_capture_precedence` helper whether grouped pipe-sink playback or shared
 fan-in coupling owns capture for this emit. The coupling reconciler remains the
 transport transition owner, and the staged output-hardware writer validates its
@@ -269,10 +269,13 @@ deleted in the USB dead-pipeline sweep — see the callout below.)
 > `apply_lean_capture_config` / `restore_buffered_config`,
 > `lean_capture_kwargs`, `DEFAULT_LEAN_CAPTURE_FIFO`, and the `JASPER_LEAN_LANE`
 > env / the `fifo` value of `JASPER_USBSINK_OUTPUT_MODE`. The text below is
-> archaeology of the design. The `jasper-camilla-pipe-guard` survives solely
-> for its live Snapcast PLAYBACK-pipe protection; its dead RawFile CAPTURE-pipe
-> branch was deleted after the 2026-07-11 transport_pipe removal left it with
-> no consumer.
+> archaeology of the design. A 2026-07-13 residue sweep also deleted the
+> producerless `capture_pipe_path` / RawFile / async-resampler emitter plumbing
+> from the stereo and active-speaker config builders and graph-carrier
+> recomposition. `playback_pipe_path` remains live for the Snapcast leader sink.
+> The `jasper-camilla-pipe-guard` survives solely for that live Snapcast
+> PLAYBACK-pipe protection; its dead RawFile CAPTURE-pipe branch was deleted
+> after the 2026-07-11 transport_pipe removal left it with no consumer.
 
 The lean lane is the low-latency music path for a **single, exclusive, wired**
 source (USB audio input): the source writes a named pipe, CamillaDSP
@@ -374,7 +377,7 @@ the path: `DEFAULT_LEAN_CAPTURE_FIFO` (`/run/jasper-usbsink/lean.pipe`).
 |---|---|---|
 | 0 | snapcast bond buffer routed via `--stream.buffer` (was an inert URL param; bonds silently ran the 1000 ms default) | shipped |
 | 2 | USB-bridge latency knobs (`JASPER_USBSINK_{QUEUE_MAXBLOCKS,LATENCY,BLOCK_FRAMES}`) | shipped, on-device tuning owed |
-| 4a | File-capture CamillaDSP emitter + fail-loud guards (stereo + active) | shipped, default-OFF |
+| 4a | ~~File-capture CamillaDSP emitter + fail-loud guards (stereo + active)~~ | **REMOVED 2026-07-13** — last producer disappeared with `transport_pipe`; `playback_pipe_path` remains for Snapcast |
 | 4b-i | `decide_source_low_latency_route` shared source policy + `low_latency_feature_flags` opt-in parsing ([`jasper.audio_runtime_plan`](../jasper/audio_runtime_plan.py)); mux consumes the plan layer directly | shipped, wired to mux consumers |
 | 4b-ii | usbsink FIFO-output mode (`JASPER_USBSINK_OUTPUT_MODE=fifo`; env action owned by `jasper.audio_runtime_plan.usbsink_output_mode_action`) | shipped, default-OFF |
 | 4b-iii | stage + validate + classify the lean config (`jasper.sound.runtime.stage_lean_capture_config`) — emit + `--check` + `classify_camilla_graph`, **no live-load** | shipped, default-OFF |
@@ -548,25 +551,16 @@ fail-safe normalization matching Python ([`config.rs`](../rust/jasper-fanin/src/
 the generator helper that returned the dual-pipe kwargs under `transport_pipe`
 and `{}` (byte-identical) under `loopback`
 ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)).
-**Live-armed (flag-gated; hardware-demoted, not default-bound):**
-the reconcile / sound / correction emit paths now ask
-`jasper.audio_runtime_plan.fanin_coupling_capture_kwargs()` and thread the result
-through the carrier, so a `transport_pipe` box puts both the RawFile capture and
-File playback pipe into the config CamillaDSP actually loads — and the
-flat-profile reconcile noop is coupling-aware so it arms even a flat speaker.
-Default `loopback` → `{}` → byte-identical emit, and the Rust side defaults to
-`Coupling::Loopback` (the `FifoWriter` is never constructed) — so unset is
-provably inert. The ORDERED arm/disarm is owned by
+The transport-pipe arm path and its RawFile/File emitter plumbing were removed.
+The remaining live coupling values are `loopback` (`{}` → byte-identical emit)
+and `shm_ring` (paired ALSA capture/playback device kwargs). The ORDERED coupling
+transition is owned by
 [`jasper.fanin.coupling_reconcile`](../jasper/fanin/coupling_reconcile.py)
 (CLI `jasper-fanin-coupling-reconcile`): arm restarts outputd, restarts fan-in,
 then reconciles camilla; disarm reconciles camilla then restarts fan-in and
 outputd; an arm failure rolls the box back to loopback. `jasper-doctor`'s
 `check_fanin_coupling` flags persisted-vs-loaded capture/playback drift.
-Hardware learning: do not default this path on, and do not use a 24 h soak to
-graduate it unless the transport primitive changes. The next gate belongs to a
-clocked/frame-bounded transport: stable audio, no runaway latency during
-`/sound/` changes, CPU-stress stability, and a measured click-in/capture-back
-sample count below 60 ms all-in.
+The superseding frame-bounded transport is `shm_ring`.
 
 ## AEC and DAC clock ownership
 

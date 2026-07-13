@@ -697,14 +697,34 @@ def test_refusal_payload_is_typed_and_stable(reason_code):
     }
 
 
-# --- shm_ring coupling threaded through reemit() ---
+# --- shm_ring coupling threaded through stereo-host reemit() ---
 #
-# The coupling is source/topology-agnostic and always-on while
-# JASPER_FANIN_CAMILLA_COUPLING=shm_ring, so every stereo-host /
-# active-baseline carrier applies it. Default (None / {}) is byte-identical.
+# The coupling is always-on for supported stereo-host graphs while
+# JASPER_FANIN_CAMILLA_COUPLING=shm_ring. Active baselines and grouped program
+# bakes keep their roleful/grouped ALSA paths. Default (None / {}) is
+# byte-identical.
 # (imports for these tests live in the top-of-file import block.)
 
 _SHM_RING_KWARGS = capture_kwargs_for_coupling("shm_ring")
+
+
+def test_active_baseline_ignores_stereo_only_shm_ring_coupling(tmp_path):
+    path = tmp_path / "active_speaker_baseline.yml"
+    path.write_text(_active_baseline_yaml("mono", 2))
+    with mock.patch(
+        "jasper.sound.graph_carrier._bonded_active_member", return_value=False
+    ), mock.patch(
+        "jasper.sound.graph_carrier._recompose_active_baseline_with_eq",
+        return_value="active-yaml",
+    ) as recompose:
+        carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
+        result = carrier.reemit(
+            SoundProfile(enabled=False),
+            fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
+        )
+
+    assert result.yaml == "active-yaml"
+    assert "coupling_capture_kwargs" not in recompose.call_args.kwargs
 
 
 def test_base_flat_loopback_coupling_is_byte_identical(tmp_path):

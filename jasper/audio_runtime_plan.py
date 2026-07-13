@@ -236,10 +236,7 @@ class EmitSoundConfigKwargs(TypedDict, total=False):
     room_peqs_right: Any
     channel_delays_ms: Any
     channel_split: Any
-    capture_pipe_path: str | None
     playback_pipe_path: str | None
-    resampler_type: str | None
-    resampler_profile: str | None
     enable_rate_adjust: bool
     # Ring (shm_ring) coupling names its CamillaDSP capture/playback devices via
     # ALSA ioplug devices (jts_ring_capture / jts_ring_playback), so BOTH device

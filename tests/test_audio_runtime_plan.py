@@ -707,9 +707,9 @@ def test_fanin_coupling_capture_kwargs_none_explicit_env_ignores_file(monkeypatc
     )
 
 
-def test_capture_precedence_applies_fanin_coupling_when_no_stronger_capture():
+def test_capture_precedence_applies_shm_ring_when_no_stronger_topology():
     base = {"enable_rate_adjust": True, "playback_pipe_path": None}
-    coupling = {"capture_pipe_path": "/run/jasper-fanin/camilla.pipe"}
+    coupling = fanin_coupling_capture_kwargs("shm_ring")
 
     merged = apply_capture_precedence(
         base,
@@ -717,7 +717,9 @@ def test_capture_precedence_applies_fanin_coupling_when_no_stronger_capture():
         member_kwargs=base,
     )
 
-    assert merged["capture_pipe_path"] == "/run/jasper-fanin/camilla.pipe"
+    assert merged["capture_device"] == "jts_ring_capture"
+    assert merged["playback_device"] == "jts_ring_playback"
+    assert merged["enable_rate_adjust"] is False
     assert base == {"enable_rate_adjust": True, "playback_pipe_path": None}
 
 
