@@ -936,7 +936,7 @@ Before any LLM work:
 - Keep the current `info.json` / `result.json` shape compatible, with
   explicit versioning so future FIR and agent tooling can detect what
   artifacts are present instead of guessing from filenames.
-- Durable-evidence substrate now exists: bundle schema v3 writes
+- Durable-evidence substrate now exists: bundle schema v5 writes
   `artifact_manifest.json` so raw captures are named as canonical
   private evidence and derived artifacts declare their inputs,
   checksums, sensitivity, and recomputability. Bundles also write

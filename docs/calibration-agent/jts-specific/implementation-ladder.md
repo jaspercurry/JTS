@@ -104,7 +104,7 @@ After the intake, the recommended order is:
    features, strategy gates, and deterministic rationale.
 2. **Durable evidence bundle contract.** Before adding more correction
    power, make bundles self-describing and replayable. This now records
-   an `artifact_manifest.json` for bundle schema v3 plus
+   an `artifact_manifest.json` for bundle schema v5 plus
    `runtime_integrity.json` and `acoustic_quality.json`: checksums,
    schemas, generator provenance, dependencies, recomputability,
    sensitivity, lightweight runtime snapshots, capture sample-count

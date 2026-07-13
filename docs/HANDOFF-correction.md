@@ -509,7 +509,7 @@
 - ✅ **Phase 2.11 — durable evidence bundle contract + runtime integrity.**
   Implemented 2026-05-28. Every new measurement session is a
   self-describing, replayable evidence packet rather than a set of
-  files known by convention. New bundles use bundle schema v3 and
+  files known by convention. New bundles use bundle schema v5 and
   include `artifact_manifest.json` with checksums, kinds, schemas,
   provenance, dependencies, sensitivity, and recomputability flags for
   raw captures and derived artifacts. They also write
@@ -2024,7 +2024,7 @@ recomputable from:
 - target/strategy choices;
 - runtime health snapshots taken around the sweep.
 
-New bundles use schema v3 and write an `artifact_manifest.json` beside
+New bundles use schema v5 and write an `artifact_manifest.json` beside
 `info.json`. Each artifact entry includes:
 
 - relative path and artifact kind (`raw_capture`,
@@ -2080,7 +2080,9 @@ Compatibility rules:
 
 - Treat `info.json` as the minimum bundle identity surface. It must
   contain `session_id`, `state`, and `bundle_schema_version` for a
-  bundle to be useful.
+  bundle to be useful. Its `bundle_schema_version` is authoritative for
+  `artifact_manifest.json`; validation fails on a contradictory manifest
+  header, and the next artifact write repairs historical header drift.
 - Treat `result.json`, `runtime_integrity.json`,
   `acoustic_quality.json`, `analysis/*`, and `fir/*` metadata as
   optional capability surfaces. Missing derived evidence should lower
