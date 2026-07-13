@@ -30,6 +30,7 @@ from .driver_safety import (
     evaluate_driver_safety_profile,
     finalise_research_result,
     normalise_driver_safety_fields,
+    validate_manual_target_bindings,
     validate_driver_research_request,
     validate_driver_research_result_shape,
 )
@@ -55,6 +56,54 @@ _MAX_DRIVERS = 16
 _MAX_CANDIDATES = 16
 _MAX_SOURCES = 8
 MAX_DRIVER_NOTE_CHARS = 2048
+
+_MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates"}
+_MANUAL_DRIVER_FIELDS = {
+    "target_id",
+    "role",
+    "model",
+    "manufacturer",
+    "nominal_impedance_ohm",
+    "sensitivity_db_2v83_1m",
+    "usable_frequency_range_hz",
+    "recommended_highpass_hz",
+    "recommended_lowpass_hz",
+    "do_not_test_below_hz",
+    "gain_offset_db",
+    "gain_offset_db_provenance",
+    "notes",
+    "sources",
+    "hard_excitation_band_hz",
+    "required_protection_filters",
+    "measurement_band_hz",
+    "crossover_search_band_hz",
+    "level_duration_limits",
+    "cabinet",
+    "source",
+}
+_CANDIDATE_FIELDS = {
+    "between_roles",
+    "frequency_hz",
+    "filter_type",
+    "slope_db_per_octave",
+    "confidence",
+    "rationale",
+    "warnings",
+    "lower_polarity",
+    "upper_polarity",
+    "delay_ms",
+    "delay_target_role",
+    "source",
+}
+_OPERATOR_INPUT_FIELDS = {
+    "full_range",
+    "woofer",
+    "mid",
+    "tweeter",
+    "subwoofer",
+    "notes",
+    "target_models",
+}
 
 
 class ActiveSpeakerDesignDraftError(ValueError):
@@ -83,6 +132,18 @@ def _mapping(raw: Any, field_name: str) -> Mapping[str, Any]:
     if not isinstance(raw, Mapping):
         raise ActiveSpeakerDesignDraftError(f"{field_name} must be an object")
     return raw
+
+
+def _reject_unknown_keys(
+    raw: Mapping[str, Any],
+    field_name: str,
+    allowed: set[str],
+) -> None:
+    unknown = sorted(str(key) for key in raw if key not in allowed)
+    if unknown:
+        raise ActiveSpeakerDesignDraftError(
+            f"{field_name} has unknown fields: {', '.join(unknown)}"
+        )
 
 
 def _sequence(raw: Any, field_name: str, *, limit: int | None = None) -> list[Any]:
@@ -304,6 +365,8 @@ def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
     # upgrade must never silently replace an attenuation the operator may have
     # chosen for driver safety. New UI-generated sensitivity proposals send
     # ``sensitivity_estimate`` and remain supersedable by acoustic measurement.
+    raw = _mapping(raw, "manual_settings.driver")
+    _reject_unknown_keys(raw, "manual_settings.driver", _MANUAL_DRIVER_FIELDS)
     driver = _normalise_driver_common(
         raw,
         "manual_settings.driver",
@@ -324,6 +387,7 @@ def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
 
 def _normalise_candidate(raw: Any) -> dict[str, Any]:
     raw = _mapping(raw, "crossover_candidate")
+    _reject_unknown_keys(raw, "crossover_candidate", _CANDIDATE_FIELDS)
     roles = [
         _role(item, "crossover_candidate.between_roles[]")
         for item in _sequence(
@@ -499,6 +563,7 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
     if raw is None or raw == "":
         return None
     raw = _mapping(raw, "manual_settings")
+    _reject_unknown_keys(raw, "manual_settings", _MANUAL_SETTINGS_FIELDS)
     drivers = [
         _normalise_manual_driver(item)
         for item in _sequence(
@@ -541,7 +606,11 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
 
 
 def normalise_operator_inputs(raw: Any) -> dict[str, Any]:
-    raw = raw if isinstance(raw, Mapping) else {}
+    if raw is None or raw == "":
+        raw = {}
+    else:
+        raw = _mapping(raw, "operator_inputs")
+    _reject_unknown_keys(raw, "operator_inputs", _OPERATOR_INPUT_FIELDS)
     out: dict[str, Any] = {}
     for key in ("full_range", "woofer", "mid", "tweeter", "subwoofer", "notes"):
         value = _text(
@@ -575,6 +644,10 @@ def normalise_operator_inputs(raw: Any) -> dict[str, Any]:
                 required=True,
                 max_chars=160,
             )
+            if str(target_id) in normalised_targets:
+                raise ActiveSpeakerDesignDraftError(
+                    f"operator_inputs.target_models contains duplicate target {target_id}"
+                )
             normalised_targets[str(target_id)] = str(model)
         if normalised_targets:
             out["target_models"] = normalised_targets
@@ -691,7 +764,11 @@ def _summary(
     for target_id, role in target_role.items():
         role_target_ids.setdefault(role, []).append(target_id)
 
-    def resolved_target_ids(drivers: list[dict[str, Any]]) -> set[str]:
+    def resolved_target_ids(
+        drivers: list[dict[str, Any]],
+        *,
+        allow_legacy_role_fanout: bool = False,
+    ) -> set[str]:
         resolved: set[str] = set()
         for driver in drivers:
             explicit = driver.get("target_id")
@@ -700,7 +777,9 @@ def _summary(
                 continue
             role = str(driver.get("role") or "")
             matches = role_target_ids.get(role, [])
-            if len(matches) == 1:
+            if allow_legacy_role_fanout:
+                resolved.update(matches)
+            elif len(matches) == 1:
                 resolved.add(matches[0])
         return resolved
 
@@ -718,8 +797,17 @@ def _summary(
         manual_settings.get("crossover_candidates", []) if manual_settings else []
     )
     research_drivers = driver_research.get("drivers", []) if driver_research else []
-    research_target_ids = resolved_target_ids(research_drivers)
-    manual_target_ids = resolved_target_ids(manual_drivers)
+    research_target_ids = resolved_target_ids(
+        research_drivers,
+        allow_legacy_role_fanout=bool(
+            driver_research
+            and driver_research.get("artifact_schema_version") == SCHEMA_VERSION
+        ),
+    )
+    manual_target_ids = resolved_target_ids(
+        manual_drivers,
+        allow_legacy_role_fanout=True,
+    )
     combined_target_ids = research_target_ids | manual_target_ids
     manual_roles = []
     for driver in manual_drivers:
@@ -800,7 +888,22 @@ def build_design_draft(
     """Build a versioned, non-authoritative speaker design draft."""
 
     inputs = normalise_operator_inputs(operator_inputs)
+    target_models = inputs.get("target_models")
+    if isinstance(target_models, Mapping):
+        current_target_ids = {
+            str(target["target_id"]) for target in active_driver_targets(topology)
+        }
+        unknown_target_ids = sorted(set(target_models) - current_target_ids)
+        if unknown_target_ids:
+            raise ActiveSpeakerDesignDraftError(
+                "operator_inputs.target_models has unknown physical targets: "
+                + ", ".join(unknown_target_ids)
+            )
     manual = normalise_manual_settings(manual_settings)
+    try:
+        validate_manual_target_bindings(topology, manual)
+    except DriverSafetyProfileError as exc:
+        raise ActiveSpeakerDesignDraftError(str(exc)) from exc
     request = None
     if driver_research_request is not None:
         try:
@@ -808,6 +911,7 @@ def build_design_draft(
                 driver_research_request,
                 topology,
                 inputs,
+                manual,
             )
         except DriverSafetyProfileError as exc:
             raise ActiveSpeakerDesignDraftError(str(exc)) from exc

@@ -24,6 +24,7 @@ from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_st
 from jasper.output_topology import (
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
+    OutputTopology,
 )
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -2059,10 +2060,11 @@ def test_design_draft_http_conflict_returns_fresh_revision(
         "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
         str(tmp_path / "design_draft.json"),
     )
+    current_topology = {"value": mono_output_topology(card_id=None)}
     monkeypatch.setattr(
         sound_setup,
         "load_output_topology",
-        lambda: mono_output_topology(card_id=None),
+        lambda: current_topology["value"],
     )
     try:
         server, base = _start_sound_server(tmp_path)
@@ -2075,6 +2077,12 @@ def test_design_draft_http_conflict_returns_fresh_revision(
             {"expected_revision": 0, "operator_inputs": {"notes": "first"}},
         )
         assert json.loads(first.read().decode("utf-8"))["revision"] == 1
+
+        changed = current_topology["value"].to_dict()
+        changed["speaker_groups"][0]["channels"][1][
+            "driver_style"
+        ] = "ribbon_tweeter"
+        current_topology["value"] = OutputTopology.from_mapping(changed)
 
         conflict = json_post_with_csrf(
             base,
@@ -2089,6 +2097,7 @@ def test_design_draft_http_conflict_returns_fresh_revision(
 
     assert fresh["revision"] == 1
     assert fresh["operator_inputs"]["notes"] == "first"
+    assert fresh["driver_safety_profile_evaluation"]["status"] == "stale"
     assert "another session" in fresh["error"]
 
 

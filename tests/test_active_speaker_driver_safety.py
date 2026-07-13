@@ -849,3 +849,138 @@ def test_operator_override_drops_research_provenance_for_changed_field() -> None
         "cabinet: operator override has no matching research source"
         in tweeter["unknowns"]
     )
+
+
+@pytest.mark.parametrize(
+    "mutate,match",
+    [
+        (
+            lambda manual: manual["drivers"][1].update({"role": "woofer"}),
+            "role does not match target_id",
+        ),
+        (
+            lambda manual: manual["drivers"][1].update(
+                {"target_id": "missing:tweeter"}
+            ),
+            "not a current physical target",
+        ),
+        (
+            lambda manual: manual["drivers"].append(
+                {**deepcopy(manual["drivers"][1]), "target_id": None}
+            ),
+            "resolves target mono:tweeter more than once",
+        ),
+    ],
+)
+def test_manual_target_binding_refuses_contradictions(mutate, match: str) -> None:
+    manual = _manual_settings()
+    mutate(manual)
+
+    with pytest.raises(DriverSafetyProfileError, match=match):
+        build_driver_safety_profile(
+            mono_output_topology(card_id=None),
+            manual_settings=manual,
+            driver_research=None,
+            confirm=True,
+            confirmed_at="2026-07-13T12:00:00Z",
+        )
+
+    with pytest.raises(DriverSafetyProfileError, match=match):
+        build_driver_research_request(
+            mono_output_topology(card_id=None),
+            _operator_inputs(),
+            manual,
+        )
+
+
+def test_stereo_duplicate_legacy_role_rows_are_rejected() -> None:
+    legacy = _manual_settings()
+    for driver in legacy["drivers"]:
+        driver.pop("target_id", None)
+    legacy["drivers"].append(deepcopy(legacy["drivers"][0]))
+
+    with pytest.raises(DriverSafetyProfileError, match="duplicate legacy role woofer"):
+        build_driver_safety_profile(
+            _stereo_topology(),
+            manual_settings=legacy,
+            driver_research=None,
+        )
+
+
+def test_direct_builder_canonicalizes_manual_values_and_forged_cabinet_claim() -> None:
+    manual = _manual_settings()
+    woofer = manual["drivers"][0]
+    woofer["cabinet"].pop("baffle_width_mm")
+    woofer["cabinet"][
+        "lf_reconstruction_capability"
+    ] = "sealed_single_radiator_supported"
+    woofer["hard_excitation_band_hz"] = [25, 5000]
+    woofer["required_protection_filters"][0].pop("family_or_equivalent")
+
+    topology = mono_output_topology(card_id=None)
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=manual,
+        driver_research=None,
+        confirm=True,
+        confirmed_at="2026-07-13T12:00:00Z",
+    )
+
+    assert profile["targets"][0]["hard_excitation_band_hz"] == [25.0, 5000.0]
+    assert profile["targets"][0]["required_protection_filters"][0][
+        "family_or_equivalent"
+    ] == "equivalent_or_steeper"
+    assert profile["targets"][0]["cabinet"]["lf_reconstruction_capability"] == (
+        "refused_geometry_incomplete"
+    )
+    evaluation = evaluate_driver_safety_profile(profile, topology)
+    assert evaluation.status == "confirmed"
+    assert evaluation.confirmed_and_current is True
+
+
+def test_direct_builder_rejects_boolean_and_unknown_manual_fields() -> None:
+    boolean = _manual_settings()
+    boolean["drivers"][1]["hard_excitation_band_hz"][0] = True
+    with pytest.raises(DriverSafetyProfileError, match="must not be boolean"):
+        build_driver_safety_profile(
+            mono_output_topology(card_id=None),
+            manual_settings=boolean,
+            driver_research=None,
+        )
+
+    unknown = _manual_settings()
+    unknown["drivers"][0]["safe_because_ai_said_so"] = True
+    with pytest.raises(DriverSafetyProfileError, match="unknown fields"):
+        build_driver_safety_profile(
+            mono_output_topology(card_id=None),
+            manual_settings=unknown,
+            driver_research=None,
+        )
+
+    candidate_unknown = _manual_settings()
+    candidate_unknown["crossover_candidates"] = [{"typo": True}]
+    with pytest.raises(DriverSafetyProfileError, match="unknown fields"):
+        build_driver_safety_profile(
+            mono_output_topology(card_id=None),
+            manual_settings=candidate_unknown,
+            driver_research=None,
+        )
+
+
+def test_research_request_operator_context_stales_after_visible_edit() -> None:
+    topology = mono_output_topology(card_id=None)
+    manual = _manual_settings()
+    request = build_driver_research_request(topology, _operator_inputs(), manual)
+    edited = _manual_settings()
+    edited["drivers"][0]["cabinet"]["baffle_width_mm"] = 240.0
+
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="operator-declared context is stale",
+    ):
+        build_design_draft(
+            topology,
+            driver_research_request=request,
+            manual_settings=edited,
+            operator_inputs=_operator_inputs(),
+        )

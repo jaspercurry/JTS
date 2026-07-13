@@ -53,6 +53,44 @@ MAX_UNKNOWNS = 32
 MAX_PROVENANCE_FIELDS = 32
 MAX_PROVENANCE_SOURCES = 8
 
+_MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates"}
+_MANUAL_DRIVER_FIELDS = {
+    "target_id",
+    "role",
+    "model",
+    "manufacturer",
+    "nominal_impedance_ohm",
+    "sensitivity_db_2v83_1m",
+    "usable_frequency_range_hz",
+    "recommended_highpass_hz",
+    "recommended_lowpass_hz",
+    "do_not_test_below_hz",
+    "gain_offset_db",
+    "gain_offset_db_provenance",
+    "notes",
+    "hard_excitation_band_hz",
+    "required_protection_filters",
+    "measurement_band_hz",
+    "crossover_search_band_hz",
+    "level_duration_limits",
+    "cabinet",
+    "source",
+}
+_MANUAL_CANDIDATE_FIELDS = {
+    "between_roles",
+    "frequency_hz",
+    "filter_type",
+    "slope_db_per_octave",
+    "confidence",
+    "rationale",
+    "warnings",
+    "lower_polarity",
+    "upper_polarity",
+    "delay_ms",
+    "delay_target_role",
+    "source",
+}
+
 
 class DriverSafetyProfileError(ValueError):
     """Raised when research or safety-profile input is malformed."""
@@ -639,6 +677,7 @@ def build_driver_research_request(
 ) -> dict[str, Any]:
     """Build the exact physical-target-bound request copied by ``/sound/``."""
 
+    validate_manual_target_bindings(topology, manual_settings)
     manual_by_role = _manual_by_role(manual_settings)
     manual_by_target = _manual_by_target(manual_settings)
     role_counts: dict[str, int] = {}
@@ -726,6 +765,7 @@ def validate_driver_research_request(
     request: Any,
     topology: OutputTopology,
     operator_inputs: Mapping[str, Any],
+    manual_settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a canonical current request or refuse stale/self-invalid input."""
 
@@ -905,7 +945,31 @@ def validate_driver_research_request(
     fingerprint = request.get("request_fingerprint")
     if not _is_sha256(fingerprint) or fingerprint != _fingerprint(core):
         raise DriverSafetyProfileError("driver_research_request fingerprint is invalid")
-    return {**core, "request_fingerprint": fingerprint}
+    canonical = {**core, "request_fingerprint": fingerprint}
+    expected = build_driver_research_request(
+        topology,
+        operator_inputs,
+        manual_settings,
+    )
+    current_by_target = {
+        str(target["target_id"]): target for target in expected.get("targets", [])
+    }
+    for target in canonical["targets"]:
+        requested_context = target.get("operator_declared_context") or {}
+        current_context = (
+            current_by_target.get(str(target["target_id"]), {}).get(
+                "operator_declared_context"
+            )
+            or {}
+        )
+        if any(
+            _canonical_json(current_context.get(key)) != _canonical_json(value)
+            for key, value in requested_context.items()
+        ):
+            raise DriverSafetyProfileError(
+                "driver_research_request operator-declared context is stale"
+            )
+    return canonical
 
 
 def validate_research_result_binding(
@@ -1028,6 +1092,141 @@ def _research_by_target(
         for driver in driver_research.get("drivers", [])
         if isinstance(driver, Mapping) and driver.get("target_id")
     }
+
+
+def validate_manual_target_bindings(
+    topology: OutputTopology,
+    manual_settings: Mapping[str, Any] | None,
+) -> None:
+    """Refuse ambiguous or contradictory physical-target driver rows."""
+
+    if not isinstance(manual_settings, Mapping):
+        return
+    targets = active_driver_targets(topology)
+    by_id = {str(target["target_id"]): target for target in targets}
+    by_role: dict[str, list[str]] = {}
+    for target in targets:
+        by_role.setdefault(str(target["role"]), []).append(str(target["target_id"]))
+    resolved_targets: set[str] = set()
+    legacy_roles: set[str] = set()
+    for index, driver in enumerate(manual_settings.get("drivers", [])):
+        if not isinstance(driver, Mapping):
+            raise DriverSafetyProfileError(
+                f"manual_settings.drivers[{index}] must be an object"
+            )
+        role = _text(
+            driver.get("role"),
+            f"manual_settings.drivers[{index}].role",
+            required=True,
+            max_chars=40,
+        )
+        target_id = _text(
+            driver.get("target_id"),
+            f"manual_settings.drivers[{index}].target_id",
+            max_chars=160,
+        )
+        if target_id:
+            target = by_id.get(target_id)
+            if target is None:
+                raise DriverSafetyProfileError(
+                    f"manual_settings.drivers[{index}].target_id is not a current physical target"
+                )
+            if role != target.get("role"):
+                raise DriverSafetyProfileError(
+                    f"manual_settings.drivers[{index}] role does not match target_id"
+                )
+            if target_id in resolved_targets:
+                raise DriverSafetyProfileError(
+                    f"manual_settings.drivers resolves target {target_id} more than once"
+                )
+            resolved_targets.add(target_id)
+            continue
+        if role in legacy_roles:
+            raise DriverSafetyProfileError(
+                f"manual_settings.drivers contains duplicate legacy role {role}"
+            )
+        legacy_roles.add(str(role))
+        matches = by_role.get(str(role), [])
+        if not matches:
+            raise DriverSafetyProfileError(
+                f"manual_settings.drivers[{index}].role is not a current driver role"
+            )
+        if len(matches) == 1:
+            resolved = matches[0]
+            if resolved in resolved_targets:
+                raise DriverSafetyProfileError(
+                    f"manual_settings.drivers resolves target {resolved} more than once"
+                )
+            resolved_targets.add(resolved)
+
+
+def _normalise_profile_manual_settings(
+    topology: OutputTopology,
+    manual_settings: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Canonicalize direct safety-builder input before deriving authority."""
+
+    if manual_settings is None:
+        return None
+    if not isinstance(manual_settings, Mapping):
+        raise DriverSafetyProfileError("manual_settings must be an object")
+    _reject_unknown_keys(
+        manual_settings,
+        "manual_settings",
+        _MANUAL_SETTINGS_FIELDS,
+    )
+    drivers: list[dict[str, Any]] = []
+    for index, raw in enumerate(
+        _sequence(
+            manual_settings.get("drivers"),
+            "manual_settings.drivers",
+            maximum=16,
+        )
+    ):
+        field_name = f"manual_settings.drivers[{index}]"
+        if not isinstance(raw, Mapping):
+            raise DriverSafetyProfileError(f"{field_name} must be an object")
+        _reject_unknown_keys(raw, field_name, _MANUAL_DRIVER_FIELDS)
+        _reject_bool_tree(raw, field_name)
+        driver: dict[str, Any] = {
+            "role": _text(
+                raw.get("role"),
+                f"{field_name}.role",
+                required=True,
+                max_chars=40,
+            ),
+        }
+        for key, max_chars in (("target_id", 160), ("model", 120), ("manufacturer", 120)):
+            value = _text(raw.get(key), f"{field_name}.{key}", max_chars=max_chars)
+            if value:
+                driver[key] = value
+        driver.update(
+            normalise_driver_safety_fields(
+                raw,
+                field_name,
+                include_research_evidence=False,
+            )
+        )
+        drivers.append(driver)
+    for index, raw_candidate in enumerate(
+        _sequence(
+            manual_settings.get("crossover_candidates"),
+            "manual_settings.crossover_candidates",
+            maximum=16,
+        )
+    ):
+        field_name = f"manual_settings.crossover_candidates[{index}]"
+        if not isinstance(raw_candidate, Mapping):
+            raise DriverSafetyProfileError(f"{field_name} must be an object")
+        _reject_unknown_keys(
+            raw_candidate,
+            field_name,
+            _MANUAL_CANDIDATE_FIELDS,
+        )
+        _reject_bool_tree(raw_candidate, field_name)
+    normalised = {"drivers": drivers, "crossover_candidates": []}
+    validate_manual_target_bindings(topology, normalised)
+    return normalised
 
 
 def _manual_by_role(
@@ -1315,13 +1514,16 @@ def build_driver_safety_profile(
 ) -> dict[str, Any]:
     """Build or preserve the immutable profile for the visible current values."""
 
-    core, issues = _profile_core(topology, manual_settings, driver_research)
+    normalised_manual = _normalise_profile_manual_settings(topology, manual_settings)
+    core, issues = _profile_core(topology, normalised_manual, driver_research)
     fingerprint = _fingerprint(core)
+    prior_evaluation = evaluate_driver_safety_profile(prior_profile, topology)
     prior_confirmation = (
         prior_profile.get("confirmation")
         if isinstance(prior_profile, Mapping)
         and prior_profile.get("profile_fingerprint") == fingerprint
         and isinstance(prior_profile.get("confirmation"), Mapping)
+        and prior_evaluation.confirmed_and_current
         else None
     )
     if confirm and issues:
@@ -1355,13 +1557,28 @@ def build_driver_safety_profile(
         status = "confirmed"
     else:
         status = "needs_confirmation"
-    return {
+    profile = {
         **core,
         "profile_fingerprint": fingerprint,
         "status": status,
         "confirmation": confirmation,
         "issues": _profile_issue_payload(issues),
     }
+    evaluation = evaluate_driver_safety_profile(profile, topology)
+    expected_evaluation_status = {
+        "incomplete": "incomplete",
+        "needs_confirmation": "unconfirmed",
+        "confirmed": "confirmed",
+    }[status]
+    if evaluation.status != expected_evaluation_status:
+        raise DriverSafetyProfileError(
+            "driver safety profile builder produced an incoherent artifact"
+        )
+    if confirm and not evaluation.confirmed_and_current:
+        raise DriverSafetyProfileError(
+            "driver safety profile confirmation did not validate as current"
+        )
+    return profile
 
 
 def _require_canonical_text_field(

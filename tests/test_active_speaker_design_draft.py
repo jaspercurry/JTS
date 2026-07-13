@@ -464,6 +464,58 @@ def test_duplicate_manual_target_and_boolean_numeric_value_are_rejected() -> Non
         build_design_draft(_topology(), manual_settings=boolean_numeric)
 
 
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        (
+            {"manual_settings": {"drivers": [], "crossover_candidates": [], "typo": 1}},
+            "manual_settings has unknown fields: typo",
+        ),
+        (
+            {
+                "manual_settings": {
+                    "drivers": [{"role": "woofer", "model": "A", "typo": 1}],
+                    "crossover_candidates": [],
+                }
+            },
+            "manual_settings.driver has unknown fields: typo",
+        ),
+        (
+            {
+                "manual_settings": {
+                    "drivers": [],
+                    "crossover_candidates": [{
+                        "between_roles": ["woofer", "tweeter"],
+                        "frequency_hz": 2500,
+                        "typo": 1,
+                    }],
+                }
+            },
+            "crossover_candidate has unknown fields: typo",
+        ),
+        (
+            {"operator_inputs": {"woofer": "A", "typo": "ignored before"}},
+            "operator_inputs has unknown fields: typo",
+        ),
+        (
+            {"operator_inputs": {"target_models": {"missing:woofer": "A"}}},
+            "unknown physical targets: missing:woofer",
+        ),
+        (
+            {
+                "operator_inputs": {
+                    "target_models": {"mono:woofer": "A", " mono:woofer ": "B"}
+                }
+            },
+            "duplicate target mono:woofer",
+        ),
+    ],
+)
+def test_nested_design_inputs_reject_unknown_fields(kwargs, match: str) -> None:
+    with pytest.raises(ActiveSpeakerDesignDraftError, match=match):
+        build_design_draft(_topology(), **kwargs)
+
+
 # --- Persisted working-crossover values (Slice 0): polarity/delay on a
 # crossover candidate -----------------------------------------------------
 

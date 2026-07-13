@@ -5120,7 +5120,7 @@ def _make_handler(
                     try:
                         self._send_json(_active_speaker_design_draft_save_payload(raw))
                     except ActiveSpeakerDesignDraftRevisionConflict as e:
-                        payload = dict(e.current_draft)
+                        payload = _active_speaker_design_draft_payload()
                         payload["error"] = str(e)
                         self._send_json(payload, status=HTTPStatus.CONFLICT)
                     except OSError as e:
