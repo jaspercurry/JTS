@@ -660,16 +660,22 @@ code = [
   "jasper/audio_measurement/**",
   "jasper/calibration_agent/**",
   "jasper/web/correction_setup.py",
+  "jasper/web/correction_hub.py",
+  "jasper/web/correction_report.py",
   "jasper/web/balance_flow.py",
   "jasper/web/sync_flow.py",
   "jasper/web/pair_flow.py",
+  "deploy/assets/correction/js/main.js",
+  "deploy/assets/correction/correction.css",
   "deploy/jasper-correction-web.*",
+  "docs/room-correction-information-design.md",
   "docs/active-crossover-information-design.md",
   "docs/calibration-agent/**",
 ]
 docs = [
   "docs/HANDOFF-audio-measurement-core.md",
   "docs/HANDOFF-correction.md",
+  "docs/room-correction-information-design.md",
   "docs/HANDOFF-multiroom.md",
   "docs/HANDOFF-correction-revision-plan.md",
   "docs/HANDOFF-calibration-agent.md",
@@ -683,9 +689,12 @@ docs = [
 requires_docs_when = [
   "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
   "Driver-research/safety-profile authority, excitation-admission limits, neutral evidence identities, commissioning lifecycle/receipt, rollback-state identity, or the Active-to-Room eligibility gate changes.",
+  "The Room screen catalog, whole-page visibility/readiness contract, disclosed defaults, returning-user persistence, blocker/nudge/failure language, relay/local parity, one-handoff model, mandatory proof, acceptance authority, or target/headroom/latency promise changes.",
 ]
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",
+  "pytest tests/test_web_correction_setup.py",
+  "bash scripts/check-js-syntax.sh",
   "pytest tests/test_measurement_volume_guard.py tests/test_web_balance_flow.py tests/test_web_sync_flow.py",
   "pytest tests/test_audio_measurement_excitation_admission.py tests/test_audio_measurement_evidence_identity.py tests/test_active_speaker_driver_safety.py tests/test_active_speaker_commissioning_lifecycle.py tests/test_active_speaker_commissioning_receipt.py",
 ]
@@ -1103,6 +1112,7 @@ code = [
 ]
 docs = [
   "docs/phone-mic-relay-plan.md",
+  "docs/room-correction-information-design.md",
 ]
 requires_docs_when = [
   "The relay API contract, the opaque-spec/blob invariant, the E2E wire format (AES-256-GCM, IV-prepended, plaintext SHA-256), the DATA-only renderer's component/theme allowlist, the capture-page CSP, a measurement-validity gate (realized-constraints / alignment-confidence / clock-drift), a failure cue, or the deploy steps change.",

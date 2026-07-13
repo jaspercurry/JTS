@@ -1,16 +1,17 @@
 # HANDOFF — correction measurement hub at `/correction/`
 
-> If you are picking this up across sessions: this is the canonical
-> planning + design document for the HTTPS correction measurement surface. Read
-> the **Status** and **Architecture decisions** sections first. The
-> phased plan is the work tracker — when a phase ships, mark it ✅ and
-> update the Status. The "Things to ignore" sections are deliberate
-> scope discipline, not omissions.
+> This is the canonical operational reference for the HTTPS correction
+> measurement surface: read **Status** first for what ships, current runtime
+> boundaries, and hardware evidence. Intended Room product states, whole-page
+> visibility, defaults, and language are canonical in
+> [`room-correction-information-design.md`](room-correction-information-design.md).
+> Historical phase narratives below remain useful as implementation
+> archaeology, not current planning authority.
 
 > The crossover builder's user journey, manual/automatic replacement semantics,
 > and parameter ownership are canonical in
 > [`active-crossover-information-design.md`](active-crossover-information-design.md).
-> This handoff owns the HTTPS measurement surface and room-correction behavior.
+> This handoff owns shipped HTTPS measurement and room-correction behavior.
 
 ## Status
 

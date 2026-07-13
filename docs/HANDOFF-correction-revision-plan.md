@@ -1,20 +1,16 @@
 # Correction & tuning — revision plan (the layered pipeline)
 
-> **Status: planning brief / execution plan of record.** Written 2026-07-03
-> from an orchestrated audit (3 research rounds, 21 subagents) + maintainer
-> alignment. This governs the reshaping of room correction into a layered,
-> foolproof, self-verifying tuning feature. Current *operational* truth for the
-> already-shipped subsystems still lives in
-> [docs/HANDOFF-correction.md](HANDOFF-correction.md),
-> [docs/HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md),
-> and [docs/HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md). This
-> doc is the *plan*; those stay the source of truth for what ships.
->
-> **2026-07-06: the hardware-free track is COMPLETE.** All phases
-> (P1a/P1b, P2, P3a/P3b, P4, P5, P6, P7) are merged to `main` — twelve
-> program PRs, each through the adversarial-review gate, ending with
-> P6's live validation against real `gpt-5.4`. What remains is the
-> on-device H-track (H0–H4, §5): prove the loop on real hardware.
+> **Status: historical.** Snapshot from 2026-07-12, after the hardware-free
+> P1–P7 track had merged and before the Room modernization program replaced
+> this plan. Preserved for primary-source archaeology — threshold and flow facts
+> below will drift. Read this for the layered-pipeline rationale and completed
+> program history, not current state. Current shipped behavior lives in
+> [HANDOFF-correction.md](HANDOFF-correction.md); intended Room product behavior
+> lives in
+> [room-correction-information-design.md](room-correction-information-design.md).
+> H1's on-device settle, AGC, and threshold work carries forward in that
+> design's hardware track. H0/H2/H3/H4 remain crossover/bass hardware work and
+> do not become Room-owned tasks.
 
 ## TL;DR
 
