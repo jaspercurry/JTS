@@ -18,15 +18,14 @@ SECTIONS = (
 def section_tabs(active: str) -> str:
     buttons = []
     for key, label, href in SECTIONS:
-        pressed = "true" if key == active else "false"
+        current = ' aria-current="page"' if key == active else ""
         buttons.append(
-            '<a class="segmented__btn" role="tab" '
-            f'aria-pressed="{pressed}" href="{html.escape(href, quote=True)}">'
+            '<a class="segmented__btn"'
+            f'{current} href="{html.escape(href, quote=True)}">'
             f'{html.escape(label)}</a>'
         )
     return (
-        '<nav class="segmented" role="tablist" '
-        'aria-label="Correction measurement type">'
+        '<nav class="segmented" aria-label="Correction measurement type">'
         + "".join(buttons)
         + "</nav>"
     )

@@ -95,7 +95,7 @@ def test_render_has_correction_measurement_tabs():
     assert 'href="/correction/room/"' in html
     assert 'href="/correction/crossover/"' in html
     assert 'href="/correction/bass/"' in html
-    assert 'aria-pressed="true" href="/correction/room/"' in html
+    assert 'aria-current="page" href="/correction/room/"' in html
 
 
 def test_render_has_no_inline_script_iife():

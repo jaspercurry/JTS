@@ -9,13 +9,13 @@ def test_section_tabs_marks_only_the_active_section() -> None:
     rendered = correction_hub.section_tabs("crossover")
 
     assert rendered.startswith(
-        '<nav class="segmented" role="tablist" '
-        'aria-label="Correction measurement type">'
+        '<nav class="segmented" aria-label="Correction measurement type">'
     )
-    assert rendered.count('aria-pressed="true"') == 1
-    assert rendered.count('aria-pressed="false"') == 2
+    assert 'role="tab"' not in rendered
+    assert 'role="tablist"' not in rendered
+    assert rendered.count('aria-current="page"') == 1
     assert (
-        'aria-pressed="true" href="/correction/crossover/">Crossover</a>'
+        'aria-current="page" href="/correction/crossover/">Crossover</a>'
         in rendered
     )
 
