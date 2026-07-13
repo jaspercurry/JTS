@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`dfdd498c`): 2026-07-12.
+Last reconciled against `main` (`d633ab52`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 382
-- **fixed**: 282
+- **open**: 381
+- **fixed**: 283
 - **in-progress**: 0
 - **mooted**: 12
 - **deferred**: 1
@@ -192,7 +192,7 @@ Last reconciled against `main` (`dfdd498c`): 2026-07-12.
 | DA-0251 | `jasper/peering/discovery.py` :: PeerDiscovery._handle_change | should-fix | W4 | **fixed** | fail-soft record parsing and FIFO identity-change bookkeeping — #1411 |
 | DA-0252 | `jasper/transit/_mta_stations.py` :: load_stations | should-fix | W4 | **fixed** | real missing/open/decode fallback tests and truthful permissive-CSV contract — #1413 |
 | DA-0253 | `jasper/voice/openai_session.py` :: OpenAIRealtimeConnection._reconnect_with_bac | should-fix | W4 | **fixed** | exact-threshold OpenAI reconnect escalation and rate-limit contract — #1414 |
-| DA-0254 | `jasper/web/speaker_setup.py` :: _apply_name / _write_bluez_main_conf_name | should-fix | W4 | **open** | — |
+| DA-0254 | `jasper/web/speaker_setup.py` :: _apply_name / _write_bluez_main_conf_name | should-fix | W4 | **fixed** | atomic fail-soft BlueZ publication and complete rename-surface convergence — #1416 |
 | DA-0255 | `jasper/web/sync_flow.py` :: handle_start / active_phase / handle_status | should-fix | W4 | **open** | `handle_play` now directly covered by race and happy-path tests in #1239; start/analyze/active-phase coverage remains |
 | DA-0256 | `rust/jasper-dual-dac-lab/src/main.rs` :: fill_identity (:1029-1062) | should-fix | W4 | **open** | — |
 | DA-0257 | `rust/jasper-fanin/src/impulse_tap.rs` :: RESERVED_TAP_DIR_BASENAMES (:148) | should-fix | W4 | **open** | — |
