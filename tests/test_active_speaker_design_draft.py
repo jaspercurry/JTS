@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -17,7 +19,10 @@ from jasper.active_speaker import (
     load_design_draft,
     save_design_draft,
 )
-from jasper.active_speaker.design_draft import _normalise_candidate
+from jasper.active_speaker.design_draft import (
+    ActiveSpeakerDesignDraftRevisionConflict,
+    _normalise_candidate,
+)
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
 
@@ -93,9 +98,10 @@ def test_design_draft_persists_research_without_authorizing_audio(tmp_path: Path
     assert payload["summary"]["crossover_candidate_count"] == 1
     assert payload["summary"]["missing_research_roles"] == []
     assert payload["driver_research"]["drivers"][1]["gain_offset_db"] == -18.5
-    assert payload["driver_research"]["drivers"][1][
-        "gain_offset_db_provenance"
-    ] == "research_estimate"
+    assert (
+        payload["driver_research"]["drivers"][1]["gain_offset_db_provenance"]
+        == "research_estimate"
+    )
     assert payload["permissions"]["may_not_load_camilla"] is True
     assert payload["permissions"]["may_not_emit_audio"] is True
     assert payload["safety"]["no_audio"] is True
@@ -262,28 +268,32 @@ def test_manual_crossover_settings_can_replace_ai_research():
     assert payload["summary"]["missing_driver_info_roles"] == []
     assert payload["summary"]["missing_crossover_candidate_pairs"] == []
     assert "driver_research_missing" in {issue["code"] for issue in payload["issues"]}
-    assert payload["manual_settings"]["drivers"][1][
-        "gain_offset_db_provenance"
-    ] == "operator_pinned"
+    assert (
+        payload["manual_settings"]["drivers"][1]["gain_offset_db_provenance"]
+        == "operator_pinned"
+    )
 
 
 def test_ui_suggested_gain_provenance_survives_normalisation():
     payload = build_design_draft(
         _topology(),
         manual_settings={
-            "drivers": [{
-                "role": "tweeter",
-                "model": "F110M-8",
-                "gain_offset_db": -24.7,
-                "gain_offset_db_provenance": "sensitivity_estimate",
-            }],
+            "drivers": [
+                {
+                    "role": "tweeter",
+                    "model": "F110M-8",
+                    "gain_offset_db": -24.7,
+                    "gain_offset_db_provenance": "sensitivity_estimate",
+                }
+            ],
             "crossover_candidates": [],
         },
     )
 
-    assert payload["manual_settings"]["drivers"][0][
-        "gain_offset_db_provenance"
-    ] == "sensitivity_estimate"
+    assert (
+        payload["manual_settings"]["drivers"][0]["gain_offset_db_provenance"]
+        == "sensitivity_estimate"
+    )
 
 
 def test_design_draft_without_research_is_honest_needs_research():
@@ -320,6 +330,192 @@ def test_load_design_draft_fails_soft_on_unsupported_schema(tmp_path: Path):
     assert payload["issues"][0]["code"] == "design_draft_unsupported_schema"
 
 
+def test_design_draft_revision_is_monotonic_and_refuses_stale_write(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active_speaker_design_draft.json"
+    first = save_design_draft(
+        _topology(),
+        operator_inputs={"notes": "first"},
+        expected_revision=0,
+        path=path,
+        created_at="2026-07-13T12:00:00Z",
+    )
+    second = save_design_draft(
+        _topology(),
+        operator_inputs={"notes": "second"},
+        expected_revision=1,
+        path=path,
+        created_at="2026-07-13T12:01:00Z",
+    )
+
+    assert first["revision"] == 1
+    assert second["revision"] == 2
+    with pytest.raises(ActiveSpeakerDesignDraftRevisionConflict) as caught:
+        save_design_draft(
+            _topology(),
+            operator_inputs={"notes": "stale"},
+            expected_revision=1,
+            path=path,
+            created_at="2026-07-13T12:02:00Z",
+        )
+    assert caught.value.current_draft["revision"] == 2
+    assert load_design_draft(path)["operator_inputs"]["notes"] == "second"
+
+
+def test_concurrent_design_draft_writes_allow_exactly_one_winner(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active_speaker_design_draft.json"
+    barrier = threading.Barrier(2)
+
+    def writer(label: str) -> tuple[str, object]:
+        barrier.wait(timeout=5)
+        try:
+            return (
+                "saved",
+                save_design_draft(
+                    _topology(),
+                    operator_inputs={"notes": label},
+                    expected_revision=0,
+                    path=path,
+                    created_at="2026-07-13T12:00:00Z",
+                ),
+            )
+        except ActiveSpeakerDesignDraftRevisionConflict as exc:
+            return ("conflict", exc.current_draft)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(writer, ("left", "right")))
+
+    assert sorted(status for status, _ in results) == ["conflict", "saved"]
+    saved = next(payload for status, payload in results if status == "saved")
+    conflict = next(payload for status, payload in results if status == "conflict")
+    assert isinstance(saved, dict)
+    assert isinstance(conflict, dict)
+    assert saved["revision"] == 1
+    assert conflict["revision"] == 1
+    loaded = load_design_draft(path)
+    assert loaded["revision"] == 1
+    assert loaded["operator_inputs"] == saved["operator_inputs"]
+
+
+def test_legacy_draft_loads_as_revision_zero_and_boolean_revision_fails_soft(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active_speaker_design_draft.json"
+    path.write_text(
+        json.dumps(
+            {
+                "artifact_schema_version": 1,
+                "kind": DESIGN_DRAFT_KIND,
+                "status": "ready_for_review",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_design_draft(path)["revision"] == 0
+
+    path.write_text(
+        json.dumps(
+            {
+                "artifact_schema_version": 1,
+                "kind": DESIGN_DRAFT_KIND,
+                "status": "ready_for_review",
+                "revision": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    invalid = load_design_draft(path)
+    assert invalid["status"] == "unreadable"
+    assert invalid["issues"][0]["code"] == "design_draft_revision_invalid"
+
+
+def test_duplicate_manual_target_and_boolean_numeric_value_are_rejected() -> None:
+    duplicate = {
+        "drivers": [
+            {"target_id": "mono:woofer", "role": "woofer", "model": "A"},
+            {"target_id": "mono:woofer", "role": "woofer", "model": "B"},
+        ],
+        "crossover_candidates": [],
+    }
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="manual_settings.drivers contains duplicate target_id",
+    ):
+        build_design_draft(_topology(), manual_settings=duplicate)
+
+    boolean_numeric = {
+        "drivers": [
+            {
+                "target_id": "mono:woofer",
+                "role": "woofer",
+                "model": "A",
+                "nominal_impedance_ohm": True,
+            }
+        ],
+        "crossover_candidates": [],
+    }
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="nominal_impedance_ohm must be numeric",
+    ):
+        build_design_draft(_topology(), manual_settings=boolean_numeric)
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        (
+            {"manual_settings": {"drivers": [], "crossover_candidates": [], "typo": 1}},
+            "manual_settings has unknown fields: typo",
+        ),
+        (
+            {
+                "manual_settings": {
+                    "drivers": [{"role": "woofer", "model": "A", "typo": 1}],
+                    "crossover_candidates": [],
+                }
+            },
+            "manual_settings.driver has unknown fields: typo",
+        ),
+        (
+            {
+                "manual_settings": {
+                    "drivers": [],
+                    "crossover_candidates": [{
+                        "between_roles": ["woofer", "tweeter"],
+                        "frequency_hz": 2500,
+                        "typo": 1,
+                    }],
+                }
+            },
+            "crossover_candidate has unknown fields: typo",
+        ),
+        (
+            {"operator_inputs": {"woofer": "A", "typo": "ignored before"}},
+            "operator_inputs has unknown fields: typo",
+        ),
+        (
+            {"operator_inputs": {"target_models": {"missing:woofer": "A"}}},
+            "unknown physical targets: missing:woofer",
+        ),
+        (
+            {
+                "operator_inputs": {
+                    "target_models": {"mono:woofer": "A", " mono:woofer ": "B"}
+                }
+            },
+            "duplicate target mono:woofer",
+        ),
+    ],
+)
+def test_nested_design_inputs_reject_unknown_fields(kwargs, match: str) -> None:
+    with pytest.raises(ActiveSpeakerDesignDraftError, match=match):
+        build_design_draft(_topology(), **kwargs)
+
+
 # --- Persisted working-crossover values (Slice 0): polarity/delay on a
 # crossover candidate -----------------------------------------------------
 
@@ -334,12 +530,14 @@ def _candidate(**overrides) -> dict:
 
 
 def test_normalise_candidate_accepts_polarity_and_delay():
-    out = _normalise_candidate(_candidate(
-        lower_polarity="inverted",
-        upper_polarity="non-inverted",
-        delay_ms=0.35,
-        delay_target_role="woofer",
-    ))
+    out = _normalise_candidate(
+        _candidate(
+            lower_polarity="inverted",
+            upper_polarity="non-inverted",
+            delay_ms=0.35,
+            delay_target_role="woofer",
+        )
+    )
 
     assert out["lower_polarity"] == "inverted"
     assert out["upper_polarity"] == "non-inverted"
@@ -406,17 +604,19 @@ def test_manual_crossover_settings_carry_polarity_and_delay_through_draft():
         _topology(),
         manual_settings={
             "drivers": [],
-            "crossover_candidates": [{
-                "between_roles": ["woofer", "tweeter"],
-                "frequency_hz": 2200,
-                "filter_type": "Linkwitz-Riley",
-                "slope_db_per_octave": 24,
-                "confidence": "medium",
-                "lower_polarity": "non-inverted",
-                "upper_polarity": "inverted",
-                "delay_ms": 0.4,
-                "delay_target_role": "tweeter",
-            }],
+            "crossover_candidates": [
+                {
+                    "between_roles": ["woofer", "tweeter"],
+                    "frequency_hz": 2200,
+                    "filter_type": "Linkwitz-Riley",
+                    "slope_db_per_octave": 24,
+                    "confidence": "medium",
+                    "lower_polarity": "non-inverted",
+                    "upper_polarity": "inverted",
+                    "delay_ms": 0.4,
+                    "delay_target_role": "tweeter",
+                }
+            ],
         },
     )
 

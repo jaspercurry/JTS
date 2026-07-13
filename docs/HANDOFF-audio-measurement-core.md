@@ -51,7 +51,52 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the worktree & `origin/main`, 2026-06-19)
+## Current state (verified against the Wave 1 worktree and its `origin/main` base, 2026-07-13)
+
+### Wave 1 contract-only foundation (2026-07-13)
+
+Wave 1 adds strict, pure boundary values; it does **not** change the current
+measurement, playback, bundle, DSP, or Room-correction flows:
+
+- `excitation_admission.py` owns one deterministic allow/refuse calculation over
+  an exact request, caller-composed limits, and fresh-protection claim. The
+  request and authority bind target, safety profile, excitation plan, closed
+  band, effective peak, duration, and repeat count. The owning adapter must
+  intersect code-owned, confirmed-profile, and plan limits; bind the plan to
+  normalized stimulus/generator/effective-peak inputs; issue protection evidence
+  from a fresh graph readback; and rerun admission immediately before playback.
+  The strict SHA-256 values are content identities, not signatures, trusted
+  issuers, or transferable playback capabilities. This slice has no producer or
+  live consumer and performs no signal generation, graph I/O, audio, or
+  persistence.
+- `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
+  `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
+  replay inputs, admission artifacts, algorithm id/version, geometry, placement,
+  and context. They do not read files, migrate Room or Active bundle formats,
+  decide quality, own a verdict, or promote a forensic bundle into authority.
+  Existing `jasper.correction.bundles` and `jasper.active_speaker.bundles`
+  retain their current ownership and behavior.
+- The same module distinguishes a normalized CamillaDSP `active_raw` content
+  identity from the exact host transaction/rollback state. The latter reuses
+  the existing `null_walk.DspPredecessor` canonical JSON and fingerprint rules.
+  No generic graph-transaction abstraction landed. The feature host must still
+  hold the real writer lock across apply, fresh readback, and exact restoration.
+- Active owns the nine-state lifecycle and positive eligibility receipt built on
+  these shared identities. The lifecycle's
+  `blocked_live_state_unknown` state prevents an attempted/unknown mutation from
+  returning to an ordinary pre-mutation block without exact restore evidence.
+  A positive receipt requires an evaluated-`verified` topology and every
+  topology-derived combined active-speaker
+  target to pass exactly three distinct admitted fixed-axis post-apply captures
+  from one session/threshold profile, and binds the retained applied candidate,
+  fresh graph proof, predecessor, and rollback result bound to the same
+  operation, mutation, and observed applied graph. Those types are
+  inert until the Active integration lane issues and persists them.
+
+Contract status is not current `/state`. Existing Active bundles remain
+forensic/fail-soft, and Room still gates from the applied recomposition snapshot;
+neither `active_speaker.setup_status` nor `/correction/start` parses the new
+receipt. No hardware behavior was changed or revalidated by Wave 1.
 
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
@@ -906,6 +951,9 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-13 (crossover adapter volume-lease participation and
+Last verified: 2026-07-13 (Wave 1 excitation/evidence identities, reuse of
+`null_walk.DspPredecessor`, and the deliberate no-consumer/no-bundle-migration
+boundary checked contract-only; no hardware behavior revalidated. Crossover
+adapter volume-lease participation and
 measurement-flow admission ownership rechecked
 against correction, balance, sync, and the coordinator mutex)

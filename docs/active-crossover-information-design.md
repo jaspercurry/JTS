@@ -11,6 +11,16 @@
 > Those documents should link here for crossover-builder product behavior rather
 > than restating it.
 
+> **Wave 1 implementation boundary (2026-07-13): contract-only.** JTS now has
+> silent contracts for target-bound hardware research, operator-confirmed driver
+> safety profiles, exact excitation admission, neutral measurement identities,
+> an Active-owned commissioning lifecycle, and an exact positive eligibility
+> receipt. These types have no live playback, CamillaDSP mutation, persistence,
+> or `/state` consumer. The existing commissioning and Room gates remain the
+> production behavior until the later integration lane explicitly issues,
+> persists, and consumes these authorities. No hardware behavior was changed or
+> revalidated by this slice.
+
 ## Product goal
 
 JTS should let a user commission an active two-way or three-way speaker in one
@@ -248,6 +258,37 @@ The user may enter this starting point manually or use research/profile data to
 prefill the visible fields. Prefill is advice. The visible working crossover is
 the source of truth, and the backend validates the resulting graph before it
 can emit sound.
+
+The existing `/sound/` research helper is the only research entry point. Its
+legacy version-1 JSON remains accepted only as advisory prefill. A version-2
+result must echo the exact server-authored request fingerprint plus every
+physical target id, target fingerprint, role, and make/model; a mismatch or
+stale request is refused. Both versions are untrusted proposals, not playback
+permission. Before an
+automatic isolated-driver measurement can run, every physical driver target
+must have a separately versioned, explicitly confirmed safety profile bound to
+the current topology target. That profile distinguishes:
+
+- the hard minimum and maximum excitation frequencies;
+- required high/low-pass protection, including cutoff and minimum slope;
+- a conservative measurement band inside the hard excitation band;
+- a crossover-search band inside the measurement band;
+- bounded level, duration, repeat, and cooldown policy; and
+- cabinet/radiator capability needed for any low-frequency reconstruction.
+
+`usable_frequency_range_hz` is descriptive product information, not a hard
+safety boundary. A filter cutoff is not a brick wall either: required filter
+slope and the hard excitation edge remain separate facts. Missing, unknown,
+unconfirmed, stale, or target-mismatched safety facts refuse new automatic
+isolated-driver audio. They do not mute an already working normal-playback
+graph merely because the newer commissioning profile has not been created.
+Every profile field is visible and editable in `/sound/`; confirmation freezes
+the normalized visible values, their target/value binding, code-owned policy
+snapshot, unknowns, and field provenance. Any target, topology, output,
+driver-style, make/model, or visible safety-value change invalidates the prior
+confirmation. The profile always reports `authorizes_playback=false`: a later
+adapter must still compose and freshly prove the stricter excitation and live
+graph authorities.
 
 ### Step 3A: manual crossover
 
@@ -519,6 +560,13 @@ Apply uses the existing shared DSP transaction. It must:
 6. confirm that the runtime loaded the expected graph; and
 7. roll back if compilation, loading, or runtime confirmation fails.
 
+Wave 1 did not add a generic graph-transaction framework. The exact rollback
+state identity reuses the existing
+`jasper.audio_measurement.null_walk.DspPredecessor` JSON/fingerprint convention.
+Holding the live writer lock,
+applying, reading back, and restoring that exact predecessor remain the owning
+Active adapter's later integration work.
+
 After apply, JTS measures the combined crossover again at the same fixed
 reference position (same axis and height as the commissioning captures).
 Verification compares like with like and records the result
@@ -544,7 +592,9 @@ become an acoustics engine.
 | Concern | Owner | Must not own |
 |---|---|---|
 | Editable and applied crossover semantics | `jasper.active_speaker` preset/profile models | Browser-only settings or relay state |
+| Research proposal and confirmed driver-safety profile | `jasper.active_speaker` | Applying DSP, authorizing audio, or hiding imported values from operator review |
 | Safe driver probe/sweep plan | `jasper.active_speaker.test_signal_plan` and graph-safety policy | Page-specific frequency branches |
+| Pure excitation-admission decision | `jasper.audio_measurement` | Speaker topology, research parsing, live DSP mutation, or product sequencing |
 | Sweep generation, deconvolution, calibration, quality math | `jasper.audio_measurement` | Product sequencing or profile application |
 | Driver, overlap, summed-response, and alignment analysis | `jasper.active_speaker.driver_acoustics` / alignment modules | HTTP, relay transport, or live DSP mutation |
 | Durable commissioning run and evidence identity | Active-speaker measurement/session layer | Filter compilation |
@@ -553,7 +603,94 @@ become an acoustics engine.
 | Phone/browser capture transport | Jasper capture relay | Tone selection, analysis, or product policy |
 | CamillaDSP emission | Existing active-speaker compiler | Inferring measurements or user intent |
 | Atomic apply and rollback | Shared DSP transaction/runtime boundary | Editing working drafts |
+| Verified active-crossover eligibility receipt | `jasper.active_speaker` | Room-owned inference or relabeling of crossover state |
 | Room correction | `jasper.correction` | Driver-domain crossover repair |
+
+### Hardware research and confirmed safety profile
+
+The existing `jts_active_crossover_driver_research` packet evolves in place; do
+not create a parallel Room-owned research wizard or let an LLM write a live
+graph. JTS binds a research request to the current physical target identities,
+the returned packet echoes those identities and uses explicit unknowns, and the
+server strictly validates it. Every safety-relevant value is visible and
+editable. Confirmation freezes the normalized values and their field-level
+provenance into an immutable fingerprint; any topology/output assignment or
+value change requires confirmation again.
+
+The version distinction is intentional: version 1 is legacy advisory research;
+version 2 is bound to a current server request. Neither is authority. The
+confirmed `jts_active_speaker_driver_safety_profile` is also distinct from the
+older code-owned `driver_protection_profile` tone/ramp envelope and from
+`/sound/active-speaker/channel-protection`'s physical/software-guard fact. Later
+playback must satisfy all applicable layers; none may be relabeled as another.
+
+The protected starting graph, excitation plans, captures, candidates, apply
+records, verification records, and downstream eligibility receipt all reference
+that fingerprint. Research may recommend a conservative starting crossover,
+but deterministic acoustic evidence owns any automatic replacement. Research
+can tighten global code-owned limits; it can never raise them.
+
+Cabinet capability is explicit. The first low-frequency splice success path may
+support a declared sealed single-radiator system with sufficient geometry.
+Vented, passive-radiator, multi-radiator, or unknown systems receive a typed
+refusal until their complete acoustic-source contract exists. Empirical overlap
+alone never licenses JTS to infer enclosure physics.
+
+The shared measurement layer receives only normalized immutable bounds and
+returns a typed admission verdict. It never receives the design draft, the
+browser, CamillaDSP, or a powerful active-speaker host object. The active-speaker
+host independently verifies the exact target and required protection through
+fresh graph readback before audible work. This is deliberate defense in depth,
+not two competing sources of truth.
+
+`jasper.audio_measurement.excitation_admission` is the Wave 1 leaf for that
+decision. Its strict request, limits, protection evidence, and verdict bind the
+exact target, safety profile, authority, excitation plan, closed frequency band,
+effective peak, duration, and repeat count. Their SHA-256 fingerprints are
+content identities, not signatures or capabilities. A trusted owning adapter
+must intersect code-owned, profile-owned, and plan-owned limits; bind the plan
+to normalized generator/effective-peak inputs; derive protection evidence from
+fresh readback; and rerun admission immediately before playback. No current
+producer or playback consumer performs that integration yet.
+
+### Wave 1 evidence, lifecycle, and Room handoff contracts
+
+The shared `ArtifactIdentity`, `CaptureIdentity`, and `ReplayIdentity` values
+bind exact feature-owned artifacts, raw captures, replay inputs, and algorithm
+versions. They do not move files, migrate either existing bundle format, decide
+capture quality, or turn a forensic bundle into authority. Room and Active keep
+owning their bundles and verdicts.
+
+Active's lifecycle has nine explicit states: `unconfigured`, `protected`,
+`measured`, `candidate_ready`, `applied_unverified`, `verified`, `blocked`,
+`blocked_live_state_unknown`, and `rolled_back`. Each positive transition is
+bound to the expected evidence kind. Once mutation begins, an attempted or
+unknown outcome cannot fall back to ordinary pre-mutation `blocked`; it enters
+`blocked_live_state_unknown` and can leave only through exact restore evidence.
+That prevents durable state from forgetting that the live graph may be
+uncertain.
+
+The positive `CommissioningEligibilityReceipt` is deliberately demanding. Its
+required targets are derived from a current, evaluated-`verified`
+`OutputTopology`'s combined active speaker groups, not supplied by the caller;
+blocked or physically unverified maps cannot create target authority. Every
+required target must pass one
+post-apply verdict over exactly three distinct, admitted, fixed-reference-axis
+captures from one commissioning session and threshold profile. The receipt also
+binds the confirmed safety profile, applied candidate, expected and freshly read
+back normalized graph, exact predecessor state, and an honest retained-apply
+rollback outcome bound to that same operation, mutation, and observed applied
+graph. A failed, restored, attempted, or unknown mutation cannot mint the
+positive receipt.
+
+These are inert types in Wave 1. Current Active bundles remain forensic and
+fail-soft, the new lifecycle is not the source of current `/state`, and no
+production code issues or persists an eligibility receipt. Room's current
+`active_speaker.setup_status` gate still derives readiness from the legacy
+topology-current applied recomposition snapshot. It neither parses the receipt
+nor requires post-apply three-capture proof, so it is intentionally fail-open
+relative to the new positive-receipt contract until the Room integration lane
+changes both producer and consumer together.
 
 ### DRY invariants
 
@@ -561,12 +698,15 @@ The implementation should have exactly:
 
 - one crossover parameter vocabulary (`ActiveSpeakerPreset`);
 - one editable working crossover;
+- one confirmed safety profile per physical driver target;
 - one driver-safe signal planner;
+- one pure excitation-admission contract;
 - one sweep/deconvolution implementation;
 - one measurement-quality model with consumer-specific policy values;
 - one candidate compiler;
 - one live-DSP transaction;
-- one current applied-profile fingerprint; and
+- one current applied-profile fingerprint;
+- one Active-owned verified eligibility receipt consumed by Room; and
 - one sequential server-authored commissioning envelope.
 
 Manual and automatic entry points may render different steps, but they do not
@@ -598,7 +738,9 @@ bundle records:
 
 ### Runtime surface
 
-`/state` or the existing active-speaker state aggregation should expose a small
+The following remains the target surface; Wave 1 contract status is **not** the
+current `/state`. Once the lifecycle and receipt have a real issuing/persistence
+adapter, `/state` or the existing active-speaker aggregation should expose a small
 household/operator summary:
 
 - idle, measuring, proposal ready, applying, verified, or failed;
@@ -665,8 +807,9 @@ needs a small non-negotiable safety floor:
 - Do not allow room correction to proceed against an unverified or stale active
   crossover.
 
-These protections already align with established JTS boundaries and do not
-require a new safety framework.
+These protections extend established JTS boundaries through a target-bound
+safety profile and one pure admission primitive. They do not create a parallel
+wizard, graph compiler, or generic commissioning framework.
 
 ### Later safety and analysis enhancements
 
@@ -793,6 +936,16 @@ trim calculation is a complete automatic crossover.
 ## Current implementation gap summary
 
 As of 2026-07-12, JTS has much of the substrate but not the full product:
+
+- **Wave 1 contract foundation (2026-07-13) is landed but inert.** `/sound/`
+  owns a revisioned, per-physical-target version-1 server request plus
+  request-bound version-2 research result and visible confirmed version-1
+  safety-profile shape; the pure measurement layer owns exact
+  excitation admission and neutral evidence identities; Active owns the
+  nine-state lifecycle and exact positive Room-eligibility receipt. These do
+  not yet replace existing playback gates, bundles, graph mutation, persistence,
+  `/state`, or Room's applied-snapshot-derived start gate. Live integration and
+  on-device proof remain later slices.
 
 - Manual setup exposes frequency, filter family/slope, and trim. ~~There is
   still no `/sound/` UI for polarity/delay authoring~~ Closed (P2a): the
@@ -959,4 +1112,6 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-13
+Last verified: 2026-07-13 (Wave 1 contract-only foundation checked against the
+worktree; no live audio, DSP mutation, Room-gate behavior, or hardware behavior
+was changed or revalidated.)

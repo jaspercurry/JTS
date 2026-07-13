@@ -34,6 +34,9 @@ Modules:
   - :mod:`~jasper.audio_measurement.ramp` — the settle-based level-match
     ``RampController`` (muted-at-floor → audible gain ramp → audible-evidence
     confirmation) that drives main-volume-affecting playback.
+  - :mod:`~jasper.audio_measurement.excitation_admission` — the pure,
+    identity-bound allow/refuse contract for requested frequency band,
+    effective peak, duration, repeats, and current protection evidence.
   - :mod:`~jasper.audio_measurement.null_walk` — the geometry-bounded,
     timing-locked delay search contract shared by active-speaker and bass
     alignment; it consumes repeated gated null depths, never browser arrival
