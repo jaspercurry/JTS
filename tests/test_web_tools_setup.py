@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import http
 import json
+import subprocess
+import sys
 import threading
 from email.message import Message
 from io import BytesIO
@@ -44,6 +46,31 @@ from jasper.web import tools_setup
 
 
 CSRF = "x" * 43  # passes _common._is_valid_token (32..128 url-safe chars)
+
+
+def test_import_does_not_load_voice_tool_runtime() -> None:
+    script = """
+import json
+import sys
+
+import jasper.web.tools_setup
+
+loaded = sorted(
+    name for name in sys.modules
+    if name == "jasper.tools" or name.startswith("jasper.tools.")
+)
+print(json.dumps(loaded))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+
+    assert json.loads(result.stdout) == []
 
 
 @pytest.fixture(autouse=True)
