@@ -13,12 +13,19 @@ search contract without sharing either subsystem's DSP or web orchestration.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
+import logging
 import math
 import statistics
+import sys
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from inspect import isawaitable
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence, TypeAlias, cast
+
+from jasper.log_event import log_event
 
 MIN_CAPTURE_COUNT = 5
 MIN_STEP_US = 50.0
@@ -27,10 +34,130 @@ MAX_REPEAT_SPREAD_DB = 2.0
 DEFAULT_SOUND_SPEED_M_S = 343.0
 MAX_EXHAUSTIVE_CANDIDATES = 25
 MAX_DSP_DELAY_US = 20_000.0
+DEFAULT_RESTORE_TIMEOUT_S = 15.0
+MIN_RESTORE_TIMEOUT_S = 1.0
+MAX_RESTORE_TIMEOUT_S = 30.0
+
+DelayWalkScope: TypeAlias = Literal["active_crossover", "bass_management"]
+DELAY_WALK_SCOPES: frozenset[str] = frozenset({"active_crossover", "bass_management"})
+
+_FailureCode: TypeAlias = Literal[
+    "timeout",
+    "readback_mismatch",
+    "invalid_confirmation",
+    "self_cancelled",
+    "other",
+]
+
+logger = logging.getLogger(__name__)
 
 
 class NullWalkError(ValueError):
     """The walk specification or evidence violates the timing contract."""
+
+
+class _LifecycleFailure(NullWalkError):
+    """One safely classifiable transaction failure for structured logs."""
+
+    def __init__(self, failure_code: _FailureCode, message: str) -> None:
+        super().__init__(message)
+        self.failure_code = failure_code
+
+
+def _canonical_state(
+    state: Mapping[str, Any],
+    *,
+    field_name: str,
+) -> tuple[str, str]:
+    """Freeze one JSON-domain DSP state and return JSON plus SHA-256.
+
+    JSON's encoder accepts lossy Python shapes such as tuples and mappings with
+    non-string keys. Those shapes are unsuitable for an *exact* rollback
+    identity: ``{1: ...}`` and ``{"1": ...}``, for example, serialize to the
+    same object key. Normalize only the real JSON data model and reject the
+    ambiguous shapes before any DSP mutation.
+    """
+
+    if not isinstance(state, Mapping) or not state:
+        raise NullWalkError(f"{field_name} must be a non-empty mapping")
+
+    def freeze(value: Any, *, path: str) -> Any:
+        if value is None or type(value) in {bool, int, str}:
+            return value
+        if type(value) is float:
+            if not math.isfinite(value):
+                raise NullWalkError(f"{field_name} contains a non-finite number")
+            return value
+        if isinstance(value, Mapping):
+            frozen: dict[str, Any] = {}
+            for key, nested in value.items():
+                if type(key) is not str:
+                    raise NullWalkError(
+                        f"{field_name} contains a non-string key at {path}"
+                    )
+                frozen[key] = freeze(nested, path=f"{path}.{key}")
+            return frozen
+        if type(value) is list:
+            return [
+                freeze(nested, path=f"{path}[{index}]")
+                for index, nested in enumerate(value)
+            ]
+        raise NullWalkError(f"{field_name} contains a non-JSON value at {path}")
+
+    frozen = freeze(state, path="$")
+    canonical = json.dumps(
+        frozen,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, init=False)
+class DspPredecessor:
+    """Frozen, host-owned identity and payload for the exact entry DSP state.
+
+    The shared walk does not interpret the payload. Active-speaker and bass
+    orchestration may carry a CamillaDSP path plus active-graph snapshot (or a
+    transaction object with equivalent authority), while ``fingerprint`` gives
+    the journal a stable, non-secret identity. The payload is canonicalized into
+    immutable JSON before any candidate mutation, and ``state`` returns a fresh
+    copy, so a mutable caller object cannot silently move the rollback target.
+    """
+
+    _state_json: str = field(repr=False)
+    fingerprint: str
+
+    def __init__(self, state: Mapping[str, Any]) -> None:
+        canonical, fingerprint = _canonical_state(
+            state,
+            field_name="predecessor state",
+        )
+        object.__setattr__(self, "_state_json", canonical)
+        object.__setattr__(self, "fingerprint", fingerprint)
+
+    @property
+    def state(self) -> dict[str, Any]:
+        """Return a fresh copy of the frozen host payload."""
+
+        state = json.loads(self._state_json)
+        assert isinstance(state, dict)  # guaranteed by _canonical_state
+        return state
+
+
+@dataclass(frozen=True, init=False)
+class DspRestoreConfirmation:
+    """Fingerprint derived from the host's post-restore DSP read-back."""
+
+    fingerprint: str
+
+    def __init__(self, state: Mapping[str, Any]) -> None:
+        _canonical, fingerprint = _canonical_state(
+            state,
+            field_name="restored DSP read-back",
+        )
+        object.__setattr__(self, "fingerprint", fingerprint)
 
 
 def geometry_seed_us(
@@ -437,27 +564,196 @@ async def _resolve(value: Any) -> Any:
     return await value if isawaitable(value) else value
 
 
-class _RestoreOnExit:
-    """Async transaction edge that never hides a walk or restore failure."""
+async def _drain_task_through_cancellation(
+    task: asyncio.Task[Any],
+) -> asyncio.CancelledError | None:
+    """Wait for ``task`` without propagating its result or caller cancellation."""
 
-    def __init__(self, restore: Callable[[], Awaitable[Any] | Any]) -> None:
-        self._restore = restore
+    waiter = asyncio.create_task(asyncio.wait({task}))
+    cancellation: asyncio.CancelledError | None = None
+    while not waiter.done():
+        try:
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError as error:
+            cancellation = error
+    waiter.result()
+    return cancellation
+
+
+async def _apply_candidate_resilient(
+    apply_candidate: Callable[[DelayCandidate], Awaitable[Any] | Any],
+    operation: DelayCandidate,
+) -> Any:
+    """Settle one DSP mutation before cancellation can start restoration.
+
+    A host adapter may offload CamillaDSP I/O to a worker. Awaiting it directly
+    lets caller cancellation detach that worker; it could then finish *after*
+    the predecessor restore and put the candidate graph back live. Shielding a
+    dedicated task and draining repeated cancellation closes that race.
+    """
+
+    async def _apply_once() -> Any:
+        return await _resolve(apply_candidate(operation))
+
+    apply_task = asyncio.create_task(_apply_once())
+    cancellation = await _drain_task_through_cancellation(apply_task)
+    if apply_task.cancelled():
+        apply_error: BaseException | None = _LifecycleFailure(
+            "self_cancelled",
+            "candidate DSP apply cancelled itself",
+        )
+    else:
+        apply_error = apply_task.exception()
+    if apply_error is not None:
+        if cancellation is not None:
+            raise BaseExceptionGroup(
+                "null walk cancellation arrived while candidate apply failed",
+                [cancellation, apply_error],
+            )
+        raise apply_error
+    if cancellation is not None:
+        raise cancellation
+    return apply_task.result()
+
+
+def _failure_type(error: BaseException) -> str:
+    if isinstance(error, _LifecycleFailure):
+        return NullWalkError.__name__
+    return type(error).__name__
+
+
+def _failure_code(error: BaseException | None) -> _FailureCode:
+    """Return a closed, non-secret lifecycle reason for structured logs."""
+
+    if isinstance(error, _LifecycleFailure):
+        return error.failure_code
+    if isinstance(error, BaseExceptionGroup):
+        classified = {
+            code
+            for nested in error.exceptions
+            if (code := _failure_code(nested)) != "other"
+        }
+        if len(classified) == 1:
+            return classified.pop()
+    return "other"
+
+
+def _validate_scope(scope: Any) -> DelayWalkScope:
+    if isinstance(scope, str) and scope in DELAY_WALK_SCOPES:
+        return cast(DelayWalkScope, scope)
+    allowed = ", ".join(sorted(DELAY_WALK_SCOPES))
+    raise NullWalkError(f"scope must be one of: {allowed}")
+
+
+class _RestorePredecessorOnExit:
+    """Cancellation-draining exact-predecessor restoration transaction edge."""
+
+    def __init__(
+        self,
+        predecessor: DspPredecessor,
+        restore_predecessor: Callable[
+            [DspPredecessor], Awaitable[DspRestoreConfirmation] | DspRestoreConfirmation
+        ],
+        *,
+        scope: DelayWalkScope,
+        timeout_s: float,
+    ) -> None:
+        self._predecessor = predecessor
+        self._restore_predecessor = restore_predecessor
+        self._scope = scope
+        self._timeout_s = timeout_s
 
     async def __aenter__(self) -> None:
         return None
 
     async def __aexit__(self, exc_type: Any, exc: Any, _tb: Any) -> bool:
-        try:
-            restored = await _resolve(self._restore())
-            if restored is False:
-                raise NullWalkError("restore reported failure")
-        except BaseException as restore_error:  # noqa: BLE001
-            if exc is not None:
-                raise BaseExceptionGroup(
-                    "null walk failed and entry graph restore also failed",
-                    [exc, restore_error],
+        trigger = (
+            "cancelled"
+            if isinstance(exc, asyncio.CancelledError)
+            else "failed"
+            if exc is not None
+            else "completed"
+        )
+
+        async def _restore_once() -> None:
+            try:
+                async with asyncio.timeout(self._timeout_s):
+                    restored = await _resolve(
+                        self._restore_predecessor(self._predecessor)
+                    )
+            except TimeoutError as timeout_error:
+                raise _LifecycleFailure(
+                    "timeout",
+                    "predecessor restore timed out",
+                ) from timeout_error
+            except asyncio.CancelledError as cancelled:
+                raise _LifecycleFailure(
+                    "self_cancelled",
+                    "predecessor restore cancelled itself",
+                ) from cancelled
+            if not isinstance(restored, DspRestoreConfirmation):
+                raise _LifecycleFailure(
+                    "invalid_confirmation",
+                    "restore_predecessor must return DspRestoreConfirmation",
                 )
-            raise
+            if restored.fingerprint != self._predecessor.fingerprint:
+                raise _LifecycleFailure(
+                    "readback_mismatch",
+                    "restore_predecessor confirmed the wrong DSP predecessor",
+                )
+
+        # A dedicated task prevents caller cancellation from cancelling the
+        # restoration itself. Repeated cancellation is absorbed until that task
+        # terminates; only then is cancellation propagated outward.
+        restore_task = asyncio.create_task(_restore_once())
+        cleanup_cancellation = await _drain_task_through_cancellation(restore_task)
+        if restore_task.cancelled():
+            restore_error: BaseException | None = _LifecycleFailure(
+                "self_cancelled",
+                "predecessor restore cancelled itself",
+            )
+        else:
+            restore_error = restore_task.exception()
+        effective_trigger = "cancelled" if cleanup_cancellation is not None else trigger
+        if restore_error is not None:
+            log_event(
+                logger,
+                "correction.delay_walk_restore_failed",
+                level=logging.WARNING,
+                scope=self._scope,
+                predecessor_fingerprint=self._predecessor.fingerprint,
+                trigger=effective_trigger,
+                error_type=_failure_type(restore_error),
+                failure_code=_failure_code(restore_error),
+            )
+            failures: list[BaseException] = []
+            if exc is not None:
+                failures.append(exc)
+            if cleanup_cancellation is not None:
+                failures.append(cleanup_cancellation)
+            failures.append(restore_error)
+            if len(failures) > 1:
+                raise BaseExceptionGroup(
+                    "null walk did not complete and exact predecessor restore failed",
+                    failures,
+                )
+            raise restore_error
+
+        log_event(
+            logger,
+            "correction.delay_walk_restored",
+            scope=self._scope,
+            predecessor_fingerprint=self._predecessor.fingerprint,
+            trigger=effective_trigger,
+        )
+        if cleanup_cancellation is not None:
+            if exc is None:
+                raise cleanup_cancellation
+            if not isinstance(exc, asyncio.CancelledError):
+                raise BaseExceptionGroup(
+                    "null walk failed and cancellation arrived during restore",
+                    [exc, cleanup_cancellation],
+                )
         return False
 
 
@@ -469,37 +765,120 @@ async def run_null_walk(
         [DelayCandidate, int],
         Awaitable[Mapping[str, Any]] | Mapping[str, Any],
     ],
-    restore: Callable[[], Awaitable[Any] | Any],
+    snapshot_predecessor: Callable[[], Awaitable[DspPredecessor] | DspPredecessor],
+    restore_predecessor: Callable[
+        [DspPredecessor], Awaitable[DspRestoreConfirmation] | DspRestoreConfirmation
+    ],
+    scope: DelayWalkScope,
     captures_per_candidate: int = MIN_CAPTURE_COUNT,
+    restore_timeout_s: float = DEFAULT_RESTORE_TIMEOUT_S,
 ) -> dict[str, Any]:
     """Execute the shared candidate/apply/capture/restore transaction.
 
     ``apply_candidate`` is the host-owned DSP mutation (active-driver delay or
     sub-to-mains delay).  ``capture_null`` is the host-owned gated measurement
-    transport. This shared layer sequences them and always attempts to restore
-    the entry graph, including after cancellation; an explicit or raised
-    restore failure is surfaced, never reported as restored. The selected
-    value is evidence for a later reviewed apply, not permission to retain a
-    candidate graph.
+    transport. ``snapshot_predecessor`` freezes the exact host-owned entry DSP
+    identity and state before the first mutation; ``restore_predecessor`` must
+    restore that same snapshot, read back the active DSP state, and construct a
+    :class:`DspRestoreConfirmation` from that read-back. This shared layer
+    sequences the walk and drains the bounded restoration despite repeated
+    cancellation. Host DSP adapters must themselves bound and cancellation-drain
+    mutation I/O, and the caller must exclude concurrent DSP writers for this
+    whole transaction. ``restore_timeout_s`` is the cancellation deadline; wall
+    completion can additionally include the adapter's bounded drain. An explicit,
+    raised, mismatched, or timed-out restore failure is surfaced and never
+    reported as restored. The selected value is evidence for a later reviewed
+    apply, not permission to retain a candidate graph.
     """
 
     if captures_per_candidate < MIN_CAPTURE_COUNT:
         raise NullWalkError(
             f"captures_per_candidate must be at least {MIN_CAPTURE_COUNT}"
         )
+    validated_scope = _validate_scope(scope)
+    restore_timeout = _finite(restore_timeout_s, field="restore_timeout_s")
+    if not MIN_RESTORE_TIMEOUT_S <= restore_timeout <= MAX_RESTORE_TIMEOUT_S:
+        raise NullWalkError(
+            "restore_timeout_s must be between "
+            f"{MIN_RESTORE_TIMEOUT_S:g} and {MAX_RESTORE_TIMEOUT_S:g}"
+        )
     candidates = spec.candidate_delays_us()
-    evidence: dict[float, list[Mapping[str, Any]]] = {}
-    async with _RestoreOnExit(restore):
-        for candidate in candidates:
-            operation = spec.dsp_candidate(candidate)
-            applied = await _resolve(apply_candidate(operation))
-            if applied is False:
-                raise NullWalkError("apply_candidate reported failure")
-            rows: list[Mapping[str, Any]] = []
-            for index in range(captures_per_candidate):
-                capture = await _resolve(capture_null(operation, index))
-                if not isinstance(capture, Mapping):
-                    raise NullWalkError("capture_null must return a mapping")
-                rows.append(capture)
-            evidence[candidate] = rows
-    return select_delay(spec, evidence)
+    predecessor: DspPredecessor | None = None
+    completed = False
+    try:
+        predecessor = await _resolve(snapshot_predecessor())
+        if not isinstance(predecessor, DspPredecessor):
+            raise NullWalkError("snapshot_predecessor must return DspPredecessor")
+        log_event(
+            logger,
+            "correction.delay_walk_started",
+            scope=validated_scope,
+            predecessor_fingerprint=predecessor.fingerprint,
+            crossover_fc_hz=spec.crossover_fc_hz,
+            candidate_count=len(candidates),
+            captures_per_candidate=captures_per_candidate,
+            positive_delay_target=spec.positive_delay_target,
+            negative_delay_target=spec.negative_delay_target,
+        )
+        evidence: dict[float, list[Mapping[str, Any]]] = {}
+        async with _RestorePredecessorOnExit(
+            predecessor,
+            restore_predecessor,
+            scope=validated_scope,
+            timeout_s=restore_timeout,
+        ):
+            for candidate in candidates:
+                operation = spec.dsp_candidate(candidate)
+                applied = await _apply_candidate_resilient(
+                    apply_candidate,
+                    operation,
+                )
+                if applied is False:
+                    raise NullWalkError("apply_candidate reported failure")
+                rows: list[Mapping[str, Any]] = []
+                for index in range(captures_per_candidate):
+                    capture = await _resolve(capture_null(operation, index))
+                    if not isinstance(capture, Mapping):
+                        raise NullWalkError("capture_null must return a mapping")
+                    rows.append(capture)
+                evidence[candidate] = rows
+        result = select_delay(spec, evidence)
+        completed = True
+    finally:
+        if not completed:
+            error = sys.exception()
+            event = (
+                "correction.delay_walk_cancelled"
+                if isinstance(error, asyncio.CancelledError)
+                else "correction.delay_walk_failed"
+            )
+            failure_fields: dict[str, Any] = {}
+            if not isinstance(error, asyncio.CancelledError):
+                failure_fields["failure_code"] = _failure_code(error)
+            log_event(
+                logger,
+                event,
+                level=(
+                    logging.INFO
+                    if isinstance(error, asyncio.CancelledError)
+                    else logging.WARNING
+                ),
+                scope=validated_scope,
+                predecessor_fingerprint=(
+                    predecessor.fingerprint
+                    if isinstance(predecessor, DspPredecessor)
+                    else None
+                ),
+                error_type=_failure_type(error) if error is not None else None,
+                **failure_fields,
+            )
+    log_event(
+        logger,
+        "correction.delay_walk_completed",
+        scope=validated_scope,
+        predecessor_fingerprint=predecessor.fingerprint,
+        status=result.get("status"),
+        reason=result.get("reason"),
+        selected_relative_delay_us=result.get("selected_relative_delay_us"),
+    )
+    return result

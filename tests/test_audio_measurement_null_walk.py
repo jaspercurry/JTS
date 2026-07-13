@@ -2,13 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
+import logging
+
 import pytest
 
 from jasper.audio_measurement.null_walk import (
+    DspPredecessor,
+    DspRestoreConfirmation,
     NullWalkError,
     NullWalkSpec,
     geometry_seed_us,
-    run_null_walk,
+    run_null_walk as _run_null_walk,
     select_delay,
     summarize_candidate,
 )
@@ -41,6 +46,61 @@ def _spec(*, fc=5000.0, seed=0.0, step=100.0):
         negative_delay_target="lower",
         step_us=step,
     )
+
+
+def _predecessor(state=None):
+    return DspPredecessor(
+        state={"config_path": "/configs/entry.yml", "active_raw": state or "raw"},
+    )
+
+
+def _restore_recorder(restored):
+    def restore(predecessor):
+        restored.append(predecessor)
+        return DspRestoreConfirmation(predecessor.state)
+
+    return restore
+
+
+async def _run_active_walk(spec, **kwargs):
+    return await _run_null_walk(spec, scope="active_crossover", **kwargs)
+
+
+def test_predecessor_fingerprint_is_derived_from_canonical_frozen_state():
+    first = DspPredecessor(state={"path": "/entry.yml", "raw": {"b": 2, "a": 1}})
+    second = DspPredecessor(state={"raw": {"a": 1, "b": 2}, "path": "/entry.yml"})
+
+    assert first.fingerprint == second.fingerprint
+    assert len(first.fingerprint) == 64
+
+
+def test_predecessor_state_access_cannot_mutate_the_frozen_rollback_anchor():
+    predecessor = DspPredecessor(
+        state={"path": "/entry.yml", "raw": {"filters": ["entry"]}}
+    )
+    state_copy = predecessor.state
+
+    state_copy["raw"]["filters"].append("candidate")
+
+    assert predecessor.state == {
+        "path": "/entry.yml",
+        "raw": {"filters": ["entry"]},
+    }
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {},
+        {"raw": float("nan")},
+        {"raw": object()},
+        {1: "ambiguous-key"},
+        {"raw": ("tuple-is-not-json",)},
+    ],
+)
+def test_predecessor_requires_nonempty_canonical_json_state(state):
+    with pytest.raises(NullWalkError, match="predecessor state"):
+        DspPredecessor(state=state)
 
 
 def test_geometry_bound_is_half_one_crossover_period_and_grid_contains_seed():
@@ -297,6 +357,7 @@ async def test_runner_applies_each_exact_candidate_and_always_restores():
     spec = _spec()
     applied = []
     restored = []
+    predecessor = _predecessor()
 
     async def apply_candidate(candidate):
         applied.append(candidate.relative_delay_us)
@@ -304,82 +365,653 @@ async def test_runner_applies_each_exact_candidate_and_always_restores():
     async def capture(candidate, index):
         return _capture(20.0 - abs(candidate.relative_delay_us) / 100.0 + index * 0.01)
 
-    out = await run_null_walk(
+    out = await _run_active_walk(
         spec,
         apply_candidate=apply_candidate,
         capture_null=capture,
-        restore=lambda: restored.append(True),
+        snapshot_predecessor=lambda: predecessor,
+        restore_predecessor=_restore_recorder(restored),
     )
 
     assert applied == list(spec.candidate_delays_us())
-    assert restored == [True]
+    assert restored == [predecessor]
     assert out["selected_delay_us"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_runner_freezes_snapshot_before_first_candidate_mutation():
+    entry_state = {
+        "config_path": "/configs/entry.yml",
+        "active_raw": {"filters": ["entry"]},
+    }
+    external = DspPredecessor(entry_state)
+    restored = []
+
+    def apply_candidate(_candidate):
+        # Simulate a host retaining and changing its own nested snapshot object
+        # while it installs candidate state. The transaction-owned predecessor
+        # must remain the value captured at entry.
+        entry_state["active_raw"]["filters"].append("candidate")
+
+    await _run_active_walk(
+        _spec(),
+        apply_candidate=apply_candidate,
+        capture_null=lambda candidate, index: _capture(
+            20.0 - abs(candidate.relative_delay_us) / 100.0 + index * 0.01
+        ),
+        snapshot_predecessor=lambda: external,
+        restore_predecessor=_restore_recorder(restored),
+    )
+
+    assert restored[0].fingerprint == external.fingerprint
+    assert restored[0].state == {
+        "config_path": "/configs/entry.yml",
+        "active_raw": {"filters": ["entry"]},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["active_crossover", "bass_management"])
+async def test_runner_emits_scoped_bounded_lifecycle_events_without_snapshot_payload(
+    caplog,
+    scope,
+):
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.null_walk")
+
+    await _run_null_walk(
+        _spec(),
+        scope=scope,
+        apply_candidate=lambda _candidate: True,
+        capture_null=lambda candidate, index: _capture(
+            20.0 - abs(candidate.relative_delay_us) / 100.0 + index * 0.01
+        ),
+        snapshot_predecessor=lambda: _predecessor(state="secret-active-raw"),
+        restore_predecessor=lambda predecessor: DspRestoreConfirmation(
+            predecessor.state
+        ),
+    )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("event=correction.delay_walk_started" in m for m in messages) == 1
+    assert sum("event=correction.delay_walk_restored" in m for m in messages) == 1
+    assert sum("event=correction.delay_walk_completed" in m for m in messages) == 1
+    assert all(f"scope={scope}" in message for message in messages)
+    assert all("secret-active-raw" not in message for message in messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["room", None, ["active_crossover"]])
+async def test_runner_refuses_unknown_scope_before_dsp_mutation(scope):
+    applied = []
+
+    with pytest.raises(NullWalkError, match="scope must be one of"):
+        await _run_null_walk(
+            _spec(),
+            scope=scope,  # type: ignore[arg-type]
+            apply_candidate=lambda candidate: applied.append(candidate),
+            capture_null=lambda _candidate, _index: _capture(20.0),
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=_restore_recorder([]),
+        )
+
+    assert applied == []
 
 
 @pytest.mark.asyncio
 async def test_runner_restores_when_capture_fails():
     spec = _spec()
     restored = []
+    predecessor = _predecessor()
 
     async def fail(_delay, _index):
         raise RuntimeError("relay lost")
 
     with pytest.raises(RuntimeError, match="relay lost"):
-        await run_null_walk(
+        await _run_active_walk(
             spec,
             apply_candidate=lambda _delay: None,
             capture_null=fail,
-            restore=lambda: restored.append(True),
+            snapshot_predecessor=lambda: predecessor,
+            restore_predecessor=_restore_recorder(restored),
         )
 
-    assert restored == [True]
+    assert restored == [predecessor]
 
 
 @pytest.mark.asyncio
 async def test_runner_rejects_apply_callback_explicit_failure_and_restores():
     restored = []
+    predecessor = _predecessor()
     with pytest.raises(NullWalkError, match="apply_candidate reported failure"):
-        await run_null_walk(
+        await _run_active_walk(
             _spec(),
             apply_candidate=lambda _candidate: False,
             capture_null=lambda _candidate, _index: _capture(20.0),
-            restore=lambda: restored.append(True),
+            snapshot_predecessor=lambda: predecessor,
+            restore_predecessor=_restore_recorder(restored),
         )
-    assert restored == [True]
+    assert restored == [predecessor]
 
 
 @pytest.mark.asyncio
-async def test_runner_rejects_restore_callback_explicit_failure():
-    with pytest.raises(NullWalkError, match="restore reported failure"):
-        await run_null_walk(
+async def test_runner_treats_apply_callback_self_cancellation_as_failure():
+    restored = []
+
+    async def cancel_apply(_candidate):
+        raise asyncio.CancelledError
+
+    with pytest.raises(NullWalkError, match="candidate DSP apply cancelled itself"):
+        await _run_active_walk(
+            _spec(),
+            apply_candidate=cancel_apply,
+            capture_null=lambda _candidate, _index: _capture(20.0),
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=_restore_recorder(restored),
+        )
+
+    assert len(restored) == 1
+
+
+@pytest.mark.asyncio
+async def test_runner_rejects_restore_callback_explicit_failure(caplog):
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.null_walk")
+
+    with pytest.raises(NullWalkError, match="must return DspRestoreConfirmation"):
+        await _run_active_walk(
             _spec(),
             apply_candidate=lambda _candidate: None,
             capture_null=lambda candidate, index: _capture(
                 20.0 - abs(candidate.relative_delay_us) / 100.0 + index * 0.01
             ),
-            restore=lambda: False,
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=lambda _predecessor: False,
         )
+    assert any(
+        "event=correction.delay_walk_restore_failed" in message
+        and "failure_code=invalid_confirmation" in message
+        for message in (record.getMessage() for record in caplog.records)
+    )
 
 
 @pytest.mark.asyncio
-async def test_runner_reports_capture_and_restore_failures_together():
+async def test_runner_rejects_restore_confirmation_for_different_graph(caplog):
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.null_walk")
+
+    with pytest.raises(NullWalkError, match="confirmed the wrong DSP predecessor"):
+        await _run_active_walk(
+            _spec(),
+            apply_candidate=lambda _candidate: None,
+            capture_null=lambda candidate, index: _capture(
+                20.0 - abs(candidate.relative_delay_us) / 100.0 + index * 0.01
+            ),
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=lambda _predecessor: DspRestoreConfirmation(
+                {"config_path": "/configs/not-entry.yml", "active_raw": "raw"}
+            ),
+        )
+    assert any(
+        "event=correction.delay_walk_restore_failed" in message
+        and "failure_code=readback_mismatch" in message
+        for message in (record.getMessage() for record in caplog.records)
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_treats_restore_callback_self_cancellation_as_failure(caplog):
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.null_walk")
+
+    async def cancel_restore(_predecessor):
+        raise asyncio.CancelledError
+
+    with pytest.raises(NullWalkError, match="predecessor restore cancelled itself"):
+        await _run_active_walk(
+            _spec(),
+            apply_candidate=lambda _candidate: True,
+            capture_null=lambda candidate, index: _capture(
+                20.0 - abs(candidate.relative_delay_us) / 100.0 + index * 0.01
+            ),
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=cancel_restore,
+        )
+    assert any(
+        "event=correction.delay_walk_restore_failed" in message
+        and "failure_code=self_cancelled" in message
+        for message in (record.getMessage() for record in caplog.records)
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_reports_capture_and_restore_failures_together(caplog):
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.null_walk")
+
     def fail_capture(_candidate, _index):
         raise RuntimeError("relay lost")
 
-    def fail_restore():
+    def fail_restore(_predecessor):
         raise RuntimeError("restore lost")
 
     with pytest.raises(BaseExceptionGroup) as caught:
-        await run_null_walk(
+        await _run_active_walk(
             _spec(),
             apply_candidate=lambda _candidate: None,
             capture_null=fail_capture,
-            restore=fail_restore,
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=fail_restore,
         )
     assert [str(exc) for exc in caught.value.exceptions] == [
         "relay lost",
         "restore lost",
     ]
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "event=correction.delay_walk_restore_failed" in message
+        and "failure_code=other" in message
+        for message in messages
+    )
+    assert any("event=correction.delay_walk_failed" in message for message in messages)
+    assert all("relay lost" not in message for message in messages)
+    assert all("restore lost" not in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_runner_cancellation_during_capture_restores_before_propagating(caplog):
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.null_walk")
+    capture_started = asyncio.Event()
+    restored = []
+    predecessor = _predecessor()
+
+    async def capture(_candidate, _index):
+        capture_started.set()
+        await asyncio.Future()
+
+    task = asyncio.create_task(
+        _run_active_walk(
+            _spec(),
+            apply_candidate=lambda _candidate: True,
+            capture_null=capture,
+            snapshot_predecessor=lambda: predecessor,
+            restore_predecessor=_restore_recorder(restored),
+        )
+    )
+    await capture_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert restored == [predecessor]
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "event=correction.delay_walk_restored" in message
+        and "trigger=cancelled" in message
+        for message in messages
+    )
+    assert any(
+        "event=correction.delay_walk_cancelled" in message for message in messages
+    )
+    assert all(
+        "failure_code=" not in message
+        for message in messages
+        if "event=correction.delay_walk_cancelled" in message
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_cancellation_settles_candidate_apply_before_restore():
+    apply_started = asyncio.Event()
+    release_apply = asyncio.Event()
+    order = []
+    predecessor = _predecessor()
+
+    async def apply_candidate(_candidate):
+        apply_started.set()
+        await release_apply.wait()
+        order.append("apply_finished")
+        return True
+
+    def restore(entry):
+        order.append("restored")
+        return DspRestoreConfirmation(entry.state)
+
+    task = asyncio.create_task(
+        _run_active_walk(
+            _spec(),
+            apply_candidate=apply_candidate,
+            capture_null=lambda _candidate, _index: _capture(20.0),
+            snapshot_predecessor=lambda: predecessor,
+            restore_predecessor=restore,
+        )
+    )
+    await apply_started.wait()
+    task.cancel()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert order == []
+    release_apply.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert order == ["apply_finished", "restored"]
+
+
+@pytest.mark.asyncio
+async def test_runner_preserves_apply_failure_that_finishes_after_cancellation():
+    apply_started = asyncio.Event()
+    release_apply = asyncio.Event()
+    restored = []
+
+    async def apply_candidate(_candidate):
+        apply_started.set()
+        await release_apply.wait()
+        raise RuntimeError("candidate load failed")
+
+    task = asyncio.create_task(
+        _run_active_walk(
+            _spec(),
+            apply_candidate=apply_candidate,
+            capture_null=lambda _candidate, _index: _capture(20.0),
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=_restore_recorder(restored),
+        )
+    )
+    await apply_started.wait()
+    task.cancel()
+    release_apply.set()
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await task
+
+    assert any(
+        isinstance(error, asyncio.CancelledError) for error in caught.value.exceptions
+    )
+    assert any(
+        isinstance(error, RuntimeError) and str(error) == "candidate load failed"
+        for error in caught.value.exceptions
+    )
+    assert len(restored) == 1
+
+
+@pytest.mark.asyncio
+async def test_runner_restores_for_unexpected_base_exception():
+    class FatalWalkAbort(BaseException):
+        pass
+
+    restored = []
+
+    def abort(_candidate, _index):
+        raise FatalWalkAbort("host shutdown")
+
+    with pytest.raises(FatalWalkAbort, match="host shutdown"):
+        await _run_active_walk(
+            _spec(),
+            apply_candidate=lambda _candidate: True,
+            capture_null=abort,
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=_restore_recorder(restored),
+        )
+
+    assert len(restored) == 1
+
+
+@pytest.mark.asyncio
+async def test_runner_repeated_cancellation_cannot_interrupt_restore():
+    capture_started = asyncio.Event()
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
+    restored = []
+    predecessor = _predecessor()
+
+    async def capture(_candidate, _index):
+        capture_started.set()
+        await asyncio.Future()
+
+    async def restore(entry):
+        restore_started.set()
+        await release_restore.wait()
+        restored.append(entry)
+        return DspRestoreConfirmation(entry.state)
+
+    task = asyncio.create_task(
+        _run_active_walk(
+            _spec(),
+            apply_candidate=lambda _candidate: True,
+            capture_null=capture,
+            snapshot_predecessor=lambda: predecessor,
+            restore_predecessor=restore,
+        )
+    )
+    await capture_started.wait()
+    task.cancel()
+    await restore_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert restored == []
+    release_restore.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert restored == [predecessor]
+
+
+@pytest.mark.asyncio
+async def test_runner_cancellation_during_success_cleanup_waits_for_restore():
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
+    restored = []
+    predecessor = _predecessor()
+
+    async def restore(entry):
+        restore_started.set()
+        await release_restore.wait()
+        restored.append(entry)
+        return DspRestoreConfirmation(entry.state)
+
+    task = asyncio.create_task(
+        _run_active_walk(
+            _spec(),
+            apply_candidate=lambda _candidate: True,
+            capture_null=lambda candidate, index: _capture(
+                20.0 - abs(candidate.relative_delay_us) / 100.0 + index * 0.01
+            ),
+            snapshot_predecessor=lambda: predecessor,
+            restore_predecessor=restore,
+        )
+    )
+    await restore_started.wait()
+    task.cancel()
+    release_restore.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert restored == [predecessor]
+
+
+@pytest.mark.asyncio
+async def test_runner_preserves_cleanup_cancellation_when_restore_fails_after_success(
+    caplog,
+):
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.null_walk")
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
+
+    async def fail_restore(_entry):
+        restore_started.set()
+        await release_restore.wait()
+        raise RuntimeError("restore")
+
+    task = asyncio.create_task(
+        _run_active_walk(
+            _spec(),
+            apply_candidate=lambda _candidate: True,
+            capture_null=lambda candidate, index: _capture(
+                20.0 - abs(candidate.relative_delay_us) / 100.0 + index * 0.01
+            ),
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=fail_restore,
+        )
+    )
+    await restore_started.wait()
+    task.cancel("cleanup")
+    await asyncio.sleep(0)
+    release_restore.set()
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await task
+
+    assert type(caught.value) is BaseExceptionGroup
+    assert [(type(error), str(error)) for error in caught.value.exceptions] == [
+        (asyncio.CancelledError, "cleanup"),
+        (RuntimeError, "restore"),
+    ]
+    assert any(
+        "event=correction.delay_walk_restore_failed" in message
+        and "trigger=cancelled" in message
+        for message in (record.getMessage() for record in caplog.records)
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_preserves_body_failure_cleanup_cancellation_and_restore_failure():
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
+
+    def fail_capture(_candidate, _index):
+        raise RuntimeError("body")
+
+    async def fail_restore(_entry):
+        restore_started.set()
+        await release_restore.wait()
+        raise RuntimeError("restore")
+
+    task = asyncio.create_task(
+        _run_active_walk(
+            _spec(),
+            apply_candidate=lambda _candidate: True,
+            capture_null=fail_capture,
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=fail_restore,
+        )
+    )
+    await restore_started.wait()
+    task.cancel("cleanup")
+    await asyncio.sleep(0)
+    release_restore.set()
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await task
+
+    assert type(caught.value) is BaseExceptionGroup
+    assert [(type(error), str(error)) for error in caught.value.exceptions] == [
+        (RuntimeError, "body"),
+        (asyncio.CancelledError, "cleanup"),
+        (RuntimeError, "restore"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_preserves_repeated_cancellation_and_restore_failure():
+    capture_started = asyncio.Event()
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
+
+    async def capture(_candidate, _index):
+        capture_started.set()
+        await asyncio.Future()
+
+    async def fail_restore(_entry):
+        restore_started.set()
+        await release_restore.wait()
+        raise RuntimeError("restore")
+
+    task = asyncio.create_task(
+        _run_active_walk(
+            _spec(),
+            apply_candidate=lambda _candidate: True,
+            capture_null=capture,
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=fail_restore,
+        )
+    )
+    await capture_started.wait()
+    task.cancel("original")
+    await restore_started.wait()
+    task.cancel("cleanup")
+    await asyncio.sleep(0)
+    release_restore.set()
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await task
+
+    assert type(caught.value) is BaseExceptionGroup
+    assert [(type(error), str(error)) for error in caught.value.exceptions] == [
+        (asyncio.CancelledError, "original"),
+        (asyncio.CancelledError, "cleanup"),
+        (RuntimeError, "restore"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_restore_timeout_fails_loudly_and_is_bounded(caplog):
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.null_walk")
+
+    async def never_restore(_predecessor):
+        await asyncio.Future()
+
+    with pytest.raises(NullWalkError, match="predecessor restore timed out"):
+        await _run_active_walk(
+            _spec(),
+            apply_candidate=lambda _candidate: True,
+            capture_null=lambda candidate, index: _capture(
+                20.0 - abs(candidate.relative_delay_us) / 100.0 + index * 0.01
+            ),
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=never_restore,
+            restore_timeout_s=1.0,
+        )
+    assert any(
+        "event=correction.delay_walk_restore_failed" in message
+        and "failure_code=timeout" in message
+        for message in (record.getMessage() for record in caplog.records)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_s", [0.9, 30.1, float("nan")])
+async def test_runner_refuses_invalid_restore_timeout_before_dsp(timeout_s):
+    applied = []
+
+    with pytest.raises(NullWalkError, match="restore_timeout_s"):
+        await _run_active_walk(
+            _spec(),
+            apply_candidate=lambda candidate: applied.append(candidate),
+            capture_null=lambda _candidate, _index: _capture(20.0),
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=_restore_recorder([]),
+            restore_timeout_s=timeout_s,
+        )
+
+    assert applied == []
+
+
+@pytest.mark.asyncio
+async def test_runner_refuses_invalid_snapshot_before_dsp_mutation():
+    applied = []
+    restored = []
+
+    with pytest.raises(NullWalkError, match="must return DspPredecessor"):
+        await _run_active_walk(
+            _spec(),
+            apply_candidate=lambda candidate: applied.append(candidate),
+            capture_null=lambda _candidate, _index: _capture(20.0),
+            snapshot_predecessor=lambda: {"config": "not-authoritative"},
+            restore_predecessor=_restore_recorder(restored),
+        )
+
+    assert applied == []
+    assert restored == []
 
 
 @pytest.mark.asyncio
@@ -387,11 +1019,14 @@ async def test_runner_refuses_unbounded_low_frequency_exhaustive_walk_before_dsp
     spec = _spec(fc=80.0)
     applied = []
     with pytest.raises(NullWalkError, match="candidate budget"):
-        await run_null_walk(
+        await _run_active_walk(
             spec,
             apply_candidate=lambda candidate: applied.append(candidate),
             capture_null=lambda _delay, _index: _capture(20.0),
-            restore=lambda: None,
+            snapshot_predecessor=_predecessor,
+            restore_predecessor=lambda predecessor: DspRestoreConfirmation(
+                predecessor.state
+            ),
         )
     assert applied == []
 
