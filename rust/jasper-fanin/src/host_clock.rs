@@ -437,9 +437,10 @@ where
             self.readback_ctl_value = None;
         }
 
-        if self.last_refresh_attempt_ms.map_or(false, |last| {
-            now_ms.saturating_sub(last) < CONTROL_REOPEN_INTERVAL_MS
-        }) {
+        if self
+            .last_refresh_attempt_ms
+            .is_some_and(|last| now_ms.saturating_sub(last) < CONTROL_REOPEN_INTERVAL_MS)
+        {
             return false;
         }
         self.last_refresh_attempt_ms = Some(now_ms);
