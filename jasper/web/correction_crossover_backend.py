@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from jasper.active_speaker import web_commissioning, web_measurement
 from jasper.active_speaker.crossover_level_run import (
+    CrossoverLevelRunError,
+    CrossoverLevelRunPhase,
     state_path as _level_run_state_path,
 )
 from jasper.atomic_io import atomic_write_text
@@ -149,6 +151,7 @@ class CrossoverLevelLease:
         self._last: LevelMatchOutcome | None = None
         self._active_outcome: LevelMatchOutcome | None = None
         self._outcomes: dict[str, LevelMatchOutcome] = {}
+        self._level_result_lock = threading.RLock()
         self._targets: dict[str, dict[str, Any]] = {}
         self._restore_lock = asyncio.Lock()
         self._sweep_entry_volume_db: float | None = None
@@ -474,7 +477,21 @@ class CrossoverLevelLease:
         return self._level_run_store.mark_phone_timeout(run_id)
 
     def mark_level_run_succeeded(self, run_id: str) -> bool:
-        return self._level_run_store.succeed(run_id)
+        with self._level_result_lock:
+            current = self._level_run_store.snapshot()
+            if current is None or current.get("run_id") != run_id:
+                return self._level_run_store.succeed(run_id)
+            if current.get("phase") not in {
+                CrossoverLevelRunPhase.AWAITING_PHONE.value,
+                CrossoverLevelRunPhase.RUNNING.value,
+            }:
+                return self._level_run_store.succeed(run_id)
+            geometry = str(current.get("geometry") or "")
+            if geometry not in self._outcomes:
+                raise CrossoverLevelRunError(
+                    "successful crossover level run has no process-local result"
+                )
+            return self._level_run_store.succeed(run_id)
 
     def mark_level_run_failed(
         self, run_id: str, *, reason: CrossoverLevelRunFailure
@@ -616,10 +633,11 @@ class CrossoverLevelLease:
                     else "stop playback and recover the crossover volume before continuing."
                 )
             )
-        self._last = outcome
-        self._outcomes[geometry] = outcome
-        if outcome.locked:
-            self.context_id = context_id
+        with self._level_result_lock:
+            self._last = outcome
+            self._outcomes[geometry] = outcome
+            if outcome.locked:
+                self.context_id = context_id
         return outcome
 
     def invalidate_comparison_context(self) -> None:
@@ -628,22 +646,24 @@ class CrossoverLevelLease:
         self.assert_volume_safety_resolved()
         from jasper.correction.level_match import LevelLockStore
 
-        if self._running is not None:
-            raise RuntimeError("cannot invalidate a running crossover level match")
-        self.level_lock_store = LevelLockStore()
-        self._last = None
-        self._active_outcome = None
-        self._outcomes = {}
-        self._targets = {}
-        self._sweep_entry_volume_db = None
-        self.context_id = None
-        self.noise_floor_db = None
-        self.mic_calibration = None
-        self.input_device = None
-        self.relay_setup_binding = None
-        self._repeat_sessions = {}
-        self._repeat_failures = {}
-        self._durable_repeat_progress = {}
+        with self._level_result_lock:
+            if self._running is not None:
+                raise RuntimeError("cannot invalidate a running crossover level match")
+            self._level_run_store.invalidate_succeeded_result()
+            self.level_lock_store = LevelLockStore()
+            self._last = None
+            self._active_outcome = None
+            self._outcomes = {}
+            self._targets = {}
+            self._sweep_entry_volume_db = None
+            self.context_id = None
+            self.noise_floor_db = None
+            self.mic_calibration = None
+            self.input_device = None
+            self.relay_setup_binding = None
+            self._repeat_sessions = {}
+            self._repeat_failures = {}
+            self._durable_repeat_progress = {}
         log_event(
             logger,
             "correction.crossover_level_context_invalidated",
@@ -713,8 +733,10 @@ class CrossoverLevelLease:
         geometry = driver_level_geometry(
             speaker_group_id, role, capture_geometry
         )
-        self._outcomes.pop(geometry, None)
-        self.level_lock_store.discard(geometry)
+        with self._level_result_lock:
+            self._outcomes.pop(geometry, None)
+            self.level_lock_store.discard(geometry)
+            self._level_run_store.invalidate_succeeded_result(geometry=geometry)
 
     async def acquire_summed_sweep_volume(
         self,

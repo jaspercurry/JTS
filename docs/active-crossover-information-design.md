@@ -637,18 +637,21 @@ filter chains, gains, permanent protection, and `devices.volume_limit <= 0` all
 belong to the same proof. Fresh persisted admission must be issued from Active's
 exact current safety plan and independently rechecked by the playback backend.
 The Shared persisted-admission/protection and guarded-playback boundaries are
-merged. Active has not adopted them yet, so the Wave 2 module still accepts no
-captures and exposes no scorer. Both historical and pending-current projections
-return `ready = false`, `score_available = false`, and no candidate,
-persistence, apply, or receipt authority.
+merged, but Active deliberately does not adopt them during the Wave 2
+synchronization barrier. The Wave 2 module therefore accepts no captures and
+exposes no scorer. Both historical and pending-current projections return
+`ready = false`, `score_available = false`, and no candidate, persistence,
+apply, or receipt authority.
 
 Active's Wave 2 isolated-driver safety boundary is preparation-only. It derives
 one closed sweep request and effective-peak ledger from the exact target and
 confirmed-current profile, intersects code and profile band/level/duration/
 repeat ceilings, retains the profile cooldown, and always returns
-`shared_persisted_admission_unavailable`. It has no playback callback and accepts
-no caller-supplied protection evidence. Execution stays impossible until an
-Active-owned production adapter consumes the merged Shared boundary.
+`shared_persisted_admission_unavailable`. Here, "unavailable" means unavailable
+to this deliberately unintegrated Active boundary, not absent from Shared. It
+has no playback callback and accepts no caller-supplied protection evidence.
+Execution stays impossible until an Active-owned production adapter consumes
+the merged Shared boundary under its feature-owned live graph/protection guard.
 
 The synchronization-barrier API sequence is exact. Active classifies evidence
 origin before authority resolution; historical B2b calls
@@ -695,10 +698,13 @@ The durable current-run phases are exactly `awaiting_phone`, `running`,
 same id is the existing token-scoped relay `run_token`. An identical active
 request returns `duplicate_active`; an identical current success returns
 `duplicate_succeeded` only while the same service owner still holds the
-process-local level result; neither may dispatch transport or backend work. A
-different request cannot replace active work. Backend start is also single
-flight. Only exact-current-run callbacks may mutate state; stale terminal
-callbacks are ignored. At service startup, a nonterminal prior-owner run becomes
+process-local level result; invalidating the comparison context or discarding
+that exact driver result removes the in-memory success marker, so the next
+identical claim is new. Neither duplicate disposition may dispatch transport or
+backend work. A different request cannot replace active work. Backend start is
+also single flight. Only exact-current-run callbacks may mutate state; stale
+terminal callbacks are ignored. At service startup, a nonterminal prior-owner
+run becomes
 `interrupted/service_restarted` before any retry may claim the slot. A prior
 owner's terminal success does not deduplicate because the corresponding level
 lock is process-local and must be reacquired after restart.
@@ -719,7 +725,8 @@ finalization—has returned. Ordinary action exceptions become a typed terminal
 failure at the adapter. The durable file and public status retain no tap link,
 pull token, relay credential, raw phone events, or calibration payload;
 `/state.level_match.run` exposes only safe bindings, timing fields, phase,
-timeout observations, terminal reason, and late-success status.
+timeout observations, terminal reason, late-success status, and whether the
+same process still holds the result needed for terminal deduplication.
 
 The required Room-owned `correction_setup.py` transport adapter is intentionally
 not part of Active's Wave 2 changes. Its exact integration is:
@@ -1414,8 +1421,9 @@ bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
 Last verified: 2026-07-13 (Wave 2 reconstruction, measured-candidate input,
-preparation-only safety, level-run correlation contracts, permanent historical
-refusal, the merged Shared admission/playback boundary and exact future Active
-adapter sequence, and Room's temporary passive-only admission boundary checked
-against the merged implementation and cited measurement literature; no live
-audio, DSP mutation, or hardware behavior was changed or revalidated.)
+preparation-only safety, level-run correlation contracts and terminal-result
+liveness, permanent historical refusal, Shared-adoption status, the merged
+Shared admission/playback boundary and exact future Active adapter sequence,
+and Room's temporary passive-only admission boundary checked against the merged
+implementation and cited measurement literature; no live audio, DSP mutation,
+or hardware behavior was changed or revalidated.)

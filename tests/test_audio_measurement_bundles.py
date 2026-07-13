@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker import bundles as active_bundles
+from jasper.active_speaker import legacy_replay
 from jasper.audio_measurement import bundles as shared_bundles
 from jasper.correction import bundles as correction_bundles
 
@@ -86,6 +87,36 @@ def test_active_speaker_uses_neutral_manifest_primitives() -> None:
     assert active_bundles.BundleError is shared_bundles.BundleError
     assert active_bundles.record_artifact is shared_bundles.record_artifact
     assert active_bundles.write_json_artifact is shared_bundles.write_json_artifact
+
+
+def test_active_legacy_replay_uses_neutral_manifest_reader_primitives() -> None:
+    assert legacy_replay.BundleError is shared_bundles.BundleError
+    assert legacy_replay.read_artifact_manifest is (
+        shared_bundles.read_artifact_manifest
+    )
+    assert legacy_replay.relative_artifact_path is (
+        shared_bundles.relative_artifact_path
+    )
+    assert legacy_replay.sha256_file is shared_bundles.sha256_file
+
+
+def test_neutral_relative_artifact_path_is_the_public_reader_guard(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+
+    assert (
+        shared_bundles.relative_artifact_path(bundle_dir, "captures/driver.wav")
+        == "captures/driver.wav"
+    )
+    with pytest.raises(shared_bundles.BundleError, match="outside bundle"):
+        shared_bundles.relative_artifact_path(bundle_dir, "../outside.wav")
+    with pytest.raises(shared_bundles.BundleError, match="cannot list itself"):
+        shared_bundles.relative_artifact_path(
+            bundle_dir,
+            shared_bundles.ARTIFACT_MANIFEST_NAME,
+        )
 
 
 def test_neutral_writer_requires_feature_owned_schema_without_info(

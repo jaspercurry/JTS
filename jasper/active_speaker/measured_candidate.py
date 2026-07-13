@@ -5,11 +5,11 @@
 """Fail-closed Wave 2 boundary for future measured crossover selection.
 
 Historical B2b captures predate production excitation admission and can never
-enter this boundary.  Wave 2 also lacks the Shared persisted-admission and
-fresh-protection API needed to authenticate new captures against Active's exact
-current safety plan.  This module therefore publishes the complete evidence
-contract and typed non-readiness states, but deliberately has no scoring,
-candidate construction, persistence, apply, or playback entry point.
+enter this boundary. Shared now provides persisted admission and guarded
+playback primitives, but Active deliberately does not adopt them during the
+Wave 2 synchronization barrier. This module therefore publishes the complete
+evidence contract and typed non-readiness states, but deliberately has no
+scoring, candidate construction, persistence, apply, or playback entry point.
 """
 
 from __future__ import annotations

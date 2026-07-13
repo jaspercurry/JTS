@@ -20,6 +20,7 @@ from jasper.active_speaker.capture_geometry import (
 from jasper.active_speaker.driver_acoustics import ReplayedDriverResponse
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.reconstruction_capability import (
+    ReconstructionCapability,
     ReconstructionRefusal,
     legacy_reconstruction_capability,
 )
@@ -620,6 +621,11 @@ def test_legacy_cabinet_and_splice_capability_is_typed_and_not_ready() -> None:
         ReconstructionRefusal.ENCLOSURE_UNSUPPORTED.value,
         ReconstructionRefusal.CAPTURE_NOT_ADMITTED.value,
     ]
+
+
+def test_reconstruction_capability_cannot_be_forged_ready() -> None:
+    with pytest.raises(TypeError, match="factory"):
+        ReconstructionCapability((), "forged")
 
 
 @pytest.mark.parametrize(

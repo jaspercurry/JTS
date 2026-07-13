@@ -102,7 +102,14 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _relative_artifact_path(bundle_dir: Path, artifact_path: Path | str) -> str:
+def relative_artifact_path(bundle_dir: Path, artifact_path: Path | str) -> str:
+    """Return one canonical bundle-relative artifact path.
+
+    Feature readers use the same traversal and manifest-self-reference checks as
+    the neutral writers instead of importing another feature's compatibility
+    wrapper or reimplementing path validation.
+    """
+
     bundle_root = bundle_dir.resolve()
     path = Path(artifact_path)
     if not path.is_absolute():
@@ -127,7 +134,7 @@ def _safe_manifest_dependencies(
     out: list[str] = []
     for dependency in dependencies:
         try:
-            out.append(_relative_artifact_path(bundle_dir, dependency))
+            out.append(relative_artifact_path(bundle_dir, dependency))
         except BundleError:
             log_event(
                 logger,
@@ -232,7 +239,7 @@ def record_artifact(
     """
 
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    rel_path = _relative_artifact_path(bundle_dir, artifact_path)
+    rel_path = relative_artifact_path(bundle_dir, artifact_path)
     path = bundle_dir / rel_path
     try:
         stat = path.stat()
@@ -274,7 +281,7 @@ def record_artifact(
         if not isinstance(raw_path, str):
             continue
         try:
-            existing_rel_path = _relative_artifact_path(bundle_dir, raw_path)
+            existing_rel_path = relative_artifact_path(bundle_dir, raw_path)
         except BundleError:
             log_event(
                 logger,
@@ -312,7 +319,7 @@ def write_json_artifact(
 ) -> None:
     """Atomically write JSON and update its manifest entry."""
 
-    rel_path = _relative_artifact_path(bundle_dir, relative_path)
+    rel_path = relative_artifact_path(bundle_dir, relative_path)
     resolved_bundle_schema_version = _resolve_bundle_schema_version(
         bundle_dir,
         bundle_schema_version,
