@@ -3290,7 +3290,6 @@ def test_status_socket_byte_reader_accepts_exact_response_cap(monkeypatch):
 
 
 def test_status_socket_byte_reader_rejects_response_over_cap(monkeypatch):
-    cap = doctor.audio._STATUS_RESPONSE_MAX_BYTES
     fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b"y"])
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
 
