@@ -19,10 +19,11 @@
 > safety profiles, exact excitation admission, neutral measurement identities,
 > an Active-owned commissioning lifecycle, and an exact positive eligibility
 > receipt. These types have no live playback, CamillaDSP mutation, persistence,
-> or `/state` consumer. The existing commissioning and Room gates remain the
-> production behavior until the later integration lane explicitly issues,
-> persists, and consumes these authorities. No hardware behavior was changed or
-> revalidated by this slice.
+> or `/state` producer. The existing Active commissioning gate remains live,
+> but Room R1b now admits only passive/not-required and rejects every active
+> topology until the later integration lane explicitly issues, persists, and
+> exposes receipt-backed authority. No hardware behavior was changed or
+> revalidated by these hardware-free slices.
 
 ## Product goal
 
@@ -953,11 +954,13 @@ positive receipt.
 These are inert types in Wave 1. Current Active bundles remain forensic and
 fail-soft, the new lifecycle is not the source of current `/state`, and no
 production code issues or persists an eligibility receipt. Room's current
-`active_speaker.setup_status` gate still derives readiness from the legacy
-topology-current applied recomposition snapshot. It neither parses the receipt
-nor requires post-apply three-capture proof, so it is intentionally fail-open
-relative to the new positive-receipt contract until the Room integration lane
-changes both producer and consumer together.
+`active_speaker.setup_status` producer still derives readiness from the legacy
+topology-current applied-recomposition snapshot, but the R1b Room adapter no
+longer accepts that positive result for active topologies. It admits only
+passive/not-required and blocks active entry until the integration lane changes
+the producer and consumer together. Room neither parses the receipt nor derives
+authority from historical B2b evidence; fresh excitation-admitted captures and
+the measured delay walk remain Active-owned prerequisites.
 
 ### DRY invariants
 
@@ -1217,8 +1220,10 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   excitation admission and neutral evidence identities; Active owns the
   nine-state lifecycle and exact positive Room-eligibility receipt. These do
   not yet replace existing playback gates, bundles, graph mutation, persistence,
-  `/state`, or Room's applied-snapshot-derived start gate. Live integration and
-  on-device proof remain later slices.
+  or `/state`. Room's temporary R1b adapter admits passive/not-required and
+  blocks every active topology rather than trusting the applied-snapshot
+  positive. Live receipt production/consumption and on-device proof remain later
+  slices.
 
 - Manual setup exposes frequency, filter family/slope, and trim. ~~There is
   still no `/sound/` UI for polarity/delay authoring~~ Closed (P2a): the
@@ -1389,6 +1394,7 @@ bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
 Last verified: 2026-07-13 (Wave 2 reconstruction, measured-candidate input,
-preparation-only safety, and level-run correlation contracts checked against
-the worktree and cited measurement literature; no live audio, DSP mutation,
-Room-gate behavior, or hardware behavior was changed or revalidated.)
+preparation-only safety, level-run correlation contracts, and Room's temporary
+passive-only admission boundary checked against the worktree and cited
+measurement literature; no live audio, DSP mutation, or hardware behavior was
+changed or revalidated.)

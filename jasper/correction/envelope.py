@@ -67,8 +67,10 @@ logger = logging.getLogger(__name__)
 # v5 wires the relay-owned level-before-sweep actions.
 # v6 makes the ordered `sections` list the sole whole-page visibility
 # authority. The browser maps this fixed vocabulary to DOM nodes; it does not
-# carry a second screen-to-section policy.
-ENVELOPE_SCHEMA_VERSION = 6
+# carry a second screen-to-section policy. v7 adds the closed `blocker` and
+# `failure` presentation blocks so raw readiness/session diagnostics never
+# become homeowner copy.
+ENVELOPE_SCHEMA_VERSION = 7
 
 # 1/N-octave smoothing applied to the empirical display curves. 6 =
 # 1/6-octave — visibly smoothed (no raw jaggedness) while preserving
@@ -159,6 +161,13 @@ _SCREEN_SECTIONS: dict[str, tuple[str, ...]] = {
 }
 
 REPORT_SECTION_SCREENS = frozenset({SCREEN_IDLE, SCREEN_RESULT})
+
+
+class _ReadinessUnset:
+    pass
+
+
+_READINESS_UNSET = _ReadinessUnset()
 
 # Session state value -> logical screen. Keyed by the string value of
 # SessionState (session.py) so this map does not import the enum and so
@@ -287,9 +296,14 @@ def _sections_for(
     capture_transport: str,
     reports_available: bool,
     tuning_offered: bool,
+    readiness_blocked: bool,
 ) -> list[str]:
     """Build the exact ordered whole-page section list for one snapshot."""
-    sections = list(_SCREEN_SECTIONS[screen])
+    sections = (
+        [SECTION_CURRENT_CORRECTION, SECTION_READINESS_BLOCKER]
+        if screen == SCREEN_IDLE and readiness_blocked
+        else list(_SCREEN_SECTIONS[screen])
+    )
     if screen == SCREEN_MIC and capture_transport == "local":
         sections.extend((
             SECTION_LOCAL_CERTIFICATE_WARNING,
@@ -482,11 +496,10 @@ def _fill_segments(session: Any) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------
 #
 # Each confidence-report finding code we surface maps to one plain-English
-# sentence. Copy tone (§0.2, §3.2): a sentence + a checkmark, "Continue
-# always live", "that's on them" — measurement-quality nudges inform, they
-# do not gate. Codes not in this catalog are surfaced generically from the
-# finding's own message so a newly-added finding still shows up (degraded
-# to its raw wording) rather than vanishing.
+# sentence. Copy tone (§0.2, §3.2): measurement-quality nudges inform, they do
+# not gate. Unknown codes and `fail` findings are omitted here: the former are
+# diagnostics until Room assigns safe copy, while the latter belong to the
+# blocking/failure path and must never be softened into an optional warning.
 _NUDGE_COPY: dict[str, dict[str, str]] = {
     "uncalibrated_mic": {
         "severity": "info",
@@ -528,40 +541,68 @@ _NUDGE_COPY: dict[str, dict[str, str]] = {
         "severity": "info",
         "text": (
             "Your measured spots differ a bit from each other, which is "
-            "normal for a room. The correction still applies."
+            "normal for a room. The measurement can still be used."
         ),
     },
     "high_position_variance": {
         "severity": "warn",
         "text": (
-            "Your measured spots differ a lot — often a sign the mic moved "
-            "between sweeps or the room is lively. Re-measuring can help, but "
-            "you can continue."
+            "Your measured spots differ a lot, which can happen in a lively "
+            "or uneven room. Measuring a tighter listening area may help, "
+            "but you can continue."
         ),
     },
     "capture_snr_low": {
         "severity": "warn",
         "text": (
-            "The room was a little noisy during the sweep. Turning it up or "
-            "quieting the room improves accuracy — you can still continue."
+            "The room was a little noisy during the sweep. Quieting the room "
+            "and keeping the microphone clear improves accuracy — you can "
+            "still continue."
         ),
     },
-    "no_completed_positions": {
+    "runtime_integrity_warnings": {
         "severity": "warn",
         "text": (
-            "No usable measurement yet — run a sweep to see your room's "
-            "response."
+            "The speaker noticed a timing or playback warning. Re-measuring "
+            "may improve confidence, but you can continue."
         ),
     },
-}
-
-# A confidence-report finding severity of "fail" is still surfaced as a
-# "warn" nudge (never "block") — measurement quality never gates. This
-# ceiling maps the report's internal severities onto the nudge vocabulary.
-_SEVERITY_CEILING: dict[str, str] = {
-    "info": "info",
-    "warn": "warn",
-    "fail": "warn",
+    "capture_quality_warnings": {
+        "severity": "warn",
+        "text": (
+            "One capture was less clear than preferred. A quieter re-measure "
+            "may improve confidence, but you can continue."
+        ),
+    },
+    "repeatability_low": {
+        "severity": "warn",
+        "text": (
+            "The main-seat repeat differed more than expected. Keeping the "
+            "microphone still and re-measuring may help, but you can continue."
+        ),
+    },
+    "repeatability_medium": {
+        "severity": "info",
+        "text": (
+            "The main-seat repeat was usable, though not an exact match. You "
+            "can continue."
+        ),
+    },
+    "repeatability_unavailable": {
+        "severity": "info",
+        "text": (
+            "The main-seat trust check was unavailable, so confidence is a "
+            "little lower. You can continue."
+        ),
+    },
+    "browser_processing_reported": {
+        "severity": "warn",
+        "text": (
+            "The browser reported an audio-path limitation. A local "
+            "measurement microphone can improve accuracy, but you can "
+            "continue."
+        ),
+    },
 }
 
 
@@ -589,24 +630,16 @@ def _nudges(session: Any) -> list[dict[str, str]]:
             if not code or code in seen:
                 continue
             seen.add(code)
-            canned = _NUDGE_COPY.get(code)
-            if canned is not None:
-                nudges.append(
-                    {"code": code, "severity": canned["severity"],
-                     "text": canned["text"]}
-                )
+            if finding.get("severity") == "fail":
                 continue
-            # Unknown finding: surface it (degraded to its raw message) rather
-            # than dropping it, with severity clamped into the nudge vocabulary.
-            raw_sev = str(finding.get("severity") or "info")
-            message = str(finding.get("message") or "").strip()
-            if not message:
+            canned = _NUDGE_COPY.get(code)
+            if canned is None:
                 continue
             nudges.append(
                 {
                     "code": code,
-                    "severity": _SEVERITY_CEILING.get(raw_sev, "info"),
-                    "text": message,
+                    "severity": canned["severity"],
+                    "text": canned["text"],
                 }
             )
     # Append the crossover-region nudge from the DESIGN report (not the
@@ -710,10 +743,6 @@ _REVERT_DONE_TEXT = (
     "removed the correction and restored your previous sound. You can "
     "measure again anytime."
 )
-_REVERT_FAILED_TEXT = (
-    "That measured worse — but we couldn't remove the correction "
-    "automatically. It is STILL APPLIED. Use Reset to remove it."
-)
 _REVERT_PENDING_ROLLBACK_TEXT = (
     "That measured worse — removing the correction now. If this message "
     "stays, use Reset to remove it."
@@ -749,7 +778,9 @@ def _revert_result_text(session: Any) -> str:
     if outcome == "ok":
         return _REVERT_DONE_TEXT
     if outcome == "failed":
-        return _REVERT_FAILED_TEXT
+        from .failures import CORRECTION_AUTO_REVERT_FAILED, public_failure
+
+        return str(public_failure(CORRECTION_AUTO_REVERT_FAILED)["text"])
     return _REVERT_PENDING_ROLLBACK_TEXT
 
 
@@ -809,7 +840,13 @@ def _crossover_region_note(session: Any) -> str:
     )
 
 
-def _verdict_text(session: Any, screen: str) -> str:
+def _verdict_text(
+    session: Any,
+    screen: str,
+    *,
+    blocker: dict[str, Any] | None,
+    failure: dict[str, Any] | None,
+) -> str:
     """A single homeowner sentence describing where the flow stands.
 
     Deliberately terse and screen-scoped — the nudges carry the caveats,
@@ -818,10 +855,11 @@ def _verdict_text(session: Any, screen: str) -> str:
     """
     if screen == SCREEN_RESULT:
         if session.state.value == "failed":
-            err = str(getattr(session, "error", "") or "").strip()
-            if err:
-                return f"Measurement stopped: {err}"
-            return "The measurement stopped before finishing."
+            return str((failure or {}).get("text") or (
+                "The speaker could not continue this step. Try again."
+            ))
+        if failure is not None:
+            return str(failure["text"])
         # The deterministic verdict leads on the result screen — it is the
         # honest "did this work?" answer, ahead of the raw before/after number.
         verdict = _verdict(session)
@@ -843,6 +881,8 @@ def _verdict_text(session: Any, screen: str) -> str:
         if headline is not None:
             return f"Done. {headline['text']} You can measure again to compare."
         return "Correction verified."
+    if failure is not None:
+        return str(failure["text"])
     if screen == SCREEN_APPLY:
         return (
             "Correction is applied. Verify it by measuring once more from "
@@ -891,6 +931,10 @@ def _verdict_text(session: Any, screen: str) -> str:
     # screen-map surgery, no acknowledge endpoint), with the same honesty.
     if _revert_outcome(session) == "ok":
         return _REVERT_DONE_TEXT
+    if failure is not None:
+        return str(failure["text"])
+    if blocker is not None:
+        return "Room correction is waiting for speaker setup."
     return "Ready to measure your room."
 
 
@@ -915,6 +959,11 @@ def _next_action_for(
     reverts, the correction stays applied, and /reset remains the manual
     undo.
     """
+    if session.state.value == "failed":
+        return {
+            "label": "Start over",
+            "endpoint": "/reset",
+        }
     if session.state.value == "needs_next_position":
         return {
             "label": "Measure next position",
@@ -999,6 +1048,7 @@ def build_envelope(
     *,
     capture_transport: str | None = None,
     reports_available: bool = False,
+    readiness_blocker: dict[str, Any] | None | _ReadinessUnset = _READINESS_UNSET,
 ) -> dict[str, Any]:
     """Build the server-computed screen envelope for one session.
 
@@ -1011,7 +1061,51 @@ def build_envelope(
     screen = _screen_for(session)
     verdict = _verdict(session)
     next_action = _next_action_for(session, screen, verdict)
+    blocker = None
+    if screen == SCREEN_IDLE:
+        if isinstance(readiness_blocker, _ReadinessUnset):
+            from .failures import (
+                ROOM_RETRY_ACTION,
+                SPEAKER_READINESS_UNAVAILABLE,
+                public_failure,
+            )
+
+            blocker = public_failure(
+                SPEAKER_READINESS_UNAVAILABLE,
+                recovery_action=ROOM_RETRY_ACTION,
+            )
+        elif readiness_blocker is not None:
+            blocker = dict(readiness_blocker)
+    if blocker is not None:
+        next_action = None
+    failure = None
+    if session.state.value == "failed":
+        from .failures import (
+            CORRECTION_AUTO_REVERT_FAILED,
+            public_failure,
+            session_failure,
+        )
+
+        acceptance = getattr(session, "acceptance", None)
+        if (
+            _revert_outcome(session) == "failed"
+            and isinstance(acceptance, dict)
+            and acceptance.get("verdict") == "revert"
+        ):
+            failure = public_failure(CORRECTION_AUTO_REVERT_FAILED)
+        else:
+            failure = session_failure(getattr(session, "error", None))
+    elif screen == SCREEN_REVIEW:
+        from .failures import measurement_evidence_failure
+
+        failure = measurement_evidence_failure(
+            getattr(session, "confidence_report", None),
+        )
+    if failure is not None and session.state.value != "failed":
+        next_action = None
     tuning_llm = _tuning_llm(screen)
+    if failure is not None:
+        tuning_llm["offered"] = False
     transport = str(
         capture_transport
         or getattr(session, "capture_transport", "local")
@@ -1026,14 +1120,22 @@ def build_envelope(
             capture_transport=transport,
             reports_available=reports_available,
             tuning_offered=bool(tuning_llm.get("offered")),
+            readiness_blocked=blocker is not None,
         ),
         "curves": _curves(session),
         "fill_segments": _fill_segments(session),
         "headline": _headline(session),
         "verdict": verdict,
-        "verdict_text": _verdict_text(session, screen),
+        "verdict_text": _verdict_text(
+            session,
+            screen,
+            blocker=blocker,
+            failure=failure,
+        ),
         "nudges": _nudges(session),
         "next_action": dict(next_action) if next_action is not None else None,
+        "blocker": blocker,
+        "failure": failure,
         "progress": _progress(screen),
         "tuning_llm": tuning_llm,
     }
@@ -1068,6 +1170,7 @@ def build_envelope_logged(
     *,
     capture_transport: str | None = None,
     reports_available: bool = False,
+    readiness_blocker: dict[str, Any] | None | _ReadinessUnset = _READINESS_UNSET,
 ) -> dict[str, Any]:
     """`build_envelope` plus one structured `event=` line for observability.
 
@@ -1078,6 +1181,7 @@ def build_envelope_logged(
         session,
         capture_transport=capture_transport,
         reports_available=reports_available,
+        readiness_blocker=readiness_blocker,
     )
     verdict_block = envelope.get("verdict")
     log_event(
@@ -1092,6 +1196,16 @@ def build_envelope_logged(
         verdict=(
             verdict_block.get("verdict")
             if isinstance(verdict_block, dict)
+            else None
+        ),
+        blocker=(
+            envelope["blocker"].get("code")
+            if isinstance(envelope.get("blocker"), dict)
+            else None
+        ),
+        failure=(
+            envelope["failure"].get("code")
+            if isinstance(envelope.get("failure"), dict)
             else None
         ),
     )

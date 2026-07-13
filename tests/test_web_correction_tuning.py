@@ -71,6 +71,7 @@ def _fake_session(state_value="ready"):
         measured_curve=Curve(measured),
         target_curve=Curve(np.zeros_like(freqs)),
         position1_curve=Curve(measured),
+        confidence_report=None,
         peqs=[],
         config_path=None,
     )
@@ -219,6 +220,7 @@ def test_propose_apply_rejects_out_of_bounds_without_applying(monkeypatch):
     body = b'{"confirm":true,"correction_peqs":[{"freq_hz":5000,"q":3,"gain_db":-7}]}'
     out = correction_setup._handle_propose_apply(_FakeHandler(body))
     assert out["applied"] is False
+    assert out["failure"]["code"] == "tuning_proposal_rejected"
     assert "re-validation" in out["reason"]
     assert applied["called"] is False
 
@@ -245,6 +247,7 @@ def test_propose_apply_rejects_regressing_set_via_resimulation(monkeypatch):
     )
     out = correction_setup._handle_propose_apply(_FakeHandler(body))
     assert out["applied"] is False
+    assert out["failure"]["code"] == "tuning_proposal_rejected"
     assert "simulation" in out["reason"]
     assert applied["called"] is False
 
@@ -270,6 +273,25 @@ def test_propose_apply_good_cut_routes_through_apply(monkeypatch):
     assert applied["peqs"] and isinstance(applied["peqs"][0], PEQJSON)
     assert applied["peqs"][0].freq_hz == 62.0
     assert out["simulation"]["accepted"] is True
+
+
+def test_propose_apply_rejects_failed_measurement_evidence(monkeypatch):
+    sess = _fake_session("ready")
+    sess.confidence_report = {
+        "findings": [{
+            "code": "runtime_integrity_failed",
+            "severity": "fail",
+            "message": "raw runtime diagnostic",
+        }],
+    }
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
+
+    with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
+        correction_setup._handle_propose_apply(_FakeHandler(body))
+
+    assert exc_info.value.failure["code"] == "measurement_evidence_unsafe"
+    assert "raw runtime diagnostic" not in str(exc_info.value.failure)
 
 
 def _real_ready_session(tmp_path, *, with_target=True):
@@ -339,6 +361,7 @@ def test_propose_apply_reports_honest_failure_when_reload_rejected(
     # ...and the response tells the truth about it.
     assert out["applied"] is False
     assert out["state"] == "failed"
+    assert out["failure"]["code"] == "correction_update_failed"
     assert "previous sound" in out["reason"]
     # The simulation itself HAD accepted (the failure is downstream).
     assert out["simulation"]["accepted"] is True
@@ -360,6 +383,7 @@ def test_propose_apply_fails_closed_without_acceptance_basis(monkeypatch):
     out = correction_setup._handle_propose_apply(_FakeHandler(body))
     assert out["applied"] is False
     assert out["code"] == "missing_acceptance_basis"
+    assert out["failure"]["code"] == "tuning_proposal_rejected"
     # The sim preview itself stayed lenient: bounds+ring+headroom passed.
     assert out["simulation"]["accepted"] is True
     assert out["simulation"]["acceptance"] is None

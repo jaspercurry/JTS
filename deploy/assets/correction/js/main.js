@@ -57,6 +57,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var wizardVerdict = document.getElementById('wizard-verdict');
   var wizardNudges = document.getElementById('wizard-nudges');
   var wizardNextBtn = document.getElementById('wizard-next');
+  var readinessBlockerMessage = document.getElementById('readiness-blocker-message');
+  var readinessBlockerAction = document.getElementById('readiness-blocker-action');
   // P6 tuning assistant elements.
   var tuningPanel = document.getElementById('tuning-panel');
   var tuningNudge = document.getElementById('tuning-nudge');
@@ -150,6 +152,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // transition, plus a low-frequency tick while a capture screen is live.
   var lastEnvelopeState = null;
   var envelopeTimer = null;
+  // A typed POST refusal belongs to the current interaction, not the session
+  // mechanism state. Keep it across the immediate envelope refresh so a
+  // still-ready session cannot overwrite the homeowner sentence with stale
+  // "Ready" copy. A server blocker/failure or the next action clears it.
+  var pendingHomeownerFailure = null;
   // One bounded retry credit per failure streak: each successful envelope
   // fetch (and each fresh trigger — state change, wizard click, landing)
   // re-arms it; a failure consumes it to schedule exactly one retry. Two
@@ -175,7 +182,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     'Set up', 'Measure', 'Review', 'Apply', 'Verify', 'Done',
   ];
 
-  var SUPPORTED_ENVELOPE_SCHEMA = 6;
+  var SUPPORTED_ENVELOPE_SCHEMA = 7;
   var KNOWN_ENVELOPE_SCREENS = {
     idle: true, mic: true, level: true, sweep: true,
     review: true, apply: true, verify: true, result: true,
@@ -188,10 +195,36 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     '/autolevel/start': true,
     '/upload-noise': true,
     '/apply': true,
+    '/reset': true,
     '/verify': true,
     '/relay/level-match': true,
     '/relay/capture': true,
     '/relay/verify': true,
+  };
+  // Closed presentation vocabulary. Codes are duplicated at this wire
+  // boundary deliberately: a malformed/partially deployed server must not
+  // smuggle arbitrary diagnostics into a block the browser treats as safe.
+  var KNOWN_FAILURES = {
+    speaker_setup_incomplete: {text: "Finish speaker setup first.", retryable: false},
+    speaker_readiness_unavailable: {text: "Speaker setup could not be checked. Try again.", retryable: true},
+    measurement_in_progress: {text: "A measurement is already in progress. Finish or stop it before starting again.", retryable: true},
+    measurement_setup_invalid: {text: "The measurement setup changed. Review the microphone choices and try again.", retryable: true},
+    speaker_measurement_unsafe: {text: "The speaker is not ready to measure safely. Review speaker setup, then try again.", retryable: false},
+    microphone_setup_unavailable: {text: "The saved microphone setup is unavailable. Choose the microphone again.", retryable: true},
+    phone_capture_unavailable: {text: "Phone capture could not be opened. Try again or use this device.", retryable: true},
+    measurement_stopped: {text: "Measurement stopped.", retryable: true},
+    test_signal_unavailable: {text: "The speaker could not play the test sound. Try again.", retryable: true},
+    measurement_analysis_failed: {text: "The speaker could not finish this measurement. Try measuring again.", retryable: true},
+    measurement_evidence_unsafe: {text: "This measurement did not pass its safety checks. Measure again.", retryable: true},
+    correction_update_failed: {text: "The correction could not be applied. Check the current correction before trying again.", retryable: true},
+    correction_restore_failed: {text: "The previous sound could not be confirmed restored. The correction may still be applied.", retryable: true},
+    correction_auto_revert_failed: {text: "That measured worse, but the correction could not be removed automatically. It is STILL APPLIED. Use Reset to remove it.", retryable: true},
+    tuning_busy: {text: "The tuning assistant just ran. Wait a moment, then try again.", retryable: true},
+    tuning_spend_limit: {text: "The daily assistant budget is reached. Try again after the daily rollover.", retryable: false},
+    tuning_unavailable: {text: "The tuning assistant is not set up yet.", retryable: false},
+    tuning_request_failed: {text: "The tuning assistant could not continue. Try again.", retryable: true},
+    tuning_proposal_rejected: {text: "That suggestion was not applied because it did not pass the speaker's safety checks.", retryable: true},
+    unknown_failure: {text: "The speaker could not continue this step. Try again.", retryable: true},
   };
   var KNOWN_SECTION_IDS = [
     'current-correction', 'run-defaults', 'readiness-blocker',
@@ -280,7 +313,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (relay.status === 'complete') {
       setRelayStatus('Phone capture received. Wait for the next instruction on this page.', 'ok');
     } else if (relay.status === 'failed') {
-      setRelayStatus(relay.error || 'Phone capture failed. Cancel and try again.', 'bad');
+      console.warn('phone capture failed', relay.error || '');
+      setRelayStatus('Phone capture stopped. Try that step again.', 'bad');
     } else if (relay.status === 'starting') {
       setRelayStatus('Creating phone capture link…', 'idle');
     } else {
@@ -481,9 +515,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       showCalibrationLoaded(payload);
       if (selectedCalibrationId) saveSerial(model, serial);
     } catch (e) {
+      console.warn('calibration lookup failed', e);
       calibrationStatus.className = 'mic-status bad';
       calibrationStatus.textContent =
-        'Lookup failed: ' + e.message + '. Use upload as a fallback.';
+        'Calibration lookup failed. Use upload as a fallback.';
     } finally {
       fetchCalibrationBtn.disabled = false;
     }
@@ -511,8 +546,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       });
       showCalibrationLoaded(payload);
     } catch (e) {
+      console.warn('calibration upload failed', e);
       calibrationStatus.className = 'mic-status bad';
-      calibrationStatus.textContent = 'Upload failed: ' + e.message;
+      calibrationStatus.textContent = 'Calibration upload failed. Try again.';
     } finally {
       uploadCalibrationBtn.disabled = false;
     }
@@ -660,16 +696,14 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (!report) return;
     var level = report.level || (report.failed ? 'fail' : 'warn');
     browserAudioReport.className = 'browser-audio-card ' + level;
-    var issues = report.issues || [];
     browserAudioReport.innerHTML =
       '<strong>Browser audio path: ' +
       escapeText(level === 'ok' ? 'ready' : (level === 'fail' ? 'blocked' : 'usable with warnings')) +
-      '</strong><p class="hint">' + escapeText(report.summary || '') + '</p>' +
-      (issues.length
-        ? '<ul>' + issues.map(function (issue) {
-            return '<li>' + escapeText(issue.message || issue.code) + '</li>';
-          }).join('') + '</ul>'
-        : '');
+      '</strong><p class="hint">' + (level === 'ok'
+        ? 'The microphone settings are ready for measurement.'
+        : (level === 'fail'
+          ? 'The microphone settings are not safe for this measurement.'
+          : 'The microphone may reduce measurement accuracy.')) + '</p>';
   }
 
   var LOCAL_CAPTURE_MEMORY_KEY = 'jts-room-local-capture-v1';
@@ -757,7 +791,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       var Ctor = window.AudioContext || window.webkitAudioContext;
       ctx = new Ctor({sampleRate: REQUIRED_SR});
     } catch (e) {
-      jtsAlert('Could not create AudioContext: ' + e.message);
+      console.warn('AudioContext unavailable', e);
+      jtsAlert('This browser could not start microphone capture. Try again.');
       return false;
     }
 
@@ -787,7 +822,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         jtsAlert('That microphone is no longer available (was it unplugged?). ' +
           'Tap “Refresh microphones”, reselect it, and try again.');
       } else {
-        jtsAlert('Microphone permission denied or unavailable: ' + e.message);
+        console.warn('microphone permission unavailable', e);
+        jtsAlert('Microphone access was not available. Check permission and try again.');
       }
       return false;
     }
@@ -871,7 +907,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       await ctx.audioWorklet.addModule(blobUrl);
     } catch (e) {
       stopMicStream();
-      jtsAlert('AudioWorklet load failed: ' + e.message);
+      console.warn('microphone processor unavailable', e);
+      jtsAlert('This browser could not prepare microphone capture. Try again.');
       return false;
     } finally {
       URL.revokeObjectURL(blobUrl);
@@ -961,8 +998,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   function setStateBadge(state, detail) {
     // Whole-page progress/copy comes from the server envelope. Keep raw
-    // mechanism details out of the DOM; typed homeowner failures replace
-    // this generic sentence in the next R1 slice.
+    // mechanism details out of the DOM; the envelope refresh replaces this
+    // bounded fallback with the server's typed homeowner failure.
     if (state === 'failed') {
       console.warn('room-correction mechanism failed', detail || '');
       if (wizardVerdict) {
@@ -988,7 +1025,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     var issues = [];
     qualityReports(payload).forEach(function (report) {
       (report && report.issues || []).forEach(function (issue) {
-        var key = [issue.severity, issue.code, issue.message].join('|');
+        var key = [issue.severity, issue.code].join('|');
         if (!seen[key]) {
           seen[key] = true;
           issues.push(issue);
@@ -1006,11 +1043,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     qualityBanner.className = 'quality-banner ' + (hasFail ? 'fail' : 'warn');
     qualityBanner.innerHTML =
       '<strong>' + (hasFail ? 'Measurement blocked:' : 'Measurement quality warnings:') +
-      '</strong><ul>' +
-      issues.map(function (issue) {
-        return '<li>' + escapeText(issue.message || issue.code) + '</li>';
-      }).join('') +
-      '</ul>';
+      '</strong><p>' + (hasFail
+        ? 'This capture could not be used safely. Try this position again.'
+        : 'A quieter re-measure may improve confidence, but you can continue.') +
+      '</p>';
   }
 
   function formatAppliedAt(epoch) {
@@ -1076,7 +1112,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     } catch (e) {
       setCurrentCorrectionTone('flat');
       currentCorrectionLabel.textContent =
-        'Could not read current correction: ' + e.message;
+        'The current correction could not be checked. Try again.';
       currentCorrectionResetBtn.classList.add('hidden');
     }
   }
@@ -1087,8 +1123,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     try {
       await postJson('reset', {});
     } catch (e) {
-      currentCorrectionLabel.textContent =
-        'Reset failed: ' + e.message;
+      currentCorrectionLabel.textContent = safeErrorMessage(
+        e,
+        GENERIC_STEP_FAILURE
+      );
       currentCorrectionResetBtn.disabled = false;
       return;
     }
@@ -1201,6 +1239,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (wizardActionInFlight) return;
     var ep = wizardNextBtn.getAttribute('data-endpoint');
     if (!ep) return;
+    pendingHomeownerFailure = null;
     wizardActionInFlight = true;
     wizardNextBtn.disabled = true;
     wizardNextBtn.classList.add('hidden');
@@ -1231,6 +1270,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         await capturePreSweepNoise();
       } else if (ep === '/apply') {
         await applyCorrection(wizardNextBtn);
+      } else if (ep === '/reset') {
+        await resetCorrection();
       } else if (ep === '/verify') {
         await startVerify(wizardNextBtn);
       } else {
@@ -1238,6 +1279,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       }
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
     } finally {
       wizardActionInFlight = false;
       wizardNextBtn.disabled = false;
@@ -1273,7 +1315,76 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         throw new Error('unknown room-correction action');
       }
     }
+    if (!Object.prototype.hasOwnProperty.call(env, 'blocker') ||
+        !Object.prototype.hasOwnProperty.call(env, 'failure')) {
+      throw new Error('room-correction failure blocks missing');
+    }
+    var blocker = validatePublicFailure(env.blocker);
+    var failure = validatePublicFailure(env.failure);
+    if (blocker && blocker.code !== 'speaker_setup_incomplete' &&
+        blocker.code !== 'speaker_readiness_unavailable') {
+      throw new Error('room-correction blocker code mismatch');
+    }
+    var hasBlockerSection = env.sections.indexOf('readiness-blocker') !== -1;
+    if (hasBlockerSection !== !!blocker) {
+      throw new Error('room-correction blocker section mismatch');
+    }
+    if (blocker && (env.screen !== 'idle' || env.next_action !== null)) {
+      throw new Error('blocked room-correction entry offered an action');
+    }
+    if (String(env.state) === 'failed' && !failure) {
+      throw new Error('room-correction failure/state mismatch');
+    }
+    if (failure && String(env.state) !== 'failed' &&
+        (env.screen !== 'review' || failure.code !== 'measurement_evidence_unsafe')) {
+      throw new Error('room-correction failure/screen mismatch');
+    }
+    if (failure && env.next_action !== null && !(
+      String(env.state) === 'failed' && env.screen === 'result' &&
+      env.next_action.endpoint === '/reset'
+    )) {
+      throw new Error('failed room-correction envelope offered an action');
+    }
     return env;
+  }
+
+  function validatePublicFailure(block) {
+    if (block === null) return null;
+    if (!block || typeof block !== 'object' ||
+        typeof block.code !== 'string' || !KNOWN_FAILURES[block.code] ||
+        typeof block.text !== 'string' || !block.text.trim() ||
+        typeof block.retryable !== 'boolean') {
+      throw new Error('invalid room-correction failure');
+    }
+    var expected = KNOWN_FAILURES[block.code];
+    if (block.text !== expected.text || block.retryable !== expected.retryable) {
+      throw new Error('room-correction failure presentation mismatch');
+    }
+    var action = block.recovery_action;
+    if (action !== null) {
+      if (!action || typeof action.label !== 'string' || !action.label.trim() ||
+          typeof action.href !== 'string' || !action.href.startsWith('/') ||
+          action.href.startsWith('//') || action.href.indexOf('\\') !== -1 ||
+          /[\u0000-\u001f]/.test(action.href)) {
+        throw new Error('invalid room-correction recovery action');
+      }
+    }
+    return block;
+  }
+
+  function renderReadinessBlocker(blocker) {
+    if (!readinessBlockerMessage || !readinessBlockerAction) return;
+    readinessBlockerMessage.textContent = blocker ? String(blocker.text) : '';
+    var action = blocker && blocker.recovery_action;
+    if (action) {
+      readinessBlockerAction.textContent = String(action.label);
+      readinessBlockerAction.href = String(action.href);
+      readinessBlockerAction.classList.remove('hidden');
+    } else {
+      readinessBlockerAction.textContent = '';
+      readinessBlockerAction.removeAttribute('href');
+      readinessBlockerAction.classList.add('hidden');
+    }
   }
 
   function renderEnvelopeFailure() {
@@ -1287,6 +1398,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         'The speaker could not refresh this step. Wait a moment and try again.';
     }
     renderNudges([]);
+    renderReadinessBlocker(null);
   }
 
   // The server supplies both membership and order. This renderer knows only
@@ -1324,11 +1436,21 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   function renderEnvelope(env) {
     if (!env || !wizardChrome) return;
     wizardChrome.classList.remove('hidden');
-    if (wizardVerdict) wizardVerdict.textContent = String(env.verdict_text || '');
+    if (env.blocker || env.failure) pendingHomeownerFailure = null;
+    if (wizardVerdict) {
+      wizardVerdict.textContent = String(
+        env.failure && env.failure.text || env.verdict_text || ''
+      );
+    }
     renderNudges(env.nudges);
     renderPrimaryAction(env.next_action);
     renderProgress(env.progress);
     renderSections(env.sections, env.curves || {});
+    renderReadinessBlocker(env.blocker);
+    if (pendingHomeownerFailure) {
+      wizardVerdict.textContent = String(pendingHomeownerFailure.text);
+      if (!pendingHomeownerFailure.retryable) renderPrimaryAction(null);
+    }
     // On the review/result screens the envelope carries the honest,
     // server-smoothed curves + Pi-classified two-tone fill. Draw them into
     // the shared canvas via drawEnvelopeCurves so the "what your room is
@@ -1399,24 +1521,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   }
 
-  // An HTTP error whose body carried the server's honest JSON error
-  // message (e.g. the paid-call min-interval 409): the assistant WAS
-  // reached, so its message is shown as-is. A plain Error (fetch threw,
-  // or the body wasn't JSON) is a genuine network/parse failure and keeps
-  // the "Could not reach" framing.
-  function tuningServerError(message) {
-    var err = new Error(String(message));
-    err.serverMessage = true;
-    return err;
-  }
-
   function setTuningError(e) {
-    if (e && e.serverMessage) {
-      setTuningStatus(e.message);
-    } else {
-      setTuningStatus('Could not reach the tuning assistant: '
-        + (e && e.message ? e.message : e));
-    }
+    setTuningStatus(safeErrorMessage(
+      e,
+      'The tuning assistant could not continue. Try again.'
+    ));
   }
 
   async function onTuningInterpret() {
@@ -1427,12 +1536,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       var resp = await fetch(endpoint('interpret'), {
         method: 'POST', headers: jsonHeaders(), body: '{}',
       });
-      var payload = await resp.json();
       if (!resp.ok) {
-        throw payload && payload.error
-          ? tuningServerError(payload.error)
-          : new Error('interpret ' + resp.status);
+        throw await responseError(
+          resp,
+          'The tuning assistant could not continue. Try again.'
+        );
       }
+      var payload = await resp.json();
       renderTuningExplanation(payload);
       setTuningStatus('');
     } catch (e) {
@@ -1449,12 +1559,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       var resp = await fetch(endpoint('propose'), {
         method: 'POST', headers: jsonHeaders(), body: '{}',
       });
-      var payload = await resp.json();
       if (!resp.ok) {
-        throw payload && payload.error
-          ? tuningServerError(payload.error)
-          : new Error('propose ' + resp.status);
+        throw await responseError(
+          resp,
+          'The tuning assistant could not continue. Try again.'
+        );
       }
+      var payload = await resp.json();
       renderTuningExplanation(payload);
       renderTuningProposals(payload.proposals || []);
       setTuningStatus('');
@@ -1573,25 +1684,25 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         headers: jsonHeaders(),
         body: JSON.stringify({ confirm: true, correction_peqs: p.correction_peqs }),
       });
+      if (!resp.ok) throw await responseError(resp, GENERIC_STEP_FAILURE);
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload && payload.error ? payload.error : ('apply ' + resp.status));
       if (payload.applied) {
         setTuningStatus('Applied. Measure once more to verify it worked.');
         pollState();
         refreshEnvelope();
       } else {
-        // Server-derived honesty: applied is false both for a safety-gate
-        // rejection AND for an apply that failed downstream (CamillaDSP
-        // rejected the reload — the speaker kept its previous sound). The
-        // server's reason carries the honest sentence; refresh so the UI
-        // shows the real session state rather than a stale review screen.
-        setTuningStatus('Not applied: ' + (payload.reason || "couldn't apply — the speaker kept its previous sound."));
+        var failure = null;
+        try { failure = validatePublicFailure(payload.failure || null); }
+        catch (_e) {}
+        setTuningStatus(
+          failure ? failure.text : 'That suggestion was not applied.'
+        );
         if (btn) btn.disabled = false;
         pollState();
         refreshEnvelope();
       }
     } catch (e) {
-      setTuningStatus('Apply failed: ' + (e && e.message ? e.message : e));
+      setTuningStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE));
       if (btn) btn.disabled = false;
     }
   }
@@ -1681,6 +1792,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   function maybeRefreshEnvelopeOnStateChange(state, autolevelStatus) {
     var al = autolevelStatus || 'idle';
     if (state !== lastEnvelopeState || al !== lastAutolevelStatus) {
+      if (state !== lastEnvelopeState) pendingHomeownerFailure = null;
       lastAutolevelStatus = al;
       envelopeRetryArmed = true;   // a fresh trigger grants one retry credit
       refreshEnvelope();
@@ -1763,7 +1875,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     var score = typeof report.score === 'number' ? report.score : 0;
     var variance = report.position_variance || {};
     var gates = report.strategy_gates || {};
-    var findings = (report.findings || []).slice(0, 5);
     var gateHtml = ['safe', 'balanced', 'assertive'].map(function (name) {
       var gate = gates[name] || {};
       var allowed = !!gate.allowed;
@@ -1782,16 +1893,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         ' positions.</p>';
     } else {
       varianceHtml =
-        '<p class="hint">Position variance unavailable: ' +
-        escapeText(variance.reason || 'need more completed positions') +
-        '.</p>';
-    }
-
-    var findingsHtml = '';
-    if (findings.length) {
-      findingsHtml = '<ul>' + findings.map(function (finding) {
-        return '<li>' + escapeText(finding.message || finding.code) + '</li>';
-      }).join('') + '</ul>';
+        '<p class="hint">Measure more listening positions to compare how the room changes.</p>';
     }
 
     confidencePanel.className = 'confidence-card ' + level;
@@ -1799,10 +1901,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       '<h3>Measurement confidence</h3>' +
       '<p><strong>' + escapeText(level.toUpperCase()) + '</strong> · ' +
       '<span class="confidence-score">' + score + '/100</span></p>' +
-      '<p class="hint">' + escapeText(report.summary || '') + '</p>' +
+      '<p class="hint">JTS combined the completed positions and quality ' +
+      'checks into this rating.</p>' +
       varianceHtml +
-      '<div class="gate-list">' + gateHtml + '</div>' +
-      findingsHtml;
+      '<div class="gate-list">' + gateHtml + '</div>';
   }
 
   function renderRuntimeIntegrity(payload) {
@@ -1821,9 +1923,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     var load = latest.load_per_core;
     var issues = (report.issues || []).slice(0, 5);
     var issueHtml = issues.length
-      ? '<ul>' + issues.map(function (issue) {
-          return '<li>' + escapeText(issue.message || issue.code) + '</li>';
-        }).join('') + '</ul>'
+      ? '<p class="hint">The speaker recorded a runtime warning. Re-measuring may improve confidence.</p>'
       : '<p class="hint">No runtime warnings were recorded around the sweep.</p>';
     var loadText = Number.isFinite(Number(load))
       ? Number(load).toFixed(2) + ' load/core'
@@ -1923,7 +2023,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       var payload = await resp.json();
       renderSessionHistory(payload.sessions || []);
     } catch (e) {
-      sessionHistory.textContent = 'Could not load measurement reports: ' + e.message;
+      console.warn('measurement report list failed', e);
+      sessionHistory.textContent = 'Measurement reports could not be loaded. Try again.';
     } finally {
       loadSessionsBtn.disabled = false;
     }
@@ -2009,7 +2110,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       await refreshEnvelope();
     } catch (e) {
       sessionReport.className = 'session-report blocked';
-      sessionReport.textContent = 'Could not delete bundle: ' + e.message;
+      sessionReport.textContent = safeErrorMessage(e, GENERIC_STEP_FAILURE);
     }
   }
 
@@ -2030,13 +2131,23 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         payload = {error: text};
       }
       if (!resp.ok) {
-        throw new Error(payload.error || ('session-report ' + resp.status));
+        console.warn('measurement report request failed', {
+          status: resp.status,
+          diagnostic: payload && payload.error,
+        });
+        throw homeownerError(
+          null,
+          'That measurement report could not be loaded. Try again.'
+        );
       }
       sessionReport.dataset.sessionId = sessionId;
       renderSessionReport(payload);
     } catch (e) {
       sessionReport.className = 'session-report blocked';
-      sessionReport.textContent = 'Could not load report: ' + e.message;
+      sessionReport.textContent = safeErrorMessage(
+        e,
+        'That measurement report could not be loaded. Try again.'
+      );
     }
   }
 
@@ -2500,28 +2611,82 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   // -- Network --
 
+  var GENERIC_STEP_FAILURE =
+    'The speaker could not continue this step. Try again.';
+
+  function homeownerError(failure, fallback) {
+    var err = new Error(
+      failure && failure.text
+        ? String(failure.text)
+        : String(fallback || GENERIC_STEP_FAILURE)
+    );
+    err.homeownerSafe = true;
+    err.failure = failure || null;
+    return err;
+  }
+
+  function safeErrorMessage(error, fallback) {
+    return error && error.homeownerSafe
+      ? String(error.message)
+      : String(fallback || GENERIC_STEP_FAILURE);
+  }
+
+  function showHomeownerFailure(error) {
+    var failure = error && error.failure;
+    pendingHomeownerFailure = failure || {
+      text: safeErrorMessage(error, GENERIC_STEP_FAILURE),
+      retryable: true,
+    };
+    if (wizardVerdict) wizardVerdict.textContent = pendingHomeownerFailure.text;
+    if (!pendingHomeownerFailure.retryable) renderPrimaryAction(null);
+  }
+
+  async function responseError(resp, fallback) {
+    var text = '';
+    var payload = null;
+    try {
+      text = await resp.text();
+      payload = JSON.parse(text);
+    } catch (_e) {}
+    var failure = null;
+    try {
+      failure = validatePublicFailure(payload && payload.failure || null);
+    } catch (_e) {}
+    console.warn('room-correction request failed', {
+      status: resp.status,
+      failureCode: failure && failure.code,
+    });
+    return homeownerError(failure, fallback);
+  }
 
   async function postJson(path, body) {
     var url = endpoint(path);
-    var resp = await fetch(url, {
-      method: 'POST',
-      headers: jsonHeaders(),
-      body: JSON.stringify(body || {})
-    });
+    var resp;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify(body || {})
+      });
+    } catch (e) {
+      console.warn('room-correction request unavailable', {url: url, error: e});
+      throw homeownerError(null, GENERIC_STEP_FAILURE);
+    }
     if (!resp.ok) {
-      var msg = await resp.text();
-      try {
-        var payload = JSON.parse(msg);
-        if (payload && payload.error) msg = payload.error;
-      } catch (_e) {}
-      throw new Error('POST ' + url + ' → ' + resp.status + ': ' + msg);
+      throw await responseError(resp, GENERIC_STEP_FAILURE);
     }
     return await resp.json();
   }
 
   async function fetchStatus() {
-    var resp = await fetch(endpoint('status'), {cache: 'no-store'});
-    if (!resp.ok) throw new Error('status ' + resp.status);
+    var resp;
+    try {
+      resp = await fetch(endpoint('status'), {cache: 'no-store'});
+    } catch (e) {
+      console.warn('room-correction status unavailable', e);
+      throw homeownerError(null, GENERIC_STEP_FAILURE);
+    }
+    if (!resp.ok) throw await responseError(resp, GENERIC_STEP_FAILURE);
     return await resp.json();
   }
 
@@ -2645,7 +2810,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
-      setRelayStatus(e.message, 'bad');
+      showHomeownerFailure(e);
+      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
     }
   }
 
@@ -2658,7 +2824,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
-      setRelayStatus(e.message, 'bad');
+      showHomeownerFailure(e);
+      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
     }
   }
 
@@ -2671,7 +2838,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
-      setRelayStatus(e.message, 'bad');
+      showHomeownerFailure(e);
+      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
     }
   }
 
@@ -2683,7 +2851,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       setRunTransportLocked(true);
     } catch (e) {
       setStateBadge('failed', e.message);
-      setRelayStatus(e.message, 'bad');
+      showHomeownerFailure(e);
+      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
       return;
     }
     await startRelayLevelMatch();
@@ -2710,6 +2879,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       setRunTransportLocked(true);
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
       return;
     }
     pollState();
@@ -2727,6 +2897,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       await postJson('next-position', {});
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
       // pollState will reapply the button policy on next tick —
       // user can retry from the new state.
       return;
@@ -2752,6 +2923,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       captureMode = 'discard';
       if (workletNode) workletNode.port.postMessage('stopCapture');
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
       return;
     }
     pollState();
@@ -2874,7 +3046,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       clearInterval(watcher);
       autolevelLockBtn.onclick = prevLockHandler;
       autolevelCancelBtn.onclick = prevCancelHandler;
-      autolevelLine.textContent = 'Auto-level failed: ' + e.message;
+      autolevelLine.textContent = safeErrorMessage(e, GENERIC_STEP_FAILURE);
       autolevelLockBtn.classList.add('hidden');
       autolevelCancelBtn.classList.add('hidden');
       return;
@@ -2911,11 +3083,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
           autolevelDetail.textContent = '';
         } else if (al.status === 'error') {
           autolevelLine.textContent = 'Auto-level error.';
-          autolevelDetail.textContent = al.error || '(no details)';
+          console.warn('autolevel failed', al.error || '');
+          autolevelDetail.textContent = 'The level check stopped safely. Try again.';
         }
         return true;
       } catch (e) {
-        autolevelLine.textContent = 'Status fetch failed: ' + e.message;
+        autolevelLine.textContent = safeErrorMessage(e, GENERIC_STEP_FAILURE);
         return true;
       }
     };
@@ -2937,7 +3110,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     try {
       await postJson('autolevel/cancel', {});
     } catch (e) {
-      autolevelLine.textContent = 'Cancel POST failed: ' + e.message;
+      autolevelLine.textContent = safeErrorMessage(e, GENERIC_STEP_FAILURE);
     }
   }
 
@@ -2957,6 +3130,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       captureMode = 'discard';
       if (workletNode) workletNode.port.postMessage('stopCapture');
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
       if (triggerBtn) triggerBtn.disabled = false;
       inVerifyMode = false;
       return;
@@ -3046,7 +3220,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (snapshot && snapshot.state === 'ready') {
       setRelayStatus('Measurement is ready. Review confidence, then apply or reset.', 'ok');
     } else if (snapshot && snapshot.state === 'failed') {
-      setRelayStatus(snapshot.error || 'Measurement failed. Cancel or start again.', 'bad');
+      console.warn('room-correction session failed', snapshot.error || '');
+      setRelayStatus(GENERIC_STEP_FAILURE, 'bad');
     }
   }
 
@@ -3151,8 +3326,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
           body: wav
         });
         if (!noiseResp.ok) {
-          var noiseMsg = await noiseResp.text();
-          throw new Error('upload-noise → ' + noiseResp.status + ': ' + noiseMsg);
+          throw await responseError(noiseResp, GENERIC_STEP_FAILURE);
         }
         await noiseResp.json();
         finishNoiseCapture(null);
@@ -3162,6 +3336,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         if (workletNode) workletNode.port.postMessage('stopCapture');
         finishNoiseCapture(e);
         setStateBadge('failed', e.message);
+        showHomeownerFailure(e);
       }
       return;
     }
@@ -3175,8 +3350,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         body: wav
       });
       if (!resp.ok) {
-        var msg = await resp.text();
-        throw new Error('upload-capture → ' + resp.status + ': ' + msg);
+        throw await responseError(resp, GENERIC_STEP_FAILURE);
       }
       var data = await resp.json();
       lastResult = data;
@@ -3221,6 +3395,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
       try {
         renderQuality(await fetchStatus());
       } catch (ignored) {}
@@ -3235,6 +3410,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
     } finally {
       if (triggerBtn) triggerBtn.disabled = false;
     }
@@ -3249,6 +3425,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
     } finally {
       resetBtn.disabled = false;
     }
@@ -3276,6 +3453,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       await postJson('reset', {});
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
     } finally {
       cancelMeasureBtn.disabled = false;
     }

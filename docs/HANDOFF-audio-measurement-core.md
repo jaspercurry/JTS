@@ -94,9 +94,13 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   inert until the Active integration lane issues and persists them.
 
 Contract status is not current `/state`. Existing Active bundles remain
-forensic/fail-soft, and Room still gates from the applied recomposition snapshot;
-neither `active_speaker.setup_status` nor `/correction/start` parses the new
-receipt. No hardware behavior was changed or revalidated by Wave 1.
+forensic/fail-soft, and `active_speaker.setup_status` still reports the legacy
+applied-recomposition decision. Room R1b no longer accepts that legacy positive
+decision for an active topology: it admits only passive/not-required and blocks
+active entry until Active issues and exposes the exact receipt-backed result.
+Room does not parse the receipt or reconstruct it from historical B2b evidence;
+automatic authority requires Active's fresh excitation-admitted captures and
+measured delay walk. No hardware behavior was changed or revalidated.
 
 ### Wave 2 neutral artifact-manifest ownership (2026-07-13)
 
@@ -1088,7 +1092,8 @@ to de-risk Phase 3.
 
 Last verified: 2026-07-13 (Wave 2 neutral artifact-manifest, playback,
 admission-artifact, and guarded-playback ownership; exact Room byte/schema/path
-compatibility; Room playback shim; deterministic tone bytes; bounded
+compatibility; Room playback shim; temporary passive-only Room admission
+pending exact Active receipt authority; deterministic tone bytes; bounded
 diagnostic/cleanup behavior; canonical admission marker and
 generation/playback path roles; crash-durable no-replace persistence;
 content-bound immutable-snapshot WAV emission; cancellation-drained playback

@@ -41,6 +41,8 @@ ENVELOPE_KEYS = {
     "verdict_text",
     "nudges",
     "next_action",
+    "blocker",
+    "failure",
     "progress",
     "tuning_llm",
 }
@@ -54,6 +56,15 @@ LOGICAL_SCREENS = {
     "apply",
     "verify",
     "result",
+}
+
+READY_SPEAKER_SETUP = {
+    "active": False,
+    "room_correction_allowed": True,
+    "acoustic_commissioning": {
+        "allowed": True,
+        "status": "not_required",
+    },
 }
 
 
@@ -188,15 +199,16 @@ def test_unknown_state_value_fails_closed_instead_of_offering_start():
 # ---------- top-level shape ------------------------------------------------
 
 
-def test_schema_version_is_six():
+def test_schema_version_is_seven():
     # v2 added the P4 `verdict` block; v3 added the P5 crossover-region
     # distinction (REVIEW verdict_text + crossover_region_dip_not_boosted nudge);
     # v4 (P6) added the `tuning_llm` affordance block.
     # v5 wires the relay-owned level-before-sweep actions; v6 makes the
-    # ordered section list the sole whole-page visibility authority.
-    assert envelope.ENVELOPE_SCHEMA_VERSION == 6
+    # ordered section list the sole whole-page visibility authority; v7 adds
+    # closed blocker/failure presentation data.
+    assert envelope.ENVELOPE_SCHEMA_VERSION == 7
     env = envelope.build_envelope(_FakeSession())
-    assert env["schema_version"] == 6
+    assert env["schema_version"] == 7
 
 
 def test_tuning_llm_block_offered_on_review_shape_pinned(monkeypatch):
@@ -297,7 +309,10 @@ def test_section_vocabulary_is_exact_and_room_owned():
     ],
 )
 def test_sections_are_server_ordered_for_each_screen(state, sections):
-    env = envelope.build_envelope(_FakeSession(state))
+    env = envelope.build_envelope(
+        _FakeSession(state),
+        readiness_blocker=None,
+    )
     assert env["sections"] == sections
 
 
@@ -387,10 +402,14 @@ def test_local_later_position_reuses_bound_setup_without_leveling_again():
 @pytest.mark.parametrize("state", [SessionState.IDLE, SessionState.VERIFIED])
 def test_reports_section_is_conditional_on_static_edge_availability(state):
     without_reports = envelope.build_envelope(
-        _FakeSession(state), reports_available=False,
+        _FakeSession(state),
+        reports_available=False,
+        readiness_blocker=None,
     )
     with_reports = envelope.build_envelope(
-        _FakeSession(state), reports_available=True,
+        _FakeSession(state),
+        reports_available=True,
+        readiness_blocker=None,
     )
     assert "reports" not in without_reports["sections"]
     assert with_reports["sections"][-1] == "reports"
@@ -423,6 +442,30 @@ def test_web_handler_never_scans_reports_on_active_poll(monkeypatch):
     assert "reports" not in body["sections"]
 
 
+def test_web_handler_active_to_idle_race_fails_closed(monkeypatch):
+    from jasper.web import correction_setup
+
+    sess = _FakeSession(SessionState.IDLE)
+    sess.cfg = SimpleNamespace(sessions_dir="unused")
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        envelope,
+        "screen_for_session",
+        lambda _sess: envelope.SCREEN_SWEEP,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_readiness",
+        lambda: pytest.fail("the first active observation must not read readiness"),
+    )
+
+    body = correction_setup._handle_envelope(SimpleNamespace(path="/envelope"))
+
+    assert body["screen"] == "idle"
+    assert body["next_action"] is None
+    assert body["blocker"]["code"] == "speaker_readiness_unavailable"
+
+
 def test_web_handler_adds_reports_only_when_static_store_has_one(monkeypatch):
     from jasper.capture_relay import correction_adapter
     from jasper.correction import bundles
@@ -431,6 +474,11 @@ def test_web_handler_adds_reports_only_when_static_store_has_one(monkeypatch):
     sess = _FakeSession(SessionState.IDLE)
     sess.cfg = SimpleNamespace(sessions_dir="unused")
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: READY_SPEAKER_SETUP,
+    )
     monkeypatch.setattr(correction_adapter, "relay_enabled", lambda: True)
     monkeypatch.setattr(bundles, "list_bundles", lambda *_args, **_kwargs: [{}])
 
@@ -452,6 +500,11 @@ def test_web_handler_report_discovery_failure_does_not_block_idle(monkeypatch):
     sess.cfg = SimpleNamespace(sessions_dir="unavailable")
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: READY_SPEAKER_SETUP,
+    )
+    monkeypatch.setattr(
         bundles,
         "list_bundles",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError()),
@@ -465,7 +518,10 @@ def test_web_handler_report_discovery_failure_does_not_block_idle(monkeypatch):
 
 
 def test_idle_envelope_has_entry_action_and_no_headline():
-    env = envelope.build_envelope(_FakeSession(SessionState.IDLE))
+    env = envelope.build_envelope(
+        _FakeSession(SessionState.IDLE),
+        readiness_blocker=None,
+    )
     assert env["screen"] == "idle"
     assert env["state"] == "idle"
     assert env["sections"] == ["current-correction", "run-defaults"]
@@ -474,9 +530,49 @@ def test_idle_envelope_has_entry_action_and_no_headline():
     assert env["curves"] == {}
     assert env["nudges"] == []
     assert env["next_action"] == {"label": "Start measuring", "endpoint": "/start"}
+    assert env["blocker"] is None
+    assert env["failure"] is None
     assert env["progress"] == {"position": 1, "total": 6}
     assert isinstance(env["verdict_text"], str) and env["verdict_text"]
     assert env["verdict"] is None  # no verify yet → no acceptance verdict
+
+
+def test_idle_envelope_without_explicit_readiness_fails_closed():
+    env = envelope.build_envelope(_FakeSession(SessionState.IDLE))
+
+    assert env["sections"] == ["current-correction", "readiness-blocker"]
+    assert env["next_action"] is None
+    assert env["blocker"]["code"] == "speaker_readiness_unavailable"
+    assert env["blocker"]["recovery_action"] == {
+        "label": "Check again",
+        "href": "/correction/room/",
+    }
+
+
+def test_blocked_idle_keeps_reports_but_withholds_defaults_and_start():
+    from jasper.correction import failures
+
+    blocker = failures.public_failure(
+        failures.SPEAKER_SETUP_INCOMPLETE,
+        recovery_action={
+            "label": "Open speaker setup",
+            "href": "/correction/crossover/",
+        },
+    )
+    env = envelope.build_envelope(
+        _FakeSession(SessionState.IDLE),
+        readiness_blocker=blocker,
+        reports_available=True,
+    )
+
+    assert env["sections"] == [
+        "current-correction",
+        "readiness-blocker",
+        "reports",
+    ]
+    assert env["next_action"] is None
+    assert env["blocker"] == blocker
+    assert env["verdict_text"] == "Room correction is waiting for speaker setup."
 
 
 def test_relay_next_position_has_one_compound_forward_action():
@@ -655,13 +751,66 @@ def test_headline_none_when_before_after_malformed():
     assert env["fill_segments"] == []
 
 
-def test_failed_state_result_screen_carries_error_in_verdict():
+def test_failed_state_result_screen_maps_raw_error_to_typed_failure():
     sess = _FakeSession(SessionState.FAILED)
     sess.error = "capture too quiet"
     env = envelope.build_envelope(sess)
     assert env["screen"] == "result"
-    assert "capture too quiet" in env["verdict_text"]
+    assert "capture too quiet" not in env["verdict_text"]
+    assert env["failure"] == {
+        "code": "unknown_failure",
+        "text": "The speaker could not continue this step. Try again.",
+        "retryable": True,
+        "recovery_action": None,
+    }
+    assert env["verdict_text"] == env["failure"]["text"]
+    assert env["next_action"] == {
+        "label": "Start over",
+        "endpoint": "/reset",
+    }
     assert env["headline"] is None
+
+
+@pytest.mark.parametrize(
+    ("diagnostic", "code"),
+    [
+        ("measurement stopped", "measurement_stopped"),
+        ("sweep playback failed: private detail", "test_signal_unavailable"),
+        ("verify analysis failed: private detail", "measurement_analysis_failed"),
+        ("YAML emit failed: private detail", "correction_update_failed"),
+        (
+            "CamillaDSP rejected the base config — manual intervention required",
+            "correction_restore_failed",
+        ),
+        ("reset reload failed: private detail", "correction_restore_failed"),
+    ],
+)
+def test_session_diagnostics_map_to_truthful_closed_failures(diagnostic, code):
+    from jasper.correction import failures
+
+    public = failures.session_failure(diagnostic)
+
+    assert public["code"] == code
+    assert "private detail" not in str(public)
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"label": "Open", "href": "https://example.com"},
+        {"label": "Open", "href": "//example.com"},
+        {"label": "Open", "href": "/correction/\\bad"},
+        {"label": "Open", "href": "/correction/\nnext"},
+    ],
+)
+def test_public_failure_rejects_unsafe_recovery_actions(action):
+    from jasper.correction import failures
+
+    with pytest.raises(ValueError, match="invalid Room recovery action"):
+        failures.public_failure(
+            failures.SPEAKER_SETUP_INCOMPLETE,
+            recovery_action=action,
+        )
 
 
 # ---------- nudges: never block, homeowner language ------------------------
@@ -754,7 +903,7 @@ def test_low_confidence_findings_map_to_nudges():
     assert env["next_action"] is not None
 
 
-def test_fail_severity_finding_is_clamped_to_warn_never_block():
+def test_fail_severity_finding_is_not_softened_into_a_nudge():
     sess = _FakeSession(SessionState.READY)
     sess.confidence_report = {
         "findings": [
@@ -763,11 +912,24 @@ def test_fail_severity_finding_is_clamped_to_warn_never_block():
         ],
     }
     env = envelope.build_envelope(sess)
-    assert len(env["nudges"]) == 1
-    assert env["nudges"][0]["severity"] == "warn"  # fail -> warn ceiling
+    assert env["nudges"] == []
+    assert env["failure"]["code"] == "measurement_evidence_unsafe"
+    assert env["next_action"] is None
+    assert env["tuning_llm"]["offered"] is False
+    assert "safety checks" in env["verdict_text"]
+
+    # Resetting the session to idle retires result evidence and restores the
+    # fresh-measurement recovery action; a retained report cannot strand Room.
+    sess.state = SessionState.IDLE
+    reset_env = envelope.build_envelope(sess, readiness_blocker=None)
+    assert reset_env["failure"] is None
+    assert reset_env["next_action"] == {
+        "label": "Start measuring",
+        "endpoint": "/start",
+    }
 
 
-def test_unknown_finding_is_surfaced_degraded_not_dropped():
+def test_unknown_finding_does_not_surface_raw_diagnostic_copy():
     sess = _FakeSession(SessionState.READY)
     sess.confidence_report = {
         "findings": [
@@ -776,12 +938,8 @@ def test_unknown_finding_is_surfaced_degraded_not_dropped():
         ],
     }
     env = envelope.build_envelope(sess)
-    assert len(env["nudges"]) == 1
-    n = env["nudges"][0]
-    assert n["code"] == "brand_new_finding"
-    # Unknown -> raw message surfaced, severity clamped into nudge vocab.
-    assert n["text"] == "a newly added confidence check tripped"
-    assert n["severity"] == "warn"
+    assert env["nudges"] == []
+    assert "newly added confidence check" not in str(env)
 
 
 def test_duplicate_finding_codes_collapse_to_one_nudge():
@@ -908,7 +1066,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         server.server_close()
 
     assert set(body) == ENVELOPE_KEYS
-    assert body["schema_version"] == 6
+    assert body["schema_version"] == 7
     assert body["screen"] == "review"
     assert body["state"] == "ready"
     assert body["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}
@@ -962,7 +1120,10 @@ def test_successful_auto_revert_is_announced_on_idle():
 
 def test_fresh_idle_session_keeps_default_copy():
     """The post-revert branch must not fire for an ordinary fresh session."""
-    env = envelope.build_envelope(_FakeSession(SessionState.IDLE))
+    env = envelope.build_envelope(
+        _FakeSession(SessionState.IDLE),
+        readiness_blocker=None,
+    )
     assert env["verdict_text"] == "Ready to measure your room."
 
 
@@ -978,6 +1139,24 @@ def test_failed_auto_revert_says_still_applied():
     assert "Reset" in env["verdict_text"]
     assert "put it back" not in env["verdict_text"]
     assert "removed the correction" not in env["verdict_text"]
+
+
+def test_failed_state_auto_revert_uses_typed_still_applied_failure():
+    sess = _FakeSession(SessionState.FAILED)
+    sess.error = "reset reload failed: connection lost"
+    sess.acceptance = _acceptance("revert")
+    sess.auto_revert_outcome = {"result": "failed", "at": 1234.0}
+
+    env = envelope.build_envelope(sess)
+
+    assert env["failure"]["code"] == "correction_auto_revert_failed"
+    assert env["verdict_text"] == env["failure"]["text"]
+    assert env["next_action"] == {
+        "label": "Start over",
+        "endpoint": "/reset",
+    }
+    assert "STILL APPLIED" in env["verdict_text"]
+    assert "connection lost" not in str(env)
 
 
 def test_inflight_revert_copy_does_not_claim_completion():

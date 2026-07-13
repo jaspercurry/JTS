@@ -28,6 +28,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from http import HTTPStatus
 from pathlib import Path
 
 import pytest
@@ -858,6 +859,220 @@ class _DummyJsonHandler:
         self.rfile = io.BytesIO(body)
 
 
+_READY_ROOM_CORRECTION_SETUP = {
+    "active": False,
+    "room_correction_allowed": True,
+    "acoustic_commissioning": {
+        "allowed": True,
+        "status": "not_required",
+    },
+}
+
+
+def test_room_readiness_accepts_consistent_passive_authority(monkeypatch):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: _READY_ROOM_CORRECTION_SETUP,
+    )
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.allowed is True
+    assert readiness.blocker is None
+
+
+def test_room_readiness_rejects_legacy_active_snapshot_authority(monkeypatch):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {
+            "active": True,
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "allowed": True,
+                "status": "ready",
+                "reason": None,
+                "detail": "historical B2b evidence says ready",
+                "setup_href": "/correction/crossover/",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_reserve_start_slot",
+        lambda: pytest.fail("legacy Active authority must reject before reserve"),
+    )
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.allowed is False
+    assert readiness.reason == "active_receipt_authority_unavailable"
+    assert readiness.blocker == {
+        "code": "speaker_setup_incomplete",
+        "text": "Finish speaker setup first.",
+        "retryable": False,
+        "recovery_action": {
+            "label": "Open speaker setup",
+            "href": "/correction/crossover/",
+        },
+    }
+    assert "historical B2b" not in str(readiness.blocker)
+
+    with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
+        correction_setup._handle_start(_DummyJsonHandler())
+    assert exc_info.value.status == HTTPStatus.CONFLICT
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {},
+        {"room_correction_allowed": True},
+        {
+            "room_correction_allowed": "yes",
+            "acoustic_commissioning": {
+                "allowed": True,
+                "status": "ready",
+            },
+        },
+        {
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "allowed": False,
+                "status": "incomplete",
+            },
+        },
+        {
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "allowed": True,
+                "status": "incomplete",
+            },
+        },
+    ],
+)
+def test_room_readiness_malformed_shapes_fail_closed_with_retry(
+    monkeypatch,
+    raw,
+):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: raw,
+    )
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.allowed is False
+    assert readiness.blocker["code"] == "speaker_readiness_unavailable"
+    assert readiness.blocker["recovery_action"] == {
+        "label": "Check again",
+        "href": "/correction/room/",
+    }
+
+
+def test_room_readiness_unknown_authority_is_retryable_unavailable(monkeypatch):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {
+            "artifact_schema_version": 1,
+            "kind": "jts_active_speaker_setup_status",
+            "active": True,
+            "room_correction_allowed": False,
+            "acoustic_commissioning": {
+                "required": True,
+                "allowed": False,
+                "status": "unknown",
+                "reason": "output_topology_unreadable",
+                "detail": "raw topology diagnostic",
+                "setup_href": "/correction/crossover/",
+            },
+        },
+    )
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.allowed is False
+    assert readiness.blocker["code"] == "speaker_readiness_unavailable"
+    assert readiness.blocker["retryable"] is True
+    assert readiness.blocker["recovery_action"] == {
+        "label": "Open speaker setup",
+        "href": "/correction/crossover/",
+    }
+    assert "raw topology diagnostic" not in str(readiness.blocker)
+
+    with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
+        correction_setup._handle_start(_DummyJsonHandler())
+    assert exc_info.value.status == HTTPStatus.SERVICE_UNAVAILABLE
+
+
+def test_room_readiness_read_failure_has_bounded_retry(monkeypatch):
+    from jasper.web import correction_setup
+
+    def unreadable():
+        raise OSError("secret filesystem detail")
+
+    monkeypatch.setattr(correction_setup, "_room_correction_readiness", unreadable)
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.blocker["code"] == "speaker_readiness_unavailable"
+    assert readiness.blocker["recovery_action"] == {
+        "label": "Check again",
+        "href": "/correction/room/",
+    }
+    assert "secret filesystem detail" not in str(readiness.blocker)
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "https://example.com/setup",
+        "//example.com/setup",
+        "/correction/\\evil",
+        "/correction/crossover/\nnext",
+    ],
+)
+def test_room_readiness_rejects_unsafe_owner_recovery_links(monkeypatch, href):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {
+            "active": True,
+            "room_correction_allowed": False,
+            "acoustic_commissioning": {
+                "allowed": False,
+                "status": "incomplete",
+                "reason": "active_speaker_setup_not_ready",
+                "detail": "raw Active detail",
+                "setup_href": href,
+            },
+        },
+    )
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.allowed is False
+    assert readiness.blocker["code"] == "speaker_setup_incomplete"
+    assert readiness.blocker["recovery_action"] == {
+        "label": "Check again",
+        "href": "/correction/room/",
+    }
+    assert "raw Active detail" not in str(readiness.blocker)
+
+
 def test_start_handler_loads_measurement_baseline_before_sweep(
     tmp_path: Path, monkeypatch,
 ):
@@ -870,7 +1085,7 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     monkeypatch.setattr(
         correction_setup,
         "_room_correction_readiness",
-        lambda: {"room_correction_allowed": True},
+        lambda: _READY_ROOM_CORRECTION_SETUP,
     )
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
@@ -1100,7 +1315,7 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
     monkeypatch.setattr(
         correction_setup,
         "_room_correction_readiness",
-        lambda: {"room_correction_allowed": True},
+        lambda: _READY_ROOM_CORRECTION_SETUP,
     )
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
@@ -1157,7 +1372,7 @@ def test_start_handler_rejects_active_measurement(monkeypatch):
     monkeypatch.setattr(
         correction_setup,
         "_room_correction_readiness",
-        lambda: {"room_correction_allowed": True},
+        lambda: _READY_ROOM_CORRECTION_SETUP,
     )
 
     class ActiveSession:
@@ -1180,7 +1395,7 @@ def test_start_handler_rejects_failed_browser_audio_before_sweep(
     monkeypatch.setattr(
         correction_setup,
         "_room_correction_readiness",
-        lambda: {"room_correction_allowed": True},
+        lambda: _READY_ROOM_CORRECTION_SETUP,
     )
 
     monkeypatch.setattr(correction_setup, "_session", None)
@@ -1224,7 +1439,7 @@ def test_start_handler_rejects_reserved_start_before_state_transition(monkeypatc
     monkeypatch.setattr(
         correction_setup,
         "_room_correction_readiness",
-        lambda: {"room_correction_allowed": True},
+        lambda: _READY_ROOM_CORRECTION_SETUP,
     )
 
     monkeypatch.setattr(correction_setup, "_session", None)
@@ -1247,8 +1462,11 @@ def test_start_handler_rejects_uncommissioned_active_speaker_before_reservation(
         correction_setup,
         "_room_correction_readiness",
         lambda: {
+            "active": True,
             "room_correction_allowed": False,
             "acoustic_commissioning": {
+                "allowed": False,
+                "status": "incomplete",
                 "reason": "active_summed_acoustic_evidence_incomplete",
                 "detail": (
                     "Finish the acoustic combined-crossover check before room "
@@ -1269,11 +1487,20 @@ def test_start_handler_rejects_uncommissioned_active_speaker_before_reservation(
         lambda **_kwargs: pytest.fail("readiness must reject before session creation"),
     )
 
-    with pytest.raises(
-        correction_setup.RequestConflict,
-        match=r"combined-crossover check.*Open /correction/crossover/",
-    ):
+    with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
         correction_setup._handle_start(_DummyJsonHandler())
+
+    assert exc_info.value.status == HTTPStatus.CONFLICT
+    assert exc_info.value.failure == {
+        "code": "speaker_setup_incomplete",
+        "text": "Finish speaker setup first.",
+        "retryable": False,
+        "recovery_action": {
+            "label": "Open speaker setup",
+            "href": "/correction/crossover/",
+        },
+    }
+    assert "combined-crossover" not in str(exc_info.value.failure)
 
 
 def test_sessions_endpoint_lists_bundles(tmp_path: Path, monkeypatch):
