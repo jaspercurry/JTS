@@ -1074,18 +1074,12 @@ def test_revoked_then_relinked_recovers_without_daemon_restart():
     ))
 
     # Voice command 1: rebuild_fn returns "still revoked" → tool surfaces
-    # the signed-out message naming the account.
-    first = asyncio.run(tools["spotify_play"](query="Beyonce"))
-    assert "signed jasper out" in first.get("error", "")
-    # Voice command 2 must NOT be throttled by the rate-limit — patch
-    # _now to advance past the cooldown so this is deterministic.
-    with patch("jasper.spotify_router._now",
-               side_effect=[1000.0, 1000.0 + 31.0]):
-        # First _now() was already consumed by call 1; reset by patching
-        # is fine since we're not relying on absolute timestamps.
-        # Actually: easier to just bypass via the public api — reset the
-        # internal field to None so the next call retries.
-        router._last_refresh_attempt = None
+    # the signed-out message naming the account. Advance the same clock past
+    # the real cooldown before command 2 so the test exercises, rather than
+    # bypasses, Router's rate-limit comparison.
+    with patch("jasper.spotify_router._now", side_effect=[1000.0, 1031.0]):
+        first = asyncio.run(tools["spotify_play"](query="Beyonce"))
+        assert "signed jasper out" in first.get("error", "")
         with patch("jasper.tools.spotify.resolve_target") as resolve_mock:
             resolve_mock.return_value = MagicMock(
                 device_id="jts-device", stop_renderers=[],
@@ -1125,6 +1119,70 @@ def test_no_device_id_returns_device_error_before_search():
     assert "Spotify Connect on the speaker isn't linked" in result["error"]
     assert "JTS" in result["error"]
     assert sp.last_search_q is None
+
+
+# ============================================================
+# spotify_queue — hermetic dispatch and error contracts
+# ============================================================
+
+
+def test_queue_adds_first_search_result_to_resolved_device():
+    sp = FakeSpotify(
+        search_results={"track": ("spotify:track:daylight", "Daylight")},
+    )
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    with patch(
+        "jasper.tools.spotify.resolve_target",
+        new=lambda *a, **k: _coro_return(_FakeResolution("renderer-id", [])),
+    ):
+        tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+        result = asyncio.run(tools["spotify_queue"](query="Daylight"))
+
+    assert result == {"ok": True, "queued": "Daylight", "account": "jasper"}
+    sp.add_to_queue.assert_called_once_with(
+        "spotify:track:daylight", device_id="renderer-id",
+    )
+
+
+def test_queue_returns_no_track_error_without_dispatch():
+    sp = FakeSpotify(search_results={})
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    with patch(
+        "jasper.tools.spotify.resolve_target",
+        new=lambda *a, **k: _coro_return(_FakeResolution("renderer-id", [])),
+    ):
+        tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+        result = asyncio.run(tools["spotify_queue"](query="Missing Song"))
+
+    assert result == {"error": "no track found for: Missing Song"}
+    sp.add_to_queue.assert_not_called()
+
+
+def test_queue_returns_device_error_before_search():
+    sp = FakeSpotify(
+        search_results={"track": ("spotify:track:daylight", "Daylight")},
+    )
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    with patch(
+        "jasper.tools.spotify.resolve_target",
+        new=lambda *a, **k: _coro_return(_FakeResolution(None, [])),
+    ):
+        tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+        result = asyncio.run(tools["spotify_queue"](query="Daylight"))
+
+    assert "Spotify Connect on the speaker isn't linked" in result["error"]
+    assert "JTS" in result["error"]
+    assert sp.last_search_q is None
+    sp.add_to_queue.assert_not_called()
 
 
 # ============================================================
