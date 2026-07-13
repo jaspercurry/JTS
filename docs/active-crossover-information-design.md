@@ -249,6 +249,26 @@ prefill the visible fields. Prefill is advice. The visible working crossover is
 the source of truth, and the backend validates the resulting graph before it
 can emit sound.
 
+The existing `/sound/` research helper is the only research entry point. Its
+versioned JSON is an untrusted proposal, not playback permission. Before an
+automatic isolated-driver measurement can run, every physical driver target
+must have a separately versioned, explicitly confirmed safety profile bound to
+the current topology target. That profile distinguishes:
+
+- the hard minimum and maximum excitation frequencies;
+- required high/low-pass protection, including cutoff and minimum slope;
+- a conservative measurement band inside the hard excitation band;
+- a crossover-search band inside the measurement band;
+- bounded level, duration, repeat, and cooldown policy; and
+- cabinet/radiator capability needed for any low-frequency reconstruction.
+
+`usable_frequency_range_hz` is descriptive product information, not a hard
+safety boundary. A filter cutoff is not a brick wall either: required filter
+slope and the hard excitation edge remain separate facts. Missing, unknown,
+unconfirmed, stale, or target-mismatched safety facts refuse new automatic
+isolated-driver audio. They do not mute an already working normal-playback
+graph merely because the newer commissioning profile has not been created.
+
 ### Step 3A: manual crossover
 
 Manual mode exposes, per crossover region:
@@ -544,7 +564,9 @@ become an acoustics engine.
 | Concern | Owner | Must not own |
 |---|---|---|
 | Editable and applied crossover semantics | `jasper.active_speaker` preset/profile models | Browser-only settings or relay state |
+| Research proposal and confirmed driver-safety profile | `jasper.active_speaker` | Applying DSP, authorizing audio, or hiding imported values from operator review |
 | Safe driver probe/sweep plan | `jasper.active_speaker.test_signal_plan` and graph-safety policy | Page-specific frequency branches |
+| Pure excitation-admission decision | `jasper.audio_measurement` | Speaker topology, research parsing, live DSP mutation, or product sequencing |
 | Sweep generation, deconvolution, calibration, quality math | `jasper.audio_measurement` | Product sequencing or profile application |
 | Driver, overlap, summed-response, and alignment analysis | `jasper.active_speaker.driver_acoustics` / alignment modules | HTTP, relay transport, or live DSP mutation |
 | Durable commissioning run and evidence identity | Active-speaker measurement/session layer | Filter compilation |
@@ -553,7 +575,38 @@ become an acoustics engine.
 | Phone/browser capture transport | Jasper capture relay | Tone selection, analysis, or product policy |
 | CamillaDSP emission | Existing active-speaker compiler | Inferring measurements or user intent |
 | Atomic apply and rollback | Shared DSP transaction/runtime boundary | Editing working drafts |
+| Verified active-crossover eligibility receipt | `jasper.active_speaker` | Room-owned inference or relabeling of crossover state |
 | Room correction | `jasper.correction` | Driver-domain crossover repair |
+
+### Hardware research and confirmed safety profile
+
+The existing `jts_active_crossover_driver_research` packet evolves in place; do
+not create a parallel Room-owned research wizard or let an LLM write a live
+graph. JTS binds a research request to the current physical target identities,
+the returned packet echoes those identities and uses explicit unknowns, and the
+server strictly validates it. Every safety-relevant value is visible and
+editable. Confirmation freezes the normalized values and their field-level
+provenance into an immutable fingerprint; any topology/output assignment or
+value change requires confirmation again.
+
+The protected starting graph, excitation plans, captures, candidates, apply
+records, verification records, and downstream eligibility receipt all reference
+that fingerprint. Research may recommend a conservative starting crossover,
+but deterministic acoustic evidence owns any automatic replacement. Research
+can tighten global code-owned limits; it can never raise them.
+
+Cabinet capability is explicit. The first low-frequency splice success path may
+support a declared sealed single-radiator system with sufficient geometry.
+Vented, passive-radiator, multi-radiator, or unknown systems receive a typed
+refusal until their complete acoustic-source contract exists. Empirical overlap
+alone never licenses JTS to infer enclosure physics.
+
+The shared measurement layer receives only normalized immutable bounds and
+returns a typed admission verdict. It never receives the design draft, the
+browser, CamillaDSP, or a powerful active-speaker host object. The active-speaker
+host independently verifies the exact target and required protection through
+fresh graph readback before audible work. This is deliberate defense in depth,
+not two competing sources of truth.
 
 ### DRY invariants
 
@@ -561,12 +614,15 @@ The implementation should have exactly:
 
 - one crossover parameter vocabulary (`ActiveSpeakerPreset`);
 - one editable working crossover;
+- one confirmed safety profile per physical driver target;
 - one driver-safe signal planner;
+- one pure excitation-admission contract;
 - one sweep/deconvolution implementation;
 - one measurement-quality model with consumer-specific policy values;
 - one candidate compiler;
 - one live-DSP transaction;
-- one current applied-profile fingerprint; and
+- one current applied-profile fingerprint;
+- one Active-owned verified eligibility receipt consumed by Room; and
 - one sequential server-authored commissioning envelope.
 
 Manual and automatic entry points may render different steps, but they do not
@@ -665,8 +721,9 @@ needs a small non-negotiable safety floor:
 - Do not allow room correction to proceed against an unverified or stale active
   crossover.
 
-These protections already align with established JTS boundaries and do not
-require a new safety framework.
+These protections extend established JTS boundaries through a target-bound
+safety profile and one pure admission primitive. They do not create a parallel
+wizard, graph compiler, or generic commissioning framework.
 
 ### Later safety and analysis enhancements
 
