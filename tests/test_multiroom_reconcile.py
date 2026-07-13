@@ -1212,10 +1212,11 @@ def test_main_fresh_solo_first_reconcile_never_touches_voice(
     jasper-voice (a ~10-15 s outage on every first boot otherwise). The
     rule lives in _write_outputd_env (absent file + empty body = no
     change); this is the documented promise from HANDOFF-multiroom."""
-    order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
     rc = reconcile_mod.main(["--reason", "test"])
     assert rc == 0
     assert not (tmp_path / "grouping-voice.env").exists()
+    assert "restart:jasper-aec-reconcile.service:no_block" not in order
     assert "restart:jasper-voice.service" not in order
 
 
