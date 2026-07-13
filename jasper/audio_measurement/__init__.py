@@ -37,6 +37,8 @@ Modules:
   - :mod:`~jasper.audio_measurement.excitation_admission` — the pure,
     identity-bound allow/refuse contract for requested frequency band,
     effective peak, duration, repeats, and current protection evidence.
+  - :mod:`~jasper.audio_measurement.bundles` — the neutral artifact-manifest
+    writer/reader shared by feature-owned Room and Active evidence bundles.
   - :mod:`~jasper.audio_measurement.null_walk` — the geometry-bounded,
     timing-locked delay search contract shared by active-speaker and bass
     alignment; it consumes repeated gated null depths, never browser arrival

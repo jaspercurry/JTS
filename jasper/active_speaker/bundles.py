@@ -13,14 +13,14 @@ capture — it is not evidence for later forensics, corpus review, or "what
 actually happened during commissioning?" questions.
 
 This module is the missing append-only half, ported from the room-correction
-session-bundle pattern ([`jasper.correction.bundles`](../correction/bundles.py)):
+session-bundle pattern:
 one durable, hashed, retention-bounded directory per commissioning attempt
 (a "bundle"), holding the fingerprints, captures, and apply transaction that
 produced (or failed to produce) a baseline. It reuses
-``jasper.correction.bundles``'s generic manifest primitives
-(:func:`~jasper.correction.bundles.record_artifact`,
-:func:`~jasper.correction.bundles.write_json_artifact`,
-:func:`~jasper.correction.bundles.read_artifact_manifest`) directly rather than
+``jasper.audio_measurement.bundles``'s neutral manifest primitives
+(:func:`~jasper.audio_measurement.bundles.record_artifact`,
+:func:`~jasper.audio_measurement.bundles.write_json_artifact`,
+:func:`~jasper.audio_measurement.bundles.read_artifact_manifest`) directly rather than
 forking them. The primitives resolve the owning bundle schema from ``info.json``;
 only the active-speaker-specific shape (its fields, retention policy, and the
 active core-artifact list) lives here.
@@ -36,7 +36,7 @@ Two invariants keep this module safe to bolt onto an already-shipped flow:
   (``{session_id, artifact_path}``) points at a bundle; the bundle never
   points back the other way except by the same id.
 - **Fail-soft everywhere.** Every public write entry point catches
-  ``OSError`` / :class:`~jasper.correction.bundles.BundleError` (plus a stray
+  ``OSError`` / :class:`~jasper.audio_measurement.bundles.BundleError` (plus a stray
   ``ValueError`` normalized the same way), logs one
   ``active_speaker.bundle_write_failed`` WARNING via
   :func:`jasper.log_event.log_event`, and returns ``None`` instead of
@@ -59,11 +59,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.correction.bundles import (
+from jasper.audio_measurement.bundles import (
     BundleError,
-    _sha256_file,
     read_artifact_manifest,
     record_artifact,
+    sha256_file,
     write_json_artifact,
 )
 from jasper.log_event import log_event
@@ -77,6 +77,12 @@ logger = logging.getLogger(__name__)
 
 BUNDLE_SCHEMA_VERSION = 1
 BUNDLE_KIND = "jts_active_speaker_commissioning_bundle"
+
+# Before the manifest primitive moved out of Room, an Active partial-bundle
+# write with no info.json inherited Room's fallback schema header. Preserve
+# those bytes until partial-bundle writes always seed info.json; ordinary
+# Active bundles continue to resolve schema 1 from their owning info.json.
+LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION = 5
 
 DEFAULT_SESSIONS_DIR = Path("/var/lib/jasper/active_speaker/sessions")
 SESSIONS_DIR_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR"
@@ -238,7 +244,7 @@ def _calibration_sha256(calibration_id: str) -> str | None:
     if sha:
         return str(sha)
     try:
-        return _sha256_file(Path(record.raw_path))
+        return sha256_file(Path(record.raw_path))
     except OSError:
         return None
 
@@ -578,6 +584,11 @@ def _copy_wav_into_bundle(bundle_dir: Path, source: Path, rel_path: str) -> None
         sensitivity="private_raw_audio",
         recomputable=False,
         generated_by="active_speaker.bundles",
+        bundle_schema_version=(
+            BUNDLE_SCHEMA_VERSION
+            if (bundle_dir / "info.json").exists()
+            else LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION
+        ),
     )
 
 
@@ -721,6 +732,11 @@ def append_repeat_capture(
         sensitivity="derived",
         recomputable=True,
         generated_by="active_speaker.bundles",
+        bundle_schema_version=(
+            BUNDLE_SCHEMA_VERSION
+            if (bundle_dir / "info.json").exists()
+            else LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION
+        ),
         dependencies=[rel_path],
         schema_version=BUNDLE_SCHEMA_VERSION,
         file_mode=BUNDLE_FILE_MODE,
