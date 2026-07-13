@@ -90,7 +90,7 @@ install_jasper_support_files() {
 #     jasper-doctor --json for /system/diagnostics (non-root jasper-control
 #     triggers it via polkit). On-demand only — not enabled.
 #   jasper-camilla-pipe-guard — ExecStartPre chain-breaker: re-points the
-#     statefile off a dead PLAYBACK/CAPTURE pipe config before camilla launches.
+#     statefile off a dead Snapcast PLAYBACK pipe before camilla launches.
 #   jasper-camilla-crossover-guard — like the pipe-guard but repairs ONLY to the
 #     re-proven driver-domain graph (never flat — a flat crossover would send
 #     full-range to the tweeter). Live only on a reconciled active leader.

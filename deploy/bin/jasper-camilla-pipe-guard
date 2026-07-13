@@ -8,24 +8,10 @@
 #
 # Runs as ExecStartPre= on jasper-camilla.service (the CORE music
 # daemon, whose bounded OnFailure recovery handler can park the graph).
-# Two dead-pipe classes,
-# both repaired by re-pointing the statefile to the packaged base
-# config BEFORE camilla launches, so the failing starts never happen:
-#
-#   1. PLAYBACK pipe — a BONDED pipe config (docs/HANDOFF-multiroom.md
-#      §2 — playback File -> the snapserver FIFO), or a local transport-pipe
-#      config (playback File -> jasper-outputd's local content pipe), whose
-#      pipe is DEAD.
-#
-#   2. CAPTURE pipe — a transport-pipe config whose RawFile CAPTURE
-#      source is a named pipe under /run (the fan-in camilla.pipe) that
-#      is ABSENT. If the statefile is left pointing at a transport-pipe
-#      config while the fan-in producer is gone, a camilla restart loads
-#      the dangling config, cannot open the absent capture pipe, and
-#      crash-loops to `failed`. A pure runtime statefile re-point when
-#      the coupling reverts is not enough — a crash mid-transition
-#      strands the dangling config, so the guard is the durable floor
-#      that breaks this class permanently.
+# A dead Snapcast PLAYBACK pipe is repaired by re-pointing the statefile
+# to the packaged base config BEFORE camilla launches, so the failing
+# starts never happen. The guarded config is the BONDED pipe config from
+# docs/HANDOFF-multiroom.md §2: playback File -> the snapserver FIFO.
 #
 # Why ExecStartPre and not only OnFailure=: preventing a known dead-pipe start
 # preserves the pipe evidence and avoids spending the bounded recovery budget.
@@ -69,18 +55,6 @@ SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
 # Seconds the reader-presence probe waits before declaring "no reader".
 # shellcheck disable=SC2034  # consumed by the sourced common guard library
 PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
-# Capture-pipe roots: a RawFile capture whose filename lives under one of
-# these and is ABSENT means the transport-pipe producer is gone and
-# camilla would crash-loop on the dangling config. /run is the runtime
-# tmpfs the transport pipe lives under (fan-in camilla.pipe); narrowing to
-# /run keeps the guard from ever touching a persistent ALSA-or-file capture
-# path.
-CAPTURE_RUNTIME_ROOT="${JASPER_PIPE_GUARD_CAPTURE_ROOT:-/run/}"
-# Playback-pipe roots: a File playback sink under this runtime root must have
-# a live FIFO reader before Camilla starts. This covers the local
-# transport-pipe outputd pipe without changing the older SnapFIFO-specific
-# reason strings below.
-PLAYBACK_RUNTIME_ROOT="${JASPER_PIPE_GUARD_PLAYBACK_ROOT:-/run/}"
 
 log() {
     # log <outcome> [detail...]
@@ -118,39 +92,6 @@ config_path=$(
 [ -n "$config_path" ] || { log skip reason=no_config_path; exit 0; }
 [ -r "$config_path" ] || { log skip reason=config_unreadable "path=$config_path"; exit 0; }
 
-# --- CAPTURE-pipe check (THE INCIDENT class) ----------------------------
-# A lean / transport-pipe config captures from a RawFile named pipe under
-# /run. If that pipe is ABSENT (the producer — usbsink lean lane or fan-in
-# coupling — reverted to the aloop lane), camilla cannot open it and
-# crash-loops to `failed`. Read the config's CAPTURE filename; if it is a
-# runtime pipe under /run that does not exist, repair to the base config.
-# Runs BEFORE the playback solo-config early-exit, because the incident
-# config is solo on the PLAYBACK side — only its CAPTURE source is dead.
-capture_filename=$(
-    awk '
-        /^[[:space:]]*capture:[[:space:]]*$/ { in_cap = 1; next }
-        # A new top-level (or sibling) "<key>:" block ends the capture map.
-        in_cap && /^[[:space:]]*[a-zA-Z_]+:[[:space:]]*$/ { in_cap = 0 }
-        in_cap && /^[[:space:]]*filename:[[:space:]]*/ {
-            sub(/^[[:space:]]*filename:[[:space:]]*/, "")
-            gsub(/["'\'']/, "")
-            print
-            exit
-        }
-    ' "$config_path"
-)
-if [ -n "$capture_filename" ]; then
-    case "$capture_filename" in
-        "${CAPTURE_RUNTIME_ROOT}"*)
-            if [ ! -e "$capture_filename" ]; then
-                camilla_guard_repair_statefile capture_pipe_absent "$config_path" \
-                    "camilla starts on runtime-contract-safe graph; next reconcile re-applies the live lane when its pipe is healthy"
-                exit 0
-            fi
-            ;;
-    esac
-fi
-
 # Pipe-shaped = the config's playback block has a filename.
 playback_filename=$(
     awk '
@@ -179,17 +120,5 @@ if [ "$playback_filename" = "$SNAPFIFO" ]; then
         "camilla starts on runtime-contract-safe graph; next reconcile re-applies the live lane when its pipe is healthy"
 fi
 
-# Local transport-pipe config. Healthy only if outputd has already created and
-# opened its local content pipe for reading.
-case "$playback_filename" in
-    "${PLAYBACK_RUNTIME_ROOT}"*)
-        camilla_guard_check_playback_pipe_or_repair \
-            "$playback_filename" playback_pipe_absent playback_pipe_no_reader \
-            playback_pipe_healthy playback_pipe_exists_probe_unavailable \
-            "$config_path" \
-            "camilla starts on runtime-contract-safe graph; next reconcile re-applies the live lane when its pipe is healthy"
-        ;;
-esac
-
-log ok reason=non_runtime_playback_pipe
+log ok reason=non_snapcast_playback_pipe
 exit 0
