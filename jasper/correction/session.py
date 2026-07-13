@@ -2652,6 +2652,7 @@ class MeasurementSession:
                 raise SessionBusyError("room-correction reset is already in progress")
             self._autolevel_reset_intent = intent
             reservation = self._autolevel_controller.reservation_token
+        reset_ready = False
         try:
             if self.autolevel_run_in_progress:
                 await self.cancel_autolevel_and_wait(timeout_s=35.0)
@@ -2660,13 +2661,14 @@ class MeasurementSession:
                     reservation,
                     timeout_s=35.0,
                 )
+            reset_ready = True
             return intent
-        except BaseException:
-            # The caller has no token to release when begin itself fails.
-            # Roll back our exact intent so a timeout/cancellation cannot wedge
-            # every future Stop behind "reset already in progress".
-            await asyncio.shield(self.end_autolevel_reset(intent))
-            raise
+        finally:
+            if not reset_ready:
+                # The caller has no token to release when begin itself fails.
+                # Roll back our exact intent so a timeout/cancellation cannot
+                # wedge every future Stop behind "reset already in progress".
+                await asyncio.shield(self.end_autolevel_reset(intent))
 
     async def end_autolevel_reset(self, intent: object) -> bool:
         """Release only the reset intent created by :meth:`begin_autolevel_reset`."""

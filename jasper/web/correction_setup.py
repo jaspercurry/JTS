@@ -1973,7 +1973,7 @@ def _handle_autolevel_start(
         future = asyncio.run_coroutine_threadsafe(
             _run_autolevel(), _ensure_loop()
         )
-    except Exception:
+    except RuntimeError:
         _run_async(
             sess.release_autolevel_run_reservation(reserved),
             timeout=2.0,
