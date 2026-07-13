@@ -20,7 +20,7 @@ def test_render_page_is_a_canonical_page_with_the_bass_module():
     # Canonical page shell (CSRF meta, app.css) and the bass section-tab active.
     assert 'name="jts-csrf"' in html
     assert '/assets/app.css' in html
-    assert 'aria-pressed="true"' in html  # a tab is active
+    assert 'aria-current="page" href="/correction/bass/"' in html
     assert "Bass management" in html
     # The static ES module is loaded (no inline script behaviour on the page).
     assert '<script type="module" src="/assets/correction/js/bass/main.js">' in html

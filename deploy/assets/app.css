@@ -231,7 +231,8 @@ svg { display: block; }
   transition: background-color 150ms ease, color 150ms ease;
 }
 .segmented__btn:hover { background: var(--foreground-005); color: var(--text); }
-.segmented__btn[aria-pressed="true"] {
+.segmented__btn[aria-pressed="true"],
+.segmented__btn[aria-current="page"] {
   background: var(--primary);
   color: var(--primary-foreground);
   box-shadow: var(--shadow);
