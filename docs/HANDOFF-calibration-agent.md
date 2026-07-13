@@ -364,7 +364,11 @@ strict), and only then routes the set through the **existing**
 `session.apply()` path (same headroom re-clip any correction gets — no new
 apply path). `applied` in the response is derived from the real outcome — a
 CamillaDSP-rejected reload reports `applied: false` ("the speaker kept its
-previous sound"), never a false success. The re-measure remains the true
+previous sound"), never a false success. The response also carries a closed
+Room `failure` block; the internal `reason` remains forensic and is never
+rendered as homeowner copy. Apply fails closed when the stored measurement
+evidence contains a fail-severity confidence finding, so historical or unsafe
+evidence cannot bypass the Room review gate. The re-measure remains the true
 judge (the correction loop closes by re-measure; preference suggestions are
 phrased as questions). **Target moves are suggestion-only**: there is no
 apply route for them — the card gives plain-text guidance to use the flow's
@@ -394,7 +398,8 @@ spend cap. Each paid call:
 1. is **gated before** — `_tuning_spend_cap_gate()` builds a `SpendCap` over
    `household_usage_reader(usage_db)` (the voice ledger + the tuning sibling,
    summed); if the cap is reached it raises `SpendCapExceeded` → **HTTP 429**
-   with an honest rollover-worded body the panel renders verbatim. Reading the
+   with a closed, rollover-worded Room failure block. The panel renders that
+   bounded homeowner copy rather than the raw response body. Reading the
    cap is **fail-open** (an unreadable ledger reads as zero spend, never
    blocks — matching the module direction).
 2. is **recorded after** — `_record_tuning_spend()` writes one priced row into
@@ -1322,8 +1327,9 @@ Codebase:
 
 ---
 
-Last verified: 2026-07-13 (Wave 2 neutral playback ownership and the retained
-Room device/cache compatibility surface rechecked hardware-free; prior 2026-07-06
+Last verified: 2026-07-13 (Wave 2 Room R1b typed failure and unsafe-evidence
+gates, neutral playback ownership, and the retained Room device/cache
+compatibility surface rechecked hardware-free; prior 2026-07-06
 P6 tuning-spend ledger landed: per-surface
 `usage-tuning.db` written solely by correction-web, gate-before/record-after
 in the two paid handlers, and the `household_usage_reader` aggregation seam

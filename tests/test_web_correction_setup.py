@@ -171,7 +171,40 @@ def test_browser_has_no_screen_visibility_or_forward_action_policy_mirror():
     assert "WIZARD_FORWARD_ACTION_BY_STATE" not in js
     assert "wizardProvidesForwardAction" not in js
     assert "showScreenSections" not in js
-    assert "SUPPORTED_ENVELOPE_SCHEMA = 6" in js
+    assert "SUPPORTED_ENVELOPE_SCHEMA = 7" in js
+
+
+def test_browser_failure_presentation_matches_server_catalog():
+    import json
+    import re
+
+    from jasper.correction import failures
+
+    js = _module_js()
+    block = re.search(
+        r"var KNOWN_FAILURES = \{(?P<body>.*?)\n  \};",
+        js,
+        re.DOTALL,
+    )
+    assert block is not None
+    entries = re.findall(
+        r'^\s*([a-z][a-z0-9_]*): \{text: ("(?:[^"\\]|\\.)*"), '
+        r"retryable: (true|false)\},?$",
+        block["body"],
+        re.MULTILINE,
+    )
+    browser = {
+        code: (json.loads(text), retryable == "true")
+        for code, text, retryable in entries
+    }
+    server = {
+        code: (
+            failures.public_failure(code)["text"],
+            failures.public_failure(code)["retryable"],
+        )
+        for code in failures.FAILURE_CODES
+    }
+    assert browser == server
 
 
 def test_render_escapes_hostname():

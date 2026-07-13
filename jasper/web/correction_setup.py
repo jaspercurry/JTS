@@ -132,12 +132,31 @@ class RequestConflict(RuntimeError):
     """Client request conflicts with the current correction session state."""
 
 
+class RoomRequestFailure(RequestConflict):
+    """A rejected Room request with bounded homeowner presentation data."""
+
+    def __init__(
+        self,
+        diagnostic: str,
+        failure: Mapping[str, Any],
+        *,
+        status: HTTPStatus,
+    ) -> None:
+        super().__init__(diagnostic)
+        self.failure = dict(failure)
+        self.status = status
+
+
 class SpendCapExceeded(RuntimeError):
     """The household daily spend cap is reached, so a PAID tuning call is
     refused. Distinct from RequestConflict (409, transient session/rate
     conflict) because this maps to HTTP 429 (Too Many Requests) with a
     rollover-worded message — the condition clears at the daily UTC rollover,
     not by retrying in a moment."""
+
+
+class TuningSetupUnavailable(RequestConflict):
+    """The optional tuning assistant has no configured model credential."""
 
 
 # Module-level session + bridge to the async loop. Lazy-init on
@@ -1457,6 +1476,144 @@ def _room_correction_readiness() -> dict[str, Any]:
     return read_active_speaker_setup_status()
 
 
+@dataclass(frozen=True)
+class _RoomReadiness:
+    allowed: bool
+    blocker: dict[str, Any] | None
+    reason: str
+    detail: str
+
+
+def _room_readiness() -> _RoomReadiness:
+    """Normalize Active's one readiness decision for envelope and `/start`.
+
+    Room does not inspect measurement artifacts or reconstruct crossover
+    authority. It validates the small public response, admits only its explicit
+    passive/not-required result, and temporarily rejects every active topology
+    until Active exposes the exact receipt-backed decision. Only Active's safe
+    local recovery href crosses this adapter.
+    """
+    from jasper.correction import failures
+
+    try:
+        raw = _room_correction_readiness()
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+        log_event(
+            logger,
+            "correction_readiness_unavailable",
+            error_type=type(exc).__name__,
+            level=logging.WARNING,
+        )
+        return _RoomReadiness(
+            allowed=False,
+            blocker=failures.public_failure(
+                failures.SPEAKER_READINESS_UNAVAILABLE,
+                recovery_action=failures.ROOM_RETRY_ACTION,
+            ),
+            reason="speaker_readiness_unavailable",
+            detail="speaker readiness could not be read",
+        )
+
+    setup = raw if isinstance(raw, Mapping) else {}
+    acoustic_raw = setup.get("acoustic_commissioning")
+    acoustic = acoustic_raw if isinstance(acoustic_raw, Mapping) else {}
+    active = setup.get("active")
+    allowed = setup.get("room_correction_allowed")
+    acoustic_allowed = acoustic.get("allowed")
+    acoustic_status = acoustic.get("status")
+    well_formed = (
+        isinstance(active, bool)
+        and isinstance(allowed, bool)
+        and isinstance(acoustic_raw, Mapping)
+        and isinstance(acoustic_allowed, bool)
+        and acoustic_allowed is allowed
+        and (
+            (
+                active is False
+                and allowed is True
+                and acoustic_status == "not_required"
+            )
+            or (
+                active is True
+                and (
+                    (allowed is True and acoustic_status == "ready")
+                    or (
+                        allowed is False
+                        and acoustic_status in {"incomplete", "unknown"}
+                    )
+                )
+            )
+        )
+    )
+    href = acoustic.get("setup_href")
+    action = None
+    if (
+        well_formed
+        and (allowed is False or (active is True and allowed is True))
+        and
+        isinstance(href, str)
+        and href.startswith("/")
+        and not href.startswith("//")
+        and "\\" not in href
+        and not any(ord(char) < 0x20 for char in href)
+        and not urlparse(href).scheme
+        and not urlparse(href).netloc
+    ):
+        action = {"label": "Open speaker setup", "href": href}
+
+    if well_formed and allowed is True and active is False:
+        return _RoomReadiness(
+            allowed=True,
+            blocker=None,
+            reason="speaker_readiness_allowed",
+            detail="speaker readiness allows room correction",
+        )
+
+    legacy_active_authority = (
+        well_formed and active is True and allowed is True
+    )
+    if legacy_active_authority:
+        # Wave 1's Active setup status can call an applied recomposition
+        # snapshot ready even when its mutable measurement set is missing.
+        # That snapshot is playback ownership, not the modern positive
+        # eligibility receipt. Until Active exposes its exact receipt-backed
+        # decision, Room rejects active topologies without inspecting or
+        # reconstructing crossover evidence itself.
+        reason = "active_receipt_authority_unavailable"
+        detail = "active crossover receipt-backed readiness is unavailable"
+    else:
+        reason = str(
+            acoustic.get("reason")
+            or setup.get("reason")
+            or (
+                "speaker_readiness_malformed"
+                if not well_formed
+                else "speaker_room_correction_not_ready"
+            )
+        )
+        detail = str(
+            acoustic.get("detail")
+            or setup.get("detail")
+            or "speaker setup is not ready for room correction"
+        )
+    unavailable = not well_formed or acoustic_status == "unknown"
+    public_code = (
+        failures.SPEAKER_READINESS_UNAVAILABLE
+        if unavailable
+        else failures.SPEAKER_SETUP_INCOMPLETE
+    )
+    blocker = failures.public_failure(
+        public_code,
+        recovery_action=action or failures.ROOM_RETRY_ACTION,
+    )
+    return _RoomReadiness(
+        allowed=False,
+        blocker=blocker,
+        reason=reason,
+        detail=detail,
+    )
+
+
 def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /start: snapshot the current DSP graph, load a measurement
     baseline with room/preference layers stripped, replace the session, and
@@ -1478,27 +1635,28 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     keeps the topology-owned speaker graph (crossovers, driver EQ, delays,
     gains, limiters) and strips only Layer B/C.
     """
+    from jasper.correction import failures
     from jasper.correction.session import SessionState
-    setup = _room_correction_readiness()
-    if setup.get("room_correction_allowed") is not True:
-        raw_acoustic = setup.get("acoustic_commissioning")
-        acoustic = raw_acoustic if isinstance(raw_acoustic, dict) else {}
-        reason = str(
-            acoustic.get("reason") or "speaker_room_correction_not_ready"
-        )
-        detail = str(
-            acoustic.get("detail")
-            or "Speaker setup is not ready for room correction."
-        )
-        href = str(acoustic.get("setup_href") or "/sound/")
+    readiness = _room_readiness()
+    if not readiness.allowed:
         log_event(
             logger,
             "correction_start_rejected",
-            reason=reason,
-            setup_href=href,
+            reason=readiness.reason,
             level=logging.WARNING,
         )
-        raise RequestConflict(f"{detail} Open {href}")
+        assert readiness.blocker is not None
+        status = (
+            HTTPStatus.SERVICE_UNAVAILABLE
+            if readiness.blocker.get("code")
+            == failures.SPEAKER_READINESS_UNAVAILABLE
+            else HTTPStatus.CONFLICT
+        )
+        raise RoomRequestFailure(
+            readiness.detail,
+            readiness.blocker,
+            status=status,
+        )
 
     body = _read_json_body(handler)
     blocking_state = _reserve_start_slot()
@@ -2204,6 +2362,9 @@ def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
     sess = _get_or_create_session()
     screen = envelope.screen_for_session(sess)
+    readiness_blocker = None
+    if screen == envelope.SCREEN_IDLE:
+        readiness_blocker = _room_readiness().blocker
 
     # Capture path is a bounded presentation input while the idle page is
     # open. Once a run starts, the session's own transport is authoritative.
@@ -2244,10 +2405,18 @@ def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 level=logging.WARNING,
             )
 
+    envelope_kwargs: dict[str, Any] = {}
+    if screen == envelope.SCREEN_IDLE:
+        # Pass an explicit decision only when this read observed idle. If the
+        # session races from active back to idle before the pure builder reads
+        # it, the omitted argument takes the builder's fail-closed path rather
+        # than accidentally treating `None` as a positive readiness decision.
+        envelope_kwargs["readiness_blocker"] = readiness_blocker
     return envelope.build_envelope_logged(
         sess,
         capture_transport=capture_transport,
         reports_available=reports_available,
+        **envelope_kwargs,
     )
 
 
@@ -4494,6 +4663,17 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /apply: write YAML + reload CamillaDSP. Restores
     pre-autolevel main_volume if autolevel was used."""
     sess = _get_or_create_session()
+    from jasper.correction import failures
+
+    evidence_failure = failures.measurement_evidence_failure(
+        getattr(sess, "confidence_report", None),
+    )
+    if evidence_failure is not None:
+        raise RoomRequestFailure(
+            "measurement confidence contains blocking evidence",
+            evidence_failure,
+            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        )
     cam = _camilla()
 
     async def _set(path: str) -> bool:
@@ -4530,7 +4710,7 @@ def _require_tuning_key() -> None:
     from jasper.calibration_agent.key_provisioning import tuning_llm_available
 
     if not tuning_llm_available():
-        raise RequestConflict(
+        raise TuningSetupUnavailable(
             "the tuning assistant needs an OpenAI key — add one at /voice"
         )
 
@@ -4911,6 +5091,17 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             f"cannot apply a proposal from state {sess.state.value}; "
             "the correction must be in the review (READY) state"
         )
+    from jasper.correction import failures
+
+    evidence_failure = failures.measurement_evidence_failure(
+        getattr(sess, "confidence_report", None),
+    )
+    if evidence_failure is not None:
+        raise RoomRequestFailure(
+            "measurement confidence contains blocking evidence",
+            evidence_failure,
+            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        )
 
     # Re-validate schema + bounds against the ACTIVE strategy caps.
     from jasper.correction import strategy as _strategy
@@ -4940,6 +5131,9 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if not validation["accepted"]:
         return {
             "applied": False,
+            "failure": failures.public_failure(
+                failures.TUNING_PROPOSAL_REJECTED,
+            ),
             "reason": "proposal failed re-validation against strategy caps",
             "issues": validation["issues"],
             "session_id": sess.session_id,
@@ -4960,6 +5154,9 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if not sim.accepted:
         return {
             "applied": False,
+            "failure": failures.public_failure(
+                failures.TUNING_PROPOSAL_REJECTED,
+            ),
             "reason": "proposal rejected by the deterministic simulation gate",
             "simulation": sim.to_dict(),
             "session_id": sess.session_id,
@@ -4973,6 +5170,9 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # only preview is honest there); applying without the judge is not.
         return {
             "applied": False,
+            "failure": failures.public_failure(
+                failures.TUNING_PROPOSAL_REJECTED,
+            ),
             "code": "missing_acceptance_basis",
             "reason": (
                 "proposal could not be judged against the room baseline "
@@ -5005,6 +5205,9 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     # kept its previous sound would be a dishonest success message.
     result["applied"] = result.get("state") == "applied"
     if not result["applied"]:
+        result["failure"] = failures.public_failure(
+            failures.CORRECTION_UPDATE_FAILED,
+        )
         result["reason"] = "couldn't apply — the speaker kept its previous sound"
     result["simulation"] = sim.to_dict()
     return result
@@ -5255,6 +5458,28 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             self, message: str, *, status: int = 400,
         ) -> None:
             self._send_json({"error": message}, status=status)
+
+        def _send_room_failure(
+            self,
+            failure: Mapping[str, Any],
+            *,
+            diagnostic: str,
+            status: int,
+        ) -> None:
+            public = dict(failure)
+            log_event(
+                logger,
+                "correction_homeowner_failure",
+                code=str(public.get("code") or "unknown_failure"),
+                retryable=bool(public.get("retryable")),
+                status=int(status),
+                diagnostic=diagnostic,
+                level=logging.WARNING,
+            )
+            self._send_json(
+                {"failure": public},
+                status=status,
+            )
 
         def _dispatch_balance(self, path: str) -> None:
             """POST /balance/* — the pair-balance walkthrough
@@ -5752,21 +5977,51 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 if path == "/start":
+                    from jasper.correction import failures
                     from jasper.correction.runtime_safety import (
                         CorrectionRuntimeSafetyError,
                     )
                     from jasper.sound.graph_carrier import CarrierCannotHostEq
                     try:
                         self._send_json(_handle_start(self))
+                    except RoomRequestFailure as e:
+                        self._send_room_failure(
+                            e.failure,
+                            diagnostic=str(e),
+                            status=e.status,
+                        )
                     except (CorrectionRuntimeSafetyError, CarrierCannotHostEq) as e:
-                        self._send_client_error(
-                            str(e),
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.SPEAKER_MEASUREMENT_UNSAFE,
+                            ),
+                            diagnostic=str(e),
                             status=HTTPStatus.UNPROCESSABLE_ENTITY,
                         )
-                    except (FileNotFoundError, ValueError) as e:
-                        self._send_client_error(str(e))
+                    except FileNotFoundError as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.MICROPHONE_SETUP_UNAVAILABLE,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
+                    except ValueError as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.MEASUREMENT_SETUP_INVALID,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
                     except RequestConflict as e:
-                        self._send_client_error(str(e), status=409)
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.MEASUREMENT_IN_PROGRESS,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.CONFLICT,
+                        )
                     return
                 if path == "/next-position":
                     self._send_json(_handle_next_position(self))
@@ -5832,22 +6087,55 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_client_error(str(e), status=409)
                     return
                 if path == "/relay/capture":
+                    from jasper.correction import failures
                     try:
                         self._send_json(_handle_relay_capture(self))
-                    except ValueError as e:
-                        self._send_client_error(str(e))
+                    except (OSError, RuntimeError, ValueError) as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.PHONE_CAPTURE_UNAVAILABLE,
+                            ),
+                            diagnostic=str(e),
+                            status=(
+                                HTTPStatus.CONFLICT
+                                if isinstance(e, ValueError)
+                                else HTTPStatus.SERVICE_UNAVAILABLE
+                            ),
+                        )
                     return
                 if path == "/relay/level-match":
+                    from jasper.correction import failures
                     try:
                         self._send_json(_handle_relay_level_match(self))
-                    except ValueError as e:
-                        self._send_client_error(str(e))
+                    except (OSError, RuntimeError, ValueError) as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.PHONE_CAPTURE_UNAVAILABLE,
+                            ),
+                            diagnostic=str(e),
+                            status=(
+                                HTTPStatus.CONFLICT
+                                if isinstance(e, ValueError)
+                                else HTTPStatus.SERVICE_UNAVAILABLE
+                            ),
+                        )
                     return
                 if path == "/relay/verify":
+                    from jasper.correction import failures
                     try:
                         self._send_json(_handle_relay_verify(self))
-                    except ValueError as e:
-                        self._send_client_error(str(e))
+                    except (OSError, RuntimeError, ValueError) as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.PHONE_CAPTURE_UNAVAILABLE,
+                            ),
+                            diagnostic=str(e),
+                            status=(
+                                HTTPStatus.CONFLICT
+                                if isinstance(e, ValueError)
+                                else HTTPStatus.SERVICE_UNAVAILABLE
+                            ),
+                        )
                     return
                 if path == "/calibration/fetch":
                     try:
@@ -5879,6 +6167,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     from jasper.sound.graph_carrier import CarrierCannotHostEq
                     try:
                         self._send_json(_handle_apply(self))
+                    except RoomRequestFailure as e:
+                        self._send_room_failure(
+                            e.failure,
+                            diagnostic=str(e),
+                            status=e.status,
+                        )
                     except (CarrierCannotHostEq, CorrectionRuntimeSafetyError) as e:
                         self._send_client_error(
                             str(e),
@@ -5915,28 +6209,70 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_client_error(str(e), status=409)
                     return
                 if path == "/interpret":
+                    from jasper.correction import failures
                     try:
                         self._send_json(_handle_interpret(self))
                     except BadRequest as e:
-                        self._send_client_error(str(e))
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.TUNING_REQUEST_FAILED,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
                     except SpendCapExceeded as e:
-                        self._send_client_error(
-                            str(e), status=HTTPStatus.TOO_MANY_REQUESTS,
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.TUNING_SPEND_LIMIT,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.TOO_MANY_REQUESTS,
+                        )
+                    except TuningSetupUnavailable as e:
+                        self._send_room_failure(
+                            failures.public_failure(failures.TUNING_UNAVAILABLE),
+                            diagnostic=str(e),
+                            status=HTTPStatus.CONFLICT,
                         )
                     except RequestConflict as e:
-                        self._send_client_error(str(e), status=409)
+                        self._send_room_failure(
+                            failures.public_failure(failures.TUNING_BUSY),
+                            diagnostic=str(e),
+                            status=HTTPStatus.CONFLICT,
+                        )
                     return
                 if path == "/propose":
+                    from jasper.correction import failures
                     try:
                         self._send_json(_handle_propose(self))
                     except BadRequest as e:
-                        self._send_client_error(str(e))
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.TUNING_REQUEST_FAILED,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
                     except SpendCapExceeded as e:
-                        self._send_client_error(
-                            str(e), status=HTTPStatus.TOO_MANY_REQUESTS,
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.TUNING_SPEND_LIMIT,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.TOO_MANY_REQUESTS,
+                        )
+                    except TuningSetupUnavailable as e:
+                        self._send_room_failure(
+                            failures.public_failure(failures.TUNING_UNAVAILABLE),
+                            diagnostic=str(e),
+                            status=HTTPStatus.CONFLICT,
                         )
                     except RequestConflict as e:
-                        self._send_client_error(str(e), status=409)
+                        self._send_room_failure(
+                            failures.public_failure(failures.TUNING_BUSY),
+                            diagnostic=str(e),
+                            status=HTTPStatus.CONFLICT,
+                        )
                     return
                 if path == "/propose/apply":
                     from jasper.correction.runtime_safety import (
@@ -5945,6 +6281,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     from jasper.sound.graph_carrier import CarrierCannotHostEq
                     try:
                         self._send_json(_handle_propose_apply(self))
+                    except RoomRequestFailure as e:
+                        self._send_room_failure(
+                            e.failure,
+                            diagnostic=str(e),
+                            status=e.status,
+                        )
                     except BadRequest as e:
                         self._send_client_error(str(e))
                     except RequestConflict as e:

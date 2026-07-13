@@ -24,11 +24,13 @@
   explicit device, timeout, and cache; they do not choose an excitation or prove
   current admission. No browser/Active flow changed, and no hardware behavior
   was revalidated.
-- ✅ **Room R1a — envelope v6 owns whole-page visibility (hardware-free;
+- ✅ **Room R1a/R1b — envelope v7 owns whole-page visibility and truthful
+  entry failures (hardware-free;
   real-device browser pass pending).** `jasper.correction.envelope` now emits
   one exact ordered `sections` list from a closed 15-name Room vocabulary.
-  The browser validates schema `6`, screen, unique known sections, and the
-  bounded action endpoint before rendering; a missing, old, future, or
+  The browser validates schema `7`, screen, unique known sections, bounded
+  blocker/failure codes, safe recovery paths, and the action endpoint before
+  rendering; a missing, old, future, or
   malformed envelope clears every section and forward action, shows one
   generic refresh sentence, and spends at most one retry credit. There is no
   browser screen-to-section map or state-to-action fallback. Unknown session
@@ -58,16 +60,30 @@
   preparation/sweep/verification audio; the server cancels and reaps the exact
   playback task (including `aplay`) before restoring the graph. CPU-only
   analysis remains non-cancellable so its worker cannot mutate a reset session.
-  This slice
-  does **not** yet claim truthful idle readiness, typed homeowner failures, or
-  the disclosed six/flat/default-repeat policy; those remain the next R1
-  patches. `/status` adds the compatible `local_capture_setup_bound` mechanic,
+  Idle envelopes consume the Active-owned setup status, admit its explicit
+  passive/not-required result, and withhold Start on incomplete, unknown,
+  missing, malformed, or active authority. The active case is intentionally
+  blocked even when the older producer calls an applied recomposition snapshot
+  ready: that snapshot is not the exact receipt-backed eligibility decision. A
+  valid Active recovery path is carried through; otherwise **Check again**
+  reloads the Room entry. `/start` repeats the same check before reading the
+  body or reserving a session. Active's `unknown` status remains retryable/503,
+  not mislabeled as ordinary incomplete setup. `jasper.correction.failures`
+  owns stable homeowner codes/copy for Start, relay, tuning, session, apply,
+  and restore failures; raw HTTP/session/provider details remain in structured
+  diagnostics and forensic reports, not primary wizard panels. Fail-severity
+  review evidence rejects both normal Apply and tuning-proposal Apply at the
+  HTTP mutation seam as well as withholding their browser actions, while
+  an exactly failed automatic revert still says the correction is **STILL
+  APPLIED**. This slice does **not** claim the disclosed
+  six/flat/default-repeat policy; that remains the next R1 patch. `/status`
+  adds the compatible `local_capture_setup_bound` mechanic,
   and the existing bundle `info.json` is refreshed with the realized local
   microphone/calibration binding. Shared-owned bundle/playback code, DSP
   design/apply safety, bundle schema, raw audio artifacts, and relay protocol
   bytes are unchanged.
-- 🧱 **Wave 1 Active→Room receipt contract (types complete, production gate
-  deliberately unchanged).** Active now owns a strict positive
+- 🧱 **Wave 1 Active→Room receipt contract (types complete; active Room entry
+  blocked pending production authority).** Active now owns a strict positive
   `CommissioningEligibilityReceipt` type whose required combined-speaker
   targets are derived only from a current, evaluated-`verified`
   `OutputTopology`; blocked or physically unverified output maps cannot create
@@ -82,15 +98,14 @@
   successful rollback cannot mint this positive receipt.
 
   This is an inert contract in Wave 1. No Active production flow issues or
-  persists the receipt; current Active bundles remain forensic/fail-soft. Room's
-  production start gate is intentionally unchanged:
-  `active_speaker.setup_status` still derives
-  `room_correction_allowed` from the topology-current applied recomposition
-  snapshot, and `/correction/start` consumes that boolean. Neither path parses
-  the receipt or requires its three-capture post-apply proof, so today's gate is
-  fail-open relative to the stronger positive-receipt contract. The new
-  nine-state Active lifecycle is likewise not current `/state`. The Active
-  integration lane must add
+  persists the receipt; current Active bundles remain forensic/fail-soft, and
+  `active_speaker.setup_status` still derives its positive boolean from the
+  topology-current applied recomposition snapshot. Room no longer treats that
+  legacy positive boolean as modern authority: its R1b adapter admits passive
+  speakers and rejects active topologies before session reservation. It neither
+  parses the receipt nor inspects historical B2b evidence. The new nine-state
+  Active lifecycle is likewise not current `/state`. The Active integration
+  lane must add
   writer-locked apply/readback/restore, receipt issuance/persistence, and the
   Room consumer together before this becomes authority. No generic graph
   transaction landed; exact rollback state reuses
@@ -1182,15 +1197,19 @@ GET  /status                 session + currently-loaded correction snapshot
                              correction_strategy, design_report,
                              current_correction: {path, session_id,
                              applied_at_epoch, peq_count} | null})
-GET  /envelope               room-correction envelope schema v6; exact ordered
-                             `sections` list is the sole whole-page visibility
-                             authority (reports discovered only on idle/result)
+GET  /envelope               room-correction envelope schema v7; exact ordered
+                             `sections` plus closed `blocker`/`failure` blocks
+                             own whole-page visibility and safe entry copy
+                             (reports discovered only on idle/result)
 GET  /sessions               debug: 20 most-recent session bundles
 GET  /session-report?id=<id> read-only evidence report for one bundle
 GET  /calibration/models     supported calibrated mic providers/models
-POST /start                  first checks setup_status.room_correction_allowed
-                             (passive speakers allowed; incomplete active Layer A
-                             gets 409 + /correction/crossover/ before reservation),
+POST /start                  first checks the setup-status active/passive flag,
+                             room_correction_allowed, and matching acoustic status
+                             (passive/not-required is allowed; every active path
+                             gets typed 409 + the validated owner path until exact
+                             receipt authority lands; unknown/malformed authority
+                             gets retryable 503 before reservation),
                              then resets to base config, begins noise capture, returns session_id;
                              body: {total_positions, target_choice,
                              strategy_choice?, noise_floor_db?,
@@ -2395,14 +2414,17 @@ Internal:
 
 Last verified: 2026-07-13 (Wave 2 neutral playback extraction and the Room
 compatibility wrapper checked against current callers and deterministic tone
-bytes. Room envelope v6 section/action ownership, static-edge
-report discovery, local capture setup binding, and the deleted legacy/certificate
-surfaces checked hardware-free against `jasper.correction.envelope`,
+bytes. Room envelope v7 section/action/blocker/failure ownership, passive-only
+readiness admission and `/start` defense pending exact Active receipt authority,
+typed Start/relay/tuning/session/apply failures, static-edge report discovery,
+local capture setup binding, and the
+deleted legacy/certificate surfaces checked hardware-free against
+`jasper.correction.envelope`, `jasper.correction.failures`,
 `MeasurementSession.bind_local_capture_setup`, `correction_setup._POST_ROUTES`,
 and `deploy/assets/correction/js/main.js`; real-device browser behavior remains
-pending. Wave 1 Active eligibility-receipt shape and the
-deliberately unchanged applied-snapshot-derived Room gate checked
-contract-only; no hardware behavior revalidated. Full GET/POST route inventory rechecked against
+pending. Wave 1 Active eligibility-receipt shape and the temporary fail-closed
+Room rejection of applied-snapshot active authority checked contract-only; no
+hardware behavior revalidated. Full GET/POST route inventory rechecked against
 `correction_setup._POST_ROUTES` and `Handler.do_GET`; durable crossover-volume
 recovery and route gating; per-driver fixed-reference-axis orchestration;
 geometry-scoped repeats/apply gate; summed fixed-axis placement and relay metadata

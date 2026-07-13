@@ -13,20 +13,28 @@
 
 > **Implementation boundary (2026-07-13).** The sequential Room envelope,
 > multi-position measurement, IIR PEQ design, deterministic verification, and
-> automatic revert loop ship today. R1a now ships the hardware-free
-> server-owned whole-page visibility contract: envelope schema v6 supplies the
-> exact ordered section list, the browser fails closed without a policy mirror,
-> the named legacy containers/actions and certificate-install guide are deleted,
-> reports are discovered only on idle/result edges, and the local fallback now
-> binds its realized microphone before level matching and capture. Truthful idle readiness,
-> typed homeowner failures, and disclosed six/flat/default-repeat policy remain
-> later R1 patches. Returning-user preferences, one persistent phone handoff,
+> automatic revert loop ship today. R1a/R1b now ship the hardware-free
+> server-owned entry and whole-page visibility contract: envelope schema v7
+> supplies the exact ordered section list plus closed blocker/failure blocks,
+> the browser fails closed without a policy mirror, the named legacy
+> containers/actions and certificate-install guide are deleted, and reports are
+> discovered only on idle/result edges. Idle now consumes the Active-owned
+> setup status, allows its explicit passive/not-required result, and withholds
+> Start for incomplete, unknown, malformed, or currently unsupported active
+> authority. It preserves a validated owner recovery link or bounded Room retry
+> and rechecks at `/start`.
+> Start, relay, tuning, and stored session failures use closed homeowner copy;
+> raw diagnostics remain in logs/evidence, not primary Room surfaces. The local
+> fallback binds its realized microphone before level matching and capture.
+> Disclosed six/flat/default-repeat policy remains the next R1 patch.
+> Returning-user preferences, one persistent phone handoff,
 > and mandatory proof remain Wave 3 target behavior. Wave 1 added inert evidence
 > identities, excitation admission, and an exact Active eligibility-receipt
-> contract; it did not make that receipt a live Room authority. Production Room
-> readiness still reads the older applied-recomposition snapshot and must not be
-> described as receipt-backed until the Active lane issues and integrates the
-> exact receipt.
+> contract; it did not make that receipt a live Room authority. The R1b adapter
+> therefore rejects active topologies even when the older setup status calls an
+> applied-recomposition snapshot ready. It does not inspect historical evidence
+> or reconstruct receipt authority; Active must issue and expose the exact
+> receipt-backed decision before Room can admit that path.
 
 ## Product goal
 
@@ -273,9 +281,11 @@ required for the requested action. Missing or malformed readiness fails closed.
 
 The existing `/start` readiness check remains defense in depth even after the
 idle envelope withholds Start. A browser bug or stale tab must not bypass it.
-Until Active integrates the exact verified eligibility receipt, Room labels the
-current readiness source only as current speaker readiness. It must not claim
-receipt-backed or freshly verified crossover authority.
+Until Active integrates the exact verified eligibility receipt, the shipped
+Room adapter admits the explicit passive/not-required result and rejects every
+active topology even when the older setup-status boolean says ready. It must
+not claim receipt-backed or freshly verified crossover authority, and the
+validated crossover setup link remains the only active-path recovery action.
 
 Historical B2b evidence is forensic only: it cannot supply modern candidate or
 receipt authority. Automatic crossover readiness must come from Active's fresh,
@@ -446,6 +456,7 @@ web handler, Room session host, Active host, or CamillaDSP controller.
 |---|---|---|
 | Room product session and state machine | `jasper.correction.session` | Browser DOM, Active commissioning, or relay transport policy |
 | Whole-page visibility and next action | `jasper.correction.envelope` | Active readiness derivation or HTTP side effects |
+| Closed homeowner failure presentation | `jasper.correction.failures` | Diagnostic capture, Active authority, or feature state transitions |
 | HTTP admission and context assembly | Room handlers under `jasper.web` | Acoustic math or a second product state machine |
 | Sweep, deconvolution, calibration, and shared quality primitives | `jasper.audio_measurement` | Room positions, target policy, or product sequencing |
 | Reverberant cross-position aggregation | `jasper.correction.spatial` | Active same-target repeat/admission policy |

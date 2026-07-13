@@ -1332,7 +1332,85 @@ def test_e2e_start_safety_refusal_returns_422(monkeypatch):
             expect_status=422,
         )
         body = json.loads(e.read().decode())
-        assert "flat sweep is unsafe" in body["error"]
+        assert body == {
+            "failure": {
+                "code": "speaker_measurement_unsafe",
+                "text": (
+                    "The speaker is not ready to measure safely. Review "
+                    "speaker setup, then try again."
+                ),
+                "retryable": False,
+                "recovery_action": None,
+            },
+        }
+        assert "flat sweep is unsafe" not in str(body)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_apply_rejects_failed_measurement_evidence_before_dsp(monkeypatch):
+    sess = SimpleNamespace(
+        confidence_report={
+            "findings": [{
+                "code": "runtime_integrity_failed",
+                "severity": "fail",
+                "message": "raw runtime diagnostic",
+            }],
+        },
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup,
+        "_camilla",
+        lambda: pytest.fail("unsafe evidence must reject before DSP access"),
+    )
+    server, base = _start_server()
+    try:
+        e = request_with_csrf(
+            base,
+            "/apply",
+            b"{}",
+            content_type="application/json",
+            expect_status=422,
+        )
+        body = json.loads(e.read().decode())
+        assert body["failure"]["code"] == "measurement_evidence_unsafe"
+        assert "raw runtime diagnostic" not in str(body)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    ("route", "handler_name"),
+    [
+        ("/relay/capture", "_handle_relay_capture"),
+        ("/relay/level-match", "_handle_relay_level_match"),
+        ("/relay/verify", "_handle_relay_verify"),
+    ],
+)
+def test_e2e_relay_refusal_returns_typed_homeowner_failure(
+    monkeypatch,
+    route,
+    handler_name,
+):
+    def fake(_handler):
+        raise ValueError("raw relay/session diagnostic")
+
+    monkeypatch.setattr(correction_setup, handler_name, fake)
+    server, base = _start_server()
+    try:
+        e = request_with_csrf(
+            base,
+            route,
+            b"{}",
+            content_type="application/json",
+            expect_status=409,
+        )
+        body = json.loads(e.read().decode())
+        assert body["failure"]["code"] == "phone_capture_unavailable"
+        assert "raw relay/session diagnostic" not in str(body)
     finally:
         server.shutdown()
         server.server_close()
@@ -1364,8 +1442,18 @@ def test_e2e_spend_cap_exceeded_returns_429_with_honest_json(monkeypatch, route)
             expect_status=429,
         )
         body = json.loads(e.read().decode())
-        assert "daily spend cap reached" in body["error"]
-        assert "rollover" in body["error"]
+        assert body == {
+            "failure": {
+                "code": "tuning_spend_limit",
+                "text": (
+                    "The daily assistant budget is reached. Try again after "
+                    "the daily rollover."
+                ),
+                "retryable": False,
+                "recovery_action": None,
+            },
+        }
+        assert "daily spend cap reached" not in str(body)
     finally:
         server.shutdown()
         server.server_close()

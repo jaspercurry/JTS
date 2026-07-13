@@ -173,7 +173,12 @@ const globalFetch = async (url) => {
   let body = {};
   let ok = true;
   let status = 200;
-  for (const [substr, bodyFn] of fetchRoutes) {
+  // Prefer the most specific endpoint. `/propose/apply` must not be captured
+  // by an older `/propose` fixture merely because it was registered first.
+  const routes = Array.from(fetchRoutes.entries()).sort(
+    (left, right) => right[0].length - left[0].length,
+  );
+  for (const [substr, bodyFn] of routes) {
     if (u.indexOf(substr) !== -1) {
       fetchCounts.set(substr, (fetchCounts.get(substr) || 0) + 1);
       // A bodyFn that throws simulates a DOWN endpoint: the response comes
@@ -198,7 +203,7 @@ const globalFetch = async (url) => {
     ok,
     status,
     async json() { return body; },
-    async text() { return ""; },
+    async text() { return JSON.stringify(body); },
   };
 };
 
@@ -258,14 +263,21 @@ source = source.replace(
     renderEnvelopeFailure,
     refreshEnvelope,
     pollState,
+    onWizardNextClick,
     startMicCapture,
     applyButtonPolicy,
     cancelMeasurement,
     // P6 tuning-assistant surfaces (IIFE-local).
     renderTuning,
     renderTuningProposals,
+    applyCorrectionProposal,
     onTuningInterpret,
     onTuningPropose,
+    renderBrowserAudioReport,
+    renderQuality,
+    renderConfidence,
+    renderRuntimeIntegrity,
+    loadSessionReport,
     // The tuning status line text, for the fetch-error-framing tests.
     getTuningStatusText: function () { return tuningStatus.textContent; },
     // Client step-label lexicon, pinned against the server progress spine.
@@ -377,11 +389,12 @@ const safeConsole = {
 // /sessions calls resolve to a benign idle payload (tests override below).
 setFetchRoute("/status", () => ({ state: "idle" }));
 setFetchRoute("/envelope", () => ({
-  schema_version: 6, screen: "idle", state: "idle",
+  schema_version: 7, screen: "idle", state: "idle",
   sections: ["current-correction", "run-defaults"],
   curves: {}, fill_segments: [], headline: null,
   verdict_text: "Ready to measure your room.", nudges: [],
   next_action: { label: "Start measuring", endpoint: "/start" },
+  blocker: null, failure: null,
   progress: { position: 1, total: 6 },
 }));
 
@@ -415,13 +428,20 @@ const {
   renderEnvelopeFailure,
   refreshEnvelope,
   pollState,
+  onWizardNextClick,
   startMicCapture,
   applyButtonPolicy,
   cancelMeasurement,
   renderTuning,
   renderTuningProposals,
+  applyCorrectionProposal,
   onTuningInterpret,
   onTuningPropose,
+  renderBrowserAudioReport,
+  renderQuality,
+  renderConfidence,
+  renderRuntimeIntegrity,
+  loadSessionReport,
   getTuningStatusText,
   wizardStepLabels,
   getEnvelopeFetchCount,
@@ -900,7 +920,7 @@ function curveOf(fn) {
 // A complete envelope with sensible defaults; override per test.
 function makeEnvelope(over) {
   return Object.assign({
-    schema_version: 6,
+    schema_version: 7,
     screen: "idle",
     state: "idle",
     sections: ["current-correction", "run-defaults"],
@@ -910,6 +930,8 @@ function makeEnvelope(over) {
     verdict_text: "Ready to measure your room.",
     nudges: [],
     next_action: { label: "Start measuring", endpoint: "/start" },
+    blocker: null,
+    failure: null,
     progress: { position: 1, total: 6 },
   }, over || {});
 }
@@ -1276,13 +1298,13 @@ await (async () => {
   resetEnvelopeBookkeeping();
 })();
 
-// 29. The v6 contract is closed. Unknown versions, screens, sections,
+// 29. The v7 contract is closed. Unknown versions, screens, sections,
 //     duplicates, or actions are rejected before any of them become policy.
 {
   const invalid = [
-    makeEnvelope({ schema_version: 5 }),
-    makeEnvelope({ schema_version: 7 }),
-    makeEnvelope({ schema_version: "6" }),
+    makeEnvelope({ schema_version: 6 }),
+    makeEnvelope({ schema_version: 8 }),
+    makeEnvelope({ schema_version: "7" }),
     makeEnvelope({ screen: "future-screen" }),
     makeEnvelope({ sections: null }),
     makeEnvelope({ sections: [] }),
@@ -1290,13 +1312,311 @@ await (async () => {
     makeEnvelope({ sections: ["future-section"] }),
     makeEnvelope({ next_action: { label: "", endpoint: "/start" } }),
     makeEnvelope({ next_action: { label: "Go", endpoint: "/future-action" } }),
+    makeEnvelope({
+      screen: "result", state: "failed", sections: ["result-proof"],
+      next_action: {label: "Try again", endpoint: "/start"},
+      failure: {
+        code: "unknown_failure",
+        text: "The speaker could not continue this step. Try again.",
+        retryable: true,
+        recovery_action: null,
+      },
+    }),
+    makeEnvelope({
+      screen: "result", state: "failed", sections: ["result-proof"],
+      next_action: {label: "Start over", endpoint: "/reset"},
+      failure: {
+        code: "unknown_failure", text: "raw diagnostic", retryable: true,
+        recovery_action: null,
+      },
+    }),
+    makeEnvelope({
+      screen: "result", state: "failed", sections: ["result-proof"],
+      next_action: {label: "Start over", endpoint: "/reset"},
+      failure: {
+        code: "unknown_failure",
+        text: "The speaker could not continue this step. Try again.",
+        retryable: false,
+        recovery_action: null,
+      },
+    }),
+    makeEnvelope({ state: "failed", next_action: null, failure: null }),
+    makeEnvelope({
+      failure: {
+        code: "measurement_evidence_unsafe",
+        text: "This measurement did not pass its safety checks. Measure again.",
+        retryable: true,
+        recovery_action: null,
+      },
+      next_action: null,
+    }),
+    makeEnvelope({
+      screen: "review", state: "ready", sections: ["measurement-review"],
+      next_action: null,
+      failure: {
+        code: "future_failure", text: "raw", retryable: true,
+        recovery_action: null,
+      },
+    }),
+    makeEnvelope({
+      screen: "review", state: "ready", sections: ["measurement-review"],
+      failure: {
+        code: "measurement_evidence_unsafe",
+        text: "This measurement did not pass its safety checks. Measure again.",
+        retryable: true,
+        recovery_action: null,
+      },
+    }),
+    makeEnvelope({
+      sections: ["current-correction", "readiness-blocker"],
+      next_action: null,
+      blocker: null,
+    }),
+    makeEnvelope({
+      sections: ["current-correction", "readiness-blocker"],
+      next_action: null,
+      blocker: {
+        code: "unknown_failure", text: "raw", retryable: true,
+        recovery_action: null,
+      },
+    }),
+    makeEnvelope({
+      sections: ["current-correction", "readiness-blocker"],
+      next_action: null,
+      blocker: {
+        code: "speaker_setup_incomplete",
+        text: "Finish speaker setup first.",
+        retryable: false,
+        recovery_action: {label: "Open", href: "https://example.com"},
+      },
+    }),
+    makeEnvelope({
+      sections: ["current-correction", "readiness-blocker"],
+      blocker: {
+        code: "speaker_setup_incomplete",
+        text: "Finish speaker setup first.",
+        retryable: false,
+        recovery_action: null,
+      },
+    }),
   ];
   invalid.forEach((env, index) => {
     let rejected = false;
     try { validateEnvelope(env); } catch (_e) { rejected = true; }
-    assert(rejected, "malformed/unknown v6 envelope fails closed", { index });
+    assert(rejected, "malformed/unknown v7 envelope fails closed", { index });
   });
 }
+
+// 29aa. A review evidence failure is a valid non-terminal failure envelope:
+//       it drives the visible verdict, withholds Apply, and suppresses tuning.
+{
+  const evidenceText =
+    "This measurement did not pass its safety checks. Measure again.";
+  renderEnvelope(makeEnvelope({
+    screen: "review", state: "ready",
+    sections: ["measurement-review"],
+    verdict_text: "raw verdict must not win",
+    next_action: null,
+    failure: {
+      code: "measurement_evidence_unsafe",
+      text: evidenceText,
+      retryable: true,
+      recovery_action: null,
+    },
+    tuning_llm: {offered: false, available: true},
+  }));
+  assert(wizVerdict().textContent === evidenceText,
+    "review evidence failure drives typed verdict copy");
+  assert(wizNext().classList.contains("hidden"),
+    "review evidence failure withholds Apply");
+  assert(getOrMake("tuning-actions").classList.contains("hidden"),
+    "review evidence failure suppresses tuning actions");
+}
+
+// 29a. Blocked idle renders only the typed Room copy and owner-supplied local
+//      recovery link. It clears the stale defaults/Start from a ready entry.
+{
+  renderEnvelope(makeEnvelope());
+  assert(!wizNext().classList.contains("hidden"),
+    "ready entry initially offers Start");
+
+  const rawActiveDetail = "historical B2b candidate says ready";
+  const blocker = {
+    code: "speaker_setup_incomplete",
+    text: "Finish speaker setup first.",
+    retryable: false,
+    recovery_action: {
+      label: "Open speaker setup",
+      href: "/correction/crossover/",
+    },
+  };
+  renderEnvelope(makeEnvelope({
+    sections: ["current-correction", "readiness-blocker"],
+    verdict_text: "Room correction is waiting for speaker setup.",
+    next_action: null,
+    blocker,
+  }));
+
+  assert(wizNext().classList.contains("hidden"),
+    "blocked entry retires stale Start");
+  assert(getOrMake("run-defaults").classList.contains("hidden"),
+    "blocked entry retires ready defaults");
+  assert(getOrMake("readiness-blocker-message").textContent === blocker.text,
+    "blocked entry renders the typed homeowner sentence");
+  assert(getOrMake("readiness-blocker-action").textContent ===
+      "Open speaker setup" &&
+      getOrMake("readiness-blocker-action").href ===
+      "/correction/crossover/",
+    "blocked entry renders only the owner-supplied local recovery link");
+  assert(wizVerdict().textContent.indexOf(rawActiveDetail) < 0 &&
+      getOrMake("readiness-blocker-message").textContent.indexOf(rawActiveDetail) < 0,
+    "raw Active diagnostics never reach the blocked entry");
+
+  const retryBlocker = {
+    code: "speaker_readiness_unavailable",
+    text: "Speaker setup could not be checked. Try again.",
+    retryable: true,
+    recovery_action: {label: "Check again", href: "/correction/room/"},
+  };
+  renderEnvelope(makeEnvelope({
+    sections: ["current-correction", "readiness-blocker"],
+    next_action: null,
+    blocker: retryBlocker,
+  }));
+  assert(getOrMake("readiness-blocker-action").href === "/correction/room/",
+    "retryable readiness failure exposes one bounded reload action");
+  renderEnvelope(makeEnvelope());
+  assert(getOrMake("readiness-blocker-action").classList.contains("hidden") &&
+      !wizNext().classList.contains("hidden"),
+    "fresh ready envelope clears retry blocker and restores Start");
+}
+
+// 29ab. Typed Start refusals remain visible across the immediate idle
+//       refresh; a successful retry clears them and advances the verdict.
+await (async () => {
+  setRelayMode(true);
+  resetEnvelopeBookkeeping();
+  renderEnvelope(makeEnvelope());
+  setFetchRoute("/status", () => ({state: "idle", autolevel: {status: "idle"}}));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  const raw = "POST /start -> 400: raw microphone diagnostic";
+  const typed = "The measurement setup changed. Review the microphone choices and try again.";
+  setFetchRoute("/start", () => ({
+    __status: 400,
+    __body: {
+      error: raw,
+      failure: {
+        code: "measurement_setup_invalid", text: typed, retryable: true,
+        recovery_action: null,
+      },
+    },
+  }));
+
+  await onWizardNextClick();
+  await settle();
+  assert(wizVerdict().textContent === typed &&
+      wizVerdict().textContent.indexOf(raw) < 0,
+    "typed Start refusal survives the immediate ready-envelope refresh");
+  assert(!wizNext().classList.contains("hidden"),
+    "retryable Start refusal keeps the retry action available");
+
+  setFetchRoute("/start", () => ({session_id: "run-1"}));
+  setFetchRoute("/relay/level-match", () => ({
+    relay: {status: "waiting", tap_link: "https://capture.example/session"},
+  }));
+  setFetchRoute("/status", () => ({
+    state: "needs_noise_capture", capture_transport: "relay",
+    autolevel: {status: "idle"},
+  }));
+  setFetchRoute("/envelope", () => makeEnvelope({
+    screen: "level", state: "needs_noise_capture",
+    sections: ["capture-handoff", "placement", "level-check"],
+    verdict_text: "Check the listening level.",
+    next_action: {label: "Measure position 1", endpoint: "/relay/capture"},
+  }));
+  await onWizardNextClick();
+  await settle();
+  assert(wizVerdict().textContent === "Check the listening level.",
+    "successful retry clears the prior typed refusal");
+})();
+
+// 29ac. Technical status evidence never bypasses the closed homeowner copy
+//       on the primary wizard/result surfaces.
+{
+  const raw = "RAW_DIAGNOSTIC_SENTINEL";
+  renderBrowserAudioReport({
+    level: "warn", summary: raw,
+    issues: [{severity: "warn", code: "future", message: raw}],
+  });
+  renderQuality({capture_quality: [{
+    issues: [{severity: "warn", code: "future", message: raw}],
+  }]});
+  renderConfidence({confidence_report: {
+    level: "low", score: 25, summary: raw,
+    position_variance: {available: false, reason: raw},
+    strategy_gates: {},
+    findings: [{severity: "fail", code: "future", message: raw}],
+  }});
+  renderRuntimeIntegrity({runtime_integrity: {
+    level: "warn", snapshot_count: 1, capture_count: 1,
+    latest_snapshot: {},
+    issues: [{severity: "warn", code: "future", message: raw}],
+  }});
+  ["browser-audio-report", "quality-banner", "confidence-panel",
+    "runtime-integrity-panel"].forEach((id) => {
+    assert(getOrMake(id).innerHTML.indexOf(raw) < 0,
+      "primary status panel keeps raw diagnostic out of homeowner copy", {id});
+  });
+}
+
+// 29ad. A failed session gets one server-owned reset action, so reload cannot
+//       strand the household on a terminal sentence with no recovery control.
+await (async () => {
+  setRelayMode(false);
+  resetFetchCounts();
+  resetEnvelopeBookkeeping();
+  const failed = makeEnvelope({
+    screen: "result", state: "failed", sections: ["result-proof"],
+    verdict_text: "The speaker could not continue this step. Try again.",
+    next_action: {label: "Start over", endpoint: "/reset"},
+    failure: {
+      code: "unknown_failure",
+      text: "The speaker could not continue this step. Try again.",
+      retryable: true,
+      recovery_action: null,
+    },
+  });
+  validateEnvelope(failed);
+  renderEnvelope(failed);
+  assert(!wizNext().classList.contains("hidden") &&
+      wizNext().getAttribute("data-endpoint") === "/reset",
+    "failed session exposes the server-owned Start over action");
+
+  setFetchRoute("/reset", () => ({state: "idle"}));
+  setFetchRoute("/status", () => ({state: "idle", autolevel: {status: "idle"}}));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  await onWizardNextClick();
+  await settle();
+  assert(fetchCountFor("/reset") === 1,
+    "failed-session recovery dispatches reset exactly once");
+  assert(wizVerdict().textContent === "Ready to measure your room.",
+    "successful failed-session reset returns to ready entry copy");
+})();
+
+// 29ae. Report API diagnostics remain forensic even when the response is a
+//       valid JSON error object; the report panel gets bounded Room copy.
+await (async () => {
+  const raw = "RAW_REPORT_BACKEND_DIAGNOSTIC";
+  setFetchRoute("/session-report", () => ({
+    __status: 500,
+    __body: {error: raw},
+  }));
+  await loadSessionReport("report-with-error");
+  const shown = getOrMake("session-report").textContent;
+  assert(shown === "That measurement report could not be loaded. Try again." &&
+      shown.indexOf(raw) < 0,
+    "report-load failure never marks raw backend copy homeowner-safe");
+})();
 
 // 29b. A browser action is single-flight. Active envelope refreshes may update
 //      copy/sections, but cannot resurrect any primary action until the local
@@ -1535,40 +1855,48 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
     "tuning: empty proposals clears the cards");
 }
 
-// 34. The paid-call min-interval gate returns an honest 409 whose JSON body
-//     carries the server's message. The tuning panel shows that message
-//     AS-IS (the assistant WAS reached), NOT under the "Could not reach"
-//     network-failure prefix. A genuine down endpoint still keeps that
-//     prefix.
+// 34. Paid-call failures render only the typed homeowner sentence. Raw route,
+//     status, and diagnostic strings stay out of the panel; an untyped outage
+//     gets the same bounded generic posture.
 await (async () => {
   const tuningStatusEl = () => getOrMake("tuning-status");
 
-  // 34a. A 409 carrying the server's honest reason is shown verbatim.
-  const gate409 = "the tuning assistant just made a paid call — wait a moment and tap again";
-  setFetchRoute("/interpret", () => ({ __status: 409, __body: { error: gate409 } }));
+  const rawDiagnostic = "POST /interpret → 409: provider exploded";
+  const typedMessage = "The tuning assistant just ran. Wait a moment, then try again.";
+  const typedFailure = {
+    code: "tuning_busy",
+    text: typedMessage,
+    retryable: true,
+    recovery_action: null,
+  };
+  setFetchRoute("/interpret", () => ({
+    __status: 409,
+    __body: {error: rawDiagnostic, failure: typedFailure},
+  }));
   await onTuningInterpret();
   const status409 = getTuningStatusText();
-  assert(status409 === gate409,
-    "tuning: a 409 gate refusal shows the server message verbatim",
+  assert(status409 === typedMessage,
+    "tuning: a 409 gate refusal shows only typed homeowner copy",
     { got: status409 });
-  assert(status409.indexOf("Could not reach") < 0,
-    "tuning: a 409 refusal is NOT framed as 'Could not reach'",
+  assert(status409.indexOf(rawDiagnostic) < 0 &&
+      status409.indexOf("409") < 0 && status409.indexOf("/interpret") < 0,
+    "tuning: raw diagnostic/status/route never reaches the panel",
     { got: status409 });
 
-  // 34b. Same honest surfacing on /propose.
-  setFetchRoute("/propose", () => ({ __status: 409, __body: { error: gate409 } }));
+  setFetchRoute("/propose", () => ({
+    __status: 409,
+    __body: {error: rawDiagnostic, failure: typedFailure},
+  }));
   await onTuningPropose();
-  assert(getTuningStatusText() === gate409,
-    "tuning: /propose 409 refusal also shows the server message verbatim",
+  assert(getTuningStatusText() === typedMessage,
+    "tuning: /propose 409 refusal also shows typed homeowner copy",
     { got: getTuningStatusText() });
 
-  // 34c. A genuine down endpoint (no JSON error body) keeps the
-  //      "Could not reach" network-failure framing.
   setFetchRoute("/interpret", () => { throw new Error("down"); });
   await onTuningInterpret();
   const statusDown = getTuningStatusText();
-  assert(statusDown.indexOf("Could not reach the tuning assistant") === 0,
-    "tuning: a true network failure keeps the 'Could not reach' framing",
+  assert(statusDown === "The tuning assistant could not continue. Try again.",
+    "tuning: an untyped outage gets bounded generic copy",
     { got: statusDown });
 
   // Restore benign defaults.
@@ -1577,8 +1905,56 @@ await (async () => {
   tuningStatusEl().textContent = "";
 })();
 
+// 35. A 200/not-applied proposal still uses the typed failure block; internal
+//     validation/simulation reasons never become tuning-panel prose.
+await (async () => {
+  const raw = "proposal failed re-validation against strategy caps";
+  const typed =
+    "That suggestion was not applied because it did not pass the speaker's safety checks.";
+  setFetchRoute("/propose/apply", () => ({
+    applied: false,
+    reason: raw,
+    failure: {
+      code: "tuning_proposal_rejected", text: typed, retryable: true,
+      recovery_action: null,
+    },
+  }));
+  setFetchRoute("/status", () => ({state: "ready", autolevel: {status: "idle"}}));
+  setFetchRoute("/envelope", () => makeEnvelope({
+    screen: "review", state: "ready", sections: ["measurement-review"],
+    next_action: {label: "Apply correction", endpoint: "/apply"},
+  }));
+
+  await applyCorrectionProposal(
+    {correction_peqs: [{freq_hz: 62, q: 3, gain_db: -7}]},
+    makeEl("button"),
+  );
+  assert(getTuningStatusText() === typed &&
+      getTuningStatusText().indexOf(raw) < 0,
+    "200/not-applied proposal renders only typed homeowner copy");
+})();
+
+// 36. A transient status-read failure can recover in the same state; the next
+//     valid envelope replaces its bounded fallback instead of leaving stale
+//     failure copy latched.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  setFetchRoute("/status", () => ({__status: 503, __body: {error: "raw"}}));
+  await pollState();
+  assert(wizVerdict().textContent ===
+      "The speaker could not continue this step. Try again.",
+    "status-read failure shows bounded fallback copy");
+
+  setFetchRoute("/envelope", () => makeEnvelope({
+    verdict_text: "Ready to measure your room.",
+  }));
+  await refreshEnvelope();
+  assert(wizVerdict().textContent === "Ready to measure your room.",
+    "same-state envelope recovery clears transient status failure copy");
+})();
+
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 38 }));
+console.log(JSON.stringify({ ok: true, tests: 47 }));
