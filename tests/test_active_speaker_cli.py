@@ -312,11 +312,11 @@ def test_path_probe_cli_writes_probe_backed_evidence(
 # get_active_config_raw read-back, get_config_file_path anchor), single-flight,
 # the dry-run preflight, and exit codes — not re-testing the load transaction.
 
-from tests.test_active_speaker_commission_load import _block  # noqa: E402
-from tests.active_speaker_fixtures import (  # noqa: E402
+from tests.test_active_speaker_commission_load import _block
+from tests.active_speaker_fixtures import (
     mono_output_topology as _topology,
 )
-from tests.test_active_speaker_startup_load import (  # noqa: E402
+from tests.test_active_speaker_startup_load import (
     _staged,
 )
 
