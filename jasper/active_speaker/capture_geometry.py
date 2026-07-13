@@ -4,10 +4,11 @@
 
 """Comparison-critical microphone placement for active-crossover captures.
 
-Per-driver levels are comparable only when every capture uses the same
-near-field geometry.  This module owns that small contract for the relay copy,
-the durable measurement record, the sequential envelope, and the baseline
-compiler.  It records an operator attestation, not a measured distance.
+Per-driver levels are comparable only within the same server-proven microphone
+geometry. This module owns that small contract for relay copy, durable evidence,
+and level-lock identity. It records an operator attestation, not a measured
+distance; near-field and reference-axis locks must never substitute for one
+another.
 """
 
 from __future__ import annotations
@@ -40,9 +41,80 @@ DRIVER_CAPTURE_GEOMETRY_BY_POLICY = {
     DRIVER_PLACEMENT_POLICY_ID: "near_field",
     REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID: "reference_axis",
 }
+DRIVER_CAPTURE_GEOMETRIES = frozenset(DRIVER_CAPTURE_GEOMETRY_BY_POLICY.values())
 SUMMED_CAPTURE_GEOMETRY_BY_POLICY = {
     SUMMED_PLACEMENT_POLICY_ID: "reference_axis",
 }
+
+
+def _active_crossover_driver_roles() -> frozenset[str]:
+    """Return the canonical 2/3-way role vocabulary without an import cycle."""
+
+    from .profile import DRIVER_ROLES_BY_WAY
+
+    return frozenset(
+        role
+        for way_count in (2, 3)
+        for role in DRIVER_ROLES_BY_WAY[way_count]
+    )
+
+
+def driver_level_geometry(
+    speaker_group_id: str,
+    role: str,
+    capture_geometry: str,
+) -> str:
+    """Stable level-lock key for one physical driver and mic geometry."""
+
+    group_id = str(speaker_group_id or "").strip()
+    role_id = str(role or "").strip().lower()
+    geometry = str(capture_geometry or "").strip().lower()
+    if not group_id or not role_id:
+        raise ValueError("driver level geometry requires a group and role")
+    if role_id not in _active_crossover_driver_roles():
+        raise ValueError("driver level geometry has unsupported driver role")
+    if geometry not in DRIVER_CAPTURE_GEOMETRIES:
+        raise ValueError("driver level geometry is unsupported")
+    return f"{geometry}_driver:{group_id}:{role_id}"
+
+
+def parse_driver_level_geometry(value: str) -> tuple[str, str, str]:
+    """Parse one canonical ``geometry_driver:group:role`` level-lock key.
+
+    Group ids may legally contain ``:``. Parse the role from the right only
+    after matching a known geometry prefix, then require the canonical writer
+    to reproduce the byte-exact input. This rejects whitespace/mixed-case
+    aliases and prevents a malformed string from selecting a larger level cap.
+    """
+
+    if not isinstance(value, str) or not value:
+        raise ValueError("driver level geometry is empty")
+    capture_geometry = next(
+        (
+            geometry
+            for geometry in DRIVER_CAPTURE_GEOMETRIES
+            if value.startswith(f"{geometry}_driver:")
+        ),
+        None,
+    )
+    if capture_geometry is None:
+        raise ValueError("driver level geometry has unsupported geometry")
+    remainder = value.removeprefix(f"{capture_geometry}_driver:")
+    speaker_group_id, separator, role = remainder.rpartition(":")
+    if not separator or not speaker_group_id or not role:
+        raise ValueError("driver level geometry requires a group and role")
+    if role not in _active_crossover_driver_roles():
+        raise ValueError("driver level geometry has unsupported driver role")
+    if (
+        driver_level_geometry(
+            speaker_group_id,
+            role,
+            capture_geometry,
+        )
+        != value
+    ):
+        raise ValueError("driver level geometry is not canonical")
+    return capture_geometry, speaker_group_id, role
 
 
 def _capture_geometry_from_proof(
@@ -153,7 +225,9 @@ class CrossoverLevelReference:
 
     @property
     def geometry(self) -> str:
-        return f"near_field_driver:{self.target_id}"
+        return driver_level_geometry(
+            self.speaker_group_id, self.role, "near_field"
+        )
 
 
 def crossover_level_reference(
@@ -213,6 +287,19 @@ def driver_placement_instruction(role: str) -> str:
     )
 
 
+def reference_axis_driver_placement_instruction(role: str) -> str:
+    """Canonical stationary axis shared by each isolated-driver capture."""
+
+    role = str(role or "driver").strip().lower()
+    return (
+        "Place the microphone capsule on the tweeter axis, exactly level with "
+        "the centre of the tweeter or horn mouth, about 1 metre away when the "
+        "room permits. Aim it according to its calibration file. Keep the "
+        f"microphone and speaker completely still while measuring the {role} "
+        "and every other driver in this set."
+    )
+
+
 def summed_placement_instruction() -> str:
     """Canonical fixed-axis placement for combined-driver alignment evidence."""
 
@@ -232,6 +319,17 @@ def placement_acknowledgement_label(role: str) -> str:
         f"The microphone capsule is {DRIVER_PLACEMENT_TARGET_CM:g} cm from the "
         f"{driver_target_description(role)} "
         "and I will use this exact distance for every driver measurement."
+    )
+
+
+def reference_axis_driver_acknowledgement_label(role: str) -> str:
+    """Explicit stationary-axis promise before an isolated-driver sweep."""
+
+    role = str(role or "driver").strip().lower()
+    return (
+        "The microphone is on the tweeter axis, level with the centre of the "
+        "tweeter or horn mouth, and I will not move it or the speaker while "
+        f"measuring the {role} and the other drivers."
     )
 
 

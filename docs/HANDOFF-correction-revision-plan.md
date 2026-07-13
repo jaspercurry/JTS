@@ -199,7 +199,10 @@ one-shot host-event round trip.
   **shared dynamic cap** is the lower of `original + 12 dB` and **−3 dBFS**
   `main_volume`, with no upward floor for a quiet listening setting. Room's
   listening-position owner uses +15 dB / 0 dB because its stimulus is already
-  −12 dBFS; crossover/near-field keeps the shared cap. It remains
+  −12 dBFS. The inert fixed-reference crossover foundation names that same
+  listening-position policy for its future geometry-scoped level action; the
+  route/envelope orchestration lands separately. Existing 3 cm crossover
+  near-field retains the tighter kernel default. It remains
   tighter than, and is not to be confused with, the independent 0 dB hard
   ceiling above. Terminal ramp snapshots expose sample-admission counts and
   maximum observed RMS/peak, trust threshold, and trust deficit so a zero-

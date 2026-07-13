@@ -194,6 +194,24 @@ The product is three tiers:
   and `above_validity_floor is True`. Measurement state keeps near-field and
   fixed-axis latest-record indexes separate, so a later far-field capture cannot
   replace the near-field evidence used for level trims.
+- **Lane B fixed-axis capture foundation (2026-07-12, inert).** The shared
+  measurement layer now names geometry-scoped driver level locks, reuses the
+  listening-position `+15 dB` / hard `0 dB` ramp cap for a future fixed-axis
+  driver level action, and can thread the exact reasserted lock into the played
+  excitation ledger. The relay sweep spec also owns the fixed-axis instruction
+  and acknowledgement policy. These are optional primitives only: this slice
+  does not add an envelope action, route, UI, repeat sequence, or apply gate, so
+  current near-field commissioning behavior is unchanged. The first fixed-axis
+  capture remains unreachable until the orchestration slice lands.
+
+  `acoustic.fr_curve` remains a peak-normalized display surface and must never
+  be treated as physical splice evidence. Existing driver repeat artifacts now
+  store a versioned `analysis_input` beside each immutable raw WAV: exact
+  generated-sweep metadata, played excitation/level ledger, capture geometry,
+  ambient duration, and a serial-free snapshot of the applied calibration
+  curve. The splice lane must replay those inputs with
+  `magnitude_response(..., normalize=False)` so calibrated amplitude is not
+  lost by subtracting two normalized display plots.
 
 ### The gaps (worktree-confirmed)
 - ~~**Active-speaker measurement loop is built but UNWIRED.**~~ **CLOSED.**

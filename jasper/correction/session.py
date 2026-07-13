@@ -62,6 +62,8 @@ from jasper.audio_measurement.excitation import (
 )
 from jasper.audio_measurement.quality_model import ROOM as ROOM_QUALITY
 from jasper.audio_measurement.ramp import (
+    LISTENING_POSITION_CAP_BUMP_DB,
+    LISTENING_POSITION_CAP_CEIL_DB,
     RECOVERABLE_ERRORS,
     MeasurementRamp,
     RampState,
@@ -106,13 +108,6 @@ def _bundles_enabled() -> bool:
 
 
 DBFS_FLOOR = -120.0
-# Room measurements use a deliberately attenuated -12 dBFS stimulus.  Give the
-# listening-position ramp up to 15 dB above the household's current volume and
-# the existing 0 dB hard ceiling; crossover/near-field commissioning retains
-# the shared kernel's tighter +12/-3 dB policy.  Clip detection remains live on
-# every phone sample, and downstream sweep-quality gates remain authoritative.
-ROOM_LEVEL_CAP_BUMP_DB = 15.0
-ROOM_LEVEL_CAP_CEIL_DB = 0.0
 SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
     ("sub_bass", 20.0, 80.0),
     ("bass", 80.0, 160.0),
@@ -2525,8 +2520,8 @@ class MeasurementSession:
             # findings are additional evidence, not this ramp's backstop.
             config=MeasurementRamp.from_env(
                 allow_bounded_low_level=True,
-                cap_bump_db=ROOM_LEVEL_CAP_BUMP_DB,
-                cap_ceil_db=ROOM_LEVEL_CAP_CEIL_DB,
+                cap_bump_db=LISTENING_POSITION_CAP_BUMP_DB,
+                cap_ceil_db=LISTENING_POSITION_CAP_CEIL_DB,
             ),
         )
         self._level_match_session = session

@@ -2160,6 +2160,7 @@ async def play_driver_capture_sweep(
     camilla_factory: CamillaFactory,
     blocking_phase: str | None = None,
     applied_profile: dict[str, Any] | None = None,
+    locked_main_volume_db: float | None = None,
 ) -> dict[str, Any]:
     """Play the analyzer sweep through one already-confirmed driver path."""
 
@@ -2215,11 +2216,26 @@ async def play_driver_capture_sweep(
         topology,
         applied_profile,
     )
+    resolved_locked_volume = (
+        locked_main_volume_db
+        if locked_main_volume_db is not None
+        else level_lock["locked_main_volume_db"]
+    )
+    if (
+        isinstance(resolved_locked_volume, bool)
+        or not isinstance(resolved_locked_volume, (int, float))
+        or not math.isfinite(float(resolved_locked_volume))
+        or float(resolved_locked_volume) > 0.0
+    ):
+        return _refused_capture_sweep(
+            "automatic_crossover_driver_level_invalid",
+            "run the protected level check for this driver before recording it",
+        )
     planned_excitation = automatic_driver_excitation(
         topology,
         role,
         applied_profile=applied_profile,
-        locked_main_volume_db=float(level_lock["locked_main_volume_db"]),
+        locked_main_volume_db=float(resolved_locked_volume),
     )
     if planned_excitation.get("status") != "ready":
         return _refused_capture_sweep(

@@ -714,12 +714,16 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
         }
 
     monkeypatch.setattr(capture, "record_driver_acoustic_capture", fake_record)
+    repeat_artifact_payloads = []
+
+    def append_repeat_capture(*_args, **kwargs):
+        repeat_artifact_payloads.append(kwargs["payload"])
+        return {"artifact_path": f"captures/repeat-{kwargs['index']}.wav"}
+
     monkeypatch.setattr(
         active_speaker_bundles,
         "append_repeat_capture",
-        lambda *_a, **kwargs: {
-            "artifact_path": f"captures/repeat-{kwargs['index']}.wav"
-        },
+        append_repeat_capture,
     )
     monkeypatch.setattr(
         active_speaker_bundles,
@@ -846,6 +850,57 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
     assert all(entry["accepted"] is True for entry in attempts)
     assert all(entry["snr_db"] == 31.0 for entry in attempts)
     assert all(entry["clipping"] is False for entry in attempts)
+    assert len(repeat_artifact_payloads) == 3
+    for artifact in repeat_artifact_payloads:
+        analysis_input = artifact["analysis_input"]
+        assert analysis_input["schema_version"] == 1
+        assert analysis_input["response_amplitude"] == "recompute_from_raw_wav"
+        assert analysis_input["display_fr_curve_peak_normalized"] is True
+        assert analysis_input["sweep_meta"]["amplitude_dbfs"] == -12.0
+        assert analysis_input["capture_geometry"] == "near_field"
+        assert analysis_input["ambient_duration_s"] == 12.0
+        assert analysis_input["calibration"] is None
+
+
+def test_driver_analysis_input_preserves_calibrated_absolute_replay_contract():
+    from jasper.active_speaker.web_measurement import driver_analysis_input_evidence
+    from jasper.audio_measurement.calibration import CalibrationCurve
+
+    evidence = driver_analysis_input_evidence(
+        sweep_meta={
+            "sample_rate": 48000,
+            "f1": 20.0,
+            "f2": 20000.0,
+            "duration_s": 8.0,
+            "amplitude_dbfs": -12.0,
+        },
+        excitation={
+            "schema_version": 1,
+            "scope": "sweep_plus_role_gain_and_driver_level_lock",
+            "locked_main_volume_db": -6.5,
+            "effective_peak_dbfs": -21.5,
+        },
+        calibration_curve=CalibrationCurve(
+            freqs_hz=[20.0, 1000.0, 20000.0],
+            correction_db=[1.2, 0.0, -2.3],
+        ),
+        calibration_id="calibration-safe-id",
+        capture_geometry="reference_axis",
+        ambient_duration_s=12.0,
+    )
+
+    assert evidence["response_amplitude"] == "recompute_from_raw_wav"
+    assert evidence["sweep_meta"]["duration_s"] == 8.0
+    assert evidence["excitation"]["locked_main_volume_db"] == -6.5
+    assert evidence["calibration"] == {
+        "calibration_id": "calibration-safe-id",
+        "curve": {
+            "freqs_hz": [20.0, 1000.0, 20000.0],
+            "correction_db": [1.2, 0.0, -2.3],
+            "phase_deg": None,
+        },
+    }
+    assert "serial" not in str(evidence).lower()
 
 
 @pytest.mark.parametrize("corruption", ("stale_target", "conflicting_geometry"))
@@ -3335,6 +3390,107 @@ async def test_crossover_gain_is_scoped_to_the_measurement_window(monkeypatch):
     await run_and_consume(object(), _relay_pi_session("driver", session_id="s"))
 
     assert order == ["window_enter", "prepare", "play", "restore", "window_exit"]
+
+
+@pytest.mark.asyncio
+async def test_driver_excitation_ledger_uses_reasserted_geometry_lock(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from jasper.correction import coordinator
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    observed: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    async def play(*_args, **kwargs):
+        observed.update(kwargs)
+        return {
+            "status": "completed",
+            "playback": {
+                "audio_emitted": True,
+                "excitation": {
+                    "locked_main_volume_db": kwargs["locked_main_volume_db"]
+                },
+            },
+            "sweep_meta": {"sample_rate": 48000},
+        }
+
+    async def prepare():
+        return True
+
+    async def restore():
+        return True
+
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    monkeypatch.setattr(
+        be,
+        "record_driver_capture",
+        lambda *_args, **_kwargs: {"recorded": True},
+    )
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        prepare_play=prepare,
+        restore_play=restore,
+        driver_locked_main_volume_db=lambda: -3.5,
+        **_relay_contract(),
+    )
+
+    await run_and_consume(object(), _relay_pi_session("driver", session_id="s"))
+
+    assert observed["locked_main_volume_db"] == -3.5
+
+
+@pytest.mark.asyncio
+async def test_supplied_geometry_lock_callback_cannot_fall_back_when_missing(
+    monkeypatch,
+):
+    from contextlib import asynccontextmanager
+
+    from jasper.correction import coordinator
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    restored = []
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    async def play(*_args, **_kwargs):
+        pytest.fail("missing geometry lock must refuse before playback")
+
+    async def prepare():
+        return True
+
+    async def restore():
+        restored.append(True)
+        return True
+
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        prepare_play=prepare,
+        restore_play=restore,
+        driver_locked_main_volume_db=lambda: None,
+        **_relay_contract(),
+    )
+
+    with pytest.raises(RuntimeError, match="geometry-scoped driver level lock"):
+        await run_and_consume(
+            object(), _relay_pi_session("driver", session_id="missing-lock")
+        )
+
+    assert restored == [True]
 
 
 @pytest.mark.asyncio
