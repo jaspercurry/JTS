@@ -302,11 +302,15 @@ in the versioned, wizard-owned
 path with the safe defaults and `has_saved_choices=false`, owned by
 `root:jasper` at mode `0660`. The installer creates it only when absent and
 never overwrites an existing valid or corrupt file. Wizard writes use a
-same-directory temporary file, validation, `fsync`, and atomic replace; they
-restore mode `0660` and group `jasper` after replacement. The first successful
-run records the confirmed choices and changes the marker to true. The server
-validates and pre-applies those choices before building the disclosed defaults.
-Browser local storage is not an authority.
+same-directory temporary file. They validate it, assign the final
+`root:jasper` ownership and `0660` mode, and `fsync` it before atomic replace,
+so no published path has an intermediate permission state. The bounded corrupt
+sidecar follows the same prepare-before-publish ordering. The implementation
+uses or extends the canonical `jasper.atomic_io` helper rather than creating a
+second replacement primitive. The first successful run records the confirmed
+choices and changes the marker to true. The server validates and pre-applies
+those choices before building the disclosed defaults. Browser local storage is
+not an authority.
 
 The product distinguishes these states:
 
