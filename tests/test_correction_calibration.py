@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -57,6 +58,31 @@ def test_apply_calibration_curve_interpolates_in_log_frequency():
     assert corrected[0] == pytest.approx(1.0)
 
 
+def test_calibration_curve_from_dict_is_strict_persisted_boundary():
+    valid = {
+        "freqs_hz": [20, 1000.0],
+        "correction_db": [-1, 2.0],
+        "phase_deg": [0, 10.0],
+        "future_metadata": "allowed",
+    }
+    assert calibration.CalibrationCurve.from_dict(valid).to_dict() == {
+        "freqs_hz": [20.0, 1000.0],
+        "correction_db": [-1.0, 2.0],
+        "phase_deg": [0.0, 10.0],
+    }
+    for payload in (
+        {**valid, "freqs_hz": [20.0, 20.0]},
+        {**valid, "freqs_hz": [20.0, -100.0]},
+        {**valid, "freqs_hz": [20.0, float("nan")]},
+        {**valid, "freqs_hz": [20.0, "1000"]},
+        {**valid, "correction_db": [-1.0]},
+        {**valid, "correction_db": [False, 1.0]},
+        {**valid, "phase_deg": [0.0]},
+    ):
+        with pytest.raises(ValueError):
+            calibration.CalibrationCurve.from_dict(payload)
+
+
 def test_store_load_roundtrip_redacts_serial_from_public_metadata(tmp_path: Path):
     record = calibration.store_calibration(
         text=SAMPLE_CAL,
@@ -81,6 +107,24 @@ def test_store_load_roundtrip_redacts_serial_from_public_metadata(tmp_path: Path
     assert Path(loaded.metadata_path).exists()
     assert (Path(loaded.raw_path).stat().st_mode & 0o777) == 0o600
     assert (Path(loaded.metadata_path).stat().st_mode & 0o777) == 0o600
+
+
+def test_load_calibration_record_rejects_corrupt_persisted_curve(tmp_path: Path):
+    record = calibration.store_calibration(
+        text=SAMPLE_CAL,
+        provider="manual_upload",
+        model="other",
+        label="Lab mic",
+        source="uploaded:lab.txt",
+        root=tmp_path,
+    )
+    metadata_path = Path(record.metadata_path)
+    payload = json.loads(metadata_path.read_text())
+    payload["curve"]["freqs_hz"][1] = "100"
+    metadata_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="finite numbers"):
+        calibration.load_calibration_record(record.calibration_id, root=tmp_path)
 
 
 def test_dayton_fetch_posts_form_and_follows_calibration_link():

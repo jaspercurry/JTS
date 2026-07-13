@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
@@ -112,16 +112,41 @@ class CalibrationCurve:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "CalibrationCurve":
-        return cls(
-            freqs_hz=[float(x) for x in data["freqs_hz"]],
-            correction_db=[float(x) for x in data["correction_db"]],
-            phase_deg=(
-                [float(x) for x in data["phase_deg"]]
-                if data.get("phase_deg") is not None
-                else None
-            ),
-        )
+    def from_dict(cls, data: Mapping[str, Any]) -> "CalibrationCurve":
+        """Strictly parse the curve shared by records and replay evidence."""
+
+        if not isinstance(data, Mapping):
+            raise ValueError("calibration curve must be an object")
+
+        def numeric_array(name: str) -> list[float]:
+            raw = data.get(name)
+            if not isinstance(raw, list) or len(raw) < 2:
+                raise ValueError(f"calibration curve {name} needs at least two points")
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not np.isfinite(float(value))
+                for value in raw
+            ):
+                raise ValueError(f"calibration curve {name} must be finite numbers")
+            return [float(value) for value in raw]
+
+        freqs = numeric_array("freqs_hz")
+        correction = numeric_array("correction_db")
+        if len(freqs) != len(correction):
+            raise ValueError("calibration curve arrays must be length-matched")
+        if any(freq <= 0.0 for freq in freqs) or any(
+            right <= left for left, right in zip(freqs, freqs[1:])
+        ):
+            raise ValueError(
+                "calibration curve frequencies must be positive and strictly increasing"
+            )
+        phase = None
+        if data.get("phase_deg") is not None:
+            phase = numeric_array("phase_deg")
+            if len(phase) != len(freqs):
+                raise ValueError("calibration curve phase must match frequency length")
+        return cls(freqs_hz=freqs, correction_db=correction, phase_deg=phase)
 
 
 @dataclass(frozen=True)

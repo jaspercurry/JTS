@@ -81,6 +81,33 @@ def test_sweep_generation_golden_shape():
     )
 
 
+def test_sweep_meta_strict_persisted_round_trip() -> None:
+    _signal, meta = sweep.synchronized_swept_sine(duration_approx_s=0.2)
+    assert sweep.SweepMeta.from_dict(meta.to_dict()) == meta
+    for field, invalid in (
+        ("sample_rate", 48000.0),
+        ("n_samples", True),
+        ("amplitude_dbfs", "-12"),
+        ("duration_s", meta.duration_s + 0.1),
+    ):
+        with pytest.raises(ValueError):
+            sweep.SweepMeta.from_dict({**meta.to_dict(), field: invalid})
+    with pytest.raises(ValueError, match="schema"):
+        sweep.SweepMeta.from_dict({**meta.to_dict(), "extra": 1})
+
+
+@pytest.mark.parametrize(
+    "amplitude_dbfs",
+    (3.0, float("nan"), float("inf"), True, "-12"),
+)
+def test_sweep_generation_rejects_invalid_amplitude(amplitude_dbfs) -> None:
+    with pytest.raises(ValueError, match="finite non-positive"):
+        sweep.synchronized_swept_sine(
+            duration_approx_s=0.2,
+            amplitude_dbfs=amplitude_dbfs,
+        )
+
+
 def test_deconvolution_golden_recovery():
     _, _, recovered, *_ = _golden_pipeline()
     assert len(recovered) == 24010

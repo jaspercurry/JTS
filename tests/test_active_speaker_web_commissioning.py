@@ -17,6 +17,7 @@ import jasper.active_speaker.playback as active_playback
 import jasper.correction.playback as correction_playback
 from jasper.active_speaker import web_commissioning as web
 from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+from jasper.active_speaker.crossover_contract import verified_driver_excitation
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.calibration_level import MIN_TEST_LEVEL_DBFS
 from jasper.audio_measurement.excitation import (
@@ -380,6 +381,7 @@ def test_automatic_driver_excitation_uses_current_applied_snapshot():
         "topology_id": topology.topology_id,
         "role": "woofer",
     }
+    assert verified_driver_excitation(payload) is not None
 
 
 def test_automatic_driver_excitation_includes_driver_level_lock():
@@ -397,6 +399,13 @@ def test_automatic_driver_excitation_includes_driver_level_lock():
     assert payload["scope"] == "sweep_plus_role_gain_and_driver_level_lock"
     assert payload["locked_main_volume_db"] == -4.0
     assert payload["effective_peak_dbfs"] == -25.5
+    assert verified_driver_excitation(payload) is not None
+
+    played = web._played_excitation_ledger(
+        payload,
+        {"amplitude_dbfs": AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS},
+    )
+    assert verified_driver_excitation(played) is not None
 
 
 def test_driver_level_match_loads_isolated_path_and_restores_entry_graph(monkeypatch):
