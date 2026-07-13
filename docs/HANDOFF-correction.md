@@ -15,6 +15,15 @@
 
 ## Status
 
+- 🧱 **Wave 2 playback core extracted; Room behavior retained.**
+  `jasper.audio_measurement.playback` now owns policy-free WAV-process cleanup
+  and deterministic sine-WAV generation. This Room module keeps
+  `correction_substream`, `/var/lib/jasper/correction/tones`, and the historical
+  public call/exception surface in `jasper.correction.playback`. Generated tone
+  names and PCM bytes are pinned unchanged. The shared entry points require an
+  explicit device, timeout, and cache; they do not choose an excitation or prove
+  current admission. No browser/Active flow changed, and no hardware behavior
+  was revalidated.
 - 🧱 **Wave 1 Active→Room receipt contract (types complete, production gate
   deliberately unchanged).** Active now owns a strict positive
   `CommissioningEligibilityReceipt` type whose required combined-speaker
@@ -1450,13 +1459,16 @@ jasper/
 │   ├── quality.py                       capture quality gates + issue schema
 │   ├── quality_model.py                 parameterized capture-quality thresholds
 │   │                                    shared across tuning layers
+│   ├── playback.py                      policy-free WAV/tone process mechanics;
+│   │                                    explicit device/cache, bounded cleanup
 │   └── ramp.py                          settle-based level-match ramp controller
 │                                        (shared measurement kernel, P2)
 │
 ├── correction/
 │   ├── __init__.py
 │   ├── coordinator.py                   measurement_window() async CM
-│   ├── playback.py                      sweep → correction_substream via aplay
+│   ├── playback.py                      Room compatibility/default wrapper around
+│   │                                    audio_measurement.playback
 │   ├── peq.py                           greedy PEQ design (≤5 filters, cuts)
 │   ├── target.py                        Harman / flat / house-curve interpolant
 │   ├── bundles.py                       debug-bundle listing / validation helpers
@@ -1604,8 +1616,9 @@ Concrete changes:
   swept-sine, 10 s, 20 Hz - 20 kHz, -12 dBFS, S16_LE WAV output.
   Cache on disk — it's deterministic. (Moved out of `jasper/correction/`
   into the shared measurement kernel in P1b; all three tuning layers reuse it.)
-- `jasper/correction/playback.py`: shell out to
-  `aplay -D correction_substream sweep.wav`. Wait for completion.
+- `jasper/audio_measurement/playback.py`: bounded `aplay` process mechanics
+  behind explicit device/timeout arguments. `jasper/correction/playback.py`
+  retains the Room-owned `correction_substream` compatibility surface.
 - `jasper/audio_measurement/deconv.py`: take phone-uploaded WAV + sweep
   metadata, perform regularized FFT inversion → mono float32 IR.
 - `jasper/audio_measurement/analysis.py`: 1/48-octave magnitude smoothing
@@ -2327,9 +2340,11 @@ Internal:
 
 ---
 
-Last verified: 2026-07-13 (Wave 1 Active eligibility-receipt shape and the
-deliberately unchanged applied-snapshot-derived Room gate checked
-contract-only; no hardware behavior revalidated. Full GET/POST route inventory rechecked against
+Last verified: 2026-07-13 (Wave 2 neutral playback extraction and the Room
+compatibility wrapper checked against current callers and deterministic tone
+bytes. Wave 1 Active eligibility-receipt shape and the deliberately unchanged
+applied-snapshot-derived Room gate checked contract-only; no hardware behavior
+revalidated. Full GET/POST route inventory rechecked against
 `correction_setup._POST_ROUTES` and `Handler.do_GET`; durable crossover-volume
 recovery and route gating; per-driver fixed-reference-axis orchestration;
 geometry-scoped repeats/apply gate; summed fixed-axis placement and relay metadata

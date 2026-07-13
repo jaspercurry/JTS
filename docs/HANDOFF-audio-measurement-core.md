@@ -51,7 +51,7 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the Wave 2 manifest worktree, 2026-07-13)
+## Current state (verified against the Wave 2 manifest + playback worktrees, 2026-07-13)
 
 ### Wave 1 contract-only foundation (2026-07-13)
 
@@ -117,6 +117,34 @@ migrated, and no manifest, artifact hash, or bundle reader grants playback,
 apply, admission, lifecycle, or eligibility-receipt authority. The historical
 `correction_bundle_*` warning event names remain temporarily stable for journal
 compatibility.
+
+### Wave 2 neutral playback extraction (2026-07-13)
+
+`jasper.audio_measurement.playback` now owns only the process and deterministic
+sine-WAV mechanics already proven by Room. Its neutral entry points require the
+feature owner to supply the WAV, ALSA device, timeout, and tone cache directory;
+the shared module has no target, band, level, cache-path, or admission default.
+It treats playback as emission of an **already-admitted** artifact and does not
+turn a Wave 1 request, identity, fingerprint, or planning result into authority.
+No Active or browser flow was adopted in this extraction.
+
+`jasper.correction.playback` remains the Room-owned compatibility wrapper. It
+retains `correction_substream`, `/var/lib/jasper/correction/tones`, the existing
+`play_sweep`, `_ensure_tone_wav`, `TonePlayer`, and `play_test_tone` call shapes,
+legacy missing-file/startup exceptions, deterministic cache filenames, and
+generated PCM bytes. The shim stays until Room owns a concrete fresh-admission
+adapter and every in-repo caller has migrated; extraction alone is not a reason
+to delete it.
+
+Playback validates finite positive time/resource inputs before spawn or cache
+creation; tone generation is capped at the current 90-second consumer ceiling,
+4.32 million samples, and 192 kHz. Subprocess stderr is capped at 8 KiB.
+Timeout and cancellation send a kill and allow two seconds for reap; a
+non-settling child produces the typed
+`kill_sent_reap_unconfirmed` cleanup state instead of holding the web service
+forever. Continuous-tone lifecycle logs use the stable
+`event=audio_measurement.continuous_tone` family. `TonePlayer.cancel()` is an
+owning-event-loop-thread API; it makes no cross-thread promise.
 
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
@@ -972,10 +1000,11 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-13 (Wave 2 neutral artifact-manifest ownership, exact
-Room byte/schema/path compatibility, and the no-authority/no-bundle-migration
-boundary checked; Wave 1 excitation/evidence identities and the deliberate
-no-production-admission-consumer boundary remain unchanged. No hardware
-behavior revalidated. Crossover adapter volume-lease participation and
-measurement-flow admission ownership rechecked against correction, balance,
-sync, and the coordinator mutex)
+Last verified: 2026-07-13 (Wave 2 neutral artifact-manifest and playback
+ownership, exact Room byte/schema/path compatibility, Room playback shim,
+deterministic tone bytes, bounded diagnostic/cleanup behavior, and the
+no-authority/no-bundle-migration/no-Active-adoption boundaries checked
+hardware-free; no hardware behavior revalidated. Wave 1 excitation/evidence
+identities and `null_walk.DspPredecessor` reuse remain contract-only. Crossover
+adapter volume-lease participation and measurement-flow admission ownership
+rechecked against correction, balance, sync, and the coordinator mutex)
