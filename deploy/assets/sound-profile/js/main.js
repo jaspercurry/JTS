@@ -1268,6 +1268,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     });
     return rolesReady && crossoversReady;
   }
+  function savedDriverResearchHasPreviewInputs() {
+    var draft = driverResearch.designDraft || {};
+    var summary = draft.summary || {};
+    if (driverResearch.dirty || draft.status !== 'ready_for_review') return false;
+    return ['missing_driver_info_target_ids', 'missing_driver_info_roles',
+      'missing_crossover_candidate_pairs'].every(function(field) {
+      return !Array.isArray(summary[field]) || summary[field].length === 0;
+    });
+  }
+  function driverResearchPreviewInputsReady(topology) {
+    // Physical-target fields remain strict for browser edits. A clean saved
+    // draft may also be ready because the backend can safely interpret older
+    // role-only stereo data without copying it into target-specific edit rows.
+    return driverResearchHasPreviewInputs(topology) ||
+      savedDriverResearchHasPreviewInputs();
+  }
   function driverResearchMissingPreviewMessage(topology) {
     if (!topology || !outputGroups(topology).length) {
       return 'Choose and save a speaker layout before previewing the active crossover.';
@@ -1661,7 +1677,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var draftPayload = driverResearch.designDraft || {};
     var savedStatus = draftPayload.status || '';
     return savedStatus && savedStatus !== 'not_saved' && savedStatus !== 'unreadable' &&
-      !driverResearch.dirty && driverResearchHasPreviewInputs(currentOutputTopology());
+      !driverResearch.dirty && driverResearchPreviewInputsReady(currentOutputTopology());
   }
   function crossoverPreviewReadyForProtectedStaging(payload) {
     payload = payload || {};
@@ -1683,14 +1699,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function driverResearchWorkingStatusLabel(status) {
     if (driverResearch.dirty) return 'editing';
-    if (driverResearchHasPreviewInputs(currentOutputTopology())) return 'ready to preview';
+    if (driverResearchPreviewInputsReady(currentOutputTopology())) return 'ready to preview';
     if (status === 'blocked') return 'needs speaker layout';
     if (status === 'unreadable') return 'needs review';
     if (status === 'needs_research') return 'needs crossover info';
     return 'working setup';
   }
   function driverResearchWorkingStatusClass(status) {
-    if (!driverResearch.dirty && driverResearchHasPreviewInputs(currentOutputTopology())) {
+    if (!driverResearch.dirty && driverResearchPreviewInputsReady(currentOutputTopology())) {
       return ' status-pill--ready';
     }
     if (status === 'blocked' || status === 'unreadable') return ' status-pill--blocked';
@@ -1997,7 +2013,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         layoutDirty: outputTopology.dirty,
         draftDirty: driverResearch.dirty,
         saving: driverResearch.saving,
-        previewInputsReady: driverResearchHasPreviewInputs(topology),
+        previewInputsReady: driverResearchPreviewInputsReady(topology),
         clientFallback: clientFallback
       }));
   }
@@ -2685,7 +2701,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var warningIssues = crossoverPreviewReviewIssues(payload.issues);
     var laterSafetyCount = Math.max(0, Number(summary.blocker_count || 0));
     var topology = currentOutputTopology();
-    var hasPreviewInputs = driverResearchHasPreviewInputs(topology);
+    var hasPreviewInputs = driverResearchPreviewInputsReady(topology);
     var canPrepare = hasPreviewInputs && !outputTopology.dirty && !driverResearch.saving;
     var disabled = crossoverPreview.preparing || !canPrepare;
     var hint = canPrepare ?
@@ -5305,7 +5321,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Save the speaker layout before preparing the crossover preview.', true);
       return false;
     }
-    if (!driverResearchHasPreviewInputs(currentOutputTopology())) {
+    if (!driverResearchPreviewInputsReady(currentOutputTopology())) {
       status(driverResearchMissingPreviewMessage(currentOutputTopology()), true);
       return false;
     }

@@ -4631,6 +4631,111 @@ async function testFollowerModeSafeFallbackOnMalformedIsland() {
   return { followerModeSafeFallbackOnMalformedIsland: true };
 }
 
+async function testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy() {
+  let designPosts = 0;
+  let previewPosts = 0;
+  const targetIds = ["left:woofer", "left:tweeter", "right:woofer", "right:tweeter"];
+  const legacyDraft = {
+    status: "ready_for_review",
+    revision: 7,
+    summary: {
+      missing_driver_info_target_ids: [],
+      missing_crossover_candidate_pairs: [],
+    },
+    operator_inputs: { woofer: "Legacy shared woofer", tweeter: "Legacy shared tweeter" },
+    manual_settings: {
+      drivers: [
+        { role: "woofer", model: "Legacy shared woofer" },
+        { role: "tweeter", model: "Legacy shared tweeter" },
+      ],
+      crossover_candidates: [{
+        between_roles: ["woofer", "tweeter"],
+        frequency_hz: 2500,
+        filter_type: "Linkwitz-Riley",
+        slope_db_per_octave: 24,
+      }],
+    },
+    driver_safety_profile: {
+      status: "incomplete",
+      confirmation: null,
+      targets: targetIds.map((targetId) => ({
+        target_id: targetId,
+        target_values_binding: "missing",
+      })),
+    },
+    driver_safety_profile_evaluation: {
+      status: "incomplete",
+      confirmed_and_current: false,
+    },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeStereoTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") designPosts += 1;
+      return Promise.resolve(response(legacyDraft));
+    },
+    "./active-speaker/crossover-preview": (_path, options = {}) => {
+      if (options.method === "POST") {
+        previewPosts += 1;
+        return Promise.resolve(response({
+          kind: "jts_active_speaker_crossover_preview",
+          status: "ready_for_protected_staging",
+          summary: { ready_crossover_count: 2, blocker_count: 0 },
+          groups: [],
+          issues: [],
+          permissions: { may_prepare_protected_startup_config: true },
+        }));
+      }
+      return Promise.resolve(response({ status: "not_prepared", summary: {}, issues: [] }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  if (initialHtml.includes("Legacy shared woofer") || initialHtml.includes("Legacy shared tweeter")) {
+    fail("Legacy role-only values must not copy into stereo target edit rows", { initialHtml });
+  }
+  for (const targetId of targetIds) {
+    if (!initialHtml.includes(`data-driver-target="${targetId}"`)) {
+      fail("Legacy stereo draft must retain one editable row per physical target", {
+        targetId,
+        initialHtml,
+      });
+    }
+  }
+  if (!initialHtml.includes("Safety profile: add the missing limits before confirmation.")) {
+    fail("Preview readiness must not imply per-target safety confirmation", { initialHtml });
+  }
+  if (/data-act="prepare-crossover-preview" disabled/.test(initialHtml)) {
+    fail("A clean server-ready legacy draft must allow crossover preview", { initialHtml });
+  }
+
+  harness.dispatchClick({ "data-act": "prepare-crossover-preview" });
+  for (let i = 0; i < 6; i += 1) await harness.flush();
+
+  if (previewPosts !== 1 || designPosts !== 0) {
+    fail("Legacy stereo preview should POST directly without rewriting ambiguous target values", {
+      previewPosts,
+      designPosts,
+      status: harness.elements.get("status").textContent,
+    });
+  }
+  const previewHtml = harness.elements.get("view-body").innerHTML;
+  if (!previewHtml.includes("Safety profile: add the missing limits before confirmation.") ||
+      previewHtml.includes("Legacy shared woofer") || previewHtml.includes("Legacy shared tweeter")) {
+    fail("Preparing a preview must not promote or copy legacy role-only safety values", {
+      previewHtml,
+    });
+  }
+  if (legacyDraft.driver_safety_profile.confirmation !== null ||
+      legacyDraft.driver_safety_profile.targets.some((target) =>
+        target.target_values_binding !== "missing")) {
+    fail("Legacy preview must leave physical-target safety confirmation incomplete", { legacyDraft });
+  }
+  return { legacyStereoDraftCanPreparePreviewWithoutTargetCopy: true };
+}
+
 async function testStereoDriverValuesStayTargetSpecific() {
   const designSaves = [];
   const legacyDraft = {
@@ -4899,6 +5004,7 @@ results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
 results.push(await testConfirmOutputAbortsPendingAuditionWithoutAutoRamp());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
+results.push(await testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy());
 results.push(await testStereoDriverValuesStayTargetSpecific());
 results.push(await testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
