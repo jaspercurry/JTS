@@ -93,6 +93,82 @@ def _driver_comparison_set(topology):
     return {**core, "fingerprint": comparison_set_fingerprint(core)}
 
 
+@pytest.mark.parametrize("source_kind", ["preset", "preview"])
+def test_start_driver_test_threads_resolved_source_to_startup_anchor(
+    monkeypatch,
+    source_kind,
+):
+    topology = _topology()
+    frozen_preset = object() if source_kind == "preset" else None
+    resolved_preview = (
+        {"status": "ready_for_protected_staging"} if source_kind == "preview" else None
+    )
+    anchor_call = {}
+    load_call = {}
+    resolve_calls = []
+
+    def resolve_inputs():
+        assert not resolve_calls, "commission inputs must be resolved once per test run"
+        resolve_calls.append(True)
+        return frozen_preset, resolved_preview
+
+    monkeypatch.setattr(web, "load_commission_load_state", lambda: {})
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web,
+        "request_missing_software_guards",
+        lambda current: (current, False),
+    )
+    monkeypatch.setattr(
+        web,
+        "resolve_commission_inputs",
+        resolve_inputs,
+    )
+    monkeypatch.setattr(web, "load_staged_startup_config", lambda: {})
+
+    async def current_config_path(_cam):
+        return "/var/lib/camilladsp/configs/sound_current.yml", None
+
+    async def loaded_anchor(**kwargs):
+        anchor_call.update(kwargs)
+        return {"status": "loaded"}
+
+    async def blocked_load(*_args, **kwargs):
+        load_call.update(kwargs)
+        return {"load": {"status": "blocked"}}
+
+    async def refused_ramp(*_args, **_kwargs):
+        return {"status": "refused"}
+
+    monkeypatch.setattr(web, "read_current_config_path", current_config_path)
+    monkeypatch.setattr(web, "_ensure_commission_startup_anchor", loaded_anchor)
+    monkeypatch.setattr(
+        web, "write_commission_path_safety", lambda *_args: "/tmp/evidence"
+    )
+    monkeypatch.setattr(
+        web,
+        "commission_seams",
+        lambda _cam: (object(), object(), object()),
+    )
+    monkeypatch.setattr(web, "load_driver_commissioning_config", blocked_load)
+    monkeypatch.setattr(web, "ramp_audible_step", refused_ramp)
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+
+    result = asyncio.run(
+        web.start_driver_test(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+        )
+    )
+
+    assert result["status"] == "refused"
+    assert resolve_calls == [True]
+    assert anchor_call["preset"] is frozen_preset
+    assert anchor_call["crossover_preview"] is resolved_preview
+    assert load_call["preset"] is frozen_preset
+    assert load_call["crossover_preview"] is resolved_preview
+
+
 def test_driver_capture_sweep_requires_confirmed_driver(monkeypatch):
     monkeypatch.setattr(web, "load_output_topology", _topology)
     monkeypatch.setattr(web, "load_measurement_state", lambda topology: {})
@@ -382,6 +458,72 @@ def test_driver_level_match_loads_isolated_path_and_restores_entry_graph(monkeyp
     )
     assert result == {"status": "rolled_back"}
     assert restored == [(prepared_load, camilla_factory)]
+
+
+def test_driver_level_match_surfaces_startup_anchor_issue(monkeypatch):
+    topology = _topology()
+    log_calls = []
+
+    monkeypatch.setattr(
+        web,
+        "automatic_driver_excitation",
+        lambda *_args, **_kwargs: {
+            "status": "ready",
+            "commissioning_gain_db": -9.0,
+        },
+    )
+
+    async def blocked_load(**_kwargs):
+        return {
+            "load": {
+                "status": "blocked",
+                "issues": [
+                    {
+                        "severity": "warning",
+                        "code": "advisory_before_blocker",
+                        "message": "this warning is not the refusal cause",
+                    },
+                    {
+                        "severity": "blocker",
+                        "code": "commission_startup_anchor_not_staged",
+                        "message": "could not stage the silent active-speaker setup",
+                    },
+                ],
+            },
+            "measurement_transaction": {},
+        }
+
+    monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", blocked_load)
+    monkeypatch.setattr(
+        web,
+        "log_event",
+        lambda *args, **kwargs: log_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="could not stage the silent active-speaker setup",
+    ):
+        asyncio.run(
+            web.prepare_automatic_driver_level_match(
+                topology,
+                speaker_group_id="mono",
+                role="woofer",
+                preset=object(),
+                applied_profile={"baseline_id": "frozen-applied"},
+                camilla_factory=lambda: object(),
+            )
+        )
+
+    assert len(log_calls) == 1
+    args, kwargs = log_calls[0]
+    assert args[1] == "correction.crossover_driver_level_match"
+    assert kwargs == {
+        "status": "blocked",
+        "group": "mono",
+        "role": "woofer",
+        "issue_code": "commission_startup_anchor_not_staged",
+    }
 
 
 @pytest.mark.parametrize(
@@ -706,7 +848,10 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
 
     monkeypatch.setattr(web, "load_staged_startup_config", lambda: {"status": "staged"})
 
-    async def ensure_anchor(**_kwargs):
+    anchor_call = {}
+
+    async def ensure_anchor(**kwargs):
+        anchor_call.update(kwargs)
         return {"status": "loaded"}
 
     monkeypatch.setattr(web, "_ensure_commission_startup_anchor", ensure_anchor)
@@ -726,6 +871,7 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
 
     monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
 
+    frozen_preset = object()
     payload = asyncio.run(
         web._load_driver_commissioning_config_for_level(
             topology=_topology(),
@@ -733,7 +879,7 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
             role="woofer",
             level_dbfs=0.0,
             startup_gate_calibration_level={"status": "floor"},
-            preset=object(),
+            preset=frozen_preset,
             crossover_preview=None,
             camilla_factory=Cam,
         )
@@ -745,6 +891,172 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
         "entry_config_error": None,
         "restored": False,
     }
+    assert anchor_call["preset"] is frozen_preset
+    assert anchor_call["crossover_preview"] is None
+
+
+def test_stage_startup_config_does_not_reread_mutable_preview_for_explicit_preset(
+    monkeypatch,
+):
+    from jasper.active_speaker import crossover_preview, design_draft
+
+    frozen_preset = object()
+    stage_call = {}
+    monkeypatch.setattr(
+        crossover_preview,
+        "load_crossover_preview",
+        lambda **_kwargs: pytest.fail(
+            "explicit applied preset must not read the mutable preview"
+        ),
+    )
+    monkeypatch.setattr(
+        design_draft,
+        "load_design_draft",
+        lambda: pytest.fail(
+            "explicit applied preset must not read the mutable design draft"
+        ),
+    )
+    monkeypatch.setattr(
+        web,
+        "stage_protected_startup_config",
+        lambda topology, **kwargs: (
+            stage_call.update(topology=topology, **kwargs)
+            or {"status": "staged"}
+        ),
+    )
+
+    result = web._stage_startup_config(_topology(), preset=frozen_preset)
+
+    assert result == {"status": "staged"}
+    assert stage_call["preset"] is frozen_preset
+    assert stage_call["crossover_preview"] is None
+
+
+def test_stage_startup_config_without_explicit_source_preserves_preview_gate(
+    monkeypatch,
+):
+    from jasper.active_speaker import crossover_preview, design_draft
+
+    draft = {"status": "ready_for_review"}
+    stale_preview = {"status": "stale"}
+    stage_call = {}
+    monkeypatch.setattr(design_draft, "load_design_draft", lambda: draft)
+    monkeypatch.setattr(
+        crossover_preview,
+        "load_crossover_preview",
+        lambda *, current_design_draft: (
+            stale_preview
+            if current_design_draft is draft
+            else pytest.fail("preview must bind to the loaded draft")
+        ),
+    )
+    monkeypatch.setattr(
+        web,
+        "stage_protected_startup_config",
+        lambda topology, **kwargs: (
+            stage_call.update(topology=topology, **kwargs)
+            or {"status": "blocked"}
+        ),
+    )
+
+    result = web._stage_startup_config(_topology())
+
+    assert result == {"status": "blocked"}
+    assert stage_call["preset"] is None
+    assert stage_call["crossover_preview"] is stale_preview
+
+
+def test_startup_anchor_stages_the_callers_resolved_source(monkeypatch):
+    topology = _topology()
+    frozen_preset = object()
+    stage_call = {}
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web,
+        "request_missing_software_guards",
+        lambda current: (current, False),
+    )
+    monkeypatch.setattr(
+        web,
+        "_stage_startup_config",
+        lambda current, **kwargs: (
+            stage_call.update(topology=current, **kwargs)
+            or {"status": "blocked"}
+        ),
+    )
+
+    result = asyncio.run(
+        web._ensure_commission_startup_anchor(
+            group="mono",
+            role="woofer",
+            staged_config={"status": "blocked"},
+            current_config_path="/var/lib/camilladsp/configs/sound_current.yml",
+            camilla_factory=lambda: object(),
+            preset=frozen_preset,
+            crossover_preview=None,
+        )
+    )
+
+    assert result["status"] == "blocked"
+    assert stage_call == {
+        "topology": topology,
+        "preset": frozen_preset,
+        "crossover_preview": None,
+    }
+
+
+def test_startup_anchor_rejects_ambiguous_graph_source_before_fast_path():
+    with pytest.raises(
+        ValueError,
+        match="requires one resolved graph source",
+    ):
+        asyncio.run(
+            web._ensure_commission_startup_anchor(
+                group="mono",
+                role="woofer",
+                staged_config={
+                    "config": {"path": "/tmp/already-loaded.yml"},
+                },
+                current_config_path="/tmp/already-loaded.yml",
+                camilla_factory=lambda: object(),
+                preset=object(),
+                crossover_preview={"status": "ready_for_protected_staging"},
+            )
+        )
+
+
+def test_summed_loader_threads_resolved_source_to_startup_anchor(monkeypatch):
+    frozen_preset = object()
+    anchor_call = {}
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            assert best_effort is False
+            return "/var/lib/camilladsp/configs/sound_current.yml"
+
+    monkeypatch.setattr(web, "load_staged_startup_config", lambda: {"status": "staged"})
+
+    async def blocked_anchor(**kwargs):
+        anchor_call.update(kwargs)
+        return {"status": "blocked"}
+
+    monkeypatch.setattr(web, "_ensure_commission_startup_anchor", blocked_anchor)
+
+    result = asyncio.run(
+        web._load_summed_commissioning_config(
+            topology=_topology(),
+            speaker_group_id="mono",
+            level_dbfs=-12.0,
+            startup_gate_calibration_level={"status": "floor"},
+            preset=frozen_preset,
+            crossover_preview=None,
+            camilla_factory=Cam,
+        )
+    )
+
+    assert result == {"status": "blocked"}
+    assert anchor_call["preset"] is frozen_preset
+    assert anchor_call["crossover_preview"] is None
 
 
 @pytest.mark.parametrize("failure_type", [RuntimeError, asyncio.CancelledError])

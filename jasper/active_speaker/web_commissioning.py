@@ -217,14 +217,23 @@ def request_missing_software_guards(
     return updated, changed
 
 
-def _stage_startup_config(topology: OutputTopology) -> dict[str, Any]:
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
+def _stage_startup_config(
+    topology: OutputTopology,
+    *,
+    preset: Any = None,
+    crossover_preview: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if preset is None and crossover_preview is None:
+        from jasper.active_speaker.crossover_preview import load_crossover_preview
+        from jasper.active_speaker.design_draft import load_design_draft
 
-    design_draft = load_design_draft()
-    crossover_preview = load_crossover_preview(current_design_draft=design_draft)
+        design_draft = load_design_draft()
+        crossover_preview = load_crossover_preview(
+            current_design_draft=design_draft
+        )
     return stage_protected_startup_config(
         topology,
+        preset=preset,
         crossover_preview=crossover_preview,
     )
 
@@ -283,15 +292,25 @@ async def _ensure_commission_startup_anchor(
     staged_config: dict[str, Any],
     current_config_path: str | None,
     camilla_factory: CamillaFactory,
+    preset: Any = None,
+    crossover_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Ensure commissioning has the silent startup graph as rollback anchor."""
 
+    if preset is not None and crossover_preview is not None:
+        raise ValueError(
+            "commissioning startup anchor requires one resolved graph source"
+        )
     staged_path = (staged_config.get("config") or {}).get("path")
     if _config_paths_match(current_config_path, staged_path):
         return {"status": "already_loaded", "staged_config_path": staged_path}
 
     topology, _guards_changed = request_missing_software_guards(load_output_topology())
-    stage = _stage_startup_config(topology)
+    stage = _stage_startup_config(
+        topology,
+        preset=preset,
+        crossover_preview=crossover_preview,
+    )
     if stage.get("status") != "staged":
         return _blocked_startup_anchor(
             group=group,
@@ -956,6 +975,7 @@ async def start_driver_test(
             group=group,
             role=role,
         )
+    preset, crossover_preview = resolve_commission_inputs()
     staged = load_staged_startup_config()
     current_config_path, current_config_error = await read_current_config_path(cam)
     startup_setup = await _ensure_commission_startup_anchor(
@@ -964,12 +984,13 @@ async def start_driver_test(
         staged_config=staged,
         current_config_path=current_config_path,
         camilla_factory=camilla_factory,
+        preset=preset,
+        crossover_preview=crossover_preview,
     )
     if startup_setup.get("status") == "blocked":
         return startup_setup
 
     staged = load_staged_startup_config()
-    preset, crossover_preview = resolve_commission_inputs()
     current_config_path, current_config_error = await read_current_config_path(cam)
     evidence_path = write_commission_path_safety(
         topology, staged, current_config_path, current_config_error
@@ -1214,6 +1235,8 @@ async def _load_summed_commissioning_config(
         staged_config=staged,
         current_config_path=current_config_path,
         camilla_factory=camilla_factory,
+        preset=preset,
+        crossover_preview=crossover_preview,
     )
     if startup_setup.get("status") == "blocked":
         return startup_setup
@@ -1854,6 +1877,8 @@ async def _load_driver_commissioning_config_for_level(
             staged_config=staged,
             current_config_path=entry_config_path,
             camilla_factory=camilla_factory,
+            preset=preset,
+            crossover_preview=crossover_preview,
         )
         if startup_setup.get("status") == "blocked":
             startup_setup["measurement_transaction"] = transaction
@@ -2001,7 +2026,6 @@ async def prepare_automatic_driver_level_match(
     preset: ActiveSpeakerPreset,
     applied_profile: dict[str, Any],
     camilla_factory: CamillaFactory,
-    crossover_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Load one protected isolated driver path for its level-match tone."""
 
@@ -2019,16 +2043,41 @@ async def prepare_automatic_driver_level_match(
         level_dbfs=float(excitation["commissioning_gain_db"]),
         startup_gate_calibration_level=calibration_level_payload(),
         preset=preset,
-        crossover_preview=crossover_preview,
+        crossover_preview=None,
         camilla_factory=camilla_factory,
     )
-    if _dict_value(load_payload.get("load")).get("status") != "loaded":
+    load_state = _dict_value(load_payload.get("load"))
+    if load_state.get("status") != "loaded":
         transaction = _dict_value(load_payload.get("measurement_transaction"))
         if transaction.get("entry_config_path"):
             await _restore_automatic_driver_entry_config_resilient(
                 load_payload, camilla_factory=camilla_factory
             )
-        raise RuntimeError("could not load the protected isolated driver path")
+        issues = _dict_items(load_state.get("issues"))
+        primary_issue = next(
+            (
+                issue
+                for issue in issues
+                if str(issue.get("severity") or "").lower() == "blocker"
+            ),
+            issues[0] if issues else {},
+        )
+        issue_code = str(
+            primary_issue.get("code") or "automatic_driver_level_path_not_loaded"
+        )
+        issue_message = str(
+            primary_issue.get("message")
+            or "could not load the protected isolated driver path"
+        )
+        log_event(
+            logger,
+            "correction.crossover_driver_level_match",
+            status="blocked",
+            group=speaker_group_id,
+            role=role,
+            issue_code=issue_code,
+        )
+        raise RuntimeError(issue_message)
     return {"load": load_payload, "excitation": excitation}
 
 

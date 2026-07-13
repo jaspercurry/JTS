@@ -522,7 +522,10 @@
 > level. Exact ledger normalization compares drivers at a common effective
 > excitation. A stale/missing applied snapshot or mismatched excitation evidence
 > fails closed before playback/recording instead of treating playback gain as
-> driver sensitivity. The first automatic product slice preserves the applied
+> driver sensitivity. When automatic measurement must emit the all-muted
+> startup/rollback anchor, it uses that same frozen applied preset rather than
+> rereading the mutable design-draft preview. The first automatic
+> product slice preserves the applied
 > crossover frequency, slope, delay, and polarity; it replaces attenuation-only
 > driver trims. Combined ESS remains an optional diagnostic, not an apply gate.
 > Magnitude only — never a phase/delay decision. Fail-closed: a
@@ -1916,7 +1919,8 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-13 (durable crossover-volume intent, confirmed recovery,
+Last verified: 2026-07-13 (frozen applied-preset startup anchor, durable
+crossover-volume intent, confirmed recovery,
 and relay lease ownership checked; bounded CamillaDSP worker cancellation checked
 against the outer commissioning rollback transaction; superseded readiness and
 per-driver topology-tone planner removal checked against the protected commission ramp and retained
