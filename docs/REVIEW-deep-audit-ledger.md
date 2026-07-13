@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`d633ab52`): 2026-07-12.
+Last reconciled against `main` (`22230cf8`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 381
-- **fixed**: 283
+- **open**: 380
+- **fixed**: 284
 - **in-progress**: 0
 - **mooted**: 12
 - **deferred**: 1
@@ -194,7 +194,7 @@ Last reconciled against `main` (`d633ab52`): 2026-07-12.
 | DA-0253 | `jasper/voice/openai_session.py` :: OpenAIRealtimeConnection._reconnect_with_bac | should-fix | W4 | **fixed** | exact-threshold OpenAI reconnect escalation and rate-limit contract — #1414 |
 | DA-0254 | `jasper/web/speaker_setup.py` :: _apply_name / _write_bluez_main_conf_name | should-fix | W4 | **fixed** | atomic fail-soft BlueZ publication and complete rename-surface convergence — #1416 |
 | DA-0255 | `jasper/web/sync_flow.py` :: handle_start / active_phase / handle_status | should-fix | W4 | **open** | `handle_play` now directly covered by race and happy-path tests in #1239; start/analyze/active-phase coverage remains |
-| DA-0256 | `rust/jasper-dual-dac-lab/src/main.rs` :: fill_identity (:1029-1062) | should-fix | W4 | **open** | — |
+| DA-0256 | `rust/jasper-dual-dac-lab/src/main.rs` :: fill_identity (:1029-1062) | should-fix | W4 | **fixed** | exact-rate validation and silent non-aligned final-period tail — #1418 |
 | DA-0257 | `rust/jasper-fanin/src/impulse_tap.rs` :: RESERVED_TAP_DIR_BASENAMES (:148) | should-fix | W4 | **open** | — |
 | DA-0258 | `rust/jasper-outputd/src/state.rs` :: OutputdState::snapshot_json | should-fix | W4 | **open** | — |
 | DA-0259 | `rust/jasper-outputd/src/state.rs` :: StateServer::handle_connection | should-fix | W4 | **open** | — |
