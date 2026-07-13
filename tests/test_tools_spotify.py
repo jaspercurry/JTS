@@ -1128,6 +1128,70 @@ def test_no_device_id_returns_device_error_before_search():
 
 
 # ============================================================
+# spotify_queue — hermetic dispatch and error contracts
+# ============================================================
+
+
+def test_queue_adds_first_search_result_to_resolved_device():
+    sp = FakeSpotify(
+        search_results={"track": ("spotify:track:daylight", "Daylight")},
+    )
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    with patch(
+        "jasper.tools.spotify.resolve_target",
+        new=lambda *a, **k: _coro_return(_FakeResolution("renderer-id", [])),
+    ):
+        tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+        result = asyncio.run(tools["spotify_queue"](query="Daylight"))
+
+    assert result == {"ok": True, "queued": "Daylight", "account": "jasper"}
+    sp.add_to_queue.assert_called_once_with(
+        "spotify:track:daylight", device_id="renderer-id",
+    )
+
+
+def test_queue_returns_no_track_error_without_dispatch():
+    sp = FakeSpotify(search_results={})
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    with patch(
+        "jasper.tools.spotify.resolve_target",
+        new=lambda *a, **k: _coro_return(_FakeResolution("renderer-id", [])),
+    ):
+        tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+        result = asyncio.run(tools["spotify_queue"](query="Missing Song"))
+
+    assert result == {"error": "no track found for: Missing Song"}
+    sp.add_to_queue.assert_not_called()
+
+
+def test_queue_returns_device_error_before_search():
+    sp = FakeSpotify(
+        search_results={"track": ("spotify:track:daylight", "Daylight")},
+    )
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    with patch(
+        "jasper.tools.spotify.resolve_target",
+        new=lambda *a, **k: _coro_return(_FakeResolution(None, [])),
+    ):
+        tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+        result = asyncio.run(tools["spotify_queue"](query="Daylight"))
+
+    assert "Spotify Connect on the speaker isn't linked" in result["error"]
+    assert "JTS" in result["error"]
+    assert sp.last_search_q is None
+    sp.add_to_queue.assert_not_called()
+
+
+# ============================================================
 # helpers
 # ============================================================
 # spotify_play_latest_by_artist — "play the new X" by named artist
