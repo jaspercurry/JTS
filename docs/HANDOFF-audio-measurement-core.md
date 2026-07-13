@@ -51,7 +51,7 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the Wave 2 manifest + playback worktrees, 2026-07-13)
+## Current state (verified against the Wave 2 manifest, playback, and admission worktrees, 2026-07-13)
 
 ### Wave 1 contract-only foundation (2026-07-13)
 
@@ -145,6 +145,58 @@ non-settling child produces the typed
 forever. Continuous-tone lifecycle logs use the stable
 `event=audio_measurement.continuous_tone` family. `TonePlayer.cancel()` is an
 owning-event-loop-thread API; it makes no cross-thread promise.
+
+### Wave 2 production admission artifacts (2026-07-13)
+
+`excitation_artifacts.py` is the narrow production persistence bridge around the frozen
+schema-version-1 `ExcitationAdmission`. `create_admission_authority()` creates
+a dedicated admission-authority directory exclusively and persists its
+canonical marker; it refuses every existing directory instead of upgrading
+evidence already there. Its feature-owned parent must already exist; Shared
+does not create feature/session ancestors. This directory is not a feature
+session envelope: the feature still owns its manifest, retention, capture
+storage, and bundle-root resolution, and records the returned marker/artifact
+identities in that state.
+Generation and playback decisions are separately persisted at the enforced
+`admission/v1/generation/<id>.json` and
+`admission/v1/playback/<id>.json` path roles. Their compact, sorted bytes are
+the exact encoding required by Active's `AdmittedCaptureProof`. Refused
+decisions, existing paths, non-canonical files, identity mismatches, and
+unreadable writes fail closed. The existing Room/Active forensic bundle writer
+is not an authority writer. Publication is no-replace and crash-durable: file
+bytes and every newly created directory entry are fsynced before success;
+failure after the final path appears is reported as outcome unknown, never as
+a clean retryable failure.
+
+The two boundaries are deliberately distinct. A feature first persists an
+allowed generation decision. Immediately before audio, while its existing DSP
+writer/playback guard is still held, it calls
+`readmit_and_persist_playback_admission()` with freshly recomposed current
+limits and new `ProtectionEvidence` issued from a second live
+graph/protection readback. That operation re-reads the generation artifact,
+invokes the pure `readmit_excitation_for_playback()` calculation internally,
+and only persists an allowed playback-role artifact. It does not infer temporal
+freshness from fingerprint inequality; the guarded host establishes freshness
+by doing the live readback and call in that order without releasing its guard.
+A resulting capture points to that final artifact, not the generation artifact.
+The guarded Shared playback entry point that will enforce this ordering is a
+later Wave 2 integration slice; these value and persistence APIs alone are not
+permission to play.
+
+Historical captures have no admission route through this API.
+`refuse_historical_evidence()` raises the typed, stable
+`historical_evidence_not_admitted` failure, while the exclusive authority
+marker and versioned roles prevent an existing forensic directory from being
+promoted through the supported creation path. The marker is content identity,
+not a signature or proof of filesystem history; it must never be copied into a
+historical session. There is no migration, ensure, repair, synthesis, or
+backfill API. The current B2b replay remains permanently diagnostic-only. At
+adoption, Active must classify B2b before authority resolution, use a fixed
+production authority root and `bundle_kind`, require a playback-role artifact,
+and never add/copy an authority marker for a historical session. Its current
+receipt does not yet enforce those origin checks. Active has not adopted these
+APIs, so this slice causes no graph, audio, capture, or Room-gate behavior
+change.
 
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
@@ -1000,11 +1052,13 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-13 (Wave 2 neutral artifact-manifest and playback
-ownership, exact Room byte/schema/path compatibility, Room playback shim,
-deterministic tone bytes, bounded diagnostic/cleanup behavior, and the
-no-authority/no-bundle-migration/no-Active-adoption boundaries checked
-hardware-free; no hardware behavior revalidated. Wave 1 excitation/evidence
-identities and `null_walk.DspPredecessor` reuse remain contract-only. Crossover
-adapter volume-lease participation and measurement-flow admission ownership
-rechecked against correction, balance, sync, and the coordinator mutex)
+Last verified: 2026-07-13 (Wave 2 neutral artifact-manifest, playback, and
+admission-artifact ownership; exact Room byte/schema/path compatibility; Room
+playback shim; deterministic tone bytes; bounded diagnostic/cleanup behavior;
+canonical admission marker and generation/playback path roles; crash-durable
+no-replace persistence; and no-bundle-migration/no-backfill/no-Active-adoption
+boundaries checked hardware-free. No hardware behavior revalidated. Wave 1
+excitation/evidence identities and `null_walk.DspPredecessor` reuse remain
+contract-only. Crossover adapter volume-lease participation and
+measurement-flow admission ownership rechecked against correction, balance,
+sync, and the coordinator mutex)
