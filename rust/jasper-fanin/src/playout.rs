@@ -378,6 +378,29 @@ mod tests {
     }
 
     #[test]
+    fn pathological_segment_flood_is_capped_by_dropping_oldest() {
+        let mut ledger = PlayoutLedger::new(RATE);
+        let extra = 3usize;
+
+        for n in 0..(MAX_SEGMENTS + extra) {
+            ledger.start_segment(Some(format!("item-{n}")), SegmentKind::Assistant);
+        }
+
+        assert_eq!(ledger.segment_count(), MAX_SEGMENTS);
+        let events = ledger.flush();
+        assert_eq!(events.len(), MAX_SEGMENTS);
+        assert_eq!(events.first().unwrap().local_segment_id, (extra + 1) as u64);
+        assert_eq!(
+            events.first().unwrap().provider_item_id.as_deref(),
+            Some("item-3"),
+        );
+        assert_eq!(
+            events.last().unwrap().local_segment_id,
+            (MAX_SEGMENTS + extra) as u64,
+        );
+    }
+
+    #[test]
     fn flush_of_empty_ledger_is_empty() {
         let mut ledger = PlayoutLedger::new(RATE);
         assert!(ledger.flush().is_empty());
