@@ -624,6 +624,31 @@ not change current product readiness: until real captures satisfy every gate,
 `ready = false`, no automatic candidate is persisted, and the UI does not
 offer **Replace with measured crossover**.
 
+Wave 2 deliberately stops before implementing a score. Its typed input contract
+pins the prerequisites that must precede any future frequency/family evaluation:
+three distinct admitted stationary captures per required driver/normal/reverse
+target, five distinct admitted null captures per graph-confirmed delay, a
+50–100 µs walk bounded by declared geometry ± half a crossover period, and a
+profile intersection tightened by measured per-band validity and SNR. Placement
+is stable per topology-derived speaker group, not falsely global across stereo
+cabinets. The future graph proof is topology-wide and exact: routing, complete
+filter chains, gains, permanent protection, and `devices.volume_limit <= 0` all
+belong to the same proof. Fresh persisted admission must be issued from Active's
+exact current safety plan and independently rechecked by the playback backend.
+Because the Shared persisted-admission/protection boundary is not merged, the
+Wave 2 module accepts no captures and exposes no scorer. Both historical and
+pending-current projections return `ready = false`, `score_available = false`,
+and no candidate, persistence, apply, or receipt authority.
+
+Active's Wave 2 isolated-driver safety boundary is preparation-only. It derives
+one closed sweep request and effective-peak ledger from the exact target and
+confirmed-current profile, intersects code and profile band/level/duration/
+repeat ceilings, retains the profile cooldown, and always returns
+`shared_persisted_admission_unavailable`. It has no playback callback and accepts
+no caller-supplied protection evidence. Execution stays impossible until the
+Shared lane provides a persisted admission/protection boundary that the planner
+and playback backend can independently re-evaluate against a fresh graph.
+
 Single-position capture also cannot observe vertical lobing: off-axis and
 directivity behavior are outside the single-position tier's evidence (First
 principles item 7 applies only where the measurement tier can observe it).
@@ -1272,6 +1297,7 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-13 (Wave 2 reconstruction contract checked against the
-worktree and cited measurement literature; no live audio, DSP mutation,
-Room-gate behavior, or hardware behavior was changed or revalidated.)
+Last verified: 2026-07-13 (Wave 2 reconstruction, measured-candidate input, and
+preparation-only safety contracts checked against the worktree and cited
+measurement literature; no live audio, DSP mutation, Room-gate behavior, or
+hardware behavior was changed or revalidated.)
