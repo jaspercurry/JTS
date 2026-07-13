@@ -12,12 +12,12 @@ fill, a one-number headline, plain-language verdict text, homeowner
 nudges (a sentence + a checkmark, never a block), the next action, and
 step progress.
 
-This module is **purely additive**. It reads a live
+This module is a pure presentation boundary. It reads a live
 :class:`~jasper.correction.session.MeasurementSession` and derives the
 envelope; it does not mutate the session and does not touch the existing
 ``/status`` payload (:func:`jasper.correction.status.session_snapshot`).
-The stepped-wizard page that consumes this is a *later* PR — today the
-existing single-page UI keeps rendering from ``/status`` unchanged.
+The Room page renders its exact ordered ``sections`` list while ``/status``
+continues to drive capture, upload, and autolevel mechanics.
 
 What is *not* duplicated here:
   - the before/after math (`fill_segments`, the measured delta) is the
@@ -64,7 +64,11 @@ logger = logging.getLogger(__name__)
 # affordance shows on the review/apply/result screens (available when an
 # OpenAI key is configured; hidden-with-nudge otherwise). Availability only,
 # no paid call — the endpoints are per-tap and confirm-gated.
-ENVELOPE_SCHEMA_VERSION = 5
+# v5 wires the relay-owned level-before-sweep actions.
+# v6 makes the ordered `sections` list the sole whole-page visibility
+# authority. The browser maps this fixed vocabulary to DOM nodes; it does not
+# carry a second screen-to-section policy.
+ENVELOPE_SCHEMA_VERSION = 6
 
 # 1/N-octave smoothing applied to the empirical display curves. 6 =
 # 1/6-octave — visibly smoothed (no raw jaggedness) while preserving
@@ -83,6 +87,78 @@ SCREEN_REVIEW = "review"
 SCREEN_APPLY = "apply"
 SCREEN_VERIFY = "verify"
 SCREEN_RESULT = "result"
+
+# Room-owned whole-page section vocabulary. These names are a wire contract:
+# the browser fails closed on any unsupported name instead of guessing what a
+# future server meant. Order matters because it is also the page order.
+SECTION_CURRENT_CORRECTION = "current-correction"
+SECTION_RUN_DEFAULTS = "run-defaults"
+SECTION_READINESS_BLOCKER = "readiness-blocker"
+SECTION_CAPTURE_HANDOFF = "capture-handoff"
+SECTION_PLACEMENT = "placement"
+SECTION_CAPTURE_SETUP = "capture-setup"
+SECTION_LOCAL_CERTIFICATE_WARNING = "local-certificate-warning"
+SECTION_LEVEL_CHECK = "level-check"
+SECTION_POSITION_CAPTURE = "position-capture"
+SECTION_MEASUREMENT_REVIEW = "measurement-review"
+SECTION_APPLY_STATUS = "apply-status"
+SECTION_VERIFICATION = "verification"
+SECTION_RESULT_PROOF = "result-proof"
+SECTION_TUNING = "tuning"
+SECTION_REPORTS = "reports"
+
+SECTION_VOCABULARY = frozenset({
+    SECTION_CURRENT_CORRECTION,
+    SECTION_RUN_DEFAULTS,
+    SECTION_READINESS_BLOCKER,
+    SECTION_CAPTURE_HANDOFF,
+    SECTION_PLACEMENT,
+    SECTION_CAPTURE_SETUP,
+    SECTION_LOCAL_CERTIFICATE_WARNING,
+    SECTION_LEVEL_CHECK,
+    SECTION_POSITION_CAPTURE,
+    SECTION_MEASUREMENT_REVIEW,
+    SECTION_APPLY_STATUS,
+    SECTION_VERIFICATION,
+    SECTION_RESULT_PROOF,
+    SECTION_TUNING,
+    SECTION_REPORTS,
+})
+
+_SCREEN_SECTIONS: dict[str, tuple[str, ...]] = {
+    SCREEN_IDLE: (
+        SECTION_CURRENT_CORRECTION,
+        SECTION_RUN_DEFAULTS,
+    ),
+    SCREEN_MIC: (
+        SECTION_RUN_DEFAULTS,
+        SECTION_CAPTURE_HANDOFF,
+        SECTION_PLACEMENT,
+    ),
+    SCREEN_LEVEL: (
+        SECTION_CAPTURE_HANDOFF,
+        SECTION_PLACEMENT,
+        SECTION_LEVEL_CHECK,
+    ),
+    SCREEN_SWEEP: (
+        SECTION_CAPTURE_HANDOFF,
+        SECTION_PLACEMENT,
+        SECTION_POSITION_CAPTURE,
+    ),
+    SCREEN_REVIEW: (SECTION_MEASUREMENT_REVIEW,),
+    SCREEN_APPLY: (SECTION_APPLY_STATUS,),
+    SCREEN_VERIFY: (
+        SECTION_CAPTURE_HANDOFF,
+        SECTION_PLACEMENT,
+        SECTION_VERIFICATION,
+    ),
+    SCREEN_RESULT: (
+        SECTION_CURRENT_CORRECTION,
+        SECTION_RESULT_PROOF,
+    ),
+}
+
+REPORT_SECTION_SCREENS = frozenset({SCREEN_IDLE, SCREEN_RESULT})
 
 # Session state value -> logical screen. Keyed by the string value of
 # SessionState (session.py) so this map does not import the enum and so
@@ -146,21 +222,36 @@ def screen_for_state(state_value: str) -> str:
     """Map a bare :class:`SessionState` value to a logical screen.
 
     Public so the pinning test can assert total coverage without
-    reaching into the session. Unknown values fall back to ``idle`` —
-    a new backend state should never leave the wizard with no screen.
+    reaching into the session. Unknown values fail closed: treating a new
+    backend state as idle would incorrectly offer Start and discard the
+    in-flight session's real meaning.
     """
-    return _STATE_SCREEN.get(state_value, SCREEN_IDLE)
+    try:
+        return _STATE_SCREEN[state_value]
+    except KeyError as exc:
+        raise ValueError(f"unsupported room-correction state: {state_value}") from exc
 
 
 def _screen_for(session: Any) -> str:
     """Resolve the live screen, folding in the level-match sub-state.
 
-    The room session has no dedicated "level" state — the §3.1 ramp runs
-    while the room session is still IDLE (before the first sweep) and is
-    observable only through ``autolevel``. So when the session is IDLE
-    but the ramp is actively ramping, the honest screen is "level".
+    The room session has no dedicated "level" state. For local capture the
+    first ``needs_noise_capture`` stop means mic setup until the realized
+    input is bound, then level matching until the first noise upload. Later
+    positions have already crossed both setup gates and are sweep screens.
+    Relay capture folds its separate level-match snapshot here as before.
     """
     screen = screen_for_state(session.state.value)
+    if (
+        getattr(session, "capture_transport", "local") != "relay"
+        and session.state.value == "needs_noise_capture"
+        and bool(getattr(session, "local_capture_setup_bound", False))
+    ):
+        return (
+            SCREEN_LEVEL
+            if int(getattr(session, "current_position", 0) or 0) == 0
+            else SCREEN_SWEEP
+        )
     if (
         getattr(session, "capture_transport", "local") == "relay"
         and session.state.value == "needs_noise_capture"
@@ -183,6 +274,32 @@ def _screen_for(session: Any) -> str:
         if autolevel.get("status") == "ramping":
             return SCREEN_LEVEL
     return screen
+
+
+def screen_for_session(session: Any) -> str:
+    """Return the logical screen for a live session without mutating it."""
+    return _screen_for(session)
+
+
+def _sections_for(
+    screen: str,
+    *,
+    capture_transport: str,
+    reports_available: bool,
+    tuning_offered: bool,
+) -> list[str]:
+    """Build the exact ordered whole-page section list for one snapshot."""
+    sections = list(_SCREEN_SECTIONS[screen])
+    if screen == SCREEN_MIC and capture_transport == "local":
+        sections.extend((
+            SECTION_LOCAL_CERTIFICATE_WARNING,
+            SECTION_CAPTURE_SETUP,
+        ))
+    if tuning_offered:
+        sections.append(SECTION_TUNING)
+    if reports_available and screen in REPORT_SECTION_SCREENS:
+        sections.append(SECTION_REPORTS)
+    return sections
 
 
 def _level_match_snapshot(session: Any) -> dict[str, Any]:
@@ -746,10 +863,17 @@ def _verdict_text(session: Any, screen: str) -> str:
     if screen == SCREEN_MIC:
         return "Recording a moment of quiet to gauge the room noise."
     if screen == SCREEN_LEVEL:
-        level = _level_match_snapshot(session)
-        last = level.get("last") if isinstance(level, dict) else None
-        ramp = last.get("ramp") if isinstance(last, dict) else None
-        state = str(ramp.get("state") or "") if isinstance(ramp, dict) else ""
+        if getattr(session, "capture_transport", "local") == "relay":
+            level = _level_match_snapshot(session)
+            last = level.get("last") if isinstance(level, dict) else None
+            ramp = last.get("ramp") if isinstance(last, dict) else None
+            state = (
+                str(ramp.get("state") or "")
+                if isinstance(ramp, dict)
+                else ""
+            )
+        else:
+            state = str(_autolevel_snapshot(session).get("status") or "")
         if state == "maxed_out":
             return (
                 "The microphone is still too quiet at the safe software limit. "
@@ -791,12 +915,48 @@ def _next_action_for(
     reverts, the correction stays applied, and /reset remains the manual
     undo.
     """
-    if getattr(session, "capture_transport", "local") == "relay":
-        if session.state.value == "needs_next_position":
+    if session.state.value == "needs_next_position":
+        return {
+            "label": "Measure next position",
+            "endpoint": "/next-position",
+        }
+    if session.state.value == "needs_repeat_capture":
+        return {
+            "label": "Repeat the main seat",
+            "endpoint": "/repeat-position",
+        }
+    if (
+        screen == SCREEN_MIC
+        and getattr(session, "capture_transport", "local") != "relay"
+    ):
+        if bool(getattr(session, "local_capture_setup_bound", False)):
+            return None
+        return {
+            "label": "Allow microphone",
+            "endpoint": "/local-capture/setup",
+        }
+    if (
+        getattr(session, "capture_transport", "local") != "relay"
+        and session.state.value == "needs_noise_capture"
+        and bool(getattr(session, "local_capture_setup_bound", False))
+    ):
+        autolevel_status = str(_autolevel_snapshot(session).get("status") or "")
+        if screen == SCREEN_LEVEL and autolevel_status == "ramping":
+            return None
+        if screen == SCREEN_LEVEL and autolevel_status != "locked":
             return {
-                "label": "Measure next position",
-                "endpoint": "/next-position",
+                "label": (
+                    "Retry level check"
+                    if autolevel_status in {"cancelled", "error", "maxed_out"}
+                    else "Check measurement level"
+                ),
+                "endpoint": "/autolevel/start",
             }
+        return {
+            "label": "Measure this position",
+            "endpoint": "/upload-noise",
+        }
+    if getattr(session, "capture_transport", "local") == "relay":
         if session.state.value == "needs_noise_capture":
             level = _level_match_snapshot(session)
             if _relay_level_ready(session):
@@ -834,7 +994,12 @@ def _next_action_for(
     return _NEXT_ACTION.get(screen)
 
 
-def build_envelope(session: Any) -> dict[str, Any]:
+def build_envelope(
+    session: Any,
+    *,
+    capture_transport: str | None = None,
+    reports_available: bool = False,
+) -> dict[str, Any]:
     """Build the server-computed screen envelope for one session.
 
     Pure read over the session; does not mutate it and does not touch the
@@ -846,10 +1011,22 @@ def build_envelope(session: Any) -> dict[str, Any]:
     screen = _screen_for(session)
     verdict = _verdict(session)
     next_action = _next_action_for(session, screen, verdict)
+    tuning_llm = _tuning_llm(screen)
+    transport = str(
+        capture_transport
+        or getattr(session, "capture_transport", "local")
+        or "local"
+    )
     envelope: dict[str, Any] = {
         "schema_version": ENVELOPE_SCHEMA_VERSION,
         "screen": screen,
         "state": session.state.value,
+        "sections": _sections_for(
+            screen,
+            capture_transport=transport,
+            reports_available=reports_available,
+            tuning_offered=bool(tuning_llm.get("offered")),
+        ),
         "curves": _curves(session),
         "fill_segments": _fill_segments(session),
         "headline": _headline(session),
@@ -858,7 +1035,7 @@ def build_envelope(session: Any) -> dict[str, Any]:
         "nudges": _nudges(session),
         "next_action": dict(next_action) if next_action is not None else None,
         "progress": _progress(screen),
-        "tuning_llm": _tuning_llm(screen),
+        "tuning_llm": tuning_llm,
     }
     return envelope
 
@@ -886,13 +1063,22 @@ def _tuning_llm(screen: str) -> dict[str, Any]:
     return block
 
 
-def build_envelope_logged(session: Any) -> dict[str, Any]:
+def build_envelope_logged(
+    session: Any,
+    *,
+    capture_transport: str | None = None,
+    reports_available: bool = False,
+) -> dict[str, Any]:
     """`build_envelope` plus one structured `event=` line for observability.
 
     Separate from the pure builder so tests pin the shape without log
     noise; the endpoint calls this variant.
     """
-    envelope = build_envelope(session)
+    envelope = build_envelope(
+        session,
+        capture_transport=capture_transport,
+        reports_available=reports_available,
+    )
     verdict_block = envelope.get("verdict")
     log_event(
         logger,
@@ -900,6 +1086,7 @@ def build_envelope_logged(session: Any) -> dict[str, Any]:
         session_id=getattr(session, "session_id", ""),
         screen=envelope["screen"],
         state=envelope["state"],
+        sections=",".join(envelope["sections"]),
         nudge_count=len(envelope["nudges"]),
         has_headline=envelope["headline"] is not None,
         verdict=(

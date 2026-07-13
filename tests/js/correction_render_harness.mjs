@@ -22,10 +22,9 @@
 //     curves;
 //   - the poll discipline (envelope fetched once per state change on static
 //     screens, via a probe fetch counter);
-//   - the single-primary-action contract: legacy Apply/Verify subordination
-//     when the wizard shows exactly that action, the envelope-down legacy
-//     fallback, mid-flow-outage stale-action retirement, and the one
-//     bounded retry.
+//   - the single-primary-action contract: exact server-owned section order,
+//     fail-closed handling for unsupported/malformed envelopes, stale-action
+//     retirement, and the one bounded retry.
 //
 // The functions are IIFE-local; the harness injects a probe hook
 // (`globalThis.__testProbe`) just before the IIFE closes so the test can
@@ -47,8 +46,8 @@ function makeClassList(initial) {
   const values = new Set(initial ? initial.split(" ").filter(Boolean) : []);
   return {
     _values: values,
-    add(name) { values.add(name); },
-    remove(name) { values.delete(name); },
+    add(...names) { names.forEach((name) => values.add(name)); },
+    remove(...names) { names.forEach((name) => values.delete(name)); },
     contains(name) { return values.has(name); },
     toggle(name, force) {
       if (force === undefined) {
@@ -66,7 +65,6 @@ function makeEl(id) {
     id,
     textContent: "",
     _innerHTML: "",
-    className: "",
     value: "",
     checked: false,
     disabled: false,
@@ -79,7 +77,14 @@ function makeEl(id) {
     // Child tracking — the P3b router builds step/nudge rows via
     // document.createElement + appendChild, and clears via innerHTML=''.
     children: [],
-    appendChild(child) { this.children.push(child); return child; },
+    appendChild(child) {
+      if (child.parentNode) {
+        child.parentNode.children = child.parentNode.children.filter((c) => c !== child);
+      }
+      this.children.push(child);
+      child.parentNode = this;
+      return child;
+    },
     addEventListener(ev, fn) {
       (this._listeners[ev] = this._listeners[ev] || []).push(fn);
     },
@@ -118,6 +123,17 @@ function makeEl(id) {
     submit() {},
   };
   el.classList = makeClassList();
+  Object.defineProperty(el, "className", {
+    get() { return el.classList.toString(); },
+    set(v) {
+      el.classList._values.clear();
+      String(v || "").split(" ").filter(Boolean).forEach((name) => {
+        el.classList.add(name);
+      });
+    },
+    enumerable: true,
+    configurable: true,
+  });
   // innerHTML accessor: setting it to '' (the router's clear-before-rebuild
   // idiom) also drops tracked children, so child counts reflect the latest
   // render. A non-empty assignment (legacy innerHTML string builders) is
@@ -152,7 +168,7 @@ const fetchCounts = new Map();       // substring -> integer
 function setFetchRoute(substr, bodyFn) { fetchRoutes.set(substr, bodyFn); }
 function fetchCountFor(substr) { return fetchCounts.get(substr) || 0; }
 function resetFetchCounts() { fetchCounts.clear(); }
-const globalFetch = (url) => {
+const globalFetch = async (url) => {
   const u = String(url || "");
   let body = {};
   let ok = true;
@@ -164,7 +180,7 @@ const globalFetch = (url) => {
       // back non-ok so the caller's `if (!resp.ok) throw` fail-soft path
       // runs (mirrors a 5xx / network stall on the Pi).
       try {
-        body = bodyFn();
+        body = await bodyFn();
         // A route can return an explicit non-2xx response that still
         // carries a JSON body (e.g. the paid-call 409 with {"error": ...}):
         // { __status: 409, __body: {...} }. Distinct from a thrown/DOWN
@@ -178,17 +194,21 @@ const globalFetch = (url) => {
       break;
     }
   }
-  return Promise.resolve({
+  return {
     ok,
     status,
     async json() { return body; },
     async text() { return ""; },
-  });
+  };
 };
 
 // AudioContext stub (mic capture path — not exercised by render tests)
 class FakeAudioContext {
-  constructor() { this.state = "running"; this.sampleRate = 48000; }
+  constructor() {
+    this.state = "running";
+    this.sampleRate = 48000;
+    this.audioWorklet = { async addModule() {} };
+  }
   createMediaStreamSource() { return { connect() {} }; }
   createAnalyser() { return { fftSize: 0, frequencyBinCount: 0, getByteTimeDomainData() {} }; }
   createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
@@ -197,15 +217,16 @@ class FakeAudioContext {
   async resume() {}
 }
 
+class FakeAudioWorkletNode {
+  constructor() {
+    this.port = { onmessage: null, postMessage() {} };
+  }
+}
+
 // ---- Strip imports, stub calls that would fail in Node ----
 let source = rawSource
   // Strip ES module imports (the IIFE body uses them via injected closures below)
   .replace(/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n/gm, "")
-  // Stub getUserMedia / navigator / MediaRecorder — not exercised in render tests
-  .replace(
-    /navigator\.mediaDevices\.getUserMedia\b/g,
-    "(() => Promise.reject(new Error('no media in harness')))",
-  )
   // Stub AudioWorklet loading
   .replace(
     /audioCtx\.audioWorklet\.addModule\b/g,
@@ -232,8 +253,14 @@ source = source.replace(
     renderNudges,
     renderPrimaryAction,
     renderProgress,
-    showScreenSections,
+    validateEnvelope,
+    renderSections,
+    renderEnvelopeFailure,
+    refreshEnvelope,
     pollState,
+    startMicCapture,
+    applyButtonPolicy,
+    cancelMeasurement,
     // P6 tuning-assistant surfaces (IIFE-local).
     renderTuning,
     renderTuningProposals,
@@ -245,6 +272,12 @@ source = source.replace(
     wizardStepLabels: WIZARD_STEP_LABELS,
     // Probe seams for the fetch-once poll-discipline test.
     getEnvelopeFetchCount: function () { return envelopeFetchCount; },
+    setWizardActionInFlight: function (value) {
+      wizardActionInFlight = !!value;
+    },
+    setRelayMode,
+    getRelayMode: function () { return relayMode; },
+    getRunTransportLocked: function () { return runTransportLocked; },
     resetEnvelopeBookkeeping: function () {
       envelopeFetchCount = 0;
       lastEnvelopeState = null;
@@ -264,9 +297,22 @@ if (/^import\s/m.test(source)) {
 
 // ---- Build the eval context ----
 const docEl = makeEl("document");
+const sessionStorageValues = new Map();
+const SECTION_NODE_IDS = {
+  tuning: "tuning-panel",
+};
 const fakeDocument = {
   getElementById(id) { return getOrMake(id); },
-  querySelector() { return null; },
+  querySelector(selector) {
+    if (selector === "main.correction-stack") {
+      const main = getOrMake("correction-stack");
+      main.dataset = { captureRelayEnabled: "0" };
+      return main;
+    }
+    const match = /^\[data-envelope-section="([^"]+)"\]$/.exec(selector);
+    if (match) return getOrMake(SECTION_NODE_IDS[match[1]] || match[1]);
+    return null;
+  },
   querySelectorAll() { return []; },
   addEventListener() {},
   removeEventListener() {},
@@ -280,9 +326,20 @@ const fakeWindow = {
   removeEventListener() {},
   location: { href: "http://jts.local/correction/" },
   isSecureContext: true,
-  navigator: { mediaDevices: { getUserMedia() { return Promise.reject(new Error("no media")); }, enumerateDevices() { return Promise.resolve([]); } } },
+  navigator: {
+    mediaDevices: {
+      getUserMedia() { return Promise.reject(new Error("no media")); },
+      enumerateDevices() { return Promise.resolve([]); },
+      addEventListener() {},
+    },
+  },
   AudioContext: FakeAudioContext,
   MediaRecorder: undefined,
+  sessionStorage: {
+    getItem(key) { return sessionStorageValues.get(key) || null; },
+    setItem(key, value) { sessionStorageValues.set(key, String(value)); },
+    removeItem(key) { sessionStorageValues.delete(key); },
+  },
   URL: { createObjectURL() { return "blob:fake"; } },
   requestAnimationFrame(fn) { setTimeout(fn, 0); return 1; },
   cancelAnimationFrame() {},
@@ -290,9 +347,13 @@ const fakeWindow = {
 
 // Inject stubs for the named imports (csrfHeaders, jsonHeaders, etc.)
 const preamble = `
+const navigator = window.navigator;
 const csrfHeaders = () => ({ 'X-CSRF-Token': 'harness', 'Content-Type': 'application/json' });
 const jsonHeaders = () => ({ 'X-CSRF-Token': 'harness', 'Content-Type': 'application/json' });
-async function jtsConfirm() { return true; }
+async function jtsConfirm() {
+  globalThis.__confirmCalls = (globalThis.__confirmCalls || 0) + 1;
+  return true;
+}
 async function jtsAlert() {}
 function escapeText(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 `;
@@ -301,7 +362,7 @@ function escapeText(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/<
 const runner = new Function(
   "document", "window", "fetch", "globalThis", "console",
   "setTimeout", "clearTimeout", "setInterval", "clearInterval",
-  "AudioContext", "URL",
+  "AudioContext", "AudioWorkletNode", "URL",
   `${preamble}\n${source}`,
 );
 
@@ -316,7 +377,8 @@ const safeConsole = {
 // /sessions calls resolve to a benign idle payload (tests override below).
 setFetchRoute("/status", () => ({ state: "idle" }));
 setFetchRoute("/envelope", () => ({
-  schema_version: 1, screen: "idle", state: "idle",
+  schema_version: 6, screen: "idle", state: "idle",
+  sections: ["current-correction", "run-defaults"],
   curves: {}, fill_segments: [], headline: null,
   verdict_text: "Ready to measure your room.", nudges: [],
   next_action: { label: "Start measuring", endpoint: "/start" },
@@ -334,7 +396,8 @@ runner(
   setInterval,
   clearInterval,
   FakeAudioContext,
-  { createObjectURL() { return "blob:fake"; } },
+  FakeAudioWorkletNode,
+  { createObjectURL() { return "blob:fake"; }, revokeObjectURL() {} },
 );
 
 const {
@@ -347,8 +410,14 @@ const {
   renderNudges,
   renderPrimaryAction,
   renderProgress,
-  showScreenSections,
+  validateEnvelope,
+  renderSections,
+  renderEnvelopeFailure,
+  refreshEnvelope,
   pollState,
+  startMicCapture,
+  applyButtonPolicy,
+  cancelMeasurement,
   renderTuning,
   renderTuningProposals,
   onTuningInterpret,
@@ -356,6 +425,10 @@ const {
   getTuningStatusText,
   wizardStepLabels,
   getEnvelopeFetchCount,
+  setWizardActionInFlight,
+  setRelayMode,
+  getRelayMode,
+  getRunTransportLocked,
   resetEnvelopeBookkeeping,
 } = globalThis.__testProbe;
 delete globalThis.__testProbe;
@@ -381,7 +454,6 @@ function wizVerdict() { return getOrMake("wizard-verdict"); }
 function wizNudges() { return getOrMake("wizard-nudges"); }
 function wizNext() { return getOrMake("wizard-next"); }
 function wizSteps() { return getOrMake("wizard-steps"); }
-function measureSectionEl() { return getOrMake("measure-section"); }
 function resultSectionEl() { return getOrMake("result-section"); }
 function canvasEl() { return getOrMake("chart"); }
 
@@ -522,6 +594,57 @@ function canvasEl() { return getOrMake("chart"); }
   assert(correctionBannerClass("measurement") === "flat","measurement → 'flat'");
   assert(correctionBannerClass("active_speaker") === "flat", "active_speaker → 'flat'");
   assert(correctionBannerClass("") === "flat",           "empty → 'flat'");
+}
+
+// 11b. Correction-status refresh may change only the banner tone. Whole-page
+//      visibility remains owned by renderSections, so an omitted banner stays
+//      hidden even when its independent status request completes later.
+{
+  banner().classList.add("hidden");
+  renderCurrentCorrection(
+    { applied_at_epoch: 1718000000, peq_count: 2 },
+    null,
+  );
+  assert(banner().classList.contains("hidden"),
+    "current-correction refresh must preserve envelope-owned hidden state",
+    { got: banner().className });
+  assert(banner().classList.contains("applied"),
+    "current-correction refresh still updates its tone class",
+    { got: banner().className });
+  banner().classList.remove("hidden");
+}
+
+// 11c. The shell-level emergency action remains available while sweep audio
+//      may play, independent of envelope section rendering. Its first tap
+//      dispatches reset immediately; parked-state Cancel remains confirmed.
+{
+  const emergency = getOrMake("cancel-measurement");
+  setFetchRoute("/reset", () => ({}));
+  resetFetchCounts();
+  globalThis.__confirmCalls = 0;
+  applyButtonPolicy("sweeping", "idle");
+  assert(!emergency.classList.contains("hidden"),
+    "sweeping exposes the persistent emergency Stop outside the envelope");
+  assert(emergency.textContent === "Stop measurement",
+    "audio-producing phases use explicit Stop language",
+    { got: emergency.textContent });
+  await cancelMeasurement();
+  assert(globalThis.__confirmCalls === 0,
+    "emergency Stop dispatches immediately without a confirmation dialog");
+  assert(fetchCountFor("/reset") === 1,
+    "emergency Stop dispatches reset on the first action",
+    { got: fetchCountFor("/reset") });
+
+  resetFetchCounts();
+  applyButtonPolicy("analyzing", "idle");
+  assert(emergency.classList.contains("hidden"),
+    "CPU-only analysis is not presented as cancellable audio");
+  applyButtonPolicy("awaiting_capture", "idle");
+  await cancelMeasurement();
+  assert(globalThis.__confirmCalls === 1,
+    "parked-state Cancel retains destructive confirmation");
+  assert(fetchCountFor("/reset") === 1,
+    "confirmed parked-state Cancel still dispatches reset");
 }
 
 // ---- P3a: honest measured before/after pins --------------------------------
@@ -777,9 +900,10 @@ function curveOf(fn) {
 // A complete envelope with sensible defaults; override per test.
 function makeEnvelope(over) {
   return Object.assign({
-    schema_version: 1,
+    schema_version: 6,
     screen: "idle",
     state: "idle",
+    sections: ["current-correction", "run-defaults"],
     curves: {},
     fill_segments: [],
     headline: null,
@@ -915,30 +1039,39 @@ function nudgeRows() {
     "warn nudges render with the warn tone, not a block tone");
 }
 
-// 27. showScreenSections: idle hides the measure workflow; a sweep screen
-//     shows it. The review/result chart visibility is SINGLE-SOURCED from
-//     the envelope's own curves (never client state like lastResult, which
-//     is empty after a mid-flow page reload): no measured curve in the
-//     envelope -> chart hidden; envelope measured curve -> chart shown.
+// 27. The server owns exact section membership and order. The browser moves
+//     one DOM root per vocabulary item into that order, hides every omitted
+//     root, and moves the one neutral evidence subtree between review/result.
 {
-  showScreenSections("idle", {});
-  assert(measureSectionEl().classList.contains("hidden"),
-    "idle screen hides the measure workflow");
-  showScreenSections("sweep", {});
-  assert(!measureSectionEl().classList.contains("hidden"),
-    "sweep screen shows the measure workflow");
-  // review screen but the envelope carries no curves -> chart stays hidden.
-  showScreenSections("review", {});
-  assert(resultSectionEl().classList.contains("hidden"),
-    "review with no envelope curves keeps the chart hidden (no blank frame)");
-  // review with an envelope measured curve -> chart shown (works even when
-  // client-side lastResult is empty, e.g. after a mid-flow page reload).
-  showScreenSections("review", {
+  const ordered = ["placement", "measurement-review", "reports"];
+  renderSections(ordered, {
     measured: { freqs_hz: [20, 200], magnitude_db: [0, 0] },
   });
+  const renderedOrder = getOrMake("envelope-sections").children.map((node) => node.id);
+  assert(renderedOrder.slice(-3).join(",") === ordered.join(","),
+    "section roots render in the exact server order", { got: renderedOrder });
+  assert(!getOrMake("placement").classList.contains("hidden") &&
+    !getOrMake("measurement-review").classList.contains("hidden") &&
+    !getOrMake("reports").classList.contains("hidden"),
+    "listed sections are visible");
+  assert(getOrMake("run-defaults").classList.contains("hidden"),
+    "omitted sections are hidden");
   assert(!resultSectionEl().classList.contains("hidden"),
     "review with an envelope measured curve shows the chart");
-  showScreenSections("idle", {});
+  assert(resultSectionEl().parentNode === getOrMake("measurement-review"),
+    "review owns the neutral evidence subtree");
+
+  renderSections(["result-proof"], {});
+  assert(resultSectionEl().parentNode === getOrMake("result-proof"),
+    "result owns the same neutral evidence subtree");
+  assert(resultSectionEl().classList.contains("hidden"),
+    "no measured curve keeps the evidence frame hidden");
+}
+
+// Drain fire-and-forget async chains (pollState launches refreshEnvelope
+// without awaiting: fetch -> json -> render). A few macrotask ticks settle it.
+async function settle() {
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
 // 28. FETCH-ONCE DISCIPLINE (P3b-1 reviewer advisory): on a STATIC screen the
@@ -946,6 +1079,7 @@ function nudgeRows() {
 //     Drive pollState repeatedly with the SAME static state and assert only
 //     one envelope fetch fires; then flip the state and assert exactly one more.
 await (async () => {
+  await settle();
   resetEnvelopeBookkeeping();
   resetFetchCounts();
   // Static 'ready' screen. /status returns 'ready' (no reschedule in
@@ -976,83 +1110,272 @@ await (async () => {
   resetEnvelopeBookkeeping();
 })();
 
-// Drain fire-and-forget async chains (pollState launches refreshEnvelope
-// without awaiting: fetch -> json -> render). A few macrotask ticks settle it.
-async function settle() {
-  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-}
-
-// 29a. SINGLE PRIMARY ACTION: when the wizard is up and owns the forward
-//      action, the duplicate legacy in-section Apply button is subordinated
-//      (hidden) while non-duplicated controls (Reset) stay. Drive the full
-//      pollState -> applyButtonPolicy -> envelope-render path for 'ready'.
+// 28b. /status is the live transport authority after /start. A reload on a
+//      relay-capable speaker must recover an active local run as local and lock
+//      the Change/fallback controls against mid-run transport mutation.
 await (async () => {
-  resetEnvelopeBookkeeping();
-  resetFetchCounts();
-  const applyCorrectionBtn = getOrMake("apply-correction");
-  const resetCorrectionBtn = getOrMake("reset-correction");
-  applyCorrectionBtn.classList.remove("hidden");   // pretend a stale showing
-
-  setFetchRoute("/status", () => ({ state: "ready", autolevel: { status: "idle" } }));
+  setRelayMode(true);
+  setFetchRoute("/status", () => ({
+    session_id: "active-local-run",
+    state: "needs_noise_capture",
+    capture_transport: "local",
+    local_capture_setup_bound: true,
+    autolevel: { status: "idle" },
+  }));
   setFetchRoute("/envelope", () => makeEnvelope({
-    screen: "review", state: "ready",
-    next_action: { label: "Apply correction", endpoint: "/apply" },
+    screen: "level", state: "needs_noise_capture",
+    sections: ["capture-handoff", "placement", "level-check"],
+    next_action: { label: "Check measurement level", endpoint: "/autolevel/start" },
   }));
   await pollState();
-  await settle();   // let the fire-and-forget envelope render + reconcile run
-
-  assert(wizNext().getAttribute("data-endpoint") === "/apply",
-    "wizard primary action owns Apply on the review screen",
-    { got: wizNext().getAttribute("data-endpoint") });
-  assert(applyCorrectionBtn.classList.contains("hidden"),
-    "the duplicate legacy Apply button is subordinated to the wizard action");
-  assert(!resetCorrectionBtn.classList.contains("hidden"),
-    "Reset (no wizard equivalent) stays available in the section");
+  await settle();
+  assert(getRelayMode() === false,
+    "active local status overrides relay-configured browser default");
+  assert(getRunTransportLocked() === true,
+    "active status locks transport/default mutation controls");
+  setFetchRoute("/status", () => ({ state: "idle", capture_transport: "local" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  setRelayMode(false);
+  resetEnvelopeBookkeeping();
 })();
 
-// 29b. RESILIENCE: if the envelope path is DOWN (chrome hidden, /envelope
-//      failing), the legacy Apply button remains the fallback so the user is
-//      never stranded without a way to apply. Fully settle 29a first so no
-//      stale success-render can un-hide the chrome mid-assert.
+// 28c. Safari's first permission grant may be the event that reveals USB
+//      inputs. With no explicit selection, that stream is discovery-only: it
+//      is stopped, the newly visible choices are populated, and the one-shot
+//      server binding is not posted.
 await (async () => {
-  await settle();
-  const applyCorrectionBtn = getOrMake("apply-correction");
-  resetEnvelopeBookkeeping();
   resetFetchCounts();
-  setFetchRoute("/status", () => ({ state: "ready", autolevel: { status: "idle" } }));
-  setFetchRoute("/envelope", () => { throw new Error("envelope down"); });
-  wizChrome().classList.add("hidden");
-  applyCorrectionBtn.classList.remove("hidden");
-  await pollState();
-  await settle();
-  assert(wizChrome().classList.contains("hidden"),
-    "a failing /envelope leaves the chrome hidden (fail-soft)");
-  assert(!applyCorrectionBtn.classList.contains("hidden"),
-    "with the envelope path down, the legacy Apply button stays as fallback");
+  const runId = "discovery-only-run";
+  sessionStorageValues.set("jts-room-local-capture-v1", JSON.stringify({
+    session_id: runId,
+    device_id: null,
+    calibration_id: null,
+  }));
+  setFetchRoute("/status", () => ({
+    session_id: runId,
+    state: "needs_noise_capture",
+    capture_transport: "local",
+    local_capture_setup_bound: false,
+    autolevel: { status: "idle" },
+  }));
+  setFetchRoute("/local-capture/setup", () => ({ state: "needs_noise_capture" }));
 
-  setFetchRoute("/status", () => ({ state: "idle" }));
+  let stopped = false;
+  const track = {
+    label: "Default microphone",
+    stop() { stopped = true; },
+    getSettings() {
+      return { sampleRate: 48000, channelCount: 1, deviceId: "default" };
+    },
+  };
+  fakeWindow.navigator.mediaDevices.getUserMedia = async () => ({
+    getAudioTracks() { return [track]; },
+    getTracks() { return [track]; },
+  });
+  fakeWindow.navigator.mediaDevices.enumerateDevices = async () => ([
+    { kind: "audioinput", deviceId: "builtin", groupId: "a", label: "Phone microphone" },
+    { kind: "audioinput", deviceId: "usb", groupId: "b", label: "USB measurement mic" },
+  ]);
+  const select = getOrMake("input-device-select");
+  select.value = "";
+
+  const ready = await startMicCapture();
+
+  assert(ready === false,
+    "blank first grant is discovery-only, not a capture-ready binding");
+  assert(stopped,
+    "discovery-only default microphone stream is stopped immediately");
+  assert(fetchCountFor("/local-capture/setup") === 0,
+    "discovery-only permission never posts the one-shot local binding",
+    { got: fetchCountFor("/local-capture/setup") });
+  assert(select.children.length >= 3,
+    "post-grant enumeration exposes a placeholder plus real mic choices",
+    { got: select.children.length });
+
+  fakeWindow.navigator.mediaDevices.getUserMedia = () =>
+    Promise.reject(new Error("no media"));
+  fakeWindow.navigator.mediaDevices.enumerateDevices = () => Promise.resolve([]);
+  sessionStorageValues.delete("jts-room-local-capture-v1");
+  setFetchRoute("/status", () => ({ state: "idle", capture_transport: "local" }));
   setFetchRoute("/envelope", () => makeEnvelope());
   resetEnvelopeBookkeeping();
-  await settle();
 })();
 
-// 30. MID-FLOW ENVELOPE-ONLY OUTAGE (the review's SHOULD-FIX cell): the
-//     envelope was healthy at ready (wizard shows Apply), the session then
-//     advances to applied, and the envelope fetch FAILS. The stale Apply
-//     action must be retired (it points at the wrong endpoint for the new
-//     state) and the legacy Verify button must be live — the single visible
-//     action is always correct. Then the one bounded retry credit recovers
-//     the chrome once the envelope endpoint comes back.
+// 28d. Even on the first real bind, an exact-device request that resolves to
+//      a different device fails closed before the one-shot POST.
+await (async () => {
+  resetFetchCounts();
+  const runId = "mismatched-device-run";
+  sessionStorageValues.set("jts-room-local-capture-v1", JSON.stringify({
+    session_id: runId,
+    device_id: null,
+    calibration_id: null,
+  }));
+  setFetchRoute("/status", () => ({
+    session_id: runId,
+    state: "needs_noise_capture",
+    capture_transport: "local",
+    local_capture_setup_bound: false,
+    autolevel: { status: "idle" },
+  }));
+  setFetchRoute("/local-capture/setup", () => ({ state: "needs_noise_capture" }));
+  let stopped = false;
+  const track = {
+    label: "Phone microphone",
+    stop() { stopped = true; },
+    getSettings() {
+      return { sampleRate: 48000, channelCount: 1, deviceId: "builtin" };
+    },
+  };
+  fakeWindow.navigator.mediaDevices.getUserMedia = async () => ({
+    getAudioTracks() { return [track]; },
+    getTracks() { return [track]; },
+  });
+  getOrMake("input-device-select").value = "usb";
+
+  const ready = await startMicCapture();
+
+  assert(ready === false && stopped,
+    "first-bind exact-device mismatch stops capture and fails closed");
+  assert(fetchCountFor("/local-capture/setup") === 0,
+    "first-bind exact-device mismatch never reaches the one-shot POST");
+
+  sessionStorageValues.delete("jts-room-local-capture-v1");
+})();
+
+// 28e. A stale tab may observe an unbound live run, but without the per-tab
+//      /start identity it cannot even request microphone permission for it.
+await (async () => {
+  resetFetchCounts();
+  sessionStorageValues.delete("jts-room-local-capture-v1");
+  setFetchRoute("/status", () => ({
+    session_id: "other-tab-run",
+    state: "needs_noise_capture",
+    capture_transport: "local",
+    local_capture_setup_bound: false,
+    autolevel: { status: "idle" },
+  }));
+  let permissionRequests = 0;
+  fakeWindow.navigator.mediaDevices.getUserMedia = async () => {
+    permissionRequests += 1;
+    throw new Error("should not request microphone");
+  };
+
+  const ready = await startMicCapture();
+
+  assert(ready === false && permissionRequests === 0,
+    "stale tab without /start identity cannot adopt or prompt for the live run");
+  assert(fetchCountFor("/local-capture/setup") === 0,
+    "stale tab never posts a binding for another tab's run");
+
+  fakeWindow.navigator.mediaDevices.getUserMedia = () =>
+    Promise.reject(new Error("no media"));
+  fakeWindow.navigator.mediaDevices.enumerateDevices = () => Promise.resolve([]);
+  setFetchRoute("/status", () => ({ state: "idle", capture_transport: "local" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// 29. The v6 contract is closed. Unknown versions, screens, sections,
+//     duplicates, or actions are rejected before any of them become policy.
+{
+  const invalid = [
+    makeEnvelope({ schema_version: 5 }),
+    makeEnvelope({ schema_version: 7 }),
+    makeEnvelope({ schema_version: "6" }),
+    makeEnvelope({ screen: "future-screen" }),
+    makeEnvelope({ sections: null }),
+    makeEnvelope({ sections: [] }),
+    makeEnvelope({ sections: ["placement", "placement"] }),
+    makeEnvelope({ sections: ["future-section"] }),
+    makeEnvelope({ next_action: { label: "", endpoint: "/start" } }),
+    makeEnvelope({ next_action: { label: "Go", endpoint: "/future-action" } }),
+  ];
+  invalid.forEach((env, index) => {
+    let rejected = false;
+    try { validateEnvelope(env); } catch (_e) { rejected = true; }
+    assert(rejected, "malformed/unknown v6 envelope fails closed", { index });
+  });
+}
+
+// 29b. A browser action is single-flight. Active envelope refreshes may update
+//      copy/sections, but cannot resurrect any primary action until the local
+//      permission/level/capture operation releases the latch.
+{
+  setWizardActionInFlight(true);
+  renderEnvelope(makeEnvelope({
+    screen: "mic", state: "needs_noise_capture",
+    sections: ["run-defaults", "capture-handoff", "placement", "capture-setup"],
+    next_action: { label: "Allow microphone", endpoint: "/local-capture/setup" },
+  }));
+  assert(wizNext().classList.contains("hidden") && wizNext().disabled,
+    "single-flight latch suppresses an action resurrected by active polling");
+  renderEnvelope(makeEnvelope({
+    screen: "level", state: "needs_noise_capture",
+    sections: ["capture-handoff", "placement", "level-check"],
+    next_action: { label: "Check measurement level", endpoint: "/autolevel/start" },
+  }));
+  assert(wizNext().classList.contains("hidden"),
+    "single-flight latch spans permission, level preflight, and capture phases");
+  setWizardActionInFlight(false);
+  renderEnvelope(makeEnvelope({
+    screen: "level", state: "needs_noise_capture",
+    sections: ["capture-handoff", "placement", "level-check"],
+    next_action: { label: "Check measurement level", endpoint: "/autolevel/start" },
+  }));
+  assert(wizNext().getAttribute("data-endpoint") === "/autolevel/start" &&
+    !wizNext().classList.contains("hidden"),
+    "releasing single-flight permits the latest server action");
+}
+
+// 29c. Concurrent envelope reads are generation ordered. An older response
+//      arriving last cannot overwrite newer state or undo a fail-closed paint.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  let resolveOld;
+  let resolveNew;
+  let call = 0;
+  setFetchRoute("/envelope", () => new Promise((resolve) => {
+    call += 1;
+    if (call === 1) resolveOld = resolve;
+    else resolveNew = resolve;
+  }));
+  const oldRequest = refreshEnvelope();
+  const newRequest = refreshEnvelope();
+  await settle();
+  resolveNew(makeEnvelope({
+    screen: "apply", state: "applied",
+    sections: ["apply-status", "tuning"],
+    next_action: { label: "Verify the result", endpoint: "/verify" },
+  }));
+  await newRequest;
+  resolveOld(makeEnvelope({
+    screen: "review", state: "ready",
+    sections: ["measurement-review", "tuning"],
+    next_action: { label: "Apply correction", endpoint: "/apply" },
+  }));
+  await oldRequest;
+  assert(wizNext().getAttribute("data-endpoint") === "/verify",
+    "late older envelope cannot replace the newest primary action");
+  assert(!getOrMake("apply-status").classList.contains("hidden") &&
+    getOrMake("measurement-review").classList.contains("hidden"),
+    "late older envelope cannot replace the newest section paint");
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// 30. Mid-flow malformed-envelope handling retires the previously valid
+//     action and every section immediately. One bounded retry then restores
+//     the new server action after a transient deploy mismatch.
 await (async () => {
   resetEnvelopeBookkeeping();
   resetFetchCounts();
-  const applyCorrectionBtn = getOrMake("apply-correction");
-  const verifyCorrectionBtn = getOrMake("verify-correction");
 
-  // Phase 1: healthy at ready — wizard owns Apply, legacy Apply subordinated.
+  // Phase 1: healthy at ready — the only forward action is Apply.
   setFetchRoute("/status", () => ({ state: "ready", autolevel: { status: "idle" } }));
   setFetchRoute("/envelope", () => makeEnvelope({
     screen: "review", state: "ready",
+    sections: ["measurement-review", "tuning"],
     next_action: { label: "Apply correction", endpoint: "/apply" },
   }));
   await pollState();
@@ -1060,26 +1383,30 @@ await (async () => {
   assert(wizNext().getAttribute("data-endpoint") === "/apply",
     "phase 1: wizard shows Apply at ready",
     { got: wizNext().getAttribute("data-endpoint") });
-  assert(applyCorrectionBtn.classList.contains("hidden"),
-    "phase 1: legacy Apply subordinated while the wizard owns it");
+  assert(!getOrMake("measurement-review").classList.contains("hidden"),
+    "phase 1: review section is visible");
 
-  // Phase 2: the session advances to applied; the envelope endpoint is DOWN.
+  // Phase 2: session advances, but an old server returns schema v5.
   setFetchRoute("/status", () => ({ state: "applied", autolevel: { status: "idle" } }));
-  setFetchRoute("/envelope", () => { throw new Error("envelope down"); });
+  setFetchRoute("/envelope", () => makeEnvelope({
+    schema_version: 5, screen: "apply", state: "applied",
+    sections: ["apply-status"],
+    next_action: { label: "Verify the result", endpoint: "/verify" },
+  }));
   await pollState();
   await settle();
   assert(wizNext().classList.contains("hidden"),
-    "phase 2: the stale Apply action is retired on the failed refresh " +
-    "(it no longer matches the applied state)");
-  assert(!verifyCorrectionBtn.classList.contains("hidden"),
-    "phase 2: the legacy Verify button is live as the single correct action");
-  assert(applyCorrectionBtn.classList.contains("hidden"),
-    "phase 2: the legacy Apply button stays hidden (wrong for applied)");
+    "phase 2: malformed envelope retires the stale Apply action");
+  assert(getOrMake("measurement-review").classList.contains("hidden") &&
+    getOrMake("apply-status").classList.contains("hidden"),
+    "phase 2: malformed envelope hides both stale and untrusted sections");
+  assert(wizVerdict().textContent.indexOf("could not refresh") !== -1,
+    "phase 2: malformed envelope shows one generic recovery message");
 
-  // Phase 3: the endpoint recovers; the one bounded retry credit (scheduled
-  // by the phase-2 failure) re-fetches and restores the wizard action.
+  // Phase 3: the endpoint recovers; the one bounded retry credit restores it.
   setFetchRoute("/envelope", () => makeEnvelope({
     screen: "apply", state: "applied",
+    sections: ["apply-status", "tuning"],
     next_action: { label: "Verify the result", endpoint: "/verify" },
   }));
   let recovered = false;
@@ -1091,8 +1418,8 @@ await (async () => {
   assert(recovered,
     "phase 3: the one bounded retry recovers the wizard action after a " +
     "transient envelope blip");
-  assert(verifyCorrectionBtn.classList.contains("hidden"),
-    "phase 3: the recovered wizard action re-subordinates the legacy Verify");
+  assert(!getOrMake("apply-status").classList.contains("hidden"),
+    "phase 3: recovered envelope reveals the new server-owned section");
 
   setFetchRoute("/status", () => ({ state: "idle" }));
   setFetchRoute("/envelope", () => makeEnvelope());
@@ -1114,21 +1441,31 @@ await (async () => {
     "every wizard step label is non-empty homeowner copy");
 }
 
-// 32. P6 tuning affordance: the panel is hidden until offered, shows the
-//     nudge when offered-but-unavailable (no key), and shows the two
-//     per-tap actions when available.
+// 32. P6 tuning content never overrides server-owned section visibility.
+//     When the section is present, unavailable shows a nudge and available
+//     shows the two per-tap actions.
 function tuningPanelEl() { return getOrMake("tuning-panel"); }
 function tuningNudgeEl() { return getOrMake("tuning-nudge"); }
 function tuningActionsEl() { return getOrMake("tuning-actions"); }
 function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
 {
-  renderTuning(null);
+  renderSections(["current-correction"], {});
+  renderTuning({ offered: true, available: true, provider: "openai" });
   assert(tuningPanelEl().classList.contains("hidden"),
-    "tuning: a missing block keeps the panel hidden");
+    "tuning: offered content cannot reveal an omitted section");
+
+  renderSections(["tuning"], {});
+  renderTuning(null);
+  assert(!tuningPanelEl().classList.contains("hidden"),
+    "tuning: section membership remains exactly what the server supplied");
+  assert(tuningNudgeEl().classList.contains("hidden") &&
+    tuningActionsEl().classList.contains("hidden"),
+    "tuning: a missing block clears both internal affordances");
 
   renderTuning({ offered: false, available: true, provider: "openai" });
-  assert(tuningPanelEl().classList.contains("hidden"),
-    "tuning: not offered (pre-measurement screen) keeps the panel hidden");
+  assert(tuningNudgeEl().classList.contains("hidden") &&
+    tuningActionsEl().classList.contains("hidden"),
+    "tuning: not offered clears both internal affordances");
 
   renderTuning({ offered: true, available: false, provider: "openai", nudge: "Add an OpenAI key at /voice" });
   assert(!tuningPanelEl().classList.contains("hidden"),
@@ -1244,4 +1581,4 @@ if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 34 }));
+console.log(JSON.stringify({ ok: true, tests: 38 }));

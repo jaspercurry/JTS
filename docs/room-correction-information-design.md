@@ -13,14 +13,20 @@
 
 > **Implementation boundary (2026-07-13).** The sequential Room envelope,
 > multi-position measurement, IIR PEQ design, deterministic verification, and
-> automatic revert loop ship today. The server-owned whole-page visibility,
-> disclosed six-position default, returning-user preferences, single phone
-> handoff, and mandatory proof presentation described here are target behavior
-> for the Room modernization program. Wave 1 added inert evidence identities,
-> excitation admission, and an exact Active eligibility-receipt contract; it did
-> not make that receipt a live Room authority. Production Room readiness still
-> reads the older applied-recomposition snapshot and must not be described as
-> receipt-backed until the Active lane issues and integrates the exact receipt.
+> automatic revert loop ship today. R1a now ships the hardware-free
+> server-owned whole-page visibility contract: envelope schema v6 supplies the
+> exact ordered section list, the browser fails closed without a policy mirror,
+> the named legacy containers/actions and certificate-install guide are deleted,
+> reports are discovered only on idle/result edges, and the local fallback now
+> binds its realized microphone before level matching and capture. Truthful idle readiness,
+> typed homeowner failures, and disclosed six/flat/default-repeat policy remain
+> later R1 patches. Returning-user preferences, one persistent phone handoff,
+> and mandatory proof remain Wave 3 target behavior. Wave 1 added inert evidence
+> identities, excitation admission, and an exact Active eligibility-receipt
+> contract; it did not make that receipt a live Room authority. Production Room
+> readiness still reads the older applied-recomposition snapshot and must not be
+> described as receipt-backed until the Active lane issues and integrates the
+> exact receipt.
 
 ## Product goal
 
@@ -101,6 +107,11 @@ The `/correction/` hub has three product domains: **Crossover**, **Room**, and
 
 - Crossover owns driver-domain safety, measurement, candidate application, and
   verified eligibility.
+- Active owns crossover run identity, timeout and late-success correlation,
+  deduplication, and durable crossover state. If an Active-defined API later
+  needs Room's shared HTTP surface, Room may add only the thin dispatch or
+  transport adapter; it must not move any of that authority into the Room
+  session.
 - Room owns listening-area measurement, room-filter policy, and the Room run.
 - Bass owns bass-management product state when that work is commissioned.
 
@@ -265,6 +276,11 @@ idle envelope withholds Start. A browser bug or stale tab must not bypass it.
 Until Active integrates the exact verified eligibility receipt, Room labels the
 current readiness source only as current speaker readiness. It must not claim
 receipt-backed or freshly verified crossover authority.
+
+Historical B2b evidence is forensic only: it cannot supply modern candidate or
+receipt authority. Automatic crossover readiness must come from Active's fresh,
+excitation-admitted captures and measured delay walk. Room consumes that
+decision fail-closed and never reconstructs it from historical evidence.
 
 ### Nudges
 

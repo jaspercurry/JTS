@@ -338,8 +338,9 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "acceptance",
         "auto_revert_outcome",
         "autolevel",
-        "capture_transport",
-        "level_match",
+            "capture_transport",
+            "local_capture_setup_bound",
+            "level_match",
     }
     assert snapshot["sweep"] == sess.sweep_meta.to_dict()
     assert snapshot["peqs"] == [{"freq_hz": 80.0, "q": 4.0, "gain_db": -3.0}]
@@ -947,6 +948,10 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     assert sess.pre_measurement_config_path == Path(
         tmp_path / "configs" / "correction_xyz_1700.yml"
     )
+    # Local browser permission/device selection is human-paced. /start must
+    # suspend the automatic upload watchdog until setup is bound; otherwise a
+    # household can time out while still responding to the permission prompt.
+    assert sess._state_guard._capture_timeout_task is None
 
 
 @pytest.mark.asyncio

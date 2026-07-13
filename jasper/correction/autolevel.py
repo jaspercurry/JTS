@@ -88,6 +88,10 @@ class AutolevelController:
         self.data = AutolevelData()
         self._lock_event: asyncio.Event | None = None
         self._cancel_event: asyncio.Event | None = None
+        self._run_finished: asyncio.Event | None = None
+        self._start_reserved = False
+        self._reservation_token: object | None = None
+        self._reservation_released: asyncio.Event | None = None
         self._main_volume_setter: (
             Callable[[float], Awaitable[Any]] | None
         ) = None
@@ -104,6 +108,83 @@ class AutolevelController:
         setter: Callable[[float], Awaitable[Any]] | None,
     ) -> None:
         self._main_volume_setter = setter
+
+    @property
+    def run_in_progress(self) -> bool:
+        """Whether a reserved, ramping, or cleanup-phase run still owns audio."""
+        return bool(
+            self._start_reserved
+            or (
+                self._run_finished is not None
+                and not self._run_finished.is_set()
+            )
+        )
+
+    @property
+    def reservation_token(self) -> object | None:
+        """Opaque identity for the adapter slot that owns this run."""
+        return self._reservation_token
+
+    @property
+    def slot_occupied(self) -> bool:
+        """Whether outer orchestration still owns the exact adapter slot."""
+        return self._reservation_token is not None
+
+    async def reserve_run(self) -> object | None:
+        """Reserve the exact next run before outer orchestration can await.
+
+        The web adapter enters a renderer/voice measurement window before it
+        calls :meth:`run`. Reserving here closes the gap where Reset could
+        otherwise see an idle controller, roll back the graph, and then be
+        followed by a late ramp write.
+        """
+        if self.slot_occupied or self.run_in_progress:
+            return None
+        token = object()
+        self._reservation_token = token
+        self._reservation_released = asyncio.Event()
+        self._run_finished = asyncio.Event()
+        self._lock_event = asyncio.Event()
+        self._cancel_event = asyncio.Event()
+        self.data = AutolevelData(status=AutolevelStatus.RAMPING)
+        self._start_reserved = True
+        return token
+
+    async def release_run_reservation(self, token: object) -> bool:
+        """Release only the exact adapter generation that was reserved."""
+        if token is not self._reservation_token:
+            return False
+        if self.run_in_progress and not self._start_reserved:
+            return False
+        if self._start_reserved:
+            self._start_reserved = False
+            self._lock_event = None
+            self._cancel_event = None
+            self.data.status = AutolevelStatus.ERROR
+            self.data.error = "autolevel run could not be scheduled"
+            if self._run_finished is not None:
+                self._run_finished.set()
+        released = self._reservation_released
+        self._reservation_token = None
+        self._reservation_released = None
+        if released is not None:
+            released.set()
+        return True
+
+    async def wait_for_run_reservation_release(
+        self,
+        token: object,
+        *,
+        timeout_s: float = 7.0,
+    ) -> bool:
+        """Wait for one exact adapter generation to finish outer teardown."""
+        if token is not self._reservation_token:
+            return True
+        released = self._reservation_released
+        if released is None:
+            return True
+        await asyncio.wait_for(released.wait(), timeout=timeout_s)
+        return True
 
     async def restore_listening_volume_if_ramped(self) -> None:
         """Restore main_volume when a measurement ends outside apply/reset.
@@ -144,6 +225,7 @@ class AutolevelController:
     async def run(
         self,
         *,
+        reservation_token: object | None = None,
         get_main_volume_db: Callable[[], Awaitable[float]],
         set_main_volume_db: Callable[[float], Awaitable[Any]],
         play_continuous_tone: Callable[[], Awaitable[Any]],
@@ -166,11 +248,26 @@ class AutolevelController:
         the user cancels. Order matters for audio safety: set quiet start volume
         before tone playback, and fade down before cancelling the tone.
         """
-        al = self.data = AutolevelData()
+        auto_release = reservation_token is None
+        if reservation_token is None:
+            reservation_token = await self.reserve_run()
+            if reservation_token is None:
+                raise RuntimeError("autolevel run already in progress")
+        if (
+            reservation_token is self._reservation_token
+            and self._start_reserved
+        ):
+            run_finished = self._run_finished
+            lock_event = self._lock_event
+            cancel_event = self._cancel_event
+            al = self.data
+            self._start_reserved = False
+        else:
+            raise RuntimeError("autolevel run reservation is stale")
+        if run_finished is None or lock_event is None or cancel_event is None:
+            raise RuntimeError("autolevel run reservation is incomplete")
         # Retain the setter so FAIL/VERIFY endings can restore listening level.
         self._main_volume_setter = set_main_volume_db
-        self._lock_event = asyncio.Event()
-        self._cancel_event = asyncio.Event()
         loop = asyncio.get_event_loop()
         tone_task: asyncio.Task | None = None
 
@@ -219,6 +316,14 @@ class AutolevelController:
 
         try:
             al.original_main_volume_db = float(await get_main_volume_db())
+            if cancel_event.is_set():
+                al.status = AutolevelStatus.CANCELLED
+                logger.info(
+                    "autolevel: CANCELLED before first volume write "
+                    "(session=%s)",
+                    self.session_id,
+                )
+                return
             if end_db is None:
                 end_db = compute_autolevel_cap(
                     al.original_main_volume_db,
@@ -237,7 +342,6 @@ class AutolevelController:
                     end_db_absolute_min,
                 )
             al.cap_db = float(end_db)
-            al.status = AutolevelStatus.RAMPING
             logger.info(
                 "autolevel: START original_main_volume=%.1f dB "
                 "(ramp %.1f → %.1f dB, step=%.1f dB/%.0f ms)",
@@ -263,9 +367,7 @@ class AutolevelController:
                 interval_end = loop.time() + step_interval_s
                 while loop.time() < interval_end:
                     await asyncio.sleep(0.01)
-                    if self._lock_event is not None and self._lock_event.is_set():
-                        al.status = AutolevelStatus.LOCKED
-                        al.locked_main_volume_db = current_db
+                    if lock_event.is_set():
                         logger.info(
                             "autolevel: LOCKED at main_volume=%.1f dB "
                             "(elapsed %.2f s)",
@@ -273,12 +375,10 @@ class AutolevelController:
                             loop.time() - start_time,
                         )
                         await _graceful_stop(current_db)
+                        al.locked_main_volume_db = current_db
+                        al.status = AutolevelStatus.LOCKED
                         return
-                    if (
-                        self._cancel_event is not None
-                        and self._cancel_event.is_set()
-                    ):
-                        al.status = AutolevelStatus.CANCELLED
+                    if cancel_event.is_set():
                         logger.info(
                             "autolevel: CANCELLED at main_volume=%.1f dB "
                             "(elapsed %.2f s) — restoring to %.1f dB",
@@ -287,9 +387,9 @@ class AutolevelController:
                             al.original_main_volume_db,
                         )
                         await _graceful_stop(al.original_main_volume_db)
+                        al.status = AutolevelStatus.CANCELLED
                         return
                     if loop.time() - start_time > safety_timeout_s:
-                        al.status = AutolevelStatus.CANCELLED
                         al.error = f"safety timeout after {safety_timeout_s}s"
                         logger.warning(
                             "autolevel: SAFETY TIMEOUT at "
@@ -298,6 +398,7 @@ class AutolevelController:
                             al.original_main_volume_db,
                         )
                         await _graceful_stop(al.original_main_volume_db)
+                        al.status = AutolevelStatus.CANCELLED
                         return
 
                 current_db = min(end_db, current_db + step_db)
@@ -305,7 +406,6 @@ class AutolevelController:
                 al.current_main_volume_db = current_db
                 logger.debug("autolevel: step main_volume=%.1f dB", current_db)
 
-            al.status = AutolevelStatus.MAXED_OUT
             al.error = (
                 "safe cap reached below target; raise the external amplifier "
                 "and retry"
@@ -317,8 +417,8 @@ class AutolevelController:
                 al.original_main_volume_db,
             )
             await _graceful_stop(al.original_main_volume_db)
+            al.status = AutolevelStatus.MAXED_OUT
         except Exception as e:  # noqa: BLE001
-            al.status = AutolevelStatus.ERROR
             al.error = str(e)
             logger.exception("autolevel failed")
             try:
@@ -328,9 +428,15 @@ class AutolevelController:
                     cancel_tone()
             except Exception:  # noqa: BLE001
                 pass
+            al.status = AutolevelStatus.ERROR
         finally:
-            self._lock_event = None
-            self._cancel_event = None
+            if self._lock_event is lock_event:
+                self._lock_event = None
+            if self._cancel_event is cancel_event:
+                self._cancel_event = None
+            run_finished.set()
+            if auto_release:
+                await self.release_run_reservation(reservation_token)
 
     async def lock(self) -> bool:
         """Signal the running autolevel task to lock current main_volume."""
@@ -344,4 +450,15 @@ class AutolevelController:
         if self._cancel_event is None:
             return False
         self._cancel_event.set()
+        return True
+
+    async def cancel_and_wait(self, *, timeout_s: float = 5.0) -> bool:
+        """Cancel an active ramp and wait until its volume restore finishes."""
+        finished = self._run_finished
+        if finished is None or finished.is_set():
+            return False
+        fired = await self.cancel()
+        if not fired:
+            return False
+        await asyncio.wait_for(finished.wait(), timeout=timeout_s)
         return True

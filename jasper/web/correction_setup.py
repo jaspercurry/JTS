@@ -179,6 +179,7 @@ _POST_ROUTES = frozenset({
     "/autolevel/cancel",
     "/upload-noise",
     "/upload-capture",
+    "/local-capture/setup",
     "/relay/level-match",
     "/relay/capture",
     "/relay/verify",
@@ -350,6 +351,16 @@ def _run_relay_capture(
                 _set_relay_capture(
                     {"tap_link": rc.tap_link, "status": "complete", "kind": kind.label}
                 )
+            except asyncio.CancelledError:
+                # Emergency Stop owns this cancellation. Retire the global
+                # relay slot as a terminal failure instead of leaving a stale
+                # awaiting-phone link that blocks the next run.
+                _set_relay_capture({
+                    "tap_link": rc.tap_link,
+                    "status": "failed",
+                    "kind": kind.label,
+                    "error": "measurement stopped",
+                })
             except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
                 # run_capture already logs event=capture_relay.failed with a
                 # traceback; this outer net also flips /status.relay to failed and
@@ -582,18 +593,18 @@ def _replace_session(
 # /correction/ is a restyle-in-place migration onto the canonical look:
 # the document shell is canonical_page() (app.css + CSRF meta + icon
 # sprite); the chrome is canonical_header() + the shared .btn / card
-# vocabulary. The page's behaviour — getUserMedia mic capture, the
+# vocabulary. The page's mechanism layer — getUserMedia mic capture, the
 # AudioWorklet level meter, the measurement-sweep + autolevel + verify
 # state machine driven by polling GET /status, the canvas chart, and the
-# session-report reader — ships UNCHANGED as the static ES module
-# /assets/correction/js/main.js. The measurement/DSP correctness can only
-# be re-verified on real Pi hardware, so the JS was relocated verbatim
-# (one module), not split or rewritten.
+# session-report reader — ships as /assets/correction/js/main.js. The
+# server-owned GET /envelope contract controls whole-page membership and
+# order; the browser has no parallel screen-to-section policy.
 #
 # getUserMedia requires a secure context; /correction/ is served over
-# HTTPS (mkcert local CA). The back link is an absolute http://<host>/ so
-# the Home affordance lands on the plain-HTTP dashboard rather than trying
-# HTTPS on /. Page-specific styling lives in /assets/correction/correction.css.
+# HTTPS with the speaker's local certificate. The back link is an absolute
+# http://<host>/ so the Home affordance lands on the plain-HTTP dashboard
+# rather than trying HTTPS on /. Page-specific styling lives in
+# /assets/correction/correction.css.
 
 
 _PAGE_BODY = """
@@ -602,29 +613,30 @@ __HEADER__
 __TABS__
 <p class="page-sub">Measure your room with a phone, design correction filters, and apply them to the speaker.</p>
 
-<div id="current-correction" class="flat" aria-live="polite">
-  <span class="label" id="current-correction-label">Checking current correction…</span>
-  <button id="current-correction-reset" type="button" class="btn btn--danger hidden">Reset correction</button>
-</div>
-
 <!-- Stepped-wizard chrome (P3b). Server-computed screen envelope (GET
      /envelope) drives everything here: which step you're on, the one
      plain-language verdict, homeowner nudges (a sentence + severity, never
      a block), the single primary action (always live — nudges never
      disable it), and the step indicator. The workflow sections below stay;
      the router shows the ones the current step needs. -->
-<section id="wizard-chrome" class="wizard-chrome hidden" aria-live="polite">
+<section id="wizard-chrome" class="wizard-chrome" aria-live="polite">
   <ol id="wizard-steps" class="wizard-steps" aria-label="Room correction steps"></ol>
   <p id="wizard-verdict" class="wizard-verdict"></p>
   <div id="wizard-nudges" class="wizard-nudges"></div>
   <button id="wizard-next" type="button" class="btn btn--primary hidden"></button>
+  <button id="cancel-measurement" type="button" class="btn btn--danger hidden">Cancel measurement</button>
 </section>
 
-<!-- P6 tuning assistant. Hidden until the envelope's tuning_llm block says
-     it is offered (a measurement screen). When offered-but-unavailable
-     (no OpenAI key) it renders the nudge; when available it shows the two
-     per-tap actions. The paid call happens ONLY on a tap. -->
-<section id="tuning-panel" class="tuning-panel hidden" aria-live="polite">
+<div id="envelope-sections" class="correction-sections">
+<section id="current-correction" data-envelope-section="current-correction" class="flat hidden" aria-live="polite">
+  <span class="label" id="current-correction-label">Checking current correction…</span>
+  <button id="current-correction-reset" type="button" class="btn btn--danger hidden">Reset correction</button>
+</section>
+
+<!-- P6 tuning assistant. The envelope's sections list owns top-level
+     visibility; tuning_llm fills the nudge/actions inside it. The paid call
+     happens ONLY on a tap. -->
+<section id="tuning-panel" data-envelope-section="tuning" class="tuning-panel hidden" aria-live="polite">
   <h2 class="tuning-title">Tuning assistant</h2>
   <p id="tuning-nudge" class="tuning-nudge hidden"></p>
   <div id="tuning-actions" class="tuning-actions hidden">
@@ -637,34 +649,33 @@ __TABS__
   <div id="tuning-proposals" class="tuning-proposals"></div>
 </section>
 
-<section id="relay-panel" class="relay-panel hidden" aria-live="polite">
-  <h2 style="margin-top:0">Room measurement</h2>
-  <p class="hint">JTS will open a guided capture page on <code>capture.jasper.tech</code>. The phone records first; the speaker plays only after that page is ready.</p>
-  <button id="relay-start-capture" type="button" class="btn btn--primary">Start</button>
-  <div id="relay-link-row" class="relay-link-row hidden">
-    <a id="relay-tap-link" class="btn btn--primary" href="#" target="_blank" rel="noopener">Open capture page</a>
-  </div>
-  <p id="relay-status" class="relay-status">Ready to create a phone capture link.</p>
+<section id="readiness-blocker" data-envelope-section="readiness-blocker" class="info-card hidden" role="alert">
+  <p id="readiness-blocker-message"></p>
+  <a id="readiness-blocker-action" class="btn hidden" href=""></a>
 </section>
 
-<details class="advice" open>
-  <summary>Where to put the phone</summary>
-  <ol>
-    <li><strong>Hold or prop the phone where your head will be when listening</strong> — sitting on the couch / chair, at ear height. <em>Not</em> on the cushion below your head; the cushion absorbs sound your ears would receive.</li>
-    <li>Phone <strong>flat, screen up</strong>, with the <strong>bottom edge</strong> (speaker / mic end) pointing toward the speakers.</li>
-    <li>Take it out of any case if it has one.</li>
-    <li>Keep the room quiet during the sweep — close windows, mute other devices, no talking.</li>
-  </ol>
-  <p class="hint">If you are using an external USB measurement mic, pick it below after granting mic permission. Holding the mic at ear height means we're measuring what you actually hear.</p>
-</details>
+<section id="capture-handoff" data-envelope-section="capture-handoff" class="info-card hidden" aria-live="polite">
+  <p id="capture-handoff-copy" class="hint"></p>
+  <div id="relay-link-row" class="relay-link-row hidden">
+    <a id="relay-tap-link" class="btn btn--primary" href="#" target="_blank" rel="noopener">Open phone capture</a>
+  </div>
+  <p id="relay-status" class="relay-status"></p>
+</section>
 
-<details id="advanced-correction-options" class="advice">
-  <summary>Advanced</summary>
-  <p class="hint">Advanced options are mostly for development, relay outages, or calibrated local-browser capture on a trusted HTTPS speaker page.</p>
-  <button id="local-capture-fallback" type="button" class="btn btn--ghost">Use local browser capture</button>
-</details>
+<section id="placement" data-envelope-section="placement" class="info-card hidden">
+  <h2 class="section__title">Place the microphone</h2>
+  <p id="placement-instruction">Put the phone or microphone at head height where you normally listen. For a phone, lay it flat screen up, point the bottom edge toward the speakers, and remove its case. Keep the room quiet.</p>
+  <div id="position-prompt" class="note-box hidden">
+    <p style="margin:0; font-weight:600">Move to position <span id="position-current">2</span> of <span id="position-total">5</span>.</p>
+    <p class="hint" style="margin-top:0.3em">Move about 30 cm from the previous position, keep the microphone at ear height, then continue.</p>
+  </div>
+</section>
 
-<div id="mic-panel" class="mic-panel">
+<section id="local-certificate-warning" data-envelope-section="local-certificate-warning" class="info-card hidden" role="note">
+  Your browser will warn about the speaker's local certificate — continue past it.
+</section>
+
+<section id="capture-setup" data-envelope-section="capture-setup" class="mic-panel hidden">
   <h2 style="margin-top:0">Microphone</h2>
   <div class="mic-grid">
     <div id="local-input-row" class="mic-row local-capture-only">
@@ -675,7 +686,7 @@ __TABS__
       </label>
       <button id="refresh-inputs" type="button" class="btn btn--ghost">Refresh microphones</button>
     </div>
-    <p id="local-input-hint" class="hint local-capture-only" style="margin:0">Your USB measurement mic should appear automatically (grant mic permission if asked). Tap <strong>Refresh microphones</strong> if it doesn’t, then select it before <strong>Start mic capture</strong>.</p>
+    <p id="local-input-hint" class="hint local-capture-only" style="margin:0">Your USB measurement mic should appear automatically. Tap <strong>Refresh microphones</strong> if it doesn’t, then select it before <strong>Allow microphone</strong>.</p>
 
     <label for="mic-model-select">Calibration
       <select id="mic-model-select">
@@ -715,9 +726,6 @@ __TABS__
     <p id="calibration-status" class="mic-status">No calibration loaded. This is okay for a quick check, but a calibrated mic is recommended before trusting filter decisions.</p>
     <p id="calibration-preview" class="cal-preview hidden"></p>
   </div>
-</div>
-
-<button id="start" type="button" class="btn btn--primary local-capture-only">Start mic capture</button>
 
 <div id="constraints" class="hidden" aria-live="polite">
   <h2>Capture settings</h2>
@@ -736,12 +744,14 @@ __TABS__
   </div>
   <div class="level-readout">RMS: <span id="level-db">—</span> dBFS</div>
 </div>
+</section>
 
-<div id="measure-section" class="hidden">
-  <h2>Measurement</h2>
-  <p>Music will pause automatically. The sweep is loud — make sure no one is asleep.</p>
-
-  <div id="measurement-options" class="info-card">
+<section id="run-defaults" data-envelope-section="run-defaults" class="info-card hidden">
+  <div class="actions">
+    <p id="run-defaults-summary" style="margin:0">Measurement choices</p>
+    <button id="change-run-defaults" type="button" class="btn btn--ghost">Change</button>
+  </div>
+  <div id="measurement-options" class="hidden">
     <label for="positions-select">Positions to measure</label>
     <select id="positions-select" form="dummy">
       <option value="1">1 — quick (single position)</option>
@@ -765,35 +775,31 @@ __TABS__
       Repeat the main seat once for a trust check
     </label>
     <p id="repeat-main-position-hint" class="hint" style="margin-top:0.3em">This adds one extra sweep at the first position and helps JTS tell measurement noise from real room behavior.</p>
+    <button id="local-capture-fallback" type="button" class="btn btn--ghost">Use this device's microphone</button>
   </div>
+</section>
 
-  <p>Status: <span id="state-badge" class="state-badge idle">idle</span>
-    <span id="state-detail" class="hint"></span></p>
-  <div id="quality-banner" class="quality-banner hidden"></div>
-
-  <div id="position-prompt" class="note-box hidden">
-    <p style="margin:0; font-weight:600">Move phone to position <span id="position-current">2</span> of <span id="position-total">5</span>.</p>
-    <p class="hint" style="margin-top:0.3em">Move ~30 cm from the previous position — left, right, forward, or back, head-height. Same orientation: phone flat, bottom edge pointing at the speakers. Tap Continue when ready.</p>
-  </div>
-
+<section id="level-check" data-envelope-section="level-check" class="info-card hidden">
+  <h2 class="section__title">Check measurement level</h2>
   <p style="display:flex; gap:0.6em; flex-wrap:wrap">
-    <button id="autolevel" type="button" class="btn btn--ghost" disabled>Auto-level</button>
     <button id="autolevel-lock" type="button" class="btn btn--primary hidden">Lock now</button>
     <button id="autolevel-cancel" type="button" class="btn btn--danger hidden">Cancel</button>
-    <button id="run-measurement" type="button" class="btn btn--primary" disabled>Run measurement</button>
-    <button id="repeat-position" type="button" class="btn btn--primary hidden">Repeat main seat</button>
-    <button id="continue-position" type="button" class="btn btn--primary hidden">Continue to next position</button>
-    <button id="apply-correction" type="button" class="btn btn--primary hidden">Apply correction</button>
-    <button id="verify-correction" type="button" class="btn btn--primary hidden">Verify with re-measurement</button>
-    <button id="reset-correction" type="button" class="btn btn--danger hidden">Reset correction</button>
-    <button id="cancel-measurement" type="button" class="btn btn--danger hidden">Cancel measurement</button>
   </p>
-  <p id="autolevel-hint" class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Auto-level</strong>. The speaker plays a 1 kHz tone while we gradually raise the volume from quiet to a measurement-friendly level (capped at −6 dB software volume — your amp's analog gain is still the final say). When the phone mic hears it in the target range, we lock automatically. If the volume sounds right to <em>you</em> first, tap <strong>Lock now</strong>. Takes ~6 seconds at most.</p>
+  <p id="autolevel-hint" class="hint" style="margin-top:0.4em">The speaker plays a 1 kHz tone while we gradually raise the volume from quiet to a measurement-friendly level (capped at −6 dB software volume — your amp's analog gain is still the final say). When the phone mic hears it in the target range, we lock automatically. If the volume sounds right to <em>you</em> first, tap <strong>Lock now</strong>. Takes ~6 seconds at most.</p>
   <p class="hint" style="margin-top:0.4em">Each measurement bypasses your current correction and preference EQ first so the sweep captures the raw room. After you tap <strong>Apply</strong>, the new correction takes over.</p>
   <div id="autolevel-status" class="note-box hidden">
     <p style="margin:0; font-weight:600" id="autolevel-line">Auto-leveling…</p>
     <p class="hint" style="margin-top:0.3em" id="autolevel-detail"></p>
   </div>
+</section>
+
+<section id="position-capture" data-envelope-section="position-capture" class="info-card hidden">
+  <h2 class="section__title">Measure this position</h2>
+  <p>Music pauses automatically while the speaker plays the test sweep.</p>
+  <div id="quality-banner" class="quality-banner hidden"></div>
+</section>
+
+<section id="measurement-review" data-envelope-section="measurement-review" class="hidden">
   <div id="result-section" class="hidden">
     <div id="confidence-panel" class="confidence-card hidden"></div>
     <div id="runtime-integrity-panel" class="runtime-card hidden"></div>
@@ -827,29 +833,28 @@ __TABS__
     <div id="design-report" class="hidden"></div>
     <h3>Filters designed</h3>
     <div class="peq-list" id="peq-list"></div>
+    <button id="reset-correction" type="button" class="btn btn--danger hidden">Reset correction</button>
   </div>
-</div>
+</section>
 
-<section id="measurement-reports" class="report-panel">
+<section id="apply-status" data-envelope-section="apply-status" class="info-card hidden">
+  <p>Room correction is applied. The next measurement checks whether it helped.</p>
+</section>
+
+<section id="verification" data-envelope-section="verification" class="info-card hidden">
+  <p>Return the microphone to the main seat for a fresh comparison.</p>
+</section>
+
+<section id="result-proof" data-envelope-section="result-proof" class="hidden"></section>
+
+<section id="reports" data-envelope-section="reports" class="report-panel hidden">
   <h2>Measurement reports</h2>
   <p class="hint">Read-only evidence from previous sessions. Raw measurement recordings are private and stay on the speaker unless you delete the bundle.</p>
   <button id="load-sessions" type="button" class="btn btn--ghost">Load recent reports</button>
   <div id="session-history" class="session-list"></div>
   <div id="session-report" class="session-report hidden"></div>
 </section>
-
-<details class="disclosure">
-  <summary>Optional: silence Safari's "Not Private" warning on future visits</summary>
-  <div class="disclosure-body">
-    <p>You're seeing this page because you tapped through Safari's "Not Private" warning — that's fine and the page works correctly. The warning appears on every visit unless you install this speaker's certificate as a trusted authority on this device.</p>
-    <ol>
-      <li>Tap <a href="http://__HOSTNAME__/jts-root-ca.crt">Download the JTS root CA</a> (plain HTTP — necessary because HTTPS isn't trusted yet). Safari prompts <em>"This website is trying to download a configuration profile."</em> Tap <strong>Allow</strong>.</li>
-      <li>Open the <strong>Settings</strong> app. A new entry near the top says <em>"Profile Downloaded — JTS Speaker Local CA"</em>. Tap it → <strong>Install</strong> → enter passcode → <strong>Install</strong> → <strong>Done</strong>.</li>
-      <li>Go to <strong>Settings → General → About → Certificate Trust Settings</strong>. Toggle <strong>JTS Speaker Local CA</strong> on. Tap <strong>Continue</strong> through the warning Apple shows for any non-public CA.</li>
-    </ol>
-    <p class="hint">To remove later: Settings → General → VPN &amp; Device Management → JTS Speaker Local CA → Remove Profile.</p>
-  </div>
-</details>
+</div>
 </main>
 <script type="module" src="/assets/correction/js/main.js"></script>
 """
@@ -953,7 +958,6 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         _PAGE_BODY
         .replace("__HEADER__", header)
         .replace("__TABS__", section_tabs("room"))
-        .replace("__HOSTNAME__", html.escape(hostname, quote=True))
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))
         .replace(
             "__CAPTURE_RELAY_ENABLED__",
@@ -1062,6 +1066,18 @@ def _runtime_integrity_summary(sess: Any) -> dict[str, Any] | None:
         return None
 
 
+async def _run_session_background_audio(
+    sess: Any,
+    operation: Callable[[], Awaitable[None]],
+) -> None:
+    """Use the session-owned cancellable slot when the session provides it."""
+    runner = getattr(sess, "run_background_audio_operation", None)
+    if callable(runner):
+        await runner(operation)
+    else:
+        await operation()
+
+
 def _schedule_measurement_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
     """Start the next normal measurement sweep and wait for visible progress."""
     from jasper.correction import coordinator, playback
@@ -1079,7 +1095,10 @@ def _schedule_measurement_sweep(sess: Any, cam: Any, *, from_state: Any) -> None
         except Exception as e:  # noqa: BLE001
             logger.exception("measurement sweep failed: %s", e)
 
-    asyncio.run_coroutine_threadsafe(_run_sweep(), _ensure_loop())
+    asyncio.run_coroutine_threadsafe(
+        _run_session_background_audio(sess, _run_sweep),
+        _ensure_loop(),
+    )
     _run_async(sess.state_changed_from(from_state), timeout=6.0)
 
 
@@ -1137,7 +1156,10 @@ def _run_relay_measurement_sweep(
                 )
 
     try:
-        _run_async(_run_sweep(), timeout=90.0)
+        _run_async(
+            _run_session_background_audio(sess, _run_sweep),
+            timeout=90.0,
+        )
     except (concurrent.futures.TimeoutError, RuntimeError, OSError, ValueError) as exc:
         try:
             _host_event("sweep_failed", error=str(exc))
@@ -1163,7 +1185,10 @@ def _schedule_repeat_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
         except Exception as e:  # noqa: BLE001
             logger.exception("repeat sweep failed: %s", e)
 
-    asyncio.run_coroutine_threadsafe(_run_sweep(), _ensure_loop())
+    asyncio.run_coroutine_threadsafe(
+        _run_session_background_audio(sess, _run_sweep),
+        _ensure_loop(),
+    )
     _run_async(sess.state_changed_from(from_state), timeout=6.0)
 
 
@@ -1624,6 +1649,11 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             state_started = False
 
         if state_started:
+            if sess.capture_transport == "local":
+                # Browser permission + device selection are human-paced. The
+                # ordinary upload watchdog resumes when the first noise upload
+                # actually begins, after setup and level matching are done.
+                sess.suspend_capture_timeout()
             _clear_start_slot()
         else:
             _clear_start_slot()
@@ -1813,7 +1843,10 @@ def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         except Exception as e:  # noqa: BLE001
             logger.exception("verify sweep failed: %s", e)
 
-    asyncio.run_coroutine_threadsafe(_run_verify_sweep(), _ensure_loop())
+    asyncio.run_coroutine_threadsafe(
+        _run_session_background_audio(sess, _run_verify_sweep),
+        _ensure_loop(),
+    )
 
     _run_async(
         sess.state_changed_from(
@@ -1823,6 +1856,29 @@ def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     )
 
     return {"session_id": sess.session_id, "state": sess.state.value}
+
+
+def _wait_for_new_autolevel_run(
+    sess: Any,
+    previous_data: Any,
+    future: Any,
+    *,
+    timeout_s: float = 5.0,
+) -> dict[str, Any]:
+    """Wait for ``run()`` to replace terminal/idle autolevel data."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        current = sess.autolevel
+        if current is not previous_data:
+            return current.snapshot()
+        if future.done():
+            break
+        time.sleep(0.05)
+    try:
+        _run_async(sess.cancel_autolevel(), timeout=1.0)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not cancel a stalled autolevel start", exc_info=True)
+    raise RequestConflict("the measurement level check could not start")
 
 
 def _handle_autolevel_start(
@@ -1844,11 +1900,28 @@ def _handle_autolevel_start(
     """
     from jasper.camilla import CamillaController
     from jasper.correction import coordinator, playback
-    from jasper.correction.session import AutolevelStatus
+    from jasper.correction.session import AutolevelStatus, SessionState
 
     sess = _get_or_create_session()
-    if sess.autolevel.status == AutolevelStatus.RAMPING:
-        raise RuntimeError("autolevel already in progress")
+    if (
+        getattr(sess, "capture_transport", "local") != "local"
+        or sess.state != SessionState.NEEDS_NOISE_CAPTURE
+        or not bool(getattr(sess, "local_capture_setup_bound", False))
+    ):
+        raise RequestConflict(
+            "local microphone setup must be complete before level matching"
+        )
+    retryable_statuses = {
+        AutolevelStatus.IDLE,
+        AutolevelStatus.CANCELLED,
+        AutolevelStatus.ERROR,
+        AutolevelStatus.MAXED_OUT,
+    }
+    if sess.autolevel.status not in retryable_statuses:
+        raise RequestConflict(
+            "the measurement level is already locked or still running"
+        )
+    previous_data = sess.autolevel
 
     cam = CamillaController(
         host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
@@ -1882,6 +1955,7 @@ def _handle_autolevel_start(
                     await cam.set_volume_db(db, best_effort=True)
 
                 await sess.run_autolevel(
+                    reservation_token=reserved,
                     get_main_volume_db=_get_vol,
                     set_main_volume_db=_set_vol,
                     play_continuous_tone=player.play,
@@ -1889,18 +1963,25 @@ def _handle_autolevel_start(
                 )
         except Exception as e:  # noqa: BLE001
             logger.exception("autolevel run failed: %s", e)
+        finally:
+            await sess.release_autolevel_run_reservation(reserved)
 
-    asyncio.run_coroutine_threadsafe(_run_autolevel(), _ensure_loop())
+    reserved = _run_async(sess.reserve_autolevel_run(), timeout=2.0)
+    if not reserved:
+        raise RequestConflict("the measurement level check is already running")
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _run_autolevel(), _ensure_loop()
+        )
+    except RuntimeError:
+        _run_async(
+            sess.release_autolevel_run_reservation(reserved),
+            timeout=2.0,
+        )
+        raise
+    started = _wait_for_new_autolevel_run(sess, previous_data, future)
 
-    # Wait briefly for status to leave IDLE so the response is
-    # non-stale (same anti-race pattern as /next-position).
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        if sess.autolevel.status != AutolevelStatus.IDLE:
-            break
-        time.sleep(0.05)
-
-    return {"started": True, "autolevel": sess.autolevel.snapshot()}
+    return {"started": True, "autolevel": started}
 
 
 def _handle_autolevel_lock(
@@ -2114,14 +2195,60 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
 def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """GET /envelope: the server-computed screen envelope for the current
-    session (revision plan §3.2). Additive alongside /status — a pure
-    read that the dumb-frontend wizard renders each step from. The legacy
-    single-page UI keeps using /status untouched; the page migration is a
-    later PR."""
-    from jasper.correction.envelope import build_envelope_logged
+    session. It is a pure presentation read alongside the unchanged
+    mechanism snapshot at /status. The browser renders the envelope's exact
+    ordered section list and closed action vocabulary without owning a
+    second screen policy."""
+    from jasper.capture_relay import correction_adapter
+    from jasper.correction import envelope
 
     sess = _get_or_create_session()
-    return build_envelope_logged(sess)
+    screen = envelope.screen_for_session(sess)
+
+    # Capture path is a bounded presentation input while the idle page is
+    # open. Once a run starts, the session's own transport is authoritative.
+    # Relay is the fleet default when configured; the local HTTPS backup asks
+    # for `capture_transport=local` on envelope refreshes after the user picks
+    # it under Change.
+    capture_transport = str(getattr(sess, "capture_transport", "local"))
+    if screen == envelope.SCREEN_IDLE:
+        query = parse_qs(urlparse(handler.path).query)
+        requested = str((query.get("capture_transport") or [""])[0])
+        relay_enabled = correction_adapter.relay_enabled()
+        if requested == "local":
+            capture_transport = "local"
+        elif requested == "relay" and relay_enabled:
+            capture_transport = "relay"
+        else:
+            capture_transport = "relay" if relay_enabled else "local"
+
+    # Session discovery reads every bundle today, so it is intentionally
+    # confined to idle/result static edges. Active screens are fetched every
+    # 900 ms and must never inherit this directory scan.
+    reports_available = False
+    if screen in envelope.REPORT_SECTION_SCREENS:
+        from jasper.correction.bundles import list_bundles
+
+        try:
+            reports_available = bool(
+                list_bundles(sess.cfg.sessions_dir, limit=1)
+            )
+        except OSError as exc:
+            # Reports are optional evidence, never a reason to strand the
+            # measurement entry/result screen when storage is unavailable.
+            log_event(
+                logger,
+                "correction_report_discovery_failed",
+                session=getattr(sess, "session_id", ""),
+                error_type=type(exc).__name__,
+                level=logging.WARNING,
+            )
+
+    return envelope.build_envelope_logged(
+        sess,
+        capture_transport=capture_transport,
+        reports_available=reports_available,
+    )
 
 
 def _handle_sessions(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -2216,6 +2343,73 @@ def _read_wav_body(
     return raw
 
 
+def _handle_local_capture_setup(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /local-capture/setup: bind the realized browser input.
+
+    Local capture asks for microphone permission after the run is reserved.
+    This narrow setup write makes the selected device/calibration the live
+    session authority before any audio upload; relay setup remains owned by
+    its versioned capture binding.
+    """
+    from jasper.audio_measurement.calibration import load_calibration_record
+    from jasper.correction.session import SessionState
+
+    sess = _get_or_create_session()
+    if (
+        getattr(sess, "capture_transport", "local") != "local"
+        or sess.state != SessionState.NEEDS_NOISE_CAPTURE
+    ):
+        raise RequestConflict("local microphone setup is not available now")
+
+    body = _read_json_body(handler)
+    requested_session_id = str(body.get("session_id") or "")
+    if requested_session_id != sess.session_id:
+        raise RequestConflict("this room-correction run is no longer current")
+    input_device = _sanitize_input_device(body.get("input_device"))
+    if input_device is None:
+        raise ValueError("select a microphone before continuing")
+
+    calibration_id = str(body.get("calibration_id") or "").strip()
+    mic_calibration = (
+        load_calibration_record(calibration_id, root=_calibration_root())
+        if calibration_id
+        else None
+    )
+    mismatch = _calibration_device_mismatch(mic_calibration, input_device)
+    if mismatch is not None:
+        raise ValueError(mismatch)
+
+    try:
+        browser_report = _run_async(
+            sess.bind_local_capture_setup(
+                mic_calibration=mic_calibration,
+                input_device=input_device,
+            ),
+            timeout=3.0,
+        )
+    except RuntimeError as exc:
+        raise RequestConflict("local microphone setup is not available now") from exc
+
+    log_event(
+        logger,
+        "correction_local_capture_setup_bound",
+        session=sess.session_id,
+        calibrated=mic_calibration is not None,
+        browser_audio_level=str(browser_report.get("level") or ""),
+    )
+    return {
+        "session_id": sess.session_id,
+        "state": sess.state.value,
+        "input_device": sess.input_device,
+        "browser_audio_report": browser_report,
+        "mic_calibration": (
+            mic_calibration.public_metadata() if mic_calibration else None
+        ),
+    }
+
+
 def _handle_upload_noise(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
@@ -2229,7 +2423,25 @@ def _handle_upload_noise(
         raise RuntimeError(
             f"cannot accept noise capture from state {sess.state.value}"
         )
+    if (
+        getattr(sess, "capture_transport", "local") == "local"
+        and not bool(getattr(sess, "local_capture_setup_bound", False))
+    ):
+        raise RequestConflict(
+            "bind the local microphone setup before uploading room noise"
+        )
+    if getattr(sess, "capture_transport", "local") == "local":
+        from jasper.correction.session import AutolevelStatus
 
+        if (
+            sess.autolevel.status != AutolevelStatus.LOCKED
+            or bool(getattr(sess, "autolevel_run_in_progress", False))
+        ):
+            raise RequestConflict(
+                "complete and lock the measurement level check before measuring"
+            )
+
+    _run_async(sess.resume_capture_timeout_on_loop(), timeout=2.0)
     body = _read_wav_body(handler)
     captured_path = sess.noise_capture_path_for_position(sess.current_position)
     captured_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2604,7 +2816,10 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 expected_binding_id=setup_binding_id,
             )
             _assert_relay_level_identity(sess, level_identity)
-            _run_async(_play_verify(), timeout=90.0)
+            _run_async(
+                _run_session_background_audio(sess, _play_verify),
+                timeout=90.0,
+            )
 
         try:
             result = await asyncio.to_thread(
@@ -3147,13 +3362,16 @@ def _handle_relay_level_match(handler: BaseHTTPRequestHandler) -> dict[str, Any]
         # self-recovers without operator cleanup.
         sess.suspend_capture_timeout()
         try:
-            await _run_relay_level_match(
+            await _run_session_background_audio(
                 sess,
-                client,
-                pi_session,
-                geometry=MicGeometry.LISTENING_POSITION.value,
-                run_token=run_token,
-                setup_binding_id=setup_binding_id,
+                lambda: _run_relay_level_match(
+                    sess,
+                    client,
+                    pi_session,
+                    geometry=MicGeometry.LISTENING_POSITION.value,
+                    run_token=run_token,
+                    setup_binding_id=setup_binding_id,
+                ),
             )
         finally:
             sess.resume_capture_timeout()
@@ -4816,10 +5034,31 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     sess = _get_or_create_session()
     cam = _camilla()
 
+    reset_intent = None
+    if hasattr(sess, "begin_autolevel_reset"):
+        reset_intent = _run_async(sess.begin_autolevel_reset(), timeout=45.0)
+    else:
+        # Duck-typed test/legacy sessions retain the old seam. Production
+        # MeasurementSession uses the atomic reset intent above.
+        autolevel_status = getattr(
+            getattr(sess, "autolevel", None), "status", None
+        )
+        autolevel_active = bool(
+            getattr(
+                sess,
+                "autolevel_run_in_progress",
+                getattr(autolevel_status, "value", None) == "ramping",
+            )
+        )
+        if autolevel_active:
+            _run_async(sess.cancel_autolevel_and_wait(), timeout=7.0)
+
     async def _set(path: str) -> bool:
         return await cam.set_config_file_path(path, best_effort=False)
 
     try:
+        if hasattr(sess, "stop_background_audio_for_reset"):
+            _run_async(sess.stop_background_audio_for_reset(), timeout=45.0)
         target = _resolve_reset_target(sess, cam)
         reset_kwargs = (
             {"target_config_path": target}
@@ -4830,7 +5069,11 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     finally:
         # Audio-safety: restore the pre-autolevel listening level even if
         # reset() raised (see _handle_apply).
-        _maybe_restore_main_volume(sess, cam)
+        try:
+            _maybe_restore_main_volume(sess, cam)
+        finally:
+            if reset_intent is not None:
+                _run_async(sess.end_autolevel_reset(reset_intent), timeout=2.0)
     return {"session_id": sess.session_id, "state": sess.state.value}
 
 
@@ -5538,13 +5781,24 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(_handle_test_tone(self))
                     return
                 if path == "/autolevel/start":
-                    self._send_json(_handle_autolevel_start(self))
+                    try:
+                        self._send_json(_handle_autolevel_start(self))
+                    except RequestConflict as e:
+                        self._send_client_error(str(e), status=409)
                     return
                 if path == "/autolevel/lock":
                     self._send_json(_handle_autolevel_lock(self))
                     return
                 if path == "/autolevel/cancel":
                     self._send_json(_handle_autolevel_cancel(self))
+                    return
+                if path == "/local-capture/setup":
+                    try:
+                        self._send_json(_handle_local_capture_setup(self))
+                    except (FileNotFoundError, ValueError) as e:
+                        self._send_client_error(str(e))
+                    except RequestConflict as e:
+                        self._send_client_error(str(e), status=409)
                     return
                 if path == "/upload-capture":
                     from jasper.audio_measurement import quality
@@ -5574,6 +5828,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_json(_handle_upload_noise(self))
                     except ValueError as e:
                         self._send_client_error(str(e))
+                    except RequestConflict as e:
+                        self._send_client_error(str(e), status=409)
                     return
                 if path == "/relay/capture":
                     try:

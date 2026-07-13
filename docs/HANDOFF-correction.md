@@ -24,6 +24,48 @@
   explicit device, timeout, and cache; they do not choose an excitation or prove
   current admission. No browser/Active flow changed, and no hardware behavior
   was revalidated.
+- ✅ **Room R1a — envelope v6 owns whole-page visibility (hardware-free;
+  real-device browser pass pending).** `jasper.correction.envelope` now emits
+  one exact ordered `sections` list from a closed 15-name Room vocabulary.
+  The browser validates schema `6`, screen, unique known sections, and the
+  bounded action endpoint before rendering; a missing, old, future, or
+  malformed envelope clears every section and forward action, shows one
+  generic refresh sentence, and spends at most one retry credit. There is no
+  browser screen-to-section map or state-to-action fallback. Unknown session
+  states fail closed instead of becoming idle/Start. Report discovery is
+  limited to idle/result envelope edges and never enters the active 900 ms
+  poll. The relay panel/dead Start, open placement disclosure, Advanced
+  disclosure, mic-panel wrapper, unconditional reports wrapper, certificate
+  install disclosure, old measure mega-wrapper, and duplicate forward buttons
+  were deleted; required mechanics moved into the envelope-owned roots. The
+  local backup keeps only one certificate-warning sentence. Because local mic
+  permission now follows Start, `POST /local-capture/setup` binds the realized
+  device/calibration to the parked live session before level matching and the
+  first noise upload. The human-paced permission step suspends the stranded-
+  capture watchdog; it stays suspended through microphone setup and the human-
+  paced level walk, then re-arms on the session's asyncio loop immediately
+  before the first noise body is read. Cancel remains available in the
+  persistent wizard chrome throughout setup, including while a running local
+  level walk also exposes its scoped Lock/Cancel controls. Reset and failure
+  paths cancel and await that ramp's listening-volume restore before graph
+  rollback; terminal level authority is published only after tone and volume
+  cleanup finish. Exact
+  identity retries are idempotent; ambiguous bind responses are retried from
+  the same per-tab identity, while relay, later-position, identity-changing,
+  unsafe, and stale-run mutations fail before capture. The upload and
+  autolevel routes enforce the completed local binding as an admission gate.
+  The persistent shell also exposes **Stop measurement** throughout
+  preparation/sweep/verification audio; the server cancels and reaps the exact
+  playback task (including `aplay`) before restoring the graph. CPU-only
+  analysis remains non-cancellable so its worker cannot mutate a reset session.
+  This slice
+  does **not** yet claim truthful idle readiness, typed homeowner failures, or
+  the disclosed six/flat/default-repeat policy; those remain the next R1
+  patches. `/status` adds the compatible `local_capture_setup_bound` mechanic,
+  and the existing bundle `info.json` is refreshed with the realized local
+  microphone/calibration binding. Shared-owned bundle/playback code, DSP
+  design/apply safety, bundle schema, raw audio artifacts, and relay protocol
+  bytes are unchanged.
 - 🧱 **Wave 1 Active→Room receipt contract (types complete, production gate
   deliberately unchanged).** Active now owns a strict positive
   `CommissioningEligibilityReceipt` type whose required combined-speaker
@@ -1140,7 +1182,9 @@ GET  /status                 session + currently-loaded correction snapshot
                              correction_strategy, design_report,
                              current_correction: {path, session_id,
                              applied_at_epoch, peq_count} | null})
-GET  /envelope               room-correction screen envelope (dumb frontend)
+GET  /envelope               room-correction envelope schema v6; exact ordered
+                             `sections` list is the sole whole-page visibility
+                             authority (reports discovered only on idle/result)
 GET  /sessions               debug: 20 most-recent session bundles
 GET  /session-report?id=<id> read-only evidence report for one bundle
 GET  /calibration/models     supported calibrated mic providers/models
@@ -1155,7 +1199,11 @@ POST /start                  first checks setup_status.room_correction_allowed
 POST /next-position          advance to position[N+1] pre-sweep noise capture
 POST /repeat-position        play the optional same-seat repeat sweep
 POST /upload-noise           body = WAV (audio/wav); pre-sweep room noise
+                             (local capture requires bound setup first)
 POST /upload-capture         body = WAV (audio/wav); per-position, repeat, OR verify capture
+POST /local-capture/setup    bind the realized local mic/calibration to the
+                             parked session before level match/noise upload;
+                             identical retries are idempotent
 POST /calibration/fetch      body: {model, serial, orientation?}; server-side
                              Dayton/miniDSP lookup, normalized + stored
 POST /calibration/upload     body: {filename, content, model?, label?,
@@ -1931,14 +1979,19 @@ These items can only be verified on real hardware. Deploy with
 - [ ] `curl -k https://jts.local/correction/healthz` → `ok`.
 - [ ] `nginx -t` → ok.
 - [ ] On iPhone after cert trust: page loads with no "Connection
-      not private" warning; mic permission prompt appears on first
-      tap; constraint table reads `✓ ok` for all 5 rows.
+      not private" warning and no mic prompt. After **Start** and **Allow
+      microphone**, the prompt appears. If that first grant reveals the device
+      list, it is discovery-only: select the exact mic and tap **Allow
+      microphone** again. The constraint table then reads `✓ ok` for all 5
+      rows.
       **Critical**: if `echoCancellation` / `noiseSuppression` /
       `autoGainControl` read `✗ bad`, that's an iOS Safari version
       regression we have to work around — file an issue.
 
 ### Phase 1 (single-position end-to-end)
-- [ ] Tap **Run measurement** → music pauses, sweep audible at the
+- [ ] Tap **Start**, use the discovery **Allow microphone** grant if needed,
+      select the exact mic, tap **Allow microphone** again, complete **Check
+      level**, then tap **Measure** → music pauses, sweep audible at the
       speaker, completes in ~10 s, no audio glitch when renderers
       come back. Watch `journalctl -u jasper-voice` for
       `MEASURE_PAUSE` / `MEASURE_RESUME` events.
@@ -2342,9 +2395,14 @@ Internal:
 
 Last verified: 2026-07-13 (Wave 2 neutral playback extraction and the Room
 compatibility wrapper checked against current callers and deterministic tone
-bytes. Wave 1 Active eligibility-receipt shape and the deliberately unchanged
-applied-snapshot-derived Room gate checked contract-only; no hardware behavior
-revalidated. Full GET/POST route inventory rechecked against
+bytes. Room envelope v6 section/action ownership, static-edge
+report discovery, local capture setup binding, and the deleted legacy/certificate
+surfaces checked hardware-free against `jasper.correction.envelope`,
+`MeasurementSession.bind_local_capture_setup`, `correction_setup._POST_ROUTES`,
+and `deploy/assets/correction/js/main.js`; real-device browser behavior remains
+pending. Wave 1 Active eligibility-receipt shape and the
+deliberately unchanged applied-snapshot-derived Room gate checked
+contract-only; no hardware behavior revalidated. Full GET/POST route inventory rechecked against
 `correction_setup._POST_ROUTES` and `Handler.do_GET`; durable crossover-volume
 recovery and route gating; per-driver fixed-reference-axis orchestration;
 geometry-scoped repeats/apply gate; summed fixed-axis placement and relay metadata

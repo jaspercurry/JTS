@@ -273,6 +273,121 @@ async def test_autolevel_cancel_restores_main_volume(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_autolevel_cancel_and_wait_prevents_late_volume_writes(tmp_path):
+    """A graph reset may proceed only after the ramp restored listening volume."""
+    sess = _make_session(tmp_path)
+    set_history: list[float] = []
+    original = -11.0
+
+    async def fake_get_vol():
+        return original
+
+    async def fake_set_vol(db):
+        set_history.append(float(db))
+
+    player = _StubTonePlayer()
+    run = asyncio.create_task(sess.run_autolevel(
+        get_main_volume_db=fake_get_vol,
+        set_main_volume_db=fake_set_vol,
+        play_continuous_tone=player.play,
+        cancel_tone=player.cancel,
+        start_db=-40.0,
+        end_db=0.0,
+        step_db=1.0,
+        step_interval_s=0.05,
+    ))
+    for _ in range(100):
+        if sess.autolevel.status == AutolevelStatus.RAMPING:
+            break
+        await asyncio.sleep(0.01)
+
+    assert await sess.cancel_autolevel_and_wait() is True
+    writes_at_return = len(set_history)
+    await asyncio.sleep(0.1)
+
+    assert run.done()
+    assert sess.autolevel.status == AutolevelStatus.CANCELLED
+    assert set_history[-1] == original
+    assert len(set_history) == writes_at_return
+
+
+@pytest.mark.asyncio
+async def test_autolevel_reservation_is_cancellable_before_first_write():
+    controller = AutolevelController(session_id="reserved-run")
+    writes: list[float] = []
+
+    token = await controller.reserve_run()
+    assert token is not None
+    assert controller.run_in_progress is True
+    assert controller.data.status == AutolevelStatus.RAMPING
+    assert await controller.reserve_run() is None
+
+    cancelling = asyncio.create_task(controller.cancel_and_wait())
+    await asyncio.sleep(0)
+    assert cancelling.done() is False
+
+    await controller.run(
+        reservation_token=token,
+        get_main_volume_db=lambda: asyncio.sleep(0, result=-12.0),
+        set_main_volume_db=lambda db: asyncio.sleep(0, result=writes.append(db)),
+        play_continuous_tone=lambda: asyncio.sleep(0),
+        cancel_tone=lambda: None,
+    )
+
+    assert await cancelling is True
+    assert writes == []
+    assert controller.data.status == AutolevelStatus.CANCELLED
+    assert controller.run_in_progress is False
+    assert controller.slot_occupied is True
+    assert await controller.reserve_run() is None
+    assert await controller.release_run_reservation(object()) is False
+    assert await controller.release_run_reservation(token) is True
+    assert controller.slot_occupied is False
+    next_token = await controller.reserve_run()
+    assert next_token is not None
+    assert await controller.release_run_reservation(token) is False
+    assert controller.reservation_token is next_token
+    assert await controller.release_run_reservation(next_token) is True
+
+
+@pytest.mark.asyncio
+async def test_autolevel_lock_is_not_authoritative_until_cleanup_finishes():
+    controller = AutolevelController(session_id="cleanup-authority")
+    writes: list[float] = []
+    final_write_started = asyncio.Event()
+    allow_final_write = asyncio.Event()
+
+    async def set_volume(db):
+        writes.append(float(db))
+        if len(writes) == 2:
+            final_write_started.set()
+            await allow_final_write.wait()
+
+    run = asyncio.create_task(controller.run(
+        get_main_volume_db=lambda: asyncio.sleep(0, result=-18.0),
+        set_main_volume_db=set_volume,
+        play_continuous_tone=lambda: asyncio.sleep(0),
+        cancel_tone=lambda: None,
+        start_db=-40.0,
+        end_db=-30.0,
+        step_interval_s=0.05,
+    ))
+    while not writes:
+        await asyncio.sleep(0)
+    assert await controller.lock() is True
+    await asyncio.wait_for(final_write_started.wait(), timeout=1.0)
+
+    assert controller.data.status == AutolevelStatus.RAMPING
+    assert controller.run_in_progress is True
+
+    allow_final_write.set()
+    await run
+
+    assert controller.data.status == AutolevelStatus.LOCKED
+    assert controller.run_in_progress is False
+
+
+@pytest.mark.asyncio
 async def test_autolevel_graceful_stop_logs_setter_failures(caplog):
     """_graceful_stop's fade-down loop and its final lock-value set must
     LOG set_main_volume_db failures rather than swallowing them silently

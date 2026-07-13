@@ -14,6 +14,7 @@ math; this test pins the wiring.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -74,6 +75,99 @@ def _synthesize_room_capture(
 
     captured = fftconvolve(sweep_signal.astype(np.float64), h, mode="full")
     return captured
+
+
+@pytest.mark.asyncio
+async def test_local_capture_setup_binds_realized_input_before_first_upload(
+    tmp_path: Path,
+):
+    sess = _make_session(tmp_path)
+    await sess.begin_noise_capture()
+    record = store_calibration(
+        text="20 0\n1000 0.5\n20000 1\n",
+        provider="manual_upload",
+        model="other",
+        label="Lab mic",
+        source="uploaded:lab.txt",
+        root=tmp_path / "calibrations",
+    )
+    device = {
+        "browser_label": "USB measurement microphone",
+        "sample_rate": 48000,
+        "channel_count": 1,
+        "echo_cancellation": False,
+        "noise_suppression": False,
+        "auto_gain_control": False,
+    }
+
+    report = await sess.bind_local_capture_setup(
+        mic_calibration=record,
+        input_device=device,
+    )
+
+    assert sess.input_device == device
+    assert sess.mic_calibration is record
+    assert sess.browser_audio_report == report
+    assert sess.local_capture_setup_bound is True
+    assert report["failed"] is False
+    assert sess.snapshot()["input_device"] == device
+    assert (sess.bundle_dir / "mic_calibration.json").is_file()
+    assert (sess.bundle_dir / "mic_calibration.txt").is_file()
+    retry_report = await sess.bind_local_capture_setup(
+        mic_calibration=record,
+        input_device=device,
+    )
+    assert retry_report == report
+    assert len([
+        event for event in sess._events if event.type == "local_capture_setup"
+    ]) == 1
+
+    with pytest.raises(RuntimeError, match="cannot change"):
+        await sess.bind_local_capture_setup(
+            mic_calibration=record,
+            input_device={**device, "browser_label": "Different microphone"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_local_capture_setup_rejects_relay_or_started_measurement(
+    tmp_path: Path,
+):
+    device = {
+        "browser_label": "USB measurement microphone",
+        "sample_rate": 48000,
+        "channel_count": 1,
+        "echo_cancellation": False,
+        "noise_suppression": False,
+        "auto_gain_control": False,
+    }
+    relay = _make_session(tmp_path / "relay")
+    relay.capture_transport = "relay"
+    await relay.begin_noise_capture()
+    with pytest.raises(RuntimeError, match="unavailable"):
+        await relay.bind_local_capture_setup(
+            mic_calibration=None,
+            input_device=device,
+        )
+
+    advanced = _make_session(tmp_path / "advanced")
+    advanced.current_position = 1
+    await advanced.begin_noise_capture()
+    with pytest.raises(RuntimeError, match="cannot change"):
+        await advanced.bind_local_capture_setup(
+            mic_calibration=None,
+            input_device=device,
+        )
+
+    unsafe = _make_session(tmp_path / "unsafe")
+    await unsafe.begin_noise_capture()
+    with pytest.raises(ValueError, match="audio path"):
+        await unsafe.bind_local_capture_setup(
+            mic_calibration=None,
+            input_device={**device, "echo_cancellation": True},
+        )
+    assert unsafe.input_device is None
+    assert unsafe.local_capture_setup_bound is False
 
 
 @pytest.mark.asyncio
@@ -635,7 +729,6 @@ async def test_session_snapshot_shape(tmp_path: Path):
 # A sweep leaves the session in awaiting_capture waiting for the browser to
 # upload. If that upload never arrives the session wedged forever and blocked
 # every future /start (observed on hardware 2026-06-04, session 07c57fbe8d12).
-import asyncio  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -689,7 +782,7 @@ async def test_needs_noise_capture_times_out_to_failed(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_relay_level_setup_can_suspend_and_resume_capture_watchdog(
+async def test_human_setup_can_suspend_and_resume_capture_watchdog_on_loop(
     tmp_path: Path,
 ):
     # Relay level setup is deliberately human-paced (permission,
@@ -706,7 +799,7 @@ async def test_relay_level_setup_can_suspend_and_resume_capture_watchdog(
     assert sess.state == SessionState.NEEDS_NOISE_CAPTURE
     assert sess.error is None
 
-    sess.resume_capture_timeout()
+    await sess.resume_capture_timeout_on_loop()
     await asyncio.sleep(0.25)
     assert sess.state == SessionState.FAILED
     assert "capture" in (sess.error or "").lower()
@@ -764,8 +857,8 @@ async def test_verify_capture_times_out_to_failed(tmp_path: Path):
 async def test_reset_rejected_while_a_sweep_or_analysis_is_in_flight(tmp_path: Path):
     # During preparing/sweeping/analyzing/verifying a fire-and-forget task is
     # running and will set the next state AFTER reset's IDLE. The server
-    # rejects reset there (the wizard never offers Cancel/Reset from those
-    # states), so it can't touch CamillaDSP mid-task.
+    # rejects a direct reset there, so it can't touch CamillaDSP mid-task. The
+    # web emergency Stop uses the separately tested cancel/reap seam first.
     sess = _make_session(tmp_path)
 
     async def fake_reset(path: str) -> bool:
@@ -782,6 +875,231 @@ async def test_reset_rejected_while_a_sweep_or_analysis_is_in_flight(tmp_path: P
         # map it to 409, not 500.
         with pytest.raises(SessionBusyError, match="in progress"):
             await sess.reset(fake_reset)
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_reaps_audio_task_before_reset(tmp_path: Path):
+    sess = _make_session(tmp_path)
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    async def audio_operation():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.set()
+
+    running = asyncio.create_task(
+        sess.run_background_audio_operation(audio_operation)
+    )
+    await started.wait()
+    sess.state = SessionState.SWEEPING
+
+    assert await sess.stop_background_audio_for_reset() is True
+    assert running.done()
+    assert cleaned.is_set()
+    assert sess.state == SessionState.FAILED
+
+    reset_calls: list[str] = []
+
+    async def fake_reset(path: str) -> bool:
+        reset_calls.append(path)
+        return True
+
+    await sess.reset(fake_reset)
+    assert sess.state == SessionState.IDLE
+    assert reset_calls == [str(sess.cfg.base_config_path)]
+
+
+@pytest.mark.asyncio
+async def test_reset_intent_atomically_blocks_autolevel_admission(tmp_path: Path):
+    sess = _make_session(tmp_path)
+    sess.state = SessionState.NEEDS_NOISE_CAPTURE
+    sess._local_capture_setup_bound = True
+
+    intent = await sess.begin_autolevel_reset()
+    assert await sess.reserve_autolevel_run() is None
+    assert await sess.end_autolevel_reset(intent) is True
+
+    token = await sess.reserve_autolevel_run()
+    assert token is not None
+    assert await sess.release_autolevel_run_reservation(token) is True
+
+
+@pytest.mark.asyncio
+async def test_reset_intent_atomically_blocks_sweep_and_level_admission(
+    tmp_path: Path,
+):
+    sess = _make_session(tmp_path)
+    called = False
+
+    async def audio_operation() -> None:
+        nonlocal called
+        called = True
+
+    async def get_volume() -> float:
+        return -20.0
+
+    async def set_volume(_value: float) -> bool:
+        return True
+
+    async def play_tone() -> None:
+        raise AssertionError("reset-gated level match must not play audio")
+
+    intent = await sess.begin_autolevel_reset()
+    with pytest.raises(SessionBusyError, match="reset is in progress"):
+        await sess.run_background_audio_operation(audio_operation)
+    with pytest.raises(SessionBusyError, match="reset is in progress"):
+        await sess.run_level_match(
+            "listening_position",
+            get_main_volume_db=get_volume,
+            set_main_volume_db=set_volume,
+            play_continuous_tone=play_tone,
+            cancel_tone=lambda: None,
+            read_status=lambda: {},
+            wait_for_armed=False,
+        )
+    assert called is False
+    assert await sess.end_autolevel_reset(intent) is True
+
+
+@pytest.mark.asyncio
+async def test_begin_reset_releases_its_intent_when_quiescence_fails(
+    tmp_path: Path,
+):
+    sess = _make_session(tmp_path)
+    sess.state = SessionState.NEEDS_NOISE_CAPTURE
+    sess._local_capture_setup_bound = True
+    token = await sess.reserve_autolevel_run()
+    assert token is not None
+
+    async def fail_quiescence(*, timeout_s: float = 5.0) -> bool:
+        del timeout_s
+        raise asyncio.TimeoutError("cleanup stalled")
+
+    sess.cancel_autolevel_and_wait = fail_quiescence  # type: ignore[method-assign]
+    with pytest.raises(asyncio.TimeoutError, match="cleanup stalled"):
+        await sess.begin_autolevel_reset()
+    assert sess._autolevel_reset_intent is None
+    assert await sess.release_autolevel_run_reservation(token) is True
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_gracefully_reaps_active_relay_level_ramp(
+    tmp_path: Path,
+):
+    sess = _make_session(tmp_path)
+    tone_started = asyncio.Event()
+    tone_stopped = asyncio.Event()
+    writes: list[float] = []
+
+    async def get_volume() -> float:
+        return -24.0
+
+    async def set_volume(value: float) -> bool:
+        writes.append(value)
+        return True
+
+    async def play_tone() -> None:
+        tone_started.set()
+        await tone_stopped.wait()
+
+    async def fast_sleep(_delay: float) -> None:
+        await asyncio.sleep(0)
+
+    running = asyncio.create_task(
+        sess.run_level_match(
+            "listening_position",
+            get_main_volume_db=get_volume,
+            set_main_volume_db=set_volume,
+            play_continuous_tone=play_tone,
+            cancel_tone=tone_stopped.set,
+            read_status=lambda: {},
+            sleep=fast_sleep,
+            wait_for_armed=False,
+        )
+    )
+    await tone_started.wait()
+
+    intent = await sess.begin_autolevel_reset()
+    assert await sess.stop_background_audio_for_reset() is True
+    outcome = await running
+    assert outcome.ramp.state.value == "cancelled"
+    assert tone_stopped.is_set()
+    assert writes[-1] == -24.0
+    assert await sess.end_autolevel_reset(intent) is True
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_reaps_level_match_before_phone_arms(
+    tmp_path: Path,
+):
+    sess = _make_session(tmp_path)
+    writes: list[float] = []
+    tone_started = False
+    phone_armed = False
+    poll_sleeping = asyncio.Event()
+    release_poll = asyncio.Event()
+    first_poll = True
+    now = 0.0
+
+    async def get_volume() -> float:
+        return -24.0
+
+    async def set_volume(value: float) -> bool:
+        writes.append(value)
+        return True
+
+    async def play_tone() -> None:
+        nonlocal tone_started
+        tone_started = True
+
+    def read_status() -> dict:
+        return {"event": {"armed": True}} if phone_armed else {}
+
+    def clock() -> float:
+        return now
+
+    async def controlled_sleep(delay: float) -> None:
+        nonlocal first_poll, now
+        now += max(delay, 0.01)
+        if first_poll:
+            first_poll = False
+            poll_sleeping.set()
+            await release_poll.wait()
+        await asyncio.sleep(0)
+
+    running = asyncio.create_task(
+        sess.run_level_match(
+            "listening_position",
+            get_main_volume_db=get_volume,
+            set_main_volume_db=set_volume,
+            play_continuous_tone=play_tone,
+            cancel_tone=lambda: None,
+            read_status=read_status,
+            clock=clock,
+            sleep=controlled_sleep,
+            wait_for_armed=True,
+        )
+    )
+    await poll_sleeping.wait()
+
+    intent = await sess.begin_autolevel_reset()
+    stopping = asyncio.create_task(sess.stop_background_audio_for_reset())
+    await asyncio.sleep(0)
+    assert not stopping.done()
+    # Reproduce the exact race: the phone's armed update lands after Stop was
+    # accepted but before the retained pre-arm poll task resumes.
+    phone_armed = True
+    release_poll.set()
+
+    assert await stopping is True
+    outcome = await running
+    assert outcome.ramp.state.value == "cancelled"
+    assert writes == []
+    assert tone_started is False
+    assert await sess.end_autolevel_reset(intent) is True
 
 
 @pytest.mark.asyncio
