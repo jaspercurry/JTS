@@ -23,6 +23,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from jasper.active_speaker import web_commissioning, web_measurement
+from jasper.active_speaker.crossover_level_run import (
+    state_path as _level_run_state_path,
+)
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
@@ -37,6 +40,11 @@ _VOLUME_READBACK_TOLERANCE_DB = 0.05
 CamillaFactory = Callable[[], Any]
 
 if TYPE_CHECKING:
+    from jasper.active_speaker.crossover_level_run import (
+        CrossoverLevelRunClaim,
+        CrossoverLevelRunFailure,
+    )
+    from jasper.audio_measurement.ramp import MeasurementRamp
     from jasper.correction.level_match import LevelMatchOutcome, LevelMatchSession
 
 
@@ -126,7 +134,13 @@ class CrossoverLevelLease:
     client.
     """
 
-    def __init__(self, *, volume_safety_state_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        volume_safety_state_path: str | Path | None = None,
+        level_run_state_path: str | Path | None = None,
+    ) -> None:
+        from jasper.active_speaker.crossover_level_run import CrossoverLevelRunStore
         from jasper.correction.level_match import LevelLockStore
 
         self.session_id = "active-crossover"
@@ -157,6 +171,7 @@ class CrossoverLevelLease:
         self._volume_safety_state = _load_volume_safety_state(
             self._volume_safety_state_path
         )
+        self._level_run_store = CrossoverLevelRunStore(path=level_run_state_path)
 
     @property
     def unresolved_volume_safety(self) -> dict[str, Any] | None:
@@ -393,8 +408,104 @@ class CrossoverLevelLease:
             raise RuntimeError("crossover level targets changed during measurement")
         self._targets = normalized
 
+    @staticmethod
+    def _ramp_config_for_geometry(geometry: str) -> MeasurementRamp:
+        """Freeze the same complete ramp config planning and execution consume."""
+
+        from jasper.active_speaker.capture_geometry import (
+            parse_driver_level_geometry,
+        )
+        from jasper.audio_measurement.ramp import (
+            LISTENING_POSITION_CAP_BUMP_DB,
+            LISTENING_POSITION_CAP_CEIL_DB,
+            MeasurementRamp,
+        )
+
+        capture_geometry, _speaker_group_id, _role = parse_driver_level_geometry(
+            str(geometry)
+        )
+        # A fixed-axis capture sits at the same roughly one-metre geometry as
+        # Room measurement, so it uses that domain's reviewed cap. Near-field
+        # retains the quieter shared default. Both still pass through the 0 dB
+        # hard ceiling and live clip abort.
+        return MeasurementRamp.from_env(
+            allow_bounded_low_level=True,
+            **(
+                {
+                    "cap_bump_db": LISTENING_POSITION_CAP_BUMP_DB,
+                    "cap_ceil_db": LISTENING_POSITION_CAP_CEIL_DB,
+                }
+                if capture_geometry == "reference_axis"
+                else {}
+            ),
+        )
+
+    def claim_level_match_run(
+        self,
+        *,
+        topology_id: str,
+        protected_profile_fingerprint: str,
+        target: Mapping[str, Any],
+    ) -> CrossoverLevelRunClaim:
+        """Claim one exact Active run before Room opens relay transport."""
+
+        from jasper.active_speaker.crossover_level_run import build_level_run_request
+
+        geometry = str(target.get("geometry") or "")
+        request = build_level_run_request(
+            topology_id=topology_id,
+            protected_profile_fingerprint=protected_profile_fingerprint,
+            target_id=str(target.get("target_id") or ""),
+            target_fingerprint=str(target.get("target_fingerprint") or ""),
+            geometry=geometry,
+            ramp=self._ramp_config_for_geometry(geometry),
+        )
+        return self._level_run_store.claim(request)
+
+    def claim_level_run_owner(self) -> dict[str, Any] | None:
+        """Retire a prior process's unfinished run at service startup."""
+
+        return self._level_run_store.claim_owner()
+
+    def mark_level_run_phone_armed(self, run_id: str) -> bool:
+        return self._level_run_store.mark_phone_armed(run_id)
+
+    def mark_level_run_phone_timeout(self, run_id: str) -> bool:
+        return self._level_run_store.mark_phone_timeout(run_id)
+
+    def mark_level_run_succeeded(self, run_id: str) -> bool:
+        return self._level_run_store.succeed(run_id)
+
+    def mark_level_run_failed(
+        self, run_id: str, *, reason: CrossoverLevelRunFailure
+    ) -> bool:
+        return self._level_run_store.fail(run_id, reason=reason)
+
+    def level_run_snapshot(self) -> dict[str, Any] | None:
+        """Return a fail-soft public projection while claims remain fail-closed."""
+
+        from jasper.active_speaker.crossover_level_run import (
+            SCHEMA_VERSION,
+            CrossoverLevelRunError,
+        )
+
+        try:
+            return self._level_run_store.snapshot()
+        except (OSError, CrossoverLevelRunError, ValueError) as exc:
+            log_event(
+                logger,
+                "correction.crossover_level_run_unavailable",
+                level=logging.ERROR,
+                reason=type(exc).__name__,
+            )
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "phase": "failed",
+                "terminal_reason": "state_unavailable",
+                "late_success": False,
+            }
+
     async def run_level_match(self, geometry: str, **ports: Any) -> Any:
-        from jasper.audio_measurement.ramp import MeasurementRamp
         from jasper.correction.level_match import LevelMatchSession
 
         self.assert_volume_safety_resolved()
@@ -422,7 +533,7 @@ class CrossoverLevelLease:
             parse_driver_level_geometry,
         )
 
-        capture_geometry, speaker_group_id, role = parse_driver_level_geometry(
+        _capture_geometry, speaker_group_id, role = parse_driver_level_geometry(
             str(geometry)
         )
         context_id = str(ports.pop("context_id", "") or "") or None
@@ -430,26 +541,24 @@ class CrossoverLevelLease:
         get_main_volume_db = ports.get("get_main_volume_db")
         if not callable(set_main_volume_db) or not callable(get_main_volume_db):
             raise RuntimeError("crossover level match has no volume control ports")
-        fixed_axis = capture_geometry == "reference_axis"
-        from jasper.audio_measurement.ramp import (
-            LISTENING_POSITION_CAP_BUMP_DB,
-            LISTENING_POSITION_CAP_CEIL_DB,
-        )
+        level_run_id = str(ports.pop("level_run_id", "") or "")
+        # The Room adapter must supply this explicit feature-owned binding once
+        # it claims a durable run. Never infer authority from the fail-soft
+        # public snapshot or silently execute a fresh env-derived ramp when an
+        # explicit claimed id is stale/corrupt. The empty case preserves the
+        # existing Room path until that thin adapter lands in its own lane.
+        if level_run_id and str(ports.get("run_token") or "") != level_run_id:
+            from jasper.active_speaker.crossover_level_run import (
+                CrossoverLevelRunError,
+            )
 
-        # A fixed-axis capture sits at the same roughly one-metre geometry as
-        # room measurement, so it uses that domain's already-reviewed cap.
-        # Near-field retains the quieter shared ramp default. Both still pass
-        # through MeasurementRamp's 0 dB hard ceiling and live clip abort.
-        config = MeasurementRamp.from_env(
-            allow_bounded_low_level=True,
-            **(
-                {
-                    "cap_bump_db": LISTENING_POSITION_CAP_BUMP_DB,
-                    "cap_ceil_db": LISTENING_POSITION_CAP_CEIL_DB,
-                }
-                if fixed_axis
-                else {}
-            ),
+            raise CrossoverLevelRunError(
+                "crossover level run id does not match the relay run token"
+            )
+        config = (
+            self._level_run_store.begin_backend(level_run_id, geometry=str(geometry))
+            if level_run_id
+            else self._ramp_config_for_geometry(str(geometry))
         )
         run = LevelMatchSession(
             session_id=self.session_id,
@@ -1128,17 +1237,25 @@ class CrossoverLevelLease:
                 and context_valid
                 and self._volume_safety_state is None
             ),
+            "run": self.level_run_snapshot(),
             "repeats": self.repeat_snapshot(),
         }
 
 
 _LEVEL_LEASE = CrossoverLevelLease(
-    volume_safety_state_path=_DEFAULT_VOLUME_SAFETY_STATE_PATH
+    volume_safety_state_path=_DEFAULT_VOLUME_SAFETY_STATE_PATH,
+    level_run_state_path=_level_run_state_path(),
 )
 
 
 def level_lease() -> CrossoverLevelLease:
     return _LEVEL_LEASE
+
+
+def claim_level_run_owner() -> dict[str, Any] | None:
+    """Service-lifecycle adapter for the Room-owned web entry point."""
+
+    return _LEVEL_LEASE.claim_level_run_owner()
 
 
 def status_payload() -> dict[str, Any]:

@@ -649,6 +649,91 @@ no caller-supplied protection evidence. Execution stays impossible until the
 Shared lane provides a persisted admission/protection boundary that the planner
 and playback backend can independently re-evaluate against a fresh graph.
 
+### Wave 2 level-run correlation and timeout boundary
+
+`jasper.active_speaker.crossover_level_run` owns schema-v1 identity and durable
+progress for crossover level checks. This state is deliberately separate from
+the durable listening-volume safety latch. Run correlation answers *which exact
+request is this callback about?*; the volume latch remains the only authority
+for exact restore or emergency attenuation after a possible volume mutation.
+Neither state may stand in for the other.
+
+Before relay transport opens, Active freezes one
+`jts_active_crossover_level_run_request` containing the exact topology id,
+confirmed protected-profile fingerprint, physical target id and fingerprint,
+canonical capture geometry, and the complete replayable `MeasurementRamp`
+configuration. The request and ramp config each have a canonical SHA-256
+fingerprint. The Pi safety timeout is `ceil(ramp.safety_timeout * 1000)`; the
+phone hard timeout is
+`ceil((ramp.safety_timeout + 30 seconds transport/setup grace) * 1000)`. The
+30-second grace is a conservative hardware-unverified Wave 2 value, not a
+measured latency claim; Wave 4 must test the real phone/relay tail. Planning and
+execution consume that same serialized ramp config. A changed environment after
+claim cannot silently change the executing ramp.
+
+The durable current-run phases are exactly `awaiting_phone`, `running`,
+`succeeded`, `failed`, and `interrupted`. One atomic claim mints the run id; that
+same id is the existing token-scoped relay `run_token`. An identical active
+request returns `duplicate_active`; an identical current success returns
+`duplicate_succeeded` only while the same service owner still holds the
+process-local level result; neither may dispatch transport or backend work. A
+different request cannot replace active work. Backend start is also single
+flight. Only exact-current-run callbacks may mutate state; stale terminal
+callbacks are ignored. At service startup, a nonterminal prior-owner run becomes
+`interrupted/service_restarted` before any retry may claim the slot. A prior
+owner's terminal success does not deduplicate because the corresponding level
+lock is process-local and must be reacquired after restart.
+
+A token-matched armed batch advances the run to `running`. A token-matched
+`phone_timeout` **before** backend start terminally refuses the run as
+`failed/phone_aborted`: the live phone feed and clip guard have ended, so audio
+must not start. A timeout recorded **after** backend start is an observation, not
+premature proof of backend failure: the same already-bounded action may still
+complete its final persistence. If that exact run later succeeds, it is stored
+as `late_success=true`. The relay poll may observe an already-posted same-token
+timeout just after success persistence; that exact-current-owner callback may
+annotate the terminal success as late, but never reopens or redispatches it.
+Unrelated or stale success cannot be relabeled. Success is allowed only after
+both token-matched phone arming and single-flight backend start, and only after
+the complete crossover action—including level-lock or comparison-set
+finalization—has returned. Ordinary action exceptions become a typed terminal
+failure at the adapter. The durable file and public status retain no tap link,
+pull token, relay credential, raw phone events, or calibration payload;
+`/state.level_match.run` exposes only safe bindings, timing fields, phase,
+timeout observations, terminal reason, and late-success status.
+
+The required Room-owned `correction_setup.py` transport adapter is intentionally
+not part of Active's Wave 2 changes. Its exact integration is:
+
+1. after the existing current topology/profile/target validation, call
+   `CrossoverLevelLease.claim_level_match_run`; bind Room's process-local relay
+   holder to both kind `level_ramp:crossover` and `claim.run_id`; if
+   `should_dispatch` is false, return the existing run/status plus a tap link
+   only when **both** those values match, without calling `_run_relay_capture`
+   (the existing kind-prefix-only lookup is insufficient and must not return a
+   prior same-kind run's link);
+2. pass `claim.run_id` to `build_level_ramp_spec` as `run_token` and
+   `claim.phone_hard_timeout_ms` as `hard_timeout_ms`; also pass the same id
+   explicitly through `_run_relay_level_match(..., level_run_id=claim.run_id)`
+   to `CrossoverLevelLease.run_level_match`; the Active lease never infers
+   claimed authority from public status, and any explicit stale/mismatched id
+   refuses instead of falling back to current environment config;
+3. while polling, notify `mark_level_run_phone_armed` once for the matching armed
+   batch and `mark_level_run_phone_timeout` only when the matching batch's abort
+   reason is `phone_timeout`;
+4. call `mark_level_run_succeeded` only after the complete `_run` callback and
+   its lock/comparison-set persistence return; call `mark_level_run_failed` for
+   ordinary exceptions, including foreground relay registration failure, before
+   re-raising, using the matching `CrossoverLevelRunFailure` member
+   (`RELAY_REGISTRATION_FAILED`, `PHONE_ABORTED`,
+   `LEVEL_MATCH_ACTION_FAILED`, or `FINALIZATION_FAILED`); and
+5. call `correction_crossover_backend.claim_level_run_owner()` beside the
+   existing repeat-admission owner claim at correction-web service startup.
+
+`_run_relay_capture`, relay credentials, capture-page lifecycle, and the generic
+phone transport remain Room-owned. Active supplies only the narrow claim,
+notification, terminal, status, and frozen-config consumer APIs.
+
 Single-position capture also cannot observe vertical lobing: off-axis and
 directivity behavior are outside the single-position tier's evidence (First
 principles item 7 applies only where the measurement tier can observe it).
@@ -953,6 +1038,12 @@ including:
 - `correction.crossover_repeat_attempt` for each bounded attempt and
   `correction.crossover_repeat_aborted` when a service restart durably
   invalidates an orphaned comparison-bound set;
+- `correction.crossover_level_run_claimed` and
+  `correction.crossover_level_run_deduplicated`;
+- `correction.crossover_level_run_phone_armed` and
+  `correction.crossover_level_run_phone_timeout`;
+- `correction.crossover_level_run_completed` or
+  `correction.crossover_level_run_interrupted`;
 - `correction.crossover_repeats_aggregated`;
 - `correction.crossover_proposal_ready`;
 - `correction.crossover_apply_started`;
@@ -1297,7 +1388,7 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-13 (Wave 2 reconstruction, measured-candidate input, and
-preparation-only safety contracts checked against the worktree and cited
-measurement literature; no live audio, DSP mutation, Room-gate behavior, or
-hardware behavior was changed or revalidated.)
+Last verified: 2026-07-13 (Wave 2 reconstruction, measured-candidate input,
+preparation-only safety, and level-run correlation contracts checked against
+the worktree and cited measurement literature; no live audio, DSP mutation,
+Room-gate behavior, or hardware behavior was changed or revalidated.)

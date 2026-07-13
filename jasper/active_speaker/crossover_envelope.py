@@ -23,7 +23,7 @@ from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
 
-CROSSOVER_ENVELOPE_SCHEMA_VERSION = 2
+CROSSOVER_ENVELOPE_SCHEMA_VERSION = 3
 
 _STEP_IDS = ("speaker_setup", "microphone", "drivers", "apply")
 _STEP_LABELS = {
@@ -132,6 +132,17 @@ def _relay_active(status: Mapping[str, Any]) -> bool:
 
 def _relay_kind(status: Mapping[str, Any]) -> str:
     return str(_mapping(status.get("relay")).get("kind") or "")
+
+
+def _level_run(status: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _mapping(_mapping(status.get("level_match")).get("run"))
+
+
+def _level_run_active(status: Mapping[str, Any]) -> bool:
+    return str(_level_run(status).get("phase") or "") in {
+        "awaiting_phone",
+        "running",
+    }
 
 
 def _setup_ready(status: Mapping[str, Any]) -> bool:
@@ -323,7 +334,10 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         _mapping(_mapping(status.get("level_match")).get("next_target"))
     )
     measurement_flow_active = (
-        _relay_active(status) or level_running or level_sequence_pending
+        _relay_active(status)
+        or _level_run_active(status)
+        or level_running
+        or level_sequence_pending
     )
     automatic_remeasure = automatic_applied and (
         measurement_flow_active
@@ -349,6 +363,54 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         done.update({"microphone", "drivers"})
 
     nudges: list[dict[str, str]] = []
+    level_run = _level_run(status)
+    level_run_phase = str(level_run.get("phase") or "")
+    level_run_unavailable = level_run.get("terminal_reason") == "state_unavailable"
+    if level_run_unavailable:
+        nudges.append({
+            "code": "crossover_level_run_state_unavailable",
+            "severity": "warn",
+            "text": (
+                "Level-check safety state is unavailable. JTS will not start "
+                "another check until that state is repaired."
+            ),
+        })
+    elif level_run.get("late_success") is True:
+        nudges.append({
+            "code": "crossover_level_run_late_success",
+            "severity": "info",
+            "text": (
+                "The phone's measurement window ended first, but JTS correlated "
+                "the later backend completion to the same exact run and saved it."
+            ),
+        })
+    elif level_run_phase == "interrupted":
+        nudges.append({
+            "code": "crossover_level_run_interrupted",
+            "severity": "warn",
+            "text": (
+                "The correction service restarted during the level check. The old "
+                "run was closed and cannot complete a retry."
+            ),
+        })
+    elif level_run_phase == "failed":
+        nudges.append({
+            "code": "crossover_level_run_failed",
+            "severity": "warn",
+            "text": (
+                "The exact level-check run did not complete. Retry when the phone "
+                "and protected speaker setup are ready."
+            ),
+        })
+    elif level_run.get("phone_timeout") is True:
+        nudges.append({
+            "code": "crossover_level_run_phone_timeout",
+            "severity": "warn",
+            "text": (
+                "The phone window ended, but JTS is still reconciling the same "
+                "bounded backend run. Do not start another level check yet."
+            ),
+        })
     if level_state == "maxed_out":
         nudges.append({
             "code": "external_amplifier_too_low",
@@ -498,6 +560,15 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "href": "/sound/",
         }
         active_step = "speaker_setup"
+    elif level_run_unavailable:
+        screen = "microphone"
+        verdict = (
+            "The level-check safety record cannot be read, so JTS is refusing "
+            "another measurement run. Check the correction service diagnostics "
+            "before retrying."
+        )
+        action = None
+        active_step = "microphone"
     elif blocked_controller_targets:
         screen = "microphone"
         verdict = (
@@ -609,9 +680,14 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "href": "/sound/",
             },
         ]
-    elif _relay_active(status) or level_running:
+    elif _relay_active(status) or _level_run_active(status) or level_running:
         screen = "waiting"
-        verdict = "Continue on the phone. This page will advance automatically when it finishes."
+        verdict = (
+            "JTS is finishing the same exact level-check run. This page will "
+            "advance automatically when its terminal result is saved."
+            if level_run.get("phone_timeout") is True
+            else "Continue on the phone. This page will advance automatically when it finishes."
+        )
         action = None
         active_step = "microphone" if (
             level_running or _relay_kind(status).startswith("level_ramp:")
