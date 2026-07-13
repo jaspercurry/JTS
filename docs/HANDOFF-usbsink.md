@@ -768,13 +768,13 @@ of `usb_f_uac2.ko`:
   steady-state boot a millisecond no-op. Structured `event=usbsink_name.*`
   logs.
 
-Wired as `jasper-usbsink-init`'s **best-effort** `ExecStartPre`
+Wired as `jasper-usbgadget.service`'s **best-effort** `ExecStartPre`
 (leading `-`): it runs before gadget-up so the patched module is loaded
 when the function is created. This one hook covers boot, feature-enable,
 **rename** (the speaker-name save handler in
 [`jasper/web/speaker_setup.py`](../jasper/web/speaker_setup.py)
-`_apply_name()` already restarts `jasper-usbsink-init` when USB sink is
-active; the marker flips and the module is rebuilt + reloaded), and
+`_apply_name()` restarts `jasper-usbgadget.service` when the composite
+gadget is active; the marker flips and the module is rebuilt + reloaded), and
 **kernel updates** (a
 new kernel boots with no override → it's rebuilt from the new stock
 module before the gadget comes up).
@@ -2057,8 +2057,11 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-07-11 (§6 runtime-fallback brokenness definition
-corrected — the durable `reopens`/`card_gen_reopens` counter signal is now gated on
+Last verified: 2026-07-12 (§4.1a rename path re-read against
+`jasper-usbgadget.service` + `speaker_setup._apply_name`; the composite gadget,
+not the deleted init unit, owns the best-effort name patch and active rename
+restart). Prior 2026-07-11 (§6 runtime-fallback brokenness definition corrected
+— the durable `reopens`/`card_gen_reopens` counter signal is now gated on
 `health=="capturing"`; the prior "idle can't move those counters" claim was wrong
 and false-disarmed an idle jts.local twice in one day. Also: Executive Summary's
 gadget-setup owner corrected from the deleted `jasper-usbsink-init.service` to

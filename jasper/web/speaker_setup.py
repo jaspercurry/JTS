@@ -14,6 +14,7 @@ URL surface (after nginx strips /speaker/):
   GET  /         page render
   POST /save     validate, duplicate-check, write state, restart services
 """
+
 from __future__ import annotations
 
 import argparse
@@ -38,9 +39,10 @@ from ..speaker_name import (
     validate_room,
     write_state,
 )
-from ..speaker_name_discovery import NameConflict, find_name_conflicts
+from ..atomic_io import atomic_write_text
 from ..control.restart_broker import manage_units
 from ..log_event import log_event
+from ..speaker_name_discovery import NameConflict, find_name_conflicts
 from ._common import (
     begin_request,
     canonical_banner,
@@ -98,8 +100,11 @@ def _restart_units(units: list[str]) -> None:
     # WS1 Phase 3: route through jasper-control's restart broker (the
     # read-only `_systemctl` probes elsewhere in this file stay direct).
     resp = manage_units(
-        *units, verb="restart", reason="speaker rename",
-        no_block=True, timeout=5.0,
+        *units,
+        verb="restart",
+        reason="speaker rename",
+        no_block=True,
+        timeout=5.0,
     )
     if not resp.get("ok"):
         log_event(
@@ -116,7 +121,20 @@ def _write_bluez_main_conf_name(name: str, path: str = BLUEZ_MAIN_CONF) -> None:
     try:
         original = conf.read_text(encoding="utf-8")
     except FileNotFoundError:
-        log_event(logger, "speaker_name.bluez_conf_missing", path=path, level=logging.WARNING)
+        log_event(
+            logger, "speaker_name.bluez_conf_missing", path=path, level=logging.WARNING
+        )
+        return
+    except (OSError, UnicodeError) as e:
+        log_event(
+            logger,
+            "speaker_name.bluez_conf",
+            path=path,
+            result="failed",
+            operation="read",
+            error=e,
+            level=logging.WARNING,
+        )
         return
 
     replacement = f"Name = {name}"
@@ -131,9 +149,24 @@ def _write_bluez_main_conf_name(name: str, path: str = BLUEZ_MAIN_CONF) -> None:
     if updated == original:
         return
 
-    tmp = conf.with_name(conf.name + ".tmp")
-    tmp.write_text(updated, encoding="utf-8")
-    os.replace(tmp, conf)
+    try:
+        atomic_write_text(
+            conf,
+            updated,
+            mode=0o644,
+            group_from_parent=True,
+        )
+    except (OSError, UnicodeError) as e:
+        log_event(
+            logger,
+            "speaker_name.bluez_conf",
+            path=path,
+            result="failed",
+            operation="write",
+            error=e,
+            level=logging.WARNING,
+        )
+        return
     log_event(logger, "speaker_name.bluez_conf", path=path, result="ok")
 
 
@@ -148,8 +181,7 @@ def _format_conflicts(conflicts: list[NameConflict]) -> str:
         )
     protocols = ", ".join(sorted({c.protocol for c in conflicts}))
     return (
-        f'That name is already in use ({protocols}). '
-        "Choose a different speaker name."
+        f"That name is already in use ({protocols}). Choose a different speaker name."
     )
 
 
@@ -157,7 +189,12 @@ def _find_conflicts(name: str) -> list[NameConflict]:
     try:
         return asyncio.run(find_name_conflicts(name))
     except Exception as e:  # noqa: BLE001
-        log_event(logger, "speaker_name.duplicate_check_failed", error=e, level=logging.WARNING)
+        log_event(
+            logger,
+            "speaker_name.duplicate_check_failed",
+            error=e,
+            level=logging.WARNING,
+        )
         return []
 
 
@@ -173,6 +210,7 @@ def _apply_name(name: str) -> None:
     _write_bluez_main_conf_name(name)
     try:
         from ..bluetooth.adapter import set_alias as set_bluetooth_alias
+
         asyncio.run(set_bluetooth_alias(name))
         log_event(logger, "speaker_name.bluetooth_alias", name=repr(name), result="ok")
     except Exception as e:  # noqa: BLE001
@@ -187,8 +225,14 @@ def _apply_name(name: str) -> None:
 
     try:
         from ..control_advert import render_control_advert
+
         ok = render_control_advert(name)
-        log_event(logger, "speaker_name.avahi", name=repr(name), result="ok" if ok else "soft_fail")
+        log_event(
+            logger,
+            "speaker_name.avahi",
+            name=repr(name),
+            result="ok" if ok else "soft_fail",
+        )
     except Exception as e:  # noqa: BLE001
         log_event(
             logger,
@@ -265,13 +309,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     return
                 ctx = begin_request(self)
                 state = read_state(cfg["state_path"])
-                send_html_response(self, _index_html(
-                    current_name=state.name,
-                    current_room=state.room,
-                    hostname=os.environ.get("JASPER_HOSTNAME", "jts.local"),
-                    csrf_token=ctx["csrf_token"],
-                    status_msg=ctx["flash"],
-                ))
+                send_html_response(
+                    self,
+                    _index_html(
+                        current_name=state.name,
+                        current_room=state.room,
+                        hostname=os.environ.get("JASPER_HOSTNAME", "jts.local"),
+                        csrf_token=ctx["csrf_token"],
+                        status_msg=ctx["flash"],
+                    ),
+                )
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -315,15 +362,19 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         logger,
                         "speaker_name.conflict",
                         requested=repr(requested),
-                        conflicts=",".join(f"{c.protocol}:{c.detail}" for c in conflicts),
+                        conflicts=",".join(
+                            f"{c.protocol}:{c.detail}" for c in conflicts
+                        ),
                     )
                     send_see_other(self, "./", flash=_format_conflicts(conflicts))
                     return
 
             try:
                 saved = write_state(
-                    requested, requested_room,
-                    path=cfg["state_path"], mode=0o644,
+                    requested,
+                    requested_room,
+                    path=cfg["state_path"],
+                    mode=0o644,
                 )
             except (OSError, SpeakerNameError) as e:
                 logger.exception("speaker name save failed")
@@ -340,7 +391,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
             _apply_name(saved)
             send_see_other(
-                self, "./",
+                self,
+                "./",
                 flash=f'Saved. Speaker renamed to "{saved}". Services restarting.',
             )
 
@@ -349,6 +401,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
 def make_server(target, *, state_path: str = SPEAKER_NAME_FILE) -> ThreadingHTTPServer:
     from . import _systemd
+
     cfg = {"state_path": state_path}
     return _systemd.make_http_server(target, _make_handler(cfg))
 
@@ -358,12 +411,17 @@ def main(argv: list[str] | None = None) -> int:
         prog="jasper-speaker-web",
         description="Speaker display-name settings for the Jasper smart speaker",
     )
-    parser.add_argument("--host", default=os.environ.get("JASPER_SPEAKER_WEB_HOST", "127.0.0.1"))
     parser.add_argument(
-        "--port", type=int,
+        "--host", default=os.environ.get("JASPER_SPEAKER_WEB_HOST", "127.0.0.1")
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
         default=int(os.environ.get("JASPER_SPEAKER_WEB_PORT", "8783")),
     )
-    parser.add_argument("--state", default=os.environ.get("JASPER_SPEAKER_NAME_FILE", SPEAKER_NAME_FILE))
+    parser.add_argument(
+        "--state", default=os.environ.get("JASPER_SPEAKER_NAME_FILE", SPEAKER_NAME_FILE)
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=os.environ.get("JASPER_LOG_LEVEL", "INFO").upper())

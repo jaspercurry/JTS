@@ -10,11 +10,18 @@
 2. The migration was presentation-only: the server-rendered POST /save flow
    (validate -> duplicate-check -> write -> restart) and the public module
    surface (render fn, make_server, main) are unchanged.
+3. The rename transaction rewrites BlueZ configuration atomically and keeps
+   the independent Bluetooth, Avahi, USB-gadget, and renderer surfaces moving
+   when one best-effort surface fails.
 """
+
 from __future__ import annotations
 
 import http
+import logging
 import types
+
+import pytest
 
 from jasper.speaker_name import DEFAULT_SPEAKER_NAME, SpeakerNameError
 from jasper.web import speaker_setup
@@ -124,9 +131,227 @@ def test_public_surface_is_stable():
     assert callable(speaker_setup._index_html)
 
 
+@pytest.mark.parametrize(
+    ("original", "expected"),
+    [
+        (
+            "[General]\nName = Old name\nClass = 0x200414\n",
+            "[General]\nName = Kitchen\nClass = 0x200414\n",
+        ),
+        (
+            "[General]\n# Name = BlueZ\nClass = 0x200414\n",
+            "[General]\nName = Kitchen\nClass = 0x200414\n",
+        ),
+        (
+            "[General]\nClass = 0x200414\n",
+            "[General]\nClass = 0x200414\nName = Kitchen\n",
+        ),
+    ],
+    ids=("active", "commented", "absent"),
+)
+def test_bluez_main_conf_name_rewrites_supported_shapes(
+    tmp_path,
+    original,
+    expected,
+):
+    conf = tmp_path / "main.conf"
+    conf.write_text(original, encoding="utf-8")
+
+    speaker_setup._write_bluez_main_conf_name("Kitchen", str(conf))
+
+    assert conf.read_text(encoding="utf-8") == expected
+    assert conf.stat().st_mode & 0o777 == 0o644
+
+
+def test_bluez_main_conf_missing_is_fail_soft(tmp_path, caplog):
+    conf = tmp_path / "main.conf"
+
+    with caplog.at_level(logging.WARNING, logger=speaker_setup.__name__):
+        speaker_setup._write_bluez_main_conf_name("Kitchen", str(conf))
+
+    assert not conf.exists()
+    assert "event=speaker_name.bluez_conf_missing" in caplog.text
+    assert f"path={conf}" in caplog.text
+
+
+def test_bluez_main_conf_identical_name_does_not_rewrite(tmp_path, monkeypatch):
+    conf = tmp_path / "main.conf"
+    original = "[General]\nName = Kitchen\nClass = 0x200414\n"
+    conf.write_text(original, encoding="utf-8")
+
+    def unexpected_write(*_args, **_kwargs):
+        raise AssertionError("identical BlueZ config must not be rewritten")
+
+    monkeypatch.setattr(speaker_setup, "atomic_write_text", unexpected_write)
+
+    speaker_setup._write_bluez_main_conf_name("Kitchen", str(conf))
+
+    assert conf.read_text(encoding="utf-8") == original
+
+
+def test_bluez_main_conf_uses_canonical_atomic_writer(tmp_path, monkeypatch):
+    conf = tmp_path / "main.conf"
+    conf.write_text("[General]\nName = Old\n", encoding="utf-8")
+    calls = []
+
+    def record_write(path, text, **kwargs):
+        calls.append((path, text, kwargs))
+
+    monkeypatch.setattr(speaker_setup, "atomic_write_text", record_write)
+
+    speaker_setup._write_bluez_main_conf_name("Kitchen", str(conf))
+
+    assert calls == [
+        (
+            conf,
+            "[General]\nName = Kitchen\n",
+            {"mode": 0o644, "group_from_parent": True},
+        ),
+    ]
+
+
+def test_bluez_main_conf_invalid_utf8_is_fail_soft(tmp_path, caplog):
+    conf = tmp_path / "main.conf"
+    conf.write_bytes(b"[General]\nName = \xff\n")
+
+    with caplog.at_level(logging.WARNING, logger=speaker_setup.__name__):
+        speaker_setup._write_bluez_main_conf_name("Kitchen", str(conf))
+
+    assert conf.read_bytes() == b"[General]\nName = \xff\n"
+    assert "event=speaker_name.bluez_conf" in caplog.text
+    assert "result=failed" in caplog.text
+    assert "operation=read" in caplog.text
+    bluez_records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("event=speaker_name.bluez_conf ")
+    ]
+    assert len(bluez_records) == 1
+
+
+@pytest.mark.parametrize("gadget_active", [False, True])
+def test_apply_name_orders_surfaces_and_composes_restart_list(
+    monkeypatch,
+    gadget_active,
+):
+    events = []
+    original_units = list(speaker_setup.RESTART_UNITS)
+
+    def unit_active(unit):
+        events.append(("probe", unit))
+        return gadget_active
+
+    async def set_alias(name):
+        events.append(("alias", name))
+
+    def render_advert(name):
+        events.append(("advert", name))
+        return True
+
+    monkeypatch.setattr(speaker_setup, "_unit_active", unit_active)
+    monkeypatch.setattr(
+        speaker_setup,
+        "_write_bluez_main_conf_name",
+        lambda name: events.append(("bluez_conf", name)),
+    )
+    monkeypatch.setattr("jasper.bluetooth.adapter.set_alias", set_alias)
+    monkeypatch.setattr(
+        "jasper.control_advert.render_control_advert",
+        render_advert,
+    )
+    monkeypatch.setattr(
+        speaker_setup,
+        "_restart_units",
+        lambda units: events.append(("restart", tuple(units))),
+    )
+
+    speaker_setup._apply_name("Kitchen")
+
+    expected_units = tuple(
+        [
+            *original_units,
+            *(["jasper-usbgadget.service"] if gadget_active else []),
+        ],
+    )
+    assert events == [
+        ("probe", "jasper-usbgadget.service"),
+        ("bluez_conf", "Kitchen"),
+        ("alias", "Kitchen"),
+        ("advert", "Kitchen"),
+        ("restart", expected_units),
+    ]
+    assert speaker_setup.RESTART_UNITS == original_units
+
+
+def test_apply_name_continues_after_bluez_alias_and_advert_failures(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    conf = tmp_path / "main.conf"
+    conf.write_text("[General]\nName = Old\n", encoding="utf-8")
+    events = []
+    real_write_bluez = speaker_setup._write_bluez_main_conf_name
+
+    def fail_atomic_write(*_args, **_kwargs):
+        raise OSError("read-only filesystem")
+
+    def write_bluez(name):
+        real_write_bluez(name, str(conf))
+        events.append(("bluez_returned", name))
+
+    async def fail_alias(name):
+        events.append(("alias", name))
+        raise RuntimeError("BlueZ unavailable")
+
+    def fail_advert(name):
+        events.append(("advert", name))
+        raise RuntimeError("Avahi unavailable")
+
+    monkeypatch.setattr(speaker_setup, "_unit_active", lambda _unit: False)
+    monkeypatch.setattr(speaker_setup, "atomic_write_text", fail_atomic_write)
+    monkeypatch.setattr(
+        speaker_setup,
+        "_write_bluez_main_conf_name",
+        write_bluez,
+    )
+    monkeypatch.setattr("jasper.bluetooth.adapter.set_alias", fail_alias)
+    monkeypatch.setattr(
+        "jasper.control_advert.render_control_advert",
+        fail_advert,
+    )
+    monkeypatch.setattr(
+        speaker_setup,
+        "_restart_units",
+        lambda units: events.append(("restart", tuple(units))),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=speaker_setup.__name__):
+        speaker_setup._apply_name("Kitchen")
+
+    assert events == [
+        ("bluez_returned", "Kitchen"),
+        ("alias", "Kitchen"),
+        ("advert", "Kitchen"),
+        ("restart", tuple(speaker_setup.RESTART_UNITS)),
+    ]
+    assert conf.read_text(encoding="utf-8") == "[General]\nName = Old\n"
+    assert "event=speaker_name.bluez_conf" in caplog.text
+    assert "operation=write" in caplog.text
+    assert "event=speaker_name.bluetooth_alias" in caplog.text
+    assert "event=speaker_name.avahi" in caplog.text
+    bluez_records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("event=speaker_name.bluez_conf ")
+    ]
+    assert len(bluez_records) == 1
+
+
 def test_get_root_renders_canonical_page(monkeypatch):
     monkeypatch.setattr(
-        speaker_setup, "read_state",
+        speaker_setup,
+        "read_state",
         lambda path: types.SimpleNamespace(name="Kitchen", room=""),
     )
     handler = _handler_cls()
@@ -169,18 +394,21 @@ def test_post_save_applies_rename_and_restarts(monkeypatch):
     monkeypatch.setattr(speaker_setup, "validate_name", lambda n: n.strip())
     monkeypatch.setattr(speaker_setup, "validate_room", lambda r: r.strip())
     monkeypatch.setattr(
-        speaker_setup, "read_state",
+        speaker_setup,
+        "read_state",
         lambda path: types.SimpleNamespace(name="OldName", room=""),
     )
     monkeypatch.setattr(speaker_setup, "_find_conflicts", lambda name: [])
     monkeypatch.setattr(
-        speaker_setup, "write_state",
+        speaker_setup,
+        "write_state",
         lambda name, room, path, mode=0o644: (
             calls["write"].append((name, room)) or name
         ),
     )
     monkeypatch.setattr(
-        speaker_setup, "_apply_name",
+        speaker_setup,
+        "_apply_name",
         lambda name: calls["apply"].append(name),
     )
 
@@ -197,7 +425,8 @@ def test_post_save_applies_rename_and_restarts(monkeypatch):
 
 def test_post_save_rejects_bad_csrf(monkeypatch):
     monkeypatch.setattr(
-        speaker_setup, "read_state",
+        speaker_setup,
+        "read_state",
         lambda path: types.SimpleNamespace(name="OldName"),
     )
     handler = _handler_cls()

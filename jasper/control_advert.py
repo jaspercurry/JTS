@@ -45,13 +45,15 @@ the rendered file to `/etc/avahi/services/jasper-control.service`. Avahi
 auto-reloads via inotify (with a deterministic systemctl reload as the
 fallback).
 
-Every failure is fail-soft: a missing/unreadable template, a stray
-placeholder, a write failure, or a reload failure logs and returns
-``False`` (or is swallowed at DEBUG). ``render_control_advert`` NEVER
-raises into the caller — /speaker save and deploy/install.sh must not
-break because mDNS could not be re-rendered. The backstop is the
-restart of jasper-control, which re-renders on the next boot.
+Every failure is fail-soft. A missing/unreadable template, stray placeholder,
+or write failure logs and returns ``False``. A best-effort reload invocation
+exception happens after publication, logs at DEBUG, and does not turn the
+render into a failure because Avahi also watches the directory through inotify.
+``render_control_advert`` NEVER raises into the caller — /speaker save and
+deploy/install.sh must not break because mDNS could not be re-rendered. A later
+/speaker apply or deploy/install render is the retry path.
 """
+
 from __future__ import annotations
 
 import logging
@@ -159,8 +161,8 @@ def render_control_advert(
     Returns True if the file was written (or was already up-to-date),
     False on any handled failure (missing/unreadable template, stray
     placeholder, write failure). NEVER raises — the caller (/speaker save,
-    deploy/install.sh) degrades gracefully; the backstop is the next
-    jasper-control restart re-rendering this file.
+    deploy/install.sh) degrades gracefully; a later /speaker apply or deploy
+    retries the render.
 
     The render/guard/atomic-write/reload body is delegated to the shared
     ``jasper.avahi_service.render_service``, which OWNS the reload: we pass
