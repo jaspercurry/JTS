@@ -103,6 +103,7 @@ from jasper.active_speaker.commission_wiring import (
     commission_seams,
     read_current_config_path,
     resolve_commission_inputs,
+    resolve_capture_preset,
     write_commission_path_safety,
 )
 
@@ -1844,14 +1845,6 @@ def _active_speaker_stop_payload() -> dict[str, Any]:
         level_status=str(state.get("calibration_level", {}).get("status")),
     )
     return state
-
-
-def _active_speaker_preset():
-    from jasper.active_speaker.tone_plan import load_active_speaker_preset
-
-    return load_active_speaker_preset(
-        os.environ.get("JASPER_ACTIVE_SPEAKER_PRESET") or None
-    )
 
 
 def _active_speaker_bringup_preflight_payload() -> dict[str, Any]:
@@ -3964,28 +3957,7 @@ def _active_speaker_measurements_payload() -> dict[str, Any]:
 
 
 def _active_speaker_capture_preset(topology: OutputTopology) -> Any:
-    preset, crossover_preview = resolve_commission_inputs()
-    if preset is not None:
-        return preset
-    if crossover_preview is not None:
-        from jasper.active_speaker.staging import compile_preset_from_crossover_preview
-
-        compiled, issues, _gates = compile_preset_from_crossover_preview(
-            topology,
-            crossover_preview,
-        )
-        if compiled is not None:
-            return compiled
-        messages = [
-            str(issue.get("message") or issue.get("code"))
-            for issue in issues
-            if isinstance(issue, dict)
-        ]
-        raise ValueError(
-            "active speaker preset is not ready for capture analysis"
-            + (": " + "; ".join(messages[:2]) if messages else "")
-        )
-    return _active_speaker_preset()
+    return resolve_capture_preset(topology)
 
 
 def _active_speaker_driver_measurement_payload(raw: dict[str, Any]) -> dict[str, Any]:

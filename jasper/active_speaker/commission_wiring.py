@@ -16,6 +16,8 @@ declaration-only instead of copying the wiring a third time.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -86,6 +88,38 @@ def resolve_commission_inputs(preset: Any = None) -> tuple[Any, dict[str, Any] |
     if preview.get("status") == "ready_for_protected_staging":
         return None, preview
     return None, None
+
+
+def resolve_capture_preset(topology: Any) -> Any:
+    """Resolve the protected preset used by every capture-analysis surface."""
+
+    preset, crossover_preview = resolve_commission_inputs()
+    if preset is not None:
+        return preset
+    if crossover_preview is not None:
+        from jasper.active_speaker.staging import compile_preset_from_crossover_preview
+
+        compiled, issues, _gates = compile_preset_from_crossover_preview(
+            topology,
+            crossover_preview,
+        )
+        if compiled is not None:
+            return compiled
+        messages = [
+            str(issue.get("message") or issue.get("code"))
+            for issue in issues
+            if isinstance(issue, Mapping)
+        ]
+        raise ValueError(
+            "active speaker preset is not ready for capture analysis"
+            + (": " + "; ".join(messages[:2]) if messages else "")
+        )
+
+    from jasper.active_speaker.tone_plan import load_active_speaker_preset
+
+    return load_active_speaker_preset(
+        os.environ.get("JASPER_ACTIVE_SPEAKER_PRESET") or None
+    )
 
 
 def write_commission_path_safety(
