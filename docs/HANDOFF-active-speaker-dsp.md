@@ -1289,6 +1289,22 @@ A check.
    resulting per-driver digital-volume locks and the shared microphone identity
    are persisted in one comparison set. Old captures without that proof, or
    captures from different sets, cannot replace a manual crossover.
+
+   Crossover level checks and driver/summed sweeps share one durable listening-
+   volume intent owned by `CrossoverLevelLease`. Before the first CamillaDSP
+   volume mutation, it atomically records the finite non-positive entry volume
+   in `/var/lib/jasper/active_speaker_crossover_volume_safety.json`. Normal
+   cleanup first restores that exact level, then uses −60 dB only as an
+   emergency fallback; setter acknowledgement is insufficient, so either result
+   needs a fresh finite CamillaDSP readback within 0.05 dB. The resolved
+   tombstone is written before the in-process gate clears. A crash during an
+   active transition, an unreadable state file, failed readback, or failed
+   tombstone write hydrates fail-closed. All new crossover level, capture,
+   playback, and apply actions remain blocked until the recovery-only wizard
+   action confirms exact restore or emergency attenuation. The web layer owns
+   the CamillaDSP ports; the lease owns persistence and the recovery decision.
+   This contract is hardware-free verified; the incremental jts3/Chrome/UMIK-2
+   run remains the B2b hardware gate.
 2. **Null-depth optimization** proves polarity and relative delay at
    each crossover. With the planned crossover active, invert one
    adjacent driver through the mixer and sweep the crossover band.
@@ -1900,7 +1916,8 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-12 (bounded CamillaDSP worker cancellation checked
+Last verified: 2026-07-13 (durable crossover-volume intent, confirmed recovery,
+and relay lease ownership checked; bounded CamillaDSP worker cancellation checked
 against the outer commissioning rollback transaction; superseded readiness and
 per-driver topology-tone planner removal checked against the protected commission ramp and retained
 summed-crossover planner; prior 2026-07-11 pass covered per-driver protected level tones and gain locks,

@@ -131,10 +131,11 @@ def driver_repeat_completed(
         if "target" in entry
         else DEFAULT_REPEAT_TARGET
     )
-    results = mapping_sequence(entry.get("results"))
-    accepted_results = sum(
-        1 for result in results if result.get("accepted") is True
-    )
+    raw_results = entry.get("results")
+    results = mapping_sequence(raw_results)
+    result_attempts = [nonnegative_int(result.get("attempt")) for result in results]
+    accepted_flags = [result.get("accepted") for result in results]
+    accepted_results = sum(1 for accepted in accepted_flags if accepted is True)
     declared_accepted = (
         nonnegative_int(entry.get("accepted"))
         if "accepted" in entry
@@ -142,11 +143,18 @@ def driver_repeat_completed(
     )
     return bool(
         entry.get("status") == "completed"
+        and (entry.get("inflight") is None or entry.get("inflight") is False)
         and entry.get("target_fingerprint") == target_fingerprint
         and declared_target == DEFAULT_REPEAT_TARGET
         and DEFAULT_REPEAT_TARGET <= attempts <= MAX_ATTEMPTS
+        and isinstance(raw_results, (list, tuple))
+        and len(results) == len(raw_results)
+        and len(results) == attempts
+        and result_attempts == list(range(1, attempts + 1))
+        and all(isinstance(accepted, bool) for accepted in accepted_flags)
         and declared_accepted == DEFAULT_REPEAT_TARGET
         and accepted_results == DEFAULT_REPEAT_TARGET
+        and (attempts == DEFAULT_REPEAT_TARGET or accepted_flags.count(False) == 1)
     )
 
 

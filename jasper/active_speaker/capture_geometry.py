@@ -84,7 +84,10 @@ def driver_repeat_binding(
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    return f"reference_axis:{target_id}", repeat_fingerprint
+    # Output-topology ids may contain ``:`` but never ``/``.  Using the
+    # forbidden character at this namespace boundary keeps the fixed-axis
+    # controller id disjoint from every legal near-field ``group:role`` id.
+    return f"reference_axis/{target_id}", repeat_fingerprint
 
 
 def _active_crossover_driver_roles() -> frozenset[str]:

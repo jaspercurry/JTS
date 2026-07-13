@@ -156,6 +156,9 @@ _relay_capture: dict[str, Any] | None = None
 # Bound the foreground relay registration so a slow/unreachable relay fails fast
 # rather than hanging the request thread for RelayClient's 15 s default.
 _RELAY_REGISTER_TIMEOUT_S = 10.0
+# Exact set/readback plus the emergency set/readback each use Camilla's bounded
+# reconnect contract. Keep the HTTP owner alive for the complete sequence.
+_CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
 _ROOM_RELAY_RETURN_PATH = "/correction/room/"
 # Require a short rolling ambient window before the Pi starts the level tone.
 # A single USB-mic startup block is too noisy to become the trust-floor SSOT;
@@ -197,6 +200,7 @@ _POST_ROUTES = frozenset({
     "/crossover/level-match",
     "/crossover/relay-capture",
     "/crossover/apply",
+    "/crossover/recover-volume",
     "/balance/start",
     "/balance/ramp",
     "/balance/meter",
@@ -445,6 +449,12 @@ def _crossover_blocking_phase() -> str | None:
     from .active_speaker_flow import blocking_measurement_phase
 
     return blocking_measurement_phase()
+
+
+def _crossover_direct_audio_blocking_phase() -> str | None:
+    """Block stale direct audio actions while any relay owns the speaker."""
+
+    return _active_relay_phase() or _crossover_blocking_phase()
 
 
 def _reserve_start_slot() -> str | None:
@@ -2974,9 +2984,15 @@ async def _run_relay_level_match(
                     sample_rate=48000,
                 )
                 player = playback.TonePlayer(tone_wav)
+                from jasper.camilla import CamillaUnavailable
 
                 async def _get_volume() -> float:
-                    value = await cam.get_volume_db(best_effort=False)
+                    try:
+                        value = await cam.get_volume_db(best_effort=False)
+                    except CamillaUnavailable as exc:
+                        raise RuntimeError(
+                            "CamillaDSP is unavailable during crossover leveling"
+                        ) from exc
                     if value is None:
                         raise RuntimeError(
                             "CamillaDSP did not report the measurement volume"
@@ -2984,7 +3000,12 @@ async def _run_relay_level_match(
                     return float(value)
 
                 async def _set_volume(db: float) -> None:
-                    applied = await cam.set_volume_db(db, best_effort=False)
+                    try:
+                        applied = await cam.set_volume_db(db, best_effort=False)
+                    except CamillaUnavailable as exc:
+                        raise RuntimeError(
+                            "CamillaDSP is unavailable during crossover leveling"
+                        ) from exc
                     if applied is False:
                         raise RuntimeError(
                             "CamillaDSP rejected the measurement volume"
@@ -3013,9 +3034,11 @@ async def _run_relay_level_match(
             getattr(sess, "input_device", None),
         )
         if mismatch is not None:
-            await sess.restore_level_match_volume(
-                lambda db: cam.set_volume_db(db, best_effort=False)
-            )
+            restore_level_match = getattr(sess, "restore_level_match_volume", None)
+            if callable(restore_level_match):
+                await restore_level_match(
+                    lambda db: cam.set_volume_db(db, best_effort=False)
+                )
             raise ValueError(mismatch)
     except (
         OSError,
@@ -3201,27 +3224,8 @@ async def _fixed_axis_level_identity_guard(
     *,
     speaker_group_id: str,
     role: str,
-    restore_volume: Callable[[], Awaitable[Any]],
-    emergency_attenuation: Callable[[], Awaitable[bool]],
 ):
-    """Drain cancellation, make output safe, then roll back partial identity."""
-
-    from .correction_crossover_backend import LevelVolumeRestoreResult
-
-    async def drain(operation: Callable[[], Awaitable[Any]]) -> Any:
-        cleanup = asyncio.create_task(
-            asyncio.wait_for(operation(), timeout=5.0)
-        )
-        while True:
-            try:
-                return await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                # The outer exception remains active and is re-propagated when
-                # this async context exits. Repeated cancellation must not tear
-                # down the child task that is restoring/bounding audio output.
-                if cleanup.done():
-                    return cleanup.result()
-                continue
+    """Roll back fixed-axis identity when its shared level run fails."""
 
     snapshot = (
         getattr(lease, "relay_setup_binding", None),
@@ -3236,47 +3240,18 @@ async def _fixed_axis_level_identity_guard(
         completed = True
     finally:
         if not completed:
-            try:
-                try:
-                    restore_result = await drain(restore_volume)
-                except (OSError, RuntimeError, TimeoutError, ValueError):
-                    restore_result = LevelVolumeRestoreResult.FAILED
-                restore_safe = (
-                    restore_result is LevelVolumeRestoreResult.RESTORED
-                    or restore_result is LevelVolumeRestoreResult.NOT_REQUIRED
-                )
-                if not restore_safe:
-                    try:
-                        emergency_safe = (
-                            await drain(emergency_attenuation) is True
-                        )
-                    except (OSError, RuntimeError, TimeoutError, ValueError):
-                        emergency_safe = False
-                    if not emergency_safe:
-                        lease.mark_level_volume_unresolved(
-                            speaker_group_id,
-                            role,
-                        )
-                        log_event(
-                            logger,
-                            "correction.crossover_reference_axis_volume_unresolved",
-                            level=logging.CRITICAL,
-                            speaker_group_id=speaker_group_id,
-                            role=role,
-                        )
-            finally:
-                lease.discard_driver_level_outcome(
-                    speaker_group_id,
-                    role,
-                    capture_geometry="reference_axis",
-                )
-                (
-                    lease.relay_setup_binding,
-                    lease.input_device,
-                    lease.mic_calibration,
-                    lease.noise_floor_db,
-                    lease.context_id,
-                ) = snapshot
+            lease.discard_driver_level_outcome(
+                speaker_group_id,
+                role,
+                capture_geometry="reference_axis",
+            )
+            (
+                lease.relay_setup_binding,
+                lease.input_device,
+                lease.mic_calibration,
+                lease.noise_floor_db,
+                lease.context_id,
+            ) = snapshot
 
 
 def _handle_crossover_relay_level_match(
@@ -3541,25 +3516,11 @@ def _handle_crossover_relay_level_match(
             )
         lease.configure_targets(level_targets)
 
-        async def _restore_failed_fixed_axis_volume() -> Any:
-            return await lease.restore_level_match_volume(
-                lambda db: _camilla().set_volume_db(db, best_effort=False)
-            )
-
-        async def _emergency_attenuate_failed_fixed_axis() -> bool:
-            return await lease.emergency_lower_level_match_volume(
-                lambda db: _camilla().set_volume_db(db, best_effort=False)
-            )
-
         identity_guard = (
             _fixed_axis_level_identity_guard(
                 lease,
                 speaker_group_id=str(target["speaker_group_id"]),
                 role=str(target["role"]),
-                restore_volume=_restore_failed_fixed_axis_volume,
-                emergency_attenuation=(
-                    _emergency_attenuate_failed_fixed_axis
-                ),
             )
             if fixed_axis_request
             else nullcontext()
@@ -3868,12 +3829,6 @@ def _handle_crossover_relay_capture(
         or not isinstance(setup, dict)
         or setup.get("status") != "ready"
     ):
-        _run_async(
-            lease.restore_level_match_volume(
-                lambda db: _camilla().set_volume_db(db, best_effort=False)
-            ),
-            timeout=5.0,
-        )
         raise ValueError(
             "protected speaker setup is no longer ready; finish it before "
             "capturing the crossover"
@@ -3905,12 +3860,6 @@ def _handle_crossover_relay_capture(
             )
         )
     ):
-        _run_async(
-            lease.restore_level_match_volume(
-                lambda db: _camilla().set_volume_db(db, best_effort=False)
-            ),
-            timeout=5.0,
-        )
         raise ValueError(
             "speaker setup changed after level matching; run the crossover "
             "level check again"
@@ -4052,10 +4001,24 @@ def _handle_crossover_relay_capture(
         )
 
     async def _get_capture_volume() -> Any:
-        return await _camilla().get_volume_db(best_effort=False)
+        from jasper.camilla import CamillaUnavailable
+
+        try:
+            return await _camilla().get_volume_db(best_effort=False)
+        except CamillaUnavailable as exc:
+            raise RuntimeError(
+                "CamillaDSP is unavailable during crossover capture"
+            ) from exc
 
     async def _set_capture_volume(db: float) -> Any:
-        return await _camilla().set_volume_db(db, best_effort=False)
+        from jasper.camilla import CamillaUnavailable
+
+        try:
+            return await _camilla().set_volume_db(db, best_effort=False)
+        except CamillaUnavailable as exc:
+            raise RuntimeError(
+                "CamillaDSP is unavailable during crossover capture"
+            ) from exc
 
     async def _prepare_capture_play() -> bool:
         if kind_id == "driver":
@@ -4067,19 +4030,23 @@ def _handle_crossover_relay_capture(
                 capture_geometry=requested_geometry,
             )
         return await lease.acquire_summed_sweep_volume(
+            str(raw["speaker_group_id"]),
             _get_capture_volume,
             _set_capture_volume,
         )
 
     async def _restore_capture_play() -> bool:
-        if not lease.sweep_volume_active:
-            return True
-        if await lease.restore_sweep_volume(_set_capture_volume):
-            return True
-        emergency_safe = await lease.emergency_lower_sweep_volume(
-            _set_capture_volume
+        from .correction_crossover_backend import (
+            UnresolvedVolumeRecoveryResult,
         )
-        if emergency_safe:
+
+        recovery = await lease.finish_sweep_volume(
+            _set_capture_volume,
+            _get_capture_volume,
+        )
+        if recovery is UnresolvedVolumeRecoveryResult.EXACT_RESTORED:
+            return True
+        if recovery is UnresolvedVolumeRecoveryResult.EMERGENCY_ATTENUATED:
             raise RuntimeError(
                 "JTS could not restore the listening volume after measurement; "
                 "it lowered output to a safe fallback. Set your volume again."
@@ -4111,6 +4078,7 @@ def _handle_crossover_relay_capture(
             kind=kind_id,
             speaker_group_id=str(raw["speaker_group_id"]),
             role=str(raw.get("role") or ""),
+            capture_geometry=requested_geometry,
             expected_target_fingerprint=target_fingerprint,
         )
 
@@ -4218,20 +4186,10 @@ def _handle_crossover_relay_capture(
         ),
     )
 
-    async def run_and_consume(client: RelayClient, pi_session: PiCaptureSession) -> None:
-        try:
-            await base_run_and_consume(client, pi_session)
-        finally:
-            if lease.sweep_volume_active:
-                await _restore_capture_play()
-            # Idempotent backstop for failures before the armed/play window.
-            await lease.restore_level_match_volume(
-                lambda db: _camilla().set_volume_db(db, best_effort=False)
-            )
     kind = RelayCaptureKind(
         label=f"crossover_sweep:{kind_id}",
         open=_open,
-        run_and_consume=run_and_consume,
+        run_and_consume=base_run_and_consume,
     )
     return {
         "relay": _run_relay_capture(
@@ -5157,8 +5115,108 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def _dispatch_crossover(self, path: str) -> None:
             """POST /crossover/* — secure active-crossover measurement."""
             from . import correction_crossover_flow
+            from . import correction_crossover_backend as crossover_backend
+
+            volume_sensitive_routes = {
+                "/crossover/level-match",
+                "/crossover/relay-capture",
+                "/crossover/apply",
+                "/crossover/driver-test",
+                "/crossover/summed-test",
+                "/crossover/driver-capture-sweep",
+                "/crossover/summed-capture-sweep",
+                "/crossover/summed-capture",
+            }
+            lease = crossover_backend.level_lease()
+            if (
+                path in volume_sensitive_routes
+                and lease.unresolved_volume_safety is not None
+            ):
+                self._send_json(
+                    {
+                        "status": "refused",
+                        "reason": "crossover_volume_safety_unresolved",
+                        "next_step": (
+                            "Use Recover safe listening volume before another "
+                            "crossover action."
+                        ),
+                    },
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
 
             try:
+                if path == "/crossover/recover-volume":
+                    from jasper.camilla import CamillaUnavailable
+
+                    if lease.unresolved_volume_safety is None:
+                        self._send_json(
+                            {
+                                "status": "refused",
+                                "reason": "crossover_volume_recovery_not_required",
+                                "next_step": "Refresh the crossover page.",
+                            },
+                            status=HTTPStatus.CONFLICT,
+                        )
+                        return
+                    cam = _camilla()
+
+                    async def _set_recovery_volume(db: float) -> bool:
+                        try:
+                            return await cam.set_volume_db(db, best_effort=False)
+                        except CamillaUnavailable as exc:
+                            raise RuntimeError(
+                                "CamillaDSP is unavailable during volume recovery"
+                            ) from exc
+
+                    async def _get_recovery_volume() -> float:
+                        try:
+                            value = await cam.get_volume_db(best_effort=False)
+                        except CamillaUnavailable as exc:
+                            raise RuntimeError(
+                                "CamillaDSP is unavailable during volume recovery"
+                            ) from exc
+                        if value is None:
+                            raise RuntimeError(
+                                "CamillaDSP did not report the recovered volume"
+                            )
+                        return float(value)
+
+                    try:
+                        recovery = _run_async(
+                            lease.recover_unresolved_volume_safety(
+                                _set_recovery_volume,
+                                _get_recovery_volume,
+                            ),
+                            timeout=_CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
+                        )
+                    except concurrent.futures.TimeoutError:
+                        log_event(
+                            logger,
+                            "correction.crossover_level_volume_safety_recovery_timeout",
+                            level=logging.ERROR,
+                            timeout_s=_CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
+                        )
+                        recovery = (
+                            crossover_backend.UnresolvedVolumeRecoveryResult.FAILED
+                        )
+                    succeeded = recovery is not (
+                        crossover_backend.UnresolvedVolumeRecoveryResult.FAILED
+                    )
+                    self._send_json(
+                        {
+                            "status": "recovered" if succeeded else "refused",
+                            "recovery": recovery.value,
+                            "next_step": (
+                                "Refresh and continue crossover commissioning."
+                                if succeeded
+                                else "Stop playback and retry recovery when CamillaDSP is available."
+                            ),
+                        },
+                        status=(HTTPStatus.OK if succeeded else HTTPStatus.CONFLICT),
+                    )
+                    return
+
                 if path in {
                     "/crossover/summed-capture",
                 }:
@@ -5207,7 +5265,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         raw,
                         _run_async,
                         _camilla,
-                        blocking_phase=_crossover_blocking_phase(),
+                        blocking_phase=_crossover_direct_audio_blocking_phase(),
                     )
                 elif path == "/crossover/driver-confirm":
                     payload, status = correction_crossover_flow.handle_driver_confirm(
@@ -5225,21 +5283,21 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         raw,
                         _run_async,
                         _camilla,
-                        blocking_phase=_crossover_blocking_phase(),
+                        blocking_phase=_crossover_direct_audio_blocking_phase(),
                     )
                 elif path == "/crossover/driver-capture-sweep":
                     payload, status = correction_crossover_flow.handle_driver_capture_sweep(
                         raw,
                         _run_async,
                         _camilla,
-                        blocking_phase=_crossover_blocking_phase(),
+                        blocking_phase=_crossover_direct_audio_blocking_phase(),
                     )
                 else:
                     payload, status = correction_crossover_flow.handle_summed_capture_sweep(
                         raw,
                         _run_async,
                         _camilla,
-                        blocking_phase=_crossover_blocking_phase(),
+                        blocking_phase=_crossover_direct_audio_blocking_phase(),
                     )
                 self._send_json(payload, status=int(status))
             except BadRequest as e:

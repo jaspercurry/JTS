@@ -187,6 +187,42 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "progress": {"position": 0, "total": len(_STEP_IDS)},
         }
 
+    unresolved_volume = _mapping(
+        _mapping(status.get("level_match")).get("unresolved_volume_safety")
+    )
+    if unresolved_volume:
+        return {
+            "schema_version": CROSSOVER_ENVELOPE_SCHEMA_VERSION,
+            "screen": "volume_recovery",
+            "active": True,
+            "steps": _step_payload(set(), "microphone"),
+            "verdict_text": (
+                "JTS could not confirm that the listening volume was restored. "
+                "Recover the exact prior level or the safe emergency attenuation "
+                "before continuing. No measurement or apply action is available "
+                "until fresh readback confirms one of those levels."
+            ),
+            "nudges": [
+                {
+                    "code": "crossover_volume_safety_unresolved",
+                    "severity": "warn",
+                    "text": (
+                        "Pause household playback before recovery. If it still fails, "
+                        "stop playback and reapply the speaker profile before listening."
+                    ),
+                }
+            ],
+            "relay": _mapping(status.get("relay")) or None,
+            "next_action": {
+                "id": "recover_volume",
+                "label": "Recover safe listening volume",
+                "endpoint": "/correction/crossover/recover-volume",
+                "body": {},
+            },
+            "alternate_actions": [],
+            "progress": _progress("microphone"),
+        }
+
     drivers = _targets(status, "drivers")
     measurements = _mapping(status.get("measurements"))
     active_comparison_set = _mapping(measurements.get("active_comparison_set"))
@@ -349,9 +385,32 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "check again before another sweep."
             ),
         })
+    from .crossover_eligibility import driver_repeat_completed
+
     driver_target_ids = set().union(
         *(_driver_repeat_target_ids(target) for target in drivers)
     ) if drivers else set()
+    exact_completed_controller_targets: set[str] = set()
+    from .capture_geometry import driver_repeat_binding
+
+    for target in drivers:
+        for geometry in ("near_field", "reference_axis"):
+            if not driver_repeat_completed(
+                target,
+                repeat_targets,
+                capture_geometry=geometry,
+            ):
+                continue
+            try:
+                target_id, _fingerprint = driver_repeat_binding(
+                    speaker_group_id=str(target.get("speaker_group_id") or ""),
+                    role=str(target.get("role") or ""),
+                    target_fingerprint=str(target.get("target_fingerprint") or ""),
+                    capture_geometry=geometry,
+                )
+            except ValueError:
+                continue
+            exact_completed_controller_targets.add(target_id)
     blocked_controller_targets = []
     terminal_controller_targets = []
     interrupted_controller_targets = []
@@ -368,7 +427,10 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         # when that measurement write happened just before the controller write
         # failed; a fresh level-check context safely resets the gate.
         final_write_incomplete = entry.get("status") == "ready"
-        terminal_set = entry.get("status") in {"aborted", "refused"}
+        terminal_set = entry.get("status") in {"aborted", "refused", "malformed"} or (
+            entry.get("status") == "completed"
+            and target_id not in exact_completed_controller_targets
+        )
         if orphaned_inflight or final_write_incomplete or terminal_set:
             blocked_controller_targets.append(str(target_id))
         if terminal_set:
@@ -668,7 +730,17 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         target = missing_reference_axis_drivers[0]
         group_id = str(target.get("speaker_group_id") or "")
         role = str(target.get("role") or "driver")
-        repeat_target_id = f"reference_axis:{group_id}:{role}"
+        from .capture_geometry import driver_repeat_binding
+
+        try:
+            repeat_target_id, _repeat_fingerprint = driver_repeat_binding(
+                speaker_group_id=group_id,
+                role=role,
+                target_fingerprint=str(target.get("target_fingerprint") or ""),
+                capture_geometry="reference_axis",
+            )
+        except ValueError:
+            repeat_target_id = ""
         progress = repeat_progress(
             _mapping(status.get("level_match")).get("repeats"), repeat_target_id
         )

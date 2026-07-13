@@ -217,6 +217,18 @@
   protocols 1 and 2. The repo version and public
   `https://capture.jasper.tech/version.json` both reported `20260712.3` on
   2026-07-12; there is no pending capture-page publish gate for this contract.
+  Crossover level and sweep volume transitions now use one durable backend
+  intent for both near-field and fixed-axis work. If restart or failed readback
+  leaves the volume unconfirmed, `GET /crossover/envelope` exposes only
+  **Recover safe listening volume**; `POST /crossover/recover-volume` attempts
+  confirmed exact restore and then the −60 dB fallback. All other crossover
+  level, capture, playback, and apply routes return 409 until that intent is
+  resolved. Fixed-axis cleanup separately owns only microphone/comparison
+  identity rollback; it does not implement a second volume state machine.
+  Hardware-free tests cover persistence-before-mutation, restart hydration,
+  exact/emergency readback, cancellation draining, route/backend refusal, and
+  the relay sweep's matching-lease handoff. jts3/Chrome/UMIK-2 proof remains the
+  B2b hardware gate.
   Relay room level setup temporarily suspends the local browser's 120-second
   upload watchdog while the human completes mic permission, calibration,
   placement, and auto-level, then restores a fresh bound for the actual room
@@ -1148,6 +1160,8 @@ POST /sync/stop              stop playback and reset the sync walkthrough
 POST /sync/reset             reset the sync walkthrough (same safe stop path)
 POST /crossover/level-match  guided mic/calibration + server-selected per-driver
                              near-field or fixed-reference-axis automatic level
+POST /crossover/recover-volume recover a durable unconfirmed listening volume;
+                              exact prior level first, then confirmed −60 dB
 POST /crossover/apply        atomically apply measured Layer A; restore gain lease
 POST /crossover/driver-test  start one protected per-driver audible test
 POST /crossover/driver-confirm record the protected driver-test result
@@ -2279,9 +2293,10 @@ Internal:
 
 ---
 
-Last verified: 2026-07-12 (full GET/POST route inventory rechecked against
-`correction_setup._POST_ROUTES` and `Handler.do_GET`; per-driver fixed-reference-axis
-orchestration, geometry-scoped repeats/apply gate, summed fixed-axis placement, and relay metadata
+Last verified: 2026-07-13 (full GET/POST route inventory rechecked against
+`correction_setup._POST_ROUTES` and `Handler.do_GET`; durable crossover-volume
+recovery and route gating; per-driver fixed-reference-axis orchestration;
+geometry-scoped repeats/apply gate; summed fixed-axis placement and relay metadata
 transport rechecked against the Lane-E admission boundary; prior 2026-07-11
 pass covered driver-specific crossover level sequence,
 authenticated capture-page protocol v2 control data, and the placement/

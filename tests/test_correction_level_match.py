@@ -1001,7 +1001,9 @@ async def test_crossover_lease_restores_then_scopes_target_to_sweep_window():
     ) is True
     assert chain._vol == pytest.approx(outcome.ramp.locked_main_volume_db)
     assert outcome.ramp.restored is True
-    assert await lease.restore_sweep_volume(chain.set_vol) is True
+    assert (await lease.finish_sweep_volume(chain.set_vol, chain.get_vol)).value == (
+        "exact_restored"
+    )
     assert chain._vol == pytest.approx(-27.0)
     assert outcome.ramp.restored is True
 
@@ -1043,7 +1045,9 @@ async def test_crossover_lease_accepts_and_reasserts_bounded_low_lock():
         "mono", "woofer", chain.get_vol, chain.set_vol
     ) is True
     assert chain._vol == pytest.approx(cap)
-    assert await lease.restore_sweep_volume(chain.set_vol) is True
+    assert (await lease.finish_sweep_volume(chain.set_vol, chain.get_vol)).value == (
+        "exact_restored"
+    )
     assert chain._vol == pytest.approx(original)
 
 

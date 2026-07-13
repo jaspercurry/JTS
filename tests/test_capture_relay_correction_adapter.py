@@ -547,8 +547,9 @@ def test_room_relay_gain_is_restored_before_measurement_window_exits(monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("post_ramp_mismatch", (False, True))
 async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
-    monkeypatch,
+    monkeypatch, post_ramp_mismatch,
 ):
     """The transport adapter binds setup/noise before asking the kernel to ramp."""
     from jasper.capture_relay import session as relay_session
@@ -600,6 +601,7 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     }
     current_status = {"value": setup_status}
     setup_acks = []
+    terminal_events = []
     ambient_index = 0
     ambient_reads: dict[int, int] = {}
 
@@ -634,6 +636,8 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
             if payload.get("phase") == "setup_validated":
                 setup_acks.append(payload)
                 current_status["value"] = "ambient"
+            if "ramp" in payload:
+                terminal_events.append(payload["ramp"])
             return None
 
     writes = []
@@ -681,10 +685,13 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
         async def run_level_match(self, _geometry, **ports):
             assert ports["noise_floor_dbfs"] == -52.0
             await ports["set_main_volume_db"](-41.0)
+            if post_ramp_mismatch:
+                self.mic_calibration = object()
+                self.input_device = None
             return SimpleNamespace(locked=True, ramp=SimpleNamespace(error=None))
 
     sess = Session()
-    await correction_setup._run_relay_level_match(
+    operation = correction_setup._run_relay_level_match(
         sess,
         Client(),
         _level_pi_session(),
@@ -694,6 +701,12 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
         tone_frequency_hz=875.0,
         reuse_noise_floor=False,
     )
+    if post_ramp_mismatch:
+        with pytest.raises(ValueError, match="calibration is loaded"):
+            await operation
+        assert terminal_events[-1]["state"] == "error"
+    else:
+        await operation
 
     assert setup_acks == [{"phase": "setup_validated", "setup_token": "setup-1"}]
     assert set(ambient_reads) == set(range(1, 11))
@@ -701,7 +714,10 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     assert ambient_reads[10] >= 1
     assert sess.total_positions == 3
     assert sess.noise_floor_db == -52.0
-    assert sess.input_device["label"] == "USB measurement mic"
+    if post_ramp_mismatch:
+        assert sess.input_device is None
+    else:
+        assert sess.input_device["label"] == "USB measurement mic"
     assert writes == [(-41.0, False)]
     from jasper.audio_measurement.excitation import (
         AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,

@@ -170,7 +170,7 @@ def test_automatic_measurement_eligibility_accepts_only_complete_current_evidenc
         ]["mono:woofer"].update({"placement_proof": {}}),
         lambda data: data.update(repeat_state={"targets": "bad"}),
         lambda data: data["repeat_state"]["targets"][
-            "reference_axis:mono:woofer"
+            "reference_axis/mono:woofer"
         ].update({"target_fingerprint": "f" * 64}),
     ),
 )
@@ -199,7 +199,7 @@ def test_completed_controller_cannot_authorize_two_accepted_acoustic_repeats():
 
 def test_completed_controller_refuses_two_accepted_or_wrong_target():
     data = _evidence()
-    entry = data["repeat_state"]["targets"]["reference_axis:mono:woofer"]
+    entry = data["repeat_state"]["targets"]["reference_axis/mono:woofer"]
     entry.update({"accepted": 2, "target": 4})
 
     result = automatic_measurement_eligibility(**data)
@@ -237,7 +237,7 @@ def test_completed_controller_refuses_fabricated_four_accepted(
     target_id = (
         "mono:woofer"
         if capture_geometry == "near_field"
-        else "reference_axis:mono:woofer"
+        else "reference_axis/mono:woofer"
     )
     entry = data["repeat_state"]["targets"][target_id]
     entry.update({
@@ -254,6 +254,118 @@ def test_completed_controller_refuses_fabricated_four_accepted(
 
     assert result.ready is False
     assert f"repeat:{capture_geometry}:mono:woofer" in result.missing
+
+
+@pytest.mark.parametrize("capture_geometry", ["near_field", "reference_axis"])
+@pytest.mark.parametrize(
+    ("attempts", "results", "expected_ready"),
+    (
+        (
+            3,
+            [
+                {"attempt": 1, "accepted": True},
+                {"attempt": 2, "accepted": True},
+                {"attempt": 3, "accepted": True},
+            ],
+            True,
+        ),
+        (
+            3,
+            [{"attempt": 1, "accepted": True}] * 3,
+            False,
+        ),
+        (
+            3,
+            [
+                {"attempt": 1, "accepted": True},
+                {"attempt": 2, "accepted": True},
+                {"attempt": 3, "accepted": True},
+                7,
+            ],
+            False,
+        ),
+        (
+            3,
+            [
+                {"attempt": 1, "accepted": True},
+                {"attempt": 3, "accepted": True},
+            ],
+            False,
+        ),
+        (
+            4,
+            [
+                {"attempt": 1, "accepted": True},
+                {"attempt": 2, "accepted": True},
+                {"attempt": 3, "accepted": True},
+            ],
+            False,
+        ),
+        (
+            4,
+            [
+                {"attempt": 1, "accepted": True},
+                {"attempt": 2, "accepted": False},
+                {"attempt": 3, "accepted": True},
+                {"attempt": 4, "accepted": True},
+            ],
+            True,
+        ),
+    ),
+)
+def test_completed_controller_requires_exact_attempt_coverage(
+    capture_geometry, attempts, results, expected_ready
+):
+    data = _evidence()
+    target_id = (
+        "mono:woofer"
+        if capture_geometry == "near_field"
+        else "reference_axis/mono:woofer"
+    )
+    data["repeat_state"]["targets"][target_id].update(
+        {
+            "attempts": attempts,
+            "results": results,
+        }
+    )
+
+    result = automatic_measurement_eligibility(**data)
+
+    assert result.ready is expected_ready
+    missing_id = f"repeat:{capture_geometry}:mono:woofer"
+    assert (missing_id in result.missing) is (not expected_ready)
+
+
+@pytest.mark.parametrize("capture_geometry", ["near_field", "reference_axis"])
+def test_completed_controller_refuses_inflight_reservation(capture_geometry):
+    data = _evidence()
+    target_id = (
+        "mono:woofer"
+        if capture_geometry == "near_field"
+        else "reference_axis/mono:woofer"
+    )
+    data["repeat_state"]["targets"][target_id]["inflight"] = "still-owned"
+
+    result = automatic_measurement_eligibility(**data)
+
+    assert result.ready is False
+    assert f"repeat:{capture_geometry}:mono:woofer" in result.missing
+
+
+def test_public_repeat_projection_preserves_completed_eligibility():
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    data = _evidence()
+    store = CrossoverLevelLease()
+    for target_id, entry in data["repeat_state"]["targets"].items():
+        entry["target_id"] = target_id
+        entry["inflight"] = None
+    store.set_durable_repeat_progress(data["repeat_state"])
+    data["repeat_state"] = store.repeat_snapshot()["durable"]
+
+    result = automatic_measurement_eligibility(**data)
+
+    assert result.ready is True
 
 
 @pytest.mark.parametrize("value", (None, "bad", {}, 3, True))

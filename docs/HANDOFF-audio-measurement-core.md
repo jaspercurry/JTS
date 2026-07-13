@@ -236,11 +236,11 @@ The product is three tiers:
   and its exact reasserted lock is part of the played excitation ledger.
   Request geometry is only a hint until the route proves it equals the
   envelope's next action; the relay acknowledgement policy is the authority at
-  playback and analysis. Wrong-mic and cancellation paths drain exact-volume
-  restoration even through repeated cancellation; if that fails, they attempt
-  the existing −60 dB emergency bound and surface a CRITICAL unresolved-safety
-  event plus retained `level_match.unresolved_volume_safety` status if both
-  operations fail. Partial process identity is always discarded;
+  playback and analysis. Both geometry stages participate in the correction
+  adapter's durable crossover-volume lease; the detailed persistence, readback,
+  restart, and recovery contract is owned by
+  [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md) under the
+  consumer measurement protocol. Partial process identity is always discarded;
   service restarts preserve completed durable near-field work. The envelope and
   direct automatic apply share one pure gate requiring the current comparison,
   topology, protected profile, usable unclipped/gated acoustic evidence, and
@@ -881,5 +881,6 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-12 (measurement-flow admission ownership rechecked
+Last verified: 2026-07-13 (crossover adapter volume-lease participation and
+measurement-flow admission ownership rechecked
 against correction, balance, sync, and the coordinator mutex)

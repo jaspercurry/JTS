@@ -526,8 +526,13 @@ against the applied profile fingerprint. A failed acoustic verification does
 not silently declare success; the user can restore the previous crossover or
 return to edit/measure.
 
+If JTS cannot confirm restoration of the listening volume after any crossover
+measurement, the crossover flow fails closed: playback, capture, and apply are
+replaced by one recovery action until fresh DSP readback confirms either the
+exact prior level or the bounded emergency attenuation.
+
 Once the crossover is applied and verified, the UI offers **Continue to room
-correction**. Room correction then defaults to five distinct listening-area
+correction**. Room correction then defaults to six distinct listening-area
 positions. Those room positions are spatial samples and are intentionally
 different from the stationary repeats used for crossover commissioning.
 
@@ -934,4 +939,4 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-12
+Last verified: 2026-07-13
