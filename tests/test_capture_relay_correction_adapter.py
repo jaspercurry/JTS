@@ -376,6 +376,45 @@ def test_sync_relay_endpoint_gate_and_precheck(monkeypatch):
     assert correction_setup._get_relay_capture() is None  # slot not claimed
 
 
+def test_sync_relay_endpoint_binds_originating_session_token(monkeypatch):
+    import asyncio
+
+    from jasper.web import correction_setup, sync_flow
+
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
+    with sync_flow._lock:
+        sync_flow._reset_locked()
+        sync_flow._state["phase"] = "measuring"
+        expected_token = int(sync_flow._state["session_token"])
+
+    captured: dict[str, object] = {}
+
+    async def run_and_consume(client, pi_session, *, session_token):
+        captured.update(
+            client=client,
+            pi_session=pi_session,
+            session_token=session_token,
+        )
+
+    def run_relay(kind, relay_base, *, return_url):
+        asyncio.run(kind.run_and_consume("client", "pi-session"))
+        captured.update(relay_base=relay_base, return_url=return_url)
+        return {"status": "awaiting_phone", "tap_link": "https://capture.test/#x"}
+
+    monkeypatch.setattr(sync_flow, "relay_run_and_consume", run_and_consume)
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", run_relay)
+
+    try:
+        payload = correction_setup._handle_sync_relay_capture(None)
+
+        assert payload["relay"]["status"] == "awaiting_phone"
+        assert captured["session_token"] == expected_token
+        assert captured["client"] == "client"
+        assert captured["pi_session"] == "pi-session"
+    finally:
+        sync_flow.handle_stop()
+
+
 def test_endpoint_route_is_registered():
     # Pin route membership: deleting the allowlist line would 404 it silently.
     from jasper.web import correction_setup
