@@ -134,9 +134,32 @@ The product is three tiers:
   still own the actual DSP mutation, exact restore, read-back, writer exclusion,
   and capture transport. The exhaustive runner preflights and refuses above 25
   candidates or beyond CamillaDSP's 20 ms delay ceiling before touching DSP.
-  Production CamillaDSP/web/persistence wiring is not shipped yet, and
-  low-frequency bass walks require a separately reviewed adaptive scheduler
-  before they are executable.
+  `delay_graph.py` is the inert candidate graph-*content* seam beside that
+  runner. Inside an outer exact-restore transaction, a host stages both delay
+  lanes to numeric zero and supplies the same `DspPredecessor` the F1 runner
+  will restore, with parsed CamillaDSP `active_raw` in its frozen state. Typed
+  bindings carry the owning host's topology channel plus one non-Delay identity
+  filter from that target's emitter-owned chain. They are admitted only when the
+  identity and Delay filters occur exactly once on the same declared pipeline
+  lane; unused, shared, duplicated, swapped, same-channel, or unknown-target
+  bindings refuse. The shared core does not parse scope-specific filter names.
+  `DelayGraphSnapshot` fingerprints those graph-derived lane proofs with the
+  scope, topology id, and complete walk spec. `confirm_delay_candidate` proves
+  only that supplied graph content is the zero-relative predecessor with the
+  requested lane's four-decimal-quantized millisecond delay as the sole changed
+  field. It derives the signed relative delay from both bound slots and requires
+  a real numeric non-positive `devices.volume_limit`; every other graph value,
+  including any pre-existing compensated positive PEQ, must remain byte-model
+  equivalent in canonical JSON. This helper does **not** establish that a
+  read-back is live, fresh, or from the current writer transaction. F2b must
+  own writer-locked candidate apply → fresh `active_raw` → typed confirmation,
+  bind that confirmation to the current run/evidence, and feed it into the F1
+  runner. Until that host contract lands, stale/replayed but content-identical
+  graphs remain an explicit integration gap, not admitted measurement
+  authority. Emitted-file hashes are never compared with CamillaDSP's
+  normalized/default-expanded graph. Production CamillaDSP/web/persistence
+  wiring is not shipped yet, and low-frequency bass walks require a separately
+  reviewed adaptive scheduler before they are executable.
 - The relay level target is reusable state, not a long-lived live gain. A
   successful ramp restores the original listening volume immediately. Room,
   verification, and active-crossover adapters reassert the target only inside
