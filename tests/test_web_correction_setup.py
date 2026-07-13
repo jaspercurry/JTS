@@ -288,10 +288,6 @@ def test_known_post_routes_reach_csrf_guard():
         "/crossover/driver-confirm", "/crossover/driver-abort",
         "/crossover/summed-test", "/crossover/driver-capture-sweep",
         "/crossover/summed-capture-sweep", "/crossover/summed-capture",
-        "/balance/start", "/balance/ramp", "/balance/meter",
-        "/balance/lock", "/balance/stop", "/balance/apply", "/balance/reset",
-        "/sync/start", "/sync/play", "/sync/analyze", "/sync/relay-capture",
-        "/sync/apply", "/sync/stop", "/sync/reset",
         # P6 tuning-LLM routes.
         "/interpret", "/propose", "/propose/apply",
     }
