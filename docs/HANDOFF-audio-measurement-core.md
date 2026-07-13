@@ -51,7 +51,7 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the Wave 1 worktree and its `origin/main` base, 2026-07-13)
+## Current state (verified against the Wave 2 manifest worktree, 2026-07-13)
 
 ### Wave 1 contract-only foundation (2026-07-13)
 
@@ -98,6 +98,26 @@ forensic/fail-soft, and Room still gates from the applied recomposition snapshot
 neither `active_speaker.setup_status` nor `/correction/start` parses the new
 receipt. No hardware behavior was changed or revalidated by Wave 1.
 
+### Wave 2 neutral artifact-manifest ownership (2026-07-13)
+
+`jasper.audio_measurement.bundles` now owns only the byte-level artifact-manifest
+mechanics already shared by Room and Active: normalized bundle-relative paths,
+SHA-256/size records, dependency normalization, atomic JSON replacement, and
+manifest upsert/read behavior. The public neutral writers require the feature
+schema from authoritative `info.json` or an explicit schema argument. Room's
+legacy schema-5 fallback is private to the `jasper.correction.bundles`
+compatibility wrapper.
+
+The feature packages still own everything that gives a bundle meaning. Room
+retains schema 5, `/var/lib/jasper/correction/sessions`, validation, replay,
+latest-session, retention, and private-audio policy. Active retains schema 1,
+its append-only fail-soft commissioning envelope, retention, and core-artifact
+rules. Manifest schema remains 1. No existing bundle tree is rewritten or
+migrated, and no manifest, artifact hash, or bundle reader grants playback,
+apply, admission, lifecycle, or eligibility-receipt authority. The historical
+`correction_bundle_*` warning event names remain temporarily stable for journal
+compatibility.
+
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
   since P1b; the correction-specific rest stays in `jasper/correction/`):
@@ -113,7 +133,8 @@ receipt. No hardware behavior was changed or revalidated by Wave 1.
   staying in `jasper/correction/`: `confidence.py`, `coordinator.py`
   (`measurement_window`: pauses renderers + voice, serializes), `session.py`
   (`MeasurementSession` state machine), `bundles.py` (schema-versioned
-  durable evidence). Shipped, tested.
+  durable evidence and Room validation/policy). The common manifest writer and
+  reader live in `audio_measurement/bundles.py`. Shipped, tested.
 - **Shared browser-mic capture**: `deploy/assets/shared/js/measurement-audio.js`
   (mono 48 kHz, AGC/EC/NS hard-coded off) + `correction/browser_audio.py`.
 - **Active-speaker subsystem** (`jasper/active_speaker/`): commissioning
@@ -951,9 +972,10 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-13 (Wave 1 excitation/evidence identities, reuse of
-`null_walk.DspPredecessor`, and the deliberate no-consumer/no-bundle-migration
-boundary checked contract-only; no hardware behavior revalidated. Crossover
-adapter volume-lease participation and
-measurement-flow admission ownership rechecked
-against correction, balance, sync, and the coordinator mutex)
+Last verified: 2026-07-13 (Wave 2 neutral artifact-manifest ownership, exact
+Room byte/schema/path compatibility, and the no-authority/no-bundle-migration
+boundary checked; Wave 1 excitation/evidence identities and the deliberate
+no-production-admission-consumer boundary remain unchanged. No hardware
+behavior revalidated. Crossover adapter volume-lease participation and
+measurement-flow admission ownership rechecked against correction, balance,
+sync, and the coordinator mutex)

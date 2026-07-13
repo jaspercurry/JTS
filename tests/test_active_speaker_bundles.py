@@ -1102,6 +1102,11 @@ def test_append_repeat_capture_is_fail_soft_when_info_json_is_missing(
     # No info.json requirement -- this succeeds even without an opened
     # bundle, since repeat evidence has no compact list to update.
     assert entry is not None
+    assert (
+        bundles.read_artifact_manifest(bundle_dir)["bundle_schema_version"]
+        == bundles.LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION
+        == 5
+    )
     assert (bundle_dir / entry["artifact_path"]).is_file()
 
 
