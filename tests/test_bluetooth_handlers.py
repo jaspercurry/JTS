@@ -64,6 +64,9 @@ def test_a2dp_handler_matches_each_supported_audio_profile() -> None:
 def test_handler_registry_selects_first_match_and_keeps_default_last() -> None:
     assert isinstance(REGISTRY[-1], DefaultHandler)
 
+    generic = _device_with_uuids([])
+    assert DefaultHandler().applies_to(generic) is True
+
     hid_and_audio = _device_with_uuids([
         f"{UUID_HID}0000-1000-8000-00805f9b34fb",
         f"{UUID_A2DP_SINK}0000-1000-8000-00805f9b34fb",
@@ -74,4 +77,4 @@ def test_handler_registry_selects_first_match_and_keeps_default_last() -> None:
         f"{UUID_A2DP_SOURCE}0000-1000-8000-00805f9b34fb",
     ])
     assert isinstance(pick(audio), A2DPSinkHandler)
-    assert isinstance(pick(_device_with_uuids([])), DefaultHandler)
+    assert isinstance(pick(generic), DefaultHandler)
