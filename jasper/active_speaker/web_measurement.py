@@ -604,7 +604,9 @@ def _finalize_driver_repeat_set(
     comparison_set: Mapping[str, Any],
     speaker_group_id: str,
     role: str,
-    target_fingerprint: str,
+    topology_target_fingerprint: str,
+    repeat_target_id: str,
+    repeat_target_fingerprint: str,
     reservation: Mapping[str, Any],
     admission_result: Mapping[str, Any],
     repeats: list[dict[str, Any]],
@@ -622,9 +624,10 @@ def _finalize_driver_repeat_set(
     )
 
     comparison_set_id = str(comparison_set.get("comparison_set_id") or "")
-    target_id = f"{speaker_group_id}:{role}"
     reservation_attempt = int(reservation.get("attempt") or 0)
-    key = repeat_store.repeat_session_key(comparison_set_id, target_fingerprint)
+    key = repeat_store.repeat_session_key(
+        comparison_set_id, repeat_target_fingerprint
+    )
     aggregate = record_driver_repeat_aggregate(
         speaker_group_id=speaker_group_id,
         role=role,
@@ -656,7 +659,7 @@ def _finalize_driver_repeat_set(
             comparison_set,
             speaker_group_id=speaker_group_id,
             role=role,
-            target_fingerprint=target_fingerprint,
+            target_fingerprint=topology_target_fingerprint,
         )
     except ValueError as exc:
         raise RuntimeError(
@@ -692,8 +695,8 @@ def _finalize_driver_repeat_set(
     })
     repeat_admission.finish(
         comparison_set,
-        target_id=target_id,
-        target_fingerprint=target_fingerprint,
+        target_id=repeat_target_id,
+        target_fingerprint=repeat_target_fingerprint,
         token=str(reservation.get("token") or ""),
         result=admission_result,
         status="ready",
@@ -716,8 +719,8 @@ def _finalize_driver_repeat_set(
         try:
             repeat_admission.abort_ready(
                 comparison_set,
-                target_id=target_id,
-                target_fingerprint=target_fingerprint,
+                target_id=repeat_target_id,
+                target_fingerprint=repeat_target_fingerprint,
                 reason="measurement_persistence_failed",
             )
         except (OSError, RuntimeError, ValueError) as abort_exc:
@@ -728,7 +731,7 @@ def _finalize_driver_repeat_set(
                 logger,
                 "correction.crossover_repeat_abort_failed",
                 level=logging.ERROR,
-                target=target_id,
+                target=repeat_target_id,
                 attempts=reservation_attempt,
                 failure_type=type(abort_exc).__name__,
                 origin_failure_type=type(exc).__name__,
@@ -743,15 +746,15 @@ def _finalize_driver_repeat_set(
     try:
         repeat_admission.complete(
             comparison_set,
-            target_id=target_id,
-            target_fingerprint=target_fingerprint,
+            target_id=repeat_target_id,
+            target_fingerprint=repeat_target_fingerprint,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         try:
             repeat_admission.abort_ready(
                 comparison_set,
-                target_id=target_id,
-                target_fingerprint=target_fingerprint,
+                target_id=repeat_target_id,
+                target_fingerprint=repeat_target_fingerprint,
                 reason="repeat_completion_failed",
             )
         except (OSError, RuntimeError, ValueError) as abort_exc:
@@ -759,7 +762,7 @@ def _finalize_driver_repeat_set(
                 logger,
                 "correction.crossover_repeat_abort_failed",
                 level=logging.ERROR,
-                target=target_id,
+                target=repeat_target_id,
                 attempts=reservation_attempt,
                 failure_type=type(abort_exc).__name__,
                 origin_failure_type=type(exc).__name__,
@@ -773,8 +776,8 @@ def _finalize_driver_repeat_set(
         active_speaker_bundles.record_repeat_progress(
             bundle_dir,
             comparison_set_id=comparison_set_id,
-            target_fingerprint=target_fingerprint,
-            target_id=target_id,
+            target_fingerprint=repeat_target_fingerprint,
+            target_id=repeat_target_id,
             attempts=reservation_attempt,
             accepted=aggregate["accepted"],
             target=DEFAULT_REPEAT_TARGET,
@@ -847,6 +850,7 @@ def finalize_driver_repeats_after_terminal_failure(
     speaker_group_id: str,
     role: str,
     target_fingerprint: str,
+    capture_geometry: str,
     reservation: Mapping[str, Any],
     failure_type: str,
     repeat_store: Any,
@@ -861,8 +865,17 @@ def finalize_driver_repeats_after_terminal_failure(
 
     if int(reservation.get("attempt") or 0) < repeat_admission.MAX_ATTEMPTS:
         return None
+    from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+    repeat_target_id, repeat_target_fingerprint = driver_repeat_binding(
+        speaker_group_id=speaker_group_id,
+        role=role,
+        target_fingerprint=target_fingerprint,
+        capture_geometry=capture_geometry,
+    )
     key = repeat_store.repeat_session_key(
-        str(comparison_set.get("comparison_set_id") or ""), target_fingerprint
+        str(comparison_set.get("comparison_set_id") or ""),
+        repeat_target_fingerprint,
     )
     repeats = repeat_store.driver_repeats(key)
     preview = aggregate_driver_repeats(repeats, target=DEFAULT_REPEAT_TARGET)
@@ -890,7 +903,9 @@ def finalize_driver_repeats_after_terminal_failure(
         comparison_set=comparison_set,
         speaker_group_id=speaker_group_id,
         role=role,
-        target_fingerprint=target_fingerprint,
+        topology_target_fingerprint=target_fingerprint,
+        repeat_target_id=repeat_target_id,
+        repeat_target_fingerprint=repeat_target_fingerprint,
         reservation=reservation,
         admission_result={
             "accepted": False,
@@ -936,12 +951,10 @@ def record_driver_capture(
     group_id = str(raw.get("speaker_group_id") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
     repeat_failure_reader = getattr(repeat_store, "repeat_failure", None)
-    prior_repeat_failure = (
-        repeat_failure_reader(f"{group_id}:{role}")
-        if callable(repeat_failure_reader)
-        else None
-    )
-    if isinstance(prior_repeat_failure, Mapping):
+    legacy_repeat_target_id = f"{group_id}:{role}"
+    if callable(repeat_failure_reader) and isinstance(
+        repeat_failure_reader(legacy_repeat_target_id), Mapping
+    ):
         raise ValueError(
             "the bounded crossover repeat set was refused or interrupted; "
             "run the driver level check again before measuring"
@@ -953,6 +966,35 @@ def record_driver_capture(
         if placement_proof is not None
         else ""
     )
+    capture_geometry = _driver_capture_geometry(
+        placement_proof,
+        comparison_set if isinstance(comparison_set, Mapping) else None,
+        speaker_group_id=group_id,
+        role=role,
+        target_fingerprint=target_fingerprint,
+    )
+    repeat_target_id = legacy_repeat_target_id
+    repeat_target_fingerprint = target_fingerprint
+    if repeat_store is not None and target_fingerprint:
+        from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+        repeat_target_id, repeat_target_fingerprint = driver_repeat_binding(
+            speaker_group_id=group_id,
+            role=role,
+            target_fingerprint=target_fingerprint,
+            capture_geometry=capture_geometry,
+        )
+    prior_repeat_failure = (
+        repeat_failure_reader(repeat_target_id)
+        if callable(repeat_failure_reader)
+        and repeat_target_id != legacy_repeat_target_id
+        else None
+    )
+    if isinstance(prior_repeat_failure, Mapping):
+        raise ValueError(
+            "the bounded crossover repeat set was refused or interrupted; "
+            "run the driver level check again before measuring"
+        )
     floor_evidence = current_driver_floor_evidence(
         topology,
         measurements,
@@ -1030,13 +1072,7 @@ def record_driver_capture(
         calibration_level=load_calibration_level_state(),
         safe_session=None,
         durable_floor_confirmation=floor_evidence.get("confirmation"),
-        capture_geometry=_driver_capture_geometry(
-            placement_proof,
-            comparison_set if isinstance(comparison_set, Mapping) else None,
-            speaker_group_id=group_id,
-            role=role,
-            target_fingerprint=target_fingerprint,
-        ),
+        capture_geometry=capture_geometry,
     )
     if repeat_store is None:
         payload = record_driver_acoustic_capture(
@@ -1056,6 +1092,14 @@ def record_driver_capture(
             target_fingerprint = _driver_target_fingerprint(
                 topology, group_id=group_id, role=role
             )
+            from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+            repeat_target_id, repeat_target_fingerprint = driver_repeat_binding(
+                speaker_group_id=group_id,
+                role=role,
+                target_fingerprint=target_fingerprint,
+                capture_geometry=capture_geometry,
+            )
         comparison_set_id = str(comparison_set.get("comparison_set_id") or "")
         reservation = raw.get("repeat_reservation")
         reservation = reservation if isinstance(reservation, Mapping) else {}
@@ -1066,13 +1110,16 @@ def record_driver_capture(
             or not target_fingerprint
             or not reservation_token
             or not 1 <= reservation_attempt <= 4
+            or reservation.get("target_id") != repeat_target_id
+            or reservation.get("target_fingerprint")
+            != repeat_target_fingerprint
         ):
             raise ValueError(
                 "the crossover measurement context or repeat admission changed; "
                 "run the level check again"
             )
         key = repeat_store.repeat_session_key(
-            comparison_set_id, target_fingerprint
+            comparison_set_id, repeat_target_fingerprint
         )
         provisional = record_driver_acoustic_capture(
             topology,
@@ -1139,7 +1186,7 @@ def record_driver_capture(
         }
         repeats = repeat_store.append_driver_repeat(
             key,
-            target_id=f"{group_id}:{role}",
+            target_id=repeat_target_id,
             item=item,
             attempt=reservation_attempt,
         )
@@ -1155,8 +1202,8 @@ def record_driver_capture(
             active_speaker_bundles.record_repeat_progress(
                 bundle_dir,
                 comparison_set_id=comparison_set_id,
-                target_fingerprint=target_fingerprint,
-                target_id=f"{group_id}:{role}",
+                target_fingerprint=repeat_target_fingerprint,
+                target_id=repeat_target_id,
                 attempts=reservation_attempt,
                 accepted=aggregate["accepted"],
                 target=DEFAULT_REPEAT_TARGET,
@@ -1198,8 +1245,8 @@ def record_driver_capture(
         if aggregate["needed_recapture"] and not attempt_budget_exhausted:
             repeat_admission.finish(
                 comparison_set,
-                target_id=f"{group_id}:{role}",
-                target_fingerprint=target_fingerprint,
+                target_id=repeat_target_id,
+                target_fingerprint=repeat_target_fingerprint,
                 token=reservation_token,
                 result=admission_result,
                 status="active",
@@ -1234,11 +1281,11 @@ def record_driver_capture(
                 "per_repeat": aggregate["per_repeat"],
             }
             repeat_store.clear_driver_repeats(key)
-            repeat_store.record_repeat_failure(f"{group_id}:{role}", failure)
+            repeat_store.record_repeat_failure(repeat_target_id, failure)
             repeat_admission.finish(
                 comparison_set,
-                target_id=f"{group_id}:{role}",
-                target_fingerprint=target_fingerprint,
+                target_id=repeat_target_id,
+                target_fingerprint=repeat_target_fingerprint,
                 token=reservation_token,
                 result=admission_result,
                 status="refused",
@@ -1257,7 +1304,9 @@ def record_driver_capture(
             comparison_set=comparison_set,
             speaker_group_id=group_id,
             role=role,
-            target_fingerprint=target_fingerprint,
+            topology_target_fingerprint=target_fingerprint,
+            repeat_target_id=repeat_target_id,
+            repeat_target_fingerprint=repeat_target_fingerprint,
             reservation=reservation,
             admission_result=admission_result,
             repeats=repeats,

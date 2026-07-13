@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import logging
+import math
 from http import HTTPStatus
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
@@ -550,6 +551,7 @@ def validate_current_capture_context(
     kind: str,
     speaker_group_id: str,
     role: str = "",
+    capture_geometry: str,
     expected_target_fingerprint: str,
 ) -> None:
     """Reject a stale relay link before it can emit a crossover sweep.
@@ -583,9 +585,23 @@ def validate_current_capture_context(
         )
     level = status.get("level_match")
     level = level if isinstance(level, Mapping) else {}
+    geometry = str(capture_geometry or "").lower()
+    reference_locks = level.get("reference_axis_driver_locks")
+    reference_locks = (
+        reference_locks if isinstance(reference_locks, Mapping) else {}
+    )
+    reference_lock = reference_locks.get(f"{speaker_group_id}:{role.lower()}")
+    geometry_level_ready = level.get("ready") is True
+    if kind == "driver" and geometry == "reference_axis":
+        geometry_level_ready = bool(
+            not isinstance(reference_lock, bool)
+            and isinstance(reference_lock, (int, float))
+            and math.isfinite(float(reference_lock))
+            and float(reference_lock) <= 0
+        )
     if (
         level.get("valid") is not True
-        or level.get("ready") is not True
+        or not geometry_level_ready
         or str(level.get("context_id") or "") != expected_profile_context_id
     ):
         raise ValueError(
@@ -821,6 +837,7 @@ def build_crossover_relay_run_and_consume(
                             else None
                         ),
                         locked_main_volume_db=locked_main_volume_db,
+                        volume_lease_prepared=prepare_play is not None,
                     )
                 summed_play_raw = {"speaker_group_id": group_id}
                 for key in (
@@ -836,6 +853,7 @@ def build_crossover_relay_run_and_consume(
                     summed_play_raw,
                     camilla_factory=camilla_factory,
                     blocking_phase=phase,
+                    volume_lease_prepared=prepare_play is not None,
                 )
             finally:
                 # Restore before measurement_window resumes household audio.

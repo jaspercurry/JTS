@@ -113,6 +113,12 @@ async def test_lease_requires_each_driver_and_summed_uses_quietest_lock():
     lease._outcomes["near_field_driver:mono:tweeter"] = _locked_outcome(
         original=-30.0, locked=-4.0
     )
+    lease._outcomes["reference_axis_driver:mono:woofer"] = _locked_outcome(
+        original=-30.0, locked=-10.0
+    )
+    lease._outcomes["reference_axis_driver:mono:tweeter"] = _locked_outcome(
+        original=-30.0, locked=-4.0
+    )
     assert lease.level_match_snapshot(current_context_id="profile-1")["ready"] is True
 
     applied: list[float] = []
@@ -122,19 +128,122 @@ async def test_lease_requires_each_driver_and_summed_uses_quietest_lock():
         return current
 
     async def set_volume(value: float) -> bool:
+        nonlocal current
         applied.append(value)
+        current = value
         return True
 
     assert await lease.acquire_driver_sweep_volume(
         "mono", "tweeter", get_volume, set_volume
     )
     assert applied[-1] == -4.0
-    assert await lease.restore_sweep_volume(set_volume)
+    assert (await lease.finish_sweep_volume(set_volume, get_volume)).value == (
+        "exact_restored"
+    )
     assert applied[-1] == -27.0
-    assert await lease.acquire_summed_sweep_volume(get_volume, set_volume)
+    assert await lease.acquire_summed_sweep_volume("mono", get_volume, set_volume)
     assert applied[-1] == -10.0
-    assert await lease.restore_sweep_volume(set_volume)
+    assert (await lease.finish_sweep_volume(set_volume, get_volume)).value == (
+        "exact_restored"
+    )
     assert applied[-1] == -27.0
+
+
+@pytest.mark.asyncio
+async def test_summed_sweep_lease_is_bound_to_requested_group():
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease()
+    lease.configure_targets([
+        {
+            "target_id": f"{group}:{role}",
+            "speaker_group_id": group,
+            "role": role,
+            "geometry": f"near_field_driver:{group}:{role}",
+            "tone_frequency_hz": 250.0 if role == "woofer" else 6250.0,
+            "commissioning_gain_db": 0.0,
+        }
+        for group in ("left", "right")
+        for role in ("woofer", "tweeter")
+    ])
+    lease._outcomes["reference_axis_driver:left:woofer"] = _locked_outcome(
+        original=-30.0, locked=-20.0
+    )
+    lease._outcomes["reference_axis_driver:right:woofer"] = _locked_outcome(
+        original=-30.0, locked=-5.0
+    )
+    current = -27.0
+    writes = []
+
+    async def get_volume():
+        return current
+
+    async def set_volume(value):
+        nonlocal current
+        writes.append(value)
+        current = value
+        return True
+
+    assert not await lease.acquire_summed_sweep_volume(
+        "right", get_volume, set_volume
+    )
+    assert writes == []
+    lease._outcomes["reference_axis_driver:right:tweeter"] = _locked_outcome(
+        original=-30.0, locked=-6.0
+    )
+    assert await lease.acquire_summed_sweep_volume(
+        "right", get_volume, set_volume
+    )
+    assert writes == [-6.0]
+    lease.assert_sweep_volume_owned(
+        source="summed_sweep",
+        speaker_group_id="right",
+        role="summed",
+    )
+    with pytest.raises(RuntimeError, match="does not own"):
+        lease.assert_sweep_volume_owned(
+            source="summed_sweep",
+            speaker_group_id="left",
+            role="summed",
+        )
+    assert (await lease.finish_sweep_volume(set_volume, get_volume)).value == (
+        "exact_restored"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_lock", (float("nan"), 0.1, True))
+async def test_summed_sweep_refuses_invalid_required_role_lock(invalid_lock):
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease()
+    lease.configure_targets([
+        {
+            "target_id": f"mono:{role}",
+            "speaker_group_id": "mono",
+            "role": role,
+            "geometry": f"near_field_driver:mono:{role}",
+            "tone_frequency_hz": 250.0 if role == "woofer" else 6250.0,
+            "commissioning_gain_db": 0.0,
+        }
+        for role in ("woofer", "tweeter")
+    ])
+    lease._outcomes["reference_axis_driver:mono:woofer"] = _locked_outcome(
+        original=-30.0, locked=-10.0
+    )
+    lease._outcomes["reference_axis_driver:mono:tweeter"] = _locked_outcome(
+        original=-30.0, locked=invalid_lock
+    )
+
+    async def get_volume():
+        return -27.0
+
+    async def unexpected_set(_value):
+        pytest.fail("invalid summed lock set must not mutate volume")
+
+    assert not await lease.acquire_summed_sweep_volume(
+        "mono", get_volume, unexpected_set
+    )
 
 
 @pytest.mark.asyncio
@@ -223,7 +332,7 @@ async def test_reference_axis_level_ramp_uses_bounded_listening_position_cap(
         classmethod(lambda cls, **kwargs: ramp_calls.append(kwargs) or object()),
     )
 
-    outcome = SimpleNamespace(locked=False, ramp=SimpleNamespace())
+    outcome = SimpleNamespace(locked=False, ramp=SimpleNamespace(restored=False))
 
     class FakeSession:
         def __init__(self, **_kwargs):
@@ -235,9 +344,22 @@ async def test_reference_axis_level_ramp_uses_bounded_listening_position_cap(
 
     monkeypatch.setattr(level_match, "LevelMatchSession", FakeSession)
     lease = backend.CrossoverLevelLease()
+    current = -30.0
+
+    async def get_volume():
+        return current
+
+    async def set_volume(value):
+        nonlocal current
+        current = value
+        return True
 
     assert (
-        await lease.run_level_match("reference_axis_driver:mono:woofer")
+        await lease.run_level_match(
+            "reference_axis_driver:mono:woofer",
+            get_main_volume_db=get_volume,
+            set_main_volume_db=set_volume,
+        )
         is outcome
     )
     assert ramp_calls == [
@@ -329,10 +451,13 @@ async def test_run_level_match_rejects_noncanonical_geometry_before_ramp(geometr
 
 
 @pytest.mark.asyncio
-async def test_sweep_lease_restores_when_volume_write_response_is_lost():
+async def test_sweep_lease_persists_restore_when_volume_write_response_is_lost(
+    tmp_path,
+):
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
-    lease = CrossoverLevelLease()
+    state_path = tmp_path / "volume-safety.json"
+    lease = CrossoverLevelLease(volume_safety_state_path=state_path)
     lease._outcomes["near_field_driver:mono:woofer"] = _locked_outcome(
         original=-30.0,
         locked=-8.0,
@@ -352,19 +477,25 @@ async def test_sweep_lease_restores_when_volume_write_response_is_lost():
             "mono", "woofer", get_volume, apply_then_timeout
         )
     assert current == -8.0
-
-    restore_attempts = 0
+    restarted = CrossoverLevelLease(volume_safety_state_path=state_path)
+    assert restarted.unresolved_volume_safety == {
+        "status": "unresolved",
+        "reason": "service_restarted_during_volume_transition",
+        "source": "driver_sweep",
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "original_main_volume_db": -27.0,
+        "emergency_volume_db": -60.0,
+    }
 
     async def restore(value: float) -> bool:
-        nonlocal current, restore_attempts
-        restore_attempts += 1
-        if restore_attempts == 1:
-            raise RuntimeError("temporary websocket failure")
+        nonlocal current
         current = value
         return True
 
-    assert await lease.restore_sweep_volume(restore) is False
-    assert await lease.restore_sweep_volume(restore) is True
+    assert (await lease.finish_sweep_volume(restore, get_volume)).value == (
+        "exact_restored"
+    )
     assert current == -27.0
 
 
@@ -415,6 +546,7 @@ async def test_sweep_lease_uses_emergency_attenuation_after_restore_rejection():
     from jasper.web.correction_crossover_backend import (
         EMERGENCY_SWEEP_VOLUME_DB,
         CrossoverLevelLease,
+        UnresolvedVolumeRecoveryResult,
     )
 
     lease = CrossoverLevelLease()
@@ -423,22 +555,276 @@ async def test_sweep_lease_uses_emergency_attenuation_after_restore_rejection():
         locked=-8.0,
     )
     writes = []
+    current = -27.0
 
     async def get_volume() -> float:
-        return -27.0
+        return current
 
     async def set_volume(value: float) -> bool:
+        nonlocal current
         writes.append(value)
-        return value != -27.0
+        if value == -27.0:
+            return False
+        current = value
+        return True
 
     assert await lease.acquire_driver_sweep_volume(
         "mono", "woofer", get_volume, set_volume
     )
-    assert await lease.restore_sweep_volume(set_volume) is False
-    assert lease.sweep_volume_active is True
-    assert await lease.emergency_lower_sweep_volume(set_volume) is True
+    assert (
+        await lease.finish_sweep_volume(set_volume, get_volume)
+        is UnresolvedVolumeRecoveryResult.EMERGENCY_ATTENUATED
+    )
     assert writes == [-8.0, -27.0, EMERGENCY_SWEEP_VOLUME_DB]
     assert lease.sweep_volume_active is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "geometry",
+    (
+        "near_field_driver:mono:woofer",
+        "reference_axis_driver:mono:woofer",
+    ),
+)
+async def test_level_intent_write_failure_prevents_volume_mutation(
+    monkeypatch, geometry
+):
+    from jasper.web import correction_crossover_backend as backend
+
+    def refuse_persist(_path, _payload):
+        raise OSError("read-only state directory")
+
+    monkeypatch.setattr(backend, "_write_volume_safety_state", refuse_persist)
+    lease = backend.CrossoverLevelLease(volume_safety_state_path="state.json")
+    writes = []
+
+    async def get_volume():
+        return -27.0
+
+    async def set_volume(value):
+        writes.append(value)
+        return True
+
+    with pytest.raises(OSError, match="read-only"):
+        await lease.run_level_match(
+            geometry,
+            get_main_volume_db=get_volume,
+            set_main_volume_db=set_volume,
+        )
+
+    assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_sweep_intent_write_failure_prevents_volume_mutation(monkeypatch):
+    from jasper.web import correction_crossover_backend as backend
+
+    lease = backend.CrossoverLevelLease(volume_safety_state_path="state.json")
+    lease._outcomes["near_field_driver:mono:woofer"] = _locked_outcome(
+        original=-30.0,
+        locked=-8.0,
+    )
+
+    def refuse_persist(_path, _payload):
+        raise OSError("read-only state directory")
+
+    monkeypatch.setattr(backend, "_write_volume_safety_state", refuse_persist)
+    writes = []
+
+    async def get_volume():
+        return -27.0
+
+    async def set_volume(value):
+        writes.append(value)
+        return True
+
+    with pytest.raises(OSError, match="read-only"):
+        await lease.acquire_driver_sweep_volume(
+            "mono", "woofer", get_volume, set_volume
+        )
+
+    assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_sweep_dual_recovery_failure_survives_restart(tmp_path):
+    from jasper.web.correction_crossover_backend import (
+        CrossoverLevelLease,
+        UnresolvedVolumeRecoveryResult,
+    )
+
+    state_path = tmp_path / "volume-safety.json"
+    lease = CrossoverLevelLease(volume_safety_state_path=state_path)
+    lease._outcomes["near_field_driver:mono:woofer"] = _locked_outcome(
+        original=-30.0,
+        locked=-8.0,
+    )
+    current = -27.0
+    writes = []
+
+    async def get_volume():
+        return current
+
+    async def set_volume(value):
+        nonlocal current
+        writes.append(value)
+        if value in {-27.0, -60.0}:
+            return False
+        current = value
+        return True
+
+    assert await lease.acquire_driver_sweep_volume(
+        "mono", "woofer", get_volume, set_volume
+    )
+    assert (
+        await lease.finish_sweep_volume(set_volume, get_volume)
+        is UnresolvedVolumeRecoveryResult.FAILED
+    )
+    assert writes == [-8.0, -27.0, -60.0]
+    assert (
+        CrossoverLevelLease(
+            volume_safety_state_path=state_path
+        ).unresolved_volume_safety
+        is not None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "geometry",
+    (
+        "near_field_driver:mono:woofer",
+        "reference_axis_driver:mono:woofer",
+    ),
+)
+async def test_level_dual_recovery_failure_survives_restart(
+    monkeypatch, tmp_path, geometry
+):
+    from jasper.audio_measurement.ramp import RampState
+    from jasper.correction import level_match
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    outcome = SimpleNamespace(
+        locked=True,
+        ramp=SimpleNamespace(state=RampState.LOCKED, restored=False),
+    )
+
+    class FakeSession:
+        def __init__(self, *, store, **_kwargs):
+            self.store = store
+
+        async def run_for_geometry(self, requested, **_ports):
+            assert requested == geometry
+            return outcome
+
+    monkeypatch.setattr(level_match, "LevelMatchSession", FakeSession)
+    state_path = tmp_path / "volume-safety.json"
+    lease = CrossoverLevelLease(volume_safety_state_path=state_path)
+    writes = []
+
+    async def get_volume():
+        return -27.0
+
+    async def refuse_volume(value):
+        writes.append(value)
+        return False
+
+    with pytest.raises(RuntimeError, match="recover the crossover volume"):
+        await lease.run_level_match(
+            geometry,
+            get_main_volume_db=get_volume,
+            set_main_volume_db=refuse_volume,
+        )
+
+    assert writes == [-27.0, -60.0]
+    assert geometry not in lease._outcomes
+    assert (
+        CrossoverLevelLease(
+            volume_safety_state_path=state_path
+        ).unresolved_volume_safety
+        is not None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "geometry",
+    (
+        "near_field_driver:mono:woofer",
+        "reference_axis_driver:mono:woofer",
+    ),
+)
+async def test_level_cancel_during_restore_drains_then_discards_identity(
+    monkeypatch, tmp_path, geometry
+):
+    import asyncio
+
+    from jasper.audio_measurement.ramp import RampState
+    from jasper.correction import level_match
+    from jasper.correction.level_match import MeasurementLevelLock
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    outcome = SimpleNamespace(
+        locked=True,
+        ramp=SimpleNamespace(state=RampState.LOCKED, restored=False),
+    )
+
+    class FakeSession:
+        def __init__(self, *, store, **_kwargs):
+            self.store = store
+
+        async def run_for_geometry(self, requested, **_ports):
+            self.store.put(
+                MeasurementLevelLock(
+                    geometry=requested,
+                    main_volume_db=-8.0,
+                    gain_map_db=None,
+                    settled_mic_dbfs=None,
+                    noise_floor_dbfs=None,
+                )
+            )
+            return outcome
+
+    monkeypatch.setattr(level_match, "LevelMatchSession", FakeSession)
+    state_path = tmp_path / "volume-safety.json"
+    lease = CrossoverLevelLease(volume_safety_state_path=state_path)
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
+    current = -27.0
+
+    async def get_volume():
+        return current
+
+    async def blocked_restore(value):
+        nonlocal current
+        restore_started.set()
+        await release_restore.wait()
+        current = value
+        return True
+
+    task = asyncio.create_task(
+        lease.run_level_match(
+            geometry,
+            get_main_volume_db=get_volume,
+            set_main_volume_db=blocked_restore,
+        )
+    )
+    await restore_started.wait()
+    task.cancel()
+    release_restore.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert current == -27.0
+    assert lease.level_lock_store.get(geometry) is None
+    assert geometry not in lease._outcomes
+    assert (
+        CrossoverLevelLease(
+            volume_safety_state_path=state_path
+        ).unresolved_volume_safety
+        is None
+    )
 
 
 def test_effective_excitation_includes_driver_main_lock():

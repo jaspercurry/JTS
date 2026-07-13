@@ -47,6 +47,49 @@ SUMMED_CAPTURE_GEOMETRY_BY_POLICY = {
 }
 
 
+def driver_repeat_binding(
+    *,
+    speaker_group_id: str,
+    role: str,
+    target_fingerprint: str,
+    capture_geometry: str,
+) -> tuple[str, str]:
+    """Return one geometry-scoped repeat-admission identity.
+
+    The physical topology fingerprint remains the placement-proof identity.
+    Fixed-axis attempts get a derived controller identity so they can never
+    continue or complete the near-field repeat set for the same driver.
+    """
+
+    group_id = str(speaker_group_id or "").strip()
+    role_id = str(role or "").strip().lower()
+    fingerprint = str(target_fingerprint or "").strip()
+    geometry = str(capture_geometry or "").strip().lower()
+    if not group_id or role_id not in _active_crossover_driver_roles():
+        raise ValueError("driver repeat binding requires a valid group and role")
+    if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        raise ValueError("driver repeat binding requires a target fingerprint")
+    if geometry not in DRIVER_CAPTURE_GEOMETRIES:
+        raise ValueError("driver repeat binding has unsupported capture geometry")
+    target_id = f"{group_id}:{role_id}"
+    if geometry == "near_field":
+        return target_id, fingerprint
+    repeat_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "capture_geometry": geometry,
+                "target_fingerprint": fingerprint,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    # Output-topology ids may contain ``:`` but never ``/``.  Using the
+    # forbidden character at this namespace boundary keeps the fixed-axis
+    # controller id disjoint from every legal near-field ``group:role`` id.
+    return f"reference_axis/{target_id}", repeat_fingerprint
+
+
 def _active_crossover_driver_roles() -> frozenset[str]:
     """Return the canonical 2/3-way role vocabulary without an import cycle."""
 

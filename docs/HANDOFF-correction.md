@@ -122,7 +122,9 @@
   the shared substrate. After protected speaker setup, one server envelope
   exposes the real product choice: keep/edit the applied manual crossover and
   continue to Room, or enter automatic driver level matching (mic/calibration +
-  one near-field level per driver → each driver sweep → explicit trim replacement)
+  one near-field level per driver → each driver's near-field repeats → one
+  fixed-reference-axis re-level and gated repeat set per driver → explicit trim
+  replacement)
   and
   then continue to Room. The browser is a thin
   renderer/dispatcher: it has no local recorder and reads one envelope snapshot,
@@ -215,6 +217,18 @@
   protocols 1 and 2. The repo version and public
   `https://capture.jasper.tech/version.json` both reported `20260712.3` on
   2026-07-12; there is no pending capture-page publish gate for this contract.
+  Crossover level and sweep volume transitions now use one durable backend
+  intent for both near-field and fixed-axis work. If restart or failed readback
+  leaves the volume unconfirmed, `GET /crossover/envelope` exposes only
+  **Recover safe listening volume**; `POST /crossover/recover-volume` attempts
+  confirmed exact restore and then the −60 dB fallback. All other crossover
+  level, capture, playback, and apply routes return 409 until that intent is
+  resolved. Fixed-axis cleanup separately owns only microphone/comparison
+  identity rollback; it does not implement a second volume state machine.
+  Hardware-free tests cover persistence-before-mutation, restart hydration,
+  exact/emergency readback, cancellation draining, route/backend refusal, and
+  the relay sweep's matching-lease handoff. jts3/Chrome/UMIK-2 proof remains the
+  B2b hardware gate.
   Relay room level setup temporarily suspends the local browser's 120-second
   upload watchdog while the human completes mic permission, calibration,
   placement, and auto-level, then restores a fresh bound for the actual room
@@ -1144,7 +1158,10 @@ POST /sync/relay-capture     phone-mic relay transport for the sync marker
 POST /sync/apply             persist the accepted positive-only pair delay
 POST /sync/stop              stop playback and reset the sync walkthrough
 POST /sync/reset             reset the sync walkthrough (same safe stop path)
-POST /crossover/level-match  guided mic/calibration + near-field automatic level
+POST /crossover/level-match  guided mic/calibration + server-selected per-driver
+                             near-field or fixed-reference-axis automatic level
+POST /crossover/recover-volume recover a durable unconfirmed listening volume;
+                              exact prior level first, then confirmed −60 dB
 POST /crossover/apply        atomically apply measured Layer A; restore gain lease
 POST /crossover/driver-test  start one protected per-driver audible test
 POST /crossover/driver-confirm record the protected driver-test result
@@ -1155,9 +1172,11 @@ POST /crossover/summed-capture-sweep start a bounded combined-driver stimulus
 POST /crossover/summed-capture body = WAV (audio/wav); analyze + record
                              active-speaker summed-crossover evidence
 POST /crossover/relay-capture body: {kind: driver|summed, speaker_group_id,
-                             role?}; phone-mic relay transport for one
+                             role?, capture_geometry?}; phone-mic relay transport for one
                              crossover sweep and the only production driver
                              evidence ingress (same record_*_capture analysis;
+                             driver geometry must equal the server envelope's
+                             next action at POST and armed time;
                              refuses while room/balance/sync
                              is active — server-computed at POST and
                              re-checked when the phone arms). ON-DEVICE:
@@ -2274,8 +2293,10 @@ Internal:
 
 ---
 
-Last verified: 2026-07-12 (full GET/POST route inventory rechecked against
-`correction_setup._POST_ROUTES` and `Handler.do_GET`; summed fixed-axis placement and relay metadata
+Last verified: 2026-07-13 (full GET/POST route inventory rechecked against
+`correction_setup._POST_ROUTES` and `Handler.do_GET`; durable crossover-volume
+recovery and route gating; per-driver fixed-reference-axis orchestration;
+geometry-scoped repeats/apply gate; summed fixed-axis placement and relay metadata
 transport rechecked against the Lane-E admission boundary; prior 2026-07-11
 pass covered driver-specific crossover level sequence,
 authenticated capture-page protocol v2 control data, and the placement/

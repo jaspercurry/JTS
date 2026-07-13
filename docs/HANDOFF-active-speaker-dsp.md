@@ -171,8 +171,13 @@
 > is the single driver-evidence ingress. `GET /correction/crossover/envelope`
 > (`active_speaker/crossover_envelope.py`) is a pure sequential screen envelope:
 > protected speaker setup → mic/calibration + one automatic near-field level per
-> driver → each driver's stationary repeat sequence → apply matched attenuation
-> trims → Room. The
+> driver → each driver's stationary near-field repeat sequence → keep the mic
+> fixed on the tweeter reference axis while each driver gets a separate safe
+> level and a target of three gated repeats → apply matched attenuation trims →
+> Room. One bounded fourth attempt may replace a rejected capture, but automatic
+> apply still requires three accepted repeats for both geometries. The lower
+> kernel can retain a two-accepted reduced-confidence aggregate for diagnosis;
+> it is not apply-eligible. The
 > browser has no second measurement
 > state machine or local recorder; passive
 > (`full_range_passive`) speakers get `active=False` (no driver/summed targets),
@@ -1284,6 +1289,22 @@ A check.
    resulting per-driver digital-volume locks and the shared microphone identity
    are persisted in one comparison set. Old captures without that proof, or
    captures from different sets, cannot replace a manual crossover.
+
+   Crossover level checks and driver/summed sweeps share one durable listening-
+   volume intent owned by `CrossoverLevelLease`. Before the first CamillaDSP
+   volume mutation, it atomically records the finite non-positive entry volume
+   in `/var/lib/jasper/active_speaker_crossover_volume_safety.json`. Normal
+   cleanup first restores that exact level, then uses −60 dB only as an
+   emergency fallback; setter acknowledgement is insufficient, so either result
+   needs a fresh finite CamillaDSP readback within 0.05 dB. The resolved
+   tombstone is written before the in-process gate clears. A crash during an
+   active transition, an unreadable state file, failed readback, or failed
+   tombstone write hydrates fail-closed. All new crossover level, capture,
+   playback, and apply actions remain blocked until the recovery-only wizard
+   action confirms exact restore or emergency attenuation. The web layer owns
+   the CamillaDSP ports; the lease owns persistence and the recovery decision.
+   This contract is hardware-free verified; the incremental jts3/Chrome/UMIK-2
+   run remains the B2b hardware gate.
 2. **Null-depth optimization** proves polarity and relative delay at
    each crossover. With the planned crossover active, invert one
    adjacent driver through the mixer and sweep the crossover band.
@@ -1895,7 +1916,8 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-12 (bounded CamillaDSP worker cancellation checked
+Last verified: 2026-07-13 (durable crossover-volume intent, confirmed recovery,
+and relay lease ownership checked; bounded CamillaDSP worker cancellation checked
 against the outer commissioning rollback transaction; superseded readiness and
 per-driver topology-tone planner removal checked against the protected commission ramp and retained
 summed-crossover planner; prior 2026-07-11 pass covered per-driver protected level tones and gain locks,
