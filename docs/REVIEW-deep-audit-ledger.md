@@ -4,12 +4,12 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`22230cf8`): 2026-07-12.
+Last reconciled against `main` (`1e7fef4a`): 2026-07-12.
 
 ## Status counts
 
-- **open**: 380
-- **fixed**: 284
+- **open**: 352
+- **fixed**: 312
 - **in-progress**: 0
 - **mooted**: 12
 - **deferred**: 1
@@ -107,20 +107,20 @@ Last reconciled against `main` (`22230cf8`): 2026-07-12.
 | DA-0166 | `firmware/dial/src/discovery.cpp` :: discoverControlEndpoint | should-fix | W3 | **fixed** | dial/AMOLED control discovery moved behind one manifest-owned firmware library — #1350 |
 | DA-0167 | `jasper/active_speaker/camilla_yaml.py` :: emit_active_speaker_driver_domain_config (du | should-fix | W3 | **fixed** | solo-baseline and driver-domain emitters share one correction safety gate — #1354 |
 | DA-0168 | `jasper/active_speaker/crossover_preview.py` :: _ACTIVE_ROLE_PAIRS | should-fix | W3 | **fixed** | one ordered role-pair contract now feeds design gating and preview generation — #1352 |
-| DA-0169 | `jasper/active_speaker/design_draft.py` :: _normalise_driver | should-fix | W3 | **open** | — |
+| DA-0169 | `jasper/active_speaker/design_draft.py` :: _normalise_driver | should-fix | W3 | **fixed** | shared driver normalizer preserves every research/manual policy divergence — #1355 |
 | DA-0170 | `jasper/active_speaker/measurement.py` :: _latest_current_summed_records / _latest_cur | should-fix | W3 | **mooted** | crossover pairing made the selectors intentionally divergent — #1345/#1353 |
-| DA-0171 | `jasper/active_speaker/runtime_contract.py` :: classify_camilla_graph:1568-1589 | should-fix | W3 | **open** | — |
-| DA-0172 | `jasper/active_speaker/safe_playback.py` :: _atomic_write_json | should-fix | W3 | **open** | — |
+| DA-0171 | `jasper/active_speaker/runtime_contract.py` :: classify_camilla_graph:1568-1589 | should-fix | W3 | **fixed** | exhaustive duplicate graph-safety branches collapsed without changing fail-closed output — #1356 |
+| DA-0172 | `jasper/active_speaker/safe_playback.py` :: _atomic_write_json | should-fix | W3 | **fixed** | safety-state writers use canonical atomic 0640 parent-group publication — #1357 |
 | DA-0173 | `jasper/active_speaker/staging.py` :: _atomic_write_json:114-126 | should-fix | W3 | **open** | — |
 | DA-0174 | `jasper/active_speaker/staging.py` :: driver_commission_audible_evidence:651-683 / | should-fix | W3 | **open** | — |
 | DA-0175 | `jasper/active_speaker/staging.py` :: stage_protected_startup_config:1722-1821 / p | should-fix | W3 | **open** | — |
 | DA-0176 | `jasper/active_speaker/startup_load.py` :: _atomic_write_json / _base_state / _commissi | should-fix | W3 | **open** | — |
-| DA-0177 | `jasper/active_speaker/web_measurement.py` :: capture_preset (line 255) | should-fix | W3 | **open** | — |
+| DA-0177 | `jasper/active_speaker/web_measurement.py` :: capture_preset (line 255) | should-fix | W3 | **fixed** | capture-preset resolution centralized with fail-closed fallback and explicit internal path ownership — #1358 |
 | DA-0178 | `jasper/audio_runtime_plan.py` :: _resolve_profile_floor_int / _resolve_output | should-fix | W3 | **open** | — |
 | DA-0179 | `jasper/audio_validation.py` :: write_artifact:663 / write_latest_pointer:69 | should-fix | W3 | **fixed** | both diagnostic publishers use one domain serializer and canonical atomic writer — #1360 |
 | DA-0180 | `jasper/cli/aec_bridge.py` :: _ref_thread (1095-1214) / _outputd_ref_udp_t | should-fix | W3 | **open** | — |
 | DA-0181 | `jasper/cli/aec_tune.py` :: main (--mic-device default) | should-fix | W3 | **fixed** | registry-derived XVF capture identity and WAV-layout validation — #1412 |
-| DA-0182 | `jasper/cli/doctor/audio.py` :: _read_status_socket:978 | should-fix | W3 | **open** | — |
+| DA-0182 | `jasper/cli/doctor/audio.py` :: _read_status_socket:978 | should-fix | W3 | **fixed** | STATUS socket lifecycle centralized with total deadline, response cap, and caller-owned policy — #1361 |
 | DA-0183 | `jasper/cli/wake_score.py` :: walk_corpus/parse_quadrant vs recording_back | should-fix | W3 | **fixed** | shared condition mapping restores ambient traversal and scoring — #1362 |
 | DA-0184 | `jasper/cli/xvf_firmware_update.py` :: _write_state | should-fix | W3 | **fixed** | firmware status uses canonical atomic writer with deterministic 0644 mode — #1363 |
 | DA-0185 | `jasper/control/aec_endpoints.py` :: _LEG_DEFAULT_RAW | should-fix | W3 | **fixed** | wake-leg defaults derived from control owner and pinned across reconciler/installer writers — #1364 |
@@ -193,18 +193,18 @@ Last reconciled against `main` (`22230cf8`): 2026-07-12.
 | DA-0252 | `jasper/transit/_mta_stations.py` :: load_stations | should-fix | W4 | **fixed** | real missing/open/decode fallback tests and truthful permissive-CSV contract — #1413 |
 | DA-0253 | `jasper/voice/openai_session.py` :: OpenAIRealtimeConnection._reconnect_with_bac | should-fix | W4 | **fixed** | exact-threshold OpenAI reconnect escalation and rate-limit contract — #1414 |
 | DA-0254 | `jasper/web/speaker_setup.py` :: _apply_name / _write_bluez_main_conf_name | should-fix | W4 | **fixed** | atomic fail-soft BlueZ publication and complete rename-surface convergence — #1416 |
-| DA-0255 | `jasper/web/sync_flow.py` :: handle_start / active_phase / handle_status | should-fix | W4 | **open** | `handle_play` now directly covered by race and happy-path tests in #1239; start/analyze/active-phase coverage remains |
+| DA-0255 | `jasper/web/sync_flow.py` :: handle_start / active_phase / handle_status | should-fix | W4 | **fixed** | sync async work generation-bound; apply phase, cleanup, retry, and replacement-session races pinned — #1425 |
 | DA-0256 | `rust/jasper-dual-dac-lab/src/main.rs` :: fill_identity (:1029-1062) | should-fix | W4 | **fixed** | exact-rate validation and silent non-aligned final-period tail — #1418 |
-| DA-0257 | `rust/jasper-fanin/src/impulse_tap.rs` :: RESERVED_TAP_DIR_BASENAMES (:148) | should-fix | W4 | **open** | — |
-| DA-0258 | `rust/jasper-outputd/src/state.rs` :: OutputdState::snapshot_json | should-fix | W4 | **open** | — |
-| DA-0259 | `rust/jasper-outputd/src/state.rs` :: StateServer::handle_connection | should-fix | W4 | **open** | — |
-| DA-0260 | `rust/jasper-resampler/src/lib.rs` :: AudioRing::push_interleaved :335-349 | should-fix | W4 | **open** | — |
+| DA-0257 | `rust/jasper-fanin/src/impulse_tap.rs` :: RESERVED_TAP_DIR_BASENAMES (:148) | should-fix | W4 | **fixed** | tap reservation validation now derives from the owning Config socket defaults — #1419 |
+| DA-0258 | `rust/jasper-outputd/src/state.rs` :: OutputdState::snapshot_json | should-fix | W4 | **fixed** | every conditional STATUS snapshot shape parsed as valid JSON by a dev-only oracle — #1424 |
+| DA-0259 | `rust/jasper-outputd/src/state.rs` :: StateServer::handle_connection | should-fix | W4 | **fixed** | state command capped at 256 bytes/2 s total with full wire, bounded-error, and no-spam coverage — #1424 |
+| DA-0260 | `rust/jasper-resampler/src/lib.rs` :: AudioRing::push_interleaved :335-349 | should-fix | W4 | **fixed** | bounded overflow drops oldest frames, retains newest stereo order, and reports the exact drop count — #1420 |
 | DA-0261 | `tests/test_doctor.py` :: (whole file) | should-fix | W4 | **open** | — |
 | DA-0262 | `tests/test_laptop_onboarding_scripts.py` :: repo_env_local | should-fix | W4 | **open** | — |
-| DA-0263 | `tests/test_multiroom_reconcile.py` :: test_main_fresh_solo_first_reconcile_never_t | should-fix | W4 | **open** | — |
-| DA-0264 | `tests/test_multiroom_runtime_balance.py` :: apply_local_trim | should-fix | W4 | **open** | — |
-| DA-0265 | `tests/test_tools_spotify.py` :: spotify_queue | should-fix | W4 | **open** | — |
-| DA-0266 | `tests/test_web_correction_setup.py` :: test_known_post_routes_reach_csrf_guard | should-fix | W4 | **open** | — |
+| DA-0263 | `tests/test_multiroom_reconcile.py` :: test_main_fresh_solo_first_reconcile_never_t | should-fix | W4 | **fixed** | fresh-solo test now inspects recorded events and proves no AEC-reconcile kick or voice restart — #1421 |
+| DA-0264 | `tests/test_multiroom_runtime_balance.py` :: apply_local_trim | should-fix | W4 | **fixed** | disabled/invalid grouping plus Camilla and outputd live-trim failure contracts covered — #1422 |
+| DA-0265 | `tests/test_tools_spotify.py` :: spotify_queue | should-fix | W4 | **fixed** | Spotify queue success dispatch and bounded failure behavior directly covered — #1426 |
+| DA-0266 | `tests/test_web_correction_setup.py` :: test_known_post_routes_reach_csrf_guard | should-fix | W4 | **fixed** | exact 45-route runtime/HANDOFF inventory equality plus route-before-CSRF coverage — #1427 |
 | DA-0267 | `jasper/route_latency/tap_client.py` :: TapClient.status | nit | W5 | **open** | — |
 | DA-0268 | `PLAN.md` :: 150 | nit | W5 | **open** | — |
 | DA-0269 | `capture-page/js/main.js` :: renderCalibration():247-351 | nit | W5 | **open** | — |
@@ -507,23 +507,23 @@ Last reconciled against `main` (`22230cf8`): 2026-07-12.
 | DA-0642 | `tests/voice_eval/regression/test_spotify.py` :: _playback_skip / _ha_action_skip / _require_ | nit | W3 | **open** | — |
 | DA-0643 | `c/jts-ring-ioplug/Makefile` :: bench | nit | W4 | **open** | — |
 | DA-0644 | `deploy/systemd/camillagui.service` :: :20 | nit | W4 | **open** | — |
-| DA-0645 | `jasper/active_speaker/audible_policy.py` :: audible_role_block_code:35 | nit | W4 | **open** | — |
-| DA-0646 | `jasper/bluetooth/handlers/__init__.py` :: pick | nit | W4 | **open** | — |
+| DA-0645 | `jasper/active_speaker/audible_policy.py` :: audible_role_block_code:35 | nit | W4 | **fixed** | missing, empty, and disallowed protection fail closed; protected high-frequency dome remains eligible — #1428 |
+| DA-0646 | `jasper/bluetooth/handlers/__init__.py` :: pick | nit | W4 | **fixed** | Bluetooth handler registry order, HID overlap, A2DP profiles, and default-last catch-all directly pinned — #1429 |
 | DA-0647 | `jasper/cli/aec_sweep_config.py` :: main / _restart_bridge | nit | W4 | **open** | — |
 | DA-0648 | `jasper/cli/chip_aec_policy.py` :: main / _query_outputd_status / _shell_assign | nit | W4 | **open** | — |
 | DA-0649 | `jasper/cli/usbsink_volume_main.py` :: main / _run | nit | W4 | **open** | — |
-| DA-0650 | `jasper/fanin/coupling_auto.py` :: read_boot_config_gadget_present | nit | W4 | **open** | — |
-| DA-0651 | `jasper/web/correction_hub.py` :: section_tabs | nit | W4 | **open** | — |
-| DA-0652 | `jasper/web/tools_setup.py` :: module docstring | nit | W4 | **open** | — |
-| DA-0653 | `rust/jasper-fanin/src/playout.rs` :: PlayoutLedger::enforce_cap (:249) | nit | W4 | **open** | — |
-| DA-0654 | `rust/jasper-fanin/src/state.rs` :: snapshot_json:919 | nit | W4 | **open** | — |
-| DA-0655 | `rust/jasper-host-clock/src/lib.rs` :: ProbeResult::as_str | nit | W4 | **open** | — |
-| DA-0656 | `rust/jasper-resampler/src/lib.rs` :: clamp_i16 :146-148 | nit | W4 | **open** | — |
+| DA-0650 | `jasper/fanin/coupling_auto.py` :: read_boot_config_gadget_present | nit | W4 | **fixed** | JTS_BOOT_CONFIG_FILE precedence and JASPER_BOOT_CONFIG_PATH fallback directly pinned — #1430 |
+| DA-0651 | `jasper/web/correction_hub.py` :: section_tabs | nit | W4 | **fixed** | shared correction navigation uses page semantics, one current page, and escaped labels/links — #1431 |
+| DA-0652 | `jasper/web/tools_setup.py` :: module docstring | nit | W4 | **fixed** | tools wizard lightweight-import boundary enforced in a fresh interpreter — #1432 |
+| DA-0653 | `rust/jasper-fanin/src/playout.rs` :: PlayoutLedger::enforce_cap (:249) | nit | W4 | **fixed** | 1024-segment cap directly exercised with oldest eviction and newest retention — #1433 |
+| DA-0654 | `rust/jasper-fanin/src/state.rs` :: snapshot_json:919 | nit | W4 | **fixed** | unavailable output delay explicitly renders both frame and millisecond fields as JSON null — #1434 |
+| DA-0655 | `rust/jasper-host-clock/src/lib.rs` :: ProbeResult::as_str | nit | W4 | **fixed** | none/pass/fail/aborted probe-result wire tokens directly pinned at the owning enum — #1435 |
+| DA-0656 | `rust/jasper-resampler/src/lib.rs` :: clamp_i16 :146-148 | nit | W4 | **fixed** | i16 rounding and saturation behavior pinned at both boundaries and out-of-range inputs — #1436 |
 | DA-0657 | `tests/fixtures/balance_trim_parity_fixture.json` :: :4-5 (trim_db_min/trim_db_max) | nit | W4 | **open** | — |
-| DA-0658 | `tests/js/sound_profile_harness.mjs` :: :12 (const modulePath = process.argv[2];) | nit | W4 | **open** | — |
-| DA-0659 | `tests/js/sound_profile_harness.mjs` :: :4355 (final console.log) | nit | W4 | **open** | — |
-| DA-0660 | `tests/js/sound_profile_harness.mjs` :: dispatchToggle (:590-601) | nit | W4 | **open** | — |
-| DA-0661 | `tests/test_active_speaker_cli.py` :: :315 | nit | W4 | **open** | — |
+| DA-0658 | `tests/js/sound_profile_harness.mjs` :: :12 (const modulePath = process.argv[2];) | nit | W4 | **fixed** | sound harness invocation no longer passes an ignored positional mode argument — #1437 |
+| DA-0659 | `tests/js/sound_profile_harness.mjs` :: :4355 (final console.log) | nit | W4 | **fixed** | harness result no longer carries an unobservable hard-coded ok=true sentinel — #1437 |
+| DA-0660 | `tests/js/sound_profile_harness.mjs` :: dispatchToggle (:590-601) | nit | W4 | **fixed** | toggle harness models selector matching and capture listeners; setup-open state survives rerender — #1437 |
+| DA-0661 | `tests/test_active_speaker_cli.py` :: :315 | nit | W4 | **fixed** | obsolete repo-wide-ignored E402 suppressions removed — #1438 |
 | DA-0662 | `tests/test_active_speaker_setup_status.py` :: import:21 | nit | W4 | **open** | — |
 | DA-0663 | `tests/test_analyze_wake_corpus_quality.py` :: pytest_approx | nit | W4 | **open** | — |
 | DA-0664 | `tests/test_audio_hardware_reconcile.py` :: 105 | nit | W4 | **open** | — |
@@ -534,7 +534,7 @@ Last reconciled against `main` (`22230cf8`): 2026-07-12.
 | DA-0669 | `tests/test_sound_setup.py` :: test_apply_profile_rolls_back_when_reload_fa | nit | W4 | **open** | — |
 | DA-0670 | `tests/test_sound_setup.py` :: test_reconcile_current_dsp_skips_unknown_con | nit | W4 | **open** | — |
 | DA-0671 | `tests/test_sources_setup_usbsink.py` :: _patch_config | nit | W4 | **open** | — |
-| DA-0672 | `tests/test_tools_spotify.py` :: test_revoked_then_relinked_recovers_without_ | nit | W4 | **open** | — |
+| DA-0672 | `tests/test_tools_spotify.py` :: test_revoked_then_relinked_recovers_without_ | nit | W4 | **fixed** | real same-clock 30-second router refresh cooldown exercised without force-resetting state — #1426 |
 | DA-0673 | `tests/test_usbsink_volume_bridge.py` :: test_run_retries_discovery_after_transient_m | nit | W4 | **open** | — |
 | DA-0674 | `tests/test_volume_diagnostics.py` :: build_volume_policy_snapshot | nit | W4 | **open** | — |
 | DA-0675 | `tests/test_wake_corpus_setup.py` :: :1-4307 (whole file) | nit | W4 | **open** | — |
