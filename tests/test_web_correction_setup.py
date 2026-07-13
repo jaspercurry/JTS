@@ -299,10 +299,15 @@ def test_known_post_routes_reach_csrf_guard():
     route_reference = (
         Path(__file__).resolve().parents[1] / "docs" / "HANDOFF-correction.md"
     ).read_text(encoding="utf-8")
+    inventory = route_reference.split("**Concrete shape (current):**", 1)[1]
+    inventory = inventory.split("HTTPS fallback", 1)[0]
+    documented_posts = {
+        line.split()[1]
+        for line in inventory.splitlines()
+        if line.startswith("POST /")
+    }
+    assert documented_posts == known
     for route in sorted(known):
-        assert f"POST {route}" in route_reference, (
-            f"{route} is missing from the canonical correction route inventory"
-        )
         resp = _drive(route, method="POST", body=b"{}")
         assert b"403" in resp.split(b"\r\n", 1)[0], (
             f"{route} should reach the CSRF guard (403)"
