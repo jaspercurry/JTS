@@ -20,9 +20,9 @@ produced (or failed to produce) a baseline. It reuses
 ``jasper.correction.bundles``'s generic manifest primitives
 (:func:`~jasper.correction.bundles.record_artifact`,
 :func:`~jasper.correction.bundles.write_json_artifact`,
-:func:`~jasper.correction.bundles.read_artifact_manifest`) directly — they are
-already generic over ``bundle_dir`` — rather than forking them; only the
-active-speaker-specific shape (``info.json``'s fields, retention policy, the
+:func:`~jasper.correction.bundles.read_artifact_manifest`) directly rather than
+forking them. The primitives resolve the owning bundle schema from ``info.json``;
+only the active-speaker-specific shape (its fields, retention policy, and the
 active core-artifact list) lives here.
 
 Two invariants keep this module safe to bolt onto an already-shipped flow:
@@ -46,6 +46,7 @@ Two invariants keep this module safe to bolt onto an already-shipped flow:
   time" and carry on; the measurement/apply path they are threading through
   has already (or will already) succeed or fail on its own terms.
 """
+
 from __future__ import annotations
 
 import functools
@@ -152,9 +153,7 @@ def _fail_soft(op: str):
                 bundle_dir = kwargs.get("bundle_dir")
                 if bundle_dir is None and args and isinstance(args[0], Path):
                     bundle_dir = args[0]
-                session_id = (
-                    bundle_dir.name if isinstance(bundle_dir, Path) else None
-                )
+                session_id = bundle_dir.name if isinstance(bundle_dir, Path) else None
                 log_event(
                     logger,
                     "active_speaker.bundle_write_failed",
@@ -322,11 +321,14 @@ def _abandon_open_bundles(root: Path) -> None:
         except BundleError:
             continue
         if info.get("state") == "open":
-            _write_info(bundle_dir, {
-                **info,
-                "state": "abandoned",
-                "updated_at": time.time(),
-            })
+            _write_info(
+                bundle_dir,
+                {
+                    **info,
+                    "state": "abandoned",
+                    "updated_at": time.time(),
+                },
+            )
 
 
 @_fail_soft("open_bundle")
@@ -381,10 +383,12 @@ def open_bundle(
     try:
         topology_fingerprints = {
             "topology_id": topology.topology_id,
-            "topology_fingerprint": _measurement._fingerprint({
-                "topology_id": topology.topology_id,
-                "hardware": _measurement._hardware_payload(topology),
-            }),
+            "topology_fingerprint": _measurement._fingerprint(
+                {
+                    "topology_id": topology.topology_id,
+                    "hardware": _measurement._hardware_payload(topology),
+                }
+            ),
             "output_assignments": [
                 {
                     "group_id": target["speaker_group_id"],
@@ -459,11 +463,14 @@ def attach_comparison_set(
     fingerprints = dict(info.get("fingerprints") or {})
     fingerprints["comparison_set_id"] = comparison_set_id
     fingerprints["comparison_set_fingerprint"] = comparison_set_fingerprint
-    return _write_info(bundle_dir, {
-        **info,
-        "fingerprints": fingerprints,
-        "updated_at": time.time(),
-    })
+    return _write_info(
+        bundle_dir,
+        {
+            **info,
+            "fingerprints": fingerprints,
+            "updated_at": time.time(),
+        },
+    )
 
 
 @_fail_soft("mark_state")
@@ -473,11 +480,14 @@ def mark_state(bundle_dir: Path, state: str) -> dict[str, Any] | None:
     if state not in _VALID_STATES:
         raise BundleError(f"unsupported bundle state: {state!r}")
     info = _read_info(bundle_dir)
-    return _write_info(bundle_dir, {
-        **info,
-        "state": state,
-        "updated_at": time.time(),
-    })
+    return _write_info(
+        bundle_dir,
+        {
+            **info,
+            "state": state,
+            "updated_at": time.time(),
+        },
+    )
 
 
 def _capture_group_role(payload: Mapping[str, Any]) -> tuple[Any, Any]:
@@ -501,7 +511,9 @@ def _capture_group_role(payload: Mapping[str, Any]) -> tuple[Any, Any]:
     return group, role
 
 
-def _guarded_capture_source(bundle_dir: Path, wav_source_path: Path | str, *, op: str) -> Path | None:
+def _guarded_capture_source(
+    bundle_dir: Path, wav_source_path: Path | str, *, op: str
+) -> Path | None:
     """Validate a capture WAV source exists and is within the size cap.
 
     Returns ``None`` (WARN-logged under the shared fail-soft event name)
@@ -652,12 +664,15 @@ def append_capture(
         # the operator's checked box.  This repairs the former dead literal:
         # an opened bundle starts false and flips only on real accepted proof.
         placement["acknowledged"] = True
-    _write_info(bundle_dir, {
-        **info,
-        "placement": placement,
-        list_key: [*(info.get(list_key) or []), entry],
-        "updated_at": time.time(),
-    })
+    _write_info(
+        bundle_dir,
+        {
+            **info,
+            "placement": placement,
+            list_key: [*(info.get(list_key) or []), entry],
+            "updated_at": time.time(),
+        },
+    )
     return entry
 
 
@@ -769,13 +784,15 @@ def record_repeat_progress(
     if reason:
         entry["reason"] = str(reason)
     progress[str(target_id)] = entry
-    _write_info(bundle_dir, {
-        **info,
-        "repeat_progress": progress,
-        "updated_at": time.time(),
-    })
+    _write_info(
+        bundle_dir,
+        {
+            **info,
+            "repeat_progress": progress,
+            "updated_at": time.time(),
+        },
+    )
     return entry
-
 
 
 def _plain(value: Any) -> dict[str, Any] | None:
@@ -930,9 +947,7 @@ def enforce_retention(
             root,
             max_bytes=max_bytes if max_bytes is not None else _sessions_max_bytes(),
             max_bundles=(
-                max_bundles
-                if max_bundles is not None
-                else _sessions_max_bundles()
+                max_bundles if max_bundles is not None else _sessions_max_bundles()
             ),
         )
     except (OSError, BundleError) as exc:

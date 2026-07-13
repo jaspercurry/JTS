@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from jasper.correction import bundles
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
@@ -43,6 +45,19 @@ def _write_bundle(root: Path, name: str, *, started_at: int) -> Path:
         schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
     )
     return d
+
+
+def _write_info_bundle(bundle_dir: Path, *, schema_version: object) -> None:
+    bundle_dir.mkdir()
+    bundles.write_json_artifact(
+        bundle_dir,
+        "info.json",
+        {"bundle_schema_version": schema_version},
+        kind="metadata",
+        sensitivity="config",
+        recomputable=False,
+        generated_by="test",
+    )
 
 
 def test_list_bundles_sorts_newest_first_and_skips_bad_json(tmp_path: Path):
@@ -164,25 +179,35 @@ def test_validate_bundle_reports_missing_result_and_quality_warnings(
 ):
     d = tmp_path / "aaa"
     d.mkdir()
-    (d / "info.json").write_text(json.dumps({
-        "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-        "session_id": "aaa",
-        "state": "ready",
-        "capture_quality": [{
-            "issues": [{
-                "code": "mic_uncalibrated",
-                "severity": "warn",
-                "message": "no measurement-mic calibration was applied",
-            }],
-        }],
-        "verify_quality": {
-            "issues": [{
-                "code": "capture_rms_low",
-                "severity": "warn",
-                "message": "capture RMS is very low",
-            }],
-        },
-    }))
+    (d / "info.json").write_text(
+        json.dumps(
+            {
+                "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+                "session_id": "aaa",
+                "state": "ready",
+                "capture_quality": [
+                    {
+                        "issues": [
+                            {
+                                "code": "mic_uncalibrated",
+                                "severity": "warn",
+                                "message": "no measurement-mic calibration was applied",
+                            }
+                        ],
+                    }
+                ],
+                "verify_quality": {
+                    "issues": [
+                        {
+                            "code": "capture_rms_low",
+                            "severity": "warn",
+                            "message": "capture RMS is very low",
+                        }
+                    ],
+                },
+            }
+        )
+    )
 
     issues = bundles.validate_bundle(d)
 
@@ -197,14 +222,70 @@ def test_validate_bundle_reports_missing_result_and_quality_warnings(
     }
 
 
+@pytest.mark.parametrize(
+    "schema_version",
+    [None, True, "5", 5.0, 0, -1],
+)
+def test_validate_bundle_reports_one_noncurrent_info_schema_warning(
+    tmp_path: Path,
+    schema_version: object,
+):
+    d = tmp_path / "invalid-info-version"
+    d.mkdir()
+    info = {
+        "session_id": "invalid-info-version",
+        "state": "open",
+    }
+    if schema_version is not None:
+        info["bundle_schema_version"] = schema_version
+    (d / "info.json").write_text(json.dumps(info))
+
+    issues = bundles.validate_bundle(d)
+
+    assert [(issue.code, issue.severity) for issue in issues] == [
+        ("schema_version", "warn")
+    ]
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    [None, True, "5", 5.0, 0, -1],
+)
+def test_validate_bundle_reports_one_noncurrent_result_schema_warning(
+    tmp_path: Path,
+    schema_version: object,
+):
+    d = _write_bundle(tmp_path, "invalid-result-version", started_at=1000)
+    result = {}
+    if schema_version is not None:
+        result["bundle_schema_version"] = schema_version
+    bundles.write_json_artifact(
+        d,
+        "result.json",
+        result,
+        kind="analysis_result",
+        sensitivity="private_metadata",
+        recomputable=True,
+        generated_by="test",
+        dependencies=["info.json"],
+        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+    )
+
+    issues = bundles.validate_bundle(d)
+
+    assert [(issue.code, issue.severity) for issue in issues] == [
+        ("result_schema_version", "warn")
+    ]
+
+
 def test_record_artifact_writes_manifest_with_checksum(tmp_path: Path):
     d = tmp_path / "aaa"
     d.mkdir()
-    (d / "info.json").write_text("{}")
+    (d / "result.json").write_text("{}")
 
     entry = bundles.record_artifact(
         d,
-        "info.json",
+        "result.json",
         kind="session_metadata",
         sensitivity="private_metadata",
         recomputable=False,
@@ -216,10 +297,282 @@ def test_record_artifact_writes_manifest_with_checksum(tmp_path: Path):
     assert manifest["manifest_schema_version"] == (
         bundles.CURRENT_ARTIFACT_MANIFEST_VERSION
     )
+    assert manifest["bundle_schema_version"] == (bundles.CURRENT_BUNDLE_SCHEMA_VERSION)
     assert manifest["artifacts"] == [entry]
-    assert entry["path"] == "info.json"
-    assert entry["byte_size"] == (d / "info.json").stat().st_size
+    assert entry["path"] == "result.json"
+    assert entry["byte_size"] == (d / "result.json").stat().st_size
     assert len(entry["sha256"]) == 64
+
+
+def test_record_artifact_keeps_info_bundle_schema_without_override(tmp_path: Path):
+    d = tmp_path / "active-speaker"
+    _write_info_bundle(d, schema_version=1)
+    (d / "capture.wav").write_bytes(b"capture")
+
+    bundles.record_artifact(
+        d,
+        "capture.wav",
+        kind="capture_wav",
+        sensitivity="private_raw_audio",
+        recomputable=False,
+        generated_by="test",
+    )
+
+    manifest = bundles.read_artifact_manifest(d)
+    assert manifest["bundle_schema_version"] == 1
+    assert {entry["path"] for entry in manifest["artifacts"]} == {
+        "capture.wav",
+        "info.json",
+    }
+
+
+def test_record_artifact_repairs_manifest_bundle_schema_from_info(tmp_path: Path):
+    d = tmp_path / "active-speaker"
+    _write_info_bundle(d, schema_version=1)
+    stale_manifest = bundles.read_artifact_manifest(d)
+    old_entry = next(
+        entry for entry in stale_manifest["artifacts"] if entry["path"] == "info.json"
+    )
+    stale_manifest["bundle_schema_version"] = bundles.CURRENT_BUNDLE_SCHEMA_VERSION
+    (d / bundles.ARTIFACT_MANIFEST_NAME).write_text(json.dumps(stale_manifest))
+    (d / "next.json").write_text("{}")
+
+    bundles.record_artifact(
+        d,
+        "next.json",
+        kind="derived",
+        sensitivity="debug_safe",
+        recomputable=True,
+        generated_by="test",
+    )
+
+    repaired = bundles.read_artifact_manifest(d)
+    assert repaired["bundle_schema_version"] == 1
+    by_path = {entry["path"]: entry for entry in repaired["artifacts"]}
+    assert by_path["info.json"] == old_entry
+    assert by_path["info.json"]["sha256"] == old_entry["sha256"]
+    assert set(by_path) == {"info.json", "next.json"}
+
+
+@pytest.mark.parametrize("schema_version", [True, "1", 1.0, 0, -1])
+def test_info_bundle_schema_requires_a_positive_integer(
+    tmp_path: Path,
+    schema_version: object,
+):
+    d = tmp_path / "invalid-info-schema"
+
+    with pytest.raises(bundles.BundleError, match="positive integer"):
+        _write_info_bundle(d, schema_version=schema_version)
+
+    assert not (d / "info.json").exists()
+    assert not (d / bundles.ARTIFACT_MANIFEST_NAME).exists()
+
+
+@pytest.mark.parametrize("schema_version", [True, "1", 1.0, 0, -1])
+def test_explicit_bundle_schema_requires_a_positive_integer(
+    tmp_path: Path,
+    schema_version: object,
+):
+    d = tmp_path / "invalid-explicit-schema"
+    d.mkdir()
+    artifact = d / "result.json"
+    artifact.write_text("{}")
+
+    with pytest.raises(bundles.BundleError, match="positive integer"):
+        bundles.record_artifact(
+            d,
+            artifact,
+            kind="derived",
+            sensitivity="debug_safe",
+            recomputable=True,
+            generated_by="test",
+            bundle_schema_version=schema_version,  # type: ignore[arg-type]
+        )
+
+    assert not (d / bundles.ARTIFACT_MANIFEST_NAME).exists()
+
+
+def test_write_json_artifact_refuses_schema_override_conflicting_with_info(
+    tmp_path: Path,
+):
+    d = tmp_path / "active-speaker"
+    _write_info_bundle(d, schema_version=1)
+    manifest_before = (d / bundles.ARTIFACT_MANIFEST_NAME).read_text()
+
+    with pytest.raises(bundles.BundleError, match="contradicts info.json"):
+        bundles.write_json_artifact(
+            d,
+            "result.json",
+            {},
+            kind="derived",
+            sensitivity="debug_safe",
+            recomputable=True,
+            generated_by="test",
+            bundle_schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+        )
+
+    assert not (d / "result.json").exists()
+    assert (d / bundles.ARTIFACT_MANIFEST_NAME).read_text() == manifest_before
+
+
+@pytest.mark.parametrize("schema_version", [True, 1.0])
+def test_schema_override_equality_traps_do_not_match_info_owner(
+    tmp_path: Path,
+    schema_version: object,
+):
+    d = tmp_path / "active-speaker"
+    _write_info_bundle(d, schema_version=1)
+    artifact = d / "result.json"
+    artifact.write_text("{}")
+
+    with pytest.raises(bundles.BundleError, match="positive integer"):
+        bundles.record_artifact(
+            d,
+            artifact,
+            kind="derived",
+            sensitivity="debug_safe",
+            recomputable=True,
+            generated_by="test",
+            bundle_schema_version=schema_version,  # type: ignore[arg-type]
+        )
+
+    manifest = bundles.read_artifact_manifest(d)
+    assert manifest["bundle_schema_version"] == 1
+    assert {entry["path"] for entry in manifest["artifacts"]} == {"info.json"}
+
+
+def test_validate_bundle_reports_manifest_info_schema_mismatch(tmp_path: Path):
+    d = _write_bundle(tmp_path, "aaa", started_at=1000)
+    manifest = bundles.read_artifact_manifest(d)
+    manifest["bundle_schema_version"] = 1
+    (d / bundles.ARTIFACT_MANIFEST_NAME).write_text(json.dumps(manifest))
+
+    issues = bundles.validate_bundle(d)
+
+    matching = [
+        issue
+        for issue in issues
+        if issue.code == "artifact_manifest_bundle_schema_mismatch"
+    ]
+    assert [(issue.code, issue.severity) for issue in matching] == [
+        ("artifact_manifest_bundle_schema_mismatch", "fail")
+    ]
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    [None, True, "1", 1.0, 0, -1],
+)
+def test_validate_bundle_reports_one_noncurrent_manifest_schema_warning(
+    tmp_path: Path,
+    schema_version: object,
+):
+    d = _write_bundle(tmp_path, "aaa", started_at=1000)
+    manifest = bundles.read_artifact_manifest(d)
+    if schema_version is None:
+        manifest.pop("manifest_schema_version")
+    else:
+        manifest["manifest_schema_version"] = schema_version
+    (d / bundles.ARTIFACT_MANIFEST_NAME).write_text(json.dumps(manifest))
+
+    issues = bundles.validate_bundle(d)
+
+    assert [(issue.code, issue.severity) for issue in issues] == [
+        ("artifact_manifest_schema_version", "warn")
+    ]
+
+
+@pytest.mark.parametrize("schema_version", [None, True, "5", 5.0, 0, -1])
+def test_validate_bundle_reports_one_malformed_manifest_bundle_schema_issue(
+    tmp_path: Path,
+    schema_version: object,
+):
+    d = _write_bundle(tmp_path, "aaa", started_at=1000)
+    manifest = bundles.read_artifact_manifest(d)
+    if schema_version is None:
+        manifest.pop("bundle_schema_version")
+    else:
+        manifest["bundle_schema_version"] = schema_version
+    (d / bundles.ARTIFACT_MANIFEST_NAME).write_text(json.dumps(manifest))
+
+    issues = bundles.validate_bundle(d)
+
+    assert [(issue.code, issue.severity) for issue in issues] == [
+        ("artifact_manifest_bundle_schema_version", "fail")
+    ]
+
+
+@pytest.mark.parametrize("schema_version", [True, 1.0])
+def test_validate_bundle_does_not_accept_manifest_schema_equality_traps(
+    tmp_path: Path,
+    schema_version: object,
+):
+    d = tmp_path / "schema-one"
+    d.mkdir()
+    (d / "info.json").write_text(
+        json.dumps(
+            {
+                "bundle_schema_version": 1,
+                "session_id": "schema-one",
+                "state": "open",
+            }
+        )
+    )
+    (d / bundles.ARTIFACT_MANIFEST_NAME).write_text(
+        json.dumps(
+            {
+                "manifest_schema_version": bundles.CURRENT_ARTIFACT_MANIFEST_VERSION,
+                "bundle_schema_version": schema_version,
+                "artifacts": [],
+            }
+        )
+    )
+
+    issues = bundles.validate_bundle(d)
+
+    matching = [
+        issue
+        for issue in issues
+        if issue.code.startswith("artifact_manifest_bundle_schema")
+    ]
+    assert [(issue.code, issue.severity) for issue in matching] == [
+        ("artifact_manifest_bundle_schema_version", "fail")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("artifact_name", "issue_code"),
+    (
+        ("runtime_integrity.json", "runtime_integrity_schema_version"),
+        ("acoustic_quality.json", "acoustic_quality_schema_version"),
+    ),
+)
+@pytest.mark.parametrize("schema_version", [None, True, "1", 1.0, 0, -1])
+def test_validate_bundle_rejects_artifact_schema_equality_traps(
+    tmp_path: Path,
+    artifact_name: str,
+    issue_code: str,
+    schema_version: object,
+):
+    d = _write_bundle(tmp_path, "invalid-artifact-version", started_at=1000)
+    artifact = {}
+    if schema_version is not None:
+        artifact["artifact_schema_version"] = schema_version
+    bundles.write_json_artifact(
+        d,
+        artifact_name,
+        artifact,
+        kind="derived",
+        sensitivity="private_metadata",
+        recomputable=True,
+        generated_by="test",
+        dependencies=["info.json"],
+        schema_version=1,
+    )
+
+    issues = bundles.validate_bundle(d)
+
+    assert [(issue.code, issue.severity) for issue in issues] == [(issue_code, "warn")]
 
 
 def test_validate_bundle_reports_manifest_checksum_mismatch(tmp_path: Path):
@@ -272,12 +625,16 @@ def test_validate_bundle_warns_when_current_bundle_missing_manifest(
 ):
     d = tmp_path / "aaa"
     d.mkdir()
-    (d / "info.json").write_text(json.dumps({
-        "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-        "session_id": "aaa",
-        "state": "failed",
-        "capture_quality": [],
-    }))
+    (d / "info.json").write_text(
+        json.dumps(
+            {
+                "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+                "session_id": "aaa",
+                "state": "failed",
+                "capture_quality": [],
+            }
+        )
+    )
 
     issues = bundles.validate_bundle(d)
 
@@ -289,13 +646,17 @@ def test_validate_bundle_warns_when_current_bundle_missing_manifest(
 def test_validate_bundle_warns_when_latest_session_failed(tmp_path: Path):
     d = tmp_path / "failed"
     d.mkdir()
-    (d / "info.json").write_text(json.dumps({
-        "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-        "session_id": "failed",
-        "state": "failed",
-        "error": "analysis failed: capture clipped",
-        "capture_quality": [],
-    }))
+    (d / "info.json").write_text(
+        json.dumps(
+            {
+                "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+                "session_id": "failed",
+                "state": "failed",
+                "error": "analysis failed: capture clipped",
+                "capture_quality": [],
+            }
+        )
+    )
 
     issues = bundles.validate_bundle(d)
 

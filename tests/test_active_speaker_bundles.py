@@ -10,6 +10,7 @@ manifest mechanics (reused verbatim from jasper.correction.bundles), the
 capture/apply write paths, retention, and the fail-soft contract — a bundle
 write failure must never block the capture/apply path recording it.
 """
+
 from __future__ import annotations
 
 import logging
@@ -177,6 +178,8 @@ def test_open_bundle_info_json_is_a_manifest_artifact(tmp_path: Path) -> None:
     bundle_dir = Path(info["bundle_dir"])
 
     manifest = read_artifact_manifest(bundle_dir)
+    assert manifest["bundle_schema_version"] == bundles.BUNDLE_SCHEMA_VERSION
+    assert manifest["bundle_schema_version"] == info["bundle_schema_version"]
     paths = {entry["path"] for entry in manifest["artifacts"]}
     assert "info.json" in paths
     entry = next(e for e in manifest["artifacts"] if e["path"] == "info.json")
@@ -329,6 +332,7 @@ def test_append_capture_records_wav_and_json_with_dependencies(
     assert wav_path.parent.stat().st_mode & 0o777 == 0o750
 
     manifest = read_artifact_manifest(bundle_dir)
+    assert manifest["bundle_schema_version"] == bundles.BUNDLE_SCHEMA_VERSION
     by_path = {a["path"]: a for a in manifest["artifacts"]}
     assert entry["artifact_path"] in by_path
     wav_entry = by_path[entry["artifact_path"]]
@@ -381,10 +385,12 @@ def test_append_capture_does_not_acknowledge_unaccepted_or_wrong_policy_proof(
         info = _open(root)
         bundle_dir = Path(info["bundle_dir"])
         payload = _driver_payload(group="mono", role="woofer")
-        payload["placement_proof"].update({
-            "accepted": accepted,
-            "policy_id": policy,
-        })
+        payload["placement_proof"].update(
+            {
+                "accepted": accepted,
+                "policy_id": policy,
+            }
+        )
         bundles.append_capture(
             bundle_dir,
             kind="driver",
@@ -490,9 +496,7 @@ def test_append_capture_rejects_missing_source(tmp_path: Path, caplog) -> None:
 def test_append_capture_rejects_oversized_source(tmp_path: Path, caplog) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(
-        tmp_path / "huge.wav", size=bundles.MAX_CAPTURE_WAV_BYTES + 1
-    )
+    wav = _write_wav(tmp_path / "huge.wav", size=bundles.MAX_CAPTURE_WAV_BYTES + 1)
 
     with caplog.at_level(logging.WARNING):
         entry = bundles.append_capture(
@@ -589,7 +593,11 @@ def _candidate(*, status: str = "applied", fingerprint: str = "cand-fp") -> dict
         "source": {"fingerprint": fingerprint, "topology_fingerprint": "topo-fp"},
         "proposal": {"note": "example"},
         "corrections_provenance": {
-            "woofer": {"gain_db": "measured", "delay_ms": "manual", "inverted": "manual"}
+            "woofer": {
+                "gain_db": "measured",
+                "delay_ms": "manual",
+                "inverted": "manual",
+            }
         },
         "validation": {"status": "valid", "ok_to_apply": True},
     }
@@ -804,9 +812,7 @@ def test_enforce_retention_protects_the_single_newest_bundle(
     assert Path(newest["bundle_dir"]).exists()
 
 
-def test_enforce_retention_respects_env_overrides(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_enforce_retention_respects_env_overrides(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BUNDLES", "1")
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BYTES", str(10**9))
     old = _open(tmp_path, now=1000.0)
@@ -1061,9 +1067,8 @@ def test_repeat_progress_is_compact_bounded_and_durable(tmp_path: Path) -> None:
     reloaded = bundles._read_info(bundle_dir)["repeat_progress"]["mono:woofer"]
     assert reloaded == entry
 
-def test_append_repeat_capture_rejects_missing_source(
-    tmp_path: Path, caplog
-) -> None:
+
+def test_append_repeat_capture_rejects_missing_source(tmp_path: Path, caplog) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
 
