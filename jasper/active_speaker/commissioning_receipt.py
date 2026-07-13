@@ -11,9 +11,11 @@ mutates CamillaDSP, or changes the current Room gate.
 
 The current Active measurement bundles are intentionally fail-soft historical
 evidence and are **not** commissioning authority.  Wave 2 must create this
-separate fail-closed authority chain (or mint an explicit, validated migration
-artifact) without reinterpreting or rewriting existing bundle bytes.  Merely
-deserializing a legacy bundle into one of these types is never sufficient.
+separate fail-closed authority chain for a fresh production commissioning
+session. Historical bundles are permanently non-admitted: no migration,
+backfill, marker copy, or synthesized admission artifact may promote them.
+Merely deserializing a legacy bundle into one of these types is never
+sufficient.
 """
 
 from __future__ import annotations

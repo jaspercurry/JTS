@@ -636,19 +636,37 @@ cabinets. The future graph proof is topology-wide and exact: routing, complete
 filter chains, gains, permanent protection, and `devices.volume_limit <= 0` all
 belong to the same proof. Fresh persisted admission must be issued from Active's
 exact current safety plan and independently rechecked by the playback backend.
-Because the Shared persisted-admission/protection boundary is not merged, the
-Wave 2 module accepts no captures and exposes no scorer. Both historical and
-pending-current projections return `ready = false`, `score_available = false`,
-and no candidate, persistence, apply, or receipt authority.
+The Shared persisted-admission/protection and guarded-playback boundaries are
+merged. Active has not adopted them yet, so the Wave 2 module still accepts no
+captures and exposes no scorer. Both historical and pending-current projections
+return `ready = false`, `score_available = false`, and no candidate,
+persistence, apply, or receipt authority.
 
 Active's Wave 2 isolated-driver safety boundary is preparation-only. It derives
 one closed sweep request and effective-peak ledger from the exact target and
 confirmed-current profile, intersects code and profile band/level/duration/
 repeat ceilings, retains the profile cooldown, and always returns
 `shared_persisted_admission_unavailable`. It has no playback callback and accepts
-no caller-supplied protection evidence. Execution stays impossible until the
-Shared lane provides a persisted admission/protection boundary that the planner
-and playback backend can independently re-evaluate against a fresh graph.
+no caller-supplied protection evidence. Execution stays impossible until an
+Active-owned production adapter consumes the merged Shared boundary.
+
+The synchronization-barrier API sequence is exact. Active classifies evidence
+origin before authority resolution; historical B2b calls
+`refuse_historical_evidence(HistoricalExcitationEvidence(...))` and stops. One
+fresh commissioning session/bundle exclusively calls
+`create_admission_authority()` once (or `open_admission_authority()` with the
+exact expected kind/id after restart). Each capture or retry uses a unique
+`admission_id`, calls `admit_excitation()` then
+`persist_generation_admission()`, records the exact generated WAV, and calls
+`bind_generated_excitation_wav()`. While holding the existing
+`dsp_writer_lock`, Active calls `play_admitted_wav()` with one
+`issue_current_inputs()` callback that obtains fresh
+`CamillaController.get_active_config_raw()` evidence and returns
+`CurrentPlaybackAdmissionInputs`; the high-level call owns playback-side
+re-admission, no-replace persistence, reread, and emission ordering. A capture
+and eventual `AdmittedCaptureProof` reference the returned playback-role
+artifact, never the generation artifact. Every post-persistence cancellation or
+failure consumes that one-shot id and requires a new generation id for retry.
 
 ### Wave 2 level-run correlation and timeout boundary
 
@@ -919,7 +937,9 @@ content identities, not signatures or capabilities. A trusted owning adapter
 must intersect code-owned, profile-owned, and plan-owned limits; bind the plan
 to normalized generator/effective-peak inputs; derive protection evidence from
 fresh readback; and rerun admission immediately before playback. No current
-producer or playback consumer performs that integration yet.
+Active producer performs that integration yet. The merged Shared
+`play_admitted_wav()` consumer performs the independent playback-side recheck
+and persistence once its trusted feature callback supplies the fresh values.
 
 ### Wave 1 evidence, lifecycle, and Room handoff contracts
 
@@ -1394,7 +1414,8 @@ bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
 Last verified: 2026-07-13 (Wave 2 reconstruction, measured-candidate input,
-preparation-only safety, level-run correlation contracts, and Room's temporary
-passive-only admission boundary checked against the worktree and cited
-measurement literature; no live audio, DSP mutation, or hardware behavior was
-changed or revalidated.)
+preparation-only safety, level-run correlation contracts, permanent historical
+refusal, the merged Shared admission/playback boundary and exact future Active
+adapter sequence, and Room's temporary passive-only admission boundary checked
+against the merged implementation and cited measurement literature; no live
+audio, DSP mutation, or hardware behavior was changed or revalidated.)

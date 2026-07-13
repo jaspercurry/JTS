@@ -12,6 +12,11 @@ playback re-admission plus durable persistence/readback, and emits an immutable
 snapshot of the verified no-link source only after the playback-role artifact
 verifies.
 
+Once that playback-role artifact exists, every cancellation or failure carries
+the verified artifact and an honest possible-audio outcome. The one-shot path
+is consumed even when the player never starts, so a caller can never retry an
+ambiguous attempt under the same generation admission.
+
 This boundary does not acquire a feature lock, interpret a graph, choose an
 ALSA lane, construct safety policy, or turn historical evidence into authority.
 The host must keep its guard held across this entire call.
@@ -225,6 +230,41 @@ class PlaybackAdmissionCancelled(asyncio.CancelledError):
         self.audio_may_have_started = audio_may_have_started
 
 
+class PlaybackAdmissionFailed(RuntimeError):
+    """Failure after persistence consumed this one-shot admission.
+
+    ``failure`` retains the typed low-level cause. ``audio_may_have_started``
+    is false only when the boundary can prove the player was not spawned; true
+    includes partial, complete, and operationally uncertain emission outcomes.
+    Every retry requires a new generation admission/id.
+    """
+
+    requires_new_generation = True
+
+    def __init__(
+        self,
+        admission: PlaybackAdmissionArtifact,
+        *,
+        audio_may_have_started: bool,
+        failure: Exception,
+    ) -> None:
+        if not isinstance(admission, PlaybackAdmissionArtifact):
+            raise ValueError("admission must be a PlaybackAdmissionArtifact")
+        if type(audio_may_have_started) is not bool:
+            raise ValueError("audio_may_have_started must be a bool")
+        if not isinstance(failure, Exception):
+            raise ValueError("failure must be an Exception")
+        state = (
+            "after audio may have started"
+            if audio_may_have_started
+            else "before audio"
+        )
+        super().__init__(f"playback admission persisted; playback failed {state}")
+        self.admission = admission
+        self.audio_may_have_started = audio_may_have_started
+        self.failure = failure
+
+
 class GeneratedStimulusFailureCode(str, Enum):
     """Closed binding failures before audio can be emitted."""
 
@@ -357,6 +397,28 @@ def _failure_detail(error: Exception) -> str | None:
     return code.value if isinstance(code, Enum) else None
 
 
+def _audio_may_have_started_after_failure(
+    error: Exception,
+    *,
+    playback_completed: bool,
+) -> bool:
+    if playback_completed:
+        return True
+    if isinstance(error, WavSourceError):
+        # The only post-persistence WavSourceError before a completed playback
+        # comes from the immutable snapshot's final pre-spawn verification.
+        return False
+    if isinstance(error, PlaybackError):
+        return error.code not in {
+            PlaybackFailureCode.INVALID_REQUEST,
+            PlaybackFailureCode.MISSING_FILE,
+            PlaybackFailureCode.START_FAILED,
+        }
+    # An unclassified error inside the playback phase cannot prove that spawn
+    # did not happen. Fail conservatively rather than licensing a silent retry.
+    return True
+
+
 async def play_admitted_wav(
     stimulus_bundle_dir: str | Path,
     *,
@@ -383,6 +445,8 @@ async def play_admitted_wav(
         raise ValueError("issue_current_inputs must be callable")
 
     phase = "stimulus_validation"
+    persisted_admission: PlaybackAdmissionArtifact | None = None
+    playback_completed = False
     terminal_logged = False
     try:
         _validate_stimulus_binding(stimulus, generation)
@@ -447,6 +511,7 @@ async def play_admitted_wav(
                 terminal_logged = True
                 raise PlaybackAdmissionRefused(admitted.decision)
 
+            persisted_admission = admitted.artifact
             phase = "playback"
             try:
                 playback = await play_verified_wav(
@@ -464,6 +529,7 @@ async def play_admitted_wav(
                     admitted.artifact,
                     audio_may_have_started=True,
                 ) from exc
+            playback_completed = True
             completed_admission = admitted.artifact
         log_event(
             logger,
@@ -495,6 +561,7 @@ async def play_admitted_wav(
             bundle_id=authority.bundle_id,
             admission_id=generation.admission_id,
             artifact_sha256=exc.admission.artifact.sha256,
+            audio_may_have_started=exc.audio_may_have_started,
         )
         terminal_logged = True
         raise
@@ -517,6 +584,31 @@ async def play_admitted_wav(
     finally:
         error = sys.exc_info()[1]
         if isinstance(error, Exception) and not terminal_logged:
+            if persisted_admission is not None:
+                admission_failure = PlaybackAdmissionFailed(
+                    persisted_admission,
+                    audio_may_have_started=_audio_may_have_started_after_failure(
+                        error,
+                        playback_completed=playback_completed,
+                    ),
+                    failure=error,
+                )
+                log_event(
+                    logger,
+                    "audio_measurement.admitted_playback",
+                    result="failed",
+                    failure_code=_failure_code(error, phase=phase).value,
+                    failure_detail=_failure_detail(error),
+                    error_type=type(error).__name__,
+                    bundle_id=authority.bundle_id,
+                    admission_id=generation.admission_id,
+                    artifact_sha256=persisted_admission.artifact.sha256,
+                    audio_may_have_started=(
+                        admission_failure.audio_may_have_started
+                    ),
+                    level=logging.WARNING,
+                )
+                raise admission_failure from error
             log_event(
                 logger,
                 "audio_measurement.admitted_playback",
