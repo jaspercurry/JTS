@@ -7,7 +7,10 @@
 > [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md); shared capture
 > and analysis primitives remain canonical in
 > [`HANDOFF-audio-measurement-core.md`](HANDOFF-audio-measurement-core.md); room
-> correction remains canonical in [`HANDOFF-correction.md`](HANDOFF-correction.md).
+> correction's shipped operational behavior remains canonical in
+> [`HANDOFF-correction.md`](HANDOFF-correction.md), while its intended product
+> behavior is canonical in
+> [`room-correction-information-design.md`](room-correction-information-design.md).
 > Those documents should link here for crossover-builder product behavior rather
 > than restating it.
 
