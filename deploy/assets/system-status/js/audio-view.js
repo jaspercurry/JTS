@@ -8,7 +8,7 @@
 
 import { h } from "/assets/shared/js/dom.js";
 import {
-  header, livePill, titledCard, choiceCard, collapsible, renderSection,
+  livePill, titledCard, choiceCard, collapsible, renderSection,
 } from "./components.js";
 import { AUDIO_OPTIONS, updateAudioQuality } from "./sections.js";
 import { fmtEpochAgo } from "./format.js";
@@ -43,7 +43,7 @@ function buildAudioQuality(handlers) {
   return { section: card.section, requested, active, status, buttons };
 }
 
-export function buildAudioPage(root, handlers) {
+export function buildAudioPanel(handlers) {
   const live = livePill();
   const overview = titledCard("General", { accent: true });
   const latency = titledCard("Latency");
@@ -56,21 +56,19 @@ export function buildAudioPage(root, handlers) {
   });
   const quality = buildAudioQuality(handlers);
 
-  root.replaceChildren(
-    header({ title: "Status", backHref: "/", activeView: "audio" }),
-    h("main.app-main.audio-main", null,
-      live.el,
-      overview.section,
-      latency.section,
-      issues.section,
-      sources.section,
-      technical,
-      quality.section,
-    ),
+  const panel = h("main.app-main.audio-main", {
+    "attr:data-status-view": "audio",
+  },
+    live.el,
+    overview.section,
+    latency.section,
+    issues.section,
+    sources.section,
+    technical,
+    quality.section,
   );
-  root.setAttribute("aria-busy", "false");
 
-  return {
+  const refs = {
     staleness: live.label,
     overview: overview.body,
     latencySection: latency.section,
@@ -82,6 +80,7 @@ export function buildAudioPage(root, handlers) {
     aq: quality,
     _memo: {},
   };
+  return { panel, refs };
 }
 
 function applyCapabilities(refs, caps) {
