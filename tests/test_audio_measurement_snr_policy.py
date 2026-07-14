@@ -9,10 +9,11 @@ docs/active-crossover-information-design.md:
 
   - :func:`band_levels_dbfs` is the FFT band-power math moved verbatim out of
     ``jasper.correction.session._band_levels_dbfs`` (which now delegates
-    here) — the delegation's output must stay byte-equal.
+    through ``jasper.correction.acoustic_quality``) — the delegation's output
+    must stay byte-equal.
   - :data:`CROSSOVER_SNR_BANDS_HZ`'s first four rows equal
-    ``session.SNR_BANDS_HZ`` so the shipped room-correction table and the new
-    six-band crossover table never drift apart.
+    ``acoustic_quality.SNR_BANDS_HZ`` so the shipped room-correction table and
+    the new six-band crossover table never drift apart.
   - :func:`band_snr_verdicts` — magnitude/trim tiers at 25/20 dB (reusing
     ``QualityModel.snr_ok_db``/``snr_warn_db``), the stricter 35 dB alignment
     tier that rejects scalar-only evidence, and the worst-RELEVANT-band
@@ -29,6 +30,7 @@ import pytest
 
 from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.correction import acoustic_quality
 from jasper.correction import session as correction_session
 
 SR = 48000
@@ -46,7 +48,10 @@ def _bands(rows):
 
 
 def test_crossover_bands_first_four_match_room_correction_table():
-    assert snr_policy.CROSSOVER_SNR_BANDS_HZ[:4] == correction_session.SNR_BANDS_HZ
+    assert snr_policy.CROSSOVER_SNR_BANDS_HZ[:4] == (
+        acoustic_quality.SNR_BANDS_HZ
+    )
+    assert correction_session.SNR_BANDS_HZ is acoustic_quality.SNR_BANDS_HZ
 
 
 def test_band_levels_dbfs_matches_session_delegation():
@@ -60,11 +65,13 @@ def test_band_levels_dbfs_matches_session_delegation():
     # shift, not just a missing band.
     samples = rng.normal(scale=0.2, size=SR).astype(np.float64)
 
+    via_owner = acoustic_quality.band_levels_dbfs(samples, SR)
     via_session = correction_session._band_levels_dbfs(samples, SR)
     via_policy = snr_policy.band_levels_dbfs(
         samples, SR, snr_policy.CROSSOVER_SNR_BANDS_HZ[:4]
     )
-    assert via_session == via_policy
+    assert via_owner == via_policy
+    assert via_session == via_owner
     assert len(via_session) == 4
 
 

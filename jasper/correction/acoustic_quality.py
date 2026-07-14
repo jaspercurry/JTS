@@ -17,17 +17,183 @@ checks, banded SNR estimates, and same-position repeatability.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
 
+import numpy as np
+
+from jasper.audio_measurement import deconv, snr_policy, sweep
 from jasper.audio_measurement.quality_model import ROOM as _ROOM_QUALITY
 
 SCHEMA_VERSION = 1
+DBFS_FLOOR = -120.0
+SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
+    ("sub_bass", 20.0, 80.0),
+    ("bass", 80.0, 160.0),
+    ("upper_bass", 160.0, 350.0),
+    ("transition", 350.0, 1000.0),
+)
 # SNR trust thresholds now live on the shared ROOM QualityModel profile so the
 # room, driver, and level-ramp layers differ by data rather than forked
 # constants; values are unchanged (25.0 / 20.0). Kept as module-level aliases so
 # existing references still resolve.
 SNR_OK_DB = _ROOM_QUALITY.snr_ok_db
 SNR_WARN_DB = _ROOM_QUALITY.snr_warn_db
+
+
+def dbfs(value: float) -> float:
+    """Convert a linear amplitude to the Room evidence dBFS floor."""
+    if value <= 0 or not np.isfinite(value):
+        return DBFS_FLOOR
+    return max(DBFS_FLOOR, 20.0 * math.log10(value))
+
+
+def band_levels_dbfs(
+    samples: np.ndarray,
+    sample_rate: int,
+) -> list[dict[str, Any]]:
+    """Estimate Room's four fixed trust bands with the shared FFT kernel."""
+    return snr_policy.band_levels_dbfs(samples, sample_rate, SNR_BANDS_HZ)
+
+
+def capture_band_snr(
+    captured_wav_path: Path,
+    noise_report: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Join capture and pre-sweep-noise levels by band identity."""
+    if not noise_report:
+        return []
+    try:
+        captured, sample_rate = sweep.read_wav_mono(captured_wav_path)
+    except Exception:  # noqa: BLE001
+        return []
+    # Bound before the float64 cast: this re-reads the raw upload from disk, so
+    # an oversized capture must not pay a full-length 64-bit copy before the
+    # shared FFT cap fires.
+    captured = deconv.cap_capture_length(
+        captured,
+        sweep_len=0,
+        sample_rate=sample_rate,
+    )
+    capture_levels = band_levels_dbfs(
+        captured.astype(np.float64),
+        sample_rate,
+    )
+    noise_by_band = {
+        band.get("band_id"): band
+        for band in noise_report.get("band_noise_dbfs") or []
+        if isinstance(band, dict)
+    }
+    out: list[dict[str, Any]] = []
+    for capture_band in capture_levels:
+        band_id = capture_band.get("band_id")
+        noise_band = noise_by_band.get(band_id)
+        if not noise_band:
+            continue
+        capture_db = float(capture_band["level_dbfs"])
+        noise_db = float(noise_band["level_dbfs"])
+        out.append({
+            "band_id": band_id,
+            "band_hz": capture_band.get("band_hz"),
+            "capture_level_dbfs": round(capture_db, 2),
+            "noise_level_dbfs": round(noise_db, 2),
+            "estimated_snr_db": round(capture_db - noise_db, 2),
+            "method": "fft_band_power_difference",
+        })
+    return out
+
+
+def direct_arrival_report(
+    impulse_response: np.ndarray,
+    *,
+    sample_rate: int,
+) -> dict[str, Any]:
+    """Summarize direct-peak strength against its pre-arrival floor."""
+    ir = np.asarray(impulse_response, dtype=np.float64)
+    if ir.ndim != 1 or ir.size < 8:
+        return {"available": False, "reason": "impulse response unavailable"}
+    peak_index = int(np.argmax(np.abs(ir)))
+    pre_end = max(0, peak_index - int(0.002 * sample_rate))
+    pre_start = max(0, pre_end - int(0.02 * sample_rate))
+    pre = ir[pre_start:pre_end]
+    if pre.size < 8:
+        return {
+            "available": False,
+            "reason": "not enough pre-arrival samples before direct peak",
+            "direct_peak_index": peak_index,
+        }
+    floor_rms = float(np.sqrt(np.mean(pre ** 2)))
+    direct_peak = float(np.max(np.abs(ir)))
+    return {
+        "available": True,
+        "direct_peak_index": peak_index,
+        "direct_peak_dbfs": round(dbfs(direct_peak), 2),
+        "pre_arrival_floor_dbfs": round(dbfs(floor_rms), 2),
+        "direct_to_pre_arrival_db": round(
+            dbfs(direct_peak) - dbfs(floor_rms),
+            2,
+        ),
+        "pre_arrival_window_ms": [
+            round(pre_start / sample_rate * 1000.0, 2),
+            round(pre_end / sample_rate * 1000.0, 2),
+        ],
+    }
+
+
+def repeatability_from_arrays(
+    first: np.ndarray,
+    repeat: np.ndarray,
+    freqs_hz: np.ndarray,
+    *,
+    peq_f_high: float,
+) -> dict[str, Any]:
+    """Compare two captures at the same physical microphone position."""
+    if first.shape != repeat.shape or first.shape != freqs_hz.shape:
+        return {
+            "available": False,
+            "level": "unavailable",
+            "reason": "repeat and original curves use different shapes",
+        }
+    upper_band_hz = min(350.0, peq_f_high)
+    mask = (freqs_hz >= 50.0) & (freqs_hz <= upper_band_hz)
+    if int(mask.sum()) < 3:
+        return {
+            "available": False,
+            "level": "unavailable",
+            "reason": "not enough points in the repeatability band",
+        }
+    delta = first[mask] - repeat[mask]
+    abs_delta = np.abs(delta)
+    rms_db = float(np.sqrt(np.mean(delta ** 2)))
+    p95_abs_db = float(np.percentile(abs_delta, 95))
+    max_abs_db = float(np.max(abs_delta))
+    if rms_db <= 1.5 and p95_abs_db <= 3.0:
+        level = "high"
+    elif rms_db <= 2.5 and p95_abs_db <= 5.0:
+        level = "medium"
+    else:
+        level = "low"
+    issues: list[dict[str, Any]] = []
+    if level == "low":
+        issues.append({
+            "code": "repeatability_low",
+            "severity": "warn",
+            "message": (
+                "same-position repeat capture differs enough to limit "
+                "assertive correction"
+            ),
+        })
+    return {
+        "available": True,
+        "level": level,
+        "band_hz": [50.0, upper_band_hz],
+        "metrics": {
+            "rms_db": round(rms_db, 2),
+            "p95_abs_db": round(p95_abs_db, 2),
+            "max_abs_db": round(max_abs_db, 2),
+        },
+        "issues": issues,
+    }
 
 
 def _round(value: Any, digits: int = 2) -> float | None:

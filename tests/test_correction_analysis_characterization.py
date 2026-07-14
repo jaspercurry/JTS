@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement import analysis, calibration, deconv, quality, sweep
-from jasper.correction import envelope, status
+from jasper.correction import acoustic_quality, envelope, status
 from .correction_session_fixtures import make_measurement_session
 
 
@@ -47,7 +47,9 @@ def test_capture_band_snr_preserves_exact_report(tmp_path: Path):
         ],
     }
 
-    assert sess._capture_band_snr(capture_path, noise_report) == [
+    report = acoustic_quality.capture_band_snr(capture_path, noise_report)
+
+    assert report == [
         {
             "band_id": "sub_bass",
             "band_hz": [20.0, 80.0],
@@ -73,6 +75,7 @@ def test_capture_band_snr_preserves_exact_report(tmp_path: Path):
             "method": "fft_band_power_difference",
         },
     ]
+    assert sess._capture_band_snr(capture_path, noise_report) == report
 
 
 def test_capture_band_snr_fails_closed_without_usable_evidence(tmp_path: Path):
@@ -91,7 +94,11 @@ def test_direct_arrival_report_preserves_exact_boundaries(tmp_path: Path):
     impulse_response = np.full(100, 0.01, dtype=np.float64)
     impulse_response[50] = 1.0
 
-    assert sess._direct_arrival_report(impulse_response) == {
+    report = acoustic_quality.direct_arrival_report(
+        impulse_response,
+        sample_rate=1000,
+    )
+    assert report == {
         "available": True,
         "direct_peak_index": 50,
         "direct_peak_dbfs": 0.0,
@@ -99,7 +106,11 @@ def test_direct_arrival_report_preserves_exact_boundaries(tmp_path: Path):
         "direct_to_pre_arrival_db": 40.0,
         "pre_arrival_window_ms": [28.0, 48.0],
     }
-    assert sess._direct_arrival_report(np.ones((2, 8))) == {
+    assert sess._direct_arrival_report(impulse_response) == report
+    assert acoustic_quality.direct_arrival_report(
+        np.ones((2, 8)),
+        sample_rate=1000,
+    ) == {
         "available": False,
         "reason": "impulse response unavailable",
     }
@@ -145,7 +156,12 @@ def test_repeatability_thresholds_are_inclusive(
     first = np.zeros(freqs_hz.shape)
     repeat = np.full(freqs_hz.shape, delta_db)
 
-    report = sess._repeatability_from_arrays(first, repeat, freqs_hz)
+    report = acoustic_quality.repeatability_from_arrays(
+        first,
+        repeat,
+        freqs_hz,
+        peq_f_high=sess.cfg.peq_f_high,
+    )
 
     assert report == {
         "available": True,
@@ -169,6 +185,7 @@ def test_repeatability_thresholds_are_inclusive(
             else []
         ),
     }
+    assert sess._repeatability_from_arrays(first, repeat, freqs_hz) == report
 
 
 def test_repeatability_unavailable_reports_are_exact(tmp_path: Path):
@@ -215,7 +232,12 @@ def test_repeatability_p95_thresholds_are_independent(
     repeat = np.zeros(freqs_hz.shape)
     repeat[-2:] = outlier_db
 
-    report = sess._repeatability_from_arrays(first, repeat, freqs_hz)
+    report = acoustic_quality.repeatability_from_arrays(
+        first,
+        repeat,
+        freqs_hz,
+        peq_f_high=sess.cfg.peq_f_high,
+    )
 
     assert report["level"] == expected_level
     assert report["metrics"] == {
@@ -224,6 +246,7 @@ def test_repeatability_p95_thresholds_are_independent(
         "max_abs_db": outlier_db,
     }
     assert bool(report["issues"]) is (expected_level == "low")
+    assert sess._repeatability_from_arrays(first, repeat, freqs_hz) == report
 
 
 def test_repeatability_uses_configured_upper_band(tmp_path: Path):
@@ -231,10 +254,11 @@ def test_repeatability_uses_configured_upper_band(tmp_path: Path):
     sess.cfg.peq_f_high = 200.0
     freqs_hz = np.array([50.0, 100.0, 200.0, 250.0])
 
-    report = sess._repeatability_from_arrays(
+    report = acoustic_quality.repeatability_from_arrays(
         np.zeros(freqs_hz.shape),
         np.ones(freqs_hz.shape),
         freqs_hz,
+        peq_f_high=sess.cfg.peq_f_high,
     )
 
     assert report["available"] is True
@@ -244,6 +268,11 @@ def test_repeatability_uses_configured_upper_band(tmp_path: Path):
         "p95_abs_db": 1.0,
         "max_abs_db": 1.0,
     }
+    assert sess._repeatability_from_arrays(
+        np.zeros(freqs_hz.shape),
+        np.ones(freqs_hz.shape),
+        freqs_hz,
+    ) == report
 
 
 def test_smooth_capture_requires_prepared_sweep_metadata(tmp_path: Path):
