@@ -34,7 +34,7 @@ import pytest
 
 from pathlib import Path
 
-from jasper.web import correction_setup
+from jasper.web import correction_setup, correction_tuning
 
 from ._web_test_helpers import request_with_csrf
 
@@ -1775,7 +1775,7 @@ def test_e2e_spend_cap_exceeded_returns_429_with_honest_json(monkeypatch, route)
     )
 
     def fake(handler):
-        raise correction_setup.SpendCapExceeded(
+        raise correction_tuning.SpendCapExceeded(
             "daily spend cap reached — the tuning assistant will be "
             "available again after the daily rollover"
         )
@@ -1803,6 +1803,63 @@ def test_e2e_spend_cap_exceeded_returns_429_with_honest_json(monkeypatch, route)
             },
         }
         assert "daily spend cap reached" not in str(body)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    ("route", "advisor_name"),
+    [("/interpret", "interpret"), ("/propose", "propose")],
+)
+def test_e2e_tuning_provider_error_returns_closed_400(
+    monkeypatch,
+    tmp_path,
+    route,
+    advisor_name,
+):
+    """Real provider diagnostics cross both backend exception boundaries but
+    never escape the closed Room failure catalog."""
+    from jasper.calibration_agent import correction_advisor, model_client
+
+    monkeypatch.setenv("JASPER_USAGE_DB", str(tmp_path / "usage.db"))
+    monkeypatch.setenv(
+        "JASPER_VOICE_PROVIDER_FILE",
+        str(tmp_path / "voice_provider.env"),
+    )
+    monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_USD", "0")
+    monkeypatch.setattr(
+        "jasper.calibration_agent.key_provisioning.tuning_llm_available",
+        lambda **_: True,
+    )
+    session = object()
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
+    correction_tuning._tuning_last_paid_call[0] = 0.0
+
+    def fail_provider(called_session, **_kwargs):
+        assert called_session is session
+        raise model_client.AdvisorModelError("raw provider diagnostic")
+
+    monkeypatch.setattr(correction_advisor, advisor_name, fail_provider)
+    server, base = _start_server()
+    try:
+        error = request_with_csrf(
+            base,
+            route,
+            b"{}",
+            content_type="application/json",
+            expect_status=400,
+        )
+        body = json.loads(error.read().decode())
+        assert body == {
+            "failure": {
+                "code": "tuning_request_failed",
+                "text": "The tuning assistant could not continue. Try again.",
+                "retryable": True,
+                "recovery_action": None,
+            },
+        }
+        assert "raw provider diagnostic" not in str(body)
     finally:
         server.shutdown()
         server.server_close()
