@@ -17,12 +17,21 @@ checks, banded SNR estimates, and same-position repeatability.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
-from jasper.audio_measurement import deconv, snr_policy, sweep
+from jasper.audio_measurement import (
+    analysis,
+    calibration,
+    deconv,
+    quality,
+    snr_policy,
+    sweep,
+)
+from jasper.audio_measurement.calibration import CalibrationRecord
 from jasper.audio_measurement.quality_model import ROOM as _ROOM_QUALITY
 
 SCHEMA_VERSION = 1
@@ -39,6 +48,20 @@ SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
 # existing references still resolve.
 SNR_OK_DB = _ROOM_QUALITY.snr_ok_db
 SNR_WARN_DB = _ROOM_QUALITY.snr_warn_db
+
+
+@dataclass(frozen=True)
+class CaptureAnalysis:
+    """Session-independent result of one admitted capture analysis."""
+
+    log_freqs_hz: np.ndarray
+    log_magnitude_db: np.ndarray
+    capture_quality: quality.CaptureQuality
+    direct_arrival: dict[str, Any]
+    impulse_response: np.ndarray
+    raw_freqs_hz: np.ndarray
+    raw_magnitude_db: np.ndarray
+    smoothed_magnitude_db: np.ndarray
 
 
 def dbfs(value: float) -> float:
@@ -194,6 +217,102 @@ def repeatability_from_arrays(
         },
         "issues": issues,
     }
+
+
+def analyze_capture(
+    captured_wav_path: Path,
+    *,
+    sweep_meta: sweep.SweepMeta | None,
+    expected_sample_rate: int,
+    mic_calibration: CalibrationRecord | None,
+    input_device: dict[str, Any] | None,
+    normalize_band_hz: tuple[float, float],
+    on_quality_issue: Callable[[quality.QualityIssue], None] | None = None,
+) -> CaptureAnalysis:
+    """Read, admit, deconvolve, smooth, calibrate, and normalize one capture."""
+    if sweep_meta is None:
+        raise RuntimeError(
+            "no sweep_meta — flow ordering bug (call _ensure_sweep_cache first)"
+        )
+
+    captured, sample_rate = sweep.read_wav_mono(captured_wav_path)
+    # Bound once before both quality and deconvolution so the recorded evidence
+    # and the derived response describe the same signal. Preserve the raw size
+    # so truncation remains visible in status and bundle evidence.
+    raw_capture_samples = len(captured)
+    captured = deconv.cap_capture_length(
+        captured,
+        sweep_len=sweep_meta.n_samples,
+        sample_rate=sample_rate,
+    )
+    capture_quality = quality.assess_capture(
+        captured,
+        sample_rate=sample_rate,
+        expected_sample_rate=expected_sample_rate,
+        sweep_n_samples=sweep_meta.n_samples,
+        has_mic_calibration=mic_calibration is not None,
+        input_device=input_device,
+        truncated_from_samples=raw_capture_samples,
+        quality_model=_ROOM_QUALITY,
+    )
+    if on_quality_issue is not None:
+        for issue in capture_quality.issues:
+            on_quality_issue(issue)
+    if capture_quality.failed:
+        raise quality.CaptureQualityError(capture_quality)
+
+    sweep_signal, _ = sweep.synchronized_swept_sine(
+        f1=sweep_meta.f1,
+        f2=sweep_meta.f2,
+        duration_approx_s=sweep_meta.duration_s,
+        sample_rate=sweep_meta.sample_rate,
+        amplitude_dbfs=sweep_meta.amplitude_dbfs,
+    )
+    impulse_response = deconv.deconvolve(
+        captured.astype(np.float64),
+        sweep_signal.astype(np.float64),
+        sample_rate=expected_sample_rate,
+    )
+    direct_arrival = direct_arrival_report(
+        impulse_response,
+        sample_rate=expected_sample_rate,
+    )
+    raw_freqs_hz, raw_magnitude_db = deconv.magnitude_response(
+        impulse_response,
+        expected_sample_rate,
+        normalize=False,
+    )
+    smoothed_magnitude_db = analysis.smooth_fractional_octave(
+        raw_freqs_hz,
+        raw_magnitude_db,
+        fraction=48,
+    )
+    log_freqs_hz, log_magnitude_db = analysis.resample_log(
+        raw_freqs_hz,
+        smoothed_magnitude_db,
+    )
+    if mic_calibration is not None:
+        log_magnitude_db = calibration.apply_calibration_curve(
+            log_freqs_hz,
+            log_magnitude_db,
+            mic_calibration.curve,
+        )
+    log_magnitude_db = analysis.normalize_to_band(
+        log_freqs_hz,
+        log_magnitude_db,
+        f_low=normalize_band_hz[0],
+        f_high=normalize_band_hz[1],
+    )
+    return CaptureAnalysis(
+        log_freqs_hz=log_freqs_hz,
+        log_magnitude_db=log_magnitude_db,
+        capture_quality=capture_quality,
+        direct_arrival=direct_arrival,
+        impulse_response=impulse_response,
+        raw_freqs_hz=raw_freqs_hz,
+        raw_magnitude_db=raw_magnitude_db,
+        smoothed_magnitude_db=smoothed_magnitude_db,
+    )
 
 
 def _round(value: Any, digits: int = 2) -> float | None:

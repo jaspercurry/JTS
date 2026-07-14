@@ -88,9 +88,7 @@ def test_capture_band_snr_fails_closed_without_usable_evidence(tmp_path: Path):
     ) == []
 
 
-def test_direct_arrival_report_preserves_exact_boundaries(tmp_path: Path):
-    sess = make_measurement_session(tmp_path)
-    sess.cfg.sample_rate = 1000
+def test_direct_arrival_report_preserves_exact_boundaries():
     impulse_response = np.full(100, 0.01, dtype=np.float64)
     impulse_response[50] = 1.0
 
@@ -106,7 +104,6 @@ def test_direct_arrival_report_preserves_exact_boundaries(tmp_path: Path):
         "direct_to_pre_arrival_db": 40.0,
         "pre_arrival_window_ms": [28.0, 48.0],
     }
-    assert sess._direct_arrival_report(impulse_response) == report
     assert acoustic_quality.direct_arrival_report(
         np.ones((2, 8)),
         sample_rate=1000,
@@ -114,20 +111,29 @@ def test_direct_arrival_report_preserves_exact_boundaries(tmp_path: Path):
         "available": False,
         "reason": "impulse response unavailable",
     }
-    assert sess._direct_arrival_report(np.ones(7)) == {
+    assert acoustic_quality.direct_arrival_report(
+        np.ones(7),
+        sample_rate=1000,
+    ) == {
         "available": False,
         "reason": "impulse response unavailable",
     }
     early_peak = np.zeros(100, dtype=np.float64)
     early_peak[9] = 1.0
-    assert sess._direct_arrival_report(early_peak) == {
+    assert acoustic_quality.direct_arrival_report(
+        early_peak,
+        sample_rate=1000,
+    ) == {
         "available": False,
         "reason": "not enough pre-arrival samples before direct peak",
         "direct_peak_index": 9,
     }
     boundary_peak = np.zeros(100, dtype=np.float64)
     boundary_peak[10] = 1.0
-    assert sess._direct_arrival_report(boundary_peak) == {
+    assert acoustic_quality.direct_arrival_report(
+        boundary_peak,
+        sample_rate=1000,
+    ) == {
         "available": True,
         "direct_peak_index": 10,
         "direct_peak_dbfs": 0.0,
@@ -423,10 +429,13 @@ def test_smooth_capture_preserves_pipeline_and_five_value_result(
     monkeypatch.setattr(analysis, "normalize_to_band", normalize_response)
     monkeypatch.setattr(sess, "_write_capture_replay_artifacts", write_replay)
 
-    result = sess._smooth_capture(
+    analysis_result = acoustic_quality.analyze_capture(
         capture_path,
-        capture_kind="measurement",
-        position_index=0,
+        sweep_meta=sess.sweep_meta,
+        expected_sample_rate=sess.cfg.sample_rate,
+        mic_calibration=sess.mic_calibration,
+        input_device=sess.input_device,
+        normalize_band_hz=(200.0, 1000.0),
     )
 
     assert order == [
@@ -440,8 +449,35 @@ def test_smooth_capture_preserves_pipeline_and_five_value_result(
         "resample",
         "calibrate",
         "normalize",
-        "replay",
     ]
+    np.testing.assert_array_equal(analysis_result.log_freqs_hz, log_freqs)
+    np.testing.assert_array_equal(
+        analysis_result.log_magnitude_db,
+        normalized,
+    )
+    assert analysis_result.capture_quality is capture_quality
+    assert analysis_result.direct_arrival == {
+        "available": True,
+        "direct_peak_index": 50,
+        "direct_peak_dbfs": 0.0,
+        "pre_arrival_floor_dbfs": -40.0,
+        "direct_to_pre_arrival_db": 40.0,
+        "pre_arrival_window_ms": [28.0, 48.0],
+    }
+
+    order.clear()
+    monkeypatch.setattr(
+        acoustic_quality,
+        "analyze_capture",
+        lambda *_args, **_kwargs: analysis_result,
+    )
+    result = sess._smooth_capture(
+        capture_path,
+        capture_kind="measurement",
+        position_index=0,
+    )
+
+    assert order == ["replay"]
     np.testing.assert_array_equal(result[0], log_freqs)
     np.testing.assert_array_equal(result[1], normalized)
     assert result[2] is capture_quality
@@ -475,6 +511,7 @@ def test_smooth_capture_preserves_pipeline_and_five_value_result(
 def test_smooth_capture_stops_before_deconvolution_on_failed_quality(
     tmp_path: Path,
     monkeypatch,
+    caplog,
 ):
     sess = make_measurement_session(tmp_path)
     sess.sweep_meta = SimpleNamespace(n_samples=3)
@@ -503,14 +540,20 @@ def test_smooth_capture_stops_before_deconvolution_on_failed_quality(
         lambda *_args, **_kwargs: pytest.fail("failed capture reached deconvolution"),
     )
 
-    with pytest.raises(quality.CaptureQualityError) as exc_info:
-        sess._smooth_capture(
-            tmp_path / "capture.wav",
-            capture_kind="measurement",
-            position_index=0,
-        )
+    with caplog.at_level("WARNING", logger="jasper.correction.session"):
+        with pytest.raises(quality.CaptureQualityError) as exc_info:
+            sess._smooth_capture(
+                tmp_path / "capture.wav",
+                capture_kind="measurement",
+                position_index=0,
+            )
 
     assert exc_info.value.report is failed
+    assert any(
+        "capture_quality session=" in record.message
+        and "code=capture_empty" in record.message
+        for record in caplog.records
+    )
 
 
 def test_helper_reports_reach_status_and_homeowner_nudge(

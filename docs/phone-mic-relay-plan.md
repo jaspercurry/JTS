@@ -32,7 +32,8 @@
 > its compact setup binding under the Active-owned flow. Calibration is still
 > applied
 > **Pi-side during analysis, never at record
-> time** (it's a post-hoc FR correction in `MeasurementSession._smooth_capture`);
+> time** (it's a post-hoc FR correction in
+> `jasper.correction.acoustic_quality.analyze_capture`);
 > the phone records raw and reports *which* mic it used in the opaque `armed`
 > event. A device-aware gate (`_relay_device_calibration_block`, before playback
 > and again after capture) refuses a vendor curve on the phone's built-in mic but

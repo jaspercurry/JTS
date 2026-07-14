@@ -527,7 +527,7 @@
   per-session bundle metadata (`input_device`, `mic_calibration`,
   `bundle_schema_version`). Calibration files normalize to one
   internal additive `correction_db` curve and are applied in
-  `MeasurementSession._smooth_capture` before target normalization
+  `jasper.correction.acoustic_quality.analyze_capture` before target normalization
   and PEQ design. Storage lives under
   `/var/lib/jasper/correction/calibration_mics/`.
 - ✅ **Phase 2.4 — observability and quality floor.**
@@ -1560,7 +1560,8 @@ jasper/
 │   ├── runtime_integrity.py             Pi/runtime health evidence around sweeps
 │   ├── runtime_safety.py                runtime graph safety re-checked against the
 │   │                                    saved output topology contract
-│   ├── acoustic_quality.py              SNR/repeatability/direct-arrival trust evidence
+│   ├── acoustic_quality.py              admitted capture analysis plus
+│   │                                    SNR/repeatability/direct-arrival trust evidence
 │   ├── replay_artifacts.py              compact derived IR/response artifacts
 │   ├── artifacts.py                     per-session bundle writer / manifest owner
 │   ├── status.py                        current-config + status/bundle payload serializers
@@ -1582,9 +1583,9 @@ jasper/
 │   │                                    multi-position measurements
 │   ├── strategy.py                      correction strategy and target-profile
 │   │                                    orchestration (raw math -> product policy)
-│   └── session.py                       measurement state machine + DSP orchestration
-│                                        (delegates auto-level ramping, state guards,
-│                                        and status serialization)
+│   └── session.py                       measurement state machine + DSP/replay orchestration
+│                                        (delegates capture analysis, auto-level ramping,
+│                                        state guards, and status serialization)
 │
 ├── cli/
 │   └── doctor.py                        correction socket / bundle / config checks
@@ -2429,9 +2430,12 @@ Internal:
 
 ---
 
-Last verified: 2026-07-13 (Wave 2 neutral playback extraction and the Room
-compatibility wrapper checked against current callers and deterministic tone
-bytes. Room envelope v8 section/action/blocker/failure/default ownership,
+Last verified: 2026-07-13 (Wave 2 acoustic-trust kernels and admitted capture
+analysis extraction checked against exact status/artifact bytes, quality issue
+logging, calibration-before-normalization, and replay orchestration. Neutral
+playback extraction and the Room compatibility wrapper checked against current
+callers and deterministic tone bytes. Room envelope v8
+section/action/blocker/failure/default ownership,
 six/flat/balanced/automatic-repeat policy, relay-first transport resolution,
 capture-only positioned relay specs, and pre-playback level-microphone checks;
 passive-only readiness admission and `/start` defense pending exact Active
