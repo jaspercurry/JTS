@@ -51,7 +51,7 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the merged Wave 2 manifest, playback, admission, and guarded-playback implementation, 2026-07-13)
+## Current state (verified against the Wave 3 isolated-driver consumer and the Shared manifest, playback, admission, and guarded-playback implementation, 2026-07-14)
 
 ### Wave 1 contract-only foundation (2026-07-13)
 
@@ -66,16 +66,18 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   normalized stimulus/generator/effective-peak inputs; issue protection evidence
   from a fresh graph readback; and rerun admission immediately before playback.
   The strict SHA-256 values are content identities, not signatures, trusted
-  issuers, or transferable playback capabilities. This slice has no producer or
-  live consumer and performs no signal generation, graph I/O, audio, or
-  persistence.
+  issuers, or transferable playback capabilities. The original Wave 1 slice had
+  no producer; Active's isolated-driver production adapter now supplies the
+  trusted live consumer, while summed and lifecycle authority remain blocked.
 - `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
   `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
   replay inputs, admission artifacts, algorithm id/version, geometry, placement,
   and context. They do not read files, migrate Room or Active bundle formats,
   decide quality, own a verdict, or promote a forensic bundle into authority.
   Existing `jasper.correction.bundles` and `jasper.active_speaker.bundles`
-  retain their current ownership and behavior.
+  retain feature ownership; newly created Active commissioning bundles also
+  establish the exact Shared admission marker, while historical bundles are
+  never upgraded.
 - The same module distinguishes a normalized CamillaDSP `active_raw` content
   identity from the exact host transaction/rollback state. The latter reuses
   the existing `null_walk.DspPredecessor` canonical JSON and fingerprint rules.
@@ -253,9 +255,13 @@ backfill API. The current B2b replay remains permanently diagnostic-only. At
 adoption, Active must classify B2b before authority resolution, use a fixed
 production authority root and `bundle_kind`, require a playback-role artifact,
 and never add/copy an authority marker for a historical session. Its current
-receipt does not yet enforce those origin checks. Active has not adopted these
-APIs, so this slice causes no graph, audio, capture, or Room-gate behavior
-change.
+receipt does not yet enforce those origin checks. Active's isolated-driver
+production path has adopted these APIs. It holds the bounded Shared writer lock
+across transient load, fresh generation/playback proofs, exact playback, and
+restoration, and threads the verified playback-role handoff through the
+server-owned capture call. Summed capture is intentionally refused before graph
+load until its group-level proof exists; lifecycle, candidate, receipt, and
+Room-gate authority are still unchanged.
 
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
@@ -1122,7 +1128,8 @@ content-bound immutable-snapshot WAV emission; cancellation-drained playback
 re-admission with explicit pre-audio/possibly-started cancellation and failure
 outcomes carrying the persisted artifact; one authority per fresh session with
 unique attempt ids; closed guarded-playback terminal events; and
-no-bundle-migration/no-backfill/no-Active-adoption boundaries checked
+no-bundle-migration/no-backfill boundaries plus Active isolated-driver adoption,
+server-owned capture handoff, and summed pre-audio refusal checked
 hardware-free. No hardware behavior revalidated. Wave 1 excitation/evidence
 identities and
 `null_walk.DspPredecessor` reuse remain contract-only. Crossover adapter

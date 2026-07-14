@@ -1077,14 +1077,15 @@ def emit_active_speaker_startup_config(
 {metadata_yaml}
 # DO NOT HAND-EDIT or load automatically. This template is for hardware
 # bring-up only: all per-driver outputs start muted, tweeter paths include
-# an extra protective high-pass, and the software volume ceiling remains 0 dB.
+# an extra protective high-pass, and the software volume ceiling remains
+# non-positive.
 
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
   queuelimit: 4
   target_level: {target_level}
-  volume_limit: {volume_limit_db:.1f}
+  volume_limit: {volume_limit_db!r}
   enable_rate_adjust: true
   capture:
     type: Alsa
@@ -1417,14 +1418,14 @@ def emit_active_speaker_commissioning_config(
 # per-output mute mask so one driver at a time is tested through its real
 # crossover/limiter chain. Bring-up uses the extra protective high-pass;
 # automatic response measurement uses the applied crossover high-pass instead.
-# The software volume ceiling stays 0 dB in both modes.
+# The software volume ceiling remains non-positive in both modes.
 
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
   queuelimit: 4
   target_level: {target_level}
-  volume_limit: {volume_limit_db:.1f}
+  volume_limit: {volume_limit_db!r}
   enable_rate_adjust: true
   capture:
     type: Alsa
@@ -1644,14 +1645,14 @@ def emit_active_speaker_baseline_config(
 {metadata_yaml}
 # This is a candidate speaker baseline: crossover filters are active, outputs
 # are not startup-muted, per-driver correction gain is non-positive, and the
-# software volume ceiling remains 0 dB.
+# software volume ceiling remains non-positive.
 
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
   queuelimit: 4
   target_level: {target_level}
-  volume_limit: {volume_limit_db:.1f}
+  volume_limit: {volume_limit_db!r}
   enable_rate_adjust: true{resampler_line}
 {capture_yaml}
   playback:
@@ -1830,14 +1831,14 @@ def emit_active_speaker_driver_domain_config(
 # runs the per-driver crossover/limiter chain. There is no program-domain
 # headroom or preference EQ (the leader baked Layer B/C); outputs are not
 # startup-muted, per-driver correction gain is non-positive, and the software
-# volume ceiling remains 0 dB.
+# volume ceiling remains non-positive.
 
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
   queuelimit: 4
   target_level: {target_level}
-  volume_limit: {volume_limit_db:.1f}
+  volume_limit: {volume_limit_db!r}
   enable_rate_adjust: true
   capture:
     type: Alsa

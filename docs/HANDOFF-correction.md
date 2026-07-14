@@ -24,6 +24,17 @@
   explicit device, timeout, and cache; they do not choose an excitation or prove
   current admission. No browser/Active flow changed, and no hardware behavior
   was revalidated.
+- 🧱 **Wave 3 isolated-driver admission reachable; summed capture paused.**
+  The correction relay's driver leg now receives a unique, persisted
+  playback-role handoff from Active's Shared-admission adapter and passes it to
+  capture persistence as an explicit server-owned argument. One bounded DSP
+  writer lock covers transient graph load, fresh graph/volume proof, exact WAV
+  playback, and restoration; cancellation cannot release the boundary before
+  restore finishes. Historical bundles without the authority marker are never
+  upgraded. The summed relay/capture route currently refuses before graph load
+  with `active_summed_persisted_admission_unavailable`; it must not record new
+  authoritative summed evidence until the group-level delay/protection adapter
+  lands. This is a software-only change; no sound or hardware was exercised.
 - ✅ **Room R1 — envelope v9 owns whole-page visibility, truthful entry
   failures, and disclosed run defaults (hardware-free;
   real-device browser pass pending).** `jasper.correction.envelope` now emits
@@ -247,7 +258,8 @@
   then continue to Room. The browser is a thin
   renderer/dispatcher: it has no local recorder and reads one envelope snapshot,
   so relay state and the one next action cannot disagree. `POST
-  /crossover/relay-capture` carries driver/summed sweeps over the **same**
+  /crossover/relay-capture` carries driver sweeps (and retains the summed
+  transport shape, currently fail-closed before playback) over the **same**
   phone-mic relay transport + `record_*_capture` analysis seam the room/sync
   flows use. The consume path
   reads the play payload's REAL shape (top-level `status` + nested
@@ -290,7 +302,7 @@
   and the gain lease is context-bound to the current protected baseline. The
   L0 emit gate + graph safety + commission ramp Stop-gates remain intact. **H2**
   is the acoustic proof only — the
-  phone-mic `getUserMedia`/CSP path + the driver/summed sweep playback
+  phone-mic `getUserMedia`/CSP path + the driver and future re-enabled summed sweep playback
   on real drivers are not exercised hardware-free (same status as the
   room/sync relay). Design of record:
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §4 P7.
@@ -409,7 +421,8 @@
   `deploy/assets/correction/js/main.js` intact. `/correction/crossover/`
   is a correction-native active-crossover microphone surface: correction
   web modules own HTTPS/browser routing, while
-  `jasper.active_speaker.web_commissioning` owns safe driver and optional summed
+  `jasper.active_speaker.web_commissioning` owns safe admitted driver playback
+  and the current fail-closed summed gate; future optional summed
   playback orchestration and `jasper.active_speaker.web_measurement`
   owns bounded browser WAV evidence plus acoustic-analysis recording.
   This page is also the ownership boundary between manual and automatic
@@ -2479,7 +2492,9 @@ Internal:
 ---
 
 Last verified: 2026-07-14 (shared DSP-writer admission deadline/cancellation
-semantics checked against Room's terminal mutation policy; Wave 2 paid tuning backend extraction checked the
+semantics checked against Room's terminal mutation policy; Active isolated-driver
+persisted admission, server-owned capture handoff, and summed pre-audio refusal
+checked hardware-free; Wave 2 paid tuning backend extraction checked the
 shared cross-route throttle, fresh household spend gate, exact provider
 arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP
 error translation without moving proposal acceptance or live apply. Acoustic-

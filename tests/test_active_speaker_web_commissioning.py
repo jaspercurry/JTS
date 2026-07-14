@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +24,7 @@ from jasper.active_speaker.calibration_level import MIN_TEST_LEVEL_DBFS
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
+from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _two_way_preset
 
@@ -92,6 +94,25 @@ def _driver_comparison_set(topology):
         },
     }
     return {**core, "fingerprint": comparison_set_fingerprint(core)}
+
+
+def _install_driver_admission_prerequisites(monkeypatch):
+    """Keep legacy orchestration tests focused below the new admission gates."""
+
+    from jasper import dsp_apply
+    from jasper.active_speaker import design_draft
+
+    monkeypatch.setattr(
+        design_draft,
+        "load_design_draft",
+        lambda: {"driver_safety_profile": {"status": "confirmed"}},
+    )
+
+    @asynccontextmanager
+    async def unlocked(*_args, **_kwargs):
+        yield
+
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", unlocked)
 
 
 @pytest.mark.parametrize("source_kind", ["preset", "preview"])
@@ -215,6 +236,7 @@ def test_driver_capture_sweep_accepts_durable_confirmation_after_session_expiry(
     )
     monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
     monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
     loaded = {}
 
     async def blocked_load(**kwargs):
@@ -240,6 +262,7 @@ def test_driver_capture_sweep_accepts_durable_confirmation_after_session_expiry(
         web.play_driver_capture_sweep(
             {"speaker_group_id": "mono", "role": "woofer"},
             camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
         )
     )
 
@@ -628,6 +651,7 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
     monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
     monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
     monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
     from jasper.active_speaker import baseline_profile
 
     monkeypatch.setattr(
@@ -648,47 +672,140 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
 
     async def fake_play(**kwargs):
         play_call.update(kwargs)
-        excitation = {
-            key: value
-            for key, value in kwargs["planned_excitation"].items()
-            if key != "status"
-        }
-        return {
-            "status": "completed",
-            "audio_emitted": True,
-            "playback_id": "play-woofer",
-            "sweep_meta": {
-                "amplitude_dbfs": AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
-            },
-            "excitation": excitation,
-        }
+        return SimpleNamespace(
+            sweep_meta=SimpleNamespace(
+                to_dict=lambda: {
+                    "amplitude_dbfs": AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
+                }
+            ),
+            handoff=SimpleNamespace(
+                admission_id="admission-woofer",
+                to_dict=lambda: {"admission_id": "admission-woofer"},
+            ),
+        )
 
     monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", fake_load)
-    monkeypatch.setattr(web, "_play_capture_sweep", fake_play)
+    monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
+    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda: {})
+    monkeypatch.setattr(web, "_commission_tone_release_fanin_lane", lambda **_kw: None)
+    from jasper.active_speaker import commissioning_admission
+
+    monkeypatch.setattr(
+        commissioning_admission, "play_admitted_driver_capture", fake_play
+    )
 
     payload = asyncio.run(
         web.play_driver_capture_sweep(
             {"speaker_group_id": "mono", "role": "woofer"},
             camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
         )
     )
 
     assert payload["status"] == "completed"
     assert payload["test_level_dbfs"] == applied_gain_db
     assert load_call["level_dbfs"] == applied_gain_db
+    assert load_call["volume_limit_db"] == -4.0
     startup_gate = load_call["startup_gate_calibration_level"]
     assert startup_gate["status"] == "floor"
     assert startup_gate["test_signal"]["requested_level_dbfs"] == (
         MIN_TEST_LEVEL_DBFS
     )
-    assert play_call["level_dbfs"] == applied_gain_db
-    assert play_call["planned_excitation"]["commissioning_gain_db"] == (
-        applied_gain_db
-    )
-    assert play_call["planned_excitation"]["gain_source"] == (
-        web.AUTOMATIC_EXCITATION_GAIN_SOURCE
-    )
+    assert play_call["commissioning_gain_db"] == applied_gain_db
+    assert play_call["expected_main_volume_db"] == -4.0
     assert payload["test_level_dbfs"] != legacy_floor_dbfs
+
+
+@pytest.mark.parametrize(
+    ("post_play_reason", "expected_issue"),
+    [
+        ("main_volume_drift", "active_driver_capture_volume_drift"),
+        (
+            "post_play_volume_unverified",
+            "active_driver_capture_post_play_volume_unverified",
+        ),
+        (
+            "post_play_volume_verification_cancelled",
+            "active_driver_capture_post_play_volume_unverified",
+        ),
+    ],
+)
+def test_driver_capture_post_play_failure_reports_consumed_attempt_and_reason(
+    monkeypatch,
+    post_play_reason,
+    expected_issue,
+):
+    topology = _topology()
+    measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
+    monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
+    from jasper.active_speaker import baseline_profile, commissioning_admission
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state",
+        lambda: _applied_excitation_profile(topology=topology, gain_db=-9.0),
+    )
+
+    async def fake_load(**_kwargs):
+        return {"load": {"status": "loaded"}}
+
+    artifact = ArtifactIdentity(
+        bundle_kind="jts_active_speaker_commissioning_bundle",
+        bundle_id="bundle-1",
+        relative_path="admission/v1/playback/attempt-1.json",
+        sha256="a" * 64,
+        byte_size=100,
+    )
+
+    async def drift_after_play(**_kwargs):
+        raise commissioning_admission.ActiveCommissioningPlaybackDrift(
+            "main volume changed during admitted driver playback",
+            reason=post_play_reason,
+            admission_id="attempt-1",
+            playback_artifact=artifact,
+        )
+
+    monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", fake_load)
+    monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
+    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda: {})
+    monkeypatch.setattr(web, "_commission_tone_release_fanin_lane", lambda **_kw: None)
+    monkeypatch.setattr(
+        commissioning_admission, "play_admitted_driver_capture", drift_after_play
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
+        )
+    )
+
+    assert payload["status"] == "failed"
+    assert payload["reason"] == expected_issue
+    assert payload["audio_emitted"] is True
+    assert payload["playback"]["audio_may_have_started"] is True
+    assert payload["playback"]["post_play_failure_reason"] == post_play_reason
+    assert payload["issues"][0]["code"] == expected_issue
+    expected_consumed_attempt = {
+        "admission_id": "attempt-1",
+        "playback_artifact": artifact.to_dict(),
+        "requires_new_generation": True,
+    }
+    assert payload["capture_admission"] == expected_consumed_attempt
+    assert payload["playback"]["capture_admission"] == expected_consumed_attempt
 
 
 @pytest.mark.parametrize("playback_fails", [False, True])
@@ -875,7 +992,10 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
         lambda _cam: (object(), object(), object()),
     )
 
-    async def load_driver(*_args, **_kwargs):
+    load_driver_call = {}
+
+    async def load_driver(*_args, **kwargs):
+        load_driver_call.update(kwargs)
         return {"load": {"status": "loaded"}}
 
     monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
@@ -887,6 +1007,7 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
             speaker_group_id="mono",
             role="woofer",
             level_dbfs=0.0,
+            volume_limit_db=-4.0,
             startup_gate_calibration_level={"status": "floor"},
             preset=frozen_preset,
             crossover_preview=None,
@@ -902,6 +1023,7 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
     }
     assert anchor_call["preset"] is frozen_preset
     assert anchor_call["crossover_preview"] is None
+    assert load_driver_call["volume_limit_db"] == -4.0
 
 
 def test_stage_startup_config_does_not_reread_mutable_preview_for_explicit_preset(
@@ -1203,6 +1325,7 @@ def test_automatic_driver_load_failure_restores_entry_graph(
         "load_applied_baseline_profile_state",
         lambda: _applied_excitation_profile(topology=topology, gain_db=0.0),
     )
+    _install_driver_admission_prerequisites(monkeypatch)
 
     async def blocked_load(**_kwargs):
         return {
@@ -1244,10 +1367,11 @@ def test_automatic_driver_load_failure_restores_entry_graph(
         web.play_driver_capture_sweep(
             {"speaker_group_id": "mono", "role": "woofer"},
             camilla_factory=Cam,
+            locked_main_volume_db=-4.0,
         )
     )
 
-    assert payload["status"] == "blocked"
+    assert payload["status"] == ("failed" if restore_fails else "blocked")
     assert restored_paths == [entry_path]
     if restore_fails:
         assert payload["issues"][0]["code"] == (
@@ -1301,6 +1425,7 @@ def test_driver_capture_sweep_refuses_before_loading_when_applied_gain_is_stale(
         web.play_driver_capture_sweep(
             {"speaker_group_id": "mono", "role": "woofer"},
             camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
         )
     )
 
@@ -1346,12 +1471,14 @@ def test_driver_capture_sweep_uses_frozen_applied_preset_not_mutable_draft(
         "_load_driver_commissioning_config_for_level",
         capture_load,
     )
+    _install_driver_admission_prerequisites(monkeypatch)
 
     payload = asyncio.run(
         web.play_driver_capture_sweep(
             {"speaker_group_id": "mono", "role": "woofer"},
             camilla_factory=lambda: object(),
             applied_profile=applied,
+            locked_main_volume_db=-4.0,
         )
     )
 
@@ -1391,6 +1518,7 @@ def test_driver_capture_sweep_uses_explicit_geometry_lock_in_excitation(monkeypa
         "_load_driver_commissioning_config_for_level",
         capture_load,
     )
+    _install_driver_admission_prerequisites(monkeypatch)
 
     payload = asyncio.run(
         web.play_driver_capture_sweep(
@@ -1403,6 +1531,140 @@ def test_driver_capture_sweep_uses_explicit_geometry_lock_in_excitation(monkeypa
 
     assert payload["status"] == "blocked"
     assert seen["locked_main_volume_db"] == -3.5
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_driver_capture_holds_one_writer_lock_through_restore(monkeypatch, cancelled):
+    topology = _topology()
+    measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    applied = _applied_excitation_profile(topology=topology, gain_db=-9.0)
+    events = []
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
+
+    from jasper import dsp_apply
+    from jasper.active_speaker import commissioning_admission
+
+    @asynccontextmanager
+    async def tracked_lock(*_args, **kwargs):
+        assert kwargs["source"] == "active_speaker_driver_capture"
+        events.append("lock_enter")
+        try:
+            yield
+        finally:
+            events.append("lock_exit")
+
+    async def load(**kwargs):
+        assert kwargs["acquire_lock"] is False
+        events.append("load")
+        return {
+            "load": {"status": "loaded"},
+            "measurement_transaction": {
+                "entry_config_path": "/tmp/entry.yml",
+                "restored": False,
+            },
+        }
+
+    async def admitted(**_kwargs):
+        events.append("play")
+        if cancelled:
+            raise asyncio.CancelledError
+        return SimpleNamespace(
+            sweep_meta=SimpleNamespace(
+                to_dict=lambda: {"amplitude_dbfs": -12.0, "duration_s": 4.0}
+            ),
+            handoff=SimpleNamespace(
+                admission_id="admission-1",
+                to_dict=lambda: {"admission_id": "admission-1"},
+            ),
+        )
+
+    async def restore(_payload, *, camilla_factory, acquire_lock):
+        del camilla_factory
+        assert acquire_lock is False
+        events.append("restore")
+        return {"status": "rolled_back", "config_path": "/tmp/entry.yml"}
+
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", tracked_lock)
+    monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", load)
+    monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
+    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda: {})
+    monkeypatch.setattr(web, "_commission_tone_release_fanin_lane", lambda **_kw: None)
+    monkeypatch.setattr(
+        web, "_restore_automatic_driver_entry_config_resilient", restore
+    )
+    monkeypatch.setattr(
+        commissioning_admission, "play_admitted_driver_capture", admitted
+    )
+
+    operation = web.play_driver_capture_sweep(
+        {"speaker_group_id": "mono", "role": "woofer"},
+        camilla_factory=lambda: object(),
+        applied_profile=applied,
+        locked_main_volume_db=-4.0,
+    )
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(operation)
+    else:
+        assert asyncio.run(operation)["status"] == "completed"
+    assert events == ["lock_enter", "load", "play", "restore", "lock_exit"]
+
+
+def test_driver_capture_writer_timeout_refuses_before_graph_load(monkeypatch):
+    topology = _topology()
+    measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
+
+    from jasper import dsp_apply
+
+    @asynccontextmanager
+    async def busy_lock(*_args, **_kwargs):
+        raise dsp_apply.DspWriterLockTimeout(
+            "/tmp/writer.lock",
+            timeout_s=3.0,
+            waited_s=3.0,
+            source="active_speaker_driver_capture",
+        )
+        yield
+
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", busy_lock)
+    monkeypatch.setattr(
+        web,
+        "_load_driver_commissioning_config_for_level",
+        lambda **_kwargs: pytest.fail("writer timeout must precede graph load"),
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+            applied_profile=_applied_excitation_profile(topology=topology),
+            locked_main_volume_db=-4.0,
+        )
+    )
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "active_driver_capture_writer_busy"
+    assert payload["audio_emitted"] is False
 
 
 @pytest.mark.parametrize("invalid_lock", (True, float("nan"), 0.1, "-3.5"))
@@ -1456,42 +1718,34 @@ def test_automatic_measurement_source_peak_is_one_shared_default():
     assert SessionConfig().amplitude_dbfs == sweep_default
 
 
-def test_summed_capture_sweep_arms_safe_session_for_mutual_exclusion(monkeypatch):
+def test_summed_capture_sweep_refuses_before_session_or_graph_mutation(monkeypatch):
     armed = {}
-    measurements = {
-        "summary": {
-            "latest_summed_tests": {
-                "mono": {
-                    "captured": True,
-                    "audio_emitted": True,
-                    "summed_test_id": "sum-1",
-                    "tone": {"level_dbfs": -72.0},
-                    "issues": [],
-                },
-            },
-        },
-    }
-    monkeypatch.setattr(web, "load_output_topology", lambda: object())
-    monkeypatch.setattr(web, "load_measurement_state", lambda topology: measurements)
-    monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "idle"})
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    monkeypatch.setattr(
+        web,
+        "load_output_topology",
+        lambda: pytest.fail("blocked summed capture must not inspect the graph"),
+    )
+    monkeypatch.setattr(
+        web,
+        "load_measurement_state",
+        lambda _topology: pytest.fail("blocked summed capture must not read evidence"),
+    )
+    monkeypatch.setattr(
+        web,
+        "load_safe_playback_state",
+        lambda: pytest.fail("blocked summed capture must not arm playback"),
+    )
     monkeypatch.setattr(
         web,
         "arm_safe_playback_session",
         lambda report: armed.setdefault("report", report) or {"status": "armed"},
     )
-    async def fake_load(**kwargs):
-        return {
-            "load": {
-                "status": "blocked",
-                "issues": [{
-                    "severity": "blocker",
-                    "code": "test_block",
-                    "message": "blocked in test",
-                }],
-            },
-        }
-
-    monkeypatch.setattr(web, "_load_applied_summed_measurement_config", fake_load)
+    monkeypatch.setattr(
+        web,
+        "_load_applied_summed_measurement_config",
+        lambda **_kwargs: pytest.fail("blocked summed capture must not load"),
+    )
 
     payload = asyncio.run(
         web.play_summed_capture_sweep(
@@ -1500,9 +1754,10 @@ def test_summed_capture_sweep_arms_safe_session_for_mutual_exclusion(monkeypatch
         )
     )
 
-    assert armed["report"]["status"] == "ready"
-    assert payload["status"] == "blocked"
-    assert payload["reason"] == "summed_capture_sweep_load_failed"
+    assert armed == {}
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "active_summed_persisted_admission_unavailable"
+    assert payload["audio_emitted"] is False
 
 
 def _full_applied_profile(*, topology=None, topology_id=None):
@@ -1514,7 +1769,7 @@ def _full_applied_profile(*, topology=None, topology_id=None):
     return profile
 
 
-def test_summed_capture_ignores_legacy_minus_80_level_and_uses_applied_graph(
+def test_summed_capture_never_reuses_legacy_evidence_without_admission(
     monkeypatch,
 ):
     topology = _topology()
@@ -1531,42 +1786,23 @@ def test_summed_capture_ignores_legacy_minus_80_level_and_uses_applied_graph(
             },
         },
     }
-    excitation = web.automatic_summed_excitation(
-        topology,
-        _full_applied_profile(topology=topology),
-    )
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
     monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
     monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
     monkeypatch.setattr(web, "commission_status_payload", lambda: {})
 
-    async def fake_load(**_kwargs):
-        return {
-            "load": {
-                "status": "loaded",
-                "previous_config_path": "/tmp/normal.yml",
-            },
-            "excitation": excitation,
-        }
-
-    monkeypatch.setattr(web, "_load_applied_summed_measurement_config", fake_load)
+    monkeypatch.setattr(
+        web,
+        "_load_applied_summed_measurement_config",
+        lambda **_kwargs: pytest.fail("summed admission must precede graph load"),
+    )
     play_call = {}
 
-    async def fake_play(**kwargs):
-        play_call.update(kwargs)
-        return {
-            "status": "completed",
-            "audio_emitted": True,
-            "playback_id": "sum-legacy",
-            "sweep_meta": {"amplitude_dbfs": -12.0},
-            "excitation": {
-                key: value
-                for key, value in excitation.items()
-                if key != "status"
-            },
-        }
-
-    monkeypatch.setattr(web, "_play_capture_sweep", fake_play)
+    monkeypatch.setattr(
+        web,
+        "_play_capture_sweep",
+        lambda **_kwargs: pytest.fail("summed admission must precede playback"),
+    )
 
     payload = asyncio.run(
         web.play_summed_capture_sweep(
@@ -1575,20 +1811,10 @@ def test_summed_capture_ignores_legacy_minus_80_level_and_uses_applied_graph(
         )
     )
 
-    assert payload["status"] == "completed"
-    assert payload["test_level_dbfs"] == 0.0
-    assert payload["test_level_dbfs"] != -80.8
-    assert play_call["level_dbfs"] == 0.0
-    assert play_call["planned_excitation"]["scope"] == (
-        "sweep_plus_applied_full_layer_a_graph"
-    )
-    assert play_call["planned_excitation"]["corrections"]["woofer"] == {
-        "gain_db": -9.0,
-        "delay_ms": 0.25,
-        "inverted": False,
-        "effective_peak_dbfs": -21.0,
-    }
-    assert callable(play_call["rollback_capture_config"])
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "active_summed_persisted_admission_unavailable"
+    assert payload["audio_emitted"] is False
+    assert play_call == {}
 
 
 def test_summed_capture_refuses_unloaded_reverse_or_delay_candidate(
@@ -1612,11 +1838,11 @@ def test_summed_capture_refuses_unloaded_reverse_or_delay_candidate(
             )
         )
         assert payload["status"] == "refused"
-        assert payload["reason"] == "summed_alignment_candidate_not_loaded"
+        assert payload["reason"] == "active_summed_persisted_admission_unavailable"
         assert payload["audio_emitted"] is False
 
 
-def test_summed_capture_refuses_stale_applied_snapshot_before_audio(monkeypatch):
+def test_summed_capture_refuses_before_stale_snapshot_loader(monkeypatch):
     topology = _topology()
     measurements = {
         "summary": {
@@ -1636,22 +1862,10 @@ def test_summed_capture_refuses_stale_applied_snapshot_before_audio(monkeypatch)
     monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
     monkeypatch.setattr(web, "commission_status_payload", lambda: {})
 
-    async def blocked_load(**_kwargs):
-        return {
-            "load": {
-                "status": "blocked",
-                "issues": [{
-                    "severity": "blocker",
-                    "code": "applied_baseline_snapshot_topology_stale",
-                    "message": "the applied crossover belongs to another topology",
-                }],
-            },
-        }
-
     monkeypatch.setattr(
         web,
         "_load_applied_summed_measurement_config",
-        blocked_load,
+        lambda **_kwargs: pytest.fail("summed admission must precede graph load"),
     )
     monkeypatch.setattr(
         web,
@@ -1666,10 +1880,10 @@ def test_summed_capture_refuses_stale_applied_snapshot_before_audio(monkeypatch)
         )
     )
 
-    assert payload["status"] == "blocked"
+    assert payload["status"] == "refused"
     assert payload["audio_emitted"] is False
     assert payload["issues"][0]["code"] == (
-        "applied_baseline_snapshot_topology_stale"
+        "active_summed_persisted_admission_unavailable"
     )
 
 

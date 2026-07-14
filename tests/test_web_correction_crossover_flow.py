@@ -4612,12 +4612,47 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
 
     applied_profile = _applied_excitation_profile(topology=topology)
     if kind == "driver":
+        from contextlib import asynccontextmanager
+
+        from jasper import dsp_apply
         from jasper.active_speaker import baseline_profile
+        from jasper.active_speaker import commissioning_admission, design_draft
+        from jasper.audio_measurement.sweep import synchronized_sweep_metadata
+
         monkeypatch.setattr(
             baseline_profile,
             "load_applied_baseline_profile_state",
             lambda: applied_profile,
         )
+        monkeypatch.setattr(
+            design_draft,
+            "load_design_draft",
+            lambda: {"driver_safety_profile": {"status": "confirmed"}},
+        )
+
+        @asynccontextmanager
+        async def _writer_lock(*_args, **_kwargs):
+            yield
+
+        async def _admitted(**_kwargs):
+            return SimpleNamespace(
+                sweep_meta=synchronized_sweep_metadata(
+                    f1=500.0,
+                    f2=8000.0,
+                    duration_approx_s=4.0,
+                    amplitude_dbfs=-12.0,
+                ),
+                handoff=SimpleNamespace(
+                    admission_id="admission-woofer",
+                    to_dict=lambda: {"admission_id": "admission-woofer"},
+                ),
+            )
+
+        monkeypatch.setattr(dsp_apply, "dsp_writer_lock", _writer_lock)
+        monkeypatch.setattr(
+            commissioning_admission, "play_admitted_driver_capture", _admitted
+        )
+        monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
         driver_target = next(
             target
             for target in active_driver_targets(topology)
@@ -4791,13 +4826,20 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
     record_calls = {}
 
     def fake_record_driver(
-        raw, wav_bytes, *, placement_proof, preset=None, repeat_store=None
+        raw,
+        wav_bytes,
+        *,
+        placement_proof,
+        admission_handoff,
+        preset=None,
+        repeat_store=None,
     ):
         record_calls["raw"] = raw
         record_calls["wav"] = wav_bytes
         record_calls["placement_proof"] = placement_proof
         record_calls["preset"] = preset
         record_calls["repeat_store"] = repeat_store
+        record_calls["admission_handoff"] = admission_handoff
         return {"recorded": True}
 
     monkeypatch.setattr(be, "record_driver_capture", fake_record_driver)
@@ -4814,6 +4856,7 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
         post_host_event=post_host_event,
         blocking_phase=lambda: None,
         applied_profile=applied_profile,
+        driver_locked_main_volume_db=lambda: -12.0,
         **_relay_contract(),
     )
     await run_and_consume(object(), _relay_pi_session("driver"))
@@ -4826,6 +4869,9 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
     assert record_calls["placement_proof"]["policy_id"] == (
         "driver_same_distance_v1"
     )
+    assert record_calls["admission_handoff"] == {
+        "admission_id": "admission-woofer"
+    }
     assert raw["role"] == "woofer"
     assert raw["playback_id"]
     # The old by-ear -72 dB floor record is identity evidence only. The played
@@ -4854,7 +4900,7 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
 
 
 @pytest.mark.asyncio
-async def test_crossover_relay_consume_feeds_real_summed_play_payload(
+async def test_crossover_relay_refuses_summed_without_group_admission(
     monkeypatch, tmp_path
 ):
     # Summed twin of the real-shape test: the REAL play_summed_capture_sweep
@@ -4875,11 +4921,8 @@ async def test_crossover_relay_consume_feeds_real_summed_play_payload(
 
     monkeypatch.setattr(be, "play_summed_capture_sweep", spy_play_summed)
 
-    def fake_record_summed(raw, wav, *, placement_proof, preset):
-        record_calls["raw"] = raw
-        record_calls["placement_proof"] = placement_proof
-        record_calls["preset"] = preset
-        return {"recorded": True}
+    def fake_record_summed(*_args, **_kwargs):
+        pytest.fail("summed capture must not record without group admission")
 
     monkeypatch.setattr(
         be,
@@ -4901,27 +4944,18 @@ async def test_crossover_relay_consume_feeds_real_summed_play_payload(
         applied_profile=applied_profile,
         **_relay_contract(),
     )
-    await run_and_consume(object(), _relay_pi_session("summed", session_id="s"))
+    with pytest.raises(ValueError, match="multi-driver protection authority"):
+        await run_and_consume(object(), _relay_pi_session("summed", session_id="s"))
 
-    raw = record_calls["raw"]
-    assert raw["summed_test_id"] == "sum-9"
-    assert raw["sweep_meta"]["sample_rate"] == 48000
-    assert raw["excitation"]["scope"] == (
-        "sweep_plus_applied_full_layer_a_graph"
-    )
-    assert raw["excitation"]["sweep_peak_dbfs"] == -12.0
-    assert raw["excitation"]["corrections"]["tweeter"]["inverted"] is True
-    assert "role" not in raw
     expected_region_fields = {
         "expect_null": False,
         "crossover_fc_hz": 1600.0,
         "polarity": "normal",
     }
-    assert {key: raw[key] for key in expected_region_fields} == expected_region_fields
     assert {
         key: play_calls["raw"][key] for key in expected_region_fields
     } == expected_region_fields
-    assert record_calls["preset"].crossover_regions[0].fc_hz == 1600.0
+    assert record_calls == {}
 
 
 @pytest.mark.asyncio
@@ -4964,7 +4998,7 @@ async def test_crossover_relay_never_records_an_unloaded_alignment_candidate(
         **_relay_contract(),
     )
 
-    with pytest.raises(ValueError, match="polarity or delay candidate"):
+    with pytest.raises(ValueError, match="multi-driver protection authority"):
         await run_and_consume(object(), _relay_pi_session("summed", session_id="s"))
 
     assert {key: play_calls["raw"][key] for key in candidate} == candidate
@@ -5012,7 +5046,8 @@ async def test_crossover_gain_is_scoped_to_the_measurement_window(monkeypatch):
     monkeypatch.setattr(
         be,
         "record_driver_capture",
-        lambda _raw, _wav, *, placement_proof, repeat_store=None: {"recorded": True},
+        lambda _raw, _wav, *, placement_proof, admission_handoff,
+        repeat_store=None: {"recorded": True},
     )
 
     run_and_consume = flow.build_crossover_relay_run_and_consume(

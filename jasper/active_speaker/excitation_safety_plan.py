@@ -2,14 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Active-owned, fail-closed preparation for future driver excitation.
+"""Active-owned, fail-closed preparation for admitted driver excitation.
 
-The closed sweep/level ledger below derives every field passed to the frozen
-Shared admission types. Shared's persisted-admission and guarded-playback APIs
-are merged, but this Wave 2 preparation boundary intentionally does not adopt
-them: it has no protection-evidence parameter and no execution callback. The
-future Active integration must issue fresh graph/protection authority
-immediately before playback.
+The closed sweep/level ledger below derives every field passed to Shared's
+persisted admission types. It deliberately remains pure: the production
+adapter owns fresh live-graph proof, persistence, exact WAV binding, guarded
+playback, and writer-lock lifetime.
 """
 
 from __future__ import annotations
@@ -49,9 +47,6 @@ class ExcitationSafetyPlanRefusal(str, Enum):
     PROFILE_NOT_CONFIRMED = "active_excitation_profile_not_confirmed"
     TARGET_NOT_CURRENT = "active_excitation_target_not_current"
     REQUEST_OUTSIDE_LIMITS = "active_excitation_request_outside_limits"
-    SHARED_PERSISTED_ADMISSION_UNAVAILABLE = (
-        "shared_persisted_admission_unavailable"
-    )
 
 
 def _sha256(value: Any, *, field: str) -> str:
@@ -141,6 +136,7 @@ class DriverSweepGeneratorPlan:
 @dataclass(frozen=True)
 class RequestedDriverExcitationPlan:
     target_fingerprint: str
+    commissioning_context_fingerprint: str
     generator: DriverSweepGeneratorPlan
 
     def __post_init__(self) -> None:
@@ -148,6 +144,14 @@ class RequestedDriverExcitationPlan:
             self,
             "target_fingerprint",
             _sha256(self.target_fingerprint, field="target_fingerprint"),
+        )
+        object.__setattr__(
+            self,
+            "commissioning_context_fingerprint",
+            _sha256(
+                self.commissioning_context_fingerprint,
+                field="commissioning_context_fingerprint",
+            ),
         )
         if not isinstance(self.generator, DriverSweepGeneratorPlan):
             raise ExcitationSafetyPlanError(
@@ -179,6 +183,9 @@ class RequestedDriverExcitationPlan:
             "schema_version": SCHEMA_VERSION,
             "kind": "jts_active_requested_driver_excitation_plan",
             "target_fingerprint": self.target_fingerprint,
+            "commissioning_context_fingerprint": (
+                self.commissioning_context_fingerprint
+            ),
             "generator": self.generator.to_dict(),
         }
 
@@ -208,7 +215,7 @@ class PreparedDriverExcitationPlan:
         minimum_cooldown_s: float,
         refusals: tuple[ExcitationSafetyPlanRefusal, ...],
     ) -> "PreparedDriverExcitationPlan":
-        """Freeze only a fully self-consistent, permanently blocked plan."""
+        """Freeze only a fully self-consistent bounded plan."""
 
         if not isinstance(topology, OutputTopology):
             raise ExcitationSafetyPlanError(
@@ -251,18 +258,12 @@ class PreparedDriverExcitationPlan:
             or request.repeat_count > limits.maximum_repeat_count
         )
         expected_refusals = (
-            (
-                ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LIMITS,
-                ExcitationSafetyPlanRefusal.SHARED_PERSISTED_ADMISSION_UNAVAILABLE,
-            )
+            (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LIMITS,)
             if outside_limits
-            else (
-                ExcitationSafetyPlanRefusal.SHARED_PERSISTED_ADMISSION_UNAVAILABLE,
-            )
+            else ()
         )
         if (
             type(refusals) is not tuple
-            or not refusals
             or any(not isinstance(reason, ExcitationSafetyPlanRefusal) for reason in refusals)
             or len(set(refusals)) != len(refusals)
             or refusals != expected_refusals
@@ -298,7 +299,7 @@ class PreparedDriverExcitationPlan:
 
     @property
     def execution_allowed(self) -> bool:
-        return False
+        return not self.refusals
 
     @property
     def fingerprint(self) -> str:
@@ -315,8 +316,8 @@ class PreparedDriverExcitationPlan:
             "request": self.request.to_dict(),
             "minimum_cooldown_s": self.minimum_cooldown_s,
             "refusals": [reason.value for reason in self.refusals],
-            "execution_allowed": False,
-            "accepts_protection_evidence": False,
+            "execution_allowed": self.execution_allowed,
+            "accepts_protection_evidence": True,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -350,7 +351,7 @@ def prepare_driver_excitation_plan(
     safety_profile: Mapping[str, Any],
     requested_plan: RequestedDriverExcitationPlan,
 ) -> PreparedDriverExcitationPlan:
-    """Bind exact current policy while refusing execution at the Shared seam."""
+    """Bind exact current policy for Shared admission or a typed refusal."""
 
     if not isinstance(topology, OutputTopology):
         raise ExcitationSafetyPlanError("topology must be OutputTopology")
@@ -453,12 +454,9 @@ def prepare_driver_excitation_plan(
         or requested_plan.repeat_count > maximum_repeats
     )
     refusals = (
-        (
-            ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LIMITS,
-            ExcitationSafetyPlanRefusal.SHARED_PERSISTED_ADMISSION_UNAVAILABLE,
-        )
+        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LIMITS,)
         if outside_limits
-        else (ExcitationSafetyPlanRefusal.SHARED_PERSISTED_ADMISSION_UNAVAILABLE,)
+        else ()
     )
     return PreparedDriverExcitationPlan._from_preparation(
         topology=topology,

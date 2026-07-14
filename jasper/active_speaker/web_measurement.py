@@ -924,6 +924,7 @@ def record_driver_capture(
     wav_bytes: bytes | None = None,
     *,
     placement_proof: Mapping[str, Any] | None = None,
+    admission_handoff: Mapping[str, Any] | None = None,
     preset: Any = None,
     repeat_store: Any = None,
 ) -> dict[str, Any]:
@@ -966,6 +967,21 @@ def record_driver_capture(
         if placement_proof is not None
         else ""
     )
+    validated_admission: dict[str, Any] | None = None
+    if admission_handoff is not None:
+        if not isinstance(comparison_set, Mapping):
+            raise ValueError("capture admission has no current comparison set")
+        from jasper.active_speaker.commissioning_admission import (
+            validate_capture_admission_handoff,
+        )
+
+        validated_admission = validate_capture_admission_handoff(
+            admission_handoff,
+            topology=topology,
+            comparison_set=comparison_set,
+            speaker_group_id=group_id,
+            role=role,
+        )
     capture_geometry = _driver_capture_geometry(
         placement_proof,
         comparison_set if isinstance(comparison_set, Mapping) else None,
@@ -1073,6 +1089,7 @@ def record_driver_capture(
         safe_session=None,
         durable_floor_confirmation=floor_evidence.get("confirmation"),
         capture_geometry=capture_geometry,
+        capture_admission=validated_admission,
     )
     if repeat_store is None:
         payload = record_driver_acoustic_capture(
@@ -1168,6 +1185,7 @@ def record_driver_capture(
             "placement_proof": (
                 dict(placement_proof) if isinstance(placement_proof, Mapping) else None
             ),
+            "capture_admission": validated_admission,
             "ambient_report": (
                 _mapping_value(provisional.get("acoustic")).get("ambient")
                 or ambient_report

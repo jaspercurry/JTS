@@ -1621,6 +1621,7 @@ def record_driver_capture(
     wav_bytes: bytes,
     *,
     placement_proof: Mapping[str, Any] | None = None,
+    admission_handoff: Mapping[str, Any] | None = None,
     preset: Any = None,
     repeat_store: Any = None,
 ) -> dict[str, Any]:
@@ -1634,6 +1635,7 @@ def record_driver_capture(
                 raw,
                 wav_bytes,
                 placement_proof=placement_proof,
+                admission_handoff=admission_handoff,
                 preset=preset,
                 repeat_store=repeat_store,
             )
@@ -1642,6 +1644,7 @@ def record_driver_capture(
             raw,
             wav_bytes,
             placement_proof=placement_proof,
+            admission_handoff=admission_handoff,
             preset=preset,
             repeat_store=repeat_store,
         )

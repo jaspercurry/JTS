@@ -61,6 +61,7 @@ from jasper.active_speaker.safe_playback import (
     record_safe_playback_result,
 )
 from jasper.active_speaker.staging import (
+    DEFAULT_CAMILLA_CONFIG_DIR,
     load_staged_startup_config,
     stage_protected_startup_config,
 )
@@ -77,6 +78,7 @@ from jasper.active_speaker.startup_load import (
 )
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
 from jasper.camilla import CamillaUnavailable
+from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
@@ -242,6 +244,7 @@ async def _load_startup_config(
     camilla_factory: CamillaFactory,
     *,
     path_safety_evidence_path: str | Path | None = None,
+    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     topology = load_output_topology()
     cam = camilla_factory()
@@ -251,6 +254,7 @@ async def _load_startup_config(
         get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
         path_safety_evidence_path=path_safety_evidence_path
         or _path_safety_evidence_path(),
+        acquire_lock=acquire_lock,
     )
 
 
@@ -294,6 +298,7 @@ async def _ensure_commission_startup_anchor(
     camilla_factory: CamillaFactory,
     preset: Any = None,
     crossover_preview: dict[str, Any] | None = None,
+    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     """Ensure commissioning has the silent startup graph as rollback anchor."""
 
@@ -347,6 +352,7 @@ async def _ensure_commission_startup_anchor(
     startup_load = await _load_startup_config(
         camilla_factory,
         path_safety_evidence_path=evidence_path,
+        acquire_lock=acquire_lock,
     )
     load_state = _dict_value(startup_load.get("load"))
     if load_state.get("status") != "loaded" or not load_state.get(
@@ -1270,10 +1276,12 @@ async def _load_summed_commissioning_config(
 async def _rollback_summed_commissioning_config(
     *,
     camilla_factory: CamillaFactory,
+    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     cam = camilla_factory()
     return await rollback_driver_commissioning_config(
-        load_config=commission_load_config(cam)
+        load_config=commission_load_config(cam),
+        acquire_lock=acquire_lock,
     )
 
 
@@ -1840,10 +1848,12 @@ async def _load_driver_commissioning_config_for_level(
     speaker_group_id: str,
     role: str,
     level_dbfs: float,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     startup_gate_calibration_level: dict[str, Any] | None,
     preset: Any,
     crossover_preview: dict[str, Any] | None,
     camilla_factory: CamillaFactory,
+    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     cam = camilla_factory()
     entry_config_path, entry_config_error = await read_current_config_path(cam)
@@ -1879,6 +1889,7 @@ async def _load_driver_commissioning_config_for_level(
             camilla_factory=camilla_factory,
             preset=preset,
             crossover_preview=crossover_preview,
+            acquire_lock=acquire_lock,
         )
         if startup_setup.get("status") == "blocked":
             startup_setup["measurement_transaction"] = transaction
@@ -1905,8 +1916,10 @@ async def _load_driver_commissioning_config_for_level(
             crossover_preview=crossover_preview,
             staged_config=staged,
             audible_gain_db=level_dbfs,
+            volume_limit_db=volume_limit_db,
             filter_mode=APPLIED_RESPONSE_FILTER_MODE,
             path_safety_evidence_path=evidence_path,
+            acquire_lock=acquire_lock,
         )
         payload["startup_setup"] = startup_setup
         payload["measurement_transaction"] = transaction
@@ -1920,6 +1933,7 @@ async def _load_driver_commissioning_config_for_level(
             await _restore_automatic_driver_entry_config_resilient(
                 transaction_payload,
                 camilla_factory=camilla_factory,
+                acquire_lock=acquire_lock,
             )
         except AutomaticDriverConfigRestoreError as restore_error:
             raise restore_error from operation_error
@@ -1941,6 +1955,7 @@ async def _restore_automatic_driver_entry_config(
     load_payload: dict[str, Any],
     *,
     camilla_factory: CamillaFactory,
+    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     """Idempotently restore automatic capture's entry production config path.
 
@@ -1967,6 +1982,7 @@ async def _restore_automatic_driver_entry_config(
     try:
         inner_rollback = await _rollback_summed_commissioning_config(
             camilla_factory=camilla_factory,
+            acquire_lock=acquire_lock,
         )
     except _COMMISSION_OPERATION_ERRORS as exc:
         inner_rollback = {"status": "failed", "error": str(exc)}
@@ -2007,12 +2023,14 @@ async def _restore_automatic_driver_entry_config_resilient(
     load_payload: dict[str, Any],
     *,
     camilla_factory: CamillaFactory,
+    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     """Finish production restoration even while the caller is being cancelled."""
     restore_task = asyncio.create_task(
         _restore_automatic_driver_entry_config(
             load_payload,
             camilla_factory=camilla_factory,
+            acquire_lock=acquire_lock,
         )
     )
     return await _await_restore_task_resilient(restore_task)
@@ -2265,11 +2283,7 @@ async def play_driver_capture_sweep(
         topology,
         applied_profile,
     )
-    resolved_locked_volume = (
-        locked_main_volume_db
-        if locked_main_volume_db is not None
-        else level_lock["locked_main_volume_db"]
-    )
+    resolved_locked_volume = locked_main_volume_db
     if (
         isinstance(resolved_locked_volume, bool)
         or not isinstance(resolved_locked_volume, (int, float))
@@ -2320,72 +2334,236 @@ async def play_driver_capture_sweep(
             ),
         )
     preset = ActiveSpeakerPreset.from_mapping(preset_raw)
-    load_payload = await _load_driver_commissioning_config_for_level(
-        topology=topology,
-        speaker_group_id=speaker_group_id,
-        role=role,
-        level_dbfs=commissioning_gain_db,
-        startup_gate_calibration_level=startup_gate_level,
-        preset=preset,
-        crossover_preview=None,
-        camilla_factory=camilla_factory,
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
     )
-    load_state = _dict_value(load_payload.get("load"))
-    if load_state.get("status") != "loaded":
-        load_issues = _dict_items(load_state.get("issues"))
-        restoration: dict[str, Any] | None = None
-        restore_issue: dict[str, str] | None = None
-        transaction = _dict_value(load_payload.get("measurement_transaction"))
-        if transaction.get("entry_config_path"):
-            try:
-                restoration = await _restore_automatic_driver_entry_config_resilient(
-                    load_payload,
-                    camilla_factory=camilla_factory,
-                )
-            except AutomaticDriverConfigRestoreError:
-                restore_issue = _automatic_driver_restore_issue()
-        issues = load_issues or [
-            _issue(
-                "driver_capture_sweep_load_failed",
-                "could not open the confirmed driver path for mic capture",
-            )
-        ]
-        if restore_issue is not None:
-            issues = [restore_issue, *issues]
-        return {
-            "status": "blocked",
-            "reason": "driver_capture_sweep_load_failed",
-            "audio_emitted": False,
-            "commissioning_load": load_payload,
-            "rollback": restoration,
-            "issues": issues,
-            "commission": commission_status_payload(),
-        }
+    from jasper.active_speaker.commissioning_admission import (
+        ActiveCommissioningAdmissionError,
+        ActiveCommissioningPlaybackDrift,
+        play_admitted_driver_capture,
+    )
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.audio_measurement.admitted_playback import (
+        PlaybackAdmissionFailed,
+        PlaybackAdmissionRefused,
+    )
+    from jasper.dsp_apply import DspWriterLockTimeout, dsp_writer_lock
 
-    async def _restore_entry_graph() -> dict[str, Any]:
-        return await _restore_automatic_driver_entry_config_resilient(
-            load_payload,
-            camilla_factory=camilla_factory,
+    design_draft = load_design_draft()
+    safety_profile = _dict_value(design_draft.get("driver_safety_profile"))
+    if not safety_profile:
+        return _refused_capture_sweep(
+            "active_excitation_profile_not_confirmed",
+            "confirm the driver safety profile before recording it",
         )
 
-    from jasper.active_speaker.test_signal_plan import driver_sweep_duration_s
+    load_payload: dict[str, Any] = {}
+    rollback: dict[str, Any] | None = None
+    rollback_issue: dict[str, str] | None = None
+    fanin_gate: dict[str, Any] | None = None
+    playback: dict[str, Any]
+    try:
+        async with dsp_writer_lock(
+            DEFAULT_CAMILLA_CONFIG_DIR,
+            source="active_speaker_driver_capture",
+            timeout_s=3.0,
+        ):
+            try:
+                load_payload = await _load_driver_commissioning_config_for_level(
+                    topology=topology,
+                    speaker_group_id=speaker_group_id,
+                    role=role,
+                    level_dbfs=commissioning_gain_db,
+                    volume_limit_db=float(resolved_locked_volume),
+                    startup_gate_calibration_level=startup_gate_level,
+                    preset=preset,
+                    crossover_preview=None,
+                    camilla_factory=camilla_factory,
+                    acquire_lock=False,
+                )
+                load_state = _dict_value(load_payload.get("load"))
+                if load_state.get("status") != "loaded":
+                    issues = _dict_items(load_state.get("issues")) or [
+                        _issue(
+                            "driver_capture_sweep_load_failed",
+                            "could not open the confirmed driver path for mic capture",
+                        )
+                    ]
+                    playback = {
+                        "status": "blocked",
+                        "backend": DRIVER_CAPTURE_SWEEP_BACKEND,
+                        "audio_emitted": False,
+                        "confirmable": False,
+                        "issues": issues,
+                        "commissioning_load": load_payload,
+                    }
+                else:
+                    cam = camilla_factory()
+                    _load_config, read_running_config, _get_path = commission_seams(cam)
 
-    playback = await _play_capture_sweep(
-        backend=DRIVER_CAPTURE_SWEEP_BACKEND,
-        target={"speaker_group_id": speaker_group_id, "role": role},
-        playback_id=str(latest.get("playback_id")),
-        level_dbfs=commissioning_gain_db,
-        load_payload=load_payload,
-        camilla_factory=camilla_factory,
-        planned_excitation=planned_excitation,
-        rollback_capture_config=_restore_entry_graph,
-        sweep_duration_s=driver_sweep_duration_s(role),
-    )
+                    async def read_main_volume_db() -> float | None:
+                        return await cam.get_volume_db(best_effort=False)
+
+                    def load_current_context():
+                        current_topology = load_output_topology()
+                        current_draft = load_design_draft()
+                        current_measurements = load_measurement_state(current_topology)
+                        return (
+                            current_topology,
+                            _dict_value(
+                                current_draft.get("driver_safety_profile")
+                            ),
+                            _dict_value(
+                                current_measurements.get("active_comparison_set")
+                            ),
+                            _dict_value(load_applied_baseline_profile_state()),
+                        )
+
+                    fanin_gate = _commission_tone_select_fanin_lane()
+                    admitted = await play_admitted_driver_capture(
+                        topology=topology,
+                        safety_profile=safety_profile,
+                        comparison_set=comparison_set,
+                        applied_profile=applied_profile,
+                        speaker_group_id=speaker_group_id,
+                        role=role,
+                        commissioning_gain_db=commissioning_gain_db,
+                        expected_main_volume_db=float(resolved_locked_volume),
+                        load_payload=load_payload,
+                        read_running_config=read_running_config,
+                        read_main_volume_db=read_main_volume_db,
+                        load_current_context=load_current_context,
+                        alsa_device=COMMISSION_TONE_ALSA_DEVICE,
+                        timeout_s=12.0,
+                    )
+                    sweep_meta = admitted.sweep_meta.to_dict()
+                    excitation = _played_excitation_ledger(
+                        planned_excitation, sweep_meta
+                    )
+                    playback = {
+                        "status": "completed",
+                        "backend": DRIVER_CAPTURE_SWEEP_BACKEND,
+                        "playback_id": admitted.handoff.admission_id,
+                        "prerequisite_playback_id": str(latest.get("playback_id")),
+                        "audio_emitted": True,
+                        "confirmable": True,
+                        "target": {
+                            "speaker_group_id": speaker_group_id,
+                            "role": role,
+                        },
+                        "sweep_meta": sweep_meta,
+                        "excitation": excitation,
+                        "tone": {"level_dbfs": commissioning_gain_db},
+                        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                        "commissioning_load": load_payload,
+                        "fanin_gate": fanin_gate,
+                        "capture_admission": admitted.handoff.to_dict(),
+                        "issues": [],
+                    }
+            except PlaybackAdmissionRefused as exc:
+                playback = {
+                    "status": "refused",
+                    "backend": DRIVER_CAPTURE_SWEEP_BACKEND,
+                    "audio_emitted": False,
+                    "confirmable": False,
+                    "issues": [_issue(
+                        "active_driver_playback_readmission_refused",
+                        "the live speaker graph changed; start this capture again",
+                    )],
+                    "refusal_codes": [
+                        reason.value for reason in exc.decision.refusal_reasons
+                    ],
+                }
+            except PlaybackAdmissionFailed as exc:
+                playback = {
+                    "status": "failed",
+                    "backend": DRIVER_CAPTURE_SWEEP_BACKEND,
+                    "audio_emitted": exc.audio_may_have_started,
+                    "audio_may_have_started": exc.audio_may_have_started,
+                    "confirmable": False,
+                    "issues": [_capture_sweep_issue(exc.failure)],
+                    "capture_admission": {
+                        "admission_id": exc.admission.generation.admission_id,
+                        "playback_artifact": exc.admission.artifact.to_dict(),
+                        "requires_new_generation": True,
+                    },
+                }
+            except ActiveCommissioningPlaybackDrift as exc:
+                if exc.reason == "main_volume_drift":
+                    issue = _issue(
+                        "active_driver_capture_volume_drift",
+                        "the listening volume changed during the sweep; start it again",
+                    )
+                else:
+                    issue = _issue(
+                        "active_driver_capture_post_play_volume_unverified",
+                        "the listening volume could not be verified after the sweep; "
+                        "start it again",
+                    )
+                playback = {
+                    "status": "failed",
+                    "backend": DRIVER_CAPTURE_SWEEP_BACKEND,
+                    "audio_emitted": True,
+                    "audio_may_have_started": True,
+                    "confirmable": False,
+                    "post_play_failure_reason": exc.reason,
+                    "issues": [issue],
+                    "capture_admission": {
+                        "admission_id": exc.admission_id,
+                        "playback_artifact": exc.playback_artifact.to_dict(),
+                        "requires_new_generation": True,
+                    },
+                }
+            except ActiveCommissioningAdmissionError as exc:
+                playback = {
+                    "status": "refused",
+                    "backend": DRIVER_CAPTURE_SWEEP_BACKEND,
+                    "audio_emitted": False,
+                    "confirmable": False,
+                    "issues": [_issue(
+                        "active_driver_capture_admission_refused", str(exc)
+                    )],
+                }
+            finally:
+                if fanin_gate is not None:
+                    _commission_tone_release_fanin_lane(reason="capture_sweep")
+                transaction = _dict_value(
+                    load_payload.get("measurement_transaction")
+                )
+                if transaction.get("entry_config_path"):
+                    try:
+                        rollback = (
+                            await _restore_automatic_driver_entry_config_resilient(
+                                load_payload,
+                                camilla_factory=camilla_factory,
+                                acquire_lock=False,
+                            )
+                        )
+                    except AutomaticDriverConfigRestoreError:
+                        rollback_issue = _automatic_driver_restore_issue()
+    except DspWriterLockTimeout:
+        return _refused_capture_sweep(
+            "active_driver_capture_writer_busy",
+            "another speaker update is in progress; start this capture again",
+        )
+    if rollback is not None:
+        playback["rollback"] = rollback
+    if rollback_issue is not None:
+        playback["status"] = "failed"
+        playback["confirmable"] = False
+        playback["issues"] = [rollback_issue, *_dict_items(playback.get("issues"))]
     playback["floor_confirmation"] = latest.get("floor_confirmation")
+    first_issue = next(iter(_dict_items(playback.get("issues"))), {})
+    result_reason = None
+    if playback.get("status") == "blocked":
+        result_reason = "driver_capture_sweep_load_failed"
+    elif playback.get("status") in ("failed", "refused"):
+        result_reason = first_issue.get("code")
     log_event(
         logger,
         "active_speaker.web_driver_capture_sweep",
         status=playback.get("status"),
+        reason=result_reason,
         group_id=speaker_group_id,
         role=role,
         audio_emitted=bool(playback.get("audio_emitted")),
@@ -2398,11 +2576,17 @@ async def play_driver_capture_sweep(
     )
     return {
         "status": playback.get("status"),
+        "reason": result_reason,
+        "audio_emitted": bool(playback.get("audio_emitted")),
         "playback": playback,
         "playback_id": playback.get("playback_id"),
         "test_level_dbfs": commissioning_gain_db,
         "sweep_meta": playback.get("sweep_meta"),
         "excitation": playback.get("excitation"),
+        "capture_admission": playback.get("capture_admission"),
+        "commissioning_load": playback.get("commissioning_load"),
+        "rollback": playback.get("rollback"),
+        "issues": _dict_items(playback.get("issues")),
         "commission": commission_status_payload(),
     }
 
@@ -2427,125 +2611,27 @@ async def play_summed_capture_sweep(
     speaker_group_id = str(raw.get("speaker_group_id") or "").strip()
     if not speaker_group_id:
         raise ValueError("speaker_group_id is required")
-    requested_polarity = str(raw.get("polarity") or "normal").strip().lower()
-    if (
-        bool(raw.get("expect_null"))
-        or requested_polarity != "normal"
-        or "delay_ms" in raw
-        or raw.get("delay_target_role") not in (None, "")
-    ):
-        # The current loader intentionally re-emits the immutable applied
-        # Layer-A graph. Until the bounded alignment primitive can compile and
-        # prove a transient candidate graph, accepting these labels would let a
-        # normal playback be persisted as reverse/delayed evidence.
-        return {
-            "status": "refused",
-            "reason": "summed_alignment_candidate_not_loaded",
-            "audio_emitted": False,
-            "issues": [{
-                "severity": "blocker",
-                "code": "summed_alignment_candidate_not_loaded",
-                "message": (
-                    "the requested polarity or delay candidate is not loaded; "
-                    "use the bounded crossover alignment step"
-                ),
-            }],
-            "commission": commission_status_payload(),
-        }
-
-    topology = load_output_topology()
-    measurements = load_measurement_state(topology)
-    latest = _latest_summed_test(measurements, speaker_group_id=speaker_group_id)
-    summed_test_id = (
-        latest.get("summed_test_id") or latest.get("playback_id")
-        if isinstance(latest, dict)
-        else None
-    )
-    if (
-        latest is None
-        or latest.get("captured") is not True
-        or latest.get("audio_emitted") is not True
-        or not summed_test_id
-        or _has_blocker(latest)
-    ):
-        return _refused_capture_sweep(
-            "summed_playback_required",
-            "play the combined crossover test before recording mic evidence",
-        )
-
-    safe_session = load_safe_playback_state()
-    if safe_session.get("status") != "armed":
-        arm_safe_playback_session(_SUMMED_TEST_ARM_REPORT)
-
-    # The manual combined-listening level proves that the intended outputs were
-    # heard. It is not an automatic acoustic level: old JTS3 artifacts can be
-    # around -80 dBFS. The automatic path instead loads the exact applied full
-    # Layer-A graph and drives it with the shared -12 dBFS ESS at the locked main
-    # volume. Per-role gain/delay/polarity stay owned by that immutable graph.
-    level = 0.0
-    load_payload = await _load_applied_summed_measurement_config(
-        topology=topology,
-        camilla_factory=camilla_factory,
-    )
-    load_state = _dict_value(load_payload.get("load"))
-    if load_state.get("status") != "loaded":
-        load_issues = _dict_items(load_state.get("issues"))
-        return {
-            "status": "blocked",
-            "reason": "summed_capture_sweep_load_failed",
-            "audio_emitted": False,
-            "commissioning_load": load_payload,
-            "issues": load_issues or [
-                _issue(
-                    "summed_capture_sweep_load_failed",
-                    "could not open the combined crossover path for mic capture",
-                )
-            ],
-            "commission": commission_status_payload(),
-        }
-
-    planned_excitation = _dict_value(load_payload.get("excitation"))
-
-    async def _rollback() -> dict[str, Any]:
-        return await _rollback_applied_summed_measurement_config(
-            load_payload,
-            camilla_factory=camilla_factory,
-        )
-
-    from jasper.active_speaker.test_signal_plan import SUMMED_SWEEP_DURATION_S
-
-    playback = await _play_capture_sweep(
-        backend=SUMMED_CAPTURE_SWEEP_BACKEND,
-        target={"speaker_group_id": speaker_group_id, "role": "summed"},
-        playback_id=str(summed_test_id),
-        level_dbfs=level,
-        load_payload=load_payload,
-        camilla_factory=camilla_factory,
-        planned_excitation=planned_excitation,
-        rollback_capture_config=_rollback,
-        sweep_duration_s=SUMMED_SWEEP_DURATION_S,
-    )
-    playback["summed_test_id"] = str(summed_test_id)
     log_event(
         logger,
         "active_speaker.web_summed_capture_sweep",
-        status=playback.get("status"),
+        status="refused",
+        reason="active_summed_persisted_admission_unavailable",
         group_id=speaker_group_id,
-        audio_emitted=bool(playback.get("audio_emitted")),
-        excitation_source=(playback.get("excitation") or {}).get("gain_source"),
-        excitation_scope=(playback.get("excitation") or {}).get("scope"),
+        audio_emitted=False,
     )
     return {
-        "status": playback.get("status"),
-        "playback": playback,
-        "playback_id": playback.get("playback_id"),
-        "summed_test_id": str(summed_test_id),
-        "test_level_dbfs": level,
-        "sweep_meta": playback.get("sweep_meta"),
-        "excitation": playback.get("excitation"),
+        "status": "refused",
+        "reason": "active_summed_persisted_admission_unavailable",
+        "audio_emitted": False,
+        "issues": [_issue(
+            "active_summed_persisted_admission_unavailable",
+            (
+                "combined crossover capture is paused until its multi-driver "
+                "protection authority is available"
+            ),
+        )],
         "commission": commission_status_payload(),
     }
-
 
 async def _play_summed_commission_tone(
     plan: dict[str, Any],
