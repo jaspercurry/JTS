@@ -15,6 +15,7 @@ from jasper import audio_validation
 from jasper.audio_profile_state import MicProbe
 from jasper.audio_validation import (
     ArtifactLoadResult,
+    ROUTE_LATENCY_POINTER_NAME,
     ValidationArtifact,
     ValidationArtifactError,
     artifact_age,
@@ -667,6 +668,19 @@ def test_load_latest_artifact_picks_newest_matching_valid_payload(tmp_path):
     assert result.state == "loaded"
     assert result.artifact == newest_match
     assert result.path == expected_path
+
+
+def test_write_latest_pointer_supports_a_scoped_status_pointer(tmp_path):
+    artifact = _artifact()
+
+    path = write_latest_pointer(
+        artifact,
+        directory=tmp_path,
+        pointer_name=ROUTE_LATENCY_POINTER_NAME,
+    )
+
+    assert path.name == ROUTE_LATENCY_POINTER_NAME
+    assert load_artifact(path, now=NOW).artifact == artifact
 
 
 def test_load_latest_artifact_reports_malformed_when_no_valid_artifacts(tmp_path):

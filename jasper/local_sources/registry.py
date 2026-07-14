@@ -38,9 +38,12 @@ class LocalSourceLifecycle:
 
     ``intent_unit`` is the unit whose enabled state represents the user's
     /sources choice for systemd-backed sources. Bluetooth is runtime-only
-    DBus power, so it has no persistent intent unit here. ``park_units`` are
-    stopped while local sources are role-parked. ``restore_units`` are started
-    only if enabled when the role un-parks, preserving systemd-backed intent.
+    DBus power, so it has no persistent intent unit here. ``health_units`` are
+    the source-critical units whose failure means the source needs attention;
+    ancillary lifecycle helpers such as a pairing agent do not belong there.
+    ``park_units`` are stopped while local sources are role-parked.
+    ``restore_units`` are started only if enabled when the role un-parks,
+    preserving systemd-backed intent.
 
     ``park_restart_units`` / ``restore_restart_units`` are units that must be
     RESTARTED (not stopped/started) on park / restore — the shape a composite
@@ -54,6 +57,7 @@ class LocalSourceLifecycle:
     source: Source
     intent_unit: str | None
     runtime_units: tuple[str, ...]
+    health_units: tuple[str, ...]
     park_units: tuple[str, ...]
     restore_units: tuple[str, ...]
     advertise_units: tuple[str, ...] = ()
@@ -82,6 +86,7 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
         source=Source.AIRPLAY,
         intent_unit="shairport-sync.service",
         runtime_units=("shairport-sync.service", "nqptp.service"),
+        health_units=("shairport-sync.service", "nqptp.service"),
         park_units=("shairport-sync.service", "nqptp.service"),
         restore_units=("shairport-sync.service", "nqptp.service"),
         advertise_units=("shairport-sync.service",),
@@ -91,6 +96,7 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
         source=Source.SPOTIFY,
         intent_unit="librespot.service",
         runtime_units=("librespot.service",),
+        health_units=("librespot.service",),
         park_units=("librespot.service",),
         restore_units=("librespot.service",),
         advertise_units=("librespot.service",),
@@ -104,6 +110,7 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
             "bluealsa.service",
             "bt-agent.service",
         ),
+        health_units=("bluealsa-aplay.service", "bluealsa.service"),
         park_units=(
             "bluealsa-aplay.service",
             "bluealsa.service",
@@ -124,6 +131,10 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
             "jasper-usbgadget.service",
             "jasper-usbsink.service",
             "jasper-usbsink-volume.service",
+        ),
+        health_units=(
+            "jasper-usbgadget.service",
+            "jasper-usbsink.service",
         ),
         # Park the AUDIO bridge units only. The composite gadget owner is NOT
         # stopped here — stopping it would also drop the always-on USB

@@ -972,6 +972,7 @@ code = [
   "jasper/control/ha_status_cache.py",
   "jasper/control/shairport_supervisor.py",
   "jasper/control/airplay_health.py",
+  "jasper/control/audio_health.py",
   "jasper/control/bootloop_guard_state.py",
   "jasper/web/system_setup.py",
   "jasper/web/airplay_setup.py",

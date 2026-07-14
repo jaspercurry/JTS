@@ -427,11 +427,11 @@ def test_env_contract_exceptions_stay_accurate():
 #
 # The /system/ dashboard polls data.json (proxied to jasper-control's
 # /system/snapshot). renderSection() is fail-soft: a renamed payload key
-# silently blanks the card. Pin: every `snap.<key>` the ES modules read
+# silently blanks a section. Pin: every `snap.<key>` the ES modules read
 # must be a key `_get_system_snapshot` builds, and the metric names the
 # vitals/network cards read from `metrics.current` must exist in the
-# system_metrics sampler. The airplay card's nested reads are pinned
-# against the AirPlayHealthSampler snapshot.
+# system_metrics sampler. The Audio view's nested reads are pinned against
+# the normalized AudioHealthSampler contract.
 # ---------------------------------------------------------------------------
 
 _SYSTEM_STATUS_JS_DIR = REPO / "deploy" / "assets" / "system-status" / "js"
@@ -467,8 +467,7 @@ def test_dashboard_snapshot_top_level_keys_exist_in_server_payload():
 
 # Metric names the vitals / network / software cards read from
 # snap.metrics.current (vitalsCards / networkList / softwareList in
-# sections.js + views.js). The airplay card's `cur` is a different
-# object (snap.airplay_health.current) — pinned separately below.
+# sections.js + views.js).
 DASHBOARD_METRICS_CURRENT_KEYS = {
     "mem_total_mb", "temp_c", "throttled_now", "throttled_history",
     "fan_present", "fan_rpm", "fan_pwm", "disk_used_pct", "disk_total_gb",
@@ -494,24 +493,25 @@ def test_dashboard_metrics_current_keys_exist_in_sampler():
     assert not problems, "\n".join(problems)
 
 
-# airplayBody(hp, ...) reads hp.current.{fanin,mpris,camilla} plus these
-# nested fields; all are built by AirPlayHealthSampler.
-DASHBOARD_AIRPLAY_CURRENT_KEYS = {
-    "fanin", "mpris", "camilla", "available", "input_buffer_frames",
-    "output_buffer_frames", "frames_per_sec", "xrun_count",
-    "buffer_frames",
+# audio-view.js / audio-sections.js render only this normalized presentation
+# model. Raw AirPlay counters remain a compatibility/technical surface.
+DASHBOARD_AUDIO_HEALTH_KEYS = {
+    "schema_version", "sampled_at", "overall", "signal_path", "latency",
+    "sources", "issues", "technical", "status", "headline", "detail",
+    "active_source", "since", "applicable", "kind", "verification",
+    "runtime", "state", "started_at", "last_seen_at", "recovered_at",
 }
 
 
-def test_dashboard_airplay_card_keys_exist_in_health_sampler():
-    sampler = (REPO / "jasper" / "control" / "airplay_health.py").read_text()
+def test_dashboard_audio_health_keys_exist_in_normalized_sampler():
+    sampler = (REPO / "jasper" / "control" / "audio_health.py").read_text()
     missing = [
-        key for key in sorted(DASHBOARD_AIRPLAY_CURRENT_KEYS)
+        key for key in sorted(DASHBOARD_AUDIO_HEALTH_KEYS)
         if f'"{key}"' not in sampler
     ]
     assert not missing, (
-        "dashboard airplay card reads keys the AirPlayHealthSampler "
+        "dashboard Audio view reads keys the AudioHealthSampler "
         f"snapshot does not build: {missing} "
-        "(jasper/control/airplay_health.py vs "
-        "deploy/assets/system-status/js/sections.js airplayBody)"
+        "(jasper/control/audio_health.py vs "
+        "deploy/assets/system-status/js/audio-*.js)"
     )

@@ -4,8 +4,6 @@
   /* Sticky header chrome — .app-header, .app-header__row, .app-header__title,
      and .icon-button — is shared and now lives in /assets/app.css. Only the
      Off / Saved / Draft tab strip below is sound-specific. */
-  .app-header__tabs { border-bottom: 1px solid var(--border); }
-  .app-header__tabs > div { max-width: 48rem; margin: 0 auto; padding: 12px 1.5rem; }
   .app-header__tabs .segmented__btn { position: relative; }
   .app-header__tabs .segmented__btn.is-live::after {
     content: "";
@@ -18,10 +16,6 @@
     background: var(--destructive);
     box-shadow: 0 0 0 2px var(--primary-foreground);
   }
-  @media (min-width: 768px) {
-    .app-header__tabs > div { padding-left: 2.5rem; padding-right: 2.5rem; }
-  }
-
   .row-between {
     display: flex; align-items: flex-end; justify-content: space-between;
     gap: 8px; padding: 0 4px; margin-bottom: 12px;

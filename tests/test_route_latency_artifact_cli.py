@@ -173,6 +173,7 @@ def test_main_writes_quick_validation_warn_artifact(monkeypatch, tmp_path, capsy
     assert "certified=[95]" in out
     artifacts = sorted(p.name for p in tmp_path.glob("*.json"))
     assert "latest.json" in artifacts
+    assert "latest-route-latency.json" in artifacts
     assert any("__route_latency__" in name for name in artifacts)
 
 

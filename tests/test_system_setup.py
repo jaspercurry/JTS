@@ -111,6 +111,43 @@ def upstream_control():
                 ],
             },
             "airplay_health": {"status": "ok", "reason": "clean"},
+            "audio_health": {
+                "schema_version": 1,
+                "sampled_at": 1_750_000_000.0,
+                "overall": {
+                    "status": "ok",
+                    "headline": "Audio is ready",
+                    "detail": "The shared output path is healthy.",
+                    "active_source": None,
+                    "since": None,
+                },
+                "signal_path": {
+                    "status": "ok",
+                    "headline": "Output path ready",
+                    "detail": "Fan-in, processing, and final output are available.",
+                },
+                "latency": {
+                    "applicable": False,
+                    "source_id": None,
+                    "kind": "none",
+                    "status": "idle",
+                    "headline": "Not applicable",
+                    "detail": "No low-latency route is active.",
+                },
+                "sources": [
+                    {
+                        "id": "airplay", "label": "AirPlay", "state": "idle",
+                        "status": "idle", "headline": "Ready for a sender",
+                        "detail": "Receiver timing is healthy.",
+                        "timing": {
+                            "kind": "sync", "status": "ok",
+                            "headline": "Sync timing healthy", "detail": "",
+                        },
+                    },
+                ],
+                "issues": [],
+                "technical": {"airplay": {"status": "ok"}},
+            },
             "audio_quality": {
                 "converter": "samplerate_medium",
                 "active_converter": "samplerate_medium",
@@ -238,6 +275,7 @@ def test_root_serves_canonical_shell(dashboard_server) -> None:
     assert 'name="jts-csrf"' in text  # CSRF token for the module's POSTs
     assert 'id="icon-back"' in text  # shared inline sprite
     assert '<div id="app"' in text  # mount point
+    assert 'data-view="system"' in text
     assert "Loading the dashboard" in text  # boot placeholder (visible if modules fail to load)
     assert '<script type="module" src="/assets/system-status/js/main.js">' in text
     # Page CSS is a linked static file now (lintable + cacheable), not inlined.
@@ -251,6 +289,23 @@ def test_root_serves_canonical_shell(dashboard_server) -> None:
     assert "serviceMemoryMb" not in text
 
 
+def test_audio_route_serves_same_shell_with_audio_view_marker(dashboard_server) -> None:
+    base, _received, _ = dashboard_server
+    status, body = _http_get(f"{base}/audio/")
+    assert status == 200
+    text = body.decode("utf-8")
+    assert "<title>Status</title>" in text
+    assert 'id="app" data-view="audio"' in text
+    assert '<script type="module" src="/assets/system-status/js/main.js">' in text
+    assert "/assets/system-status/system.css?v=" in text
+
+
+def test_render_page_fails_closed_to_known_view_marker() -> None:
+    text = system_setup._render_page(view='audio" onmouseover="bad').decode()
+    assert 'data-view="system"' in text
+    assert "onmouseover" not in text
+
+
 def test_data_json_proxies_snapshot(dashboard_server) -> None:
     base, received, _ = dashboard_server
     status, body = _http_get(f"{base}/data.json")
@@ -258,6 +313,7 @@ def test_data_json_proxies_snapshot(dashboard_server) -> None:
     payload = json.loads(body)
     assert payload["build"]["JASPER_GIT_SHA"] == "abc1234"
     assert payload["voice_provider"] == "gemini"
+    assert payload["audio_health"]["overall"]["headline"] == "Audio is ready"
     assert payload["airplay_health"]["status"] == "ok"
     assert payload["outputd"]["backend"] == "alsa"
     assert payload["audio_quality"]["converter"] == "samplerate_medium"
@@ -404,7 +460,7 @@ _SHARED_DOM_JS = _ASSETS_DIR / "shared" / "js" / "dom.js"
 # was promoted to the shared /assets/shared/js/dom.js owner — so it is folded
 # in via _system_js() below rather than listed here.
 _EXPECTED_MODULES = (
-    "format", "charts", "components", "sections",
+    "format", "charts", "components", "sections", "audio-sections", "audio-view",
     "views", "api", "actions", "main",
 )
 
@@ -450,25 +506,51 @@ def test_modules_wire_the_proxy_endpoints() -> None:
     for path in ("restart/voice", "restart/audio", "reboot", "poweroff",
                  "audio-quality", "data.json", "diagnostics.json"):
         assert path in js, f"system modules no longer reference {path}"
+    assert 'getJSON("/system/data.json")' in js
+    assert 'fetch("/system/audio-quality"' in js
 
 
 def test_modules_preserve_metric_logic() -> None:
     """Spot-check that the formatting/threshold port survived: the system-total
-    breakdown, throttle wording, the MPRIS fallback, the audio-conversion
-    options, and the cgroup warning."""
+    breakdown, throttle wording, the audio-conversion options, and the cgroup
+    warning. Audio diagnosis now comes from the normalized backend model."""
     js = _system_js()
     assert "System total · shown / unshown / free" in js
     assert "throttling now" in js
-    # The "Now" line gates the raw frame rate on shairport playback (the
-    # airplay lane free-runs silence at idle); this is the playing-but-no-
-    # frames fallback branch.
-    assert "no fan-in frames" in js
     assert "samplerate_medium" in js
     assert "samplerate_best" in js
     assert "cgroup_enable=memory" in js
-    assert "tts dropped" in js
     assert "Thermal sensor unavailable" in js
     assert "cur.temp_c || 0" not in js
+
+
+def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> None:
+    audio_view = (_MODULE_DIR / "audio-view.js").read_text()
+    audio_sections = (_MODULE_DIR / "audio-sections.js").read_text()
+    views = (_MODULE_DIR / "views.js").read_text()
+    components = (_MODULE_DIR / "components.js").read_text()
+
+    assert "snap.audio_health" in audio_view
+    assert "Audio health unavailable" in audio_sections
+    assert 'kind === "route_latency"' in audio_view
+    assert 'timing.kind === "sync"' in audio_sections
+    assert 'timing.applicable === false' in audio_sections
+    assert "issue.started_at" in audio_sections
+    assert 'source.status === "ok"' in audio_sections
+    assert '"--tone"' in audio_sections
+    assert "Array.isArray(health.sources)" in audio_view
+    assert "ageBucket" in audio_view
+    main_js = (_MODULE_DIR / "main.js").read_text()
+    assert "finally" in main_js
+    assert "Dashboard data was incomplete" in main_js
+    assert 'title: "Technical details", open: false' in audio_view
+    assert "raw_mode" not in audio_sections
+    assert "p95_budget_ms" not in audio_sections
+    assert "snap.airplay_health" not in views
+    assert 'activeView: "system"' in views
+    assert 'viewLink("system", "System", "/system/")' in components
+    assert 'viewLink("audio", "Audio", "/system/audio/")' in components
+    assert '"attr:aria-current"' in components
 
 
 def test_system_mobile_actions_and_tables_are_intentional() -> None:
@@ -500,6 +582,8 @@ def test_modules_warn_before_best_audio_quality() -> None:
 def test_unknown_route_404(dashboard_server) -> None:
     base, _, _ = dashboard_server
     status, _ = _http_get(f"{base}/nope")
+    assert status == 404
+    status, _ = _http_get(f"{base}/audio/nope")
     assert status == 404
 
 

@@ -15,11 +15,10 @@
 
 import { h } from "/assets/shared/js/dom.js";
 import {
-  header, livePill, titledCard, choiceCard, actionButton, collapsible,
+  header, livePill, titledCard, actionButton, collapsible, renderSection,
 } from "./components.js";
 import {
-  AUDIO_OPTIONS, vitalsCards, softwareList, haBody, airplayBody,
-  networkList, servicesTable, updateAudioQuality, waitingNote,
+  vitalsCards, softwareList, haBody, networkList, servicesTable, waitingNote,
 } from "./sections.js";
 import { buildDebugCard } from "./debug-card.js";
 
@@ -30,33 +29,7 @@ export function buildPage(root, handlers) {
   const vitals = h("section.stat-grid");
   const software = titledCard("Software");
   const ha = titledCard("Home Assistant");
-  const airplay = titledCard("AirPlay");
   const network = titledCard("Network");
-
-  // Audio conversion — built once (buttons + handlers persist); only the
-  // requested/active text + pressed state update on a poll.
-  const aqRequested = h("dd", null, "—");
-  const aqActive = h("dd", null, "—");
-  const aqStatus = h("p.info-card__note", null, "");
-  const aqButtons = AUDIO_OPTIONS.map((opt) => ({
-    converter: opt.converter,
-    el: choiceCard({
-      title: opt.label, body: opt.body, active: false,
-      onClick: () => handlers.setQuality(opt.converter),
-    }),
-  }));
-  const audio = titledCard("Audio conversion");
-  audio.body.append(
-    h("dl.deflist", null,
-      h("dt", null, "Requested"), aqRequested,
-      h("dt", null, "Active"), aqActive),
-    h("p.info-card__note", null,
-      "Medium is recommended for most hardware and keeps the speech/AEC " +
-      "band clean. Best preserves the extreme top edge of hearing but " +
-      "uses more CPU. Changing this restarts music renderers briefly."),
-    h("div.choice-grid", null, aqButtons.map((b) => b.el)),
-    aqStatus,
-  );
 
   // Actions — built once, never touched by a poll. actionsStatus is an
   // aria-live region for post-action feedback (esp. reboot/power-off, which
@@ -121,10 +94,10 @@ export function buildPage(root, handlers) {
   const debugCard = buildDebugCard();
 
   root.replaceChildren(
-    header({ title: "System", backHref: "/" }),
+    header({ title: "Status", backHref: "/", activeView: "system" }),
     h("main.app-main", null,
       live.el, vitals, software.section, ha.section,
-      airplay.section, audio.section, network.section, actions.section,
+      network.section, actions.section,
       diag.section, debugCard, services),
   );
   root.setAttribute("aria-busy", "false");
@@ -132,11 +105,9 @@ export function buildPage(root, handlers) {
   return {
     staleness: live.label,
     vitals, software: software.body, ha: ha.body,
-    airplay: airplay.body, network: network.body, svc: svcBody,
+    network: network.body, svc: svcBody,
     actionsStatus, capabilityNote,
     actionButtons: { restartVoice, restartAudio },
-    audioSection: audio.section,
-    aq: { requested: aqRequested, active: aqActive, status: aqStatus, buttons: aqButtons },
     _memo: {},
   };
 }
@@ -152,15 +123,9 @@ function setActionAvailable(btn, allowed) {
 
 function applySystemCapabilities(refs, caps) {
   refs.systemCapabilities = caps || null;
-  const canSetAudioQuality = capabilityAllows(caps, "audio_quality");
   const canRestartVoice = capabilityAllows(caps, "restart_voice");
   const canRestartAudio = capabilityAllows(caps, "restart_audio");
 
-  refs.audioSection.hidden = !canSetAudioQuality;
-  refs.aq.buttons.forEach((b) => {
-    if (!canSetAudioQuality) b.el.disabled = true;
-    else if (!b.el.dataset.applying) b.el.disabled = false;
-  });
   setActionAvailable(refs.actionButtons.restartVoice, canRestartVoice);
   setActionAvailable(refs.actionButtons.restartAudio, canRestartAudio);
 
@@ -169,26 +134,6 @@ function applySystemCapabilities(refs, caps) {
   // hidden rather than reading a field that is always absent.
   refs.capabilityNote.hidden = true;
   refs.capabilityNote.textContent = "";
-}
-
-// Render one section, isolated + memoised. `key` names it for memo/log; `data`
-// is the slice the render depends on (skip when unchanged); `build` produces
-// the DOM (node or array). A throw logs + shows an inline note in this card
-// only, and clears the memo so the next poll retries.
-function renderSection(refs, key, container, data, build) {
-  let json = null;
-  try { json = JSON.stringify(data); } catch { /* unserialisable → always render */ }
-  if (json !== null && refs._memo[key] === json) return;
-  try {
-    const out = build();
-    container.replaceChildren(...(Array.isArray(out) ? out : [out]));
-    refs._memo[key] = json;
-  } catch (e) {
-    console.error(`system: rendering section '${key}' failed`, e);
-    refs._memo[key] = null;
-    container.replaceChildren(
-      h("p.info-card__note", null, "Couldn't render this section — see the console."));
-  }
 }
 
 export function update(refs, snap) {
@@ -226,16 +171,6 @@ export function update(refs, snap) {
   renderSection(refs, "software", refs.software,
     { b: snap.build, u: cur.uptime_sec, p: snap.voice_provider }, () => softwareList(snap, cur));
   renderSection(refs, "ha", refs.ha, snap.home_assistant, () => haBody(snap.home_assistant));
-  renderSection(refs, "airplay", refs.airplay,
-    { a: snap.airplay_health, o: snap.outputd, s: services },
-    () => airplayBody(snap.airplay_health, snap.outputd, services));
-
-  // Audio toggle updates in place (persistent buttons) — isolated separately.
-  try {
-    updateAudioQuality(refs.aq, snap.audio_quality);
-  } catch (e) {
-    console.error("system: updating audio-quality failed", e);
-  }
   try {
     applySystemCapabilities(refs, snap.system_capabilities);
   } catch (e) {

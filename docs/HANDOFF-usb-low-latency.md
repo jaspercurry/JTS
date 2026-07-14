@@ -182,8 +182,12 @@ for the architecture and the end-to-end quick/promotion walkthrough below.
 Run the artifact writer with `sudo` on the Pi because it must read root-owned
 runtime env files and write `/var/lib/jasper/audio-validation/*.json`. The writer
 binds the measured numbers to the live `jasper.audio_runtime_plan` route identity
-and updates `latest.json`. Raw sample inputs are recorded with source path,
-byte count, and SHA-256 of the parsed file. Aggregate-only inputs require
+and updates both the general `latest.json` pointer and the route-specific
+`latest-route-latency.json` pointer. Always-on health reads only the scoped
+pointer, with a one-file `latest.json` compatibility fallback when the scoped
+pointer is absent after upgrade, so its work stays constant as timestamped
+evidence accumulates. Raw sample inputs are recorded with source path, byte
+count, and SHA-256 of the parsed file. Aggregate-only inputs require
 `--harness-id` so the artifact cannot anonymously certify externally computed
 percentiles.
 
@@ -2151,8 +2155,9 @@ lifecycle, bounded same-stream retry, explicit fallback causes, compliance
 actions, STATUS/doctor contract, canonical deploy, coordinated restart, and live
 gadget rebuild on jts.local; also re-verified the route artifact/doctor live-state
 contract against `jasper/audio_validation.py`, `jasper/cli/doctor/audio.py`, and
-fan-in's canonical `direct.health` idle/capturing/broken classifier). Prior
-2026-07-11: recorded the
+fan-in's canonical `direct.health` idle/capturing/broken classifier; doctor now
+tolerates only the activity-dependent idle unlock while artifact creation stays
+strict and static target identity still matches). Prior 2026-07-11: recorded the
 2026-07-11 promotion cert result in
 "Current Production Route" and "Productization Plan", tightened the cert-gate
 mentions from p95<=48/p99<=60 to the certified p95<=40/p99<=42 ms budget, and

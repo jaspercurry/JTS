@@ -4,9 +4,60 @@
 
 from __future__ import annotations
 
-from jasper import audio_runtime_plan
+from jasper import audio_runtime_plan, audio_validation
 from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
 from jasper.control import state_aggregate
+
+
+def test_route_latency_state_uses_constant_work_legacy_pointer_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            ),
+        },
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        route_mode="solo",
+    )
+    observed: list[object] = []
+
+    def fake_load(path, *, max_age):
+        observed.append(path)
+        if path.name == audio_validation.ROUTE_LATENCY_POINTER_NAME:
+            return audio_validation.ArtifactLoadResult(
+                state="missing",
+                path=path,
+                errors=("artifact file does not exist",),
+            )
+        return audio_validation.ArtifactLoadResult(
+            state="loaded",
+            path=path,
+            artifact=object(),  # fake assessor below owns this test boundary
+        )
+
+    def fake_assess(result, **_kwargs):
+        assert result.state == "loaded"
+        return {"status": "pass", "reason": "legacy pointer accepted"}
+
+    monkeypatch.setattr(audio_validation, "artifact_directory", lambda: tmp_path)
+    monkeypatch.setattr(audio_validation, "load_artifact", fake_load)
+    monkeypatch.setattr(
+        audio_validation,
+        "assess_route_latency_artifact",
+        fake_assess,
+    )
+
+    state = state_aggregate.route_latency_artifact_state(plan)
+
+    assert state is not None
+    assert state["status"] == "pass"
+    assert observed == [
+        tmp_path / audio_validation.ROUTE_LATENCY_POINTER_NAME,
+        tmp_path / audio_validation.LATEST_POINTER_NAME,
+    ]
 
 
 def test_audio_graph_state_aggregates_route_artifact_bridge_fanin_and_outputd(
@@ -36,7 +87,7 @@ def test_audio_graph_state_aggregates_route_artifact_bridge_fanin_and_outputd(
     )
     monkeypatch.setattr(
         state_aggregate,
-        "_route_latency_artifact_state",
+        "route_latency_artifact_state",
         lambda observed_plan: artifact,
     )
 

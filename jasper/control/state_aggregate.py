@@ -239,27 +239,33 @@ def _build_usbsink_renderer_state(
     }
 
 
-def _route_latency_artifact_state(plan: Any) -> dict[str, Any] | None:
+def route_latency_artifact_state(plan: Any) -> dict[str, Any] | None:
+    """Assess the current route's latency artifact for state/health consumers."""
     if not getattr(plan.route_profile, "low_latency_claim", False):
         return None
     try:
         from ..audio_validation import (
-            ROUTE_LATENCY_MIC_ID,
-            ROUTE_LATENCY_PROFILE,
+            LATEST_POINTER_NAME,
+            ROUTE_LATENCY_POINTER_NAME,
             ROUTE_LATENCY_STALE_AFTER,
             artifact_directory,
             assess_route_latency_artifact,
-            load_latest_artifact,
+            load_artifact,
         )
 
-        dac_id = None if plan.profile_id == "unknown" else plan.profile_id
-        result = load_latest_artifact(
-            artifact_directory(),
-            mic_id=ROUTE_LATENCY_MIC_ID,
-            dac_id=dac_id,
-            profile=ROUTE_LATENCY_PROFILE,
+        result = load_artifact(
+            artifact_directory() / ROUTE_LATENCY_POINTER_NAME,
             max_age=ROUTE_LATENCY_STALE_AFTER,
         )
+        if result.state == "missing":
+            # Upgrade compatibility: older route writers populated only the
+            # general latest pointer. This remains constant work (two files
+            # maximum), and identity assessment below still fails closed if
+            # that pointer belongs to another validation profile or route.
+            result = load_artifact(
+                artifact_directory() / LATEST_POINTER_NAME,
+                max_age=ROUTE_LATENCY_STALE_AFTER,
+            )
         return assess_route_latency_artifact(
             result,
             route_config_hash=plan.route_config_hash,
@@ -310,7 +316,7 @@ def _audio_graph_state(
         and isinstance(outputd_aec_clock.get("latency"), dict)
         else None
     )
-    artifact = _route_latency_artifact_state(plan)
+    artifact = route_latency_artifact_state(plan)
     route_status = "unclaimed"
     if plan.route_profile.low_latency_claim:
         route_status = (
