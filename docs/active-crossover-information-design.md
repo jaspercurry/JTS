@@ -50,7 +50,10 @@
 > schedule keeps the exhaustive fine grid capped at 25 measurements and, when
 > that grid is larger, binds at most 25 symmetric coarse coordinates plus the
 > two adjacent fine coordinates around one explicit coarse refinement anchor.
-> It schedules measurement only and makes no winning-delay claim. Capture
+> The schedule makes no winning-delay claim. Shared's separate
+> `select_scheduled_delay()` final evaluator requires exact scheduled evidence
+> and applies the same repeatability, plateau, and tie policy as the exhaustive
+> selector without relaxing its 25-point limit. Capture
 > planning requires the preset's exact group set: one mono active group for a
 > mono preset, or exactly left and right active groups for a stereo preset, all
 > using the preset's way-count mode and complete driver-role set. Capture
@@ -1530,7 +1533,8 @@ Shared-admission/playback adapter and bounded writer transaction,
 summed pre-audio refusal, durable bundle-backed commissioning-run identity,
 startup owner-generation claim, fail-closed crossover status, strict pure
 group-by-region evidence sets with typed run/attempt and geometry authority,
-the bounded low-frequency coarse-plus-refinement schedule, complete-plan replay
+the bounded low-frequency coarse-plus-refinement schedule and schedule-aware
+final evaluator, complete-plan replay
 guards, receipt schema-v2 one-shot roles,
 and Room's temporary passive-only admission boundary checked against the current
 implementation and cited measurement literature; no live audio, DSP mutation,

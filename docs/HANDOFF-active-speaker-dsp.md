@@ -733,8 +733,10 @@
 > analysis-input, quality, generation, and playback identities and paths unique
 > across the complete receipt; its admitted-capture,
 > post-apply-target, and receipt containers are explicitly schema version 2.
-> These are pure
-> contracts only: no live summed host, persistence adapter, candidate evaluator,
+> Shared also exposes a pure `select_scheduled_delay()` final evaluator that
+> requires the exact schedule and reuses the exhaustive selector's
+> repeatability, plateau, and tie policy. These remain pure contracts only: no
+> live summed host, persistence adapter, measured-candidate producer,
 > graph mutation, lifecycle transition, verification producer, receipt issuer,
 > or Room consumer is added by this slice.
 
@@ -784,8 +786,10 @@ For JTS, that means:
 - The shipped 350 Hz lower crossover now has a reviewed bounded schedule
   contract: its 29-coordinate fine grid becomes 15 symmetric coarse
   coordinates plus at most two adjacent fine refinements around an explicit
-  coarse anchor. The exhaustive runner remains capped at 25. The production
-  host must consume this exact schedule; no host or selected delay exists yet.
+  coarse anchor. The exhaustive runner remains capped at 25. A separate final
+  evaluator requires that exact schedule and applies the same winner policy.
+  The production host must consume both; no production-selected delay exists
+  yet.
 
 The existing deployed audio topology now has the runtime substrate for
 the constrained dual Apple active-output profile, but commissioning
@@ -2066,6 +2070,7 @@ eligibility receipt, reachable isolated-driver persisted admission under one
 bounded writer transaction, summed pre-audio refusal, strict group-by-region
 normal/reverse/delay evidence values with typed run/attempt and geometry
 authority, the bounded low-frequency coarse-plus-refinement schedule,
+schedule-aware final evaluator,
 complete-plan replay guards, receipt schema-v2 one-shot roles, and the
 durable bundle-backed commissioning-run store/start/status boundary and service owner-
 generation claim; no live candidate/verification/receipt producer, and
