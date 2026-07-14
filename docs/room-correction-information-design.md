@@ -15,11 +15,13 @@
 > multi-position measurement, IIR PEQ design, deterministic verification, and
 > automatic revert loop ship today. R1 now ships the hardware-free
 > server-owned entry, defaults, and whole-page visibility contract: envelope
-> schema v8
+> schema v9
 > supplies the exact ordered section list plus closed blocker/failure blocks,
 > the browser fails closed without a policy mirror, the named legacy
 > containers/actions and certificate-install guide are deleted, and reports are
-> discovered only on idle/result edges. Idle now consumes the Active-owned
+> discovered only on idle/result envelope edges. A lightweight idle entry read
+> refreshes readiness and current-correction presentation together without
+> rescanning reports. Idle now consumes the Active-owned
 > setup status, allows its explicit passive/not-required result, and withholds
 > Start for incomplete, unknown, malformed, or currently unsupported active
 > authority. It preserves a validated owner recovery link or bounded Room retry
@@ -136,9 +138,12 @@ The Room experience follows these principles:
 
 1. One screen has one primary forward action. Stop, cancel, restore, and other
    safety actions may remain available without competing as forward actions.
-2. The server envelope owns the screen, ordered section list, homeowner copy,
-   blocker, nudges, and next action. The browser renders that contract and owns
-   capture mechanics; it does not reconstruct product policy.
+2. Server presentation contracts own homeowner copy. The envelope owns the
+   flow screen, ordered section list, blockers, nudges, and next action;
+   `/status` owns the full mechanism snapshot and initial current-config
+   banner, while lightweight idle `/entry-status` refreshes that banner with
+   speaker readiness. The browser renders those contracts and owns capture
+   mechanics; it does not reconstruct product policy.
 3. Defaults are visible decisions made for the household, not values hidden in
    form controls.
 4. Safety and authority may block. Measurement quality and preference do not
@@ -148,6 +153,13 @@ The Room experience follows these principles:
    and reflection-gated driver evidence remain Active concerns.
 6. A proposal is not live, an applied correction is not verified, and a
    verification result is not accepted until the owning authority says so.
+
+Localization and interpolation do not create a second copy owner. The browser
+may insert a localized timestamp or the currently selected server-supplied
+labels into a server-supplied sentence template; it must not carry a parallel
+sentence, progress-label list, current-config sentence, or repeat disclosure.
+A bounded unavailable message may remain in the browser because a server
+presentation contract cannot describe its own failure to load.
 
 ## Product flow
 
@@ -160,7 +172,7 @@ flowchart TD
     E --> F["Check level"]
     F --> G["Measure six listening positions"]
     G --> H["Review measured correction"]
-    H --> I["Apply correction"]
+    H --> I["Apply room correction"]
     I --> J["Verify from the main seat"]
     J --> K{"Deterministic verdict"}
     K -->|Accepted| L["Show before/after proof"]
@@ -208,12 +220,12 @@ The ordered visibility contract is:
 | Ready idle | `current-correction`, `run-defaults`, optional `reports` | **Start measuring** |
 | Blocked idle | `current-correction`, `readiness-blocker`, optional `reports` | Server-owned recovery link; no Start |
 | Microphone / handoff | `run-defaults`, `capture-handoff`, `placement`; local backup additionally gets `local-certificate-warning`, `capture-setup` | **Open phone capture** or **Allow microphone** |
-| Level | `capture-handoff`, `placement`, `level-check` | **Check level** or the envelope's bounded continue action |
-| Sweep | `capture-handoff`, `placement`, `position-capture` | **Measure position _n_** / **Continue to next position** |
+| Level | `capture-handoff`, `placement`, `level-check` | **Check measurement level**, **Retry level check**, or **Measure this position**, as authorized by the envelope |
+| Sweep | `capture-handoff`, `placement`, `position-capture` | **Measure this position** / **Measure next position** |
 | Review | `measurement-review`, optional `tuning` | **Apply room correction** |
 | Apply | `apply-status`, optional `tuning` | **Verify correction** once application is confirmed |
-| Verify | `capture-handoff`, `placement`, `verification`, optional `tuning` | **Verify correction** |
-| Result | `current-correction`, `result-proof`, optional `tuning`, optional `reports` | **Measure again**; restore is available when relevant |
+| Verify | `capture-handoff`, `placement`, `verification`, optional `tuning` | **Verify correction**, or **Check verification level** for relay capture |
+| Result | `current-correction`, `result-proof`, optional `tuning`, optional `reports` | **Measure again**; **Measure again to confirm** for `revert_pending_confirm`; restore is available when relevant |
 
 Conditional sections are decided by the server from the same snapshot as the
 rest of the envelope. For example, `reports` appears only when the session store
@@ -221,7 +233,7 @@ has a report; the browser does not render an empty first-run panel. The tuning
 section appears only on screens with evidence worth explaining and only when the
 server offers it. Report discovery is a static-edge concern: the handler may
 look it up while building idle or result envelopes, but never on the active
-900 ms status-poll path. `jasper.correction.envelope` receives the already
+900 ms envelope-poll path. `jasper.correction.envelope` receives the already
 computed availability fact and remains pure. R1 must not add a bundle scan,
 cache, or index to the hot path merely to decide whether this optional section
 is visible.

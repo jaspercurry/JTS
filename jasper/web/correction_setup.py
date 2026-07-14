@@ -16,8 +16,10 @@ Architecture (per docs/HANDOFF-correction.md):
     spotify_setup, dial_setup. No FastAPI / ASGI dependency.
   - Single in-memory `MeasurementSession` (jasper.correction.session)
     drives the multi-step state machine.
-  - Browser polls GET /status every 500 ms — simpler than SSE in
-    stdlib, plenty fast for state transitions that take seconds.
+  - Browser polls GET /status every 500 ms while work is active, the
+    presentation envelope every 900 ms on active screens, and lightweight
+    entry facts every 10 s while idle — simpler than SSE in stdlib and bounded
+    for state transitions that take seconds.
   - Background asyncio loop in a daemon thread bridges the sync HTTP
     handlers to the async session methods.
   - HTTP routes (after nginx strips the /correction/ prefix): the full,
@@ -516,7 +518,7 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
     return _loop
 
 
-def _run_async(coro, *, timeout: float = 60.0):
+def _run_async(coro, *, timeout: float | None = 60.0):
     """Run a coroutine on the background loop and return its result.
 
     Long timeout default (60 s) covers sweep playback (10 s) + setup
@@ -533,6 +535,19 @@ def _run_async(coro, *, timeout: float = 60.0):
         # bounded/shielded rollback in ``finally`` blocks.
         fut.cancel()
         raise
+
+
+def _run_graph_mutation(coro):
+    """Wait for one Room-owned graph mutation to reach a terminal result.
+
+    CamillaController bounds and drains each transport attempt. Shared writer-
+    lock admission is currently blocking and remains a Shared-owned bounded-
+    admission gap. Once admitted, adding a second outer deadline here could
+    cancel between graph load and rollback/state persistence, so Room waits for
+    the transaction's terminal result.
+    """
+
+    return _run_async(coro, timeout=None)
 
 
 def _get_or_create_session():
@@ -889,8 +904,8 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         household_correction_strategy_options,
         target_profile_options,
     )
+    from jasper.correction.envelope import room_position_label
     from jasper.correction.session import (
-        DEFAULT_REPEAT_MAIN_POSITION,
         DEFAULT_ROOM_POSITION_COUNT,
         ROOM_POSITION_COUNT_CHOICES,
     )
@@ -930,8 +945,12 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         for spec in household_correction_strategy_options()
     )
     room_position_options_html = "\n      ".join(
-        '<option value="{count}"{selected}>{label}</option>'.format(
+        (
+            '<option value="{count}" data-summary-label="{summary_label}"'
+            '{selected}>{label}</option>'
+        ).format(
             count=count,
+            summary_label=html.escape(room_position_label(count), quote=True),
             selected=(" selected" if count == DEFAULT_ROOM_POSITION_COUNT else ""),
             label=html.escape(
                 (
@@ -948,16 +967,9 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         )
         for count in ROOM_POSITION_COUNT_CHOICES
     )
-    run_defaults_summary = (
-        f"Measuring {DEFAULT_ROOM_POSITION_COUNT} positions with the "
-        f"{DEFAULT_TARGET_PROFILE_ID} target"
-    )
-    repeat_main_position_disclosure = (
-        "JTS automatically repeats the main-seat measurement once to check "
-        "that the result is trustworthy."
-        if DEFAULT_REPEAT_MAIN_POSITION
-        else ""
-    )
+    # The server-owned envelope fills both after the first presentation read.
+    run_defaults_summary = ""
+    repeat_main_position_disclosure = ""
     from jasper.capture_relay import correction_adapter
     capture_relay_enabled = correction_adapter.relay_enabled()
     # Absolute http:// back link: /correction/ is HTTPS but the dashboard at /
@@ -1849,9 +1861,8 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         from jasper.sound.graph_carrier import CarrierCannotHostEq
 
         try:
-            baseline_payload = _run_async(
+            baseline_payload = _run_graph_mutation(
                 _load_measurement_baseline(sess, cam),
-                timeout=10.0,
             )
         except CarrierCannotHostEq:
             logger.warning("/start: measurement baseline rejected by graph carrier")
@@ -2381,11 +2392,30 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     CamillaDSP config descriptor. `current_correction` is best-effort
     (returns None if CamillaDSP is unreachable) so the page still
     renders something useful when the daemon is restarting."""
-    from jasper.correction.status import describe_current_config
     from jasper.dsp_apply import last_dsp_apply_state
 
     sess = _get_or_create_session()
     snap = sess.snapshot()
+    current_config, presentation = _current_config_presentation(sess)
+    snap["current_config"] = current_config
+    snap["current_correction"] = current_config.get("current_correction")
+    snap["current_correction_presentation"] = presentation
+    snap["last_dsp_apply"] = last_dsp_apply_state()
+    # Active phone-mic-relay capture, when one is in flight (tap-link + status).
+    # None on the default on-Pi flow, so the page only shows the relay UI when the
+    # operator has enabled it.
+    snap["relay"] = _get_relay_capture_for("room_", "level_ramp:room")
+    return snap
+
+
+def _current_config_presentation(sess: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read the current Camilla descriptor and its homeowner presentation."""
+
+    from jasper.correction.status import (
+        current_correction_presentation,
+        describe_current_config,
+    )
+
     cam = _camilla()
     try:
         path = _run_async(
@@ -2399,14 +2429,22 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         config_dir=sess.cfg.config_dir,
         base_config_path=sess.cfg.base_config_path,
     )
-    snap["current_config"] = current_config
-    snap["current_correction"] = current_config.get("current_correction")
-    snap["last_dsp_apply"] = last_dsp_apply_state()
-    # Active phone-mic-relay capture, when one is in flight (tap-link + status).
-    # None on the default on-Pi flow, so the page only shows the relay UI when the
-    # operator has enabled it.
-    snap["relay"] = _get_relay_capture_for("room_", "level_ramp:room")
-    return snap
+    return current_config, current_correction_presentation(current_config)
+
+
+def _handle_entry_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """Lightweight idle refresh: screen/state, readiness, and config banner."""
+
+    from jasper.correction import envelope
+
+    sess = _get_or_create_session()
+    _current_config, presentation = _current_config_presentation(sess)
+    return {
+        "screen": envelope.screen_for_session(sess),
+        "state": sess.state.value,
+        "readiness_blocker": _room_readiness().blocker,
+        "current_correction_presentation": presentation,
+    }
 
 
 def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -4795,7 +4833,7 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return await cam.get_config_file_path(best_effort=True)
 
     try:
-        _run_async(sess.apply(_set, camilla_get_config=_get), timeout=15.0)
+        _run_graph_mutation(sess.apply(_set, camilla_get_config=_get))
     finally:
         # Audio-safety: autolevel may have ramped main_volume well above the
         # listening level for measurement SNR. Restore it even if apply()
@@ -5105,7 +5143,7 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             if _accepts_target_config_path(sess.reset)
             else {}
         )
-        _run_async(sess.reset(_set, **reset_kwargs), timeout=15.0)
+        _run_graph_mutation(sess.reset(_set, **reset_kwargs))
     finally:
         # Audio-safety: restore the pre-autolevel listening level even if
         # reset() raised (see _handle_apply).
@@ -5174,12 +5212,11 @@ def _maybe_auto_revert(sess: Any) -> bool:
     never silent.
 
     Failure honesty: when the attempt dies BEFORE the session could record an
-    outcome (target-resolution raise, the 15 s response timeout), a "failed"
-    outcome is stamped here so the result screen says the correction is STILL
-    APPLIED. The stamp never overwrites a recorded outcome, and on a response
-    timeout the still-running auto_revert coroutine records the real result
-    when reset() finishes — a later "ok" overwrites this "failed", so the
-    envelope converges on the truth.
+    outcome (for example, target-resolution failure), a "failed" outcome is
+    stamped here so the result screen says the correction is STILL APPLIED.
+    The stamp never overwrites a recorded outcome; after any shared writer
+    admission, graph mutation runs to a terminal result, so success is never
+    reported as a timeout-driven cancellation.
     """
     if getattr(sess, "acceptance_verdict", None) != "revert":
         return False
@@ -5196,7 +5233,7 @@ def _maybe_auto_revert(sess: Any) -> bool:
             else {}
         )
         return bool(
-            _run_async(sess.auto_revert(_set, **revert_kwargs), timeout=15.0)
+            _run_graph_mutation(sess.auto_revert(_set, **revert_kwargs))
         )
     except Exception:  # noqa: BLE001
         logger.exception(
@@ -5628,6 +5665,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/room",
                 "/healthz",
                 "/status",
+                "/entry-status",
                 "/envelope",
                 "/sessions",
                 "/session-report",
@@ -5748,6 +5786,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/status":
                 self._serve_json_route("/status", _handle_status)
+                return
+            if path == "/entry-status":
+                self._serve_json_route("/entry-status", _handle_entry_status)
                 return
             if path == "/envelope":
                 self._serve_json_route("/envelope", _handle_envelope)

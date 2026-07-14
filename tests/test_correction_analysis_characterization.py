@@ -300,13 +300,19 @@ def test_smooth_capture_preserves_pipeline_and_five_value_result(
     monkeypatch,
 ):
     sess = make_measurement_session(tmp_path)
-    sess.cfg.sample_rate = 1000
+    # Keep the three rate authorities intentionally distinct. This test must
+    # fail if capture admission, sweep regeneration, or response analysis ever
+    # starts borrowing another layer's rate.
+    capture_sample_rate = 1000
+    sweep_sample_rate = 2000
+    expected_sample_rate = 3000
+    sess.cfg.sample_rate = expected_sample_rate
     sess.sweep_meta = SimpleNamespace(
         n_samples=3,
         f1=20.0,
         f2=400.0,
         duration_s=1.0,
-        sample_rate=1000,
+        sample_rate=sweep_sample_rate,
         amplitude_dbfs=-12.0,
     )
     sess.mic_calibration = SimpleNamespace(curve="calibration-curve")
@@ -324,6 +330,14 @@ def test_smooth_capture_preserves_pipeline_and_five_value_result(
     )
     impulse_response = np.full(100, 0.01, dtype=np.float64)
     impulse_response[50] = 1.0
+    direct_arrival = {
+        "available": True,
+        "direct_peak_index": 50,
+        "direct_peak_dbfs": 0.0,
+        "pre_arrival_floor_dbfs": -40.0,
+        "direct_to_pre_arrival_db": 40.0,
+        "pre_arrival_window_ms": [28.0, 48.0],
+    }
     raw_freqs = np.array([20.0, 100.0])
     raw_magnitude = np.array([1.0, 2.0])
     smoothed = np.array([3.0, 4.0])
@@ -336,20 +350,20 @@ def test_smooth_capture_preserves_pipeline_and_five_value_result(
     def read_wav(path):
         order.append("read")
         assert path == capture_path
-        return captured, 1000
+        return captured, capture_sample_rate
 
     def cap_capture(values, *, sweep_len, sample_rate):
         order.append("cap")
         np.testing.assert_array_equal(values, captured)
-        assert (sweep_len, sample_rate) == (3, 1000)
+        assert (sweep_len, sample_rate) == (3, capture_sample_rate)
         return capped
 
     def assess(values, **kwargs):
         order.append("quality")
         np.testing.assert_array_equal(values, capped)
         assert kwargs == {
-            "sample_rate": 1000,
-            "expected_sample_rate": 1000,
+            "sample_rate": capture_sample_rate,
+            "expected_sample_rate": expected_sample_rate,
             "sweep_n_samples": 3,
             "has_mic_calibration": True,
             "input_device": {"label": "measurement mic"},
@@ -364,7 +378,7 @@ def test_smooth_capture_preserves_pipeline_and_five_value_result(
             "f1": 20.0,
             "f2": 400.0,
             "duration_approx_s": 1.0,
-            "sample_rate": 1000,
+            "sample_rate": sweep_sample_rate,
             "amplitude_dbfs": -12.0,
         }
         return np.array([0.25, 0.5]), object()
@@ -373,13 +387,13 @@ def test_smooth_capture_preserves_pipeline_and_five_value_result(
         order.append("deconvolve")
         np.testing.assert_array_equal(values, capped.astype(np.float64))
         np.testing.assert_array_equal(sweep_signal, np.array([0.25, 0.5]))
-        assert sample_rate == 1000
+        assert sample_rate == expected_sample_rate
         return impulse_response
 
     def magnitude_response(ir, sample_rate, *, normalize):
         order.append("magnitude")
         np.testing.assert_array_equal(ir, impulse_response)
-        assert sample_rate == 1000
+        assert sample_rate == expected_sample_rate
         assert normalize is False
         return raw_freqs, raw_magnitude
 
@@ -423,6 +437,15 @@ def test_smooth_capture_preserves_pipeline_and_five_value_result(
     monkeypatch.setattr(sweep, "synchronized_swept_sine", synchronized_sweep)
     monkeypatch.setattr(deconv, "deconvolve", deconvolve)
     monkeypatch.setattr(deconv, "magnitude_response", magnitude_response)
+    monkeypatch.setattr(
+        acoustic_quality,
+        "direct_arrival_report",
+        lambda _ir, *, sample_rate: (
+            direct_arrival
+            if sample_rate == expected_sample_rate
+            else pytest.fail("direct-arrival analysis used the wrong sample rate")
+        ),
+    )
     monkeypatch.setattr(analysis, "smooth_fractional_octave", smooth_response)
     monkeypatch.setattr(analysis, "resample_log", resample_response)
     monkeypatch.setattr(calibration, "apply_calibration_curve", apply_calibration)
@@ -456,14 +479,7 @@ def test_smooth_capture_preserves_pipeline_and_five_value_result(
         normalized,
     )
     assert analysis_result.capture_quality is capture_quality
-    assert analysis_result.direct_arrival == {
-        "available": True,
-        "direct_peak_index": 50,
-        "direct_peak_dbfs": 0.0,
-        "pre_arrival_floor_dbfs": -40.0,
-        "direct_to_pre_arrival_db": 40.0,
-        "pre_arrival_window_ms": [28.0, 48.0],
-    }
+    assert analysis_result.direct_arrival == direct_arrival
 
     order.clear()
     monkeypatch.setattr(

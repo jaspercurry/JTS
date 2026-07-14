@@ -21,6 +21,7 @@ wiring (`/envelope`) is a thin `build_envelope_logged` call over
 """
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import numpy as np
@@ -105,6 +106,7 @@ class _FakeSession:
         self.auto_revert_outcome: dict[str, object] | None = None
         self.confidence_report: dict[str, object] | None = None
         self.design_report: dict[str, object] | None = None
+        self.config_path: str | None = None
 
 
 def _relay_session(
@@ -201,19 +203,50 @@ def test_unknown_state_value_fails_closed_instead_of_offering_start():
         envelope.screen_for_state("some_future_state")
 
 
+def test_analyzing_never_offers_apply_or_paid_tuning():
+    sess = _FakeSession(SessionState.ANALYZING)
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "review"
+    assert env["progress"]["position"] == 3
+    assert env["sections"] == ["measurement-review"]
+    assert env["verdict_text"] == (
+        "Analyzing the measurement now. This usually takes a few seconds."
+    )
+    assert env["next_action"] is None
+    assert env["tuning_llm"]["offered"] is False
+
+
+def test_verify_analysis_stays_on_verify_progress_without_actions():
+    sess = _FakeSession(SessionState.ANALYZING)
+    sess.config_path = "/tmp/correction.yml"
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "verify"
+    assert env["progress"]["position"] == 5
+    assert env["sections"] == ["measurement-review"]
+    assert env["verdict_text"] == (
+        "Analyzing the measurement now. This usually takes a few seconds."
+    )
+    assert env["next_action"] is None
+    assert env["tuning_llm"]["offered"] is False
+
+
 # ---------- top-level shape ------------------------------------------------
 
 
-def test_schema_version_is_eight():
+def test_schema_version_is_nine():
     # v2 added the P4 `verdict` block; v3 added the P5 crossover-region
     # distinction (REVIEW verdict_text + crossover_region_dip_not_boosted nudge);
     # v4 (P6) added the `tuning_llm` affordance block.
     # v5 wires the relay-owned level-before-sweep actions; v6 makes the
     # ordered section list the sole whole-page visibility authority; v7 adds
-    # closed blocker/failure presentation data; v8 adds run defaults.
-    assert envelope.ENVELOPE_SCHEMA_VERSION == 8
+    # closed blocker/failure presentation data; v8 adds run defaults; v9 adds
+    # the required server-owned progress labels, summary template, and repeat
+    # disclosure after v8 had shipped.
+    assert envelope.ENVELOPE_SCHEMA_VERSION == 9
     env = envelope.build_envelope(_FakeSession())
-    assert env["schema_version"] == 8
+    assert env["schema_version"] == 9
 
 
 def test_tuning_llm_block_offered_on_review_shape_pinned(monkeypatch):
@@ -276,10 +309,15 @@ def test_run_defaults_disclose_server_owned_choices_and_lock_active_run():
 
     assert env["run_defaults"] == {
         "summary": "Measuring 6 positions with the flat target",
+        "summary_template": "Measuring {positions_label} with the {target} target",
         "total_positions": DEFAULT_ROOM_POSITION_COUNT,
         "target": {"id": "flat", "label": "Flat"},
         "strategy": {"id": "balanced", "label": "Balanced"},
         "repeat_main_position": True,
+        "repeat_disclosure": (
+            "JTS automatically repeats the main-seat measurement once to check "
+            "that the result is trustworthy."
+        ),
         "capture_transport": "relay",
         "change_allowed": True,
     }
@@ -618,7 +656,11 @@ def test_idle_envelope_has_entry_action_and_no_headline():
     assert env["next_action"] == {"label": "Start measuring", "endpoint": "/start"}
     assert env["blocker"] is None
     assert env["failure"] is None
-    assert env["progress"] == {"position": 1, "total": 6}
+    assert env["progress"] == {
+        "position": 1,
+        "total": 6,
+        "labels": ["Set up", "Measure", "Review", "Apply", "Verify", "Done"],
+    }
     assert isinstance(env["verdict_text"], str) and env["verdict_text"]
     assert env["verdict"] is None  # no verify yet → no acceptance verdict
 
@@ -686,7 +728,56 @@ def test_relay_pending_confirmation_reuses_retained_level_for_second_verify():
     sess.acceptance = {"verdict": "revert_pending_confirm"}
     env = envelope.build_envelope(sess)
     assert env["screen"] == "result"
-    assert env["next_action"]["endpoint"] == "/relay/verify"
+    assert env["next_action"] == {
+        "label": "Measure again to confirm",
+        "endpoint": "/relay/verify",
+    }
+
+
+def test_relay_unlocked_verification_level_check_stays_on_verify_screen():
+    sess = _relay_session(SessionState.APPLIED, level_state="idle")
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "verify"
+    assert env["progress"]["position"] == 5
+    assert env["sections"][:3] == [
+        "capture-handoff",
+        "placement",
+        "verification",
+    ]
+    assert env["next_action"] == {
+        "label": "Check verification level",
+        "endpoint": "/relay/level-match",
+    }
+
+
+def test_relay_unlocked_confirmation_keeps_worse_result_visible():
+    sess = _relay_session(SessionState.VERIFIED, level_state="idle")
+    sess.acceptance = {"verdict": "revert_pending_confirm"}
+
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "result"
+    assert env["progress"]["position"] == 6
+    assert "result-proof" in env["sections"]
+    assert env["next_action"] == {
+        "label": "Measure again to confirm",
+        "endpoint": "/relay/level-match",
+    }
+
+
+@pytest.mark.parametrize("state", [SessionState.APPLIED, SessionState.VERIFIED])
+def test_relay_verification_pending_keeps_phone_handoff_visible(state):
+    sess = _relay_session(state, restored=True)
+    if state is SessionState.VERIFIED:
+        sess.acceptance = {"verdict": "revert_pending_confirm"}
+
+    env = envelope.build_envelope(sess, relay_capture_pending=True)
+
+    assert env["screen"] == "verify"
+    assert env["progress"]["position"] == 5
+    assert "capture-handoff" in env["sections"]
+    assert env["next_action"] is None
 
 
 # ---------- level screen (autolevel sub-state) -----------------------------
@@ -768,15 +859,22 @@ def test_review_screen_next_action_is_apply():
     sess = _FakeSession(SessionState.READY)
     env = envelope.build_envelope(sess)
     assert env["screen"] == "review"
-    assert env["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}
-    assert env["progress"] == {"position": 3, "total": 6}
+    assert env["next_action"] == {
+        "label": "Apply room correction",
+        "endpoint": "/apply",
+    }
+    assert env["progress"] == {
+        "position": 3,
+        "total": 6,
+        "labels": ["Set up", "Measure", "Review", "Apply", "Verify", "Done"],
+    }
 
 
 def test_apply_screen_next_action_is_verify():
     sess = _FakeSession(SessionState.APPLIED)
     env = envelope.build_envelope(sess)
     assert env["screen"] == "apply"
-    assert env["next_action"] == {"label": "Verify the result", "endpoint": "/verify"}
+    assert env["next_action"] == {"label": "Verify correction", "endpoint": "/verify"}
 
 
 def test_verify_screen_has_no_forward_action():
@@ -924,7 +1022,10 @@ def test_uncalibrated_mic_nudge_present_and_non_blocking():
     assert "approximate" in n["text"].lower()
     assert "continue" in n["text"].lower()
     # A nudge NEVER removes the forward action.
-    assert env["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}
+    assert env["next_action"] == {
+        "label": "Apply room correction",
+        "endpoint": "/apply",
+    }
 
 
 def test_room_bounded_low_level_surfaces_shortfall_without_blocking_sweep():
@@ -1062,7 +1163,6 @@ def test_build_envelope_logged_matches_pure_builder(caplog):
             {"code": "uncalibrated_mic", "severity": "warn", "message": "x"},
         ],
     }
-    import logging
     with caplog.at_level(logging.INFO, logger="jasper.correction.envelope"):
         logged = envelope.build_envelope_logged(sess)
     assert logged == envelope.build_envelope(sess)
@@ -1070,6 +1170,21 @@ def test_build_envelope_logged_matches_pure_builder(caplog):
         "event=correction_envelope.serve" in rec.getMessage()
         for rec in caplog.records
     )
+
+
+def test_build_envelope_logged_emits_only_on_presentation_transition(caplog):
+    sess = _FakeSession(SessionState.SWEEPING)
+    with caplog.at_level(logging.INFO, logger="jasper.correction.envelope"):
+        envelope.build_envelope_logged(sess)
+        envelope.build_envelope_logged(sess)
+        sess.state = SessionState.READY
+        envelope.build_envelope_logged(sess)
+
+    events = [
+        rec for rec in caplog.records
+        if "event=correction_envelope.serve" in rec.getMessage()
+    ]
+    assert len(events) == 2
 
 
 # ---------- endpoint wiring ------------------------------------------------
@@ -1152,10 +1267,13 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         server.server_close()
 
     assert set(body) == ENVELOPE_KEYS
-    assert body["schema_version"] == 8
+    assert body["schema_version"] == 9
     assert body["screen"] == "review"
     assert body["state"] == "ready"
-    assert body["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}
+    assert body["next_action"] == {
+        "label": "Apply room correction",
+        "endpoint": "/apply",
+    }
     # The uncalibrated-mic nudge survives the full round-trip, non-blocking.
     assert any(n["code"] == "uncalibrated_mic" for n in body["nudges"])
     assert all(n["severity"] in {"info", "warn"} for n in body["nudges"])

@@ -91,6 +91,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var measurementOptions = document.getElementById('measurement-options');
   var changeRunDefaultsBtn = document.getElementById('change-run-defaults');
   var runDefaultsSummary = document.getElementById('run-defaults-summary');
+  var repeatMainPositionDisclosure = document.getElementById(
+    'repeat-main-position-disclosure'
+  );
   var positionsSelect = document.getElementById('positions-select');
   var targetSelect = document.getElementById('target-select');
   var strategySelect = document.getElementById('strategy-select');
@@ -123,7 +126,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var localRunOwnedByThisTab = false;
   var localRunOwnerSessionId = null;
   var wizardActionInFlight = false;
-  var envelopeRequestGeneration = 0;
+  var envelopeRequestInFlight = null;
+  var envelopeRefreshQueued = false;
+  var envelopeFetchTimeoutMs = 5000;
+  var idleEnvelopeRefreshMs = 10000;
   var noiseCaptureCompletion = null;
   var noiseCaptureResolve = null;
   var noiseCaptureReject = null;
@@ -148,10 +154,16 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // user-facing wizard chrome (step, verdict, nudges, primary action). To
   // honour the P3b-1 reviewer's poll discipline — hot-poll only during
   // active capture, fetch once per state change on static screens — we
-  // track the last screen/state the envelope reported and refresh it on a
-  // transition, plus a low-frequency tick while a capture screen is live.
-  var lastEnvelopeState = null;
+  // track status observations separately from the last successfully rendered
+  // envelope and refresh on a transition, plus a low-frequency tick while a
+  // capture screen is live. A failed envelope must not make every unchanged
+  // 500 ms status tick look like a new transition.
+  var lastObservedStatusState = null;
+  var lastRenderedEnvelopeScreen = null;
+  var lastRenderedEnvelopeState = null;
+  var lastRenderedReadinessSignature = null;
   var envelopeTimer = null;
+  var envelopePollingEnabled = true;
   // A typed POST refusal belongs to the current interaction, not the session
   // mechanism state. Keep it across the immediate envelope refresh so a
   // still-ready session cannot overwrite the homeowner sentence with stale
@@ -167,6 +179,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // discipline: it must increment once per state change, not per poll tick).
   var envelopeFetchCount = 0;
   var runDefaultsDirty = false;
+  var currentRunDefaults = null;
 
   // Logical screens whose data is live-updating (capture in flight or a
   // short server-side transient) — the only screens the envelope is
@@ -176,14 +189,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     mic: true, level: true, sweep: true, verify: true,
   };
 
-  // Ordered wizard spine + homeowner labels for the step indicator. Mirrors
-  // envelope._PROGRESS_SPINE (idle, sweep, review, apply, verify, result) so
-  // progress.position indexes the same six steps the server counts.
-  var WIZARD_STEP_LABELS = [
-    'Set up', 'Measure', 'Review', 'Apply', 'Verify', 'Done',
-  ];
+  // Schema v9 has one exact six-step progress spine. The server supplies its
+  // homeowner labels; the browser owns only the structural bound.
+  var WIZARD_PROGRESS_TOTAL = 6;
 
-  var SUPPORTED_ENVELOPE_SCHEMA = 8;
+  var SUPPORTED_ENVELOPE_SCHEMA = 9;
   var KNOWN_ENVELOPE_SCREENS = {
     idle: true, mic: true, level: true, sweep: true,
     review: true, apply: true, verify: true, result: true,
@@ -375,12 +385,16 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   function updateRunDefaultsSummaryFromControls() {
     var positions = Number(positionsSelect && positionsSelect.value);
+    var selectedPosition = positionsSelect && positionsSelect.options &&
+      positionsSelect.options[positionsSelect.selectedIndex];
+    var positionsLabel = selectedPosition &&
+      selectedPosition.getAttribute('data-summary-label');
     var targetLabel = selectedOptionLabel(targetSelect).toLowerCase();
-    if (!Number.isInteger(positions) || positions <= 0 || !targetLabel) return;
-    var positionWord = positions === 1 ? 'position' : 'positions';
-    runDefaultsSummary.textContent =
-      'Measuring ' + positions + ' ' + positionWord + ' with the ' +
-      targetLabel + ' target';
+    if (!currentRunDefaults || !Number.isInteger(positions) ||
+        positions <= 0 || !positionsLabel || !targetLabel) return;
+    runDefaultsSummary.textContent = currentRunDefaults.summary_template
+      .split('{positions_label}').join(positionsLabel)
+      .split('{target}').join(targetLabel);
   }
 
   async function populateInputDevices(selectedId) {
@@ -1089,60 +1103,58 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
-  // Map the backend config `kind` to a banner CSS class. The class set
-  // (applied/custom/flat) is presentation and stays here; the human copy is
-  // OWNED by the backend (correction.status.describe_current_config -> {label,
-  // message}) and rendered verbatim so the two surfaces cannot drift (C4a-2).
-  function correctionBannerClass(kind) {
-    if (kind === 'custom' || kind === 'unknown') return 'custom';
-    return 'flat';
-  }
-
   function setCurrentCorrectionTone(tone) {
     currentCorrectionBanner.classList.remove('applied', 'custom', 'flat');
     currentCorrectionBanner.classList.add(tone);
   }
 
-  function renderCurrentCorrection(cc, config) {
-    // `cc` is the parsed JTS room-correction descriptor. When a correction is
-    // applied JTS formats the live adjustment count + timestamp client-side (dynamic
-    // data, not copy). Otherwise the backend `config` descriptor owns the
-    // label/message; the browser renders it rather than re-deriving per-kind
-    // strings that have drifted from the backend.
-    if (cc && cc.applied_at_epoch) {
-      setCurrentCorrectionTone('applied');
-      var when = formatAppliedAt(cc.applied_at_epoch);
-      var count = cc.peq_count || 0;
-      var noun = count === 1 ? 'adjustment' : 'adjustments';
-      currentCorrectionLabel.textContent =
-        'Room correction on — ' + count + ' ' + noun +
-        (when ? ' applied ' + when : '');
-      currentCorrectionResetBtn.classList.remove('hidden');
+  function renderCurrentCorrectionUnavailable() {
+    setCurrentCorrectionTone('flat');
+    currentCorrectionLabel.textContent =
+      'The current correction could not be checked. Try again.';
+    currentCorrectionResetBtn.classList.add('hidden');
+  }
+
+  function renderCurrentCorrection(presentation) {
+    var tones = {applied: true, custom: true, flat: true};
+    if (!presentation || typeof presentation !== 'object' ||
+        !tones[presentation.tone] ||
+        typeof presentation.message_template !== 'string' ||
+        !presentation.message_template.trim() ||
+        typeof presentation.reset_allowed !== 'boolean' ||
+        !Object.prototype.hasOwnProperty.call(
+          presentation, 'applied_at_epoch'
+        ) ||
+        (presentation.applied_at_epoch !== null &&
+          (!Number.isInteger(presentation.applied_at_epoch) ||
+           presentation.applied_at_epoch < 0))) {
+      renderCurrentCorrectionUnavailable();
       return;
     }
-    var kind = config && config.kind || '';
-    setCurrentCorrectionTone(correctionBannerClass(kind));
-    currentCorrectionLabel.textContent =
-      (config && (config.message || config.label)) ||
-      'No correction applied — speaker is flat.';
-    // A non-JTS/advanced config offers a reset to the flat baseline; managed
-    // (flat/preference/active-speaker/measurement) states have nothing to reset.
-    if (kind === 'custom') {
-      currentCorrectionResetBtn.classList.remove('hidden');
-    } else {
-      currentCorrectionResetBtn.classList.add('hidden');
+    var message = presentation.message_template;
+    if (message.indexOf('{applied_at}') !== -1) {
+      var when = formatAppliedAt(presentation.applied_at_epoch);
+      if (!when) {
+        renderCurrentCorrectionUnavailable();
+        return;
+      }
+      message = message.split('{applied_at}').join(when);
     }
+    if (/\{[^{}]+\}/.test(message)) {
+      renderCurrentCorrectionUnavailable();
+      return;
+    }
+    setCurrentCorrectionTone(presentation.tone);
+    currentCorrectionLabel.textContent = message;
+    hideEl(currentCorrectionResetBtn, !presentation.reset_allowed);
   }
 
   async function refreshCurrentCorrection() {
     try {
       var s = await fetchStatus();
-      renderCurrentCorrection(s.current_correction, s.current_config);
+      renderCurrentCorrection(s.current_correction_presentation);
     } catch (e) {
-      setCurrentCorrectionTone('flat');
-      currentCorrectionLabel.textContent =
-        'The current correction could not be checked. Try again.';
-      currentCorrectionResetBtn.classList.add('hidden');
+      renderCurrentCorrectionUnavailable();
     }
   }
 
@@ -1176,13 +1188,14 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // capture/upload/autolevel/relay mechanics the envelope can't express.
   // ==========================================================================
 
-  // Render the step indicator from envelope.progress ({position, total}).
-  // Homeowner labels come from WIZARD_STEP_LABELS; the server owns which
-  // position is current, so the browser never re-counts the flow.
+  // Render the step indicator from envelope.progress
+  // ({position, total, labels}). Both the current position and homeowner
+  // labels come from the server, so the browser never re-counts or authors
+  // the flow.
   function renderProgress(progress) {
     if (!wizardSteps) return;
-    var total = Number(progress && progress.total) || WIZARD_STEP_LABELS.length;
-    var position = Number(progress && progress.position) || 1;
+    var total = progress.total;
+    var position = progress.position;
     wizardSteps.innerHTML = '';
     for (var i = 1; i <= total; i++) {
       var li = document.createElement('li');
@@ -1193,9 +1206,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       dot.setAttribute('aria-hidden', 'true');
       var label = document.createElement('span');
       label.className = 'wizard-step__label';
-      // Labels are a fixed client-owned lexicon (not untrusted); still use
-      // textContent so no markup path exists.
-      label.textContent = WIZARD_STEP_LABELS[i - 1] || ('Step ' + i);
+      label.textContent = progress.labels[i - 1];
       li.appendChild(dot);
       li.appendChild(label);
       wizardSteps.appendChild(li);
@@ -1327,6 +1338,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (!KNOWN_ENVELOPE_SCREENS[String(env.screen || '')]) {
       throw new Error('unknown room-correction screen');
     }
+    validateProgress(env.progress);
     if (!Array.isArray(env.sections) || env.sections.length === 0) {
       throw new Error('room-correction sections missing');
     }
@@ -1383,15 +1395,47 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     return env;
   }
 
+  function validateProgress(progress) {
+    if (!progress || typeof progress !== 'object' ||
+        !Number.isInteger(progress.position) || progress.position < 1 ||
+        progress.position > WIZARD_PROGRESS_TOTAL ||
+        !Number.isInteger(progress.total) ||
+        progress.total !== WIZARD_PROGRESS_TOTAL ||
+        !Array.isArray(progress.labels) ||
+        progress.labels.length !== WIZARD_PROGRESS_TOTAL ||
+        !progress.labels.every(function (label) {
+          return typeof label === 'string' && !!label.trim();
+        })) {
+      throw new Error('invalid room-correction progress');
+    }
+    return progress;
+  }
+
   function validateRunDefaults(block) {
+    var summaryRemainder = (
+      block && typeof block.summary_template === 'string'
+        ? block.summary_template
+        : ''
+    );
+    var requiredSummaryTokens = ['{positions_label}', '{target}'];
+    var summaryTokensValid = requiredSummaryTokens.every(function (token) {
+      if (summaryRemainder.split(token).length !== 2) return false;
+      summaryRemainder = summaryRemainder.replace(token, '');
+      return true;
+    }) && summaryRemainder.indexOf('{') === -1 &&
+      summaryRemainder.indexOf('}') === -1;
     if (!block || typeof block !== 'object' ||
         typeof block.summary !== 'string' || !block.summary.trim() ||
+        typeof block.summary_template !== 'string' ||
+        !block.summary_template.trim() ||
+        !summaryTokensValid ||
         !Number.isInteger(block.total_positions) || block.total_positions <= 0 ||
         !block.target || typeof block.target.id !== 'string' ||
         typeof block.target.label !== 'string' || !block.target.label.trim() ||
         !block.strategy || typeof block.strategy.id !== 'string' ||
         typeof block.strategy.label !== 'string' || !block.strategy.label.trim() ||
         typeof block.repeat_main_position !== 'boolean' ||
+        typeof block.repeat_disclosure !== 'string' ||
         (block.capture_transport !== 'relay' && block.capture_transport !== 'local') ||
         typeof block.change_allowed !== 'boolean') {
       throw new Error('invalid room-correction run defaults');
@@ -1415,6 +1459,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   function renderRunDefaults(block) {
     if (!block || !runDefaultsSummary) return;
+    currentRunDefaults = block;
     if (!block.change_allowed || !runDefaultsDirty) {
       positionsSelect.value = String(block.total_positions);
       targetSelect.value = String(block.target.id);
@@ -1425,6 +1470,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         throw new Error('room-correction run choice is not supported by this page');
       }
       runDefaultsSummary.textContent = String(block.summary);
+    }
+    if (repeatMainPositionDisclosure) {
+      repeatMainPositionDisclosure.textContent = String(block.repeat_disclosure);
+      hideEl(repeatMainPositionDisclosure, !block.repeat_disclosure);
     }
     setRunTransportLocked(!block.change_allowed);
   }
@@ -1821,45 +1870,134 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // counter so the harness can prove the fetch-once-per-state-change
   // discipline. A failed or unsupported envelope keeps the /status
   // mechanism path alive but clears every user-facing section and action.
-  async function refreshEnvelope() {
-    envelopeFetchCount += 1;
-    var requestGeneration = ++envelopeRequestGeneration;
+  async function fetchPresentationJson(path, label) {
+    var controller = new AbortController();
+    var fetchTimeout = setTimeout(function () {
+      controller.abort();
+    }, envelopeFetchTimeoutMs);
     try {
-      var envelopePath = 'envelope?capture_transport=' +
-        (relayMode ? 'relay' : 'local');
-      var resp = await fetch(endpoint(envelopePath), { cache: 'no-store' });
-      if (!resp.ok) throw new Error('envelope ' + resp.status);
-      var env = validateEnvelope(await resp.json());
-      if (requestGeneration !== envelopeRequestGeneration) return;
-      lastEnvelopeState = env.state;
-      envelopeRetryArmed = true;   // success re-arms one retry credit
-      renderEnvelope(env);
-      scheduleEnvelopePoll(env.screen);
-    } catch (e) {
-      if (requestGeneration !== envelopeRequestGeneration) return;
-      // Fail closed immediately: no stale action or section policy survives
-      // an unsupported/malformed envelope. Spend one retry credit so a
-      // transient deploy restart can self-heal without creating a loop.
-      console.warn('envelope refresh failed', e);
-      renderEnvelopeFailure();
-      if (envelopeRetryArmed) {
-        envelopeRetryArmed = false;
-        if (envelopeTimer) clearTimeout(envelopeTimer);
-        envelopeTimer = setTimeout(refreshEnvelope, 1500);
-      }
+      var resp = await fetch(endpoint(path), {
+        cache: 'no-store', signal: controller.signal,
+      });
+      if (!resp.ok) throw new Error(label + ' ' + resp.status);
+      return await resp.json();
+    } finally {
+      clearTimeout(fetchTimeout);
     }
   }
 
-  // Poll discipline (P3b-1 reviewer advisory): re-fetch the envelope on a
-  // timer ONLY while an active-capture screen is live. Static screens
-  // (idle/review/apply/result) are edge-triggered off a /status state
-  // change (see maybeRefreshEnvelopeOnStateChange) and are never hot-polled
-  // — server-smoothed curves ride those envelopes at ~25–50 ms/GET on a Pi,
-  // too costly to spin on.
+  async function refreshEnvelope() {
+    envelopePollingEnabled = true;
+    if (envelopeRequestInFlight) {
+      envelopeRefreshQueued = true;
+      return envelopeRequestInFlight;
+    }
+    if (envelopeTimer) { clearTimeout(envelopeTimer); envelopeTimer = null; }
+    envelopeFetchCount += 1;
+    envelopeRequestInFlight = (async function () {
+      try {
+        var envelopePath = 'envelope?capture_transport=' +
+          (relayMode ? 'relay' : 'local');
+        var env = validateEnvelope(
+          await fetchPresentationJson(envelopePath, 'envelope')
+        );
+        envelopeRetryArmed = true;   // success re-arms one retry credit
+        renderEnvelope(env);
+        lastRenderedEnvelopeScreen = env.screen;
+        lastRenderedEnvelopeState = env.state;
+        if (env.screen === 'idle') {
+          lastRenderedReadinessSignature = JSON.stringify(env.blocker);
+        }
+        scheduleEnvelopePoll(env.screen);
+        return true;
+      } catch (e) {
+        // Fail closed immediately: no stale action or section policy survives
+        // an unsupported/malformed envelope. Spend one retry credit so a
+        // transient deploy restart can self-heal without creating a loop.
+        console.warn('envelope refresh failed', e);
+        renderEnvelopeFailure();
+        var shouldMonitorIdle = lastRenderedEnvelopeScreen === 'idle' ||
+          lastObservedStatusState === 'idle';
+        // The last presentation was retired above. Mark it stale so a later
+        // lightweight readiness read forces one full policy refresh even when
+        // readiness itself did not change during the outage.
+        lastRenderedEnvelopeScreen = null;
+        if (envelopeRetryArmed && envelopePollingEnabled) {
+          envelopeRetryArmed = false;
+          envelopeTimer = setTimeout(refreshEnvelope, 1500);
+        } else if (shouldMonitorIdle && envelopePollingEnabled) {
+          // Two consecutive failures spend the fast retry. Resume through the
+          // cheap idle probe instead of repeatedly scanning report bundles.
+          envelopeTimer = setTimeout(refreshIdleEntry, idleEnvelopeRefreshMs);
+        }
+        return false;
+      }
+    })();
+    var succeeded = false;
+    try {
+      succeeded = await envelopeRequestInFlight;
+    } finally {
+      envelopeRequestInFlight = null;
+      var queued = envelopeRefreshQueued;
+      envelopeRefreshQueued = false;
+      // A newer trigger that arrived during a successful read gets one
+      // coalesced follow-up. After failure, the bounded backoff above owns
+      // recovery; never turn queued status ticks into immediate retries.
+      if (queued && succeeded) refreshEnvelope();
+    }
+  }
+
+  // Idle readiness and the current-correction banner can change outside the
+  // Room session. Refresh those two cheap facts together, and fetch the full
+  // envelope only when its readiness policy or logical screen is stale. This
+  // keeps report discovery off the steady-state idle cadence.
+  async function refreshIdleEntry() {
+    if (envelopeTimer) { clearTimeout(envelopeTimer); envelopeTimer = null; }
+    var keepPolling = lastRenderedEnvelopeScreen === 'idle' ||
+      lastObservedStatusState === 'idle';
+    try {
+      var entry = await fetchPresentationJson(
+        'entry-status', 'entry status'
+      );
+      if (!entry || typeof entry !== 'object' ||
+          !KNOWN_ENVELOPE_SCREENS[String(entry.screen || '')] ||
+          typeof entry.state !== 'string' || !entry.state.trim() ||
+          !Object.prototype.hasOwnProperty.call(entry, 'readiness_blocker')) {
+        throw new Error('invalid room-correction entry status');
+      }
+      var blocker = validatePublicFailure(entry.readiness_blocker);
+      renderCurrentCorrection(entry.current_correction_presentation);
+      var signature = JSON.stringify(blocker);
+      if (entry.screen !== lastRenderedEnvelopeScreen ||
+          entry.state !== lastRenderedEnvelopeState ||
+          signature !== lastRenderedReadinessSignature) {
+        envelopeRetryArmed = true;
+        await refreshEnvelope();
+        return;
+      }
+    } catch (e) {
+      console.warn('entry status refresh failed', e);
+      renderCurrentCorrectionUnavailable();
+      renderEnvelopeFailure();
+      lastRenderedEnvelopeScreen = null;
+      lastRenderedEnvelopeState = null;
+    }
+    if (envelopePollingEnabled &&
+        (keepPolling || lastObservedStatusState === 'idle')) {
+      envelopeTimer = setTimeout(refreshIdleEntry, idleEnvelopeRefreshMs);
+    }
+  }
+
+  // Poll discipline (P3b-1 reviewer advisory): active capture is hot-polled;
+  // idle gets a lightweight readiness/banner refresh because both are
+  // external to Room state. Other static screens remain state-edge triggered.
   function scheduleEnvelopePoll(screen) {
     if (envelopeTimer) { clearTimeout(envelopeTimer); envelopeTimer = null; }
+    if (!envelopePollingEnabled) return;
     if (ACTIVE_ENVELOPE_SCREENS[screen]) {
       envelopeTimer = setTimeout(refreshEnvelope, 900);
+    } else if (screen === 'idle') {
+      envelopeTimer = setTimeout(refreshIdleEntry, idleEnvelopeRefreshMs);
     }
   }
 
@@ -1873,8 +2011,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var lastAutolevelStatus = null;
   function maybeRefreshEnvelopeOnStateChange(state, autolevelStatus) {
     var al = autolevelStatus || 'idle';
-    if (state !== lastEnvelopeState || al !== lastAutolevelStatus) {
-      if (state !== lastEnvelopeState) pendingHomeownerFailure = null;
+    var stateChanged = state !== lastObservedStatusState;
+    if (stateChanged || al !== lastAutolevelStatus) {
+      if (stateChanged) pendingHomeownerFailure = null;
+      lastObservedStatusState = state;
       lastAutolevelStatus = al;
       envelopeRetryArmed = true;   // a fresh trigger grants one retry credit
       refreshEnvelope();

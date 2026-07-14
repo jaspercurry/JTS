@@ -430,11 +430,11 @@ class MeasurementSession:
         # context that drove the autolevel target band.
         self.noise_floor_db: float | None = None
 
-        # Snapshot of the active CamillaDSP config at the moment
-        # `/start` was hit, BEFORE the auto-reset to base config. Lets
-        # the bundle reproduce what state the speaker was in when this
-        # session began, including custom configs that JTS cannot
-        # safely preserve.
+        # Snapshot of the active CamillaDSP config when `/start` was hit,
+        # before the web layer emits its topology-preserving measurement
+        # baseline (Room/preference EQ removed; protected speaker DSP kept).
+        # The bundle can therefore describe the speaker state that preceded
+        # measurement; `/start` rejects graphs the carrier cannot preserve.
         self.current_correction_at_start: dict[str, Any] | None = None
 
         # Per-session debug bundle. All artifacts (info.json,
