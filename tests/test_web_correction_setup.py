@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from types import SimpleNamespace
 import threading
 
 import pytest
@@ -48,6 +49,38 @@ def test_run_async_timeout_cancels_loop_task():
     with pytest.raises(concurrent.futures.TimeoutError):
         correction_setup._run_async(never_finishes(), timeout=0.01)
     assert cancelled.wait(timeout=2)
+
+
+def test_room_graph_mutation_has_no_cancelling_outer_deadline(monkeypatch):
+    import asyncio
+
+    seen = {}
+
+    async def operation():
+        return "done"
+
+    def run(coro, *, timeout):
+        seen["timeout"] = timeout
+        return asyncio.run(coro)
+
+    monkeypatch.setattr(correction_setup, "_run_async", run)
+
+    assert correction_setup._run_graph_mutation(operation()) == "done"
+    assert seen == {"timeout": None}
+
+
+def test_all_room_graph_mutation_callers_use_terminal_runner():
+    import inspect
+
+    callers = (
+        correction_setup._handle_start,
+        correction_setup._handle_apply,
+        correction_setup._handle_reset,
+        correction_setup._maybe_auto_revert,
+    )
+    for caller in callers:
+        source = inspect.getsource(caller)
+        assert "_run_graph_mutation(" in source
 
 
 # ---------------------------------------------------------------------------
@@ -165,19 +198,27 @@ def test_render_keeps_only_plain_local_certificate_warning():
     assert 'id="readiness-blocker-action" class="btn" href="/sound/"' not in html
 
 
-def test_render_discloses_one_server_owned_household_default_set():
+def test_render_leaves_household_default_copy_to_the_envelope():
     html = _render()
 
-    assert html.count("Measuring 6 positions with the flat target") == 1
+    assert '<p id="run-defaults-summary"></p>' in html
+    assert "Measuring 6 positions with the flat target" not in html
     assert html.count('id="change-run-defaults"') == 1
     assert 'aria-controls="measurement-options"' in html
     assert 'aria-expanded="false"' in html
-    assert '<option value="6" selected>6 positions — recommended</option>' in html
+    assert (
+        '<option value="6" data-summary-label="6 positions" selected>'
+        '6 positions — recommended</option>'
+    ) in html
     assert '<option value="5" selected>' not in html
     assert "MMM averaging" not in html
     assert "Assertive" not in html
     assert 'id="repeat-main-position"' not in html
-    assert html.count("automatically repeats the main-seat measurement once") == 1
+    assert (
+        '<p id="repeat-main-position-disclosure" class="hint"></p>'
+        in html
+    )
+    assert "automatically repeats the main-seat measurement once" not in html
     assert html.index('id="repeat-main-position-disclosure"') < html.index(
         'id="measurement-options" class="hidden"'
     )
@@ -201,7 +242,7 @@ def test_browser_has_no_screen_visibility_or_forward_action_policy_mirror():
     assert "WIZARD_FORWARD_ACTION_BY_STATE" not in js
     assert "wizardProvidesForwardAction" not in js
     assert "showScreenSections" not in js
-    assert "SUPPORTED_ENVELOPE_SCHEMA = 8" in js
+    assert "SUPPORTED_ENVELOPE_SCHEMA = 9" in js
 
 
 def test_browser_failure_presentation_matches_server_catalog():
@@ -326,6 +367,68 @@ def test_get_healthz_ok():
     resp = _drive("/healthz")
     assert b"200" in resp.split(b"\r\n", 1)[0]
     assert b"ok" in resp
+
+
+def test_get_entry_status_routes_to_lightweight_handler(monkeypatch):
+    import json
+
+    payload = {
+        "screen": "idle",
+        "state": "idle",
+        "readiness_blocker": None,
+        "current_correction_presentation": {"tone": "flat"},
+    }
+    monkeypatch.setattr(
+        correction_setup,
+        "_handle_entry_status",
+        lambda _handler: payload,
+    )
+
+    resp = _drive("/entry-status")
+
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+    assert json.loads(resp.split(b"\r\n\r\n", 1)[1]) == payload
+
+
+def test_entry_status_reads_lightweight_entry_facts_without_reports(monkeypatch):
+    from jasper.correction import bundles
+
+    presentation = {
+        "tone": "flat",
+        "message_template": "No JTS room correction is applied.",
+        "applied_at_epoch": None,
+        "reset_allowed": False,
+    }
+    session = SimpleNamespace(
+        state=SimpleNamespace(value="idle"),
+    )
+    monkeypatch.setattr(
+        correction_setup, "_get_or_create_session", lambda: session,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_current_config_presentation",
+        lambda sess: ({"kind": "flat"}, presentation)
+        if sess is session
+        else pytest.fail("unexpected session"),
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_readiness",
+        lambda: SimpleNamespace(blocker={"code": "speaker_setup_incomplete"}),
+    )
+    monkeypatch.setattr(
+        bundles,
+        "list_bundles",
+        lambda *_args, **_kwargs: pytest.fail("entry status scanned reports"),
+    )
+
+    assert correction_setup._handle_entry_status(None) == {
+        "screen": "idle",
+        "state": "idle",
+        "readiness_blocker": {"code": "speaker_setup_incomplete"},
+        "current_correction_presentation": presentation,
+    }
 
 
 def test_unknown_get_route_404():

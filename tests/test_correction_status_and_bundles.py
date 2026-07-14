@@ -54,6 +54,36 @@ from .correction_session_fixtures import (
 # ---------- parse_current_correction ---------------------------------------
 
 
+def test_current_correction_presentation_owns_copy_and_reset_authority():
+    applied = correction_status.current_correction_presentation({
+        "kind": "correction",
+        "current_correction": {
+            "applied_at_epoch": 1_700_000_000,
+            "peq_count": 1,
+        },
+    })
+    assert applied == {
+        "tone": "applied",
+        "message_template": (
+            "Room correction on — 1 adjustment applied {applied_at}"
+        ),
+        "applied_at_epoch": 1_700_000_000,
+        "reset_allowed": True,
+    }
+
+    custom = correction_status.current_correction_presentation({
+        "kind": "custom",
+        "message": "Advanced configuration is active.",
+        "current_correction": None,
+    })
+    assert custom == {
+        "tone": "custom",
+        "message_template": "Advanced configuration is active.",
+        "applied_at_epoch": None,
+        "reset_allowed": True,
+    }
+
+
 def test_parse_current_correction_base_config_returns_none(tmp_path: Path):
     """The base outputd config is "no correction applied" —
     the UI shows the flat banner without a Reset button."""
@@ -790,7 +820,7 @@ async def test_design_writes_result_json(tmp_path: Path, monkeypatch):
     )
 
 
-# ---------- /start auto-reset + /sessions endpoint -------------------------
+# ---------- /start measurement baseline + /sessions endpoint ---------------
 
 
 class _FakeCamilla:

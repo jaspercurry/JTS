@@ -1481,9 +1481,12 @@ def test_render_page_includes_noise_and_repeat_capture_flow():
     body = correction_setup._render_page("jts.local").decode()
     assert 'id="repeat-main-position"' not in body
     assert 'id="repeat-main-position-disclosure"' in body
-    assert "automatically repeats the main-seat measurement once" in body
+    # The presentation envelope owns this copy and fills the initially empty
+    # disclosure. test_correction_envelope pins the exact server wording.
+    assert "automatically repeats the main-seat measurement once" not in body
     assert 'id="repeat-position"' not in body
     js = _module_js()  # the capture/upload flow moved to the module
+    assert "block.repeat_disclosure" in js
     assert "capturePreSweepNoise" in js
     assert "upload-noise" in js
     assert "repeat-position" in js

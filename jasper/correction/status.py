@@ -51,6 +51,48 @@ def parse_current_correction(
     return correction if isinstance(correction, dict) else None
 
 
+def current_correction_presentation(
+    descriptor: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the homeowner banner contract for one config descriptor.
+
+    The browser may localize the timestamp, but the server owns the sentence,
+    tone, and reset authority. Keeping this beside ``describe_current_config``
+    prevents presentation copy from drifting away from config classification.
+    """
+
+    correction = descriptor.get("current_correction")
+    if isinstance(correction, dict) and correction.get("applied_at_epoch"):
+        try:
+            count = max(0, int(correction.get("peq_count") or 0))
+            applied_at_epoch = int(correction["applied_at_epoch"])
+        except (TypeError, ValueError):
+            count = 0
+            applied_at_epoch = 0
+        noun = "adjustment" if count == 1 else "adjustments"
+        return {
+            "tone": "applied",
+            "message_template": (
+                f"Room correction on — {count} {noun} applied {{applied_at}}"
+            ),
+            "applied_at_epoch": applied_at_epoch,
+            "reset_allowed": True,
+        }
+
+    kind = str(descriptor.get("kind") or "unknown")
+    message = str(
+        descriptor.get("message")
+        or descriptor.get("label")
+        or "The current correction could not be described."
+    )
+    return {
+        "tone": "custom" if kind in {"custom", "unknown"} else "flat",
+        "message_template": message,
+        "applied_at_epoch": None,
+        "reset_allowed": kind == "custom",
+    }
+
+
 def describe_current_config(
     path: str | None,
     *,

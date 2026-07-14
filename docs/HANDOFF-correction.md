@@ -24,11 +24,11 @@
   explicit device, timeout, and cache; they do not choose an excitation or prove
   current admission. No browser/Active flow changed, and no hardware behavior
   was revalidated.
-- ✅ **Room R1 — envelope v8 owns whole-page visibility, truthful entry
+- ✅ **Room R1 — envelope v9 owns whole-page visibility, truthful entry
   failures, and disclosed run defaults (hardware-free;
   real-device browser pass pending).** `jasper.correction.envelope` now emits
   one exact ordered `sections` list from a closed 15-name Room vocabulary.
-  The browser validates schema `8`, screen, unique known sections, bounded
+  The browser validates schema `9`, screen, unique known sections, bounded
   blocker/failure codes, safe recovery paths, and the action endpoint before
   rendering; a missing, old, future, or
   malformed envelope clears every section and forward action, shows one
@@ -36,7 +36,10 @@
   browser screen-to-section map or state-to-action fallback. Unknown session
   states fail closed instead of becoming idle/Start. Report discovery is
   limited to idle/result envelope edges and never enters the active 900 ms
-  poll. The relay panel/dead Start, open placement disclosure, Advanced
+  poll. Idle entry facts refresh every 10 seconds through the lightweight
+  `/entry-status` route because external speaker readiness, current correction,
+  or a Room run in another tab can change without a local state transition.
+  The relay panel/dead Start, open placement disclosure, Advanced
   disclosure, mic-panel wrapper, unconditional reports wrapper, certificate
   install disclosure, old measure mega-wrapper, and duplicate forward buttons
   were deleted; required mechanics moved into the envelope-owned roots. The
@@ -67,7 +70,13 @@
   ready: that snapshot is not the exact receipt-backed eligibility decision. A
   valid Active recovery path is carried through; otherwise **Check again**
   reloads the Room entry. `/start` repeats the same check before reading the
-  body or reserving a session. Active's `unknown` status remains retryable/503,
+  body or reserving a session. Measurement-baseline load, Apply, Reset, and
+  automatic revert wait for a terminal result after any shared writer
+  admission; Camilla transport attempts are bounded, while shared writer-lock
+  admission itself is currently blocking and remains a Shared/coordinator gap.
+  Room does not add an outer deadline after entry that could cancel between
+  graph mutation and rollback/state persistence. Active's
+  `unknown` status remains retryable/503,
   not mislabeled as ordinary incomplete setup. `jasper.correction.failures`
   owns stable homeowner codes/copy for Start, relay, tuning, session, apply,
   and restore failures; raw HTTP/session/provider details remain in structured
@@ -1039,11 +1048,11 @@ Current operational truth for that composition lives in
 [docs/HANDOFF-sound-preferences.md](HANDOFF-sound-preferences.md) and
 [docs/HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md).
 
-**Outstanding Phases 0-2.12 hardware verification** (see "Hardware
-test checklist" below) — the math is validated on synthetic IRs;
+**Current Wave 4 hardware verification** (see "Hardware test checklist"
+below) — the math is validated on synthetic IRs;
 the integration with real CamillaDSP / iPhone Safari / aplay /
 voice_daemon UDS is unverified and is the gating step before
-declaring v2 shippable.
+declaring the current Room flow hardware-validated.
 
 ## Goal
 
@@ -1212,7 +1221,11 @@ GET  /status                 session + currently-loaded correction snapshot
                              correction_strategy, design_report,
                              current_correction: {path, session_id,
                              applied_at_epoch, peq_count} | null})
-GET  /envelope               room-correction envelope schema v8; exact ordered
+GET  /entry-status           lightweight idle refresh: Active-owned readiness
+                             blocker + current-correction presentation + Room
+                             screen/state identity; does not discover reports
+                             or rebuild screen policy
+GET  /envelope               room-correction envelope schema v9; exact ordered
                              `sections` plus closed `blocker`/`failure` blocks
                              own whole-page visibility and safe entry copy;
                              typed `run_defaults` owns the disclosed run summary
@@ -1226,7 +1239,10 @@ POST /start                  first checks the setup-status active/passive flag,
                              gets typed 409 + the validated owner path until exact
                              receipt authority lands; unknown/malformed authority
                              gets retryable 503 before reservation),
-                             then resets to base config, begins noise capture, returns session_id;
+                             then loads a topology-preserving measurement
+                             baseline (Room/preference EQ removed; protected
+                             speaker DSP retained), begins noise capture, and
+                             returns session_id;
                              body: {total_positions, target_choice,
                              strategy_choice?, noise_floor_db?,
                              calibration_id?, input_device?,
@@ -1309,9 +1325,14 @@ POST /crossover/relay-capture body: {kind: driver|summed, speaker_group_id,
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 
-Browser polls `GET /status` every 500 ms; SSE was considered but never
-landed because polling is simpler in stdlib and the latency budget
-allows it.
+Browser polls `GET /status` every 500 ms only while a Room operation is in
+flight, then stops in terminal/static states. The presentation envelope polls
+at 900 ms on active capture screens. Idle uses `GET /entry-status` every 10
+seconds to refresh external speaker readiness and the current-correction
+banner together; it rebuilds the full envelope only when readiness or the
+logical screen changed, keeping report discovery off the steady-state cadence.
+SSE was considered but never landed because bounded polling is simpler in
+stdlib and the latency budget allows it.
 
 ### Decision 3 — URL: `/correction/`, plus entry on the landing page
 
@@ -2009,7 +2030,7 @@ What can actually go wrong, ordered by likelihood × impact.
 These items can only be verified on real hardware. Deploy with
 `bash scripts/deploy-to-pi.sh`, then run on the Pi:
 
-### Phase 0 (TLS + skeleton)
+### Entry, TLS, and disclosed defaults
 - [ ] `systemctl is-active jasper-correction-web.socket` → `active`
       (the service itself may be inactive when idle; socket
       activation is the liveness contract).
@@ -2018,56 +2039,79 @@ These items can only be verified on real hardware. Deploy with
 - [ ] `curl http://jts.local/correction/` returns the preflight page.
 - [ ] `curl -k https://jts.local/correction/healthz` → `ok`.
 - [ ] `nginx -t` → ok.
-- [ ] On iPhone after cert trust: page loads with no "Connection
-      not private" warning and no mic prompt. After **Start** and **Allow
-      microphone**, the prompt appears. If that first grant reveals the device
-      list, it is discovery-only: select the exact mic and tap **Allow
-      microphone** again. The constraint table then reads `✓ ok` for all 5
-      rows.
+- [ ] The ready Room page shows **Measuring 6 positions with the flat
+      target — Change**, discloses the automatic main-seat trust repeat, and
+      shows **Start measuring** as its only primary forward action. **Change**
+      leaves relay/phone capture as the configured default, offers **Use this
+      device's microphone** as the local alternative, and names **Balanced**
+      as the recommended strategy.
+- [ ] On the normal relay path, opening Room and choosing **Start measuring**
+      does not request microphone permission in the management browser. A
+      bounded level-check handoff appears; **Open phone capture** opens the
+      signed phone page, and the phone-reported position count cannot change
+      the Pi-owned six-position run.
+
+### Relay-first six-position run and verification
+- [ ] Complete the phone microphone/calibration setup and level check. The
+      speaker raises the test signal only within the bounded level walk, music
+      pauses while required, and the prior listening volume and renderers
+      return without a glitch. Watch `journalctl -u jasper-voice` for
+      `MEASURE_PAUSE` / `MEASURE_RESUME` events.
+- [ ] **Measure this position** creates the capture for position 1. The phone
+      records and uploads the sweep cleanly, the speaker completes playback in
+      roughly 10 seconds, and the management page advances only after the Pi
+      accepts the capture.
+- [ ] Move the phone for each subsequent instruction. The page shows the
+      correct position number out of six, and **Measure next position**
+      advances positions 2 through 6. Each follow-up link carries the Pi-owned
+      position/total metadata and authenticates the realized microphone
+      against the level-check identity before sound.
+- [ ] After position 6, the run automatically requires one main-seat trust
+      repeat. **Repeat the main seat** performs that capture through the same
+      Room relay route; it is identified as a trust check and is not counted as
+      a seventh listening position.
+- [ ] After the repeat, the averaged measured curve and proposed adjustments
+      render. **Apply room correction** swaps the CamillaDSP config without an
+      audio dropout (verify by playing music continuously across the apply
+      boundary, for example with
+      `aplay -D correction_substream white_noise.wav` in another shell).
+- [ ] Return the phone to the main seat and choose **Verify correction**. The
+      fresh like-for-like capture completes, the verification curve overlays
+      the chart, and the RMS/max-deviation summary appears without treating an
+      applied correction as verified before the capture is accepted.
+- [ ] **Audibility check**: play a familiar bass-heavy track before and after
+      **Apply room correction** — a repeatable modal peak should audibly
+      tighten. The measured verification result, not this subjective check,
+      remains acceptance authority.
+- [ ] Tap **Reset correction** on a normal full-range stereo topology →
+      CamillaDSP removes room PEQs cleanly while preserving the current sound
+      profile. As a regression check with an already-corrected active graph,
+      verify reset keeps the active speaker baseline and only clears room PEQs;
+      fresh active Room entry remains fail-closed pending modern receipt
+      authority.
+- [ ] AEC bridge interaction (if enabled): routing resumes after measurement
+      without permanent drift; allow the adaptive filter its normal convergence
+      window described in [HANDOFF-aec.md](HANDOFF-aec.md).
+
+### Local backup and bounded choices
+- [ ] Before **Start measuring**, open **Change** and choose **Use this device's
+      microphone**. After **Start measuring**, **Allow microphone** requests
+      permission and binds the realized device/calibration to the parked Room
+      session. If the first grant is discovery-only, select the exact mic and
+      choose **Allow microphone** again. The constraint table then reads
+      `✓ ok` for all five rows.
       **Critical**: if `echoCancellation` / `noiseSuppression` /
       `autoGainControl` read `✗ bad`, that's an iOS Safari version
       regression we have to work around — file an issue.
-
-### Phase 1 (single-position end-to-end)
-- [ ] Tap **Start**, use the discovery **Allow microphone** grant if needed,
-      select the exact mic, tap **Allow microphone** again, complete **Check
-      level**, then tap **Measure** → music pauses, sweep audible at the
-      speaker, completes in ~10 s, no audio glitch when renderers
-      come back. Watch `journalctl -u jasper-voice` for
-      `MEASURE_PAUSE` / `MEASURE_RESUME` events.
-- [ ] AudioWorklet capture uploads cleanly (browser network tab
-      shows POST /upload-capture with audio/wav body).
-- [ ] Chart renders within ~5 s of upload; PEQ list shows 0-5
-      filters with reasonable freq/Q/gain.
-- [ ] Tap **Apply** → CamillaDSP swaps config without audio dropout
-      (verify by playing music continuously across the apply
-      boundary, e.g. `aplay -D correction_substream white_noise.wav`
-      in another shell).
-- [ ] **Audibility check**: play a familiar bass-heavy track
-      before/after Apply — modal peak should audibly tighten.
-- [ ] Tap **Reset correction** on a normal full-range stereo topology →
-      CamillaDSP removes room PEQs cleanly while preserving the current sound
-      profile. On saved active/protected topology, verify reset keeps the
-      active speaker baseline and only clears room PEQs.
-- [ ] AEC bridge interaction (if enabled): no permanent drift after
-      a measurement; bridge re-converges in ~200 ms.
-
-### Phase 2 (multi-position + verify)
-- [ ] 5-position flow: NEEDS_NEXT_POSITION prompt visible after
-      each capture; **Continue** advances to next sweep with
-      ~3-5 s of dead air (renderer pause/restart cycle).
-- [ ] Move phone between positions; verify the prompt shows the
-      correct position number.
-- [ ] After 5 positions: PEQ design produces a result; chart shows
-      the AVERAGED measured curve (not the last-position one).
-- [ ] **Verify with re-measurement** after Apply: new measurement
-      runs, purple dashed curve overlays on chart, RMS / max
-      deviation summary appears.
-- [ ] Verify deviation should be SMALLER post-correction than
-      pre-correction was. If it isn't, the correction didn't work
-      — check journals for clues.
-- [ ] Target choice: flat vs warm produces different PEQ sets and
-      audibly different results.
+- [ ] Complete **Check measurement level**, then **Measure this position**.
+      AudioWorklet capture uploads cleanly (the browser network panel shows an
+      `audio/wav` upload), and the local path follows the same six-position,
+      main-seat-repeat, **Apply room correction**, and **Verify correction**
+      product flow as relay.
+- [ ] In separate bounded-choice runs, select one or three positions, a
+      non-default named target, and **Safe** strategy. The disclosed summary,
+      session, report, and designed result use exactly those choices; the
+      automatic main-seat trust repeat remains enabled for both transports.
 
 ### Phase 2.4 (observability + quality)
 - [ ] Deliberately quiet capture warns in the UI and bundle instead
@@ -2441,7 +2485,7 @@ trust kernels and admitted capture analysis extraction checked against exact
 status/artifact bytes, quality issue logging, calibration-before-normalization,
 and replay orchestration. Neutral
 playback extraction and the Room compatibility wrapper checked against current
-callers and deterministic tone bytes. Room envelope v8
+callers and deterministic tone bytes. Room envelope v9
 section/action/blocker/failure/default ownership,
 six/flat/balanced/automatic-repeat policy, relay-first transport resolution,
 capture-only positioned relay specs, and pre-playback level-microphone checks;

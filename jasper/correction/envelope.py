@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from typing import Any
 
 import numpy as np
@@ -71,7 +72,10 @@ logger = logging.getLogger(__name__)
 # `failure` presentation blocks so raw readiness/session diagnostics never
 # become homeowner copy. v8 adds the server-owned `run_defaults` block: the
 # disclosed run choices, capture transport, and whether Change is still legal.
-ENVELOPE_SCHEMA_VERSION = 8
+# v9 completes the server-owned copy boundary with progress labels, the
+# run-defaults summary template, and the automatic-repeat disclosure. v8 was
+# already shipped, so these new required fields use a distinct wire version.
+ENVELOPE_SCHEMA_VERSION = 9
 
 # 1/N-octave smoothing applied to the empirical display curves. 6 =
 # 1/6-octave — visibly smoothed (no raw jaggedness) while preserving
@@ -205,6 +209,14 @@ _PROGRESS_SPINE: tuple[str, ...] = (
     SCREEN_VERIFY,
     SCREEN_RESULT,
 )
+_PROGRESS_LABELS: tuple[str, ...] = (
+    "Set up",
+    "Measure",
+    "Review",
+    "Apply",
+    "Verify",
+    "Done",
+)
 # Screens that collapse onto a spine position for progress purposes.
 _PROGRESS_ALIAS: dict[str, str] = {
     SCREEN_MIC: SCREEN_IDLE,
@@ -221,8 +233,8 @@ _NEXT_ACTION: dict[str, dict[str, str] | None] = {
     SCREEN_MIC: None,          # browser drives the noise/mic upload
     SCREEN_LEVEL: None,        # ramp runs to a lock on its own
     SCREEN_SWEEP: None,        # browser drives the sweep capture upload
-    SCREEN_REVIEW: {"label": "Apply correction", "endpoint": "/apply"},
-    SCREEN_APPLY: {"label": "Verify the result", "endpoint": "/verify"},
+    SCREEN_REVIEW: {"label": "Apply room correction", "endpoint": "/apply"},
+    SCREEN_APPLY: {"label": "Verify correction", "endpoint": "/verify"},
     SCREEN_VERIFY: None,       # browser drives the verify capture upload
     SCREEN_RESULT: {"label": "Measure again", "endpoint": "/start"},
 }
@@ -253,6 +265,15 @@ def _screen_for(session: Any) -> str:
     """
     screen = screen_for_state(session.state.value)
     if (
+        session.state.value == "analyzing"
+        and getattr(session, "config_path", None) is not None
+    ):
+        # The same backend state analyzes both the final room capture and the
+        # post-apply verification capture. A loaded correction is the narrow,
+        # durable fact that distinguishes the latter without adding another
+        # session state solely for presentation.
+        return SCREEN_VERIFY
+    if (
         getattr(session, "capture_transport", "local") != "relay"
         and session.state.value == "needs_noise_capture"
         and bool(getattr(session, "local_capture_setup_bound", False))
@@ -269,16 +290,13 @@ def _screen_for(session: Any) -> str:
         return SCREEN_MIC if _relay_level_ready(session) else SCREEN_LEVEL
     if (
         getattr(session, "capture_transport", "local") == "relay"
-        and (
-            session.state.value == "applied"
-            or (
-                session.state.value == "verified"
-                and _relay_confirmation_pending(session)
-            )
-        )
+        and session.state.value == "applied"
         and not _relay_level_ready(session)
     ):
-        return SCREEN_LEVEL
+        # Verification level matching is part of verification, not a return to
+        # the run's initial level step. Keep progress and section ownership on
+        # Verify; the next-action endpoint distinguishes level check from sweep.
+        return SCREEN_VERIFY
     if screen == SCREEN_IDLE:
         autolevel = _autolevel_snapshot(session)
         if autolevel.get("status") == "ramping":
@@ -298,8 +316,14 @@ def _sections_for(
     reports_available: bool,
     tuning_offered: bool,
     readiness_blocked: bool,
+    analyzing: bool = False,
 ) -> list[str]:
     """Build the exact ordered whole-page section list for one snapshot."""
+    if analyzing:
+        # Analysis does not play audio or ask for another capture. Reuse the
+        # neutral evidence section while the worker finishes, without
+        # republishing sweep/placement or verification-capture instructions.
+        return [SECTION_MEASUREMENT_REVIEW]
     sections = (
         [SECTION_CURRENT_CORRECTION, SECTION_READINESS_BLOCKER]
         if screen == SCREEN_IDLE and readiness_blocked
@@ -357,13 +381,17 @@ def _autolevel_snapshot(session: Any) -> dict[str, Any]:
     return snap if isinstance(snap, dict) else {}
 
 
-def _progress(screen: str) -> dict[str, int]:
+def _progress(screen: str) -> dict[str, Any]:
     spine_screen = _PROGRESS_ALIAS.get(screen, screen)
     try:
         position = _PROGRESS_SPINE.index(spine_screen) + 1
     except ValueError:
         position = 1
-    return {"position": position, "total": len(_PROGRESS_SPINE)}
+    return {
+        "position": position,
+        "total": len(_PROGRESS_SPINE),
+        "labels": list(_PROGRESS_LABELS),
+    }
 
 
 def _smoothed_curve(
@@ -854,6 +882,8 @@ def _verdict_text(
     the headline carries the numbers; this is the "what's happening"
     line the dumb frontend shows verbatim.
     """
+    if session.state.value == "analyzing":
+        return "Analyzing the measurement now. This usually takes a few seconds."
     if screen == SCREEN_RESULT:
         if session.state.value == "failed":
             return str((failure or {}).get("text") or (
@@ -1041,18 +1071,27 @@ def _next_action_for(
                 "label": "Retry level check" if retry else "Check measurement level",
                 "endpoint": "/relay/level-match",
             }
-        if session.state.value == "applied" or (
-            session.state.value == "verified"
-            and _relay_confirmation_pending(session)
-        ):
+        if session.state.value == "applied":
             if _relay_level_ready(session):
                 return {
-                    "label": "Verify the result",
+                    "label": "Verify correction",
                     "endpoint": "/relay/verify",
                 }
             return {
                 "label": "Check verification level",
                 "endpoint": "/relay/level-match",
+            }
+        if (
+            session.state.value == "verified"
+            and _relay_confirmation_pending(session)
+        ):
+            return {
+                "label": "Measure again to confirm",
+                "endpoint": (
+                    "/relay/verify"
+                    if _relay_level_ready(session)
+                    else "/relay/level-match"
+                ),
             }
     if screen == SCREEN_RESULT and verdict is not None:
         if str(verdict.get("verdict")) == "revert_pending_confirm":
@@ -1061,6 +1100,13 @@ def _next_action_for(
                 "endpoint": "/verify",
             }
     return _NEXT_ACTION.get(screen)
+
+
+def room_position_label(total_positions: int) -> str:
+    """Return the server-owned count phrase used in Room summary copy."""
+
+    noun = "position" if total_positions == 1 else "positions"
+    return f"{total_positions} {noun}"
 
 
 def _run_defaults(
@@ -1104,12 +1150,19 @@ def _run_defaults(
             DEFAULT_REPEAT_MAIN_POSITION,
         )
     )
-    position_word = "position" if total_positions == 1 else "positions"
+    positions_label = room_position_label(total_positions)
+    repeat_disclosure = (
+        "JTS automatically repeats the main-seat measurement once to check "
+        "that the result is trustworthy."
+        if repeat_main_position
+        else ""
+    )
     return {
         "summary": (
-            f"Measuring {total_positions} {position_word} with the "
+            f"Measuring {positions_label} with the "
             f"{target.label.casefold()} target"
         ),
+        "summary_template": "Measuring {positions_label} with the {target} target",
         "total_positions": total_positions,
         "target": {"id": target.target_id, "label": target.label},
         "strategy": {
@@ -1117,6 +1170,7 @@ def _run_defaults(
             "label": correction_strategy.label,
         },
         "repeat_main_position": repeat_main_position,
+        "repeat_disclosure": repeat_disclosure,
         "capture_transport": capture_transport,
         "change_allowed": (
             screen == SCREEN_IDLE and session.state.value == "idle"
@@ -1140,13 +1194,28 @@ def build_envelope(
     deterministic verdict block + verdict text, homeowner nudges, the next
     action, and progress.
     """
-    screen = _screen_for(session)
-    verdict = _verdict(session)
     transport = str(
         capture_transport
         or getattr(session, "capture_transport", "local")
         or "local"
     )
+    screen = _screen_for(session)
+    if (
+        relay_capture_pending
+        and transport == "relay"
+        and (
+            session.state.value == "applied"
+            or (
+                session.state.value == "verified"
+                and _relay_confirmation_pending(session)
+            )
+        )
+    ):
+        # Verification begins while the durable state remains APPLIED (or a
+        # pending-confirmation VERIFIED). Present the actual capture screen so
+        # its phone handoff stays visible and progress does not jump backward.
+        screen = SCREEN_VERIFY
+    verdict = _verdict(session)
     next_action = _next_action_for(
         session,
         screen,
@@ -1197,8 +1266,10 @@ def build_envelope(
     if failure is not None and session.state.value != "failed":
         next_action = None
     tuning_llm = _tuning_llm(screen)
-    if failure is not None:
+    if failure is not None or session.state.value == "analyzing":
         tuning_llm["offered"] = False
+    if session.state.value == "analyzing":
+        next_action = None
     envelope: dict[str, Any] = {
         "schema_version": ENVELOPE_SCHEMA_VERSION,
         "screen": screen,
@@ -1209,6 +1280,7 @@ def build_envelope(
             reports_available=reports_available,
             tuning_offered=bool(tuning_llm.get("offered")),
             readiness_blocked=blocker is not None,
+            analyzing=session.state.value == "analyzing",
         ),
         "run_defaults": _run_defaults(
             session,
@@ -1258,6 +1330,11 @@ def _tuning_llm(screen: str) -> dict[str, Any]:
     return block
 
 
+_envelope_log_lock = threading.Lock()
+_last_logged_session: Any | None = None
+_last_logged_signature: tuple[Any, ...] | None = None
+
+
 def build_envelope_logged(
     session: Any,
     *,
@@ -1266,10 +1343,11 @@ def build_envelope_logged(
     reports_available: bool = False,
     readiness_blocker: dict[str, Any] | None | _ReadinessUnset = _READINESS_UNSET,
 ) -> dict[str, Any]:
-    """`build_envelope` plus one structured `event=` line for observability.
+    """`build_envelope` plus a transition-only structured observability event.
 
-    Separate from the pure builder so tests pin the shape without log
-    noise; the endpoint calls this variant.
+    Active screens poll this endpoint, so identical envelopes must not emit on
+    every GET. Room has one current session; retaining only its last compact
+    presentation signature gives transition logs without an unbounded cache.
     """
     envelope = build_envelope(
         session,
@@ -1279,29 +1357,51 @@ def build_envelope_logged(
         readiness_blocker=readiness_blocker,
     )
     verdict_block = envelope.get("verdict")
-    log_event(
-        logger,
-        "correction_envelope.serve",
-        session_id=getattr(session, "session_id", ""),
-        screen=envelope["screen"],
-        state=envelope["state"],
-        sections=",".join(envelope["sections"]),
-        nudge_count=len(envelope["nudges"]),
-        has_headline=envelope["headline"] is not None,
-        verdict=(
-            verdict_block.get("verdict")
-            if isinstance(verdict_block, dict)
-            else None
-        ),
-        blocker=(
-            envelope["blocker"].get("code")
-            if isinstance(envelope.get("blocker"), dict)
-            else None
-        ),
-        failure=(
-            envelope["failure"].get("code")
-            if isinstance(envelope.get("failure"), dict)
-            else None
-        ),
+    verdict = (
+        verdict_block.get("verdict")
+        if isinstance(verdict_block, dict)
+        else None
     )
+    blocker = (
+        envelope["blocker"].get("code")
+        if isinstance(envelope.get("blocker"), dict)
+        else None
+    )
+    failure = (
+        envelope["failure"].get("code")
+        if isinstance(envelope.get("failure"), dict)
+        else None
+    )
+    signature = (
+        envelope["screen"],
+        envelope["state"],
+        tuple(envelope["sections"]),
+        len(envelope["nudges"]),
+        envelope["headline"] is not None,
+        verdict,
+        blocker,
+        failure,
+    )
+    global _last_logged_session, _last_logged_signature
+    with _envelope_log_lock:
+        changed = (
+            session is not _last_logged_session
+            or signature != _last_logged_signature
+        )
+        if changed:
+            _last_logged_session = session
+            _last_logged_signature = signature
+            log_event(
+                logger,
+                "correction_envelope.serve",
+                session_id=getattr(session, "session_id", ""),
+                screen=envelope["screen"],
+                state=envelope["state"],
+                sections=",".join(envelope["sections"]),
+                nudge_count=len(envelope["nudges"]),
+                has_headline=envelope["headline"] is not None,
+                verdict=verdict,
+                blocker=blocker,
+                failure=failure,
+            )
     return envelope

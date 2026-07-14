@@ -4,9 +4,9 @@
 
 // Render harness for /correction/ rendering (C4a-2 + P3a + P3b).
 //
-// Exercises renderCurrentCorrection (deploy/assets/correction/js/main.js,
-// ~line 726) with representative backend payloads and asserts the correct
-// CSS class, reset-button visibility, and label copy for each correction kind.
+// Exercises renderCurrentCorrection with representative server presentation
+// blocks and asserts the tone, reset authority, timestamp substitution, and
+// bounded malformed-block fallback.
 // Also pins the P3a honest measured before/after surfaces:
 //   - verifyHeadlineHtml: verb/colour choice from the server delta, the
 //     ±0.1 dB display deadband, the neutral bucket, band text from the
@@ -168,9 +168,10 @@ const fetchCounts = new Map();       // substring -> integer
 function setFetchRoute(substr, bodyFn) { fetchRoutes.set(substr, bodyFn); }
 function fetchCountFor(substr) { return fetchCounts.get(substr) || 0; }
 function resetFetchCounts() { fetchCounts.clear(); }
-const globalFetch = async (url) => {
+const globalFetch = async (url, init = {}) => {
   const u = String(url || "");
   let body = {};
+  let jsonBodyFn = null;
   let ok = true;
   let status = 200;
   // Prefer the most specific endpoint. `/propose/apply` must not be captured
@@ -185,7 +186,7 @@ const globalFetch = async (url) => {
       // back non-ok so the caller's `if (!resp.ok) throw` fail-soft path
       // runs (mirrors a 5xx / network stall on the Pi).
       try {
-        body = await bodyFn();
+        body = await bodyFn(init);
         // A route can return an explicit non-2xx response that still
         // carries a JSON body (e.g. the paid-call 409 with {"error": ...}):
         // { __status: 409, __body: {...} }. Distinct from a thrown/DOWN
@@ -195,6 +196,11 @@ const globalFetch = async (url) => {
           ok = status >= 200 && status < 300;
           body = body.__body || {};
         }
+        if (body && typeof body === "object" &&
+            typeof body.__jsonBody === "function") {
+          jsonBodyFn = body.__jsonBody;
+          body = {};
+        }
       } catch (_e) { ok = false; status = 503; body = {}; }
       break;
     }
@@ -202,7 +208,7 @@ const globalFetch = async (url) => {
   return {
     ok,
     status,
-    async json() { return body; },
+    async json() { return jsonBodyFn ? jsonBodyFn() : body; },
     async text() { return JSON.stringify(body); },
   };
 };
@@ -247,7 +253,6 @@ source = source.replace(
   /\}\)\(\);\s*$/,
   `  globalThis.__testProbe = {
     renderCurrentCorrection,
-    correctionBannerClass,
     verifyHeadlineHtml,
     drawChart,
     // lastVerify is IIFE-local state read by drawChart's before/after
@@ -267,6 +272,7 @@ source = source.replace(
     renderSections,
     renderEnvelopeFailure,
     refreshEnvelope,
+    refreshIdleEntry,
     pollState,
     onWizardNextClick,
     startMicCapture,
@@ -285,8 +291,6 @@ source = source.replace(
     loadSessionReport,
     // The tuning status line text, for the fetch-error-framing tests.
     getTuningStatusText: function () { return tuningStatus.textContent; },
-    // Client step-label lexicon, pinned against the server progress spine.
-    wizardStepLabels: WIZARD_STEP_LABELS,
     // Probe seams for the fetch-once poll-discipline test.
     getEnvelopeFetchCount: function () { return envelopeFetchCount; },
     setWizardActionInFlight: function (value) {
@@ -301,12 +305,23 @@ source = source.replace(
     getRunTransportLocked: function () { return runTransportLocked; },
     hasPollTimer: function () { return !!pollTimer; },
     resetEnvelopeBookkeeping: function () {
+      envelopePollingEnabled = false;
       envelopeFetchCount = 0;
-      lastEnvelopeState = null;
+      lastObservedStatusState = null;
+      lastRenderedEnvelopeScreen = null;
+      lastRenderedEnvelopeState = null;
+      lastRenderedReadinessSignature = null;
       lastAutolevelStatus = null;
       envelopeRetryArmed = false;
+      envelopeRefreshQueued = false;
       if (envelopeTimer) { clearTimeout(envelopeTimer); envelopeTimer = null; }
       if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    },
+    setEnvelopeFetchTimeoutMs: function (value) {
+      envelopeFetchTimeoutMs = Number(value);
+    },
+    setIdleEnvelopeRefreshMs: function (value) {
+      idleEnvelopeRefreshMs = Number(value);
     },
   };
 })();`,
@@ -388,6 +403,12 @@ configureSelect("positions-select", [
   ["3", "3 positions"],
   ["6", "6 positions — recommended"],
 ], "6");
+for (const option of getOrMake("positions-select").options) {
+  option.setAttribute(
+    "data-summary-label",
+    option.value === "1" ? "1 position" : option.value + " positions",
+  );
+}
 configureSelect("target-select", [
   ["flat", "Flat"],
   ["warm", "Warm"],
@@ -426,18 +447,37 @@ const safeConsole = {
   info() {},
 };
 
-// Default fetch routes so boot's fire-and-forget /status, /envelope, and
-// /sessions calls resolve to a benign idle payload (tests override below).
+// Default fetch routes so boot's fire-and-forget reads resolve to benign idle
+// payloads (tests override below).
+const SERVER_PROGRESS_LABELS = [
+  "Set up", "Measure", "Review", "Apply", "Verify", "Done",
+];
+function progressAt(position, labels = SERVER_PROGRESS_LABELS) {
+  return {position, total: 6, labels: [...labels]};
+}
 setFetchRoute("/status", () => ({ state: "idle" }));
+setFetchRoute("/entry-status", () => ({
+  screen: "idle",
+  state: "idle",
+  readiness_blocker: null,
+  current_correction_presentation: {
+    tone: "flat",
+    message_template: "No JTS room correction is applied.",
+    applied_at_epoch: null,
+    reset_allowed: false,
+  },
+}));
 setFetchRoute("/envelope", () => ({
-  schema_version: 8, screen: "idle", state: "idle",
+  schema_version: 9, screen: "idle", state: "idle",
   sections: ["current-correction", "run-defaults"],
   run_defaults: {
     summary: "Measuring 6 positions with the flat target",
+    summary_template: "Measuring {positions_label} with the {target} target",
     total_positions: 6,
     target: { id: "flat", label: "Flat" },
     strategy: { id: "balanced", label: "Balanced" },
     repeat_main_position: true,
+    repeat_disclosure: "JTS repeats the main seat once.",
     capture_transport: "relay",
     change_allowed: true,
   },
@@ -445,7 +485,7 @@ setFetchRoute("/envelope", () => ({
   verdict_text: "Ready to measure your room.", nudges: [],
   next_action: { label: "Start measuring", endpoint: "/start" },
   blocker: null, failure: null,
-  progress: { position: 1, total: 6 },
+  progress: progressAt(1),
 }));
 
 runner(
@@ -465,7 +505,6 @@ runner(
 
 const {
   renderCurrentCorrection,
-  correctionBannerClass,
   verifyHeadlineHtml,
   drawChart,
   setLastVerify,
@@ -482,6 +521,7 @@ const {
   renderSections,
   renderEnvelopeFailure,
   refreshEnvelope,
+  refreshIdleEntry,
   pollState,
   onWizardNextClick,
   startMicCapture,
@@ -498,7 +538,6 @@ const {
   renderRuntimeIntegrity,
   loadSessionReport,
   getTuningStatusText,
-  wizardStepLabels,
   getEnvelopeFetchCount,
   setWizardActionInFlight,
   setRelayMode,
@@ -507,6 +546,8 @@ const {
   getRunTransportLocked,
   hasPollTimer,
   resetEnvelopeBookkeeping,
+  setEnvelopeFetchTimeoutMs,
+  setIdleEnvelopeRefreshMs,
 } = globalThis.__testProbe;
 delete globalThis.__testProbe;
 
@@ -536,141 +577,76 @@ function canvasEl() { return getOrMake("chart"); }
 
 // ---- Tests ----
 
-// 1. Applied correction (cc has applied_at_epoch)
-// Expect: className='applied', label contains adjustment count, reset visible
+function currentPresentation(over) {
+  return Object.assign({
+    tone: "flat",
+    message_template: "No JTS room correction is applied.",
+    applied_at_epoch: null,
+    reset_allowed: false,
+  }, over || {});
+}
+
+// 1. Applied correction copy and adjustment grammar are server-owned. The
+//    browser substitutes only the localized timestamp placeholder.
 {
-  renderCurrentCorrection(
-    { applied_at_epoch: 1718000000, peq_count: 5 },
-    null,
-  );
+  renderCurrentCorrection(currentPresentation({
+    tone: "applied",
+    message_template: "Room correction on — 5 adjustments applied {applied_at}",
+    applied_at_epoch: 1718000000,
+    reset_allowed: true,
+  }));
   assert(banner().className === "applied",
-    "applied correction must set banner class to 'applied'",
-    { got: banner().className });
-  assert(label().textContent.includes("5 adjustments"),
-    "applied label must mention household adjustment count",
-    { got: label().textContent });
+    "server presentation sets the applied tone", {got: banner().className});
+  assert(label().textContent.startsWith("Room correction on — 5 adjustments applied ") &&
+      !label().textContent.includes("{applied_at}"),
+    "browser localizes only the server timestamp placeholder",
+    {got: label().textContent});
   assert(!resetBtn().classList.contains("hidden"),
-    "applied correction must show reset button");
+    "server presentation enables reset");
 }
 
-// 2. Applied with 1 adjustment (singular noun)
+// 2. Non-applied presentation copy, tone, and reset policy render verbatim.
 {
-  renderCurrentCorrection({ applied_at_epoch: 1718000001, peq_count: 1 }, null);
-  assert(label().textContent.includes("1 adjustment"),
-    "single adjustment should use the singular noun",
-    { got: label().textContent });
-  assert(!label().textContent.includes("adjustments"),
-    "single adjustment must not use the plural noun",
-    { got: label().textContent });
+  renderCurrentCorrection(currentPresentation({
+    tone: "custom",
+    message_template: "Advanced DSP config is active.",
+    reset_allowed: true,
+  }));
+  assert(banner().className === "custom" &&
+      label().textContent === "Advanced DSP config is active." &&
+      !resetBtn().classList.contains("hidden"),
+    "custom presentation is entirely server-owned");
+
+  renderCurrentCorrection(currentPresentation());
+  assert(banner().className === "flat" &&
+      label().textContent === "No JTS room correction is applied." &&
+      resetBtn().classList.contains("hidden"),
+    "flat presentation is entirely server-owned");
 }
 
-// 3. Applied with 0 adjustments
+// 3. Malformed presentation fails to one bounded unavailable sentence; raw
+//    or partially valid server fields never become browser policy.
 {
-  renderCurrentCorrection({ applied_at_epoch: 1718000002, peq_count: 0 }, null);
-  assert(label().textContent.includes("0 adjustments"),
-    "zero adjustments should use the plural noun",
-    { got: label().textContent });
-}
-
-// 4. flat kind (no correction applied)
-// Expect: banner class 'flat', no reset button, fallback copy
-{
-  renderCurrentCorrection(null, { kind: "flat", message: "Flat — no correction.", label: null });
-  assert(banner().className === "flat",
-    "flat config must set banner class to 'flat'",
-    { got: banner().className });
-  assert(label().textContent === "Flat — no correction.",
-    "flat config must render backend message verbatim",
-    { got: label().textContent });
-  assert(resetBtn().classList.contains("hidden"),
-    "flat config must hide reset button");
-}
-
-// 5. custom kind
-// Expect: banner class 'custom', reset button visible
-{
-  renderCurrentCorrection(null, { kind: "custom", message: "Custom DSP loaded.", label: null });
-  assert(banner().className === "custom",
-    "custom kind must set banner class to 'custom'",
-    { got: banner().className });
-  assert(label().textContent === "Custom DSP loaded.",
-    "custom kind must render backend message",
-    { got: label().textContent });
-  assert(!resetBtn().classList.contains("hidden"),
-    "custom kind must show reset button (offers reset to flat baseline)");
-}
-
-// 6. unknown kind (treated same as custom for the banner class, no reset offered for
-//    kinds the UI doesn't recognise beyond 'custom' — correctionBannerClass returns
-//    'custom' but the reset logic only shows the button for kind === 'custom')
-{
-  renderCurrentCorrection(null, { kind: "unknown", message: "Unknown state.", label: null });
-  assert(banner().className === "custom",
-    "unknown kind must resolve to banner class 'custom' via correctionBannerClass",
-    { got: banner().className });
-  assert(resetBtn().classList.contains("hidden"),
-    "unknown kind must hide reset button (only 'custom' offers reset)");
-}
-
-// 7. preference kind (managed — no reset offered)
-{
-  renderCurrentCorrection(null, { kind: "preference", message: "Preference EQ active.", label: null });
-  assert(banner().className === "flat",
-    "preference kind maps to banner class 'flat'",
-    { got: banner().className });
-  assert(resetBtn().classList.contains("hidden"),
-    "preference kind must hide reset button");
-}
-
-// 8. measurement kind (managed)
-{
-  renderCurrentCorrection(null, { kind: "measurement", label: "Room measurement applied" });
-  assert(banner().className === "flat",
-    "measurement kind maps to banner class 'flat'",
-    { got: banner().className });
-  assert(label().textContent === "Room measurement applied",
-    "measurement kind falls back to label field when message is absent",
-    { got: label().textContent });
-}
-
-// 9. no config at all (null/null) → fallback copy
-{
-  renderCurrentCorrection(null, null);
-  assert(banner().className === "flat",
-    "null config must set banner class to 'flat'",
-    { got: banner().className });
-  assert(
-    label().textContent === "No correction applied — speaker is flat.",
-    "null config must show fallback copy",
-    { got: label().textContent });
-  assert(resetBtn().classList.contains("hidden"),
-    "null config must hide reset button");
-}
-
-// 10. cc supplied but no applied_at_epoch (e.g. in-progress session descriptor)
-//     → falls through to config path
-{
-  renderCurrentCorrection(
-    { peq_count: 3 },  // no applied_at_epoch
-    { kind: "flat", message: "Not yet applied." },
-  );
-  assert(banner().className === "flat",
-    "cc without applied_at_epoch must fall through to config path",
-    { got: banner().className });
-  assert(label().textContent === "Not yet applied.",
-    "cc without applied_at_epoch must render config message",
-    { got: label().textContent });
-}
-
-// 11. correctionBannerClass: verify the pure mapping independently
-{
-  assert(correctionBannerClass("custom") === "custom",   "custom → 'custom'");
-  assert(correctionBannerClass("unknown") === "custom",  "unknown → 'custom'");
-  assert(correctionBannerClass("flat") === "flat",       "flat → 'flat'");
-  assert(correctionBannerClass("preference") === "flat", "preference → 'flat'");
-  assert(correctionBannerClass("measurement") === "flat","measurement → 'flat'");
-  assert(correctionBannerClass("active_speaker") === "flat", "active_speaker → 'flat'");
-  assert(correctionBannerClass("") === "flat",           "empty → 'flat'");
+  const invalid = [
+    null,
+    currentPresentation({tone: "future"}),
+    currentPresentation({message_template: ""}),
+    currentPresentation({reset_allowed: "true"}),
+    {...currentPresentation(), applied_at_epoch: undefined},
+    currentPresentation({applied_at_epoch: -1}),
+    currentPresentation({
+      message_template: "Applied {applied_at}", applied_at_epoch: null,
+    }),
+    currentPresentation({message_template: "Applied {unknown_value}"}),
+  ];
+  invalid.forEach((presentation, index) => {
+    renderCurrentCorrection(presentation);
+    assert(banner().className === "flat" &&
+        label().textContent ===
+          "The current correction could not be checked. Try again." &&
+        resetBtn().classList.contains("hidden"),
+      "invalid current-correction presentation fails closed", {index});
+  });
 }
 
 // 11b. Correction-status refresh may change only the banner tone. Whole-page
@@ -678,10 +654,12 @@ function canvasEl() { return getOrMake("chart"); }
 //      hidden even when its independent status request completes later.
 {
   banner().classList.add("hidden");
-  renderCurrentCorrection(
-    { applied_at_epoch: 1718000000, peq_count: 2 },
-    null,
-  );
+  renderCurrentCorrection(currentPresentation({
+    tone: "applied",
+    message_template: "Correction applied {applied_at}",
+    applied_at_epoch: 1718000000,
+    reset_allowed: true,
+  }));
   assert(banner().classList.contains("hidden"),
     "current-correction refresh must preserve envelope-owned hidden state",
     { got: banner().className });
@@ -977,16 +955,18 @@ function curveOf(fn) {
 // A complete envelope with sensible defaults; override per test.
 function makeEnvelope(over) {
   const env = Object.assign({
-    schema_version: 8,
+    schema_version: 9,
     screen: "idle",
     state: "idle",
     sections: ["current-correction", "run-defaults"],
     run_defaults: {
       summary: "Measuring 6 positions with the flat target",
+      summary_template: "Measuring {positions_label} with the {target} target",
       total_positions: 6,
       target: { id: "flat", label: "Flat" },
       strategy: { id: "balanced", label: "Balanced" },
       repeat_main_position: true,
+      repeat_disclosure: "JTS repeats the main seat once.",
       capture_transport: "relay",
       change_allowed: true,
     },
@@ -998,7 +978,7 @@ function makeEnvelope(over) {
     next_action: { label: "Start measuring", endpoint: "/start" },
     blocker: null,
     failure: null,
-    progress: { position: 1, total: 6 },
+    progress: progressAt(1),
   }, over || {});
   if (
     !(over && Object.prototype.hasOwnProperty.call(over, "run_defaults")) &&
@@ -1021,7 +1001,7 @@ function nudgeRows() {
     screen: "sweep", state: "sweeping",
     verdict_text: "Playing a test sweep. Keep the room quiet.",
     next_action: null,
-    progress: { position: 2, total: 6 },
+    progress: progressAt(2),
   }));
   assert(wizVerdict().textContent === "Playing a test sweep. Keep the room quiet.",
     "verdict_text is rendered verbatim", { got: wizVerdict().textContent });
@@ -1033,8 +1013,8 @@ function nudgeRows() {
 {
   renderEnvelope(makeEnvelope({
     screen: "review", state: "ready",
-    progress: { position: 3, total: 6 },
-    next_action: { label: "Apply correction", endpoint: "/apply" },
+    progress: progressAt(3),
+    next_action: { label: "Apply room correction", endpoint: "/apply" },
   }));
   const steps = wizSteps().children;
   assert(steps.length === 6, "one step per progress.total", { got: steps.length });
@@ -1047,6 +1027,9 @@ function nudgeRows() {
     "later steps are neither current nor done", { got: steps[4].className });
   assert(wizSteps().getAttribute("aria-label") === "Step 3 of 6",
     "step indicator exposes an aria-label", { got: wizSteps().getAttribute("aria-label") });
+  assert(steps.map((step) => step.children[1].textContent).join("|") ===
+      SERVER_PROGRESS_LABELS.join("|"),
+    "step labels render from the server progress payload");
 }
 
 // 21. Nudge severity rendering: info -> info class, warn -> warn class,
@@ -1091,8 +1074,8 @@ function nudgeRows() {
 
 // 24. Primary action: label + endpoint from the server, button live + shown.
 {
-  renderPrimaryAction({ label: "Apply correction", endpoint: "/apply" });
-  assert(wizNext().textContent === "Apply correction",
+  renderPrimaryAction({ label: "Apply room correction", endpoint: "/apply" });
+  assert(wizNext().textContent === "Apply room correction",
     "primary action label comes from the server", { got: wizNext().textContent });
   assert(wizNext().getAttribute("data-endpoint") === "/apply",
     "endpoint is stashed on a data-* attribute (no inline handler interp)",
@@ -1116,7 +1099,7 @@ function nudgeRows() {
 {
   renderEnvelope(makeEnvelope({
     screen: "review", state: "ready",
-    next_action: { label: "Apply correction", endpoint: "/apply" },
+    next_action: { label: "Apply room correction", endpoint: "/apply" },
     nudges: [
       { code: "high_position_variance", severity: "warn",
         text: "Your measured spots differ a lot — you can continue." },
@@ -1376,14 +1359,23 @@ await (async () => {
   resetEnvelopeBookkeeping();
 })();
 
-// 28f. Run defaults are rendered verbatim, Change stays bounded, and the
-//      browser sends selected values without inventing defaults or transport-
-//      specific repeat policy.
+// 28f. Run-default copy is server-owned, Change stays bounded, and the browser
+//      sends selected values without inventing defaults or transport-specific
+//      repeat policy.
 {
-  renderEnvelope(makeEnvelope());
+  renderEnvelope(makeEnvelope({
+    run_defaults: {
+      ...makeEnvelope().run_defaults,
+      summary_template: "{positions_label} listening with {target}",
+      repeat_disclosure: "The server owns this repeat disclosure.",
+    },
+  }));
   assert(getOrMake("run-defaults-summary").textContent ===
     "Measuring 6 positions with the flat target",
   "run defaults: server summary renders verbatim");
+  assert(getOrMake("repeat-main-position-disclosure").textContent ===
+      "The server owns this repeat disclosure.",
+    "run defaults: repeat disclosure renders verbatim from the server");
 
   setMeasurementOptionsOpen(false);
   getOrMake("change-run-defaults").click();
@@ -1397,8 +1389,8 @@ await (async () => {
   getOrMake("target-select").selectedIndex = 1;
   for (const fn of getOrMake("target-select")._listeners.change || []) fn({});
   assert(getOrMake("run-defaults-summary").textContent ===
-    "Measuring 3 positions with the warm target",
-  "run defaults: disclosure follows the permitted choice");
+    "3 positions listening with warm",
+  "run defaults: local choices substitute the server-owned summary template");
 
   setRelayMode(true);
   const relayPayload = measurementStartPayload();
@@ -1441,20 +1433,53 @@ await (async () => {
   setRelayMode(false);
 })();
 
-// 29. The v8 contract is closed. Unknown versions, screens, sections,
+// 29. The v9 contract is closed. Unknown versions, screens, sections,
 //     duplicates, or actions are rejected before any of them become policy.
 {
   const invalid = [
-    makeEnvelope({ schema_version: 7 }),
-    makeEnvelope({ schema_version: 9 }),
-    makeEnvelope({ schema_version: "8" }),
+    makeEnvelope({ schema_version: 8 }),
+    makeEnvelope({ schema_version: 10 }),
+    makeEnvelope({ schema_version: "9" }),
+    makeEnvelope({ progress: null }),
+    makeEnvelope({ progress: {...progressAt(1), position: "1"} }),
+    makeEnvelope({ progress: {...progressAt(1), position: 1.5} }),
+    makeEnvelope({ progress: {...progressAt(1), position: 0} }),
+    makeEnvelope({ progress: {...progressAt(1), position: 7} }),
+    makeEnvelope({ progress: {...progressAt(1), total: "6"} }),
+    makeEnvelope({ progress: {...progressAt(1), total: 5} }),
+    makeEnvelope({ progress: {...progressAt(1), total: 7} }),
+    makeEnvelope({ progress: {...progressAt(1), labels: null} }),
+    makeEnvelope({ progress: progressAt(1, SERVER_PROGRESS_LABELS.slice(0, 5)) }),
+    makeEnvelope({ progress: progressAt(1, [...SERVER_PROGRESS_LABELS, "Extra"]) }),
+    makeEnvelope({ progress: progressAt(1, ["", ...SERVER_PROGRESS_LABELS.slice(1)]) }),
+    makeEnvelope({ progress: progressAt(1, [1, ...SERVER_PROGRESS_LABELS.slice(1)]) }),
     makeEnvelope({ run_defaults: null }),
     makeEnvelope({ run_defaults: {
+      ...makeEnvelope().run_defaults,
+      summary_template: "",
+    } }),
+    makeEnvelope({ run_defaults: {
+      ...makeEnvelope().run_defaults,
+      summary_template: "Measuring {positions_label} without a target token",
+    } }),
+    makeEnvelope({ run_defaults: {
+      ...makeEnvelope().run_defaults,
+      summary_template: (
+        "Measuring {positions_label} with the {target} target {future}"
+      ),
+    } }),
+    makeEnvelope({ run_defaults: {
+      ...makeEnvelope().run_defaults,
+      repeat_disclosure: null,
+    } }),
+    makeEnvelope({ run_defaults: {
       summary: "Measuring 6 positions with the flat target",
+      summary_template: "Measuring {positions_label} with the {target} target",
       total_positions: 6,
       target: { id: "flat", label: "Flat" },
       strategy: { id: "balanced", label: "Balanced" },
       repeat_main_position: "true",
+      repeat_disclosure: "JTS repeats the main seat once.",
       capture_transport: "relay",
       change_allowed: true,
     } }),
@@ -1576,7 +1601,7 @@ await (async () => {
   invalid.forEach((env, index) => {
     let rejected = false;
     try { validateEnvelope(env); } catch (_e) { rejected = true; }
-    assert(rejected, "malformed/unknown v8 envelope fails closed", { index });
+    assert(rejected, "malformed/unknown v9 envelope fails closed", { index });
   });
 }
 
@@ -1724,6 +1749,8 @@ await (async () => {
   renderEnvelope(makeEnvelope());
   setFetchRoute("/status", () => ({state: "idle", autolevel: {status: "idle"}}));
   setFetchRoute("/envelope", () => makeEnvelope());
+  await pollState();
+  await settle();
   const raw = "POST /start -> 400: raw microphone diagnostic";
   const typed = "The measurement setup changed. Review the microphone choices and try again.";
   setFetchRoute("/start", () => ({
@@ -1873,38 +1900,309 @@ await (async () => {
     "releasing single-flight permits the latest server action");
 }
 
-// 29c. Concurrent envelope reads are generation ordered. An older response
-//      arriving last cannot overwrite newer state or undo a fail-closed paint.
+// 29c. Envelope reads are single-flight. Calls arriving during a slow read
+//      share it, then collapse to at most one follow-up so new state is not
+//      lost without ever overlapping requests.
 await (async () => {
   resetEnvelopeBookkeeping();
-  let resolveOld;
-  let resolveNew;
+  resetFetchCounts();
+  let resolveFirst;
   let call = 0;
-  setFetchRoute("/envelope", () => new Promise((resolve) => {
-    call += 1;
-    if (call === 1) resolveOld = resolve;
-    else resolveNew = resolve;
-  }));
-  const oldRequest = refreshEnvelope();
-  const newRequest = refreshEnvelope();
+  let active = 0;
+  let maxActive = 0;
+  setFetchRoute("/envelope", async () => {
+    const thisCall = ++call;
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    if (thisCall === 1) {
+      await new Promise((resolve) => { resolveFirst = resolve; });
+    }
+    active -= 1;
+    return thisCall === 1
+      ? makeEnvelope({
+          screen: "review", state: "ready",
+          sections: ["measurement-review", "tuning"],
+          next_action: { label: "Apply room correction", endpoint: "/apply" },
+        })
+      : makeEnvelope({
+          screen: "apply", state: "applied",
+          sections: ["apply-status", "tuning"],
+          next_action: { label: "Verify correction", endpoint: "/verify" },
+        });
+  });
+  const firstRequest = refreshEnvelope();
+  const secondRequest = refreshEnvelope();
+  const thirdRequest = refreshEnvelope();
   await settle();
-  resolveNew(makeEnvelope({
-    screen: "apply", state: "applied",
-    sections: ["apply-status", "tuning"],
-    next_action: { label: "Verify the result", endpoint: "/verify" },
-  }));
-  await newRequest;
-  resolveOld(makeEnvelope({
-    screen: "review", state: "ready",
-    sections: ["measurement-review", "tuning"],
-    next_action: { label: "Apply correction", endpoint: "/apply" },
-  }));
-  await oldRequest;
+  assert(fetchCountFor("/envelope") === 1 && maxActive === 1,
+    "slow envelope calls share one in-flight request", {
+      fetches: fetchCountFor("/envelope"), maxActive,
+    });
+  resolveFirst();
+  await Promise.all([firstRequest, secondRequest, thirdRequest]);
+  await settle();
+  assert(fetchCountFor("/envelope") === 2 && maxActive === 1,
+    "concurrent triggers collapse to one non-overlapping follow-up", {
+      fetches: fetchCountFor("/envelope"), maxActive,
+    });
   assert(wizNext().getAttribute("data-endpoint") === "/verify",
-    "late older envelope cannot replace the newest primary action");
+    "the coalesced follow-up renders the newest primary action");
   assert(!getOrMake("apply-status").classList.contains("hidden") &&
     getOrMake("measurement-review").classList.contains("hidden"),
-    "late older envelope cannot replace the newest section paint");
+    "the coalesced follow-up renders the newest section paint");
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// 29d. A persistent envelope failure on an active screen gets one backed-off
+//      retry. The live 500 ms status loop observes the state independently;
+//      unchanged status ticks neither overlap requests nor mint retries.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  resetFetchCounts();
+  setFetchRoute("/status", () => ({
+    state: "sweeping", autolevel: {status: "idle"},
+  }));
+  setFetchRoute("/envelope", () => { throw new Error("envelope down"); });
+
+  await pollState();
+  await settle();
+  assert(fetchCountFor("/envelope") === 1,
+    "active-screen failure starts with one envelope request");
+
+  await new Promise((resolve) => setTimeout(resolve, 2400));
+  assert(fetchCountFor("/envelope") === 2,
+    "active-screen failure gets exactly one backed-off retry despite status polling",
+    {got: fetchCountFor("/envelope")});
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert(fetchCountFor("/envelope") === 2,
+    "persistent failure stops after the bounded retry",
+    {got: fetchCountFor("/envelope")});
+
+  setFetchRoute("/status", () => ({state: "idle", autolevel: {status: "idle"}}));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// 29e. A transport that accepts the envelope request and then stalls cannot
+//      hold the single-flight latch forever. The deadline aborts it into the
+//      same fail-closed paint and one bounded retry as any other read failure.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  resetFetchCounts();
+  setEnvelopeFetchTimeoutMs(30);
+  setFetchRoute("/envelope", () => makeEnvelope());
+  await refreshEnvelope();
+  resetFetchCounts();
+  let aborts = 0;
+  setFetchRoute("/envelope", (init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener("abort", () => {
+      aborts += 1;
+      reject(new Error("aborted"));
+    }, {once: true});
+  }));
+  renderEnvelope(makeEnvelope({
+    screen: "review", state: "ready",
+    sections: ["measurement-review", "tuning"],
+    next_action: {label: "Apply room correction", endpoint: "/apply"},
+  }));
+
+  await refreshEnvelope();
+  assert(aborts === 1 && wizNext().classList.contains("hidden") &&
+      getOrMake("measurement-review").classList.contains("hidden"),
+    "hung envelope read aborts and retires stale presentation policy");
+  await new Promise((resolve) => setTimeout(resolve, 1650));
+  assert(fetchCountFor("/envelope") === 2 && aborts === 2,
+    "hung envelope read receives exactly one bounded retry", {
+      fetches: fetchCountFor("/envelope"), aborts,
+    });
+
+  setEnvelopeFetchTimeoutMs(5000);
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// 29f. Idle refreshes only lightweight entry facts. A readiness change causes
+//      one full-envelope repaint, while repeated unchanged probes do not keep
+//      re-running report discovery. The current-config banner refreshes on the
+//      same cadence so the two external facts cannot drift apart.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  resetFetchCounts();
+  setIdleEnvelopeRefreshMs(30);
+  let envelopeReads = 0;
+  let entryReads = 0;
+  let readinessChanged = false;
+  setFetchRoute("/envelope", () => {
+    envelopeReads += 1;
+    return readinessChanged
+      ? makeEnvelope({
+          sections: ["current-correction", "readiness-blocker"],
+          next_action: null,
+          blocker: {
+            code: "speaker_setup_incomplete",
+            text: "Finish speaker setup first.",
+            retryable: false,
+            recovery_action: {label: "Open Sound setup", href: "/sound/"},
+          },
+        })
+      : makeEnvelope();
+  });
+  setFetchRoute("/entry-status", () => {
+    entryReads += 1;
+    return {
+      screen: "idle",
+      state: "idle",
+      readiness_blocker: readinessChanged ? {
+        code: "speaker_setup_incomplete",
+        text: "Finish speaker setup first.",
+        retryable: false,
+        recovery_action: {label: "Open Sound setup", href: "/sound/"},
+      } : null,
+      current_correction_presentation: {
+        tone: "custom",
+        message_template: "Custom DSP graph is active.",
+        applied_at_epoch: null,
+        reset_allowed: true,
+      },
+    };
+  });
+
+  await refreshEnvelope();
+  readinessChanged = true;
+  await new Promise((resolve) => setTimeout(resolve, 95));
+  assert(entryReads >= 2 && envelopeReads === 2 &&
+      wizNext().classList.contains("hidden") &&
+      !getOrMake("readiness-blocker").classList.contains("hidden"),
+    "idle entry refresh withdraws Start once without repeated full scans", {
+      entryReads, envelopeReads,
+    });
+  assert(label().textContent === "Custom DSP graph is active." &&
+      banner().className === "custom" &&
+      !resetBtn().classList.contains("hidden"),
+    "idle entry refresh updates the current-correction banner with readiness");
+
+  setIdleEnvelopeRefreshMs(10000);
+  setFetchRoute("/entry-status", () => ({
+    screen: "idle",
+    state: "idle",
+    readiness_blocker: null,
+    current_correction_presentation: currentPresentation(),
+  }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// 29g. If the state becomes idle during a short server restart, two failed
+//      envelope reads still recover through the lightweight idle probe. The
+//      probe forces a full repaint because the last rendered screen was active.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  resetFetchCounts();
+  setIdleEnvelopeRefreshMs(30);
+  setFetchRoute("/envelope", () => makeEnvelope({
+    screen: "sweep", state: "sweeping",
+    sections: ["capture-handoff", "placement", "position-capture"],
+    next_action: null,
+  }));
+  await refreshEnvelope();
+  resetFetchCounts();
+  let attempts = 0;
+  setFetchRoute("/envelope", () => {
+    attempts += 1;
+    if (attempts <= 2) throw new Error("brief restart");
+    return makeEnvelope();
+  });
+  setFetchRoute("/status", () => ({
+    state: "idle", autolevel: {status: "idle"},
+  }));
+
+  await pollState();
+  await new Promise((resolve) => setTimeout(resolve, 1650));
+  assert(attempts === 3 && fetchCountFor("/entry-status") >= 1 &&
+      !getOrMake("run-defaults").classList.contains("hidden"),
+    "active-to-idle transition recovers after the fast retry is spent", {
+      attempts, entryReads: fetchCountFor("/entry-status"),
+    });
+
+  setIdleEnvelopeRefreshMs(10000);
+  setFetchRoute("/status", () => ({state: "idle", autolevel: {status: "idle"}}));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// 29h. The lightweight idle probe shares the presentation-read deadline; a
+//      stalled readiness read fails closed instead of wedging idle forever.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  setEnvelopeFetchTimeoutMs(30);
+  setFetchRoute("/envelope", () => makeEnvelope());
+  await refreshEnvelope();
+  let aborts = 0;
+  setFetchRoute("/entry-status", (init) => ({
+    __jsonBody: () => new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => {
+        aborts += 1;
+        reject(new Error("aborted"));
+      }, {once: true});
+    }),
+  }));
+
+  await refreshIdleEntry();
+  assert(aborts === 1 && wizNext().classList.contains("hidden") &&
+      label().textContent ===
+        "The current correction could not be checked. Try again.",
+    "stalled idle entry read aborts and retires stale entry authority");
+
+  setEnvelopeFetchTimeoutMs(5000);
+  setFetchRoute("/entry-status", () => ({
+    screen: "idle",
+    state: "idle",
+    readiness_blocker: null,
+    current_correction_presentation: currentPresentation(),
+  }));
+  resetEnvelopeBookkeeping();
+})();
+
+// 29i. Another tab can start a Room run while this tab is statically idle.
+//      Server screen/state identity on the cheap probe forces one full
+//      envelope repaint even when speaker readiness itself did not change.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  resetFetchCounts();
+  setIdleEnvelopeRefreshMs(30);
+  let moved = false;
+  setFetchRoute("/envelope", () => moved
+    ? makeEnvelope({
+        screen: "sweep", state: "sweeping",
+        sections: ["capture-handoff", "placement", "position-capture"],
+        next_action: null,
+      })
+    : makeEnvelope());
+  setFetchRoute("/entry-status", () => ({
+    screen: moved ? "sweep" : "idle",
+    state: moved ? "sweeping" : "idle",
+    readiness_blocker: null,
+    current_correction_presentation: currentPresentation(),
+  }));
+
+  await refreshEnvelope();
+  moved = true;
+  await new Promise((resolve) => setTimeout(resolve, 65));
+  assert(fetchCountFor("/envelope") === 2 &&
+      !getOrMake("position-capture").classList.contains("hidden") &&
+      wizNext().classList.contains("hidden"),
+    "idle probe repaints a Room run started in another tab", {
+      envelopeReads: fetchCountFor("/envelope"),
+    });
+
+  setIdleEnvelopeRefreshMs(10000);
+  setFetchRoute("/entry-status", () => ({
+    screen: "idle",
+    state: "idle",
+    readiness_blocker: null,
+    current_correction_presentation: currentPresentation(),
+  }));
   setFetchRoute("/envelope", () => makeEnvelope());
   resetEnvelopeBookkeeping();
 })();
@@ -1921,7 +2219,7 @@ await (async () => {
   setFetchRoute("/envelope", () => makeEnvelope({
     screen: "review", state: "ready",
     sections: ["measurement-review", "tuning"],
-    next_action: { label: "Apply correction", endpoint: "/apply" },
+    next_action: { label: "Apply room correction", endpoint: "/apply" },
   }));
   await pollState();
   await settle();
@@ -1936,7 +2234,7 @@ await (async () => {
   setFetchRoute("/envelope", () => makeEnvelope({
     schema_version: 5, screen: "apply", state: "applied",
     sections: ["apply-status"],
-    next_action: { label: "Verify the result", endpoint: "/verify" },
+    next_action: { label: "Verify correction", endpoint: "/verify" },
   }));
   await pollState();
   await settle();
@@ -1952,7 +2250,7 @@ await (async () => {
   setFetchRoute("/envelope", () => makeEnvelope({
     screen: "apply", state: "applied",
     sections: ["apply-status", "tuning"],
-    next_action: { label: "Verify the result", endpoint: "/verify" },
+    next_action: { label: "Verify correction", endpoint: "/verify" },
   }));
   let recovered = false;
   for (let i = 0; i < 30 && !recovered; i++) {
@@ -1972,18 +2270,14 @@ await (async () => {
   await settle();
 })();
 
-// 31. WIZARD_STEP_LABELS stays in lockstep with the server's progress spine:
-//     envelope._PROGRESS_SPINE (jasper/correction/envelope.py) has exactly 6
-//     entries (idle, sweep, review, apply, verify, result) and progress.total
-//     comes from its length. If the server spine grows/shrinks, this fails
-//     loudly instead of the indicator silently degrading to "Step N" labels.
+// 31. Progress copy is server-owned. Any six valid labels render verbatim;
+//     there is no second client lexicon to drift from the envelope.
 {
-  assert(wizardStepLabels.length === 6,
-    "WIZARD_STEP_LABELS must match envelope._PROGRESS_SPINE's 6 entries — " +
-    "update the client lexicon with the server spine",
-    { got: wizardStepLabels.length });
-  assert(wizardStepLabels.every((l) => typeof l === "string" && l.trim()),
-    "every wizard step label is non-empty homeowner copy");
+  const labels = ["Prepare", "Capture", "Inspect", "Install", "Check", "Complete"];
+  renderProgress(progressAt(4, labels));
+  assert(wizSteps().children.map((step) => step.children[1].textContent).join("|") ===
+      labels.join("|"),
+    "the browser renders the six server labels verbatim");
 }
 
 // 32. P6 tuning content never overrides server-owned section visibility.
@@ -2147,7 +2441,7 @@ await (async () => {
   setFetchRoute("/status", () => ({state: "ready", autolevel: {status: "idle"}}));
   setFetchRoute("/envelope", () => makeEnvelope({
     screen: "review", state: "ready", sections: ["measurement-review"],
-    next_action: {label: "Apply correction", endpoint: "/apply"},
+    next_action: {label: "Apply room correction", endpoint: "/apply"},
   }));
 
   await applyCorrectionProposal(
@@ -2178,8 +2472,9 @@ await (async () => {
     "same-state envelope recovery clears transient status failure copy");
 })();
 
+resetEnvelopeBookkeeping();
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 47 }));
+console.log(JSON.stringify({ ok: true, tests: 50 }));
