@@ -23,8 +23,9 @@ into that split, per-band verdict. It has two halves:
 
 * :func:`band_levels_dbfs` — the FFT band-power estimator, relocated verbatim
   from ``jasper.correction.session._band_levels_dbfs`` (which now delegates
-  here with its own band table) so room correction and active-crossover
-  commissioning share one implementation instead of two forks.
+  through ``jasper.correction.acoustic_quality`` with Room's band table) so
+  room correction and active-crossover commissioning share one implementation
+  instead of two forks.
 * :func:`band_snr_verdicts` — the decision-class-aware verdict builder.
   ``jasper.active_speaker.driver_acoustics`` (per-driver and summed-crossover
   analysis) is the first consumer; room correction does not call this yet.
@@ -49,9 +50,9 @@ from jasper.audio_measurement import deconv
 from jasper.audio_measurement.quality_model import QualityModel
 
 # Six bands spanning the trusted phone-mic analysis window. The first four are
-# byte-identical to jasper.correction.session.SNR_BANDS_HZ (room correction's
-# shipped table, pinned by test_audio_measurement_snr_policy.py so the two
-# never drift apart). "mid" and "treble" extend the table up through a
+# byte-identical to jasper.correction.acoustic_quality.SNR_BANDS_HZ (room
+# correction's shipped table, pinned by test_audio_measurement_snr_policy.py so
+# the two never drift apart). "mid" and "treble" extend the table up through a
 # tweeter's crossover range, which room correction (a sub-1 kHz PEQ concern)
 # never needed.
 CROSSOVER_SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
@@ -104,7 +105,7 @@ def band_levels_dbfs(
     """FFT band-power levels of ``samples``, one entry per band that has bins.
 
     Moved verbatim from ``jasper.correction.session._band_levels_dbfs``
-    (which now delegates here, passing its own ``SNR_BANDS_HZ``) — same
+    (which now delegates through ``correction.acoustic_quality``) — same
     Hanning window, same power average, same rounding — so room correction
     and active-crossover commissioning read one implementation instead of two
     forks. Bounds the FFT input the same way
