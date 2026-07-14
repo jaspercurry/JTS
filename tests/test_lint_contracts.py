@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import re
 import tomllib
+from io import StringIO
 from pathlib import Path
+from tokenize import COMMENT, generate_tokens
 
 REPO = Path(__file__).resolve().parent.parent
 SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
@@ -122,8 +124,13 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # (630 -> 628) so the reclaimed slack is not silently reusable; MAX_NOQA_MARKERS
 # is left alone this round even though the same two markers also counted
 # against it, since the noqa ceiling already carries slack from other sources.
+# 2026-07-14 (-7 broad-except suppressions): the summed commissioning runtime
+# consolidates eight identical transaction-edge handlers into one explicit
+# capture helper. The ratchet now counts suppression comment tokens instead of
+# unrelated prose/string mentions of the rule name, so its value is the
+# auditable live marker count after that consolidation (627 -> 620).
 MAX_NOQA_MARKERS = 813
-MAX_BLE001_MARKERS = 628
+MAX_BLE001_MARKERS = 620
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 
@@ -164,7 +171,13 @@ def test_broad_exception_suppressions_are_explicit() -> None:
 
 
 def test_noqa_debt_does_not_grow() -> None:
-    text = "\n".join(path.read_text(encoding="utf-8") for path in _python_files())
+    sources = [path.read_text(encoding="utf-8") for path in _python_files()]
+    text = "\n".join(sources)
+    ble_markers = sum(
+        token.type == COMMENT and token.string.startswith("# noqa: BLE001")
+        for source in sources
+        for token in generate_tokens(StringIO(source).readline)
+    )
 
     assert text.count("# noqa") <= MAX_NOQA_MARKERS
-    assert text.count("BLE001") <= MAX_BLE001_MARKERS
+    assert ble_markers <= MAX_BLE001_MARKERS

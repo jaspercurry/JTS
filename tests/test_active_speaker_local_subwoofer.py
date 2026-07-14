@@ -404,6 +404,101 @@ def test_sub_baseline_reproof_allows_well_formed_graph(topology_fn, preset_fn) -
     assert graph.details["subwoofer_present"] is True
 
 
+def test_sub_baseline_reproof_blocks_filter_after_sub_limiter() -> None:
+    baseline = _baseline(_active_2way_sub_preset())
+    payload = yaml.safe_load(baseline)
+    payload["filters"]["forged_post_sub_limiter_peq"] = {
+        "type": "Biquad",
+        "parameters": {
+            "type": "Peaking",
+            "freq": 2000.0,
+            "q": 1.0,
+            "gain": 60.0,
+        },
+    }
+    payload["pipeline"].append({
+        "type": "Filter",
+        "channels": [4],
+        "names": ["forged_post_sub_limiter_peq"],
+    })
+    source = next(
+        line for line in baseline.splitlines() if line.startswith("# Source:")
+    )
+
+    graph = classify_camilla_graph(
+        topology=_active_2way_sub_topology(),
+        text=f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}",
+    )
+
+    assert graph.allowed is False
+    assert "active_output_post_limiter_filter_unsafe" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
+@pytest.mark.parametrize("corner_hz", [39.0, 201.0, 20_000.0])
+def test_sub_baseline_reproof_blocks_out_of_range_paired_corner(
+    corner_hz: float,
+) -> None:
+    baseline = _baseline(_active_2way_sub_preset())
+    payload = yaml.safe_load(baseline)
+    for name in ("as_sub_lowpass", "as_woofer_bass_mgmt_hp"):
+        payload["filters"][name]["parameters"]["freq"] = corner_hz
+    source = next(
+        line for line in baseline.splitlines() if line.startswith("# Source:")
+    )
+
+    graph = classify_camilla_graph(
+        topology=_active_2way_sub_topology(),
+        text=f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}",
+    )
+
+    assert graph.allowed is False
+    assert "active_output_driver_chain_unrecognized" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
+@pytest.mark.parametrize("order", [2, 8])
+def test_sub_baseline_reproof_requires_canonical_crossover_order(order: int) -> None:
+    baseline = _baseline(_active_2way_sub_preset())
+    payload = yaml.safe_load(baseline)
+    for name in ("as_sub_lowpass", "as_woofer_bass_mgmt_hp"):
+        payload["filters"][name]["parameters"]["order"] = order
+    source = next(
+        line for line in baseline.splitlines() if line.startswith("# Source:")
+    )
+
+    graph = classify_camilla_graph(
+        topology=_active_2way_sub_topology(),
+        text=f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}",
+    )
+
+    assert graph.allowed is False
+    assert "active_output_driver_chain_unrecognized" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
+def test_passive_main_bass_management_requires_canonical_order() -> None:
+    baseline = _baseline(_passive_1way_sub_preset())
+    payload = yaml.safe_load(baseline)
+    payload["filters"]["as_full_range_bass_mgmt_hp"]["parameters"]["order"] = 2
+    source = next(
+        line for line in baseline.splitlines() if line.startswith("# Source:")
+    )
+
+    graph = classify_camilla_graph(
+        topology=_passive_1way_sub_topology(),
+        text=f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}",
+    )
+
+    assert graph.allowed is False
+    assert "active_baseline_bass_mgmt_highpass_missing" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
 @pytest.mark.parametrize(
     "topology_fn,preset_fn",
     [
@@ -594,6 +689,36 @@ def test_commissioning_reproof_blocks_audible_sub_with_high_corner() -> None:
     graph = classify_camilla_graph(topology=topology, text=tampered)
     assert graph.allowed is False
     assert "active_graph_unprotected_sub_audible" in {i["code"] for i in graph.issues}
+
+
+def test_commissioning_reproof_blocks_malformed_sub_lowpass_while_muted() -> None:
+    from jasper.active_speaker.camilla_yaml import (
+        emit_active_speaker_commissioning_config,
+    )
+
+    preset = _active_2way_sub_preset()
+    honest = emit_active_speaker_commissioning_config(
+        preset,
+        playback_device="hw:TEST,0",
+        audible_outputs=set(),
+    )
+    tampered = honest.replace(
+        "as_sub_lowpass:\n    type: BiquadCombo\n    parameters:\n"
+        "      type: LinkwitzRileyLowpass",
+        "as_sub_lowpass:\n    type: Biquad\n    parameters:\n"
+        "      type: Peaking",
+    )
+    assert tampered != honest
+
+    graph = classify_camilla_graph(
+        topology=_active_2way_sub_topology(),
+        text=tampered,
+    )
+
+    assert graph.allowed is False
+    assert "active_commissioning_chain_unrecognized" in {
+        issue["code"] for issue in graph.issues
+    }
 
 
 # --------------------------------------------------------------------------- #

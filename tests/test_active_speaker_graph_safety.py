@@ -101,6 +101,8 @@ def test_float_matches():
     assert not gs.float_matches(-119.0, MUTE_GAIN)
     assert not gs.float_matches(None, MUTE_GAIN)
     assert not gs.float_matches("nope", MUTE_GAIN)
+    assert not gs.float_matches(10**400, MUTE_GAIN)
+    assert gs.float_value(10**400) is None
 
 
 # --------------------------------------------------------------------------- #
