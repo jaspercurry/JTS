@@ -1027,22 +1027,23 @@ def _read_status_socket(socket_path: str) -> dict[str, object]:
     return parsed
 
 
-def _route_live_state_issues_for_doctor(plan: object) -> tuple[str, ...]:
+def _route_live_state_issues_for_doctor(
+    plan: object,
+    *,
+    negotiated_buffer_frames: int | None = None,
+) -> tuple[str, ...]:
     from jasper.audio_validation import route_live_state_issues
 
     identity = plan.route_latency_identity()
+    if negotiated_buffer_frames is not None:
+        direct = identity.get("fanin_direct_config")
+        if isinstance(direct, dict):
+            identity["fanin_direct_config"] = {
+                **direct,
+                "negotiated_buffer_frames": negotiated_buffer_frames,
+            }
     issues: list[str] = []
-    usbsink_state: dict[str, object] | None = None
     fanin_status: dict[str, object] | None = None
-
-    try:
-        parsed = json.loads(Path("/run/jasper-usbsink/state.json").read_text())
-        if isinstance(parsed, dict):
-            usbsink_state = parsed
-        else:
-            issues.append("live_usbsink_state_malformed")
-    except (OSError, json.JSONDecodeError) as e:
-        issues.append(f"live_usbsink_state_unreadable:{type(e).__name__}")
 
     try:
         fanin_status = _read_status_socket(_FANIN_STATUS_SOCKET)
@@ -1055,7 +1056,6 @@ def _route_live_state_issues_for_doctor(plan: object) -> tuple[str, ...]:
                 *issues,
                 *route_live_state_issues(
                     identity,
-                    usbsink_state=usbsink_state,
                     fanin_status=fanin_status,
                     # A valid promotion artifact certifies the installed route,
                     # not a promise that an idle USB host keeps the activity-
@@ -1064,7 +1064,7 @@ def _route_live_state_issues_for_doctor(plan: object) -> tuple[str, ...]:
                     # classifier; the shared helper remains fail-closed unless
                     # that field says exactly "idle". The artifact writer does
                     # not opt in and therefore stays strict mid-stream.
-                    allow_idle_resampler_unlocked=True,
+                    allow_idle_direct_lane=True,
                 ),
             )
         )
@@ -1845,7 +1845,24 @@ def check_route_latency_evidence() -> CheckResult:
     )
     status = str(summary.get("status") or "fail")
     if status in {"pass", "warn"}:
-        live_issues = _route_live_state_issues_for_doctor(plan)
+        negotiated_buffer_frames: int | None = None
+        if result.artifact is not None:
+            artifact_identity = result.artifact.checks.get("identity")
+            if isinstance(artifact_identity, dict):
+                raw_buffer = artifact_identity.get(
+                    "fanin_direct_negotiated_buffer_frames"
+                )
+                if not isinstance(raw_buffer, bool):
+                    try:
+                        parsed_buffer = int(raw_buffer)
+                    except (TypeError, ValueError):
+                        parsed_buffer = 0
+                    if parsed_buffer > 0:
+                        negotiated_buffer_frames = parsed_buffer
+        live_issues = _route_live_state_issues_for_doctor(
+            plan,
+            negotiated_buffer_frames=negotiated_buffer_frames,
+        )
         if live_issues:
             status = "fail"
             detail += f", live_issues={list(live_issues)}"

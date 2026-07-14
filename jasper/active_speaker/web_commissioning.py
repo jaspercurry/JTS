@@ -481,14 +481,23 @@ def _commission_tone_mux_command(cmd: str) -> dict[str, Any]:
 
 
 def _commission_tone_select_fanin_lane() -> dict[str, Any]:
-    return _commission_tone_mux_command(
-        f"TEST_SELECT {COMMISSION_TONE_FANIN_LABEL}",
-    )
+    try:
+        return _commission_tone_mux_command(
+            "TEST_SELECT "
+            f"{COMMISSION_TONE_FANIN_LABEL} active-speaker-commissioning",
+        )
+    except _MUX_COMMAND_ERRORS:
+        # SELECT may have landed even when its response was lost. The
+        # owner-scoped idempotent release cannot disturb correction's gate.
+        _commission_tone_release_fanin_lane(reason="select_indeterminate")
+        raise
 
 
 def _commission_tone_release_fanin_lane(*, reason: str) -> dict[str, Any]:
     try:
-        payload = _commission_tone_mux_command("TEST_RELEASE")
+        payload = _commission_tone_mux_command(
+            "TEST_RELEASE active-speaker-commissioning",
+        )
     except _MUX_COMMAND_ERRORS as exc:
         log_event(
             logger,

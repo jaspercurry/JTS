@@ -7,27 +7,39 @@ Description=Jasper composite USB gadget (management network + optional audio)
 #   - uac2.usb0 — the wizard-toggled USB audio input (jasper-usbsink source).
 #
 # This is the FIRST gadget unit install.sh enables (systemctl enable --now),
-# deliberately — it carries the always-on network. jasper-usbsink.service
-# (the audio bridge) orders After= this unit and no longer owns the gadget.
+# deliberately — it carries the always-on network. jasper-usbsink.service is a
+# process-free readiness marker that orders After= this unit and does not own the
+# gadget.
 #
 # There is intentionally NO jasper-local-source-allowed ExecCondition on this
 # unit: the network function must survive multiroom follower parking. The
-# AUDIO-function gate lives inside jasper-usbgadget-up (it composes uac2 only
-# when jasper-usbsink is enabled AND local sources are allowed), and
-# jasper-usbsink.service keeps its own ExecCondition.
+# AUDIO-function gate lives inside jasper-usbgadget-up: it reads canonical USB
+# source intent plus role permission directly and composes uac2 only when both
+# allow it. jasper-usbsink enablement remains a derived lifecycle mirror, and
+# the service keeps the same source-aware ExecCondition at its start boundary.
 #
 # NAMING DEBT: the ConfigFS gadget dir name stays `jts-usb-audio` (the doctor's
 # low-latency contract reads that exact path). Accepted debt — see
 # docs/HANDOFF-usb-gadget.md.
-After=systemd-modules-load.service sys-kernel-config.mount
+After=systemd-modules-load.service sys-kernel-config.mount jasper-fanin.service
+Wants=jasper-fanin.service
 Before=jasper-usbsink.service
 ConditionPathExists=/sys/kernel/config
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# ConfigFS composition is synchronous and normally sub-second. Bound both
+# halves so a coordinator `restart` has a 10 s service contract; its client
+# waits one second longer for PID 1's terminal result.
+TimeoutStartSec=5s
+TimeoutStopSec=5s
 EnvironmentFile=-/etc/jasper/jasper.env
-EnvironmentFile=-/var/lib/jasper/speaker_name.env
+# The management-writable speaker-name file is parsed as one inert value
+# by gadget-up; never inject it into this root process. Test-only path/command
+# seams are also stripped from the production unit environment.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PYTHONPATH PYTHONHOME JASPER_CONFIGFS_ROOT JASPER_UDC_CLASS_DIR JASPER_CPUINFO_FILE JASPER_MODULES_ROOT JASPER_SPEAKER_NAME_FILE JASPER_SPEAKER_NAME_READER JASPER_USBGADGET_AUDIO_ALLOWED_CMD JASPER_USBGADGET_AUDIO_READY_CMD JASPER_USBGADGET_AUDIO_DATA_READY_CMD
 # Skip (NOT fail) when there is no UDC yet (fresh install pre-reboot) or when
 # no function is wanted (network kill-switched AND audio off/parked). The
 # zero-function case restores the historic zero-RAM contract: libcomposite

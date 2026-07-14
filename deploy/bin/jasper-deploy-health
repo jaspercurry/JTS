@@ -19,7 +19,9 @@ memory pressure, before we have evidence that the heavier Python stack is safe.
 from __future__ import annotations
 
 import json
+import os
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -29,14 +31,52 @@ from typing import Any
 
 INSTALL_PROFILE_FILE = Path("/var/lib/jasper/install_profile")
 SOURCE_INTENT_FILE = Path("/var/lib/jasper/source_intent.env")
+GROUPING_ENV_FILE = Path("/var/lib/jasper/grouping.env")
 FULL_INSTALL_PROFILE = "full"
 STREAMBOX_INSTALL_PROFILE = "streambox"
 LEGACY_STREAMBOX_INSTALL_PROFILES = frozenset({"endpoint", "satellite"})
 AIRPLAY_UNIT = "shairport-sync.service"
 AIRPLAY_INTENT_KEY = "JASPER_SOURCE_INTENT_SHAIRPORT_SYNC_SERVICE"
+SPOTIFY_UNIT = "librespot.service"
+SPOTIFY_INTENT_KEY = "JASPER_SOURCE_INTENT_LIBRESPOT_SERVICE"
+BLUETOOTH_INTENT_KEY = "JASPER_BLUETOOTH_SOURCE_INTENT"
+USBSINK_INTENT_KEY = "JASPER_SOURCE_INTENT_JASPER_USBSINK_SERVICE"
+SOURCE_INTENT_PREFIX = "JASPER_SOURCE_INTENT_"
 SOURCE_INTENT_ENABLED = "enabled"
 SOURCE_INTENT_DISABLED = "disabled"
 MAX_SOURCE_INTENT_BYTES = 64 * 1024
+MAX_GROUPING_ENV_BYTES = 64 * 1024
+RFKILL_CLASS_PATH = Path("/sys/class/rfkill")
+UAC2_CARD_PATH = Path("/proc/asound/UAC2Gadget")
+MAX_RFKILL_FIELD_BYTES = 32
+
+# Fixed, import-cheap source contract for this stdlib-only probe. The intent
+# keys preserve the existing unit-derived AirPlay/Spotify names; Bluetooth has
+# no systemd intent unit, so its source-level key is explicit. USB Audio Input
+# ships disabled; the other three ship enabled. Bluetooth is effective-On only
+# when both audio services and its pairing agent are active.
+SOURCE_INTENT_KEYS = {
+    "airplay": AIRPLAY_INTENT_KEY,
+    "spotify": SPOTIFY_INTENT_KEY,
+    "bluetooth": BLUETOOTH_INTENT_KEY,
+    "usbsink": USBSINK_INTENT_KEY,
+}
+SOURCE_INTENT_DEFAULTS = {
+    "airplay": True,
+    "spotify": True,
+    "bluetooth": True,
+    "usbsink": False,
+}
+SOURCE_REQUIRED_UNITS = {
+    "airplay": (AIRPLAY_UNIT, "nqptp.service"),
+    "spotify": (SPOTIFY_UNIT,),
+    "bluetooth": (
+        "bluealsa.service",
+        "bluealsa-aplay.service",
+        "bt-agent.service",
+    ),
+    "usbsink": ("jasper-usbsink.service",),
+}
 
 FULL_REQUIRED_ACTIVE_UNITS = (
     "nginx.service",
@@ -46,10 +86,6 @@ FULL_REQUIRED_ACTIVE_UNITS = (
     "jasper-camilla.service",
     "jasper-mux.service",
     "jasper-input.service",
-    "shairport-sync.service",
-    "nqptp.service",
-    "bluealsa.service",
-    "bluealsa-aplay.service",
 )
 
 STREAMBOX_REQUIRED_ACTIVE_UNITS = tuple(
@@ -70,11 +106,10 @@ OBSERVED_OPTIONAL_UNITS_BY_PROFILE = {
     FULL_INSTALL_PROFILE: (
         "jasper-voice.service",
         "jasper-aec-bridge.service",
-        "bt-agent.service",
     ),
     # Voice and AEC are intentionally disabled by park_streambox_brain_units.
     # Do not manufacture warnings for units this install profile cannot run.
-    STREAMBOX_INSTALL_PROFILE: ("bt-agent.service",),
+    STREAMBOX_INSTALL_PROFILE: (),
 }
 
 FANIN_SOCKET = "/run/jasper-fanin/control.sock"
@@ -121,48 +156,220 @@ def _systemctl_is_active(unit: str) -> str:
     return (proc.stdout or proc.stderr).strip() or f"rc={proc.returncode}"
 
 
-def _airplay_expected_active(path: Path | None = None) -> bool:
-    """Return the persisted AirPlay source expectation.
+def _read_regular_bounded_bytes(path: Path, max_bytes: int) -> bytes:
+    """Descriptor-safe bounded read for privileged mutable-state probes."""
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RuntimeError(f"{path} is not a regular file")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(64 * 1024, max_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                raise RuntimeError(f"{path} exceeds the {max_bytes}-byte cap")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _source_expectations(path: Path | None = None) -> dict[str, bool]:
+    """Return persisted active expectations for the fixed source set.
 
     This mirrors the tiny read-only subset of :mod:`jasper.source_intent` that
     a system-Python, stdlib-only deploy probe can safely use: the canonical
-    path, 64 KiB cap, last assignment wins, quotes are stripped, and absent
-    file/key means the shipped enabled default. An unreadable/oversized file or
-    malformed AirPlay value is ambiguous and fails the health check closed.
+    path, a strict 64 KiB *byte* cap, last assignment wins, quotes are stripped,
+    and an absent file/key means that source's shipped default. An unreadable,
+    oversized, invalid-UTF-8, or malformed recognized value is ambiguous and
+    fails the health check closed. Unrelated env keys remain outside this
+    probe's ownership and are ignored. Unknown keys in the owned
+    JASPER_SOURCE_INTENT_* namespace fail closed so a newly added source cannot
+    silently escape this fixed deploy contract.
     """
 
     intent_file = SOURCE_INTENT_FILE if path is None else path
     try:
-        with intent_file.open(encoding="utf-8") as file:
-            text = file.read(MAX_SOURCE_INTENT_BYTES + 1)
+        raw_bytes = _read_regular_bounded_bytes(
+            intent_file,
+            MAX_SOURCE_INTENT_BYTES,
+        )
     except FileNotFoundError:
-        return True
-    except UnicodeError as exc:
-        raise RuntimeError(f"cannot decode {intent_file} as UTF-8: {exc}") from exc
+        return dict(SOURCE_INTENT_DEFAULTS)
     except OSError as exc:
         raise RuntimeError(f"cannot read {intent_file}: {exc}") from exc
-    if len(text) > MAX_SOURCE_INTENT_BYTES:
-        raise RuntimeError(
-            f"{intent_file} exceeds the {MAX_SOURCE_INTENT_BYTES}-byte cap"
-        )
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeError as exc:
+        raise RuntimeError(f"cannot decode {intent_file} as UTF-8: {exc}") from exc
 
-    value: str | None = None
+    key_to_source = {key: source for source, key in SOURCE_INTENT_KEYS.items()}
+    values: dict[str, str] = {}
     for raw in text.splitlines():
         stripped = raw.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
         key, _, candidate = stripped.partition("=")
-        if key.strip() == AIRPLAY_INTENT_KEY:
-            value = candidate.strip().strip("'\"")
-    if value is None:
-        return True
-    if value == SOURCE_INTENT_ENABLED:
-        return True
-    if value == SOURCE_INTENT_DISABLED:
-        return False
-    raise RuntimeError(
-        f"{AIRPLAY_INTENT_KEY} is {value!r}, expected enabled or disabled"
+        normalized_key = key.strip()
+        source = key_to_source.get(normalized_key)
+        if source is not None:
+            values[source] = candidate.strip().strip("'\"")
+        elif normalized_key.startswith(SOURCE_INTENT_PREFIX):
+            raise RuntimeError(
+                f"unrecognized source intent key {normalized_key!r}"
+            )
+
+    expected = dict(SOURCE_INTENT_DEFAULTS)
+    for source, value in values.items():
+        if value == SOURCE_INTENT_ENABLED:
+            expected[source] = True
+        elif value == SOURCE_INTENT_DISABLED:
+            expected[source] = False
+        else:
+            key = SOURCE_INTENT_KEYS[source]
+            raise RuntimeError(
+                f"{key} is {value!r}, expected enabled or disabled"
+            )
+    return expected
+
+
+def _read_bounded_env(path: Path, max_bytes: int) -> dict[str, str]:
+    """Read a small systemd-style env file with last-assignment-wins."""
+    try:
+        raw_bytes = _read_regular_bounded_bytes(path, max_bytes)
+    except (OSError, RuntimeError):
+        return {}
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeError:
+        return {}
+    values: dict[str, str] = {}
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+def _bonded_follower_active(path: Path | None = None) -> bool:
+    """Whether runtime and persisted grouping agree this box is a follower.
+
+    The config checks avoid treating a stale snapclient as a pair. The bounded
+    runtime probes avoid treating a half-applied follower config as parked.
+    """
+    env = _read_bounded_env(
+        GROUPING_ENV_FILE if path is None else path,
+        MAX_GROUPING_ENV_BYTES,
     )
+    if env.get("JASPER_GROUPING", "").lower() != "on":
+        return False
+    if env.get("JASPER_GROUPING_ROLE", "") != "follower":
+        return False
+    if not env.get("JASPER_GROUPING_BOND_ID", ""):
+        return False
+    if not env.get("JASPER_GROUPING_LEADER_ADDR", ""):
+        return False
+    return (
+        _systemctl_is_active("jasper-snapclient.service") == "active"
+        and _systemctl_is_active("jasper-snapserver.service") != "active"
+    )
+
+
+def _read_small_field(path: Path) -> str:
+    try:
+        with path.open("rb") as file:
+            raw = file.read(MAX_RFKILL_FIELD_BYTES + 1)
+    except OSError as exc:
+        raise RuntimeError(f"cannot read {path}: {exc}") from exc
+    if len(raw) > MAX_RFKILL_FIELD_BYTES:
+        raise RuntimeError(f"{path} exceeds {MAX_RFKILL_FIELD_BYTES} bytes")
+    try:
+        return raw.decode("utf-8").strip()
+    except UnicodeError as exc:
+        raise RuntimeError(f"cannot decode {path} as UTF-8: {exc}") from exc
+
+
+def _bluetooth_rfkill_state(
+    root: Path | None = None,
+) -> tuple[bool, bool, bool, bool]:
+    """Return (present, any soft blocked, all soft blocked, any hard blocked)."""
+    rfkill_root = RFKILL_CLASS_PATH if root is None else root
+    present = False
+    soft_states: list[bool] = []
+    hard_blocked = False
+    try:
+        entries = sorted(rfkill_root.glob("rfkill*"))
+    except OSError as exc:
+        raise RuntimeError(f"cannot enumerate {rfkill_root}: {exc}") from exc
+    for entry in entries:
+        if _read_small_field(entry / "type") != "bluetooth":
+            continue
+        present = True
+        soft_states.append(_read_small_field(entry / "soft") == "1")
+        hard_blocked = hard_blocked or _read_small_field(entry / "hard") == "1"
+    return (
+        present,
+        any(soft_states),
+        all(soft_states) if soft_states else False,
+        hard_blocked,
+    )
+
+
+def _bluez_powered() -> bool | None:
+    try:
+        proc = subprocess.run(
+            ["bluetoothctl", "show"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    for raw in proc.stdout.splitlines():
+        key, separator, value = raw.strip().partition(":")
+        if separator and key == "Powered":
+            if value.strip() == "yes":
+                return True
+            if value.strip() == "no":
+                return False
+    return None
+
+
+def _bluetooth_radio_issues(desired: bool) -> list[str]:
+    """Validate physical RF-kill and BlueZ power against persisted intent."""
+    try:
+        present, any_soft_blocked, all_soft_blocked, hard_blocked = (
+            _bluetooth_rfkill_state()
+        )
+    except RuntimeError as exc:
+        return [f"RF-kill state is unreadable: {exc}"]
+    powered = _bluez_powered()
+    issues: list[str] = []
+    if desired:
+        if not present:
+            issues.append("no Bluetooth RF-kill radio is present")
+        if any_soft_blocked:
+            issues.append("Bluetooth radio is soft blocked")
+        if hard_blocked:
+            issues.append("Bluetooth radio is hard blocked")
+        if powered is not True:
+            issues.append("BlueZ Powered is not yes")
+    else:
+        if present and not all_soft_blocked:
+            issues.append("Bluetooth radio is not soft blocked")
+        if powered is True:
+            issues.append("BlueZ Powered is still yes")
+        elif present and powered is None:
+            issues.append("BlueZ Powered state is unreadable")
+    return issues
 
 
 def _status_json(path: str) -> dict[str, Any]:
@@ -238,6 +445,58 @@ def _fanin_xrun_counts(payload: dict[str, Any]) -> tuple[int, int]:
     return output_xruns, input_xruns
 
 
+def _usb_source_issues(
+    desired: bool,
+    fanin_status: dict[str, Any],
+    *,
+    card_path: Path | None = None,
+) -> list[str]:
+    """Validate USB's host-visible and direct-capture derived state.
+
+    The service-state check lives in ``SOURCE_REQUIRED_UNITS``. This check
+    closes the other two boundaries owned by the coordinator: the UAC2 card
+    advertised to the host and fan-in's direct lane that consumes it.
+    """
+
+    card_present = (UAC2_CARD_PATH if card_path is None else card_path).is_dir()
+    direct_entry: dict[str, Any] | None = None
+    inputs = fanin_status.get("inputs")
+    if isinstance(inputs, list):
+        for raw in inputs:
+            if (
+                isinstance(raw, dict)
+                and raw.get("label") == "usbsink"
+                and raw.get("source") == "direct"
+            ):
+                direct_entry = raw
+                break
+
+    if not desired:
+        issues: list[str] = []
+        if card_present:
+            issues.append("UAC2 card is still advertised")
+        if direct_entry is not None:
+            issues.append("fan-in direct USB lane is still armed")
+        return issues
+
+    issues = []
+    if not card_present:
+        issues.append("UAC2 card is not advertised")
+    if direct_entry is None:
+        issues.append("fan-in direct USB lane is absent")
+        return issues
+    direct = direct_entry.get("direct")
+    if not isinstance(direct, dict):
+        issues.append("fan-in direct USB status is malformed")
+        return issues
+    if direct.get("present") is not True:
+        issues.append("fan-in direct USB device is not present")
+    health = direct.get("health")
+    if health not in {"idle", "capturing"}:
+        issues.append(f"fan-in direct USB health is {health!r}")
+    return issues
+
+
 def _line(status: str, name: str, detail: str) -> None:
     print(f"{status:<4} {name:<28} {detail}")
 
@@ -255,36 +514,74 @@ def main() -> int:
 
     print(f"low-memory deploy health (profile={profile})")
 
+    parked_follower = _bonded_follower_active()
     required_units = REQUIRED_ACTIVE_UNITS_BY_PROFILE[profile]
+    if parked_follower:
+        # The follower consumes its leader's Snapcast stream directly. The
+        # local source arbiter is deliberately stopped with every local source.
+        required_units = tuple(
+            unit for unit in required_units if unit != "jasper-mux.service"
+        )
+        _line("OK", "local source policy", "parked (bonded follower)")
     try:
-        airplay_expected = _airplay_expected_active()
+        source_expectations = _source_expectations()
     except RuntimeError as exc:
         failures += 1
         _line("FAIL", "source intent", str(exc))
-        airplay_expected = None
+        source_expectations = None
 
     for unit in required_units:
-        if unit == AIRPLAY_UNIT:
-            if airplay_expected is None:
-                continue
-            if not airplay_expected:
-                state = _systemctl_is_active(unit)
-                if state == "inactive":
-                    _line("OK", unit, "inactive (disabled by persisted source intent)")
-                else:
-                    failures += 1
-                    _line(
-                        "FAIL",
-                        unit,
-                        f"{state}; expected inactive from persisted source intent",
-                    )
-                continue
         state = _systemctl_is_active(unit)
         if state == "active":
             _line("OK", unit, state)
         else:
             failures += 1
             _line("FAIL", unit, state)
+
+    # Source units are checked separately from the always-required core so a
+    # persisted household disable is a healthy inactive state, while drift in
+    # either direction still fails the deploy surface. If parsing failed, skip
+    # every source probe rather than guessing a desired state.
+    if source_expectations is not None:
+        for source, units in SOURCE_REQUIRED_UNITS.items():
+            for unit in units:
+                expected_active = (
+                    False if parked_follower else source_expectations[source]
+                )
+                state = _systemctl_is_active(unit)
+                expected_state = "active" if expected_active else "inactive"
+                if state == expected_state:
+                    detail = state
+                    if parked_follower and not expected_active:
+                        detail += " (parked on bonded follower)"
+                    elif not expected_active:
+                        detail += " (disabled by persisted source intent)"
+                    _line("OK", unit, detail)
+                else:
+                    failures += 1
+                    policy = (
+                        "bonded-follower parking policy"
+                        if parked_follower
+                        else "persisted source intent"
+                    )
+                    _line(
+                        "FAIL",
+                        unit,
+                        f"{state}; expected {expected_state} from {policy}",
+                    )
+
+        if not parked_follower:
+            radio_issues = _bluetooth_radio_issues(
+                source_expectations["bluetooth"]
+            )
+            if radio_issues:
+                failures += 1
+                _line("FAIL", "Bluetooth radio", "; ".join(radio_issues))
+            else:
+                desired = (
+                    "on" if source_expectations["bluetooth"] else "off"
+                )
+                _line("OK", "Bluetooth radio", f"matches desired {desired}")
 
     for socket_unit in REQUIRED_ACTIVE_SOCKETS:
         state = _systemctl_is_active(socket_unit)
@@ -337,6 +634,18 @@ def main() -> int:
                     f"progress_age_ms={age}"
                 ),
             )
+
+        if source_expectations is not None:
+            usb_desired = (
+                False if parked_follower else source_expectations["usbsink"]
+            )
+            usb_issues = _usb_source_issues(usb_desired, fanin_later)
+            if usb_issues:
+                failures += 1
+                _line("FAIL", "USB Audio Input", "; ".join(usb_issues))
+            else:
+                desired = "on" if usb_desired else "off"
+                _line("OK", "USB Audio Input", f"matches desired {desired}")
     except Exception as exc:  # noqa: BLE001
         failures += 1
         _line("FAIL", "jasper-fanin STATUS", str(exc))

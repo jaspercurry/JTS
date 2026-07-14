@@ -1,7 +1,11 @@
 [Unit]
 Description=Jasper renderer source-arbiter (auto/manual source selection)
-After=jasper-fanin.service librespot.service shairport-sync.service bluealsa.service
-Wants=jasper-fanin.service librespot.service shairport-sync.service bluealsa.service
+# Mux consumes renderer state when a source is running, but it does not own
+# renderer lifecycle.  In particular, Wants= on an optional source would start
+# it even when /sources/ had disabled the unit.  The source-intent coordinator
+# is the sole lifecycle owner; mux only pulls its required fan-in dependency.
+After=jasper-fanin.service
+Wants=jasper-fanin.service
 # Source arbitration is safe to restart after transient OOM/update pressure.
 # Keep a finite limit for real config/code loops, but do not park after a
 # short burst while the box is still reclaiming memory.
@@ -10,6 +14,8 @@ StartLimitBurst=20
 
 [Service]
 Type=simple
+TimeoutStartSec=2s
+TimeoutStopSec=5s
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # Spotify credentials are wizard-owned and live outside jasper.env.
@@ -22,7 +28,8 @@ EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # JASPER_FANIN_CONTROL_SOCKET aligned if an operator moves fan-in's
 # UDS out of /run/jasper-fanin/control.sock.
 EnvironmentFile=-/var/lib/jasper/fanin.env
-ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
+ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed
 ExecStart=/opt/jasper/.venv/bin/jasper-mux
 Restart=always
 RestartSec=5

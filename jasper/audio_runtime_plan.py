@@ -93,22 +93,17 @@ FANIN_INPUT_RESAMPLER_CUSHION_KEY = (
     "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES"
 )
 FANIN_INPUT_RESAMPLER_RING_KEY = "JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES"
+FANIN_USB_DIRECT_PERIOD_KEY = "JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES"
+FANIN_USB_DIRECT_DEVICE = "hw:UAC2Gadget"
+DEFAULT_FANIN_USB_DIRECT_PERIOD_FRAMES = 256
+MIN_FANIN_USB_DIRECT_PERIOD_FRAMES = 32
+MAX_FANIN_USB_DIRECT_PERIOD_FRAMES = 1024
+FANIN_USB_DIRECT_MIN_BUFFER_FRAMES = 768
+FANIN_USB_DIRECT_MIN_BUFFER_PERIODS = 3
 DEFAULT_USB_LOW_LATENCY_RESAMPLER_TARGET_FRAMES = 512
 DEFAULT_USB_LOW_LATENCY_RESAMPLER_MAX_ADJUST_PPM = 500
 DEFAULT_USB_LOW_LATENCY_RESAMPLER_CUSHION_FRAMES = 1536
 DEFAULT_USB_LOW_LATENCY_RESAMPLER_RING_FRAMES = 4096
-# The Rust jasper-usbsink-audio bridge has one delivery mode (the aloop
-# fan-in lane). The route reconciler records it in the route env for route
-# identity; the daemon does not read it. There is no runtime flip.
-USBSINK_OUTPUT_MODE_KEY = "JASPER_USBSINK_OUTPUT_MODE"
-USBSINK_OUTPUT_MODE_ALOOP = "aloop"
-LEGACY_USBSINK_AUDIO_IMPL_KEY = "JASPER_USBSINK_AUDIO_IMPL"
-USBSINK_BLOCK_FRAMES_KEY = "JASPER_USBSINK_BLOCK_FRAMES"
-USBSINK_RING_PERIODS_KEY = "JASPER_USBSINK_RING_PERIODS"
-USBSINK_LATENCY_KEY = "JASPER_USBSINK_LATENCY"
-DEFAULT_USB_LOW_LATENCY_BLOCK_FRAMES = 256
-DEFAULT_USB_LOW_LATENCY_RING_PERIODS = 3
-DEFAULT_USB_LOW_LATENCY_LATENCY_HINT = "low"
 DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES = 1536
 AUDIO_ROUTE_PROFILE_KEY = "JASPER_AUDIO_ROUTE_PROFILE"
 ROUTE_CORRECTED_48K = "corrected_48k"
@@ -138,7 +133,7 @@ USB_LOW_LATENCY_SOURCE_ID = "usbsink"
 # new gate with margin.
 USB_LOW_LATENCY_P95_BUDGET_MS = 40.0
 USB_LOW_LATENCY_P99_BUDGET_MS = 42.0
-ROUTE_CONFIG_HASH_SCHEMA_VERSION = 3
+ROUTE_CONFIG_HASH_SCHEMA_VERSION = 4
 UAC2_LOW_LATENCY_EXPECTED_ATTRS = {
     "c_sync": "async",
     "req_number": "2",
@@ -164,6 +159,7 @@ BASE_ENV_PROCESS_FALLBACK_KEYS = frozenset(
     | {
         AUDIO_ROUTE_PROFILE_KEY,
         COUPLING_ENV_VAR,
+        FANIN_USB_DIRECT_PERIOD_KEY,
     }
 )
 
@@ -390,7 +386,7 @@ class AudioRouteProfile:
     source_id: str
     fixed_sample_rate: int
     low_latency_claim: bool
-    rust_usb_audio_required: bool
+    fanin_usb_direct_required: bool
     fanin_input_resampler_required: bool
     camilla_required: bool
     outputd_final_reference_required: bool
@@ -409,7 +405,7 @@ class AudioRouteProfile:
             "source_id": self.source_id,
             "fixed_sample_rate": self.fixed_sample_rate,
             "low_latency_claim": self.low_latency_claim,
-            "rust_usb_audio_required": self.rust_usb_audio_required,
+            "fanin_usb_direct_required": self.fanin_usb_direct_required,
             "fanin_input_resampler_required": self.fanin_input_resampler_required,
             "camilla_required": self.camilla_required,
             "outputd_final_reference_required": (
@@ -792,7 +788,7 @@ def resolve_audio_route_profile(
             source_id=USB_LOW_LATENCY_SOURCE_ID,
             fixed_sample_rate=DEFAULT_SAMPLE_RATE,
             low_latency_claim=True,
-            rust_usb_audio_required=True,
+            fanin_usb_direct_required=True,
             fanin_input_resampler_required=True,
             camilla_required=True,
             outputd_final_reference_required=True,
@@ -808,7 +804,7 @@ def resolve_audio_route_profile(
             source_id=USB_LOW_LATENCY_SOURCE_ID,
             fixed_sample_rate=0,
             low_latency_claim=False,
-            rust_usb_audio_required=True,
+            fanin_usb_direct_required=False,
             fanin_input_resampler_required=False,
             camilla_required=False,
             outputd_final_reference_required=True,
@@ -828,7 +824,7 @@ def resolve_audio_route_profile(
         source_id="all",
         fixed_sample_rate=DEFAULT_SAMPLE_RATE,
         low_latency_claim=False,
-        rust_usb_audio_required=False,
+        fanin_usb_direct_required=False,
         fanin_input_resampler_required=False,
         camilla_required=True,
         outputd_final_reference_required=True,
@@ -854,11 +850,6 @@ def route_owned_env_actions(
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_MAX_ADJUST_KEY),
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_CUSHION_KEY),
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_RING_KEY),
-            RuntimeEnvAction("unset", LEGACY_USBSINK_AUDIO_IMPL_KEY),
-            RuntimeEnvAction("unset", USBSINK_BLOCK_FRAMES_KEY),
-            RuntimeEnvAction("unset", USBSINK_RING_PERIODS_KEY),
-            RuntimeEnvAction("unset", USBSINK_LATENCY_KEY),
-            RuntimeEnvAction("set", USBSINK_OUTPUT_MODE_KEY, USBSINK_OUTPUT_MODE_ALOOP),
         )
 
     return (
@@ -884,19 +875,6 @@ def route_owned_env_actions(
             FANIN_INPUT_RESAMPLER_RING_KEY,
             str(DEFAULT_USB_LOW_LATENCY_RESAMPLER_RING_FRAMES),
         ),
-        RuntimeEnvAction("unset", LEGACY_USBSINK_AUDIO_IMPL_KEY),
-        RuntimeEnvAction(
-            "set",
-            USBSINK_BLOCK_FRAMES_KEY,
-            str(DEFAULT_USB_LOW_LATENCY_BLOCK_FRAMES),
-        ),
-        RuntimeEnvAction(
-            "set",
-            USBSINK_RING_PERIODS_KEY,
-            str(DEFAULT_USB_LOW_LATENCY_RING_PERIODS),
-        ),
-        RuntimeEnvAction("set", USBSINK_LATENCY_KEY, DEFAULT_USB_LOW_LATENCY_LATENCY_HINT),
-        RuntimeEnvAction("set", USBSINK_OUTPUT_MODE_KEY, USBSINK_OUTPUT_MODE_ALOOP),
     )
 
 
@@ -951,18 +929,38 @@ def fanin_resampler_config_for_route(route: AudioRouteProfile) -> dict[str, Any]
     }
 
 
-def rust_bridge_config_for_route(route: AudioRouteProfile) -> dict[str, Any]:
-    """Route-owned Rust USB bridge config expected for latency evidence."""
+def _fanin_direct_min_buffer_frames(period_frames: int) -> int:
+    """Return fan-in's smallest valid deep, period-aligned direct buffer."""
 
-    values = _route_action_values(route)
-    if not route.rust_usb_audio_required:
+    floor = max(
+        period_frames * FANIN_USB_DIRECT_MIN_BUFFER_PERIODS,
+        FANIN_USB_DIRECT_MIN_BUFFER_FRAMES,
+    )
+    return ((floor + period_frames - 1) // period_frames) * period_frames
+
+
+def fanin_direct_config_for_route(
+    route: AudioRouteProfile,
+    settings: tuple[RuntimeSetting, ...],
+) -> dict[str, Any]:
+    """Planned USB direct-capture contract expected in fan-in STATUS."""
+
+    if not route.fanin_usb_direct_required:
         return {}
+    period_frames = int(
+        next(
+            setting.value
+            for setting in settings
+            if setting.key == FANIN_USB_DIRECT_PERIOD_KEY
+        )
+    )
     return {
-        "implementation": "rust",
-        "period_frames": _int_like(values.get(USBSINK_BLOCK_FRAMES_KEY, "")),
-        "ring_periods": _int_like(values.get(USBSINK_RING_PERIODS_KEY, "")),
-        "latency_hint": values.get(USBSINK_LATENCY_KEY, ""),
-        "output_mode": values.get(USBSINK_OUTPUT_MODE_KEY, ""),
+        "lane": USB_LOW_LATENCY_SOURCE_ID,
+        "source": "direct",
+        "device": FANIN_USB_DIRECT_DEVICE,
+        "period_frames": period_frames,
+        "min_buffer_frames": _fanin_direct_min_buffer_frames(period_frames),
+        "buffer_period_aligned": True,
     }
 
 
@@ -995,9 +993,9 @@ def route_latency_identity_for_plan(
         "dac_profile_id": dac_profile_id or "",
         "route_config_hash": route_config_hash,
         "camilla_config_hash": camilla_config_hash,
+        "fanin_direct_config": fanin_direct_config_for_route(route, settings),
         "fanin_resampler_config": fanin_resampler_config_for_route(route),
         "outputd_config": outputd_config_for_settings(settings),
-        "rust_bridge_config": rust_bridge_config_for_route(route),
         "uac2_gadget_attrs": (
             dict(UAC2_LOW_LATENCY_EXPECTED_ATTRS)
             if route.route_id == ROUTE_USB_LOW_LATENCY_48K
@@ -1295,6 +1293,25 @@ def build_audio_runtime_plan(
             fanin_label=fanin_env_label,
         ),
     ]
+    if route_profile.fanin_usb_direct_required:
+        settings.append(
+            _resolve_fanin_int(
+                key=FANIN_USB_DIRECT_PERIOD_KEY,
+                default=DEFAULT_FANIN_USB_DIRECT_PERIOD_FRAMES,
+                base_env=base_values,
+                # This lever is read by fan-in from its environment; the lab
+                # override artifact has no writer for it and must not create a
+                # plan-only value that the daemon never receives.
+                override_env={},
+                fanin_env=fanin_values,
+                base_label=base_env_label,
+                override_label=override_label,
+                fanin_label=fanin_env_label,
+                operator_env_allowed=True,
+                min_value=MIN_FANIN_USB_DIRECT_PERIOD_FRAMES,
+                max_value=MAX_FANIN_USB_DIRECT_PERIOD_FRAMES,
+            )
+        )
     settings.append(coupling_setting)
     support = coupling_supported_for_route(str(coupling_setting.value), route_mode)
     camilla_devices = read_camilla_devices_config(correction_config_path)
@@ -2347,6 +2364,9 @@ def _resolve_fanin_int(
     base_label: str,
     override_label: str,
     fanin_label: str,
+    operator_env_allowed: bool = False,
+    min_value: int = 1,
+    max_value: int | None = None,
 ) -> RuntimeSetting:
     operator_raw = _raw(base_env, key)
     override_raw = _raw(override_env, key)
@@ -2354,6 +2374,27 @@ def _resolve_fanin_int(
     operator_value, operator_error = _positive_int(operator_raw)
     override_value, override_error = _positive_int(override_raw)
     generated_value, generated_error = _positive_int(generated_raw)
+
+    def enforce_bounds(
+        value: int | None,
+        error: str | None,
+    ) -> tuple[int | None, str | None]:
+        if value is None or error is not None:
+            return value, error
+        if value < min_value or (max_value is not None and value > max_value):
+            upper = f"..{max_value}" if max_value is not None else " or greater"
+            return None, f"must be {min_value}{upper}"
+        return value, None
+
+    operator_value, operator_error = enforce_bounds(
+        operator_value, operator_error,
+    )
+    override_value, override_error = enforce_bounds(
+        override_value, override_error,
+    )
+    generated_value, generated_error = enforce_bounds(
+        generated_value, generated_error,
+    )
     warnings: list[str] = []
 
     if override_error is not None:
@@ -2371,9 +2412,9 @@ def _resolve_fanin_int(
             f"{key} in {fanin_label} is invalid ({generated_raw!r}: "
             f"{generated_error}); using the next safe source"
         )
-    if operator_raw is not None:
+    if operator_raw is not None and not operator_env_allowed:
         warnings.append(
-            f"{key} is present in {base_label}; fan-in buffer tuning belongs in "
+            f"{key} is present in {base_label}; fan-in tuning belongs in "
             f"{fanin_label} or the audio runtime lab override artifact"
         )
     if operator_raw is not None and generated_raw is not None:

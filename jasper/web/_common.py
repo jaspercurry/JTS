@@ -553,24 +553,31 @@ def restart_systemd_units(*units: str) -> None:
 
 
 def bonded_follower_active() -> bool:
-    """True when this speaker is an ACTIVE bonded multiroom FOLLOWER —
-    the dumb-follower profile parks voice/AEC/renderers while paired.
-    The ONE shared predicate (multiroom.config.is_bonded_follower),
-    fail-open to False so a broken read never blocks a solo wizard."""
-    try:
-        from ..multiroom.config import is_bonded_follower, load_config
+    """True when a requested follower role actually remains effective.
 
-        return is_bonded_follower(load_config())
+    The grouping reconciler may refuse an unsafe bond and land solo without
+    erasing the household's request.  Its fingerprinted status distinguishes
+    that safe fallback from an active follower; missing/stale status keeps a
+    requested follower parked until reconciliation proves otherwise.
+    """
+    try:
+        from ..multiroom.config import load_config
+        from ..multiroom.effective_role import (
+            effective_local_sources_park_reason,
+        )
+
+        return effective_local_sources_park_reason(load_config()) is not None
     except Exception:  # noqa: BLE001 — fail-open
         return False
 
 
 def bonded_follower_leader_addr() -> str:
-    """Return the bonded follower's configured leader address, if readable."""
+    """Return the effective follower's leader address, if readable."""
     try:
-        from ..multiroom.config import follower_leader_addr, load_config
+        from ..multiroom.config import load_config
+        from ..multiroom.effective_role import effective_follower_leader_addr
 
-        return follower_leader_addr(load_config()) or ""
+        return effective_follower_leader_addr(load_config()) or ""
     except Exception:  # noqa: BLE001 — fail-open
         return ""
 

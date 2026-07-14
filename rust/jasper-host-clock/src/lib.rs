@@ -18,19 +18,13 @@
 //!
 //! This crate holds the pure, I/O-free ladder/servo ([`HostClock`]) plus the
 //! feature-gated ALSA actuator ([`AlsaPitchCtl`], behind `feature = "alsa"`).
-//! It was built as the shared home for either USB clock owner — whichever
-//! daemon owns the gadget capture drives it:
-//! - **solo (aloop) mode**: `jasper-usbsink-audio` used to own the gadget
-//!   capture and drive this from its state publisher
-//!   (`JASPER_USBSINK_HOST_CLOCK`). That path was deleted 2026-07-10 with the
-//!   aloop solo USB capture path (#1209); `jasper-usbsink-audio` is
-//!   standby-only now and has no dependency on this crate.
-//! - **combo (USB DIRECT) mode**: `jasper-fanin` owns the gadget capture and
-//!   drives this from a dedicated thread (`JASPER_FANIN_HOST_CLOCK`). This is
-//!   the sole live consumer today.
+//! `jasper-fanin` owns the gadget capture and drives this from a dedicated
+//! thread (`JASPER_FANIN_HOST_CLOCK`). It is the sole live consumer. The
+//! retired solo/aloop bridge used this crate before that path was deleted; that
+//! history is why the core remains daemon-agnostic.
 //!
-//! The invariant pinned across both: **the daemon that owns the gadget capture
-//! owns the pitch ctl.** Only one drives it at a time. The crate stays
+//! The invariant is: **the daemon that owns the gadget capture owns the pitch
+//! ctl.** The crate stays
 //! daemon-agnostic on purpose: any future second consumer would parse its own
 //! `JASPER_*` env keys and build a [`HostClockConfig`] the same way fan-in
 //! does, differing only in the `event=` log prefix (fan-in uses `fanin`; the

@@ -442,10 +442,46 @@ def test_summarize_latencies_empty_does_not_crash():
 # --------------------------------------------------------------------------
 
 
+def _healthy_route_snapshot(
+    *,
+    uptime_seconds: float = 10.0,
+    fanin_output_xruns: int = 0,
+    outputd_content_xruns: int = 0,
+    outputd_dac_xruns: int = 0,
+    usb_xruns: int = 0,
+    usb_unlocks: int = 0,
+    usb_silence_frames: int = 0,
+    usb_overrun_frames: int = 0,
+) -> dict:
+    return {
+        "fanin": {
+            "uptime_seconds": uptime_seconds,
+            "inputs": [
+                {"label": "spotify", "source": "lane", "xrun_count": 0},
+                {
+                    "label": "usbsink",
+                    "source": "direct",
+                    "xrun_count": usb_xruns,
+                    "resampler": {
+                        "unlock_count": usb_unlocks,
+                        "silence_frames": usb_silence_frames,
+                        "overrun_frames": usb_overrun_frames,
+                    },
+                },
+            ],
+            "output": {"xrun_count": fanin_output_xruns},
+        },
+        "outputd": {
+            "uptime_seconds": uptime_seconds,
+            "content": {"xrun_count": outputd_content_xruns},
+            "dac": {"xrun_count": outputd_dac_xruns},
+        },
+    }
+
+
 def test_diff_route_health_clean_snapshot_would_justify_ok():
-    counters = {"capture_xruns": 0, "playback_xruns": 0, "underflow_periods": 0, "overflow_events": 0, "dropped_periods": 0}
-    before = {"usbsink": {"counters": dict(counters)}, "fanin": {"ok": True}, "outputd": {"ok": True}}
-    after = {"usbsink": {"counters": dict(counters)}, "fanin": {"ok": True}, "outputd": {"ok": True}}
+    before = _healthy_route_snapshot()
+    after = _healthy_route_snapshot(uptime_seconds=20.0)
 
     report = harness.diff_route_health(before, after)
 
@@ -453,31 +489,109 @@ def test_diff_route_health_clean_snapshot_would_justify_ok():
     assert all(v == 0.0 for v in report.known_counter_deltas.values())
 
 
-def test_diff_route_health_new_xruns_would_not_justify_ok():
-    before = {
-        "usbsink": {"counters": {"capture_xruns": 2, "playback_xruns": 0, "underflow_periods": 0, "overflow_events": 0, "dropped_periods": 0}},
-        "fanin": {"ok": True},
-        "outputd": {"ok": True},
-    }
-    after = {
-        "usbsink": {"counters": {"capture_xruns": 5, "playback_xruns": 0, "underflow_periods": 0, "overflow_events": 0, "dropped_periods": 0}},
-        "fanin": {"ok": True},
-        "outputd": {"ok": True},
-    }
-
-    report = harness.diff_route_health(before, after)
-
-    assert report.would_justify_route_health_ok is False
-    assert report.known_counter_deltas["usbsink.counters.capture_xruns"] == 3.0
-
-
 def test_diff_route_health_unreachable_daemon_never_justifies_ok():
-    before = {"usbsink": None, "fanin": {"ok": True}, "outputd": {"ok": True}}
-    after = {"usbsink": None, "fanin": {"ok": True}, "outputd": {"ok": True}}
+    before = {"fanin": None, "outputd": {"ok": True}}
+    after = {"fanin": None, "outputd": {"ok": True}}
 
     report = harness.diff_route_health(before, after)
 
     assert report.would_justify_route_health_ok is False
+
+
+def test_diff_route_health_incomplete_surfaces_never_justify_ok():
+    before = {"fanin": {"ok": True}, "outputd": {"ok": True}}
+    after = {"fanin": {"ok": True}, "outputd": {"ok": True}}
+
+    report = harness.diff_route_health(before, after)
+
+    assert report.would_justify_route_health_ok is False
+
+
+def test_diff_route_health_requires_numeric_stable_counters():
+    for bad_value in (None, True, "0", -1):
+        before = _healthy_route_snapshot()
+        after = _healthy_route_snapshot(uptime_seconds=20.0)
+        before["outputd"]["dac"]["xrun_count"] = bad_value
+        after["outputd"]["dac"]["xrun_count"] = bad_value
+
+        assert (
+            harness.diff_route_health(before, after).would_justify_route_health_ok
+            is False
+        )
+
+
+def test_diff_route_health_requires_unique_usb_direct_lane():
+    for mutate in ("missing", "non_direct", "duplicate"):
+        before = _healthy_route_snapshot()
+        after = _healthy_route_snapshot(uptime_seconds=20.0)
+        if mutate == "missing":
+            before["fanin"]["inputs"] = before["fanin"]["inputs"][:1]
+            after["fanin"]["inputs"] = after["fanin"]["inputs"][:1]
+        elif mutate == "non_direct":
+            before["fanin"]["inputs"][1]["source"] = "lane"
+            after["fanin"]["inputs"][1]["source"] = "lane"
+        else:
+            before["fanin"]["inputs"].append(
+                dict(before["fanin"]["inputs"][1]),
+            )
+            after["fanin"]["inputs"].append(
+                dict(after["fanin"]["inputs"][1]),
+            )
+
+        assert (
+            harness.diff_route_health(before, after).would_justify_route_health_ok
+            is False
+        )
+
+
+def test_diff_route_health_requires_numeric_usb_direct_counters():
+    for bad_value in (None, True, "0", -1):
+        before = _healthy_route_snapshot()
+        after = _healthy_route_snapshot(uptime_seconds=20.0)
+        before["fanin"]["inputs"][1]["resampler"]["unlock_count"] = bad_value
+        after["fanin"]["inputs"][1]["resampler"]["unlock_count"] = bad_value
+
+        assert (
+            harness.diff_route_health(before, after).would_justify_route_health_ok
+            is False
+        )
+
+
+def test_diff_route_health_requires_numeric_xruns_on_every_fanin_lane():
+    for bad_value in (None, True, "0", -1):
+        before = _healthy_route_snapshot()
+        after = _healthy_route_snapshot(uptime_seconds=20.0)
+        before["fanin"]["inputs"][0]["xrun_count"] = bad_value
+        after["fanin"]["inputs"][0]["xrun_count"] = bad_value
+
+        assert (
+            harness.diff_route_health(before, after).would_justify_route_health_ok
+            is False
+        )
+
+
+def test_diff_route_health_topology_change_never_justifies_ok():
+    before = _healthy_route_snapshot()
+    after = _healthy_route_snapshot(uptime_seconds=20.0)
+    after["fanin"]["inputs"].reverse()
+
+    assert harness.diff_route_health(before, after).would_justify_route_health_ok is False
+
+
+def test_diff_route_health_fanin_restart_with_clean_counters_fails():
+    before = _healthy_route_snapshot(uptime_seconds=20.0)
+    after = _healthy_route_snapshot(uptime_seconds=30.0)
+    after["fanin"]["uptime_seconds"] = 1.0
+
+    assert harness.diff_route_health(before, after).would_justify_route_health_ok is False
+
+
+def test_diff_route_health_outputd_restart_with_clean_counters_fails():
+    before = _healthy_route_snapshot(uptime_seconds=20.0)
+    after = _healthy_route_snapshot(uptime_seconds=30.0)
+    after["outputd"]["uptime_seconds"] = 1.0
+
+    assert harness.diff_route_health(before, after).would_justify_route_health_ok is False
 
 
 def test_diff_route_health_reports_all_nonzero_deltas_generically():
@@ -492,46 +606,29 @@ def test_diff_route_health_reports_all_nonzero_deltas_generically():
     assert report.all_deltas["fanin.custom_new_counter"] == 3.0
 
 
-def _clean_usbsink_counters() -> dict:
-    return {"capture_xruns": 0, "playback_xruns": 0, "underflow_periods": 0, "overflow_events": 0, "dropped_periods": 0}
-
-
 def test_diff_route_health_negative_known_delta_means_restart_not_clean():
     # S1: a NEGATIVE delta on a per-process monotonic counter can only mean the
     # daemon restarted mid-window (counter reset to 0). A restart is an unclean
     # window by definition — it must NOT justify the declaration, even though
     # "fewer xruns after" superficially looks cleaner.
-    before = {
-        "usbsink": {"counters": {**_clean_usbsink_counters(), "capture_xruns": 7}},
-        "fanin": {"ok": True},
-        "outputd": {"ok": True},
-    }
-    after = {
-        "usbsink": {"counters": _clean_usbsink_counters()},  # reset to 0 -> -7
-        "fanin": {"ok": True},
-        "outputd": {"ok": True},
-    }
+    before = _healthy_route_snapshot(fanin_output_xruns=7)
+    after = _healthy_route_snapshot(uptime_seconds=20.0)  # reset to 0 -> -7
 
     report = harness.diff_route_health(before, after)
 
-    assert report.known_counter_deltas["usbsink.counters.capture_xruns"] == -7.0
+    assert report.known_counter_deltas["fanin.output.xrun_count"] == -7.0
     assert report.would_justify_route_health_ok is False
 
 
 def test_diff_route_health_fanin_output_xrun_would_not_justify_ok():
     # S2: a new fan-in OUTPUT xrun is on the route's own path — the HANDOFF
     # clean-window contract names "no outputd/fan-in xruns" explicitly, so it
-    # must disqualify even though nothing on the usbsink surface moved.
-    before = {
-        "usbsink": {"counters": _clean_usbsink_counters()},
-        "fanin": {"output": {"xrun_count": 0}},
-        "outputd": {"ok": True},
-    }
-    after = {
-        "usbsink": {"counters": _clean_usbsink_counters()},
-        "fanin": {"output": {"xrun_count": 4}},
-        "outputd": {"ok": True},
-    }
+    # must disqualify on its own.
+    before = _healthy_route_snapshot()
+    after = _healthy_route_snapshot(
+        uptime_seconds=20.0,
+        fanin_output_xruns=4,
+    )
 
     report = harness.diff_route_health(before, after)
 
@@ -542,19 +639,17 @@ def test_diff_route_health_fanin_output_xrun_would_not_justify_ok():
 def test_diff_route_health_outputd_content_and_dac_xruns_would_not_justify_ok():
     # S2: outputd content-capture and final-DAC xruns are both on the route.
     for surface_after in (
-        {"content": {"xrun_count": 1}, "dac": {"xrun_count": 0}},
-        {"content": {"xrun_count": 0}, "dac": {"xrun_count": 2}},
+        _healthy_route_snapshot(
+            uptime_seconds=20.0,
+            outputd_content_xruns=1,
+        ),
+        _healthy_route_snapshot(
+            uptime_seconds=20.0,
+            outputd_dac_xruns=2,
+        ),
     ):
-        before = {
-            "usbsink": {"counters": _clean_usbsink_counters()},
-            "fanin": {"ok": True},
-            "outputd": {"content": {"xrun_count": 0}, "dac": {"xrun_count": 0}},
-        }
-        after = {
-            "usbsink": {"counters": _clean_usbsink_counters()},
-            "fanin": {"ok": True},
-            "outputd": surface_after,
-        }
+        before = _healthy_route_snapshot()
+        after = surface_after
 
         report = harness.diff_route_health(before, after)
 
@@ -565,41 +660,51 @@ def test_diff_route_health_per_lane_resampler_unlock_would_not_justify_ok():
     # S2: the fan-in USB resampler unlock/silence/overrun counters live inside
     # the `inputs` ARRAY, matched by dotted-path suffix regardless of lane
     # index. A resampler unlock (or silence/overrun) on ANY lane disqualifies.
-    def snapshot(unlock: int, silence: int, overrun: int, lane_xrun: int) -> dict:
-        return {
-            "usbsink": {"counters": _clean_usbsink_counters()},
-            "fanin": {
-                "inputs": [
-                    {"label": "spotify", "xrun_count": 0},
-                    {
-                        "label": "usb",
-                        "xrun_count": lane_xrun,
-                        "resampler": {
-                            "unlock_count": unlock,
-                            "silence_frames": silence,
-                            "overrun_frames": overrun,
-                        },
-                    },
-                ],
-                "output": {"xrun_count": 0},
-            },
-            "outputd": {"content": {"xrun_count": 0}, "dac": {"xrun_count": 0}},
-        }
+    def snapshot(
+        unlock: int,
+        silence: int,
+        overrun: int,
+        lane_xrun: int,
+        *,
+        uptime_seconds: float,
+    ) -> dict:
+        return _healthy_route_snapshot(
+            uptime_seconds=uptime_seconds,
+            usb_xruns=lane_xrun,
+            usb_unlocks=unlock,
+            usb_silence_frames=silence,
+            usb_overrun_frames=overrun,
+        )
 
     # A clean window (no per-lane movement) still justifies.
-    clean = harness.diff_route_health(snapshot(0, 0, 0, 0), snapshot(0, 0, 0, 0))
+    clean = harness.diff_route_health(
+        snapshot(0, 0, 0, 0, uptime_seconds=10.0),
+        snapshot(0, 0, 0, 0, uptime_seconds=20.0),
+    )
     assert clean.would_justify_route_health_ok is True
 
     # A resampler unlock on the USB lane disqualifies, and the array-indexed
     # path is what gets flagged.
-    report = harness.diff_route_health(snapshot(0, 0, 0, 0), snapshot(1, 0, 0, 0))
+    report = harness.diff_route_health(
+        snapshot(0, 0, 0, 0, uptime_seconds=10.0),
+        snapshot(1, 0, 0, 0, uptime_seconds=20.0),
+    )
     assert report.known_counter_deltas["fanin.inputs.1.resampler.unlock_count"] == 1.0
     assert report.would_justify_route_health_ok is False
 
     # Silence / overrun / per-lane xrun each independently disqualify.
-    assert harness.diff_route_health(snapshot(0, 0, 0, 0), snapshot(0, 256, 0, 0)).would_justify_route_health_ok is False
-    assert harness.diff_route_health(snapshot(0, 0, 0, 0), snapshot(0, 0, 128, 0)).would_justify_route_health_ok is False
-    assert harness.diff_route_health(snapshot(0, 0, 0, 0), snapshot(0, 0, 0, 3)).would_justify_route_health_ok is False
+    assert harness.diff_route_health(
+        snapshot(0, 0, 0, 0, uptime_seconds=10.0),
+        snapshot(0, 256, 0, 0, uptime_seconds=20.0),
+    ).would_justify_route_health_ok is False
+    assert harness.diff_route_health(
+        snapshot(0, 0, 0, 0, uptime_seconds=10.0),
+        snapshot(0, 0, 128, 0, uptime_seconds=20.0),
+    ).would_justify_route_health_ok is False
+    assert harness.diff_route_health(
+        snapshot(0, 0, 0, 0, uptime_seconds=10.0),
+        snapshot(0, 0, 0, 3, uptime_seconds=20.0),
+    ).would_justify_route_health_ok is False
 
 
 # --------------------------------------------------------------------------
@@ -832,8 +937,14 @@ def test_cli_analyze_prints_route_health_and_never_auto_confirms(tmp_path, capsy
     health_path.write_text(
         json.dumps(
             {
-                "before": {"usbsink": {"counters": {"capture_xruns": 0}}},
-                "after": {"usbsink": {"counters": {"capture_xruns": 2}}},
+                "before": {
+                    "fanin": {"output": {"xrun_count": 0}},
+                    "outputd": {},
+                },
+                "after": {
+                    "fanin": {"output": {"xrun_count": 2}},
+                    "outputd": {},
+                },
             }
         ),
         encoding="utf-8",
@@ -851,12 +962,12 @@ def test_cli_analyze_prints_route_health_and_never_auto_confirms(tmp_path, capsy
     assert rc == 0
     out = capsys.readouterr().out
     assert "would NOT be justified" in out
-    assert "usbsink.counters.capture_xruns: +2" in out
+    assert "fanin.output.xrun_count: +2" in out
 
 
 def test_health_report_excludes_timestamp_noise_leaves(tmp_path, capsys):
-    # captured_at_monotonic_ns / last_progress_epoch_ms / updated_at always
-    # change between snapshots and are not health counters — they must not
+    # captured_at_monotonic_ns always changes between snapshots and is not a
+    # health counter — it must not
     # appear in the printed deltas, or they bury the counters that matter.
     tap_path = tmp_path / "tap.jsonl"
     mic_path = tmp_path / "mic.jsonl"
@@ -872,11 +983,13 @@ def test_health_report_excludes_timestamp_noise_leaves(tmp_path, capsys):
             {
                 "before": {
                     "captured_at_monotonic_ns": 1_000,
-                    "usbsink": {"counters": {"capture_xruns": 0}, "last_progress_epoch_ms": 100},
+                    "fanin": {"output": {"xrun_count": 0}},
+                    "outputd": {},
                 },
                 "after": {
                     "captured_at_monotonic_ns": 999_999_999,
-                    "usbsink": {"counters": {"capture_xruns": 1}, "last_progress_epoch_ms": 5_000_000},
+                    "fanin": {"output": {"xrun_count": 1}},
+                    "outputd": {},
                 },
             }
         ),
@@ -895,10 +1008,9 @@ def test_health_report_excludes_timestamp_noise_leaves(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     # The real counter delta is printed...
-    assert "usbsink.counters.capture_xruns: +1" in out
+    assert "fanin.output.xrun_count: +1" in out
     # ...but the timestamp leaves are not.
     assert "captured_at_monotonic_ns" not in out
-    assert "last_progress_epoch_ms" not in out
 
 
 def test_analyze_tolerates_malformed_route_health_snapshot(tmp_path, capsys):
@@ -990,12 +1102,11 @@ def test_cli_invoke_artifact_passes_route_health_ok_only_with_explicit_confirm(t
     )
     _write_jsonl(mic_path, [{"monotonic_ns": i * 1_500_000_000 + 30_000_000, "peak": 0.5} for i in range(n)])
     health_path = tmp_path / "route-health-snapshot.json"
-    clean_counters = {"capture_xruns": 0, "playback_xruns": 0, "underflow_periods": 0, "overflow_events": 0, "dropped_periods": 0}
     health_path.write_text(
         json.dumps(
             {
-                "before": {"usbsink": {"counters": dict(clean_counters)}, "fanin": {}, "outputd": {}},
-                "after": {"usbsink": {"counters": dict(clean_counters)}, "fanin": {}, "outputd": {}},
+                "before": _healthy_route_snapshot(),
+                "after": _healthy_route_snapshot(uptime_seconds=20.0),
             }
         ),
         encoding="utf-8",

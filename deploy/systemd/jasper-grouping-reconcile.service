@@ -11,14 +11,31 @@ Documentation=file:/opt/jasper/docs/HANDOFF-multiroom.md
 # already inactive). The reconciler — not [Install] — enables/starts
 # the units on opt-in, so this stays cost-free until a household
 # actually groups speakers.
-After=sound.target jasper-camilla.service
+After=sound.target jasper-camilla.service jasper-source-intent-reconcile.service
 Wants=sound.target jasper-camilla.service
 
 [Service]
 Type=oneshot
-TimeoutStartSec=60
+# The reconciler's effective-role fact authorizes source starts. Persist a
+# prior follower deny across reboot in a dedicated root-owned directory rather
+# than group-writable /var/lib/jasper. Boot IDs still invalidate stale grants.
+StateDirectory=jasper-grouping
+StateDirectoryMode=0755
+# A steady-state grouping apply remains short, but the finite outer ceiling
+# covers every conservative sequential branch: the two-unit Snapcast plan,
+# one-time provisioning (apt update + install), six bounded post-plan service /
+# hardware actions, up to two 788 s source-coordinator starts (drain a prior
+# activation, then synchronously converge the completed role), manager probes,
+# and a final margin. The handoff uses `start`, never restart, so an ordered
+# source transition is not cut in half; grouping succeeds only after source
+# park/restore does. Tests derive this 2526 s value from the child bounds.
+TimeoutStartSec=2526
 EnvironmentFile=-/etc/jasper/jasper.env
-EnvironmentFile=-/var/lib/jasper/grouping.env
+# grouping.env is wizard-owned data, not a process environment. The Python
+# reconciler parses that fixed file itself; importing it here would let a
+# management-writable value influence this root interpreter before parsing.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PYTHONPATH PYTHONHOME
 ExecStart=/opt/jasper/.venv/bin/python -m jasper.multiroom.reconcile --reason systemd
 StandardOutput=journal
 StandardError=journal

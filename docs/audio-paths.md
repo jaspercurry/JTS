@@ -86,7 +86,9 @@ packets.
 
 The landing page's Source selector chooses which enabled renderer lane
 the speaker passes; it does not turn renderers on or off. The on/off
-surface remains `/sources/`.
+surface remains `/sources/`. Persisted on/off intent, runtime convergence,
+Bluetooth radio policy, USB transition ordering, and follower parking are
+owned by [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
 
 Control path:
 
@@ -108,7 +110,8 @@ Ownership is deliberately split:
   resources live in `jasper/local_sources/registry.py`: the systemd units
   that run, advertise, park while paired as a follower, restore on unpair,
   and refresh after audio graph changes, plus the explicit source-critical
-  subset used for cached readiness health.
+  subset used for cached readiness health. The registry declares resources;
+  the source-lifecycle handoff above owns how desired intent is applied.
 - Before mux exposes a new lane, it asks
   `VolumeCoordinator.prepare_source_handoff(...)` to make the target
   volume carrier safe. Only then does it send `SELECT <label>` to
@@ -195,15 +198,19 @@ mixer, a second output device, or a new volume model.
    `listening_level`.
 6. **Declare source lifecycle resources.** Add the source's operational
    resource group in `jasper/local_sources/registry.py`: persistent intent
-   unit, runtime units, parked-follower units, restore-if-enabled units,
-   advertise units, and audio-refresh units. Keep implementation
-   subresources explicit here, as USB does with its bridge daemon and
-   host-visible gadget init unit.
+   unit, runtime units, parked-follower units, advertise units, and
+   audio-refresh units. Keep implementation
+   subresources explicit here, as USB does with its process-free readiness marker and
+   host-visible gadget owner. Then extend the fixed intent allowlist and add
+   one concrete applier only if ordinary systemd enable/start/stop is not
+   sufficient. Follow
+   [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md); do not create a
+   second persistence path or infer intent from process state.
 7. **Define preemption.** Add the source-specific stop/pause/silence
    path to `jasper/mux.py`. Prefer a real renderer-owned API: AirPlay
    uses shairport-sync MPRIS `Stop` when it loses the lane, Spotify uses
-   Web API pause with a restart fallback, and USB sink uses its local
-   silence endpoint. If the source cannot be controlled from the Pi,
+   Web API pause with a restart fallback, and USB uses fan-in's lane-level
+   MUTE/UNMUTE command. If the source cannot be controlled from the Pi,
    document the intentional fallback ("may briefly mix") and expose an
    operator escape hatch only when the failure mode justifies one.
 8. **Wire manual source selection.** The mux/control allow-lists derive
@@ -614,7 +621,9 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-07-07 (ring/default path text rechecked against
+Last verified: 2026-07-14 (source-lifecycle ownership and add-a-source
+integration points rechecked against `jasper.source_intent` and
+`jasper.local_sources`; prior 2026-07-07 ring/default path text rechecked against
 `jasper.fanin_coupling`, `jasper.fanin.coupling_auto`, and
 `jasper.fanin.coupling_reconcile`; prior 2026-07-01 assistant loudness
 safety text rechecked against

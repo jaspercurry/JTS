@@ -1096,7 +1096,11 @@ The Tier 3 supervisor at
 catches this without manual intervention. Detection latency is ~90 s
 (3 consecutive RTSP-`OPTIONS` failures at 30 s cadence) plus a ~2 s
 restart. Gated on `PlaybackStatus != "Playing"` so a live session is
-never disrupted; rate-limited to one restart per 10 minutes.
+never disrupted; rate-limited to one restart per 10 minutes. Its final
+mutation is an ordinary `systemctl restart`, so a desired-On receiver that has
+gone fully inactive can recover. The unit's final source-intent ExecCondition
+is the last gate: a concurrent AirPlay Off or follower park makes the restart
+skip instead of reviving the source.
 
 Design rationale: [docs/HANDOFF-resilience.md (Tier 3)](HANDOFF-resilience.md).
 Disable knob: `JASPER_SHAIRPORT_SUPERVISOR=disabled` in
@@ -1819,7 +1823,10 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-07-14 (`/system/audio/` normalized AirPlay projection,
+Last verified: 2026-07-14 (Tier-3 recovery final mutation rechecked as an
+inactive-capable `restart` guarded by the unit's final source-intent
+ExecCondition so concurrent Off/role parking wins;
+`/system/audio/` normalized AirPlay projection,
 source-specific sync timing, legacy snapshot compatibility, and the
 short-read non-escalation boundary rechecked against
 `jasper/control/{audio_health,airplay_health}.py`). Prior 2026-06-29 (JTS2 Apple-dongle AirPlay path checked at

@@ -555,11 +555,76 @@ verification = [
 ]
 
 [[subsystem]]
+id = "local-source-lifecycle"
+title = "Local source intent and lifecycle convergence"
+safety = "boot-risk"
+code = [
+  "jasper/source_intent.py",
+  "jasper/bluetooth/availability.py",
+  "jasper/local_sources/registry.py",
+  "jasper/local_sources/guard.py",
+  "jasper/mux.py",
+  "jasper/control/shairport_supervisor.py",
+  "jasper/control/restart_broker.py",
+  "jasper/multiroom/reconcile.py",
+  "jasper/multiroom/effective_role.py",
+  "jasper/control/server.py",
+  "jasper/tools/audio.py",
+  "jasper/web/_common.py",
+  "jasper/web/sources_setup.py",
+  "jasper/web/bluetooth_setup.py",
+  "jasper/web/airplay_setup.py",
+  "jasper/web/speaker_setup.py",
+  "jasper/cli/airplay_mode.py",
+  "jasper/cli/doctor/renderers.py",
+  "jasper/cli/doctor/usbsink.py",
+  "jasper/control/audio_health.py",
+  "jasper/correction/coordinator.py",
+  "jasper/fanin/coupling_auto.py",
+  "jasper/accessories/reconcile.py",
+  "scripts/claim-librespot.sh",
+  "deploy/assets/sources/js/main.js",
+  "deploy/assets/bluetooth/js/main.js",
+  "deploy/systemd/jasper-source-intent-reconcile.service",
+  "deploy/systemd/jasper-fanin-coupling-auto.service",
+  "deploy/systemd/jasper-usbgadget.service",
+  "deploy/systemd/jasper-mux.service",
+  "deploy/systemd/jasper-accessory-reconcile.service",
+  "deploy/systemd/jasper-wiim-remote-mic.service",
+  "deploy/systemd/shairport-sync.service",
+  "deploy/systemd/nqptp.service",
+  "deploy/systemd/librespot.service",
+  "deploy/systemd/bt-agent.service",
+  "deploy/systemd/jasper-usbsink*.service",
+  "deploy/systemd/bluealsa*.service.d/**",
+  "deploy/systemd/bluetooth.service.d/**",
+  "deploy/usbsink/jasper-usbgadget-wanted",
+  "deploy/usbsink/jasper-usbgadget-up",
+  "deploy/nginx-jasper.conf",
+  "deploy/nginx-jasper-streambox.conf",
+  "deploy/lib/install/systemd-units.sh",
+  "deploy/lib/install/env-migrations.sh",
+  "deploy/lib/install/renderers.sh",
+  "deploy/bin/jasper-deploy-health",
+]
+docs = [
+  "docs/HANDOFF-source-lifecycle.md",
+]
+requires_docs_when = [
+  "A source intent key/default, desired-versus-effective state, source resource declaration, AirPlay/Spotify unit convergence, Bluetooth RF-kill/BlueZ/accessory ordering, USB transition ordering, follower parking interaction, any maintenance path that can restart a source, boot/deploy replay, or source-aware health behavior changes.",
+]
+verification = [
+  "pytest tests/test_source_intent_reconcile.py tests/test_web_sources_setup.py tests/test_web_bluetooth_setup.py tests/test_bluetooth_setup_ui.py tests/test_local_sources_registry.py tests/test_multiroom_reconcile.py tests/test_deploy_health_script.py tests/test_source_intent_systemd.py tests/test_install_core_audio_graph_loop.py",
+]
+
+[[subsystem]]
 id = "usb-audio-input"
 title = "USB Audio Input"
 safety = "boot-risk"
 code = [
   "jasper/usbsink/**",
+  "jasper/usbgadget.py",
+  "jasper/fanin/status.py",
   "jasper/local_sources/**",
   "jasper/web/sources_setup.py",
   "deploy/usbsink/**",
@@ -592,6 +657,7 @@ code = [
   "deploy/systemd/jasper-usbgadget.service",
   "deploy/systemd/jasper-usbnet-dhcp.service",
   "deploy/usb-network/**",
+  "jasper/usbgadget.py",
   "jasper/cli/doctor/usbsink.py",
   "jasper/cli/doctor/network.py",
   # NOTE: jasper/control/state_aggregate.py is deliberately NOT routed here.
@@ -628,7 +694,6 @@ code = [
   "jasper/cli/route_latency_artifact.py",
   "jasper/cli/route_latency_harness.py",
   "jasper/route_latency/**",
-  "rust/jasper-usbsink-audio/**",
   "rust/jasper-host-clock/**",
 ]
 docs = [
@@ -642,7 +707,7 @@ requires_docs_when = [
   "The lean File-capture lane topology, the CamillaDSP resampler schema/vocabulary, the FIFO format/path contract, the lean-lane feature flag, the chip/software AEC optionality, or the no-re-architect rules change.",
   "The USB-only lean-fifo route, its solo-only/mux-ladder arming, or the DAC-floor codification plan changes (see HANDOFF-usb-low-latency.md).",
   "The route-latency artifact schema/gate thresholds, the click/capture harness's mic-source contract or presets, or the Rust ingress tap's JSONL/HTTP arm-disarm contract change (see HANDOFF-usb-low-latency.md and testing-tooling.md's harness section).",
-  "The host-slaved USB clock's env keys/defaults, ladder states, state.json `host_clock` block shape, servo constants, or bandwidth-separation derivation change (see HANDOFF-usb-low-latency.md 'Host-slaved USB clock (Stage 1)').",
+  "The host-slaved USB clock's env keys/defaults, ladder states, fan-in STATUS and `/state.audio_graph.fanin.host_clock` shape, servo constants, or bandwidth-separation derivation change (see HANDOFF-usb-low-latency.md 'Host-slaved USB clock in combo mode').",
   "The USB-input ring geometry, cushion-decay floor, or the productized fresh-install combo defaults change — re-verify the measured latency numbers and the fresh-install settings table (see HANDOFF-usb-latency-measurement.md).",
 ]
 verification = [

@@ -31,6 +31,7 @@ from typing import Any
 
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
+from ..source_intent import read_source_intents
 from .airplay_health import AirPlayHealthSampler, SAMPLE_INTERVAL_SEC
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,10 @@ _SOURCE_LABELS = {
 }
 _SOURCE_HEALTH_UNITS = {
     lifecycle.source.value: lifecycle.health_units
+    for lifecycle in local_source_lifecycles()
+}
+_SOURCE_OFF_DRIFT_UNITS = {
+    lifecycle.source.value: lifecycle.park_units
     for lifecycle in local_source_lifecycles()
 }
 _SOURCE_PRIMARY_UNITS = {
@@ -630,6 +635,7 @@ def _state_issues(
     latency: Mapping[str, Any],
     active_source: str | None,
     service_states: Mapping[str, Any] | None = None,
+    source_intents: Mapping[str, bool] | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     warmup = bool(airplay.get("warmup_active"))
@@ -769,9 +775,34 @@ def _state_issues(
                 title="USB latency verification needed",
                 detail="The stored measurement is missing, stale, or does not match this route.",
             ))
-    for source_id, units in _SOURCE_HEALTH_UNITS.items():
+    for source_id, health_units in _SOURCE_HEALTH_UNITS.items():
+        desired = _mapping(source_intents).get(source_id)
+        units = (
+            _SOURCE_OFF_DRIFT_UNITS.get(source_id, ())
+            if desired is False
+            else health_units
+        )
         for unit in units:
-            failure = _service_failure(unit, _mapping(service_states).get(unit))
+            unit_state = _mapping(service_states).get(unit)
+            if desired is False:
+                if _mapping(unit_state).get("active_state") == "active":
+                    issues.append(_issue(
+                        f"{source_id}.service.{unit}.off_drift",
+                        scope="source",
+                        source_id=source_id,
+                        impact="availability",
+                        severity="issue",
+                        title=(
+                            f"{_SOURCE_LABELS.get(source_id, source_id)} "
+                            "is running while Off"
+                        ),
+                        detail=(
+                            f"{unit} is active despite the saved Music sources "
+                            "choice. Run the source lifecycle reconciler."
+                        ),
+                    ))
+                continue
+            failure = _service_failure(unit, unit_state)
             if failure is None:
                 continue
             issues.append(_issue(
@@ -804,9 +835,23 @@ def _service_failure(unit: str, raw_state: Any) -> str | None:
 def _source_service_summary(
     source_id: str,
     service_states: Mapping[str, Any] | None,
+    source_intents: Mapping[str, bool] | None = None,
 ) -> tuple[str, str, str] | None:
     """Return ``(state, headline, detail)`` from cached systemd truth."""
     states = _mapping(service_states)
+    desired = _mapping(source_intents).get(source_id)
+    if desired is False:
+        active_units = [
+            unit for unit in _SOURCE_OFF_DRIFT_UNITS.get(source_id, ())
+            if _mapping(states.get(unit)).get("active_state") == "active"
+        ]
+        if active_units:
+            return (
+                "unavailable",
+                f"{_SOURCE_LABELS.get(source_id, source_id)} is running while Off",
+                "Unexpected active services: " + ", ".join(active_units) + ".",
+            )
+        return "off", "Off", "Turned off in Music sources."
     if not states:
         return None
     for unit in _SOURCE_HEALTH_UNITS.get(source_id, ()):
@@ -832,6 +877,7 @@ def _source_cards(
     route: Mapping[str, Any],
     active_source: str | None,
     service_states: Mapping[str, Any] | None = None,
+    source_intents: Mapping[str, bool] | None = None,
 ) -> list[dict[str, Any]]:
     current = _mapping(airplay.get("current"))
     fanin = _mapping(current.get("fanin"))
@@ -847,7 +893,11 @@ def _source_cards(
             if active else "No active stream."
         )
         state = "active" if active else "idle"
-        service_summary = _source_service_summary(source_id, service_states)
+        service_summary = _source_service_summary(
+            source_id,
+            service_states,
+            source_intents,
+        )
         if service_summary is not None and (
             not active or service_summary[0] == "unavailable"
         ):
@@ -890,6 +940,7 @@ def compose_audio_health(
     sampled_at: float,
     previous_overall: Mapping[str, Any] | None = None,
     service_states: Mapping[str, Any] | None = None,
+    source_intents: Mapping[str, bool] | None = None,
 ) -> dict[str, Any]:
     """Compose the public, presentation-ready audio-health contract."""
     ap = _mapping(airplay)
@@ -909,6 +960,7 @@ def compose_audio_health(
         route_state,
         active_source,
         service_states,
+        source_intents,
     )
     unavailable_sources = [
         str(source.get("label") or source.get("id"))
@@ -1152,6 +1204,14 @@ class AudioHealthSampler:
         self._record_raw_events(airplay)
         self._record_counter_events(airplay, outputd, now)
         active_source = _active_source(airplay)
+        try:
+            intents = {
+                source.value: enabled
+                for source, enabled in read_source_intents().items()
+            }
+        except RuntimeError:
+            logger.debug("audio health source-intent probe failed", exc_info=True)
+            intents = None
         signal_path = _signal_path(airplay, outputd)
         current = _mapping(airplay.get("current"))
         fanin = _mapping(current.get("fanin"))
@@ -1168,6 +1228,7 @@ class AudioHealthSampler:
                 latency,
                 active_source,
                 self._service_states,
+                intents,
             ),
             now,
         )
@@ -1186,6 +1247,7 @@ class AudioHealthSampler:
                 sampled_at=now,
                 previous_overall=previous_overall,
                 service_states=self._service_states,
+                source_intents=intents,
             )
 
     def _record_raw_events(self, airplay: Mapping[str, Any]) -> None:

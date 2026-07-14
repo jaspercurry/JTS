@@ -144,7 +144,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   0 — librespot          (Spotify Connect)
 #   1 — shairport-sync     (AirPlay 2)
 #   2 — bluealsa-aplay     (Bluetooth A2DP)
-#   3 — jasper-usbsink     (USB audio input)
+#   3 — USB lane's silent fallback while DIRECT gadget capture is off
 #   4 — correction/test sweeps
 #   5 — outputd active-speaker N-channel content lane (Camilla -> outputd;
 #       width set by the openers + locked by snd-aloop: 4 for dual-Apple,

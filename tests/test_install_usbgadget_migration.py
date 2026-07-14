@@ -2,26 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for `enable_usbgadget` in deploy/lib/install/systemd-units.sh.
+"""Install-time USB gadget ordering contracts.
 
-The regression this guards (adversarial review core-0): on an upgrade,
-`migrate_usbsink_init_to_usbgadget` runs `systemctl disable --now
-jasper-usbsink-init.service` while the OLD in-memory unit graph still has
-jasper-usbsink `PartOf=jasper-usbsink-init`, so that stop PROPAGATES and leaves
-an enabled (possibly playing) USB-audio bridge STOPPED. `enable_usbgadget`'s
-`enable --now jasper-usbgadget.service` is only a START, and PartOf= never
-propagates a start — so without an explicit restore, the deploy ends with the
-gadget composed but the bridge daemon down until reboot.
-
-`enable_usbgadget` therefore does a restore-if-enabled (`start
-jasper-usbsink.service` iff `is-enabled --quiet` is true). This must run
-UNCONDITIONALLY (not gated on SKIP_RESTART) because the migration's stop is
-itself unconditional.
-
-The fragment is sourced into a harness with stub install.sh globals plus a
-`systemctl` shim that records calls and drives the `is-enabled` result, so the
-function is exercised hardware-free and root-free (the pattern the core
-audio-graph loop / migration tests already use).
+The installer must never advertise UAC2 from stale derived enablement. It first
+parks ``jasper-usbsink`` and establishes an NCM-only gadget; the later source-
+intent coordinator owns canonical On and its direct-lane-before-advertising
+sequence. The shell harness models fresh installs and upgrades without systemd,
+ConfigFS, root, or USB hardware.
 """
 from __future__ import annotations
 
@@ -32,29 +19,57 @@ ROOT = Path(__file__).resolve().parents[1]
 FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
 
 
-def _harness(tmp_path: Path, *, usbsink_enabled: bool, gadget_rc: int = 0) -> str:
-    """Bash that sources the fragment with a `systemctl` shim and invokes
-    `enable_usbgadget`.
+def _harness(
+    tmp_path: Path,
+    *,
+    derived_enabled: bool,
+    derived_active: bool | None = None,
+    gadget_active: bool = False,
+    gadget_rc: int = 0,
+    park_rc: int = 0,
+    restart_rc: int = 0,
+    uac2_present: bool = False,
+) -> str:
+    """Source the install fragment with a stateful ``systemctl`` shim."""
 
-    `usbsink_enabled` drives the shim's `is-enabled --quiet jasper-usbsink`
-    result; `gadget_rc` makes `enable --now jasper-usbgadget.service` fail so
-    the failure-echo branch can be exercised.
-    """
     log = tmp_path / "systemctl.log"
-    enabled_rc = 0 if usbsink_enabled else 1
+    enabled_state = 1 if derived_enabled else 0
+    active_state = enabled_state if derived_active is None else int(derived_active)
+    gadget_active_state = 1 if gadget_active else 0
+    uac2_path = tmp_path / "UAC2Gadget"
+    if uac2_present:
+        uac2_path.mkdir(exist_ok=True)
     return f"""
 set -uo pipefail
 REPO_DIR="{ROOT}"
-SYSTEMD_DIR="{tmp_path / "systemd"}"
+SYSTEMD_DIR="{tmp_path / 'systemd'}"
+JASPER_UAC2_CARD_PATH="{uac2_path}"
+USBSINK_ENABLED={enabled_state}
+USBSINK_ACTIVE={active_state}
 systemctl() {{
   echo "$*" >> "{log}"
-  # `is-enabled --quiet jasper-usbsink.service` drives the restore branch.
   if [[ "${{1:-}}" == "is-enabled" && "$*" == *jasper-usbsink.service* ]]; then
-    return {enabled_rc}
+    [[ "${{USBSINK_ENABLED}}" == "1" ]]
+    return
   fi
-  # `enable --now jasper-usbgadget.service` can be forced to fail.
+  if [[ "${{1:-}}" == "is-active" && "$*" == *jasper-usbsink.service* ]]; then
+    [[ "${{USBSINK_ACTIVE}}" == "1" ]]
+    return
+  fi
+  if [[ "${{1:-}}" == "is-active" && "$*" == *jasper-usbgadget.service* ]]; then
+    return $((1 - {gadget_active_state}))
+  fi
+  if [[ "${{1:-}}" == "disable" && "$*" == *jasper-usbsink.service* ]]; then
+    if [[ {park_rc} != 0 ]]; then return {park_rc}; fi
+    USBSINK_ENABLED=0
+    USBSINK_ACTIVE=0
+    return 0
+  fi
   if [[ "${{1:-}}" == "enable" && "$*" == *--now* && "$*" == *jasper-usbgadget.service* ]]; then
     return {gadget_rc}
+  fi
+  if [[ "${{1:-}}" == "restart" && "$*" == *jasper-usbgadget.service* ]]; then
+    return {restart_rc}
   fi
   return 0
 }}
@@ -63,50 +78,156 @@ enable_usbgadget
 """
 
 
-def _run(tmp_path: Path, *, usbsink_enabled: bool, gadget_rc: int = 0):
-    script = _harness(tmp_path, usbsink_enabled=usbsink_enabled, gadget_rc=gadget_rc)
+def _run(tmp_path: Path, **kwargs):
     proc = subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True, text=True, timeout=20,
+        ["bash", "-c", _harness(tmp_path, **kwargs)],
+        capture_output=True,
+        text=True,
+        timeout=20,
     )
     log = tmp_path / "systemctl.log"
     calls = log.read_text().splitlines() if log.exists() else []
     return proc, calls
 
 
-def test_enable_usbgadget_restarts_bridge_when_usb_audio_enabled(tmp_path):
-    """core-0: with USB audio enabled, enable_usbgadget must `start
-    jasper-usbsink.service` so the migration's PartOf stop doesn't strand it."""
-    proc, calls = _run(tmp_path, usbsink_enabled=True)
+def test_fresh_install_establishes_audio_off_before_ncm_gadget(tmp_path):
+    proc, calls = _run(tmp_path, derived_enabled=False)
+
     assert proc.returncode == 0, proc.stderr
-    assert "enable --now jasper-usbgadget.service" in calls
-    assert "is-enabled --quiet jasper-usbsink.service" in calls
-    assert "start jasper-usbsink.service" in calls, (
-        "an enabled USB-audio bridge must be restored after the gadget migration"
+    park_idx = calls.index("disable --now jasper-usbsink.service")
+    compose_idx = calls.index("enable --now jasper-usbgadget.service")
+    assert park_idx < compose_idx
+    assert "enable jasper-usbsink.service" not in calls
+    assert "start jasper-usbsink.service" not in calls
+    assert "event=install.usb_gadget_baseline audio=off" in proc.stdout
+
+
+def test_upgrade_on_state_is_parked_without_install_side_restore(tmp_path):
+    """Canonical On is intentionally restored later by the coordinator."""
+
+    proc, calls = _run(
+        tmp_path,
+        derived_enabled=True,
+        derived_active=True,
     )
 
-
-def test_enable_usbgadget_leaves_bridge_stopped_when_usb_audio_disabled(tmp_path):
-    """The restore is is-enabled-gated: a household that never enabled USB audio
-    must not have the bridge started by a deploy."""
-    proc, calls = _run(tmp_path, usbsink_enabled=False)
     assert proc.returncode == 0, proc.stderr
-    assert "is-enabled --quiet jasper-usbsink.service" in calls
+    assert calls.index("disable --now jasper-usbsink.service") < calls.index(
+        "enable --now jasper-usbgadget.service"
+    )
+    assert "enable jasper-usbsink.service" not in calls
     assert "start jasper-usbsink.service" not in calls
 
 
+def test_active_upgrade_recomposes_network_only_after_parking_audio(tmp_path):
+    """A bound descriptor must not take gadget-up's stale idempotent fast path."""
+
+    proc, calls = _run(
+        tmp_path,
+        derived_enabled=True,
+        derived_active=True,
+        gadget_active=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    park_idx = calls.index("disable --now jasper-usbsink.service")
+    compose_idx = calls.index("enable --now jasper-usbgadget.service")
+    recompose_idx = calls.index("restart jasper-usbgadget.service")
+    assert park_idx < compose_idx < recompose_idx
+
+
+def test_active_ncm_only_gadget_is_not_flapped_on_every_deploy(tmp_path):
+    """A deploy over the NCM management link must preserve converged NCM."""
+
+    proc, calls = _run(
+        tmp_path,
+        derived_enabled=False,
+        derived_active=False,
+        gadget_active=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "restart jasper-usbgadget.service" not in calls
+
+
+def test_active_gadget_recomposes_when_uac2_card_proves_descriptor_drift(tmp_path):
+    proc, calls = _run(
+        tmp_path,
+        derived_enabled=False,
+        derived_active=False,
+        gadget_active=True,
+        uac2_present=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "restart jasper-usbgadget.service" in calls
+
+
+def test_inactive_failed_gadget_recomposes_when_uac2_descriptor_survived(tmp_path):
+    """A failed oneshot can leave ConfigFS bound even while systemd is inactive."""
+
+    proc, calls = _run(
+        tmp_path,
+        derived_enabled=False,
+        derived_active=False,
+        gadget_active=False,
+        uac2_present=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "restart jasper-usbgadget.service" in calls
+
+
+def test_failed_audio_park_refuses_to_compose(tmp_path):
+    proc, calls = _run(
+        tmp_path,
+        derived_enabled=True,
+        derived_active=True,
+        park_rc=1,
+    )
+
+    assert proc.returncode != 0
+    assert "could not park USB Audio Input" in proc.stderr
+    assert "enable --now jasper-usbgadget.service" not in calls
+
+
+def test_failed_network_only_recompose_refuses_to_continue(tmp_path):
+    proc, calls = _run(
+        tmp_path,
+        derived_enabled=False,
+        gadget_active=True,
+        uac2_present=True,
+        restart_rc=1,
+    )
+
+    assert proc.returncode != 0
+    assert "possibly stale UAC2 advertised" in proc.stderr
+    assert "restart jasper-usbgadget.service" in calls
+
+
 def test_enable_usbgadget_enables_device_activated_dhcp(tmp_path):
-    """The scoped dnsmasq is enabled (device-activated, so `enable` wires the
-    WantedBy pull without starting it until usb0 appears)."""
-    _proc, calls = _run(tmp_path, usbsink_enabled=False)
+    _proc, calls = _run(tmp_path, derived_enabled=False)
+
     assert "enable jasper-usbnet-dhcp.service" in calls
 
 
 def test_enable_usbgadget_reports_real_gadget_failure(tmp_path):
-    """core-9: a genuine gadget enable failure prints a journalctl-pointing
-    warning (NOT the old 'likely no UDC' misdirection — an ExecCondition skip
-    would have returned rc=0 and never reached this branch)."""
-    proc, _calls = _run(tmp_path, usbsink_enabled=False, gadget_rc=1)
+    proc, _calls = _run(
+        tmp_path,
+        derived_enabled=False,
+        gadget_rc=1,
+    )
+
     assert proc.returncode == 0, proc.stderr
     assert "journalctl -u jasper-usbgadget" in proc.stdout
     assert "no UDC yet" not in proc.stdout
+
+
+def test_enable_usbgadget_does_not_interpret_or_restore_canonical_on():
+    source = FRAGMENT.read_text()
+    body = source.split("enable_usbgadget() {", 1)[1].split("\n}\n", 1)[0]
+
+    assert "canonical_usbsink_intent_enabled" not in source
+    assert "source_intent_enabled" not in body
+    assert "systemctl enable jasper-usbsink.service" not in body
+    assert "systemctl start jasper-usbsink.service" not in body

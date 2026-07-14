@@ -6,7 +6,7 @@ description = "JTS host-slaved USB clock: the daemon-agnostic ladder + probe + s
 license = "Apache-2.0"
 repository = "https://github.com/jaspercurry/JTS"
 authors = ["Jasper Curry <jaspercurry@gmail.com>"]
-# MSRV: 1.75 to match both consumers (jasper-usbsink-audio, jasper-fanin) —
+# MSRV: 1.75 for the jasper-fanin consumer —
 # this crate compiles under the pinned 1.85.0 CI toolchain with clippy's
 # `incompatible_msrv` lint honoring 1.75.
 rust-version = "1.75"
@@ -19,8 +19,8 @@ rust-version = "1.75"
 jasper-clock = { path = "../jasper-clock" }
 log = "0.4"
 # The real ALSA pitch actuator (`AlsaPitchCtl`) is behind an off-by-default
-# feature so `cargo test` on a macOS host (no libasound) is pure. Consumers
-# enable it: usbsink under its own `alsa-runtime`, fan-in unconditionally.
+# feature so `cargo test` on a macOS host (no libasound) is pure. Fan-in enables
+# it unconditionally.
 alsa = { version = "0.11", optional = true }
 
 [dev-dependencies]

@@ -1,21 +1,44 @@
 [Unit]
-# Fixed root helper that persists /sources enable/disable intent (WS1 Phase 3b).
-# The non-root jasper-control broker cannot run manage-unit-files (enable/disable)
-# — it can't be unit-scoped on this systemd and `systemctl restart` consults it,
-# so granting it would re-open restart-of-any-unit. So the /sources/ wizard
-# (non-root jasper-web) records the household's on/off choice in
-# /var/lib/jasper/source_intent.env and kicks THIS root oneshot through the
-# broker's START_ONLY_UNITS grant (`systemctl start` = manage-units = polkit
-# scoped). It enable/disables ONLY the allowlisted source intent units. Mirrors
-# jasper-wifi-scan-repair. See jasper/source_intent.py +
-# docs/HANDOFF-privilege-separation.md.
-Description=Apply persisted /sources enable/disable intent
-Documentation=file:/opt/jasper/AGENTS.md
+# Single root coordinator for persisted /sources intent. It runs at boot, after
+# systemd has restored saved RF-kill state, and is also kicked synchronously by
+# the non-root web wizard through the restart broker's START_ONLY grant. The
+# helper owns the fixed source allowlist and converges both persistent unit-file
+# state and effective runtime state; bluetooth.service itself remains available
+# as shared control-plane infrastructure.
+Description=Reconcile persisted local-source intent
+Documentation=file:/opt/jasper/docs/HANDOFF-source-lifecycle.md
+# The coordinator synchronously starts source units. Wait for the boot-owned
+# shared prerequisites those units declare so child timeouts cover source work,
+# not concurrent core/network startup. These are ordering edges only: this
+# oneshot does not pull optional source dependencies or own the core graph.
+After=systemd-rfkill.service hciuart.service network.target network-online.target sound.target avahi-daemon.service jasper-control.service jasper-fanin.service jasper-outputd.service jasper-camilla.service jasper-usbgadget.service
+# No automatic Restart= loop exists below. Disable start-rate limiting because
+# a request may perform one bounded retry after joining a stale/non-exact
+# activation and several rows may be exercised quickly; the request lock
+# provides bounded backpressure.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 ExecStart=/opt/jasper/.venv/bin/jasper-source-intent-reconcile --reason systemd
-# Bounded: a handful of `systemctl enable/disable` on the source allowlist.
-TimeoutStartSec=30
+# Root owns the acknowledgement directory (0755 lets non-root web callers read
+# the 0644 status, but not replace it). Preserve across oneshot stop so the
+# synchronous requester can inspect the just-completed pass.
+RuntimeDirectory=jasper-source-intent
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+# The pass always visits all four sources and every child operation has its own
+# shorter ceiling. 783 s is the final finite boot/request boundary with margin
+# over the declared worst-case path; the synchronous broker waits 793 s for
+# PID 1 to report the terminal result.
+TimeoutStartSec=783
+# Do not use Restart= here. Persistent malformed intent or hardware failure
+# must park after one observable pass, not create a rate-dependent retry loop.
+# Web requests retry once only when the first activation lacks a fresh exact
+# acknowledgement; boot, deploy, role change, or the next household action are
+# explicit recovery triggers.
 StandardOutput=journal
 StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

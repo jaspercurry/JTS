@@ -28,6 +28,7 @@ import subprocess
 import sys
 
 MODE_ENV_FILE = "/var/lib/jasper/airplay_mode.env"
+SHAIRPORT_RESTART_TIMEOUT_SEC = 36.0  # 30s start + 5s stop + client margin
 ENV_VAR = "JASPER_AIRPLAY_FREE_RUNNING"
 
 
@@ -73,17 +74,17 @@ def _write_mode(mode: str) -> None:
 
 
 def _apply_and_restart() -> int:
-    """Restart shairport-sync — its ExecStartPre runs
+    """Refresh shairport-sync when active — its ExecStartPre runs
     jasper-apply-airplay-mode against the env file we just wrote, so
     /etc/shairport-sync.conf is re-rendered before shairport starts.
     Returns 0 on success."""
     r = subprocess.run(
-        ["systemctl", "restart", "shairport-sync"],
-        check=False, timeout=15,
+        ["systemctl", "try-restart", "shairport-sync"],
+        check=False, timeout=SHAIRPORT_RESTART_TIMEOUT_SEC,
     )
     if r.returncode != 0:
         print(
-            "jasper-airplay-mode: systemctl restart shairport-sync failed",
+            "jasper-airplay-mode: systemctl try-restart shairport-sync failed",
             file=sys.stderr,
         )
         return r.returncode
@@ -97,7 +98,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("show", help="Print the current mode and exit.")
-    p_set = sub.add_parser("set", help="Switch mode and restart shairport-sync.")
+    p_set = sub.add_parser(
+        "set",
+        help="Switch mode and refresh shairport-sync when it is active.",
+    )
     p_set.add_argument("mode", choices=["free-running", "synced"])
     args = parser.parse_args(argv)
 

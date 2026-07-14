@@ -482,7 +482,6 @@ _AUDIO_PATH_UNITS = (
     "jasper-aec-bridge",
     "jasper-snapclient",
     "jasper-snapserver",
-    "jasper-usbsink",
     "shairport-sync",
     "librespot",
     "bluealsa-aplay",

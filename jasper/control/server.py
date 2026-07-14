@@ -729,7 +729,9 @@ def stop_peering_daemon(*, timeout: float = 5.0) -> None:
 # Forwarded pair action requests carry this header; its presence stops a
 # second hop (see _maybe_forward_pair_action_to_leader's loop breaker).
 _PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
-_GROUPING_RECONCILE_UNIT = "jasper-grouping-reconcile.service"
+_GROUPING_RECONCILE_KICK_HELPER = (
+    "/usr/local/sbin/jasper-grouping-reconcile-kick"
+)
 _GROUPING_RECONCILE_TRAILING_UNIT = "jasper-grouping-reconcile-trailing.service"
 _GROUPING_RECONCILE_TRAILING_DELAY_FILE = (
     "/run/jasper-control/grouping-reconcile-trailing-delay"
@@ -754,10 +756,12 @@ def _pair_follower_leader_addr() -> str | None:
     else None. One tiny env-file read per call (multiroom.config.load_config
     — never the runtime derive with its systemctl/RPC probes: this gates
     every /volume request). The predicate itself is the shared
-    follower_leader_addr, so bond-validity semantics live in one place."""
-    from ..multiroom.config import follower_leader_addr, load_config
+    effective-role reader, so a refused bond that safely landed solo does not
+    forward local controls to the requested leader."""
+    from ..multiroom.config import load_config
+    from ..multiroom.effective_role import effective_follower_leader_addr
 
-    return follower_leader_addr(load_config())
+    return effective_follower_leader_addr(load_config())
 
 
 def _bonded_follower_mic_payload(leader: str) -> dict[str, Any]:
@@ -854,7 +858,7 @@ def _launch_grouping_reconciler_kick(reason: str) -> None:
         reason=reason,
     )
     subprocess.Popen(
-        ["systemctl", "restart", "--no-block", _GROUPING_RECONCILE_UNIT],
+        [_GROUPING_RECONCILE_KICK_HELPER],
     )
 
 
@@ -1088,13 +1092,12 @@ def _reset_grouping_reconciler_kick_coalescer_for_tests() -> None:
 def _kick_grouping_reconciler() -> None:
     """Apply a persisted grouping change through jasper-grouping-reconcile.
 
-    Mirror of _kick_aec_reconciler: `restart` (not `start`) the Type=oneshot
-    reconciler so a change written while a previous reconcile is still active
-    is not a no-op. The reconciler is the single applier of snapcast state and
-    outputd grouping env. This nudges it to re-read grouping.env, but coalesces
-    rapid /grouping/set bursts so trim/delay/crossover sweeps do not tear down
-    outputd on every intermediate value. A skipped kick always arms one trailing
-    retry; the final grouping.env write is therefore applied.
+    The reconciler is the single applier of snapcast state and outputd grouping
+    env. A fixed helper performs a blocking ``systemctl start`` so an active
+    Type=oneshot pass drains before it launches one fresh pass. This caller also
+    coalesces rapid /grouping/set bursts so trim/delay/crossover sweeps do not tear
+    down outputd on every intermediate value. A skipped kick always arms one
+    trailing retry; the final grouping.env write is therefore applied.
     """
     _grouping_reconciler_kick_coalescer.kick()
 

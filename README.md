@@ -259,6 +259,11 @@ runs automatically only when the configured AEC mic is present with
   MTA BusTime API key — that card is locked until the user pastes one.
 - ✅ Per-source on/off wizard at `http://jts.local/sources/` —
   AirPlay / Bluetooth / Spotify Connect / USB Audio Input toggles.
+  Choices persist independently from runtime health, so the UI can show a
+  saved desired state separately from `on`, `off`, `degraded`, `parked`, or
+  `unavailable` effective state. One boot/deploy reconciler applies all four
+  sources; see
+  [docs/HANDOFF-source-lifecycle.md](docs/HANDOFF-source-lifecycle.md).
   Bluetooth's off toggle prompts for confirmation when a paired
   wireless remote (e.g. the VK-01 volume knob) is present, since
   powering the adapter off would silently disconnect it. Same
@@ -292,13 +297,15 @@ runs automatically only when the configured AEC mic is present with
   Plug a computer into the Pi's USB data/OTG port through a compatible
   power/data splitter or hub and the host sees the configured speaker
   name as a USB audio output device while this speaker is solo or a pair
-  leader. A bonded follower parks the USB gadget even if saved intent is
-  on, so it does not advertise itself as an independent input. Off by default; toggle at
+  leader. A bonded follower parks the USB audio function even if saved intent
+  is on, while the gadget's management network remains available, so it does
+  not advertise itself as an independent audio input. Off by default; toggle at
   `http://jts.local/sources/` enables it. The host's volume slider
   drives JTS's canonical `listening_level` (feels like spinning the
   dial). Joins the existing mux arbitration for latest-source-wins
-  preemption. Zero RAM cost when off; the Rust audio bridge is low
-  single-digit MB when on, plus the non-real-time host-volume helper. See
+  preemption. Zero resident-process RAM for the lifecycle marker; when on,
+  fan-in captures the UAC2 device directly and the non-real-time host-volume
+  helper remains bounded. See
   [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md) for the full
   design.
 - ✅ **USB management network** — the same USB-C port always carries a
@@ -560,9 +567,10 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/REVIEW-deep-audit-2026-07-11.md](docs/REVIEW-deep-audit-2026-07-11.md) | Maintainers | Point-in-time whole-codebase deep-audit report (677 verified findings, grades, fix waves); session-artifact, not current operational truth |
 | [docs/REVIEW-deep-audit-ledger.md](docs/REVIEW-deep-audit-ledger.md) | Maintainers | Live findings tracker joined to the deep-audit report by DA-NNNN id — per-finding status/disposition/PR, consolidation triage, owner decisions, validation owed |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
+| [docs/HANDOFF-source-lifecycle.md](docs/HANDOFF-source-lifecycle.md) | Operators / source maintainers | **Operational.** Single current-truth owner for persisted source intent, desired-vs-effective state, the AirPlay/Spotify, Bluetooth, and USB convergence mechanisms, follower parking, boot/deploy replay, failure observability, and the JTS4 validation checklist. |
 | [docs/HANDOFF-speaker-output-reference.md](docs/HANDOFF-speaker-output-reference.md) | Audio / voice architects | Chosen direction for a JTS-native output owner, true speaker-output reference, TTS playout ledger, and robust assistant-speech barge-in |
 | [docs/HANDOFF-audio-latency-foundation.md](docs/HANDOFF-audio-latency-foundation.md) | Audio architects | Local-audio-latency work: the lean File-capture lane (Stage 4, default-OFF, soak-gated), USB-input bridge latency, the snapcast bond buffer, the CamillaDSP v4 resampler object schema, chip/software AEC optionality, and the hard rules against re-architecting the topology |
-| [docs/HANDOFF-usb-low-latency.md](docs/HANDOFF-usb-low-latency.md) | Audio architects | **Operational + evidence gate.** Current `usb_low_latency_48k` route: Rust UAC2 bridge, fan-in USB input resampler, CamillaDSP protection/correction, outputd final-reference ownership, Apple DAC tuned floor, rejected lower settings, `jasper-route-latency-artifact`, and the doctor route-latency artifact gate. The older lean-FIFO bypass is preserved there only as historical/deferred context. |
+| [docs/HANDOFF-usb-low-latency.md](docs/HANDOFF-usb-low-latency.md) | Audio architects | **Operational + evidence gate.** Current `usb_low_latency_48k` route: fan-in DIRECT UAC2 capture + USB resampler, CamillaDSP protection/correction, outputd final-reference ownership, Apple DAC tuned floor, rejected lower settings, `jasper-route-latency-artifact`, and the doctor route-latency artifact gate. The older bridge/lean-FIFO paths are preserved there only as historical/deferred context. |
 | [docs/HANDOFF-usb-latency-measurement.md](docs/HANDOFF-usb-latency-measurement.md) | Audio architects / maintainers | **Operational + reference.** Measurement reference for USB-input latency: the hardware-measured results (~55.5 ms full chain, electrical `:9891` + analog Scarlett-loopback methods that compose exactly), the per-stage breakdown, the productized-settings table (every value is the shipped code default or auto-pass-armed — the fresh-install reference), and the host/bench reproduction setup (Mac output pinning, gadget recovery, click-WAV spec, descend-to-floor). |
 | [docs/HANDOFF-audio-graph-consolidation.md](docs/HANDOFF-audio-graph-consolidation.md) | Audio architects | **Campaign plan.** Consolidating the audio graph onto SHM rings + the `jts_ring` ioplug and deleting every duplicate/legacy path (snd-aloop, Python usbsink pump, lean lane, transport_pipe, rate_match): the file-level no-dupes audit, sequenced phase map with per-phase gates/rollbacks, renderer ring-ingress design, risk register, and campaign done criteria |
 | [docs/RESEARCH-pipewire-low-latency.md](docs/RESEARCH-pipewire-low-latency.md) | Audio architects | Research artifact: how PipeWire's *actual* source achieves low latency + clock resilience (the `spa_dll` delay-locked loop, driver/follower double-buffered quantum, timer/headroom ALSA model, xrun recovery, zero-copy), a JTS verdict per technique, and a principle-aligned adoption plan centered on lifting one shared DLL primitive. We do NOT use PipeWire — this mines its algorithms, not its architecture |
@@ -857,6 +865,10 @@ reference. Currently:
   — Planned provider/source capability boundary for future music
   integrations: volume, transport, metadata, health, and contributor
   checklist
+- [`HANDOFF-source-lifecycle.md`](docs/HANDOFF-source-lifecycle.md) —
+  Current local-source on/off contract: persisted household intent versus
+  effective runtime state, one bounded boot/deploy coordinator, the three
+  concrete source mechanisms, and follower-role parking.
 - [`HANDOFF-airplay.md`](docs/HANDOFF-airplay.md) — AirPlay
   glitch troubleshooting guide. **Start here if you hear audio
   artifacts on AirPlay.** Symptom → pattern decision flow, concrete
@@ -1139,7 +1151,7 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-accessory-reconcile` (optional accessory mic profile gate) | Active oneshot | ~0 resident | boot/deploy and Bluetooth pair/connect/forget only |
 | `jasper-wiim-remote-mic` (WiiM Remote 2 BLE mic adapter) | Profile-gated; active only when paired WiiM Remote 2 is present | 0 MB off; ~15 MB on, bounded by MemoryMax=100M | ~0% idle; decode only while the remote mic streams |
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
-| `jasper-usbsink` (USB audio source) | **Disabled by default**; Rust data plane when on | 0 MB off; low single-digit MB for the bridge, plus host-volume helper | low; ALSA-period Rust bridge while host streams |
+| `jasper-usbsink` (USB audio source lifecycle mirror) | **Disabled by default**; fan-in DIRECT data plane when on | process-free readiness marker; only the bounded host-volume observer is resident while on | low; fan-in owns ALSA capture while the host streams |
 | `jasper-usbgadget` (composite ConfigFS gadget: always-on USB network + optional audio) | **Active by default** (network function); audio function follows the usbsink toggle above | one-shot, ~0 own footprint; ~1 MB kernel modules once composed — see [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) "RAM contract" | ~0 |
 | `jasper-usbnet-dhcp` (scoped dnsmasq for the USB management network) | **Device-activated** — active only while `usb0` exists | 0 MB when `usb0` absent; bounded ≤16 MB when active | ~0% idle |
 | `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Transit / Home Assistant / Weather / Sound / Wake-Corpus / Speaker / Rooms / Tools wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |

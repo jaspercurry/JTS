@@ -23,12 +23,16 @@ from ..audio_quality import (
     read_state as _read_audio_quality_state,
 )
 from ..music_sources import MUSIC_SOURCE_SPECS
-from ..fanin.status import fanin_usbsink_lane_is_direct
+from ..fanin.status import (
+    FANIN_INPUT_SOURCE_DIRECT,
+    fanin_usbsink_input,
+)
 from ..source_state import (
     usbsink_direct_audible,
     usbsink_direct_muted,
     usbsink_direct_rms_dbfs,
 )
+from ..usbgadget import DEFAULT_UDC_CLASS_DIR, udc_host_connected
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom import cascade_timeline
@@ -123,119 +127,33 @@ def _safe_audio_quality_state() -> dict[str, Any]:
         }
 
 
-def _fanin_input_status(
-    fanin_status: dict[str, Any] | None,
-    label: str,
-) -> dict[str, Any] | None:
-    if not isinstance(fanin_status, dict):
-        return None
-    inputs = fanin_status.get("inputs")
-    if not isinstance(inputs, list):
-        return None
-    for entry in inputs:
-        if isinstance(entry, dict) and entry.get("label") == label:
-            return entry
-    return None
-
-
-def _finite_float_or_none(raw: Any) -> float | None:
-    """Coerce ``raw`` to a finite float, else ``None``.
-
-    Rejects bools (``True``/``False`` are ``int`` subclasses) and non-finite
-    values (a legacy jasper-usbsink could write ``-Infinity``) so the /state
-    JSON stays ``allow_nan=False``-clean."""
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return None
-    value = float(raw)
-    if not math.isfinite(value):
-        return None
-    return value
-
-
-def _usbsink_in_combo_mode(
-    fanin_status: dict[str, Any] | None,
-    usbsink_blob: dict[str, Any] | None,
-) -> bool:
-    """True when jasper-fanin DIRECT-captures the USB gadget (a "combo" box) and
-    the jasper-usbsink bridge is therefore in standby.
-
-    In combo mode the bridge runs with ``JASPER_USBSINK_AUDIO_STANDBY=1``: it
-    opens no PCM, so *its own* published ``playing`` / ``rms_dbfs`` are frozen at
-    their idle defaults (``false`` / ``-120``) and describe nothing. The live
-    audio flows through fan-in's direct capture, whose truth is
-    ``audio.fanin.usbsink_input`` (``source=="direct"`` with ``frames_read``
-    advancing and a live per-period ``rms_dbfs``). The renderer section derives
-    combo playing / level from that fan-in lane, not the standby bridge (see
-    :func:`_build_usbsink_renderer_state`).
-
-    Detected primarily off the fan-in STATUS lane via the shared
-    :func:`jasper.fanin.status.fanin_usbsink_lane_is_direct` predicate (the one
-    owner of the ``source=="direct"`` contract, also used by the route-latency
-    harness / mux), with the bridge's own ``standby`` flag as a fallback so a
-    momentarily-unavailable fan-in STATUS can't resurrect the stale bridge
-    values."""
-    if fanin_usbsink_lane_is_direct(fanin_status):
-        return True
-    return bool(isinstance(usbsink_blob, dict) and usbsink_blob.get("standby"))
-
-
 def _build_usbsink_renderer_state(
-    usbsink_blob: Any,
     fanin_status: dict[str, Any] | None,
+    *,
+    host_connected: bool,
 ) -> dict[str, Any] | None:
-    """Build the ``/state.renderers.usbsink`` section from the bridge state blob.
+    """Build ``/state.renderers.usbsink`` from its two live owners.
 
-    The bridge is standby-only now, so the ``combo`` path is the norm: the bridge's
-    own ``playing`` / ``rms_dbfs`` are meaningless (it opens no PCM) and fan-in's
-    DIRECT lane is the truth. The ``combo`` false branch below is a defensive
-    fallback for a state blob without ``standby: true`` (a not-yet-migrated box or
-    an old binary mid-deploy) — it surfaces the blob verbatim.
+    Fan-in's identity-bound DIRECT lane owns activity, level, and mix-mute.
+    ConfigFS/UDC sysfs owns host connection.  The section is absent when fan-in
+    does not expose the DIRECT lane, preserving ``null == off/unavailable``
+    without a copied state file or a resident compatibility daemon.
+    """
 
-    Combo boxes: the bridge is in standby (see :func:`_usbsink_in_combo_mode`),
-    so *the bridge's own* ``playing`` / ``rms_dbfs`` are meaningless. But fan-in's
-    USB DIRECT lane measures the live capture level per period, so we surface the
-    TRUE playing / rms from that lane instead of the ``null`` this surface used to
-    report: ``playing`` = the direct lane's level above the shared
-    :data:`~jasper.source_state.USBSINK_PLAYING_RMS_DBFS` gate,
-    ``rms_dbfs`` = that live level. Both fall back to ``null`` only when the
-    fan-in STATUS is unavailable or predates the per-lane level (older build).
-    This is a single-snapshot *level* read (no temporal frames-advanced
-    hysteresis — that lives in mux), preserving the no-hysteresis /state
-    contract the now-deleted solo bridge used to provide (it read its own
-    per-period ``playing`` flag directly, with no hysteresis either).
-    Consumers read USB *selection* from ``source_selection`` / ``active_source``
-    (mux). ``host_connected`` stays valid (the standby bridge still derives it
-    from ``/sys/class/udc``), as do ``preempted`` / ``updated_at``.
-
-    Returns ``None`` when the feature is off / the blob is unusable (not a
-    dict), matching the "null == off" contract the /system dashboard relies on."""
-    if not isinstance(usbsink_blob, dict):
+    input_state = fanin_usbsink_input(fanin_status)
+    if not input_state or input_state.get("source") != FANIN_INPUT_SOURCE_DIRECT:
         return None
-    host_connected = bool(usbsink_blob.get("host_connected", False))
-    preempted = bool(usbsink_blob.get("preempted", False))
-    updated_at = usbsink_blob.get("updated_at")
-    if _usbsink_in_combo_mode(fanin_status, usbsink_blob):
-        return {
-            "combo": True,
-            "playing": usbsink_direct_audible(fanin_status),
-            "preempted": preempted,
-            # `muted` is the fan-in mix-mute STATE mux drives for combo-box
-            # arbitration (separate from `preempted`, which on a combo box is the
-            # standby bridge's frozen flag): the live USB-silencing truth is
-            # whether fan-in has the direct lane muted. `null` on an older fan-in
-            # build without the per-lane flag.
-            "muted": usbsink_direct_muted(fanin_status),
-            "host_connected": host_connected,
-            "rms_dbfs": usbsink_direct_rms_dbfs(fanin_status),
-            "updated_at": updated_at,
-        }
     return {
-        "combo": False,
-        "playing": bool(usbsink_blob.get("playing", False)),
-        "preempted": preempted,
-        "host_connected": host_connected,
-        "rms_dbfs": _finite_float_or_none(usbsink_blob.get("rms_dbfs")),
-        "updated_at": updated_at,
+        "combo": True,
+        "playing": usbsink_direct_audible(fanin_status),
+        # Compatibility fields retained for lightweight dashboard consumers.
+        # Fan-in's `muted` is the actual arbitration state; there is no second
+        # bridge process with an independent preemption state or timestamp.
+        "preempted": False,
+        "muted": usbsink_direct_muted(fanin_status),
+        "host_connected": bool(host_connected),
+        "rms_dbfs": usbsink_direct_rms_dbfs(fanin_status),
+        "updated_at": None,
     }
 
 
@@ -278,7 +196,6 @@ def route_latency_artifact_state(plan: Any) -> dict[str, Any] | None:
 
 def _audio_graph_state(
     *,
-    usbsink_raw: dict[str, Any] | None,
     fanin_status: dict[str, Any] | None,
     outputd_status: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -290,14 +207,7 @@ def _audio_graph_state(
         logger.exception("audio graph route plan read failed")
         return {"route": {"status": "unavailable", "error": str(e)}}
 
-    usbsink_counters = None
-    usbsink_ring = None
-    if isinstance(usbsink_raw, dict):
-        counters = usbsink_raw.get("counters")
-        ring = usbsink_raw.get("ring")
-        usbsink_counters = counters if isinstance(counters, dict) else None
-        usbsink_ring = ring if isinstance(ring, dict) else None
-    fanin_usbsink = _fanin_input_status(fanin_status, "usbsink")
+    fanin_usbsink = fanin_usbsink_input(fanin_status)
     outputd_dac = (
         outputd_status.get("dac")
         if isinstance(outputd_status, dict)
@@ -337,30 +247,6 @@ def _audio_graph_state(
             "contract": plan.route_profile.to_dict(),
         },
         "artifact": artifact,
-        "rust_bridge": {
-            "implementation": (
-                usbsink_raw.get("implementation")
-                if isinstance(usbsink_raw, dict)
-                else None
-            ),
-            "ring": usbsink_ring,
-            "counters": usbsink_counters,
-            "period_frames": (
-                usbsink_raw.get("period_frames")
-                if isinstance(usbsink_raw, dict)
-                else None
-            ),
-            # The standby-only bridge no longer emits a host_clock block (the solo
-            # host-slaved clock was deleted with the aloop path), so this is now
-            # always None here — the LIVE combo host clock is fan-in's, surfaced as
-            # ``fanin.host_clock`` below. Kept as an explicit None for /state shape
-            # stability. See docs/HANDOFF-usb-low-latency.md.
-            "host_clock": (
-                usbsink_raw.get("host_clock")
-                if isinstance(usbsink_raw, dict)
-                else None
-            ),
-        },
         "fanin": {
             "usbsink_input": fanin_usbsink,
             "resampler": (
@@ -1098,29 +984,15 @@ async def _get_state(
         "session_active": bool(spotify_blob.get("session_active", False)),
     }
 
-    # USB sink — fourth renderer. Reads the state file the daemon
-    # publishes. Section reports None when the feature is disabled
-    # (no state file) so consumers can distinguish "off" from
-    # "on but idle".
-    usbsink_state: dict | None = None
-    usbsink_raw: dict[str, Any] | None = None
-    try:
-        with open(
-            os.environ.get(
-                "JASPER_USBSINK_STATE_PATH",
-                "/run/jasper-usbsink/state.json",
-            ),
-        ) as f:
-            usbsink_blob = json.load(f)
-        if isinstance(usbsink_blob, dict):
-            usbsink_raw = usbsink_blob
-        # On a combo box (fan-in DIRECT-captures the gadget) the bridge is in
-        # standby and its playing/rms_dbfs are stale idle defaults; the builder
-        # nulls them and flags combo=true so /state doesn't misreport live USB
-        # audio as silent. Solo boxes keep the bridge's RMS-gated truth.
-        usbsink_state = _build_usbsink_renderer_state(usbsink_blob, fanin_st)
-    except (OSError, ValueError, json.JSONDecodeError):
-        pass
+    # USB Audio Input — fourth renderer. Fan-in owns the live DIRECT lane;
+    # kernel UDC state owns host connection. No copied state file or resident
+    # bridge helper sits between those owners and this projection.
+    usbsink_state = _build_usbsink_renderer_state(
+        fanin_st,
+        host_connected=udc_host_connected(
+            os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR),
+        ),
+    )
 
     voice_session = bool(voice_st) and voice_st.get("state") == "SESSION"
     # Active-source picks. Mux owns the effective audible source in
@@ -1229,7 +1101,6 @@ async def _get_state(
         output_hardware_state = None
 
     audio_graph_state = _audio_graph_state(
-        usbsink_raw=usbsink_raw,
         fanin_status=fanin_st,
         outputd_status=outputd_st,
     )

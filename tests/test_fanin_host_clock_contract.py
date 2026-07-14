@@ -81,14 +81,14 @@ def _fanin_host_clock_text() -> str:
 
 # --------------------------------------------------------------------------
 # Env-key names + defaults, pinned against config.rs + .env.example prose.
-# The three JASPER_FANIN_HOST_CLOCK* keys mirror usbsink's; there is NO target
-# env (the setpoint is the resampler's held target, derived).
+# The live fan-in host-clock keys; there is NO target or probe-duration env.
+# The setpoint is the resampler's held target and Correction mode uses a fixed
+# probe window.
 # --------------------------------------------------------------------------
 
 _PINNED_ENV_KEYS = {
     "JASPER_FANIN_HOST_CLOCK": None,  # unset = disabled; no numeric default
     "JASPER_FANIN_HOST_CLOCK_PROBE_PPM": "300",
-    "JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS": "6",
 }
 
 
@@ -135,16 +135,16 @@ def test_fanin_host_clock_is_default_off_literal_gate():
     assert "event=fanin.host_clock_config_ignored" in text
 
 
-def test_fanin_probe_ranges_match_usbsink_contract():
-    # The two servos share one probe contract: ppm 200..=800, secs 5..=10.
+def test_fanin_probe_ppm_range_is_bounded():
     text = _fanin_config_text()
     assert "(200..=800).contains(&host_clock_probe_ppm)" in text, (
         "the fan-in probe-ppm range must be 200..=800 (the ~163 ppm Windows "
-        "deadband floor + the ±1000 ppm validity ceiling), matching usbsink."
+        "deadband floor + the ±1000 ppm validity ceiling)."
     )
-    assert "(5..=10).contains(&host_clock_probe_secs)" in text, (
-        "the fan-in probe-seconds range must be 5..=10, matching usbsink."
-    )
+
+
+def test_no_dead_fanin_host_clock_probe_duration_env():
+    assert "JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS" not in _fanin_config_text()
 
 
 def test_no_fanin_host_clock_target_env_key():
@@ -224,7 +224,6 @@ def test_audio_graph_passes_through_present_fanin_host_clock_block():
     block["enabled"] = True
     block["ladder"] = "l0_locked"
     graph = state_aggregate._audio_graph_state(
-        usbsink_raw=None,
         fanin_status=_fanin_status_with_host_clock(block),
         outputd_status=None,
     )
@@ -236,7 +235,6 @@ def test_audio_graph_fanin_host_clock_none_when_key_absent():
     # A combo build with no host_clock in the fan-in STATUS (feature never
     # rendered a block) → None, a definite "no evidence".
     graph = state_aggregate._audio_graph_state(
-        usbsink_raw=None,
         fanin_status={"inputs": []},
         outputd_status=None,
     )
@@ -246,7 +244,6 @@ def test_audio_graph_fanin_host_clock_none_when_key_absent():
 
 def test_audio_graph_fanin_host_clock_none_when_fanin_status_none():
     graph = state_aggregate._audio_graph_state(
-        usbsink_raw=None,
         fanin_status=None,
         outputd_status=None,
     )
@@ -257,7 +254,6 @@ def test_audio_graph_fanin_host_clock_none_when_fanin_status_none():
 def test_audio_graph_fanin_host_clock_none_when_fanin_status_not_a_dict():
     # Defensive: a malformed fan-in status must degrade to None, not raise.
     graph = state_aggregate._audio_graph_state(
-        usbsink_raw=None,
         fanin_status="not-a-dict",  # type: ignore[arg-type]
         outputd_status=None,
     )

@@ -19,8 +19,7 @@
 //! reason the cross-timeline subtraction the harness does is valid, and why
 //! this tap emits monotonic ns, never epoch ns.
 //!
-//! The bridge's own tap is DEAD in direct mode (the bridge runs in standby and
-//! opens no capture, so its detector never fires); this JSONL under
+//! The retired bridge has no tap; this JSONL under
 //! `/run/jasper-fanin/` is the only ingress evidence for the direct route.
 //!
 //! # Cost model (COAH resilience)

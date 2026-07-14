@@ -8,6 +8,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from jasper import audio_runtime_plan as audio_plan
 from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
 from jasper.audio_runtime_plan import (
@@ -16,13 +18,12 @@ from jasper.audio_runtime_plan import (
     FANIN_OUTPUT_BUFFER_KEY,
     FANIN_INPUT_RESAMPLER_KEY,
     FANIN_INPUT_RESAMPLER_LANE_KEY,
+    FANIN_USB_DIRECT_PERIOD_KEY,
     MIN_FANIN_OUTPUT_BUFFER_FRAMES,
     OUTPUTD_CONTENT_BRIDGE_KEY,
     ROUTE_BITPERFECT_DECLARED,
     ROUTE_CORRECTED_48K,
     ROUTE_USB_LOW_LATENCY_48K,
-    USBSINK_BLOCK_FRAMES_KEY,
-    USBSINK_RING_PERIODS_KEY,
     apply_capture_precedence,
     DEFAULT_FANIN_INPUT_BUFFER_FRAMES,
     DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES,
@@ -537,7 +538,7 @@ def test_invalid_audio_route_profile_falls_back_with_warning():
     assert any("invalid" in warning for warning in profile.warnings)
 
 
-def test_usb_low_latency_route_requires_rust_fanin_resampler_and_reference():
+def test_usb_low_latency_route_requires_direct_fanin_resampler_and_reference():
     profile = resolve_audio_route_profile(
         {AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K}
     )
@@ -545,7 +546,7 @@ def test_usb_low_latency_route_requires_rust_fanin_resampler_and_reference():
     by_key = {action.key: action for action in actions}
 
     assert profile.low_latency_claim is True
-    assert profile.rust_usb_audio_required is True
+    assert profile.fanin_usb_direct_required is True
     assert profile.fanin_input_resampler_required is True
     assert profile.camilla_required is True
     assert profile.outputd_final_reference_required is True
@@ -557,16 +558,14 @@ def test_usb_low_latency_route_requires_rust_fanin_resampler_and_reference():
     assert profile.p99_budget_ms == 42.0
     assert by_key[FANIN_INPUT_RESAMPLER_KEY].value == "enabled"
     assert by_key[FANIN_INPUT_RESAMPLER_LANE_KEY].value == "usbsink"
-    assert by_key["JASPER_USBSINK_AUDIO_IMPL"].action == "unset"
-    assert by_key[USBSINK_BLOCK_FRAMES_KEY].value == "256"
-    assert by_key[USBSINK_RING_PERIODS_KEY].value == "3"
+    assert all(not key.startswith("JASPER_USBSINK_") for key in by_key)
     assert (
         by_key["JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES"].value
         == "1536"
     )
 
 
-def test_usb_low_latency_route_identity_carries_planned_bridge_and_resampler():
+def test_usb_low_latency_route_identity_carries_direct_capture_and_resampler():
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
         profile_id=APPLE_USB_C_DONGLE_ID,
@@ -584,9 +583,14 @@ def test_usb_low_latency_route_identity_carries_planned_bridge_and_resampler():
         "warmup_cushion_frames": 1536,
         "ring_frames": 4096,
     }
-    assert identity["rust_bridge_config"]["implementation"] == "rust"
-    assert identity["rust_bridge_config"]["period_frames"] == 256
-    assert identity["rust_bridge_config"]["ring_periods"] == 3
+    assert identity["fanin_direct_config"] == {
+        "lane": "usbsink",
+        "source": "direct",
+        "device": "hw:UAC2Gadget",
+        "period_frames": 256,
+        "min_buffer_frames": 768,
+        "buffer_period_aligned": True,
+    }
     assert identity["outputd_config"]["JASPER_OUTPUTD_PERIOD_FRAMES"] == 128
     assert (
         identity["outputd_config"]["JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"]
@@ -610,17 +614,40 @@ def test_usb_low_latency_route_rejects_legacy_rate_match_bridge():
     )
 
 
-def test_route_config_hash_includes_route_owned_env_actions(monkeypatch):
+def test_route_config_hash_includes_fanin_direct_period():
     base_env = {AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K}
     default_plan = build_audio_runtime_plan(base_env=base_env, route_mode="solo")
 
-    monkeypatch.setattr(audio_plan, "DEFAULT_USB_LOW_LATENCY_BLOCK_FRAMES", 128)
-    changed_plan = build_audio_runtime_plan(base_env=base_env, route_mode="solo")
+    changed_plan = build_audio_runtime_plan(
+        base_env=base_env,
+        fanin_env={FANIN_USB_DIRECT_PERIOD_KEY: "128"},
+        route_mode="solo",
+    )
 
-    assert changed_plan.route_latency_identity()["rust_bridge_config"][
+    assert changed_plan.route_latency_identity()["fanin_direct_config"][
         "period_frames"
     ] == 128
     assert changed_plan.route_config_hash != default_plan.route_config_hash
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected", "invalid"),
+    (("31", 256, True), ("32", 32, False), ("1024", 1024, False), ("1025", 256, True)),
+)
+def test_usb_direct_period_matches_rust_bounds(raw, expected, invalid):
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={FANIN_USB_DIRECT_PERIOD_KEY: raw},
+        route_mode="solo",
+    )
+
+    setting = next(
+        item for item in plan.settings
+        if item.key == FANIN_USB_DIRECT_PERIOD_KEY
+    )
+    assert setting.value == expected
+    bound_warning = any("must be 32..1024" in warning for warning in setting.warnings)
+    assert bound_warning is invalid
 
 
 def test_route_config_hash_includes_active_camilla_config_hash(tmp_path):
@@ -644,14 +671,12 @@ def test_route_config_hash_includes_active_camilla_config_hash(tmp_path):
     assert first.route_config_hash != second.route_config_hash
 
 
-def test_non_low_latency_route_disarms_rust_bridge_claiming_knobs():
+def test_non_low_latency_route_clears_fanin_resampler_knobs_only():
     actions = route_owned_env_actions(ROUTE_CORRECTED_48K)
     by_key = {action.key: action for action in actions}
 
     assert by_key[FANIN_INPUT_RESAMPLER_KEY].action == "unset"
-    assert by_key["JASPER_USBSINK_AUDIO_IMPL"].action == "unset"
-    assert by_key[USBSINK_BLOCK_FRAMES_KEY].action == "unset"
-    assert by_key["JASPER_USBSINK_OUTPUT_MODE"].value == "aloop"
+    assert all(not key.startswith("JASPER_USBSINK_") for key in by_key)
 
 
 def test_bitperfect_route_is_declared_but_inactive_and_aec_degraded():

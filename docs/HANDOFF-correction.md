@@ -236,7 +236,7 @@
   target but restores the user's original listening volume immediately. Each
   room/verify/crossover sweep reasserts the target only inside
   `measurement_window()` and restores the original in that window's `finally`,
-  before renderers resume. Ensure/restore share one async transition lock;
+  before household music lanes resume. Ensure/restore share one async transition lock;
   safety does not depend on an in-memory expiry timer. All
   synthetic — H1 (on-device settle cadence + iOS/Android AGC-freeze
   confirmation) supplies the real threshold values; the `JASPER_RAMP_*`
@@ -1139,7 +1139,7 @@ them; design **with** them.
 
 | Constraint | Source | What it forces |
 |---|---|---|
-| Raspberry Pi 5 **1 GB** target | User decision (2026-05-09): "see how far we can get on 1 GB" | PEQ is comfortable. FIR stays 1 GB-aware and research-gated: pause renderers during expensive generation, measure real memory before enabling mixed-phase / FDW paths. |
+| Raspberry Pi 5 **1 GB** target | User decision (2026-05-09): "see how far we can get on 1 GB" | PEQ is comfortable. FIR stays 1 GB-aware and research-gated: measure peak memory with ordinary source daemons still running before enabling mixed-phase / FDW paths. |
 | **Apple USB-C dongle**, stereo, 48 kHz | [README.md](../README.md) Hardware table | Filters are 2-channel. No multi-driver crossover work in scope. |
 | Pure ALSA: **snd-aloop + fan-in + outputd**, no PipeWire | [docs/audio-paths.md](audio-paths.md) | Sweep injection point is `correction_substream`, a dedicated fan-in lane. CamillaDSP captures from `pcm.jasper_capture` (dsnoop on summed `hw:Loopback,1,7`), processes, writes to `outputd_content_playback`, and jasper-outputd owns the DAC. |
 | `master_gain` mixer **already exists** as identity | [deploy/camilladsp/outputd-cutover.yml](../deploy/camilladsp/outputd-cutover.yml) | The EQ slot is reserved. We add filters in front of it, leave it alone. |
@@ -1439,16 +1439,30 @@ The HTTP coordinator at `jasper/correction/coordinator.py` is an
 async context manager:
 ```python
 async with measurement_window():
-    # 1. systemctl stop librespot shairport-sync bluealsa-aplay
+    # 1. mux TEST_SELECT correction correction-measurement; require owner + gate
     # 2. UDS MEASURE_PAUSE → voice_daemon
-    # 3. yield (caller does the sweep + analysis + filter design)
-    # 4. UDS MEASURE_RESUME → voice_daemon  (in finally)
-    # 5. systemctl start librespot shairport-sync bluealsa-aplay
+    # 3. renew the 60 s mux lease and 120 s voice lease while healthy
+    # 4. yield (caller does the sweep + analysis + filter design)
+    # 5. UDS MEASURE_RESUME + verified owner-scoped TEST_RELEASE (finally)
 ```
 
 **Why not a new `jasper-coordinator` daemon?** The patterns we
 need already exist:
-- "Pause renderers" = `systemctl stop`. Done.
+- `jasper-mux` already owns fan-in routing. The coordinator uses its existing
+  owner-scoped diagnostic gate (`correction-measurement`), which excludes every
+  music lane (including fan-in's live USB DIRECT lane) while always admitting
+  the correction lane. Mux confirms the landed owner/state and reasserts it
+  each tick. The closed owner vocabulary also prevents active-speaker
+  commissioning from stealing or releasing an in-flight correction gate, and
+  makes cleanup safe after a lost response. Correction never becomes a second
+  writer of USB's policy mute.
+- Music source daemons stay running and fan-in continues draining their private
+  lanes. This avoids process churn, preserves source intent exactly, and means
+  a killed web worker cannot strand enabled sources manually stopped. Mux's
+  60-second monotonic owner lease is the external crash-recovery boundary;
+  correction renews it every 20 seconds. If renewal stays unconfirmed for 40
+  seconds, the renewal task cancels the owning measurement and `finally`
+  restores voice/gate state before mux could reopen music into a live sweep.
 - "Pause voice loop" = UDS command (mirrors `/cue/play` shape).
 - "Pause AEC bridge" = if enabled, the bridge re-converges in
   ~200 ms after the sweep stops; no pause needed.
@@ -1475,14 +1489,11 @@ shows insufficient free memory *after* pausing.
 **Why not require 2 GB?** User decision (2026-05-09): "see how
 far we can get on 1 GB."
 
-**Concrete RAM budget on 1 GB after pause:** Per the explore-agent
-audit of running processes, steady total is 500-620 MB. Pausing
-librespot, shairport-sync, bluez-alsa, and the Gemini Live SDK
-(via `MEASURE_PAUSE` + `systemctl stop`) frees an estimated
-130-200 MB. That's enough headroom for PEQ (negligible) and likely
-enough for short minimum-phase FIR prototypes, but Phase 5 should
-measure peak memory before enabling mixed-phase or FDW generation in
-the user-facing flow.
+**Concrete RAM budget on 1 GB:** The source processes deliberately remain alive;
+the design does not count speculative process-stop savings as FIR headroom.
+PEQ remains negligible. Phase 5 must measure real steady-state and peak memory
+with the ordinary household stack running before enabling mixed-phase or FDW
+generation in the user-facing flow.
 
 **Defaults that keep us safely on the safe side:**
 - Match range: 20-350 Hz (project-safe modal/transition-region
@@ -1775,10 +1786,10 @@ sees a chart, taps "Apply," next song plays through corrected DSP.
 
 Concrete changes:
 - `jasper/correction/coordinator.py`: `measurement_window()` async
-  context manager. Calls `systemctl stop` on all music source daemons
-  that can write into fan-in. Sends `MEASURE_PAUSE` over UDS to voice_daemon.
-  On exit (including exceptions): sends `MEASURE_RESUME`,
-  `systemctl start ...`.
+  context manager. Acquires mux's owner-scoped, leased correction gate, which
+  excludes all music lanes without stopping their daemons. Sends
+  `MEASURE_PAUSE` over UDS to voice_daemon. On exit (including exceptions):
+  sends `MEASURE_RESUME` and strictly releases its own mux gate.
 - `jasper/voice_daemon.py`: handle `MEASURE_PAUSE` / `MEASURE_RESUME`
   in `_handle_command()`. Set `self._measurement_active = asyncio.Event()`.
   WakeLoop's main loop awaits `not self._measurement_active.is_set()`
@@ -2071,10 +2082,12 @@ What can actually go wrong, ordered by likelihood × impact.
    that loads our emitted YAML, runs the existing
    [test_camilla_ducker.py](../tests/test_camilla_ducker.py) tests
    against it.
-4. **measurement_window() leaves a music source daemon in a stopped
-   state on crash.** Mitigation: `try/finally` in coordinator;
-   systemd restart policies on the renderers; explicit
-   `jasper-doctor` checks for source-daemon health.
+4. **measurement_window() loses its web worker while music is isolated.**
+   Mitigation: mux owns a closed owner vocabulary and a 60-second monotonic
+   lease. Same-owner selection renews it; another feature cannot steal/release
+   it; expiry strictly restores the current manual/auto/NONE gate and retains
+   ownership for retry if that low-level restore fails. Source processes and
+   household intent are never changed by correction.
 5. **iOS user gives up on cert trust dance.** Mitigation: extremely
    clear onboarding instructions (screenshots, not just text) on
    the port-80 landing page. Cert download served at HTTP-only URL
@@ -2540,7 +2553,9 @@ Internal:
 
 ---
 
-Last verified: 2026-07-14 (shared DSP-writer admission deadline/cancellation
+Last verified: 2026-07-14 (measurement isolation rechecked against mux's
+closed owner vocabulary, transactional release acknowledgement, response-loss
+rollback, monotonic crash lease, and no source-process mutation; shared DSP-writer admission deadline/cancellation
 semantics checked against Room's terminal mutation policy; Active isolated-driver
 persisted admission, server-owned capture handoff, and summed pre-audio refusal
 checked hardware-free; Active's durable bundle-backed commissioning-run start,

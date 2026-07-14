@@ -17,9 +17,12 @@ still validated on hardware.
 Mirrors the house style in tests/test_peering_state.py: synthetic inputs,
 plain asserts; file I/O goes to pytest's tmp_path.
 """
+
 from __future__ import annotations
 
 import os
+
+import pytest
 
 from jasper.multiroom.config import (
     DEFAULT_BUFFER_MS,
@@ -62,8 +65,13 @@ def _disabled() -> GroupingConfig:
     )
 
 
-def _leader(*, channel="left", bond_id="living-room", buffer_ms=DEFAULT_BUFFER_MS,
-            codec=DEFAULT_CODEC) -> GroupingConfig:
+def _leader(
+    *,
+    channel="left",
+    bond_id="living-room",
+    buffer_ms=DEFAULT_BUFFER_MS,
+    codec=DEFAULT_CODEC,
+) -> GroupingConfig:
     return GroupingConfig(
         enabled=True,
         role="leader",
@@ -76,8 +84,14 @@ def _leader(*, channel="left", bond_id="living-room", buffer_ms=DEFAULT_BUFFER_M
     )
 
 
-def _follower(*, channel="right", bond_id="living-room", leader_addr="192.168.1.50",
-              buffer_ms=DEFAULT_BUFFER_MS, codec=DEFAULT_CODEC) -> GroupingConfig:
+def _follower(
+    *,
+    channel="right",
+    bond_id="living-room",
+    leader_addr="192.168.1.50",
+    buffer_ms=DEFAULT_BUFFER_MS,
+    codec=DEFAULT_CODEC,
+) -> GroupingConfig:
     return GroupingConfig(
         enabled=True,
         role="follower",
@@ -154,28 +168,11 @@ def test_plan_disabled_stops_both():
     assert "solo" in p.summary
 
 
-def test_plan_disabled_stops_snap_units_and_restores_renderers():
-    """Solo: snap units stop; parked source resources carry RESTORE
-    intents (start-only-if-enabled — the un-park after a bond dissolves;
-    a no-op on a speaker that was never bonded since the units are
-    already running or wizard-disabled)."""
-    from jasper.local_sources import (
-        local_source_restore_restart_units,
-        local_source_restore_units,
-    )
+def test_plan_disabled_owns_only_snap_units():
+    """Source restore is delegated to the canonical source coordinator."""
     p = plan(_disabled())
     by_unit = {i.unit: i.desired for i in p.intents}
-    assert by_unit[SNAPSERVER_UNIT] == "stop"
-    assert by_unit[SNAPCLIENT_UNIT] == "stop"
-    for u in local_source_restore_units():
-        assert by_unit[u] == "restore"
-    for u in local_source_restore_restart_units():
-        assert by_unit[u] == "recompose"
-    assert len(p.intents) == (
-        2
-        + len(local_source_restore_units())
-        + len(local_source_restore_restart_units())
-    )
+    assert by_unit == {SNAPSERVER_UNIT: "stop", SNAPCLIENT_UNIT: "stop"}
 
 
 # ---------- plan(): enabled + error => stop both (never start a broken bond) ----------
@@ -195,19 +192,12 @@ def test_plan_invalid_summary_surfaces_error_and_not_starting():
 
 
 def test_plan_invalid_starts_nothing():
-    """Fail-safe: a broken bond must never produce a START intent for the
-    snap units — and it RESTORES parked source resources (a broken bond
-    must not keep the household's sources parked on top of not playing).
-    Non-snap intents are "restore" (start-only-if-enabled) or "recompose"
-    (try-restart the composite gadget) — never a plain "start"."""
+    """Fail-safe: a broken bond stops both snap units; sources have one owner."""
     p = plan(_invalid())
-    snap = {SNAPSERVER_UNIT, SNAPCLIENT_UNIT}
-    assert all(i.desired == "stop" for i in p.intents if i.unit in snap)
-    assert all(
-        i.desired in ("restore", "recompose")
-        for i in p.intents if i.unit not in snap
-    )
-    assert not any(i.desired == "start" for i in p.intents)
+    assert {(i.unit, i.desired) for i in p.intents} == {
+        (SNAPSERVER_UNIT, "stop"),
+        (SNAPCLIENT_UNIT, "stop"),
+    }
 
 
 # ---------- plan(): leader => start server + start client ----------
@@ -354,9 +344,7 @@ def test_snapclient_argv_latency_from_buffer_ms():
 
 def test_snapclient_argv_latency_from_client_latency_ms():
     cfg = _follower(buffer_ms=600)
-    cfg = GroupingConfig(
-        **{**cfg.__dict__, "client_latency_ms": 17}
-    )
+    cfg = GroupingConfig(**{**cfg.__dict__, "client_latency_ms": 17})
     argv = snapclient_argv(cfg)
     assert argv[argv.index("--latency") + 1] == "17"
 
@@ -393,7 +381,11 @@ def test_snapclient_argv_unchanged_when_player_fifo_unset():
     gated-off reroute is a true no-op."""
     cfg = _follower(leader_addr="jts3.local")
     assert snapclient_argv(cfg) == [
-        "snapclient", "--host", "jts3.local", "--latency", "0",
+        "snapclient",
+        "--host",
+        "jts3.local",
+        "--latency",
+        "0",
     ]
     assert snapclient_argv(cfg, player_fifo=None) == snapclient_argv(cfg)
     assert "--player" not in snapclient_argv(cfg)
@@ -429,7 +421,9 @@ def test_snapclient_argv_alsa_player_takes_precedence_over_fifo():
     """If both are (defensively) passed, the ALSA loopback wins — the active
     path never falls back to the FIFO."""
     argv = snapclient_argv(
-        _follower(), player_fifo="/x.fifo", player_alsa_device="hw:Loopback,0,5",
+        _follower(),
+        player_fifo="/x.fifo",
+        player_alsa_device="hw:Loopback,0,5",
     )
     assert "--soundcard" in argv and "file:filename=" not in " ".join(argv)
 
@@ -468,6 +462,7 @@ def test_assemble_args_leader_strips_binary_name_from_server():
 
 def test_assemble_args_leader_strips_binary_name_from_client():
     from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
+
     d = _assemble_args(_leader())
     assert not d[CLIENT_KEY].split()[0] == "snapclient"
     # An active member's client ALWAYS carries the round-trip file player
@@ -487,8 +482,8 @@ def test_assemble_args_leader_server_carries_the_fifo_source():
 
 def test_assemble_args_follower_server_empty_client_set():
     d = _assemble_args(_follower(leader_addr="192.168.1.50"))
-    assert d[SERVER_KEY] == ""          # a follower runs no server
-    assert d[CLIENT_KEY]                # but does run a client
+    assert d[SERVER_KEY] == ""  # a follower runs no server
+    assert d[CLIENT_KEY]  # but does run a client
     assert "--host 192.168.1.50" in d[CLIENT_KEY]
 
 
@@ -597,19 +592,29 @@ def test_outputd_grouping_env_clears_main_highpass_when_not_applicable():
         crossover_hz=90.0,
         roster=(BondMember(addr="192.168.1.8", name="Sub", channel="sub"),),
     )
-    assert outputd_grouping_env(
-        dataclasses.replace(rostered, mains_highpass_enabled=False)
-    )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
-    assert outputd_grouping_env(_leader(channel="left"))[
-        OUTPUTD_DAC_CONTENT_HP_HZ_ENV
-    ] == ""
-    assert outputd_grouping_env(
-        dataclasses.replace(_follower(channel="sub"), subwoofer_present=True)
-    )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
-    assert outputd_grouping_env(
-        dataclasses.replace(_follower(channel="right"), subwoofer_present=True),
-        active_endpoint=True,
-    )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
+    assert (
+        outputd_grouping_env(
+            dataclasses.replace(rostered, mains_highpass_enabled=False)
+        )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV]
+        == ""
+    )
+    assert (
+        outputd_grouping_env(_leader(channel="left"))[OUTPUTD_DAC_CONTENT_HP_HZ_ENV]
+        == ""
+    )
+    assert (
+        outputd_grouping_env(
+            dataclasses.replace(_follower(channel="sub"), subwoofer_present=True)
+        )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV]
+        == ""
+    )
+    assert (
+        outputd_grouping_env(
+            dataclasses.replace(_follower(channel="right"), subwoofer_present=True),
+            active_endpoint=True,
+        )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV]
+        == ""
+    )
     assert outputd_grouping_env(_disabled())[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
 
 
@@ -747,7 +752,8 @@ def test_outputd_grouping_env_clears_tts_socket_for_a_sub():
     sub = outputd_grouping_env(_follower(channel="sub"))
     assert sub[OUTPUTD_TTS_SOCKET_ENV] == ""  # cleared = unset to outputd
     active_sub = outputd_grouping_env(
-        _follower(channel="sub"), active_endpoint=True,
+        _follower(channel="sub"),
+        active_endpoint=True,
     )
     assert active_sub[OUTPUTD_TTS_SOCKET_ENV] == ""
 
@@ -755,7 +761,8 @@ def test_outputd_grouping_env_clears_tts_socket_for_a_sub():
         env = outputd_grouping_env(_follower(channel=ch))
         assert env[OUTPUTD_TTS_SOCKET_ENV] == OUTPUTD_TTS_SOCKET
         active_env = outputd_grouping_env(
-            _follower(channel=ch), active_endpoint=True,
+            _follower(channel=ch),
+            active_endpoint=True,
         )
         assert active_env[OUTPUTD_TTS_SOCKET_ENV] == ""
 
@@ -801,7 +808,10 @@ def test_assemble_args_codec_and_buffer_flow_into_server():
 def test_write_args_file_round_trips_keys(tmp_path, monkeypatch):
     target = tmp_path / "snapcast-args.env"
     monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(tmp_path))
-    keys = {SERVER_KEY: "--stream.source pipe://x", CLIENT_KEY: "--host 127.0.0.1 --latency 0"}
+    keys = {
+        SERVER_KEY: "--stream.source pipe://x",
+        CLIENT_KEY: "--host 127.0.0.1 --latency 0",
+    }
     assert _write_args_file(keys, path=str(target)) is True
     text = target.read_text()
     assert f"{SERVER_KEY}=--stream.source pipe://x\n" in text
@@ -862,7 +872,9 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
 
     # The rename now happens inside jasper.atomic_io; boom it there.
     monkeypatch.setattr(reconcile_mod.atomic_io.os, "replace", _boom)
-    assert _write_args_file({SERVER_KEY: "x", CLIENT_KEY: "y"}, path=str(target)) is False
+    assert (
+        _write_args_file({SERVER_KEY: "x", CLIENT_KEY: "y"}, path=str(target)) is False
+    )
     assert not target.exists()
     # No leftover temp files in the dir.
     assert list(tmp_path.glob(".snapcast-args.*")) == []
@@ -890,31 +902,46 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
     monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(tmp_path))
     monkeypatch.setattr(reconcile_mod, "ARGS_FILE", str(target))
     monkeypatch.setattr(
-        reconcile_mod, "OUTPUTD_GROUPING_ENV_FILE",
+        reconcile_mod,
+        "OUTPUTD_GROUPING_ENV_FILE",
         str(tmp_path / "grouping-outputd.env"),
     )
     monkeypatch.setattr(
-        reconcile_mod, "VOICE_GROUPING_ENV_FILE",
+        reconcile_mod,
+        "VOICE_GROUPING_ENV_FILE",
         str(tmp_path / "grouping-voice.env"),
     )
     monkeypatch.setattr(
-        reconcile_mod, "AIRPLAY_GROUPING_ENV_FILE",
+        reconcile_mod,
+        "AIRPLAY_GROUPING_ENV_FILE",
         str(tmp_path / "grouping-airplay.env"),
     )
     monkeypatch.setattr(
-        reconcile_mod, "MEMBER_CONTENT_FIFO",
+        reconcile_mod,
+        "MEMBER_CONTENT_FIFO",
         str(tmp_path / "member-content.fifo"),
     )
     monkeypatch.setattr(
-        reconcile_mod, "FOLLOWER_STATUS_FILE",
+        reconcile_mod,
+        "FOLLOWER_STATUS_FILE",
         str(tmp_path / "grouping-follower-status.json"),
+    )
+    # macOS has no Linux /proc boot_id. Give every reconciler main() test one
+    # stable synthetic boot identity; dedicated effective-role tests exercise
+    # missing/malformed/mismatched readers.
+    monkeypatch.setattr(
+        reconcile_mod,
+        "read_current_boot_id",
+        lambda: "11111111-1111-4111-8111-111111111111",
     )
     # Default to the PASSIVE path (these legacy main() tests assert dumb-member
     # behavior); the active-follower main() flow has its own tests that override
     # this. is_active_speaker_box reads the topology, so stub it for hermeticity.
     monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: False)
     monkeypatch.setattr(
-        reconcile_mod, "_systemctl_unit_state", lambda _query, _unit: False,
+        reconcile_mod,
+        "_systemctl_unit_state",
+        lambda _query, _unit: False,
     )
     monkeypatch.setattr(reconcile_mod, "load_config", lambda *a, **k: cfg)
     # Snapcast provisioning (main() calls it for any enabled bond): default to a
@@ -923,7 +950,8 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
     import jasper.multiroom.provision as provision_mod
 
     monkeypatch.setattr(
-        provision_mod, "ensure_snapcast_installed",
+        provision_mod,
+        "ensure_snapcast_installed",
         lambda **kw: {"state": "present", "detail": ""},
     )
 
@@ -943,30 +971,50 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
     monkeypatch.setattr(reconcile_mod, "_write_args_file", _spy_write)
     monkeypatch.setattr(reconcile_mod, "_apply", _fake_apply)
     monkeypatch.setattr(
-        reconcile_mod, "_restart_outputd",
+        reconcile_mod,
+        "_restart_outputd",
         lambda: order.append("outputd_restart") or True,
     )
-    def _fake_restart(unit, *, no_block=False):
+
+    def _fake_restart(unit, *, no_block=False, active_only=False):
         suffix = ":no_block" if no_block else ""
-        order.append(f"restart:{unit}{suffix}")
+        verb = "try-restart" if active_only else "restart"
+        order.append(f"{verb}:{unit}{suffix}")
         return True
 
     monkeypatch.setattr(reconcile_mod, "_restart_unit", _fake_restart)
     monkeypatch.setattr(
-        leader_config_mod, "apply_bonded_leader_config_sync",
+        reconcile_mod,
+        "_converge_sources_after_role",
+        lambda: (
+            order.append(f"start-owner:{reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT}")
+            or True
+        ),
+    )
+    monkeypatch.setattr(
+        leader_config_mod,
+        "apply_bonded_leader_config_sync",
         lambda cfg_: order.append("camilla_bonded") or "bonded.yml",
     )
     monkeypatch.setattr(
-        leader_config_mod, "restore_solo_config_sync",
+        leader_config_mod,
+        "restore_solo_config_sync",
         lambda: order.append("camilla_restore_check") and None,
     )
     import jasper.multiroom.snapcast_rpc as snapcast_rpc_mod
 
     monkeypatch.setattr(
-        snapcast_rpc_mod, "ensure_groups_on_stream",
-        lambda want, **kw: order.append("stream_binding") or {
-            "reachable": True, "groups": 1, "fixed": 0, "failed": 0,
-        },
+        snapcast_rpc_mod,
+        "ensure_groups_on_stream",
+        lambda want, **kw: (
+            order.append("stream_binding")
+            or {
+                "reachable": True,
+                "groups": 1,
+                "fixed": 0,
+                "failed": 0,
+            }
+        ),
     )
     return target, order
 
@@ -980,7 +1028,7 @@ def test_main_leader_writes_both_keys_then_applies(tmp_path, monkeypatch):
     assert order.index("write") < order.index("apply")
     text = target.read_text()
     assert text.startswith(f"{SERVER_KEY}=")
-    assert SNAPFIFO in text                       # server reads the fifo
+    assert SNAPFIFO in text  # server reads the fifo
     assert f"\n{CLIENT_KEY}=--host 127.0.0.1" in text  # leader client → loopback
 
 
@@ -991,8 +1039,46 @@ def test_main_follower_writes_client_only(tmp_path, monkeypatch):
     rc = main([])
     assert rc == 0
     text = target.read_text()
-    assert f"{SERVER_KEY}=\n" in text             # follower: server empty
+    assert f"{SERVER_KEY}=\n" in text  # follower: server empty
     assert f"{CLIENT_KEY}=--host 192.168.1.50" in text
+
+
+def test_follower_aborts_if_fail_safe_source_deny_cannot_be_published(
+    tmp_path,
+    monkeypatch,
+):
+    import json
+
+    from jasper.multiroom.effective_role import grouping_request_fingerprint
+
+    requested = _follower(leader_addr="192.168.1.50")
+    _target, order = _patch_main_io(monkeypatch, tmp_path, requested)
+    status_path = tmp_path / "grouping-follower-status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "active_follower": False,
+                "active_leader": False,
+                "blocked_reason": "old_refusal",
+                "requested_fingerprint": grouping_request_fingerprint(requested),
+                "local_sources_allowed": True,
+            }
+        )
+    )
+
+    def fail_status_write(*_args, **_kwargs):
+        raise OSError("read-only status")
+
+    monkeypatch.setattr(
+        reconcile_mod.atomic_io,
+        "atomic_write_text",
+        fail_status_write,
+    )
+
+    assert main([]) == 1
+    assert "apply" not in order
+    assert not any(item.startswith("start-owner:") for item in order)
+    assert json.loads(status_path.read_text())["local_sources_allowed"] is True
 
 
 def test_main_disabled_writes_empty_args(tmp_path, monkeypatch):
@@ -1000,6 +1086,153 @@ def test_main_disabled_writes_empty_args(tmp_path, monkeypatch):
     rc = main([])
     assert rc == 0
     assert target.read_text() == f"{SERVER_KEY}=\n{CLIENT_KEY}=\n"
+
+
+def test_main_solo_fails_before_role_mutation_when_boot_id_cannot_bind_grant(
+    tmp_path,
+    monkeypatch,
+):
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    monkeypatch.setattr(reconcile_mod, "read_current_boot_id", lambda: "")
+
+    assert main([]) == 1
+    assert "apply" not in order
+    assert not any(item.startswith("start-owner:") for item in order)
+
+
+@pytest.mark.parametrize("prior_active_follower", [True, False])
+def test_follower_to_solo_keeps_sources_denied_until_role_lands(
+    tmp_path,
+    monkeypatch,
+    prior_active_follower,
+):
+    import json
+
+    from jasper.multiroom.effective_role import grouping_request_fingerprint
+
+    requested = _disabled()
+    previous = _follower(leader_addr="192.168.1.50")
+    target, order = _patch_main_io(monkeypatch, tmp_path, requested)
+    status_path = tmp_path / "grouping-follower-status.json"
+    boot_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(reconcile_mod, "read_current_boot_id", lambda: boot_id)
+    status_path.write_text(
+        json.dumps(
+            {
+                "active_follower": prior_active_follower,
+                "active_leader": False,
+                "blocked_reason": "",
+                "requested_fingerprint": grouping_request_fingerprint(previous),
+                "local_sources_allowed": False,
+                "boot_id": boot_id,
+            }
+        )
+    )
+
+    def apply_after_deny(_decision):
+        assert target.exists()
+        in_progress = json.loads(status_path.read_text())
+        assert in_progress["requested_fingerprint"] == (
+            grouping_request_fingerprint(requested)
+        )
+        assert in_progress["blocked_reason"] == "role_transition_in_progress"
+        assert in_progress["local_sources_allowed"] is False
+        order.append("apply")
+        return 0
+
+    def converge_after_grant():
+        landed = json.loads(status_path.read_text())
+        assert landed["local_sources_allowed"] is True
+        assert landed["blocked_reason"] == ""
+        order.append("source-after-grant")
+        return True
+
+    monkeypatch.setattr(reconcile_mod, "_apply", apply_after_deny)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_converge_sources_after_role",
+        converge_after_grant,
+    )
+
+    assert main([]) == 0
+    final = json.loads(status_path.read_text())
+    assert final["boot_id"] == boot_id
+    assert final["local_sources_allowed"] is True
+    assert order.index("apply") < order.index("source-after-grant")
+
+
+@pytest.mark.parametrize("prior_active_follower", [True, False])
+def test_failed_follower_to_solo_transition_stays_parked_across_retry(
+    tmp_path,
+    monkeypatch,
+    prior_active_follower,
+):
+    import json
+
+    from jasper.multiroom.effective_role import grouping_request_fingerprint
+
+    requested = _disabled()
+    previous = _follower(leader_addr="192.168.1.50")
+    _target, order = _patch_main_io(monkeypatch, tmp_path, requested)
+    status_path = tmp_path / "grouping-follower-status.json"
+    boot_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(reconcile_mod, "read_current_boot_id", lambda: boot_id)
+    status_path.write_text(
+        json.dumps(
+            {
+                "active_follower": prior_active_follower,
+                "active_leader": False,
+                "blocked_reason": "",
+                "requested_fingerprint": grouping_request_fingerprint(previous),
+                "local_sources_allowed": False,
+                "boot_id": boot_id,
+            }
+        )
+    )
+
+    apply_attempt = 0
+
+    def apply_while_denied(_decision):
+        nonlocal apply_attempt
+        apply_attempt += 1
+        status = json.loads(status_path.read_text())
+        assert status["local_sources_allowed"] is False
+        assert status["blocked_reason"] == "role_transition_in_progress"
+        return 1 if apply_attempt == 1 else 0
+
+    monkeypatch.setattr(reconcile_mod, "_apply", apply_while_denied)
+
+    def converge_after_role():
+        status = json.loads(status_path.read_text())
+        if apply_attempt == 1:
+            assert status["local_sources_allowed"] is False
+            assert status["blocked_reason"] == "role_transition_in_progress"
+            order.append("source-stays-parked")
+        else:
+            assert status["local_sources_allowed"] is True
+            assert status["blocked_reason"] == ""
+            order.append("source-after-retry-grant")
+        return True
+
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_converge_sources_after_role",
+        converge_after_role,
+    )
+
+    assert main([]) == 1
+    after_failure = json.loads(status_path.read_text())
+    assert after_failure["local_sources_allowed"] is False
+    assert "source-stays-parked" in order
+
+    # The first failed attempt already rewrote status with the *current*
+    # request fingerprint. The retry must still recognize the explicit deny as
+    # an unfinished transition, rather than publishing a grant before apply.
+    assert main([]) == 0
+    final = json.loads(status_path.read_text())
+    assert final["local_sources_allowed"] is True
+    assert apply_attempt == 2
+    assert "source-after-retry-grant" in order
 
 
 def test_main_invalid_writes_empty_args(tmp_path, monkeypatch):
@@ -1035,10 +1268,14 @@ def test_main_leader_order_env_restart_units_then_camilla(tmp_path, monkeypatch)
     # that script is the single owner of the voice/bridge units and
     # decides restart-vs-park from the derived flag + provider + mic.
     assert order == [
-        "write", "outputd_restart",
+        "write",
+        "outputd_restart",
         "restart:jasper-aec-reconcile.service:no_block",
-        "apply", "restart:shairport-sync.service", "camilla_bonded",
+        "apply",
+        "try-restart:shairport-sync.service",
+        "camilla_bonded",
         "stream_binding",
+        "start-owner:jasper-source-intent-reconcile.service",
     ]
 
 
@@ -1050,7 +1287,13 @@ def test_main_leader_second_run_skips_outputd_restart(tmp_path, monkeypatch):
     order.clear()
     assert main([]) == 0
     # no outputd/voice restart on the unchanged second run
-    assert order == ["write", "apply", "camilla_bonded", "stream_binding"]
+    assert order == [
+        "write",
+        "apply",
+        "camilla_bonded",
+        "stream_binding",
+        "start-owner:jasper-source-intent-reconcile.service",
+    ]
 
 
 def test_main_nonleader_runs_solo_restore_not_bonded_apply(tmp_path, monkeypatch):
@@ -1063,10 +1306,28 @@ def test_main_nonleader_runs_solo_restore_not_bonded_apply(tmp_path, monkeypatch
         assert "camilla_restore_check" in order
 
 
+@pytest.mark.parametrize("cfg", [_follower(), _disabled(), _leader()])
+def test_role_apply_hands_all_sources_to_canonical_owner(
+    cfg,
+    tmp_path,
+    monkeypatch,
+):
+    """Follower park and solo/leader restore use the one source owner."""
+
+    _target, order = _patch_main_io(monkeypatch, tmp_path, cfg)
+    assert main([]) == 0
+    apply_idx = order.index("apply")
+    source_idx = order.index("start-owner:jasper-source-intent-reconcile.service")
+    assert apply_idx < source_idx
+    assert not any("accessory-reconcile" in entry for entry in order)
+    assert not any("fanin-coupling" in entry for entry in order)
+
+
 def test_main_leader_writes_member_fifo(tmp_path, monkeypatch):
     """An active member's round-trip FIFO exists after reconcile (created
     before snapclient would start writing it)."""
     import stat as stat_mod
+
     _target, _order = _patch_main_io(monkeypatch, tmp_path, _leader())
     assert main([]) == 0
     fifo = tmp_path / "member-content.fifo"
@@ -1080,8 +1341,10 @@ def test_main_writes_outputd_env_for_member_and_clears_for_solo(tmp_path, monkey
     _target, _order = _patch_main_io(monkeypatch, tmp_path, _leader())
     assert main([]) == 0
     env = (tmp_path / "grouping-outputd.env").read_text()
-    assert "JASPER_OUTPUTD_DAC_CONTENT_FIFO=" + str(
-        tmp_path / "member-content.fifo") in env
+    assert (
+        "JASPER_OUTPUTD_DAC_CONTENT_FIFO=" + str(tmp_path / "member-content.fifo")
+        in env
+    )
     assert "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL=left" in env
 
     _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
@@ -1092,7 +1355,10 @@ def test_main_writes_outputd_env_for_member_and_clears_for_solo(tmp_path, monkey
     assert "outputd_restart" in order  # env changed bonded→cleared ⇒ restart
 
 
-def test_main_leader_writes_airplay_offset_and_restarts_shairport(tmp_path, monkeypatch):
+def test_main_leader_writes_airplay_offset_and_refreshes_active_shairport(
+    tmp_path,
+    monkeypatch,
+):
     """A bonded leader folds the Snapcast buffer into its AirPlay offset
     (grouping-airplay.env) and restarts shairport — AFTER the unit plan —
     so ExecStartPre re-derives the offset."""
@@ -1100,33 +1366,36 @@ def test_main_leader_writes_airplay_offset_and_restarts_shairport(tmp_path, monk
     assert main([]) == 0
     env = (tmp_path / "grouping-airplay.env").read_text()
     assert "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC=0.400000" in env
-    assert "restart:shairport-sync.service" in order
-    assert order.index("apply") < order.index("restart:shairport-sync.service")
+    assert "try-restart:shairport-sync.service" in order
+    assert order.index("apply") < order.index("try-restart:shairport-sync.service")
 
 
-def test_main_solo_writes_no_airplay_offset_and_skips_shairport_restart(tmp_path, monkeypatch):
+def test_main_solo_writes_no_airplay_offset_and_skips_shairport_restart(
+    tmp_path, monkeypatch
+):
     """INVARIANT: a solo speaker that was never bonded writes NO bonded key
     and never restarts shairport — its AirPlay offset stays byte-identical."""
     _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
     assert main([]) == 0
-    assert "restart:shairport-sync.service" not in order
+    assert "try-restart:shairport-sync.service" not in order
     p = tmp_path / "grouping-airplay.env"
     # Empty body on a fresh file is not written at all (no spurious churn).
     assert not p.exists() or "BONDED_EXTRA_DELAY" not in p.read_text()
 
 
-def test_main_unbond_restarts_shairport_to_restore_solo_offset(tmp_path, monkeypatch):
+def test_main_unbond_refreshes_only_active_shairport_to_restore_solo_offset(
+    tmp_path,
+    monkeypatch,
+):
     """bonded leader -> solo: the airplay offset env clears and shairport is
     restarted so its offset reverts to the solo value (restore-on-unbond — a
     stranded bonded offset would make solo audio play early)."""
     _patch_main_io(monkeypatch, tmp_path, _leader())
-    assert main([]) == 0                                  # bond writes the delta
+    assert main([]) == 0  # bond writes the delta
     _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
-    assert main([]) == 0                                  # unbond clears it
-    assert "restart:shairport-sync.service" in order
-    assert "BONDED_EXTRA_DELAY" not in (
-        tmp_path / "grouping-airplay.env"
-    ).read_text()
+    assert main([]) == 0  # unbond clears it
+    assert "try-restart:shairport-sync.service" in order
+    assert "BONDED_EXTRA_DELAY" not in (tmp_path / "grouping-airplay.env").read_text()
 
 
 def test_main_follower_does_not_restart_shairport(tmp_path, monkeypatch):
@@ -1136,7 +1405,7 @@ def test_main_follower_does_not_restart_shairport(tmp_path, monkeypatch):
         monkeypatch, tmp_path, _follower(leader_addr="192.168.1.50")
     )
     assert main([]) == 0
-    assert "restart:shairport-sync.service" not in order
+    assert "try-restart:shairport-sync.service" not in order
 
 
 def test_main_nonleader_skips_stream_binding(tmp_path, monkeypatch):
@@ -1154,7 +1423,8 @@ def test_main_unreachable_snapserver_flips_rc(tmp_path, monkeypatch):
 
     _target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     monkeypatch.setattr(
-        snapcast_rpc_mod, "ensure_groups_on_stream",
+        snapcast_rpc_mod,
+        "ensure_groups_on_stream",
         lambda want, **kw: {"reachable": False, "groups": 0, "fixed": 0, "failed": 0},
     )
     assert main([]) == 1
@@ -1165,13 +1435,16 @@ def test_main_camilla_failure_is_fail_soft_but_flips_rc(tmp_path, monkeypatch):
     """A camilla apply failure never aborts unit management — but the
     oneshot exits nonzero so the failure is visible on the unit."""
     import jasper.multiroom.leader_config as leader_config_mod
+
     _target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
 
     def _boom(cfg_):
         raise RuntimeError("camilla unavailable")
 
     monkeypatch.setattr(
-        leader_config_mod, "apply_bonded_leader_config_sync", _boom,
+        leader_config_mod,
+        "apply_bonded_leader_config_sync",
+        _boom,
     )
     rc = main([])
     assert rc == 1
@@ -1205,7 +1478,8 @@ def test_desired_snapfifo_path_invalid_leader_does_not():
 
 
 def test_main_fresh_solo_first_reconcile_never_touches_voice(
-    monkeypatch, tmp_path,
+    monkeypatch,
+    tmp_path,
 ):
     """The first-write-empty rule, pinned: a FRESH solo speaker's first
     reconcile must neither create an empty grouping-voice.env nor restart
@@ -1223,108 +1497,20 @@ def test_main_fresh_solo_first_reconcile_never_touches_voice(
 # ---------- dumb-follower profile: park + restore + absent-unit no-ops ----
 
 
-def test_plan_follower_parks_the_local_source_resource_groups():
-    """role=follower stops every local-source parked resource (the dumb
-    follower advertises and runs no local sources — and a phantom local
-    session would audibly leak during inv-B fallback periods)."""
-    from jasper.local_sources import local_source_park_units
+def test_plan_follower_owns_only_snap_units():
+    """Source parking is delegated after the grouping data plane lands."""
     p = plan(_follower())
     by_unit = {i.unit: i.desired for i in p.intents}
-    for u in local_source_park_units():
-        assert by_unit[u] == "stop", u
-    assert by_unit[SNAPCLIENT_UNIT] == "start"
-    assert by_unit[SNAPSERVER_UNIT] == "stop"
-    # Ordering contract: every stop precedes the snapclient start.
-    kinds = [i.desired for i in p.intents]
-    assert kinds.index("start") == len(kinds) - 1
+    assert by_unit == {SNAPSERVER_UNIT: "stop", SNAPCLIENT_UNIT: "start"}
 
 
-def test_plan_follower_parks_usbsink_bridge_and_recomposes_gadget():
-    """USB input owns an audio bridge daemon and the composite gadget. Follower
-    parking must STOP the audio bridge units so a laptop cannot still see the
-    follower as a USB audio device, but RECOMPOSE (not stop) the gadget so the
-    always-on USB management network survives — the recompose drops the audio
-    function while keeping ncm."""
-    p = plan(_follower())
-    by_unit = {i.unit: i.desired for i in p.intents}
-    assert by_unit["jasper-usbsink.service"] == "stop"
-    assert by_unit["jasper-usbsink-volume.service"] == "stop"
-    # The gadget is recomposed (try-restart), never stopped — the network stays.
-    assert by_unit["jasper-usbgadget.service"] == "recompose"
-    # And the recompose is ordered after the audio stops (so it reads "audio
-    # parked") and before the snapclient start.
-    kinds = [i.desired for i in p.intents]
-    gadget_idx = next(
-        i for i, it in enumerate(p.intents)
-        if it.unit == "jasper-usbgadget.service"
-    )
-    bridge_idx = next(
-        i for i, it in enumerate(p.intents)
-        if it.unit == "jasper-usbsink.service"
-    )
-    assert bridge_idx < gadget_idx < kinds.index("start")
-
-
-def test_plan_restore_recomposes_gadget_before_restarting_bridge():
-    """Un-park (solo restore) must RECOMPOSE the composite gadget BEFORE it
-    restores (starts) the USB-audio bridge — the mirror image of the park order.
-
-    review core-2: the reverse order (bridge start before recompose) made the
-    bridge's ExecStartPre=jasper-usbsink-wait-card poll the UAC2Gadget card for
-    the full 30 s and fail, because the card only exists after the recompose
-    that would come next — a guaranteed stall + failed-unit transient on every
-    un-park. The recompose must land first so uac2 is composed and the card
-    exists before the bridge waits on it."""
-    p = plan(_disabled())
-    by_unit = {i.unit: i.desired for i in p.intents}
-    assert by_unit["jasper-usbgadget.service"] == "recompose"
-    assert by_unit["jasper-usbsink.service"] == "restore"
-    gadget_idx = next(
-        i for i, it in enumerate(p.intents)
-        if it.unit == "jasper-usbgadget.service"
-    )
-    bridge_idx = next(
-        i for i, it in enumerate(p.intents)
-        if it.unit == "jasper-usbsink.service"
-    )
-    assert gadget_idx < bridge_idx, (
-        "the gadget must recompose (adding uac2) before the bridge is started, "
-        "so wait-card finds the UAC2Gadget card instead of polling 30 s"
-    )
-
-
-def test_plan_follower_parks_source_arbiter_infrastructure():
-    """The mux is shared local-source infrastructure. It is not one source's
-    daemon, but it must stop while a follower has no local source authority."""
-    p = plan(_follower())
-    by_unit = {i.unit: i.desired for i in p.intents}
-    assert by_unit["jasper-mux.service"] == "stop"
-
-
-def test_plan_leader_keeps_sources_restored():
-    """The leader is the pair's input hub — its renderer stack is never
-    parked; the restore intents put a just-demoted ex-follower's sources
-    back per the /sources/ wizard. The composite gadget is recomposed (not
-    restored) so its audio function comes back iff USB audio is enabled."""
-    from jasper.local_sources import (
-        local_source_restore_restart_units,
-        local_source_restore_units,
-    )
+def test_plan_leader_owns_only_snap_units():
     p = plan(_leader())
     by_unit = {i.unit: i.desired for i in p.intents}
-    for u in local_source_restore_units():
-        assert by_unit[u] == "restore", u
-    assert by_unit["jasper-mux.service"] == "restore"
-    for u in local_source_restore_restart_units():
-        assert by_unit[u] == "recompose", u
-    # The gadget is never a plain restore (it is always-on).
-    assert "jasper-usbgadget.service" not in {
-        i.unit for i in p.intents if i.desired == "restore"
-    }
+    assert by_unit == {SNAPSERVER_UNIT: "start", SNAPCLIENT_UNIT: "start"}
 
 
-def _apply_with_fake_systemctl(monkeypatch, intents, *, enabled=(),
-                               absent=()):
+def _apply_with_fake_systemctl(monkeypatch, intents, *, enabled=(), absent=()):
     """Run _apply with subprocess.run faked. Returns (rc, calls) where
     calls is the list of argv lists systemctl saw."""
     import subprocess as sp
@@ -1346,7 +1532,9 @@ def _apply_with_fake_systemctl(monkeypatch, intents, *, enabled=(),
         if unit in absent:
             if kw.get("check"):
                 raise sp.CalledProcessError(
-                    5, argv, stderr=f"Failed to {verb} {unit}: Unit not loaded.",
+                    5,
+                    argv,
+                    stderr=f"Failed to {verb} {unit}: Unit not loaded.",
                 )
             return sp.CompletedProcess(argv, 5)
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
@@ -1356,28 +1544,18 @@ def _apply_with_fake_systemctl(monkeypatch, intents, *, enabled=(),
     return rc, calls
 
 
-def test_apply_restore_starts_only_enabled_units(monkeypatch):
-    from jasper.multiroom.reconcile import UnitIntent
-    rc, calls = _apply_with_fake_systemctl(
-        monkeypatch,
-        [UnitIntent("a.service", "restore", "t"),
-         UnitIntent("b.service", "restore", "t")],
-        enabled={"a.service"},
-    )
-    assert rc == 0
-    assert ["systemctl", "start", "a.service"] in calls
-    assert not any(c[1] == "start" and c[-1] == "b.service" for c in calls)
-
-
 def test_apply_absent_unit_is_a_clean_noop(monkeypatch):
     """A streambox box never installs some full-speaker units — stop
     intents against absent units must not flip the exit code (absent
     units are no-ops)."""
     from jasper.multiroom.reconcile import UnitIntent
+
     rc, calls = _apply_with_fake_systemctl(
         monkeypatch,
-        [UnitIntent("ghost.service", "stop", "t"),
-         UnitIntent("real.service", "stop", "t")],
+        [
+            UnitIntent("ghost.service", "stop", "t"),
+            UnitIntent("real.service", "stop", "t"),
+        ],
         absent={"ghost.service"},
     )
     assert rc == 0
@@ -1393,21 +1571,62 @@ def test_apply_real_failure_still_flips_rc(monkeypatch):
         raise sp.CalledProcessError(1, argv, stderr="Job failed. See logs.")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    rc = _apply(ReconcilePlan(
-        intents=(UnitIntent("x.service", "stop", "t"),), summary="t"))
+    rc = _apply(
+        ReconcilePlan(intents=(UnitIntent("x.service", "stop", "t"),), summary="t")
+    )
     assert rc == 1
 
 
+def test_apply_timeout_is_bounded_and_does_not_skip_later_intents(monkeypatch):
+    """A wedged local unit job fails this intent without hanging direct CLI."""
+    import subprocess as sp
+    from jasper.multiroom.reconcile import ReconcilePlan, UnitIntent, _apply
+
+    calls: list[tuple[list[str], float]] = []
+
+    def fake_run(argv, **kw):
+        calls.append((list(argv), kw["timeout"]))
+        if argv[-1] == "wedged.service":
+            raise sp.TimeoutExpired(argv, kw["timeout"])
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    rc = _apply(
+        ReconcilePlan(
+            intents=(
+                UnitIntent("wedged.service", "stop", "t"),
+                UnitIntent("healthy.service", "stop", "t"),
+            ),
+            summary="t",
+        )
+    )
+    assert rc == 1
+    assert calls == [
+        (
+            ["systemctl", "stop", "wedged.service"],
+            reconcile_mod._SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
+        ),
+        (
+            ["systemctl", "stop", "healthy.service"],
+            reconcile_mod._SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
+        ),
+    ]
+
+
 def test_main_follower_voice_env_kicks_aec_reconcile_with_park_flag(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Bond-form on a follower: grouping-voice.env carries the validated
     park flag and the change is applied via ONE kick of
     jasper-aec-reconcile (the voice/bridge unit owner) — never a direct
     jasper-voice restart from this reconciler."""
     from jasper.multiroom.reconcile import VOICE_PARK_ENV
+
     _target, order = _patch_main_io(
-        monkeypatch, tmp_path, _follower(leader_addr="192.168.1.50"),
+        monkeypatch,
+        tmp_path,
+        _follower(leader_addr="192.168.1.50"),
     )
     assert main([]) == 0
     text = (tmp_path / "grouping-voice.env").read_text()
@@ -1426,30 +1645,74 @@ def test_write_follower_status_round_trips(tmp_path):
     from jasper.multiroom.reconcile import _write_follower_status
 
     p = str(tmp_path / "grouping-follower-status.json")
-    _write_follower_status(active_follower=True, blocked_reason="", path=p)
+    boot_id = "11111111-1111-4111-8111-111111111111"
+    read_boot_id = lambda: boot_id
+    _write_follower_status(
+        active_follower=True,
+        blocked_reason="",
+        path=p,
+        boot_id_reader=read_boot_id,
+    )
     assert json.loads(open(p).read()) == {
-        "active_follower": True, "active_leader": False, "blocked_reason": "",
+        "active_follower": True,
+        "active_leader": False,
+        "blocked_reason": "",
+        "boot_id": boot_id,
     }
     # An active LEADER runs camilla#2 as the bond leader (Slice 5).
     _write_follower_status(
-        active_follower=False, active_leader=True, blocked_reason="", path=p,
+        active_follower=False,
+        active_leader=True,
+        blocked_reason="",
+        path=p,
+        boot_id_reader=read_boot_id,
     )
     assert json.loads(open(p).read()) == {
-        "active_follower": False, "active_leader": True, "blocked_reason": "",
+        "active_follower": False,
+        "active_leader": True,
+        "blocked_reason": "",
+        "boot_id": boot_id,
     }
     # Rewritten every reconcile — a later blocked state replaces the prior one.
-    _write_follower_status(active_follower=False, blocked_reason="graph_unprovable", path=p)
+    _write_follower_status(
+        active_follower=False,
+        blocked_reason="graph_unprovable",
+        path=p,
+        boot_id_reader=read_boot_id,
+    )
     assert json.loads(open(p).read()) == {
-        "active_follower": False, "active_leader": False,
+        "active_follower": False,
+        "active_leader": False,
         "blocked_reason": "graph_unprovable",
+        "boot_id": boot_id,
     }
+
+
+def test_write_follower_status_refuses_unbound_persistent_grant(tmp_path):
+    import json
+
+    p = str(tmp_path / "grouping-follower-status.json")
+    assert (
+        reconcile_mod._write_follower_status(
+            active_follower=False,
+            blocked_reason="role_transition_in_progress",
+            local_sources_allowed=True,
+            path=p,
+            boot_id_reader=lambda: "malformed",
+        )
+        is False
+    )
+    status = json.loads(open(p).read())
+    assert status["boot_id"] == ""
+    assert status["local_sources_allowed"] is False
 
 
 # ---------- main(): ACTIVE follower flow (Slice 3) ----------
 
 
 def test_main_active_follower_prechecks_early_then_swaps_camilla_after_units(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """An active follower: the readiness GATE runs BEFORE the units (fail-safe),
     snapclient writes the loopback (not the FIFO), and the CamillaDSP swap runs
@@ -1459,11 +1722,13 @@ def test_main_active_follower_prechecks_early_then_swaps_camilla_after_units(
     target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
     monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     monkeypatch.setattr(
-        fc_mod, "precheck_active_follower_sync",
+        fc_mod,
+        "precheck_active_follower_sync",
         lambda cfg_: order.append("precheck") or "grouping_follower.yml",
     )
     monkeypatch.setattr(
-        fc_mod, "apply_prebuilt_follower_config_sync",
+        fc_mod,
+        "apply_prebuilt_follower_config_sync",
         lambda: order.append("camilla_active_follower") or "grouping_follower.yml",
     )
 
@@ -1483,7 +1748,8 @@ def test_main_active_follower_prechecks_early_then_swaps_camilla_after_units(
 
 
 def test_main_active_follower_precheck_failure_falls_back_to_solo(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """If the readiness gate fails (can't make the driver-domain graph safe),
     the box does NOT bond — it fails safe to SOLO: no CamillaDSP follower swap,
@@ -1499,11 +1765,13 @@ def test_main_active_follower_precheck_failure_falls_back_to_solo(
 
     monkeypatch.setattr(fc_mod, "precheck_active_follower_sync", _boom)
     monkeypatch.setattr(
-        fc_mod, "apply_prebuilt_follower_config_sync",
+        fc_mod,
+        "apply_prebuilt_follower_config_sync",
         lambda: order.append("camilla_active_follower"),
     )
     monkeypatch.setattr(
-        fc_mod, "restore_active_follower_solo_sync",
+        fc_mod,
+        "restore_active_follower_solo_sync",
         lambda: order.append("active_solo_restore") or None,
     )
 
@@ -1518,6 +1786,33 @@ def test_main_active_follower_precheck_failure_falls_back_to_solo(
     status = (tmp_path / "grouping-follower-status.json").read_text()
     assert '"blocked_reason": "graph_unprovable"' in status
     assert '"active_follower": false' in status
+    assert '"local_sources_allowed": true' in status
+
+
+def test_refused_follower_restore_failure_keeps_sources_parked(
+    tmp_path,
+    monkeypatch,
+):
+    import json
+
+    import jasper.multiroom.follower_config as fc_mod
+
+    _patch_main_io(monkeypatch, tmp_path, _follower())
+    monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
+
+    def fail_precheck(_cfg):
+        raise fc_mod.ActiveFollowerError("graph_unprovable", "nope")
+
+    def fail_restore():
+        raise RuntimeError("restore failed")
+
+    monkeypatch.setattr(fc_mod, "precheck_active_follower_sync", fail_precheck)
+    monkeypatch.setattr(fc_mod, "restore_active_follower_solo_sync", fail_restore)
+
+    assert main(["--reason", "test"]) == 1
+    status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
+    assert status["blocked_reason"] == "graph_unprovable"
+    assert status["local_sources_allowed"] is False
 
 
 # ---------- main(): ACTIVE leader flow (Slice 5 — two CamillaDSP) ----------
@@ -1531,23 +1826,28 @@ def _patch_active_leader(monkeypatch, order):
     import jasper.multiroom.active_leader_config as alc_mod
 
     monkeypatch.setattr(
-        alc_mod, "precheck_active_leader_sync",
+        alc_mod,
+        "precheck_active_leader_sync",
         lambda cfg_: order.append("precheck") or ("bake.yml", "crossover.yml"),
     )
     monkeypatch.setattr(
-        alc_mod, "apply_active_leader_bake_sync",
+        alc_mod,
+        "apply_active_leader_bake_sync",
         lambda: order.append("bake") or "bake.yml",
     )
     monkeypatch.setattr(
-        alc_mod, "seed_crossover_statefile",
+        alc_mod,
+        "seed_crossover_statefile",
         lambda *a, **k: order.append("seed") or "crossover-statefile.yml",
     )
     monkeypatch.setattr(
-        reconcile_mod, "_arm_crossover_unit",
+        reconcile_mod,
+        "_arm_crossover_unit",
         lambda: order.append("arm_camilla2") or True,
     )
     monkeypatch.setattr(
-        reconcile_mod, "_disable_crossover_unit",
+        reconcile_mod,
+        "_disable_crossover_unit",
         lambda: order.append("disable_camilla2") or True,
     )
     monkeypatch.setattr(
@@ -1571,12 +1871,15 @@ def _patch_active_leader(monkeypatch, order):
     monkeypatch.setattr(
         reconcile_mod,
         "_wait_for_active_content_pcm_release",
-        lambda: order.append("probe") or reconcile_mod._PcmHandleProbeResult(
-            "released",
-            "status_closed",
-            detail="closed",
-            attempts=1,
-            timeout_sec=0.8,
+        lambda: (
+            order.append("probe")
+            or reconcile_mod._PcmHandleProbeResult(
+                "released",
+                "status_closed",
+                detail="closed",
+                attempts=1,
+                timeout_sec=0.8,
+            )
         ),
     )
     return alc_mod
@@ -1671,7 +1974,9 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
         "ensure:jasper-camilla.service:active-leader-bake"
     ) < order.index("bake")
     assert order.index("bake") < order.index("seed")
-    assert order.index("seed") < order.index("audio_hardware:grouping-active-leader-bake")
+    assert order.index("seed") < order.index(
+        "audio_hardware:grouping-active-leader-bake"
+    )
     assert (
         order.index("audio_hardware:grouping-active-leader-bake")
         < order.index("probe")
@@ -1694,7 +1999,8 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
 
 
 def test_main_active_leader_already_armed_skips_release_probe(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Idempotency: once camilla#2 is active, it legitimately owns substream 5.
     A steady-state reconcile must not probe that handle as if it were camilla#1
@@ -1705,10 +2011,13 @@ def test_main_active_leader_already_armed_skips_release_probe(
     monkeypatch.setattr(
         reconcile_mod,
         "_unit_is_active",
-        lambda unit: unit in {
-            reconcile_mod.SNAPSERVER_UNIT,
-            reconcile_mod.CROSSOVER_UNIT,
-        },
+        lambda unit: (
+            unit
+            in {
+                reconcile_mod.SNAPSERVER_UNIT,
+                reconcile_mod.CROSSOVER_UNIT,
+            }
+        ),
     )
 
     rc = main(["--reason", "test"])
@@ -1739,7 +2048,8 @@ def test_main_active_leader_precheck_failure_falls_back_to_solo(tmp_path, monkey
     # On a refused FIRST bond camilla#2 was never armed, so the fail-safe restore
     # takes the (untouched) solo-active follower path — stub it for hermeticity.
     monkeypatch.setattr(
-        fc_mod, "restore_active_follower_solo_sync",
+        fc_mod,
+        "restore_active_follower_solo_sync",
         lambda: order.append("active_solo_restore") or None,
     )
 
@@ -1757,7 +2067,9 @@ def test_main_active_leader_precheck_failure_falls_back_to_solo(tmp_path, monkey
     assert '"active_leader": false' in status
 
 
-def test_main_active_leader_unbond_disables_camilla2_and_restores(tmp_path, monkeypatch):
+def test_main_active_leader_unbond_disables_camilla2_and_restores(
+    tmp_path, monkeypatch
+):
     """Unbond of an active leader (camilla#2 enabled is the discriminator): tear
     camilla#2 down + restore camilla#1 via the leader stash. The untouched
     active-follower restore path is NOT taken."""
@@ -1769,17 +2081,20 @@ def test_main_active_leader_unbond_disables_camilla2_and_restores(tmp_path, monk
     _patch_active_leader(monkeypatch, order)
     # camilla#2 enabled => this box WAS an active leader.
     monkeypatch.setattr(
-        reconcile_mod, "_systemctl_unit_state",
+        reconcile_mod,
+        "_systemctl_unit_state",
         lambda query, unit: (
             query == "is-enabled" and unit == reconcile_mod.CROSSOVER_UNIT
         ),
     )
     monkeypatch.setattr(
-        alc_mod, "restore_active_leader_solo_sync",
+        alc_mod,
+        "restore_active_leader_solo_sync",
         lambda: order.append("leader_restore") or "active_speaker_baseline.yml",
     )
     monkeypatch.setattr(
-        fc_mod, "restore_active_follower_solo_sync",
+        fc_mod,
+        "restore_active_follower_solo_sync",
         lambda: order.append("follower_restore") or None,
     )
 
@@ -1794,7 +2109,8 @@ def test_main_active_leader_unbond_disables_camilla2_and_restores(tmp_path, monk
 
 
 def test_main_disabled_but_active_crossover_uses_leader_teardown(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Runtime ownership wins when a partial prior disable cleared intent."""
     import jasper.multiroom.active_leader_config as alc_mod
@@ -1848,7 +2164,8 @@ def test_main_passive_leader_unchanged_never_arms_camilla2(tmp_path, monkeypatch
 
 
 def test_main_solo_active_box_takes_follower_path_not_leader_teardown(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Solo-impact regression: a solo/active box whose camilla#2 is NOT enabled
     (never an active leader) takes the untouched active-follower restore path and
@@ -1860,10 +2177,13 @@ def test_main_solo_active_box_takes_follower_path_not_leader_teardown(
     monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
-        reconcile_mod, "_systemctl_unit_state", lambda _query, _unit: False,
+        reconcile_mod,
+        "_systemctl_unit_state",
+        lambda _query, _unit: False,
     )
     monkeypatch.setattr(
-        fc_mod, "restore_active_follower_solo_sync",
+        fc_mod,
+        "restore_active_follower_solo_sync",
         lambda: order.append("follower_restore") or None,
     )
 
@@ -1876,7 +2196,9 @@ def test_main_solo_active_box_takes_follower_path_not_leader_teardown(
 
 
 def test_main_unknown_topology_preserves_graph_before_any_mutation(
-    tmp_path, monkeypatch, caplog,
+    tmp_path,
+    monkeypatch,
+    caplog,
 ):
     """A corrupt active/passive classifier can never authorize restoration."""
     import jasper.multiroom.active_leader_config as alc_mod
@@ -1885,7 +2207,9 @@ def test_main_unknown_topology_preserves_graph_before_any_mutation(
 
     _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
     monkeypatch.setattr(
-        reconcile_mod, "_active_speaker_box_state", lambda: None,
+        reconcile_mod,
+        "_active_speaker_box_state",
+        lambda: None,
     )
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
@@ -1910,7 +2234,8 @@ def test_main_unknown_topology_preserves_graph_before_any_mutation(
     assert rc == 1
     assert order == []
     events = [
-        record.message for record in caplog.records
+        record.message
+        for record in caplog.records
         if "event=multiroom.reconcile.active_restore_blocked" in record.message
     ]
     assert len(events) == 1
@@ -1921,7 +2246,9 @@ def test_main_unknown_topology_preserves_graph_before_any_mutation(
 
 
 def test_main_solo_active_box_blocks_restore_when_crossover_state_unknown(
-    tmp_path, monkeypatch, caplog,
+    tmp_path,
+    monkeypatch,
+    caplog,
 ):
     """Unknown camilla#2 ownership must never guess a solo restore path."""
     import jasper.multiroom.active_leader_config as alc_mod
@@ -1931,7 +2258,9 @@ def test_main_solo_active_box_blocks_restore_when_crossover_state_unknown(
     monkeypatch.setattr(reconcile_mod, "_active_speaker_box_state", lambda: True)
     _patch_active_leader(monkeypatch, order)
     monkeypatch.setattr(
-        reconcile_mod, "_systemctl_unit_state", lambda _query, _unit: None,
+        reconcile_mod,
+        "_systemctl_unit_state",
+        lambda _query, _unit: None,
     )
     monkeypatch.setattr(
         alc_mod,
@@ -1955,7 +2284,8 @@ def test_main_solo_active_box_blocks_restore_when_crossover_state_unknown(
     assert "outputd_restart" not in order
     assert "apply" not in order
     events = [
-        record.message for record in caplog.records
+        record.message
+        for record in caplog.records
         if "event=multiroom.reconcile.active_restore_blocked" in record.message
     ]
     assert len(events) == 1
@@ -1966,7 +2296,8 @@ def test_main_solo_active_box_blocks_restore_when_crossover_state_unknown(
 
 
 def test_main_crossover_teardown_failure_preserves_runtime_graph(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Camilla#1 cannot reclaim the DAC when camilla#2 failed to stop."""
     import jasper.multiroom.active_leader_config as alc_mod
@@ -2009,7 +2340,8 @@ def test_main_crossover_teardown_failure_preserves_runtime_graph(
 
 
 def test_main_crossover_must_report_inactive_after_teardown(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """A successful disable command is insufficient without inactive proof."""
     import jasper.multiroom.active_leader_config as alc_mod
@@ -2064,7 +2396,8 @@ def test_main_active_leader_skips_arm_when_bake_fails(tmp_path, monkeypatch):
 
 
 def test_main_active_leader_skips_arm_when_audio_hardware_reconcile_fails(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """After the bake and inert camilla#2 statefile seed, outputd must
     re-converge to the active-content lane before camilla#2 can safely own the
@@ -2089,7 +2422,8 @@ def test_main_active_leader_skips_arm_when_audio_hardware_reconcile_fails(
 
 
 def test_main_active_leader_skips_bake_when_camilla1_cannot_restart(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """If a prior failed active-leader attempt left camilla#2 holding the active
     lane, reconcile first releases camilla#2 and reset-starts camilla#1. If
@@ -2113,7 +2447,8 @@ def test_main_active_leader_skips_bake_when_camilla1_cannot_restart(
 
 
 def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """jts3 EBUSY regression (2026-06-24): a successful camilla#1 bake is not
     proof that snd-aloop substream 5 is closed. If the positive handle probe
@@ -2127,13 +2462,15 @@ def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
     monkeypatch.setattr(
         reconcile_mod,
         "_wait_for_active_content_pcm_release",
-        lambda: order.append("probe_busy")
-        or reconcile_mod._PcmHandleProbeResult(
-            "busy",
-            "timeout",
-            detail="state: RUNNING",
-            attempts=17,
-            timeout_sec=0.8,
+        lambda: (
+            order.append("probe_busy")
+            or reconcile_mod._PcmHandleProbeResult(
+                "busy",
+                "timeout",
+                detail="state: RUNNING",
+                attempts=17,
+                timeout_sec=0.8,
+            )
         ),
     )
     monkeypatch.setattr(
@@ -2159,7 +2496,8 @@ def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
 
 
 def test_main_active_leader_fails_closed_when_probe_tool_missing(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Hardening (P1 review #3): `unknown` (probe tool missing) is NOT positive
     proof of release, so the reconciler fails CLOSED — restores solo-active and
@@ -2174,13 +2512,15 @@ def test_main_active_leader_fails_closed_when_probe_tool_missing(
     monkeypatch.setattr(
         reconcile_mod,
         "_wait_for_active_content_pcm_release",
-        lambda: order.append("probe_missing")
-        or reconcile_mod._PcmHandleProbeResult(
-            "unknown",
-            "probe_tool_missing",
-            detail="cat",
-            attempts=1,
-            timeout_sec=0.8,
+        lambda: (
+            order.append("probe_missing")
+            or reconcile_mod._PcmHandleProbeResult(
+                "unknown",
+                "probe_tool_missing",
+                detail="cat",
+                attempts=1,
+                timeout_sec=0.8,
+            )
         ),
     )
     monkeypatch.setattr(
@@ -2205,7 +2545,8 @@ def test_main_active_leader_fails_closed_when_probe_tool_missing(
 
 
 def test_main_active_leader_skips_bake_and_arm_when_snapserver_down(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """JTS5 incident regression: snapserver not active (no Snapcast installed, or
     it failed to start) means camilla#1's File-sink bake has no FIFO reader — so
@@ -2235,7 +2576,8 @@ def test_main_provisions_snapcast_when_active_before_units(tmp_path, monkeypatch
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
     monkeypatch.setattr(
-        provision_mod, "ensure_snapcast_installed",
+        provision_mod,
+        "ensure_snapcast_installed",
         lambda **kw: order.append("provision") or {"state": "installed", "detail": ""},
     )
 
@@ -2253,7 +2595,8 @@ def test_main_provision_failure_flips_rc_without_crashing(tmp_path, monkeypatch)
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
     monkeypatch.setattr(
-        provision_mod, "ensure_snapcast_installed",
+        provision_mod,
+        "ensure_snapcast_installed",
         lambda **kw: {"state": "failed", "detail": "no network"},
     )
 
@@ -2270,7 +2613,8 @@ def test_main_solo_does_not_provision(tmp_path, monkeypatch):
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
     monkeypatch.setattr(
-        provision_mod, "ensure_snapcast_installed",
+        provision_mod,
+        "ensure_snapcast_installed",
         lambda **kw: order.append("provision") or {"state": "present", "detail": ""},
     )
 
@@ -2319,15 +2663,189 @@ def test_restart_unit_can_queue_cross_owner_restart_no_block(monkeypatch):
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    assert reconcile_mod._restart_unit(
-        reconcile_mod.AEC_RECONCILE_UNIT, no_block=True,
-    ) is True
+    assert (
+        reconcile_mod._restart_unit(
+            reconcile_mod.AEC_RECONCILE_UNIT,
+            no_block=True,
+        )
+        is True
+    )
     assert calls[0] == [
-        "systemctl", "reset-failed", reconcile_mod.AEC_RECONCILE_UNIT,
+        "systemctl",
+        "reset-failed",
+        reconcile_mod.AEC_RECONCILE_UNIT,
     ]
     assert calls[1] == [
-        "systemctl", "--no-block", "restart", reconcile_mod.AEC_RECONCILE_UNIT,
+        "systemctl",
+        "--no-block",
+        "restart",
+        reconcile_mod.AEC_RECONCILE_UNIT,
     ]
+
+
+def test_restart_unit_active_only_never_resurrects_airplay_off(monkeypatch):
+    """A grouping offset change refreshes AirPlay only when it is active."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert (
+        reconcile_mod._restart_unit(
+            reconcile_mod.SHAIRPORT_UNIT,
+            active_only=True,
+        )
+        is True
+    )
+    assert calls[1] == [
+        "systemctl",
+        "try-restart",
+        reconcile_mod.SHAIRPORT_UNIT,
+    ]
+
+
+def test_converge_sources_runs_fresh_pass_when_inactive(monkeypatch):
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[:3] == [
+            "systemctl",
+            "show",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ]:
+            return sp.CompletedProcess(argv, 0, stdout="inactive\n", stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._converge_sources_after_role() is True
+    assert calls == [
+        [
+            "systemctl",
+            "reset-failed",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ],
+        [
+            "systemctl",
+            "show",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+            "--property=ActiveState",
+            "--value",
+        ],
+        [
+            "systemctl",
+            "start",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ],
+    ]
+
+
+def test_converge_sources_drains_old_activation_before_fresh_pass(monkeypatch):
+    """An activating oneshot may have read the old role before grouping applied.
+
+    A blocking start joins that job without interrupting it; only after it
+    returns may the second blocking start run the required fresh pass.
+    """
+    import subprocess as sp
+
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(argv, **kw):
+        calls.append((list(argv), dict(kw)))
+        if argv[:3] == [
+            "systemctl",
+            "show",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ]:
+            return sp.CompletedProcess(argv, 0, stdout="activating\n", stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._converge_sources_after_role() is True
+
+    argv = [call[0] for call in calls]
+    assert argv[-2:] == [
+        [
+            "systemctl",
+            "start",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ],
+        [
+            "systemctl",
+            "start",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ],
+    ]
+    barrier_kwargs = calls[-2][1]
+    assert barrier_kwargs["timeout"] == (
+        reconcile_mod.SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 5.0
+    )
+    assert barrier_kwargs["check"] is True
+    assert calls[-1][1]["timeout"] == (
+        reconcile_mod._SOURCE_RECONCILE_START_TIMEOUT_SEC
+    )
+
+
+def test_converge_sources_unknown_state_uses_safe_barrier(monkeypatch):
+    """A failed state probe cannot be permission to risk coalescing old work."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[1:2] == ["show"]:
+            assert kw["timeout"] == reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC
+            raise sp.TimeoutExpired(argv, kw["timeout"])
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._converge_sources_after_role() is True
+    assert calls[-2:] == [
+        ["systemctl", "start", reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT],
+        [
+            "systemctl",
+            "start",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ],
+    ]
+
+
+def test_converge_sources_barrier_timeout_fails_without_fresh_pass(
+    monkeypatch,
+):
+    """A wedged old source pass is not interrupted or falsely acknowledged."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[1:2] == ["show"]:
+            return sp.CompletedProcess(argv, 0, stdout="activating\n", stderr="")
+        if argv[1:2] == ["start"]:
+            raise sp.TimeoutExpired(argv, kw["timeout"])
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._converge_sources_after_role() is False
+    assert (
+        calls.count(
+            [
+                "systemctl",
+                "start",
+                reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+            ]
+        )
+        == 1
+    )
+    assert not any("restart" in call for call in calls)
 
 
 def test_restart_unit_reset_failed_is_fail_soft(monkeypatch):
@@ -2346,6 +2864,63 @@ def test_restart_unit_reset_failed_is_fail_soft(monkeypatch):
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
     assert reconcile_mod._restart_unit("jasper-camilla.service") is True
     assert ["systemctl", "restart", "jasper-camilla.service"] in calls
+
+
+def test_restart_unit_reset_timeout_is_fail_soft(monkeypatch):
+    """A wedged best-effort reset cannot consume the whole reconcile pass."""
+    import subprocess as sp
+
+    calls: list[tuple[list[str], float]] = []
+
+    def fake_run(argv, **kw):
+        calls.append((list(argv), kw["timeout"]))
+        if argv[1] == "reset-failed":
+            raise sp.TimeoutExpired(argv, kw["timeout"])
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._restart_unit("jasper-camilla.service") is True
+    assert calls == [
+        (
+            ["systemctl", "reset-failed", "jasper-camilla.service"],
+            reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC,
+        ),
+        (
+            ["systemctl", "restart", "jasper-camilla.service"],
+            reconcile_mod._SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("no_block", "expected_timeout"),
+    [
+        (False, reconcile_mod._SYSTEMCTL_BLOCKING_TIMEOUT_SEC),
+        (True, reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC),
+    ],
+)
+def test_restart_unit_timeout_matches_blocking_mode(
+    monkeypatch,
+    no_block,
+    expected_timeout,
+):
+    """Detached manager requests stay short; blocking jobs get the full bound."""
+    import subprocess as sp
+
+    def fake_run(argv, **kw):
+        if argv[1] == "reset-failed":
+            return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+        assert kw["timeout"] == expected_timeout
+        raise sp.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert (
+        reconcile_mod._restart_unit(
+            "jasper-outputd.service",
+            no_block=no_block,
+        )
+        is False
+    )
 
 
 def test_restart_unit_reports_real_restart_failure(monkeypatch):
@@ -2377,7 +2952,8 @@ def test_restart_unit_contains_spawn_oserror(monkeypatch, caplog):
         assert reconcile_mod._restart_unit("jasper-outputd.service") is False
 
     events = [
-        record.message for record in caplog.records
+        record.message
+        for record in caplog.records
         if "event=multiroom.reconcile.unit_restart_failed" in record.message
     ]
     assert len(events) == 1
@@ -2387,7 +2963,9 @@ def test_restart_unit_contains_spawn_oserror(monkeypatch, caplog):
 
 def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):
     """A systemctl spawn failure becomes a blocked teardown, not an escape."""
-    def fake_run(_argv, **_kw):
+
+    def fake_run(_argv, **kw):
+        assert kw["timeout"] == reconcile_mod._SYSTEMCTL_BLOCKING_TIMEOUT_SEC
         raise OSError("cannot spawn systemctl")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
@@ -2396,7 +2974,8 @@ def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):
         assert reconcile_mod._disable_crossover_unit() is False
 
     events = [
-        record.message for record in caplog.records
+        record.message
+        for record in caplog.records
         if "event=multiroom.reconcile.crossover_unit_failed" in record.message
     ]
     assert len(events) == 1
@@ -2405,7 +2984,6 @@ def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):
 
 
 def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
-    """Enabled/active wrappers differ only by their systemctl query token."""
     import subprocess as sp
 
     calls: list[list[str]] = []
@@ -2413,15 +2991,28 @@ def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
 
     def fake_run(argv, **kw):
         calls.append(list(argv))
-        assert kw == {"capture_output": True, "text": True}
+        assert kw == {
+            "capture_output": True,
+            "text": True,
+            "timeout": reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC,
+        }
         returncode, stdout = next(results)
         return sp.CompletedProcess(
-            argv, returncode, stdout=stdout, stderr="",
+            argv,
+            returncode,
+            stdout=stdout,
+            stderr="",
         )
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
 
-    assert reconcile_mod._unit_is_enabled("source.service") is True
+    assert (
+        reconcile_mod._systemctl_unit_state(
+            "is-enabled",
+            "source.service",
+        )
+        is True
+    )
     assert reconcile_mod._unit_is_active("audio.service") is False
     assert calls == [
         ["systemctl", "is-enabled", "source.service"],
@@ -2430,7 +3021,8 @@ def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
 
 
 def test_active_speaker_topology_error_is_raw_unknown_but_legacy_false(
-    monkeypatch, caplog,
+    monkeypatch,
+    caplog,
 ):
     """Safety callers retain corrupt-topology uncertainty; old readers do not."""
     import jasper.output_topology as topology_mod
@@ -2445,7 +3037,8 @@ def test_active_speaker_topology_error_is_raw_unknown_but_legacy_false(
         assert reconcile_mod.is_active_speaker_box() is False
 
     events = [
-        record.message for record in caplog.records
+        record.message
+        for record in caplog.records
         if "event=multiroom.reconcile.active_speaker_probe_failed" in record.message
     ]
     assert len(events) == 2
@@ -2498,14 +3091,22 @@ def test_unit_state_vocabulary_has_explicit_jts_intent_semantics(monkeypatch):
     }
     for state, expected in enabled_states.items():
         current[0] = state
-        assert reconcile_mod._systemctl_unit_state(
-            "is-enabled", "test.service",
-        ) is expected, state
+        assert (
+            reconcile_mod._systemctl_unit_state(
+                "is-enabled",
+                "test.service",
+            )
+            is expected
+        ), state
     for state, expected in active_states.items():
         current[0] = state
-        assert reconcile_mod._systemctl_unit_state(
-            "is-active", "test.service",
-        ) is expected, state
+        assert (
+            reconcile_mod._systemctl_unit_state(
+                "is-active",
+                "test.service",
+            )
+            is expected
+        ), state
 
 
 def test_unit_state_completed_manager_error_is_unknown(monkeypatch, caplog):
@@ -2525,12 +3126,14 @@ def test_unit_state_completed_manager_error_is_unknown(monkeypatch, caplog):
 
     with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
         state = reconcile_mod._systemctl_unit_state(
-            "is-enabled", reconcile_mod.CROSSOVER_UNIT,
+            "is-enabled",
+            reconcile_mod.CROSSOVER_UNIT,
         )
 
     assert state is None
     events = [
-        record.message for record in caplog.records
+        record.message
+        for record in caplog.records
         if "event=multiroom.reconcile.unit_state_probe_failed" in record.message
     ]
     assert len(events) == 1
@@ -2540,48 +3143,83 @@ def test_unit_state_completed_manager_error_is_unknown(monkeypatch, caplog):
 
 
 def test_unit_state_query_oserror_is_safe_false_and_observable(
-    monkeypatch, caplog,
+    monkeypatch,
+    caplog,
 ):
     """A spawn failure must not escape or masquerade as silent inactivity."""
+
     def fake_run(_argv, **_kw):
         raise OSError("cannot allocate process")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
 
     with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
-        assert reconcile_mod._systemctl_unit_state(
-            "is-enabled", "raw.service",
-        ) is None
-        assert reconcile_mod._unit_is_enabled("source.service") is False
+        assert (
+            reconcile_mod._systemctl_unit_state(
+                "is-enabled",
+                "raw.service",
+            )
+            is None
+        )
         assert reconcile_mod._unit_is_active("audio.service") is False
 
     events = [
-        record.message for record in caplog.records
+        record.message
+        for record in caplog.records
         if "event=multiroom.reconcile.unit_state_probe_failed" in record.message
     ]
-    assert len(events) == 3
+    assert len(events) == 2
     assert "unit=raw.service" in events[0]
     assert "query=is-enabled" in events[0]
-    assert "unit=source.service" in events[1]
-    assert "query=is-enabled" in events[1]
-    assert "unit=audio.service" in events[2]
-    assert "query=is-active" in events[2]
+    assert "unit=audio.service" in events[1]
+    assert "query=is-active" in events[1]
+
+
+def test_unit_state_query_timeout_is_unknown_and_observable(monkeypatch, caplog):
+    """A stuck manager probe is finite and cannot masquerade as inactive."""
+    import subprocess as sp
+
+    def fake_run(argv, **kw):
+        assert kw["timeout"] == reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC
+        raise sp.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+
+    with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
+        assert (
+            reconcile_mod._systemctl_unit_state(
+                "is-active",
+                "audio.service",
+            )
+            is None
+        )
+
+    assert any(
+        "event=multiroom.reconcile.unit_state_probe_failed" in record.message
+        and "unit=audio.service" in record.message
+        for record in caplog.records
+    )
 
 
 def test_unit_state_query_missing_systemctl_is_silent_false(
-    monkeypatch, caplog,
+    monkeypatch,
+    caplog,
 ):
     """The historical no-systemctl install-tier case remains a quiet miss."""
+
     def fake_run(_argv, **_kw):
         raise FileNotFoundError("systemctl")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
 
     with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
-        assert reconcile_mod._systemctl_unit_state(
-            "is-enabled", "raw.service",
-        ) is None
-        assert reconcile_mod._unit_is_enabled("source.service") is False
+        assert (
+            reconcile_mod._systemctl_unit_state(
+                "is-enabled",
+                "raw.service",
+            )
+            is None
+        )
         assert reconcile_mod._unit_is_active("audio.service") is False
 
     assert not any(
@@ -2591,7 +3229,8 @@ def test_unit_state_query_missing_systemctl_is_silent_false(
 
 
 def test_ensure_unit_active_continues_after_probe_and_reset_oserrors(
-    monkeypatch, caplog,
+    monkeypatch,
+    caplog,
 ):
     """Probe/reset are fail-soft; the idempotent start is load-bearing."""
     import subprocess as sp
@@ -2607,9 +3246,13 @@ def test_ensure_unit_active_continues_after_probe_and_reset_oserrors(
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
 
     with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
-        assert reconcile_mod._ensure_unit_active(
-            "jasper-camilla.service", reason="active-leader-bake",
-        ) is True
+        assert (
+            reconcile_mod._ensure_unit_active(
+                "jasper-camilla.service",
+                reason="active-leader-bake",
+            )
+            is True
+        )
 
     assert calls == [
         ["systemctl", "is-active", "jasper-camilla.service"],
@@ -2640,18 +3283,53 @@ def test_ensure_unit_active_contains_start_oserror(monkeypatch, caplog):
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
 
     with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
-        assert reconcile_mod._ensure_unit_active(
-            "jasper-camilla.service", reason="active-leader-bake",
-        ) is False
+        assert (
+            reconcile_mod._ensure_unit_active(
+                "jasper-camilla.service",
+                reason="active-leader-bake",
+            )
+            is False
+        )
 
     events = [
-        record.message for record in caplog.records
+        record.message
+        for record in caplog.records
         if "event=multiroom.reconcile.unit_start_failed" in record.message
     ]
     assert len(events) == 1
     assert "unit=jasper-camilla.service" in events[0]
     assert "reason=active-leader-bake" in events[0]
     assert 'error="cannot spawn systemctl"' in events[0]
+
+
+def test_ensure_unit_active_contains_bounded_start_timeout(monkeypatch, caplog):
+    """Direct/install recovery cannot hang forever behind a systemd job."""
+    import subprocess as sp
+
+    def fake_run(argv, **kw):
+        if argv[1] == "is-active":
+            return sp.CompletedProcess(argv, 3, stdout="inactive\n", stderr="")
+        if argv[1] == "start":
+            assert kw["timeout"] == reconcile_mod._SYSTEMCTL_BLOCKING_TIMEOUT_SEC
+            raise sp.TimeoutExpired(argv, kw["timeout"])
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+
+    with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
+        assert (
+            reconcile_mod._ensure_unit_active(
+                "jasper-camilla.service",
+                reason="active-leader-bake",
+            )
+            is False
+        )
+
+    assert any(
+        "event=multiroom.reconcile.unit_start_failed" in record.message
+        and "jasper-camilla.service" in record.message
+        for record in caplog.records
+    )
 
 
 # --- ring-armed box refuses to bond (audit finding 3, P2) --------------------
@@ -2679,10 +3357,87 @@ def test_ring_armed_leader_refuses_bond_falls_back_to_solo(tmp_path, monkeypatch
     # The follower status file records the ring block reason for /state + doctor.
     import json
 
-    status = json.loads(
-        (tmp_path / "grouping-follower-status.json").read_text()
-    )
+    status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
     assert status.get("blocked_reason") == "ring_armed_box_cannot_bond"
+    assert status.get("local_sources_allowed") is True
+
+
+def test_ring_armed_follower_status_allows_sources_after_solo_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    from jasper.multiroom.effective_role import (
+        effective_local_sources_park_reason,
+        read_effective_role_status,
+    )
+
+    requested = _follower(leader_addr="192.168.1.50")
+    _patch_main_io(monkeypatch, tmp_path, requested)
+    _arm_ring_for_reconcile(monkeypatch)
+
+    assert main([]) == 1
+    status_path = tmp_path / "grouping-follower-status.json"
+    status = read_effective_role_status(str(status_path))
+    assert status["blocked_reason"] == "ring_armed_box_cannot_bond"
+    assert status["local_sources_allowed"] is True
+    assert (
+        effective_local_sources_park_reason(
+            requested,
+            status=status,
+            boot_id_reader=lambda: status["boot_id"],
+        )
+        is None
+    )
+
+
+def test_refused_follower_stays_parked_until_solo_unit_plan_succeeds(
+    tmp_path,
+    monkeypatch,
+):
+    import json
+
+    requested = _follower(leader_addr="192.168.1.50")
+    _patch_main_io(monkeypatch, tmp_path, requested)
+    _arm_ring_for_reconcile(monkeypatch)
+    status_path = tmp_path / "grouping-follower-status.json"
+
+    def fail_plan(_decision):
+        in_progress = json.loads(status_path.read_text())
+        assert in_progress["local_sources_allowed"] is False
+        return 1
+
+    monkeypatch.setattr(reconcile_mod, "_apply", fail_plan)
+
+    assert main([]) == 1
+    final = json.loads(status_path.read_text())
+    assert final["local_sources_allowed"] is False
+
+
+def test_refused_follower_grant_write_failure_keeps_prior_deny(
+    tmp_path,
+    monkeypatch,
+):
+    import json
+
+    requested = _follower(leader_addr="192.168.1.50")
+    _patch_main_io(monkeypatch, tmp_path, requested)
+    _arm_ring_for_reconcile(monkeypatch)
+    real_write = reconcile_mod._write_follower_status
+
+    def fail_only_grant(**kwargs):
+        if kwargs.get("local_sources_allowed") is True:
+            return False
+        return real_write(**kwargs)
+
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_write_follower_status",
+        fail_only_grant,
+    )
+
+    assert main([]) == 1
+    final = json.loads((tmp_path / "grouping-follower-status.json").read_text())
+    assert final["local_sources_allowed"] is False
 
 
 def test_loopback_box_still_bonds_normally(tmp_path, monkeypatch):

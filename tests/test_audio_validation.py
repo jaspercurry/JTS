@@ -245,9 +245,10 @@ def test_make_route_latency_artifact_records_identity_and_certification():
         dac_id="apple_usb_c_dongle",
         route_config_hash="abc123",
         camilla_config_hash="camilla123",
+        fanin_direct_config={"period_frames": 256, "min_buffer_frames": 768},
+        fanin_direct_negotiated_buffer_frames=768,
         fanin_resampler_config={"target_frames": 512},
         outputd_config={"period_frames": 256},
-        rust_bridge_config={"period_frames": 256, "ring_periods": 3},
         uac2_gadget_attrs={"c_sync": "async"},
         measurement_provenance={
             "input_kind": "raw_samples",
@@ -268,6 +269,7 @@ def test_make_route_latency_artifact_records_identity_and_certification():
     assert checks["identity"]["dac_profile_id"] == "apple_usb_c_dongle"
     assert checks["identity"]["route_config_hash"] == "abc123"
     assert checks["identity"]["camilla_config_hash"] == "camilla123"
+    assert checks["identity"]["fanin_direct_negotiated_buffer_frames"] == 768
     assert checks["certified_percentiles"] == [95, 99]
     assert checks["evidence"]["input_kind"] == "raw_samples"
     assert checks["evidence"]["sample_sha256"] == "0" * 64
@@ -276,10 +278,14 @@ def test_make_route_latency_artifact_records_identity_and_certification():
 
 def test_route_live_state_issues_detect_runtime_mismatches():
     identity = {
-        "rust_bridge_config": {
-            "implementation": "rust",
+        "fanin_direct_config": {
+            "lane": "usbsink",
+            "source": "direct",
+            "device": "hw:UAC2Gadget",
             "period_frames": 256,
-            "ring_periods": 3,
+            "min_buffer_frames": 768,
+            "buffer_period_aligned": True,
+            "negotiated_buffer_frames": 768,
         },
         "fanin_resampler_config": {
             "enabled": True,
@@ -291,15 +297,17 @@ def test_route_live_state_issues_detect_runtime_mismatches():
 
     assert route_live_state_issues(
         identity,
-        usbsink_state={
-            "implementation": "rust",
-            "period_frames": 256,
-            "ring": {"capacity_periods": 3},
-        },
         fanin_status={
             "inputs": [
                 {
                     "label": "usbsink",
+                    "source": "direct",
+                    "direct": {
+                        "device": "hw:UAC2Gadget",
+                        "health": "capturing",
+                        "period_frames": 256,
+                        "buffer_frames": 768,
+                    },
                     "resampler": {
                         "locked": True,
                         "target_fill_frames": 2048,
@@ -311,15 +319,17 @@ def test_route_live_state_issues_detect_runtime_mismatches():
 
     issues = route_live_state_issues(
         identity,
-        usbsink_state={
-            "implementation": "rust",
-            "period_frames": 128,
-            "ring": {"capacity_periods": 2},
-        },
         fanin_status={
             "inputs": [
                 {
                     "label": "usbsink",
+                    "source": "aloop",
+                    "direct": {
+                        "device": "hw:Other",
+                        "health": "broken",
+                        "period_frames": 128,
+                        "buffer_frames": 500,
+                    },
                     "resampler": {
                         "locked": False,
                         "target_fill_frames": 1536,
@@ -329,14 +339,61 @@ def test_route_live_state_issues_detect_runtime_mismatches():
         },
     )
 
-    assert "live_usbsink_bridge_mismatch:period_frames" in issues
-    assert "live_usbsink_bridge_mismatch:ring_periods" in issues
+    assert "live_fanin_direct_mismatch:usbsink:source" in issues
+    assert "live_fanin_direct_mismatch:usbsink:device" in issues
+    assert "live_fanin_direct_unhealthy:usbsink:broken" in issues
+    assert "live_fanin_direct_mismatch:usbsink:period_frames" in issues
+    assert "live_fanin_direct_mismatch:usbsink:buffer_frames" in issues
+    assert "live_fanin_direct_mismatch:usbsink:buffer_alignment" in issues
     assert "live_fanin_resampler_unlocked:usbsink" in issues
     assert "live_fanin_resampler_mismatch:usbsink:target_fill_frames" in issues
 
 
+def test_route_live_state_requires_certified_negotiated_direct_buffer():
+    identity = {
+        "fanin_direct_config": {
+            "lane": "usbsink",
+            "source": "direct",
+            "device": "hw:UAC2Gadget",
+            "period_frames": 256,
+            "min_buffer_frames": 768,
+            "buffer_period_aligned": True,
+            "negotiated_buffer_frames": 768,
+        },
+    }
+
+    def status(buffer_frames: int):
+        return {
+            "inputs": [
+                {
+                    "label": "usbsink",
+                    "source": "direct",
+                    "direct": {
+                        "device": "hw:UAC2Gadget",
+                        "health": "capturing",
+                        "period_frames": 256,
+                        "buffer_frames": buffer_frames,
+                    },
+                }
+            ]
+        }
+
+    assert route_live_state_issues(identity, fanin_status=status(768)) == ()
+    assert route_live_state_issues(identity, fanin_status=status(1024)) == (
+        "live_fanin_direct_mismatch:usbsink:negotiated_buffer_frames",
+    )
+
+
 def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested():
     identity = {
+        "fanin_direct_config": {
+            "lane": "usbsink",
+            "source": "direct",
+            "device": "hw:UAC2Gadget",
+            "period_frames": 256,
+            "min_buffer_frames": 768,
+            "buffer_period_aligned": True,
+        },
         "fanin_resampler_config": {
             "enabled": True,
             "lane": "usbsink",
@@ -351,7 +408,12 @@ def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested
                 {
                     "label": "usbsink",
                     "source": "direct",
-                    "direct": {"health": health},
+                    "direct": {
+                        "device": "hw:UAC2Gadget",
+                        "health": health,
+                        "period_frames": 256,
+                        "buffer_frames": 768,
+                    },
                     "resampler": {
                         "locked": False,
                         "target_fill_frames": target_fill_frames,
@@ -365,30 +427,42 @@ def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested
     assert route_live_state_issues(
         identity,
         fanin_status=status("idle"),
-    ) == ("live_fanin_resampler_unlocked:usbsink",)
+    ) == (
+        "live_fanin_direct_unhealthy:usbsink:idle",
+        "live_fanin_resampler_unlocked:usbsink",
+    )
 
     # Doctor may assess stored certification while the box is explicitly idle.
     assert route_live_state_issues(
         identity,
         fanin_status=status("idle"),
-        allow_idle_resampler_unlocked=True,
+        allow_idle_direct_lane=True,
     ) == ()
 
-    # Capturing/broken/unknown are not idle, so an unlocked live lane remains a
-    # failure even when the doctor policy is enabled.
-    for health in ("capturing", "broken", ""):
+    # Capturing is healthy but still requires the activity-dependent lock.
+    assert route_live_state_issues(
+        identity,
+        fanin_status=status("capturing"),
+        allow_idle_direct_lane=True,
+    ) == ("live_fanin_resampler_unlocked:usbsink",)
+
+    # Broken/unknown are neither healthy nor idle, so both failures remain.
+    for health in ("broken", ""):
         assert route_live_state_issues(
             identity,
             fanin_status=status(health),
-            allow_idle_resampler_unlocked=True,
-        ) == ("live_fanin_resampler_unlocked:usbsink",)
+            allow_idle_direct_lane=True,
+        ) == (
+            f"live_fanin_direct_unhealthy:usbsink:{health or 'unknown'}",
+            "live_fanin_resampler_unlocked:usbsink",
+        )
 
     # The configured target is identity, not activity state, and must still
     # match while idle.
     assert route_live_state_issues(
         identity,
         fanin_status=status("idle", target_fill_frames=1536),
-        allow_idle_resampler_unlocked=True,
+        allow_idle_direct_lane=True,
     ) == ("live_fanin_resampler_mismatch:usbsink:target_fill_frames",)
 
 
@@ -421,9 +495,10 @@ def test_assess_route_latency_artifact_fails_identity_mismatch(tmp_path):
         dac_id="apple_usb_c_dongle",
         route_config_hash="same",
         camilla_config_hash="camilla-a",
+        fanin_direct_config={"period_frames": 256, "min_buffer_frames": 768},
+        fanin_direct_negotiated_buffer_frames=768,
         fanin_resampler_config={"target_frames": 512},
         outputd_config={"JASPER_OUTPUTD_PERIOD_FRAMES": 1024},
-        rust_bridge_config={"period_frames": 256, "ring_periods": 3},
         p95_ms=38.5,
         p99_ms=41.0,
         sample_count=1000,
@@ -443,15 +518,54 @@ def test_assess_route_latency_artifact_fails_identity_mismatch(tmp_path):
             "dac_profile_id": "apple_usb_c_dongle",
             "route_config_hash": "same",
             "camilla_config_hash": "camilla-b",
+            "fanin_direct_config": {
+                "period_frames": 256,
+                "min_buffer_frames": 768,
+            },
             "fanin_resampler_config": {"target_frames": 512},
             "outputd_config": {"JASPER_OUTPUTD_PERIOD_FRAMES": 1024},
-            "rust_bridge_config": {"period_frames": 256, "ring_periods": 3},
         },
     )
 
     assert summary["status"] == "fail"
     assert summary["config_match"] is False
     assert "identity_mismatch:camilla_config_hash" in summary["issues"]
+
+
+def test_assess_route_latency_artifact_rejects_missing_negotiated_buffer(tmp_path):
+    artifact = make_route_latency_artifact(
+        route_id="usb_low_latency_48k",
+        source_id="usbsink",
+        dac_id="apple_usb_c_dongle",
+        route_config_hash="same",
+        fanin_direct_config={"period_frames": 256, "min_buffer_frames": 768},
+        p95_ms=38.5,
+        p99_ms=41.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        impulse_spacing_jittered=True,
+        validated_at=NOW,
+    )
+    path = write_artifact(artifact, directory=tmp_path)
+    result = load_artifact(path, now=NOW + timedelta(days=1))
+
+    summary = assess_route_latency_artifact(
+        result,
+        route_config_hash="same",
+        expected_identity={
+            "route_config_hash": "same",
+            "fanin_direct_config": {
+                "period_frames": 256,
+                "min_buffer_frames": 768,
+            },
+        },
+    )
+
+    assert summary["status"] == "fail"
+    assert (
+        "identity_mismatch:fanin_direct_negotiated_buffer_frames"
+        in summary["issues"]
+    )
 
 
 def test_route_latency_artifact_uses_fresh_24h_window(tmp_path):

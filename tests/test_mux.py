@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import jasper.mux as mux_module
 from jasper.music_sources import VolumeMode
 from jasper.mux import Mux, Source
 
@@ -83,7 +84,7 @@ def mux(tmp_path):
 
 
 @pytest.fixture
-def patched_probes(monkeypatch):
+def patched_probes(monkeypatch, mux):
     """Replaces the source_state probe references in jasper.mux's
     namespace with AsyncMocks. Tests mutate return_value via
     `_stub_probes` to control what the next tick sees.
@@ -98,8 +99,7 @@ def patched_probes(monkeypatch):
     monkeypatch.setattr("jasper.mux.spotify_playing", spotify)
     monkeypatch.setattr("jasper.mux.airplay_playing", airplay)
     monkeypatch.setattr("jasper.mux.bluetooth_playing", bluetooth)
-    monkeypatch.setattr("jasper.mux.usbsink_playing", usbsink)
-    monkeypatch.setattr("jasper.mux.read_usbsink_state", lambda *a, **k: None)
+    monkeypatch.setattr(mux, "_usbsink_playing", usbsink)
     return SimpleNamespace(
         spotify=spotify, airplay=airplay,
         bluetooth=bluetooth, usbsink=usbsink,
@@ -306,6 +306,29 @@ def test_mux_service_loads_spotify_credentials_env():
     assert "-/var/lib/jasper-intsecrets/spotify_credentials.env" in env_files
 
 
+def test_mux_service_does_not_pull_optional_sources():
+    """Starting mux must not override a household-Off source.
+
+    systemd starts every unit named by ``Wants=`` even when that unit is
+    disabled, so mux may depend on fan-in but may only observe optional
+    renderers.
+    """
+    unit = (REPO / "deploy" / "systemd" / "jasper-mux.service").read_text()
+    wants = {
+        dependency
+        for line in unit.splitlines()
+        if line.strip().startswith("Wants=")
+        for dependency in line.split("=", 1)[1].split()
+    }
+
+    assert wants == {"jasper-fanin.service"}
+    assert {
+        "librespot.service",
+        "shairport-sync.service",
+        "bluealsa.service",
+    }.isdisjoint(wants)
+
+
 def test_mux_service_can_write_state_dir():
     """The manual-pin persistence file (mux_mode.json) + shared
     speaker_volume.json live under /var/lib/jasper; the unit must keep that path
@@ -455,22 +478,20 @@ async def test_usbsink_preempt_release_idempotent(mux, patched_probes):
 
 
 # ----------------------------------------------------------------------
-# USB combo box arbitration. In combo mode jasper-usbsink is in standby
-# (bridge `playing:false` forever) while fan-in DIRECT-captures the gadget.
+# USB combo box arbitration. Fan-in is the sole live USB ingress owner and
+# DIRECT-captures the gadget.
 # mux detects USB liveness from the direct lane's host-input counter advancing
 # across ticks.
 # ----------------------------------------------------------------------
 
 
 def _make_combo_box(mux: Mux, monkeypatch, frames_seq):
+    # Combo tests exercise the real fan-in liveness method rather than the
+    # per-test fixture's simple USB boolean stub.
     monkeypatch.setattr(
-        "jasper.mux.read_usbsink_state",
-        lambda *a, **k: {
-            "standby": True,
-            "playing": False,
-            "host_connected": True,
-            "rms_dbfs": -120.0,
-        },
+        mux,
+        "_usbsink_playing",
+        Mux._usbsink_playing.__get__(mux, Mux),
     )
     frames = list(frames_seq)
     idx = {"i": 0}
@@ -574,9 +595,9 @@ async def test_combo_usb_survives_single_fanin_status_miss(
 
 
 # ----------------------------------------------------------------------
-# USB preempt transport. jasper-fanin DIRECT-captures the gadget and the
-# jasper-usbsink daemon is standby-only (it owns no audio path), so mux silences
-# USB by MUTE/UNMUTE of the fan-in usbsink lane at its mix stage — the only
+# USB preempt transport. jasper-fanin DIRECT-captures the gadget as the sole
+# live USB ingress owner, so mux silences USB by MUTE/UNMUTE of the fan-in
+# usbsink lane at its mix stage — the only
 # USB-silencing primitive. (The old :8781 solo-bridge POST path was removed with
 # the aloop solo capture path.)
 # ----------------------------------------------------------------------
@@ -590,6 +611,28 @@ def _make_mux_mute_stubbed(tmp_path):
     fanin_mute = AsyncMock(return_value={})
     m._fanin_lane_mute = fanin_mute
     return m, fanin_mute
+
+
+@pytest.mark.asyncio
+async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_path):
+    """STATUS and mutations must not split across sockets under an override."""
+
+    command = AsyncMock(return_value={})
+    monkeypatch.setattr(mux_module, "fanin_command", command)
+    monkeypatch.setattr(mux_module, "FANIN_CONTROL_SOCKET", "/tmp/override.sock")
+    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
+
+    await m._fanin_select_label("correction")
+    await m._fanin_auto()
+    await m._fanin_none()
+    await m._fanin_lane_mute("usbsink", True)
+
+    assert [call.kwargs["socket_path"] for call in command.await_args_list] == [
+        "/tmp/override.sock",
+        "/tmp/override.sock",
+        "/tmp/override.sock",
+        "/tmp/override.sock",
+    ]
 
 
 # ----------------------------------------------------------------------
@@ -850,12 +893,15 @@ async def test_test_fanin_label_overrides_manual_reassert_without_persisting(
     mux._fanin_select_label = AsyncMock(return_value={})
     _stub_probes(patched_probes, airplay=False)
 
-    status = await mux.select_test_fanin_label("correction")
+    status = await mux.select_test_fanin_label(
+        "correction", "correction-measurement",
+    )
     await mux._tick()
 
     assert status["mode"] == "manual"
     assert status["selected_source"] == "airplay"
     assert status["test_source"] == "correction"
+    assert status["test_owner"] == "correction-measurement"
     assert status["active_source"] == "correction"
     mux._fanin_select_label.assert_awaited_with("correction")
     assert mux._manual_source is Source.AIRPLAY
@@ -866,16 +912,178 @@ async def test_test_fanin_release_restores_manual_source(mux):
     mux._manual_source = Source.AIRPLAY
     mux._winner = Source.AIRPLAY
     mux._test_fanin_label = "correction"
+    mux._test_fanin_owner = "correction-measurement"
     mux._fanin_select = AsyncMock(return_value={})
     mux._fanin_none = AsyncMock(return_value={})
 
-    status = await mux.release_test_fanin_label()
+    status = await mux.release_test_fanin_label("correction-measurement")
 
     mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY)
     mux._fanin_none.assert_not_awaited()
     assert status["test_source"] is None
+    assert status["test_owner"] is None
     assert status["selected_source"] == "airplay"
     assert status["active_source"] == "airplay"
+
+
+@pytest.mark.asyncio
+async def test_test_fanin_gate_is_idempotent_for_owner_and_busy_for_other(mux):
+    mux._fanin_select_label = AsyncMock(return_value={})
+
+    first = await mux.select_test_fanin_label(
+        "correction", "correction-measurement",
+    )
+    retry = await mux.select_test_fanin_label(
+        "correction", "correction-measurement",
+    )
+    busy = await mux.select_test_fanin_label(
+        "correction", "active-speaker-commissioning",
+    )
+    wrong_release = await mux.release_test_fanin_label(
+        "active-speaker-commissioning",
+    )
+
+    assert first["test_owner"] == "correction-measurement"
+    assert retry["test_owner"] == "correction-measurement"
+    assert "owned by" in busy["error"]
+    assert "owned by" in wrong_release["error"]
+    assert mux._test_fanin_owner == "correction-measurement"
+    assert mux._fanin_select_label.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_manual_select_is_rejected_without_mutation_during_test_gate(
+    mux, patched_probes,
+):
+    mux._test_fanin_label = "correction"
+    mux._test_fanin_owner = "correction-measurement"
+    mux._test_fanin_expires_at = 100.0
+
+    result = await mux.select_source(Source.AIRPLAY)
+
+    assert "correction-measurement" in result["error"]
+    mux._fanin_select.assert_not_awaited()
+    assert mux._volume_coordinator.events == []
+    for probe in vars(patched_probes).values():
+        probe.assert_not_awaited()
+    assert mux._test_fanin_owner == "correction-measurement"
+
+
+@pytest.mark.asyncio
+async def test_auto_select_is_rejected_before_probe_during_test_gate(
+    mux, patched_probes,
+):
+    mux._test_fanin_label = "correction"
+    mux._test_fanin_owner = "correction-measurement"
+    mux._test_fanin_expires_at = 100.0
+
+    result = await mux.auto_select()
+
+    assert "correction-measurement" in result["error"]
+    mux._fanin_auto.assert_not_awaited()
+    mux._fanin_none.assert_not_awaited()
+    assert mux._volume_coordinator.events == []
+    for probe in vars(patched_probes).values():
+        probe.assert_not_awaited()
+    assert mux._test_fanin_owner == "correction-measurement"
+
+
+@pytest.mark.asyncio
+async def test_test_gate_renewal_extends_lease(monkeypatch, mux):
+    mux._fanin_select_label = AsyncMock(return_value={})
+    now = [10.0]
+    monkeypatch.setattr(mux_module.time, "monotonic", lambda: now[0])
+
+    await mux.select_test_fanin_label(
+        "correction", "correction-measurement",
+    )
+    first_expiry = mux._test_fanin_expires_at
+    now[0] = 50.0
+    await mux.select_test_fanin_label(
+        "correction", "correction-measurement",
+    )
+
+    assert first_expiry == 10.0 + mux_module.FANIN_TEST_LEASE_SEC
+    assert mux._test_fanin_expires_at == 50.0 + mux_module.FANIN_TEST_LEASE_SEC
+
+
+@pytest.mark.asyncio
+async def test_test_gate_response_loss_rolls_back_or_retains_owner(mux):
+    mux._fanin_select_label = AsyncMock(side_effect=RuntimeError("response lost"))
+    mux._fanin_none = AsyncMock(side_effect=RuntimeError("rollback unavailable"))
+
+    failed = await mux.select_test_fanin_label(
+        "correction", "correction-measurement",
+    )
+
+    assert "response lost" in failed["error"]
+    assert mux._test_fanin_owner == "correction-measurement"
+    assert mux._test_fanin_label == "correction"
+    assert mux._test_fanin_expires_at is not None
+
+
+@pytest.mark.asyncio
+async def test_test_gate_release_failure_retains_owner_then_retry_clears(mux):
+    mux._test_fanin_label = "correction"
+    mux._test_fanin_owner = "correction-measurement"
+    mux._test_fanin_expires_at = 100.0
+    mux._fanin_none = AsyncMock(side_effect=[RuntimeError("fanin down"), {}])
+
+    failed = await mux.release_test_fanin_label("correction-measurement")
+    assert "fanin down" in failed["error"]
+    assert mux._test_fanin_owner == "correction-measurement"
+
+    released = await mux.release_test_fanin_label("correction-measurement")
+    assert "error" not in released
+    assert mux._test_fanin_owner is None
+    assert mux._test_fanin_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_owner_scoped_release_without_memory_reasserts_normal_gate(mux):
+    """Recover SELECT-landed/response-lost even before ownership published."""
+
+    mux._fanin_none = AsyncMock(return_value={})
+
+    released = await mux.release_test_fanin_label("correction-measurement")
+
+    assert "error" not in released
+    mux._fanin_none.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_expired_test_gate_self_clears_through_strict_restore(
+    mux, patched_probes,
+):
+    _stub_probes(patched_probes)
+    mux._test_fanin_label = "correction"
+    mux._test_fanin_owner = "correction-measurement"
+    mux._test_fanin_expires_at = 0.0
+    mux._fanin_none = AsyncMock(return_value={})
+
+    await mux._tick()
+
+    assert mux._test_fanin_owner is None
+    assert mux._test_fanin_label is None
+    assert mux._fanin_none.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_expired_test_gate_restore_failure_stays_owned_for_retry(
+    mux, patched_probes,
+):
+    _stub_probes(patched_probes)
+    mux._test_fanin_label = "correction"
+    mux._test_fanin_owner = "correction-measurement"
+    mux._test_fanin_expires_at = 0.0
+    mux._fanin_none = AsyncMock(side_effect=RuntimeError("fanin down"))
+    mux._fanin_select_label = AsyncMock(return_value={})
+
+    await mux._tick()
+
+    assert mux._test_fanin_owner == "correction-measurement"
+    assert mux._test_fanin_label == "correction"
+    mux._fanin_select_label.assert_awaited_with("correction")
 
 
 @pytest.mark.asyncio

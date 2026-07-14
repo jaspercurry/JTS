@@ -63,7 +63,7 @@ _STEP_TO_PLAN_MARKER = {
     "render_outputd_cutover_config": "Render outputd flat startup config with active DAC latency floor",
     "build_install_jasper_fanin": "jasper-fanin Rust daemon",
     "build_install_jasper_outputd": "jasper-outputd daemon from rust/jasper-outputd",
-    "build_install_jasper_usbsink_audio": "jasper-usbsink-audio daemon from rust/jasper-usbsink-audio",
+    "retire_jasper_usbsink_audio": "Retire the obsolete jasper-usbsink-audio binary and Cargo cache",
     "install_jts_ring_platform": "jts_ring ALSA ioplug from c/jts-ring-ioplug",
     "install_systemd_units": "Enable socket-activated setup wizards",
     "retire_audio_topology_switch": "stale legacy audio-topology state",

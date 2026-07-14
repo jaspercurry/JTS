@@ -8,7 +8,7 @@
    page stylesheet, carries the shared .app-header, embeds the CSRF meta tag).
    This page has no client behaviour, so it ships NO ES module and NO <script>.
 2. The migration was presentation-only: the server-rendered POST /save flow
-   (validate mode -> write env file -> restart shairport-sync) and the public
+   (validate mode -> write env file -> try-restart active shairport-sync) and the public
    module surface (render fn, make_server, main) are unchanged.
 """
 from __future__ import annotations
@@ -94,7 +94,7 @@ def test_airplay_blank_flash_renders_no_banner():
 
 
 def test_airplay_saved_flash_renders_ok_banner():
-    out = _render(flash="Saved. AirPlay now in synced mode (shairport-sync restarted).")
+    out = _render(flash="Saved. AirPlay is now in synced mode.")
     assert "banner--ok" in out
 
 
@@ -116,6 +116,22 @@ def test_public_surface_is_stable():
     assert callable(airplay_setup.main)
     assert callable(airplay_setup._index_html)
     assert callable(airplay_setup._current_mode)
+
+
+def test_mode_refresh_never_starts_disabled_airplay(monkeypatch):
+    calls = []
+
+    def manage(*units, **kwargs):
+        calls.append((units, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(airplay_setup, "manage_units", manage)
+
+    airplay_setup._restart_shairport()
+
+    assert calls[0][0] == ("shairport-sync.service",)
+    assert calls[0][1]["verb"] == "try-restart"
+    assert calls[0][1]["timeout"] == airplay_setup.SHAIRPORT_RESTART_TIMEOUT_SEC
 
 
 def test_get_root_renders_canonical_page(monkeypatch):

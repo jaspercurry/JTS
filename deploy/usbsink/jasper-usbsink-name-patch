@@ -30,9 +30,11 @@ set -uo pipefail
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHER="${SELF_DIR}/uac2_name_patch.py"
 SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
+SPEAKER_NAME_READER="${JASPER_SPEAKER_NAME_READER:-/opt/jasper/.venv/bin/python}"
+MODULES_ROOT="${JASPER_MODULES_ROOT:-/lib/modules}"
 
 KVER="$(uname -r)"
-MODDIR="/lib/modules/${KVER}"
+MODDIR="${MODULES_ROOT}/${KVER}"
 UPDATES_DIR="${MODDIR}/updates"
 OVERRIDE="${UPDATES_DIR}/usb_f_uac2.ko"
 MARKER="${UPDATES_DIR}/.jasper-usbsink-name.marker"
@@ -43,14 +45,16 @@ emit() {  # emit <outcome> [k=v ...]
 }
 
 # --- desired name -----------------------------------------------------
-# Seed from the inherited environment (systemd loads speaker_name.env via
-# EnvironmentFile=) so a transiently-unreadable file still yields the real
-# name; then re-source the file as the single source of truth so it wins.
-NAME="${JASPER_SPEAKER_NAME:-JTS}"
-if [[ -r "${SPEAKER_NAME_FILE}" ]]; then
-    # shellcheck disable=SC1090
-    source "${SPEAKER_NAME_FILE}" 2>/dev/null || true
-    NAME="${JASPER_SPEAKER_NAME:-JTS}"
+# Management-writable identity state is untrusted at this root boundary. The
+# canonical reader owns env quoting plus the 32-character printable-name
+# policy before a value reaches module labels, markers, or structured logs.
+# Never source/eval/pre-read the path. The reader performs one descriptor-held,
+# no-follow, nonblocking, 64 KiB-capped read so FIFO/symlink/replacement races
+# fail safely to JTS.
+NAME="JTS"
+canonical_name="$("${SPEAKER_NAME_READER}" -m jasper.speaker_name "${SPEAKER_NAME_FILE}" 2>/dev/null || true)"
+if [[ -n "${canonical_name}" ]]; then
+    NAME="${canonical_name}"
 fi
 
 # --- locate the STOCK module (always under kernel/, never updates/) ---

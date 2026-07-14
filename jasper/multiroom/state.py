@@ -40,14 +40,12 @@ the ``/state`` aggregator.
 """
 from __future__ import annotations
 
-import json
 import subprocess
-from pathlib import Path
 from typing import Any, Callable
 
 from .config import GROUPING_ENV_FILE, GroupingConfig, load_config
+from .effective_role import read_effective_role_status
 from .reconcile import (
-    FOLLOWER_STATUS_FILE,
     SNAP_STREAM_ID,
     desired_snapfifo_path,
     plan,
@@ -59,24 +57,14 @@ from .reconcile import (
 _PROBE_TIMEOUT_SEC = 5
 
 
-def read_active_follower_status(path: str = FOLLOWER_STATUS_FILE) -> dict[str, Any]:
+def read_active_follower_status(path: str | None = None) -> dict[str, Any]:
     """Fresh-read the reconciler's active-follower endpoint status (Slice 3).
 
     Returns ``{active_follower: bool, blocked_reason: str}`` or ``{}`` when the
     file is missing / unreadable / malformed. Total + fail-soft: never raises,
     never reads ``os.environ`` (jasper-control is not restarted on a bond, so a
     cached env would go stale — the fresh-read contract this module exists for)."""
-    try:
-        raw = json.loads(Path(path).read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {
-        "active_follower": bool(raw.get("active_follower")),
-        "active_leader": bool(raw.get("active_leader")),
-        "blocked_reason": str(raw.get("blocked_reason") or ""),
-    }
+    return read_effective_role_status(path)
 
 
 def read_unit_active_states(units: list[str]) -> dict[str, str]:

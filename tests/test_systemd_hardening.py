@@ -16,13 +16,19 @@ of the phase-1 directives from a Tier-A unit fails CI. It deliberately encodes
 the per-unit nuances (the reason a uniform block would break things), so the
 exceptions are explicit, not silent.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
+from jasper import source_intent
+from jasper.accessories import reconcile as accessory_reconcile
+from jasper.multiroom import reconcile as multiroom_reconcile
+
 ROOT = Path(__file__).resolve().parents[1]
+USBSINK_READINESS_UNIT = ROOT / "deploy/systemd/jasper-usbsink.service"
 
 # Tier-A unit -> its file (jasper-web lives in deploy/, the rest in deploy/systemd/).
 TIER_A = {
@@ -46,6 +52,12 @@ ACCESSORY_RECONCILERS = {
 # Per-unit TimeoutStartSec overrides; anything absent expects the 60s default.
 RECONCILE_ONESHOT_TIMEOUTS = {
     "jasper-fanin-coupling-auto": "120",
+    "jasper-grouping-reconcile": str(
+        int(multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC)
+    ),
+    "jasper-source-intent-reconcile": str(
+        int(source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)
+    ),
 }
 
 RECONCILE_ONESHOTS = {
@@ -59,6 +71,9 @@ RECONCILE_ONESHOTS = {
     # P3/P4 default-flip: the boot-time fan-in coupling + USB combo resolver.
     "jasper-fanin-coupling-auto": (
         ROOT / "deploy/systemd/jasper-fanin-coupling-auto.service"
+    ),
+    "jasper-source-intent-reconcile": (
+        ROOT / "deploy/systemd/jasper-source-intent-reconcile.service"
     ),
 }
 
@@ -97,6 +112,34 @@ def _directives(path: Path) -> list[tuple[str, str]]:
         key, _, value = s.partition("=")
         out.append((key.strip(), value.strip()))
     return out
+
+
+def test_usbsink_readiness_marker_is_unprivileged_and_read_only():
+    pairs = set(_directives(USBSINK_READINESS_UNIT))
+    required = {
+        ("User", "jasper-recon"),
+        ("Group", "jasper"),
+        ("CapabilityBoundingSet", ""),
+        ("AmbientCapabilities", ""),
+        ("NoNewPrivileges", "true"),
+        ("SystemCallFilter", "@system-service"),
+        ("ProtectSystem", "strict"),
+        ("ProtectHome", "true"),
+        ("PrivateTmp", "true"),
+        ("PrivateDevices", "true"),
+        ("ProtectKernelTunables", "true"),
+        ("ProtectKernelModules", "true"),
+        ("ProtectKernelLogs", "true"),
+        ("ProtectControlGroups", "true"),
+        ("RestrictNamespaces", "true"),
+        ("RestrictSUIDSGID", "true"),
+        ("RestrictRealtime", "true"),
+        ("LockPersonality", "true"),
+        ("MemoryDenyWriteExecute", "true"),
+        ("RestrictAddressFamilies", "AF_UNIX"),
+        ("RemoveIPC", "true"),
+    }
+    assert not (required - pairs)
 
 
 @pytest.mark.parametrize("unit,path", sorted(TIER_A.items()))
@@ -194,12 +237,52 @@ def test_reconcile_oneshots_have_bounded_start_timeout(unit, path):
     # coordinated camilla stop->fanin->start sequence + a possible 15s
     # audio-hardware-reconcile kick); a kill mid-sequence leaves CamillaDSP
     # cleanly stopped where OnFailure cannot catch it, so its timeout must
-    # outlast the pass (review #1252 SF-1). The other reconcilers keep 60.
+    # outlast the pass (review #1252 SF-1). Grouping may wait for one prior
+    # source activation before it queues a guaranteed-fresh role pass, and
+    # source intent owns its own complete multi-source transaction.
+    # Their finite outer bounds cover those declared child budgets. The other
+    # reconcilers keep 60.
     expected_timeout = RECONCILE_ONESHOT_TIMEOUTS.get(unit, "60")
     assert ("TimeoutStartSec", expected_timeout) in pairs, (
         f"{unit}: reconcile oneshots need a finite start timeout so startup "
         f"dependency mistakes fail visibly instead of wedging voice offline "
         f"(expected TimeoutStartSec={expected_timeout})."
+    )
+
+
+def test_grouping_timeout_covers_every_bounded_owner_handoff_step():
+    """The outer oneshot must outlast its complete sequential child budget."""
+    required_before_margin = (
+        multiroom_reconcile._BASE_RECONCILE_BUDGET_SEC
+        + multiroom_reconcile._MAX_SOURCE_RECONCILE_STARTS
+        * multiroom_reconcile._SOURCE_RECONCILE_START_TIMEOUT_SEC
+        + multiroom_reconcile._OWNER_CONTROL_CALLS_PER_HANDOFF
+        * multiroom_reconcile._SYSTEMCTL_CONTROL_TIMEOUT_SEC
+    )
+    assert multiroom_reconcile._OWNER_CONTROL_CALLS_PER_HANDOFF == 2
+    assert multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC == (
+        required_before_margin + multiroom_reconcile._RECONCILE_TIMEOUT_MARGIN_SEC
+    )
+    assert multiroom_reconcile._RECONCILE_TIMEOUT_MARGIN_SEC > 0
+
+    grouping_unit = RECONCILE_ONESHOTS["jasper-grouping-reconcile"]
+    configured = dict(_directives(grouping_unit))["TimeoutStartSec"]
+    assert float(configured) == multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC
+
+
+def test_accessory_parallel_budget_matches_owner_and_caller_barriers():
+    """Full bounded On work fits one owner window, with callers just above."""
+
+    accessory_unit = ACCESSORY_RECONCILERS["jasper-accessory-reconcile"]
+    owner_timeout = float(dict(_directives(accessory_unit))["TimeoutStartSec"])
+    assert accessory_reconcile._ADAPTER_SYSTEMCTL_CALLS == 3
+    assert accessory_reconcile._VOICE_REFRESH_SYSTEMCTL_CALLS == 2
+    assert accessory_reconcile._OWNER_OPERATION_TIMEOUT_BUDGET_SEC < owner_timeout
+    assert (
+        source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC[
+            source_intent._ACCESSORY_RECONCILE_UNIT
+        ]
+        == owner_timeout + 5.0
     )
 
 
@@ -256,7 +339,13 @@ DROPPED = {
     # CAP_NET_ADMIN — NL80211 scan-repair routes through a root helper.
     "jasper-web": (
         "jasper-web",
-        {"audio", "bluetooth", "systemd-journal", "jasper-secrets", "jasper-intsecrets"},
+        {
+            "audio",
+            "bluetooth",
+            "systemd-journal",
+            "jasper-secrets",
+            "jasper-intsecrets",
+        },
     ),
 }
 
@@ -476,7 +565,8 @@ def test_streambox_spotify_uses_intsecrets_compartment():
 
     install_sh = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")
     streambox_branch = install_sh.split(
-        'if [[ "${install_profile}" == "streambox" ]]; then', 1,
+        'if [[ "${install_profile}" == "streambox" ]]; then',
+        1,
     )[1].split("return 0", 1)[0]
     assert "migrate_secrets_phase4b" in streambox_branch, (
         "streambox installs must create/migrate the Phase 4b compartment before "
@@ -547,7 +637,8 @@ TIER_B_DAC_MIXER_UNITS = {
 
 
 @pytest.mark.parametrize(
-    "unit,path", sorted(DEFERRED_PRIVILEGED_SUPPORT_UNITS.items()),
+    "unit,path",
+    sorted(DEFERRED_PRIVILEGED_SUPPORT_UNITS.items()),
 )
 def test_privileged_support_units_stay_root_until_validated(unit, path):
     assert path.is_file(), f"{unit}: expected unit at {path}"
@@ -588,8 +679,13 @@ def test_usbnet_dhcp_unit_is_hardened_scoped_dnsmasq():
     boundings = [v for k, v in pairs if k == "CapabilityBoundingSet"]
     assert boundings, "jasper-usbnet-dhcp must set CapabilityBoundingSet="
     bounding = boundings[-1].split()
-    for cap in ("CAP_NET_BIND_SERVICE", "CAP_NET_ADMIN", "CAP_NET_RAW",
-                "CAP_SETUID", "CAP_SETGID"):
+    for cap in (
+        "CAP_NET_BIND_SERVICE",
+        "CAP_NET_ADMIN",
+        "CAP_NET_RAW",
+        "CAP_SETUID",
+        "CAP_SETGID",
+    ):
         assert cap in bounding, (
             f"{cap} must be in the CapabilityBoundingSet — without "
             "CAP_SETUID/CAP_SETGID dnsmasq's privilege drop to nobody fails "
@@ -681,9 +777,7 @@ def test_apple_dongle_udev_mixer_fast_path_remains_root_exception():
 
 def test_camilla_unit_rate_limits_external_log_floods():
     """External Camilla WARN floods must not consume persistent journal history."""
-    text = (ROOT / "deploy/systemd/jasper-camilla.service").read_text(
-        encoding="utf-8"
-    )
+    text = (ROOT / "deploy/systemd/jasper-camilla.service").read_text(encoding="utf-8")
     assert "LogRateLimitIntervalSec=60s" in text
     assert "LogRateLimitBurst=120" in text
 

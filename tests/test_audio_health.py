@@ -9,6 +9,7 @@ import threading
 import urllib.request
 from http.server import ThreadingHTTPServer
 
+from jasper.control import audio_health
 from jasper.control.airplay_health import AirPlayHealthSampler
 from jasper.control.audio_health import (
     AudioHealthSampler,
@@ -120,6 +121,7 @@ def _compose(
     ladder=None,
     artifact_status="pass",
     service_states=None,
+    source_intents=None,
 ) -> dict:
     return compose_audio_health(
         airplay=_airplay(selected=selected, ladder=ladder),
@@ -128,6 +130,7 @@ def _compose(
         issues=[],
         sampled_at=1000.0,
         service_states=service_states,
+        source_intents=source_intents,
     )
 
 
@@ -221,7 +224,169 @@ def test_cached_service_state_distinguishes_ready_from_not_running() -> None:
     assert sources["spotify"]["headline"] == "Not running"
 
 
-def test_ancillary_pairing_agent_failure_does_not_disable_bluetooth() -> None:
+def test_household_off_is_labeled_without_inactive_failure_noise() -> None:
+    health = _compose(
+        service_states={
+            "librespot.service": {
+                "load_state": "loaded",
+                "active_state": "failed",
+                "result": "exit-code",
+            },
+        },
+        source_intents={"spotify": False},
+    )
+
+    spotify = next(source for source in health["sources"] if source["id"] == "spotify")
+    assert spotify["state"] == "off"
+    assert spotify["headline"] == "Off"
+    assert spotify["status"] == "idle"
+
+
+def test_household_off_but_active_is_reported_as_drift() -> None:
+    service_states = {
+        "librespot.service": {
+            "load_state": "loaded",
+            "active_state": "active",
+            "result": "success",
+        },
+    }
+    health = _compose(
+        service_states=service_states,
+        source_intents={"spotify": False},
+    )
+    spotify = next(source for source in health["sources"] if source["id"] == "spotify")
+    assert spotify["state"] == "unavailable"
+    assert "running while Off" in spotify["headline"]
+
+    issues = audio_health._state_issues(
+        _airplay(),
+        _outputd(),
+        {"status": "idle", "headline": "No source is playing", "detail": ""},
+        {"status": "idle"},
+        None,
+        service_states,
+        {"spotify": False},
+    )
+    assert any(issue["key"].endswith("off_drift") for issue in issues)
+
+
+def test_usb_off_ignores_always_on_management_gadget() -> None:
+    service_states = {
+        "jasper-usbgadget.service": {
+            "load_state": "loaded",
+            "active_state": "active",
+            "result": "success",
+        },
+        "jasper-usbsink.service": {
+            "load_state": "loaded",
+            "active_state": "inactive",
+            "result": "success",
+        },
+        "jasper-usbsink-volume.service": {
+            "load_state": "loaded",
+            "active_state": "inactive",
+            "result": "success",
+        },
+    }
+    health = _compose(
+        service_states=service_states,
+        source_intents={"usbsink": False},
+    )
+    usb = next(source for source in health["sources"] if source["id"] == "usbsink")
+    assert usb["state"] == "off"
+    assert usb["status"] == "idle"
+    assert usb["headline"] == "Off"
+
+    issues = audio_health._state_issues(
+        _airplay(),
+        _outputd(),
+        {"status": "idle", "headline": "No source is playing", "detail": ""},
+        {"status": "idle"},
+        None,
+        service_states,
+        {"usbsink": False},
+    )
+    assert not any(issue["key"].startswith("usbsink.service.") for issue in issues)
+
+
+def test_usb_off_with_active_audio_service_is_reported_as_drift() -> None:
+    service_states = {
+        "jasper-usbgadget.service": {
+            "load_state": "loaded",
+            "active_state": "active",
+            "result": "success",
+        },
+        "jasper-usbsink.service": {
+            "load_state": "loaded",
+            "active_state": "active",
+            "result": "success",
+        },
+    }
+    health = _compose(
+        service_states=service_states,
+        source_intents={"usbsink": False},
+    )
+    usb = next(source for source in health["sources"] if source["id"] == "usbsink")
+    assert usb["state"] == "unavailable"
+    assert usb["status"] == "issue"
+    assert usb["headline"] == "USB Audio is running while Off"
+    assert "jasper-usbsink.service" in usb["detail"]
+    assert "jasper-usbgadget.service" not in usb["detail"]
+
+    issues = audio_health._state_issues(
+        _airplay(),
+        _outputd(),
+        {"status": "idle", "headline": "No source is playing", "detail": ""},
+        {"status": "idle"},
+        None,
+        service_states,
+        {"usbsink": False},
+    )
+    drift_keys = {issue["key"] for issue in issues if issue["key"].endswith("off_drift")}
+    assert drift_keys == {
+        "usbsink.service.jasper-usbsink.service.off_drift",
+    }
+
+
+def test_usb_on_still_requires_its_management_gadget() -> None:
+    service_states = {
+        "jasper-usbgadget.service": {
+            "load_state": "loaded",
+            "active_state": "failed",
+            "result": "exit-code",
+        },
+        "jasper-usbsink.service": {
+            "load_state": "loaded",
+            "active_state": "active",
+            "result": "success",
+        },
+    }
+    health = _compose(
+        service_states=service_states,
+        source_intents={"usbsink": True},
+    )
+    usb = next(source for source in health["sources"] if source["id"] == "usbsink")
+    assert usb["state"] == "unavailable"
+    assert usb["status"] == "issue"
+    assert usb["headline"] == "USB Audio unavailable"
+    assert "jasper-usbgadget.service reports failed" in usb["detail"]
+
+    issues = audio_health._state_issues(
+        _airplay(),
+        _outputd(),
+        {"status": "idle", "headline": "No source is playing", "detail": ""},
+        {"status": "idle"},
+        None,
+        service_states,
+        {"usbsink": True},
+    )
+    assert any(
+        issue["key"] == "usbsink.service.jasper-usbgadget.service"
+        for issue in issues
+    )
+
+
+def test_required_pairing_agent_failure_degrades_bluetooth() -> None:
     health = _compose(service_states={
         "bluealsa-aplay.service": {
             "active_state": "active",
@@ -243,9 +408,10 @@ def test_ancillary_pairing_agent_failure_does_not_disable_bluetooth() -> None:
     bluetooth = next(
         source for source in health["sources"] if source["id"] == "bluetooth"
     )
-    assert bluetooth["state"] == "ready"
-    assert bluetooth["status"] == "ok"
-    assert health["overall"]["status"] == "idle"
+    assert bluetooth["state"] == "unavailable"
+    assert bluetooth["status"] == "issue"
+    assert "bt-agent.service reports failed" in bluetooth["detail"]
+    assert health["overall"]["status"] == "warn"
 
 
 def test_optional_usb_volume_observer_failure_does_not_disable_audio() -> None:

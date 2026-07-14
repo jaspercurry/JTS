@@ -262,7 +262,6 @@ jobs:
             rust/jasper-tts-protocol \
             rust/jasper-fanin \
             rust/jasper-outputd \
-            rust/jasper-usbsink-audio \
             rust/jasper-dual-dac-lab
           do
             (cd "$crate" && cargo +"$RUST_TOOLCHAIN" fmt --all -- --check)
@@ -284,7 +283,6 @@ jobs:
             rust/jasper-host-clock
             rust/jasper-fanin
             rust/jasper-outputd
-            rust/jasper-usbsink-audio
             rust/jasper-dual-dac-lab
             rust/jasper-tts-protocol
 
@@ -312,8 +310,8 @@ jobs:
       - name: jasper-host-clock — clippy (all features incl. the ALSA actuator)
         if: steps.rust-needed.outputs.run == 'true'
         # The daemon-agnostic host-slaved USB clock ladder + servo + write-gate,
-        # shared by jasper-usbsink-audio (solo mode) and jasper-fanin (combo
-        # mode). The pure ladder/servo compiles with no features; `--all-features`
+        # consumed by jasper-fanin's USB DIRECT lane. The pure ladder/servo
+        # compiles with no features; `--all-features`
         # links the ALSA `AlsaPitchCtl` actuator so it is linted too (libasound2-dev
         # is installed above). Same -D warnings gate as its siblings.
         working-directory: rust/jasper-host-clock
@@ -332,11 +330,6 @@ jobs:
       - name: jasper-outputd — clippy
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-outputd
-        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
-
-      - name: jasper-usbsink-audio — clippy
-        if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-usbsink-audio
         run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
 
       - name: jasper-dual-dac-lab — clippy
@@ -377,8 +370,8 @@ jobs:
         # The shared host-slaved USB clock. The pure ladder/probe/servo/write-gate
         # + the status-fragment byte-shape run with NO features (no libasound), so
         # its ladder-transition / probe / write-gate / clamp / anti-windup /
-        # fragment-shape properties are the regression gate for BOTH consumers
-        # (jasper-usbsink-audio solo, jasper-fanin combo) and run on any host.
+        # fragment-shape properties are the regression gate for jasper-fanin's
+        # USB DIRECT consumer and run on any host.
         working-directory: rust/jasper-host-clock
         run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
@@ -406,14 +399,6 @@ jobs:
       - name: jasper-outputd — build + test (release, locked; mirrors install.sh)
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-outputd
-        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
-
-      - name: jasper-usbsink-audio — build + test (release, locked; mirrors install.sh)
-        if: steps.rust-needed.outputs.run == 'true'
-        # Production USB low-latency data plane. This default-feature test builds
-        # the ALSA-backed binary on Linux with libasound2-dev, unlike local macOS
-        # no-default-feature unit tests.
-        working-directory: rust/jasper-usbsink-audio
         run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
       - name: jasper-dual-dac-lab — build + test (release, locked)

@@ -11,8 +11,7 @@ there, armed over its control UDS with plaintext line verbs. This module never
 imports Rust code — it only speaks the pinned control-socket + JSONL contract.
 
 The historical usbsink-bridge HTTP tap (``127.0.0.1:8781``) was removed with the
-aloop solo capture path (2026-07-10): the jasper-usbsink daemon is standby-only
-and opens no capture, so it has no tap to arm.
+aloop solo capture path; the bridge process itself has now been retired.
 
 Pinned contract (matches ``TapConfig::from_arm_body`` / the tap verb serializers
 in the Rust fan-in crate):

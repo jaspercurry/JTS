@@ -32,7 +32,7 @@ on every start, so any restart picks up the current setting.
 
 URL surface (after nginx strips /airplay/):
   GET  /        page render
-  POST /save    write mode, restart shairport-sync
+  POST /save    write mode, refresh shairport-sync when active
 """
 from __future__ import annotations
 
@@ -65,6 +65,7 @@ logger = logging.getLogger(__name__)
 
 
 MODE_FILE = "/var/lib/jasper/airplay_mode.env"
+SHAIRPORT_RESTART_TIMEOUT_SEC = 36.0  # unit start+stop contract plus margin
 ENV_VAR = "JASPER_AIRPLAY_FREE_RUNNING"
 
 
@@ -89,19 +90,20 @@ def _apply_save(form: dict[str, str]) -> tuple[str | None, str | None]:
 
 
 def _restart_shairport() -> None:
-    """Restart shairport-sync so its ExecStartPre re-renders
+    """Refresh an active shairport-sync so its ExecStartPre re-renders
     /etc/shairport-sync.conf from the template + current env file.
     Best-effort — log but don't raise. WS1 Phase 3: routed through
     jasper-control's restart broker (blocking so the re-render lands
     before we return) instead of a direct systemctl, so the wizard
     needs no privilege once dropped to a non-root service user."""
     resp = manage_units(
-        "shairport-sync.service", verb="restart",
-        reason="airplay mode change", no_block=False, timeout=16.0,
+        "shairport-sync.service", verb="try-restart",
+        reason="airplay mode change", no_block=False,
+        timeout=SHAIRPORT_RESTART_TIMEOUT_SEC,
     )
     if not resp.get("ok"):
         logger.warning(
-            "shairport-sync restart failed: %s",
+            "shairport-sync try-restart failed: %s",
             resp.get("error") or f"rc={resp.get('rc')}",
         )
 
@@ -150,7 +152,7 @@ def _index_html(mode: str, csrf_token: str, *, status_msg: str = "") -> bytes:
       </span>
     </label>
     <div class="form-actions">
-      <button type="submit" class="btn btn--primary">Save and restart AirPlay</button>
+      <button type="submit" class="btn btn--primary">Save AirPlay mode</button>
     </div>
   </form>
 
@@ -237,7 +239,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 _restart_shairport()
                 send_see_other(
                     self, "./",
-                    flash=f"Saved. AirPlay now in {mode} mode (shairport-sync restarted).",
+                    flash=(
+                        f"Saved. AirPlay is now in {mode} mode. "
+                        "The setting applies whenever AirPlay is on."
+                    ),
                 )
                 return
             self.send_error(HTTPStatus.NOT_FOUND)

@@ -34,9 +34,8 @@
 //! |-------------------|------------------------------------------------------|
 //! | `host_connected`  | `DirectObservability.present`                        |
 //! | `playing`         | `LaneResampler.locked_state`                         |
-//! | `preempted`       | always `false` (mux preempt targets the standby      |
-//! |                   | usbsink HTTP daemon, never this lane; SELECT/NONE    |
-//! |                   | gates the SUM downstream, so steering continues      |
+//! | `preempted`       | always `false` (fan-in MIX MUTE gates the SUM        |
+//! |                   | downstream, so steering continues                    |
 //! |                   | while deselected, keeping the lane converged)        |
 //! | `fill_frames`     | resampler `fill_frames` gauge (cursor-relative,      |
 //! |                   | frame-granular, published every render period)       |
@@ -220,17 +219,15 @@ pub fn decode_fallback_reason_code(code: u64) -> FallbackReason {
 /// the ALREADY-RESOLVED effective flag (the direct-off gate is applied by the
 /// caller in `main`, so a `enabled` + direct-off box passes `false` here and the
 /// ladder is inert). `target_fill_frames` is the resampler's held target.
-pub fn build_config(
-    enabled: bool,
-    probe_ppm: u32,
-    probe_secs: u64,
-    target_fill_frames: u64,
-) -> HostClockConfig {
+pub fn build_config(enabled: bool, probe_ppm: u32, target_fill_frames: u64) -> HostClockConfig {
     HostClockConfig {
         enabled,
         target_fill_frames: target_fill_frames as f64,
         probe_ppm: probe_ppm as f64,
-        probe_step_secs: probe_secs,
+        // The sole runtime mode is Correction, whose probe duration is the
+        // fixed CORRECTION_PROBE_STEP_SECS. This legacy Fill-mode field remains
+        // internal to the shared config shape and is not a fan-in env knob.
+        probe_step_secs: 6,
         // Combo mode runs the CORRECTION-ppm observable: a lane resampler sits
         // between the gadget ring and the mix and absorbs the host clock, so the
         // fill slope is structurally dead (the resampler flattens it — the
@@ -248,9 +245,8 @@ pub fn build_config(
 /// loads); the mapping is the whole content.
 pub fn build_obs(signals: &HostClockSignals) -> Obs {
     Obs {
-        // The mixer preempt path targets the standby usbsink HTTP daemon, never
-        // this lane; SELECT/NONE gates the SUM downstream. So the ladder never
-        // sees a preempt — steering continues while the lane is deselected,
+        // Fan-in MIX MUTE gates the SUM downstream. The ladder never sees a
+        // preempt — steering continues while the lane is muted,
         // keeping it converged for the next un-mute.
         preempted: false,
         // Direct capture present ⇒ a host is attached and captured.
@@ -737,7 +733,7 @@ mod tests {
         // The setpoint is the resampler's held target (target + cushion), NOT a
         // second env knob — the whole point of C4 (no outer loop fighting the
         // inner integrator).
-        let cfg = build_config(true, 300, 6, 2048);
+        let cfg = build_config(true, 300, 2048);
         assert_eq!(cfg.target_fill_frames, 2048.0);
         assert_eq!(cfg.probe_ppm, 300.0);
         assert_eq!(cfg.probe_step_secs, 6);
@@ -749,7 +745,7 @@ mod tests {
     fn build_config_threads_the_resolved_enabled_flag() {
         // The direct-off gate is resolved by the caller; a false here yields an
         // inert config.
-        let cfg = build_config(false, 300, 6, 2048);
+        let cfg = build_config(false, 300, 2048);
         assert!(!cfg.enabled);
     }
 
@@ -844,7 +840,7 @@ mod tests {
     fn build_config_selects_correction_obs_mode() {
         // Combo mode ALWAYS runs the CORRECTION observable — the fill slope is
         // dead when a lane resampler sits between the gadget ring and the mix.
-        let cfg = build_config(true, 300, 6, 2048);
+        let cfg = build_config(true, 300, 2048);
         assert_eq!(cfg.obs_mode, ObsMode::Correction);
     }
 

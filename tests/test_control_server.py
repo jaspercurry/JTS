@@ -1156,7 +1156,7 @@ def _grouping_test_setup(monkeypatch, tmp_path):
 
 
 _GROUPING_KICK = [
-    "systemctl", "restart", "--no-block", "jasper-grouping-reconcile.service",
+    "/usr/local/sbin/jasper-grouping-reconcile-kick",
 ]
 
 
@@ -2806,9 +2806,6 @@ def test_state_prefers_mux_winner_over_raw_renderer_probe(
     }))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(spotify_state))
     monkeypatch.setenv(
-        "JASPER_USBSINK_STATE_PATH", str(tmp_path / "missing_usb.json"),
-    )
-    monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
 
@@ -2858,9 +2855,6 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(spotify_state))
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(volume_state))
     monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
-    monkeypatch.setenv(
-        "JASPER_USBSINK_STATE_PATH", str(tmp_path / "missing_usb.json"),
-    )
     volume_diagnostics.record_source_push(
         "spotify",
         level=100,
@@ -2898,13 +2892,8 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
 def test_state_usbsink_section_null_when_disabled(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
-    """When jasper-usbsink isn't running, no /run/jasper-usbsink/
-    state.json exists — the section comes back as null so consumers
-    can distinguish "feature off" from "feature on but idle"."""
+    """No identity-bound fan-in DIRECT lane means the source is off."""
     base, _ = server_with_coordinator
-    monkeypatch.setenv(
-        "JASPER_USBSINK_STATE_PATH", str(tmp_path / "missing.json"),
-    )
     monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
@@ -2920,16 +2909,28 @@ def test_state_usbsink_section_null_when_disabled(
 def test_state_usbsink_section_populated_when_enabled(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
-    """When the daemon is publishing, /state surfaces playing,
-    preempted, host_connected, rms_dbfs."""
+    """Fan-in owns activity/level; UDC sysfs owns host connection."""
+    import jasper.control.server as srv_mod
+
     base, _ = server_with_coordinator
-    usbsink_state = tmp_path / "usbsink_state.json"
-    usbsink_state.write_text(json.dumps({
-        "playing": True, "preempted": False, "host_connected": True,
-        "rms_dbfs": -12.3,
-        "updated_at": "2026-05-16T00:00:00+00:00",
-    }))
-    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+    udc = tmp_path / "udc" / "controller"
+    udc.mkdir(parents=True)
+    (udc / "state").write_text("configured\n")
+    monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(tmp_path / "udc"))
+
+    async def fake_status(path, **_kwargs):
+        if "jasper-fanin" in path:
+            return {
+                "inputs": [{
+                    "label": "usbsink",
+                    "source": "direct",
+                    "rms_dbfs": -12.3,
+                    "muted": False,
+                }],
+            }
+        return None
+
+    monkeypatch.setattr(srv_mod, "_local_status_json", fake_status)
     monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
@@ -2940,39 +2941,13 @@ def test_state_usbsink_section_populated_when_enabled(
     status, body = _get(f"{base}/state")
     assert status == 200
     section = body["renderers"]["usbsink"]
-    # Solo box (no fan-in direct lane, bridge not in standby): the bridge's
-    # RMS-gated truth is surfaced verbatim.
-    assert section["combo"] is False
+    assert section["combo"] is True
     assert section["playing"] is True
     assert section["preempted"] is False
+    assert section["muted"] is False
     assert section["host_connected"] is True
     assert section["rms_dbfs"] == -12.3
-
-
-def test_state_usbsink_section_scrubs_legacy_nonfinite_rms(
-    server_with_coordinator, monkeypatch, tmp_path,
-):
-    """Old jasper-usbsink versions could write -Infinity. /state must still
-    return standards-compliant JSON values."""
-    base, _ = server_with_coordinator
-    usbsink_state = tmp_path / "usbsink_state.json"
-    usbsink_state.write_text(
-        '{"playing":false,"preempted":false,"host_connected":true,'
-        '"rms_dbfs":-Infinity,"updated_at":"2026-05-16T00:00:00+00:00"}'
-    )
-    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
-    monkeypatch.setenv(
-        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
-    )
-
-    status, body = _get(f"{base}/state")
-
-    assert status == 200
-    assert body["renderers"]["usbsink"]["rms_dbfs"] is None
-    json.dumps(body, allow_nan=False)
+    assert section["updated_at"] is None
 
 
 def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
@@ -2981,14 +2956,23 @@ def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
     """active_source ranks usbsink above idle but below the named
     renderers — when nothing else is playing and USB is, the field
     surfaces as 'usbsink' so the dashboard renders correctly."""
+    import jasper.control.server as srv_mod
+
     base, _ = server_with_coordinator
-    usbsink_state = tmp_path / "usbsink_state.json"
-    usbsink_state.write_text(json.dumps({
-        "playing": True, "preempted": False, "host_connected": True,
-        "rms_dbfs": -10.0,
-        "updated_at": "2026-05-16T00:00:00+00:00",
-    }))
-    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+
+    async def fake_status(path, **_kwargs):
+        if "jasper-fanin" in path:
+            return {
+                "inputs": [{
+                    "label": "usbsink",
+                    "source": "direct",
+                    "rms_dbfs": -10.0,
+                    "muted": False,
+                }],
+            }
+        return None
+
+    monkeypatch.setattr(srv_mod, "_local_status_json", fake_status)
     monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
@@ -3001,55 +2985,10 @@ def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
     assert body["active_source"] == "usbsink"
 
 
-def test_state_usbsink_section_honest_in_combo_standby_mode(
-    server_with_coordinator, monkeypatch, tmp_path,
-):
-    """Combo box: the jasper-usbsink bridge is in standby (fan-in DIRECT-captures
-    the gadget) and publishes frozen idle defaults (playing:false / rms:-120).
-    /state must NOT relay those as live truth — it nulls playing/rms and flags
-    combo, keeping the still-valid host_connected. Regression for the
-    2026-07-06 'renderers.usbsink misleads while combo audio flows' bug.
-
-    Detection here rides the bridge's own `standby` flag (the test server has no
-    fan-in socket, so fanin_st is None); the fan-in `source=="direct"` detector
-    is pinned in tests/test_state_usbsink_renderer.py."""
-    base, _ = server_with_coordinator
-    usbsink_state = tmp_path / "usbsink_state.json"
-    usbsink_state.write_text(json.dumps({
-        "standby": True,
-        "playing": False, "preempted": False, "host_connected": True,
-        "rms_dbfs": -120.0,
-        "updated_at": "2026-07-06T16:15:33.123Z",
-    }))
-    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
-    monkeypatch.setenv(
-        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
-    )
-
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    section = body["renderers"]["usbsink"]
-    assert section["combo"] is True
-    assert section["playing"] is None
-    assert section["rms_dbfs"] is None
-    assert section["host_connected"] is True
-    # The stale standby-bridge `playing:false` must not be the only signal that
-    # keeps USB out of active_source — but it must also never PICK usbsink off a
-    # dead flag. With no mux winner and combo playing=None, USB is not active.
-    assert body["active_source"] != "usbsink"
-    json.dumps(body, allow_nan=False)
-
-
 def test_state_combo_active_source_still_driven_by_mux_selection(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
-    """Combo box in manual mode: renderers.usbsink.playing is None (combo), but
-    active_source must still resolve to usbsink from mux's selected_source.
-    Pins the state_aggregate line-1004 promise — nulling the dead bridge flag in
-    combo mode must not break the mux-driven (step 2) USB selection."""
+    """Mux selection remains authoritative when fan-in STATUS is unavailable."""
     import jasper.control.server as srv_mod
     base, _ = server_with_coordinator
 
@@ -3062,14 +3001,6 @@ def test_state_combo_active_source_still_driven_by_mux_selection(
         }
 
     monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
-    usbsink_state = tmp_path / "usbsink_state.json"
-    usbsink_state.write_text(json.dumps({
-        "standby": True,
-        "playing": False, "preempted": False, "host_connected": True,
-        "rms_dbfs": -120.0,
-        "updated_at": "2026-07-06T16:15:33.123Z",
-    }))
-    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
     monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
@@ -3079,10 +3010,7 @@ def test_state_combo_active_source_still_driven_by_mux_selection(
 
     status, body = _get(f"{base}/state")
     assert status == 200
-    section = body["renderers"]["usbsink"]
-    assert section["combo"] is True
-    assert section["playing"] is None
-    # active_source is mux-driven (step 2), not the nulled combo bridge flag.
+    assert body["renderers"]["usbsink"] is None
     assert body["active_source"] == "usbsink"
 
 
@@ -4240,7 +4168,12 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
     """Only an ACTIVE bonded follower forwards: leader, solo, and
     fail-LOUD-invalid configs all resolve to None (local handling)."""
     import jasper.multiroom.config as mcfg
+    import jasper.multiroom.effective_role as effective_role
     import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(
+        effective_role, "read_effective_role_status", lambda: {},
+    )
 
     cases = [
         (_grouping_cfg(), "jts.local"),
@@ -4252,6 +4185,28 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
     for cfg, want in cases:
         monkeypatch.setattr(mcfg, "load_config", lambda *a, _c=cfg, **k: _c)
         assert srv_mod._pair_follower_leader_addr() == want
+
+
+def test_refused_follower_landed_solo_does_not_forward_volume(monkeypatch):
+    import jasper.control.server as srv_mod
+    import jasper.multiroom.config as mcfg
+    import jasper.multiroom.effective_role as effective_role
+
+    cfg = _grouping_cfg()
+    boot_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(mcfg, "load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr(effective_role, "read_current_boot_id", lambda: boot_id)
+    monkeypatch.setattr(
+        effective_role,
+        "read_effective_role_status",
+        lambda: {
+            "requested_fingerprint": effective_role.grouping_request_fingerprint(cfg),
+            "local_sources_allowed": True,
+            "boot_id": boot_id,
+        },
+    )
+
+    assert srv_mod._pair_follower_leader_addr() is None
 
 
 class _FakeUpstream:

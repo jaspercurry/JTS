@@ -25,4 +25,5 @@ if (( delay_i > 60 )); then
 fi
 
 sleep "${delay_i}"
-systemctl --no-block restart jasper-grouping-reconcile.service
+kick_helper="${JASPER_GROUPING_KICK_HELPER:-/usr/local/sbin/jasper-grouping-reconcile-kick}"
+exec "${kick_helper}"

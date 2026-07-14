@@ -11,17 +11,8 @@
 
 FANIN_BIN="/opt/jasper/bin/jasper-fanin"
 OUTPUTD_BIN="/opt/jasper/bin/jasper-outputd"
-USBSINK_AUDIO_BIN="/opt/jasper/bin/jasper-usbsink-audio"
 OUTPUTD_SOURCE_MISSING_ERROR="ERROR: jasper-outputd source missing"
-USBSINK_AUDIO_SOURCE_MISSING_ERROR="ERROR: jasper-usbsink-audio source missing"
 RUST_LOW_MEMORY_BUILD_THRESHOLD_KB=1200000
-
-# Space-separated set of daemon names whose installed binary content
-# changed during this install run (sha256 compared before/after the
-# `install` below). Consumed by restart_services_for_changed_rust_daemons
-# from the systemd step; a plain string (not an array) so it stays safe
-# under `set -u` on old bash.
-JASPER_RUST_CHANGED_BINS=""
 
 rust_build_memtotal_kb() {
     local meminfo="${JASPER_RUST_MEMINFO_FILE:-/proc/meminfo}"
@@ -135,10 +126,6 @@ build_install_rust_daemon() {
         bin_dest="${OUTPUTD_BIN}"
         missing_source_message="${OUTPUTD_SOURCE_MISSING_ERROR}"
         required_reason="This tree requires jasper-outputd as the final output owner."
-    elif [[ "${name}" == "jasper-usbsink-audio" ]]; then
-        bin_dest="${USBSINK_AUDIO_BIN}"
-        missing_source_message="${USBSINK_AUDIO_SOURCE_MISSING_ERROR}"
-        required_reason="This tree requires jasper-usbsink-audio for the production USB low-latency route."
     fi
 
     if [[ ! -d "${src_dir}" ]]; then
@@ -193,11 +180,9 @@ build_install_rust_daemon() {
             "$(dirname "${cache_dir}")/jasper-ring"
         chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-ring"
     fi
-    # Same for the shared host-clock crate (jasper-host-clock) so the
-    # `path = "../jasper-host-clock"` deps of jasper-usbsink-audio and
-    # jasper-fanin (the Capture Pitch DLL extracted from the bridge)
-    # resolve. Guarded by existence so a branch predating the crate still
-    # builds.
+    # Same for the shared host-clock crate (jasper-host-clock) so jasper-fanin's
+    # Capture Pitch DLL dependency resolves. Guarded by existence so a branch
+    # predating the crate still builds.
     if [[ -d "${REPO_DIR}/rust/jasper-host-clock" ]]; then
         stage_rust_crate "${REPO_DIR}/rust/jasper-host-clock" \
             "$(dirname "${cache_dir}")/jasper-host-clock"
@@ -229,25 +214,9 @@ build_install_rust_daemon() {
         return 1
     fi
 
-    # Record whether the installed binary content actually changed. A
-    # running service keeps executing the OLD inode after `install`
-    # replaces the file on disk, so a content change must drive a
-    # conditional service restart in the systemd step (the 2026-07-02
-    # stale jasper-usbsink-audio incident: new HTTP endpoints 404'd until
-    # a manual restart). Capture the pre-install hash before `install`.
-    local pre_sha="" new_sha
-    if [[ -e "${bin_dest}" ]]; then
-        pre_sha="$(sha256sum "${bin_dest}" | awk '{print $1}')"
-    fi
     mkdir -p /opt/jasper/bin
     install -m 0755 -o root -g root "${built_bin}" "${bin_dest}"
-    new_sha="$(sha256sum "${bin_dest}" | awk '{print $1}')"
-    if [[ "${new_sha}" != "${pre_sha}" ]]; then
-        JASPER_RUST_CHANGED_BINS="${JASPER_RUST_CHANGED_BINS} ${name}"
-        echo "  -> installed ${bin_dest} ($(du -h "${bin_dest}" | cut -f1)) — binary content changed"
-    else
-        echo "  -> installed ${bin_dest} ($(du -h "${bin_dest}" | cut -f1)) — binary content unchanged"
-    fi
+    echo "  -> installed ${bin_dest} ($(du -h "${bin_dest}" | cut -f1))"
 }
 
 build_install_jasper_fanin() {
@@ -262,48 +231,10 @@ build_install_jasper_outputd() {
     build_install_rust_daemon "jasper-outputd" "1"
 }
 
-build_install_jasper_usbsink_audio() {
-    # The production USB low-latency route must not depend on Python
-    # callbacks in the audio data plane.
-    build_install_rust_daemon "jasper-usbsink-audio" "1"
-}
-
-rust_daemon_binary_changed() {
-    # Membership test against the space-separated changed set. Padded
-    # spaces make names exact tokens ("jasper-usbsink" must not match
-    # "jasper-usbsink-audio").
-    case " ${JASPER_RUST_CHANGED_BINS} " in
-        *" $1 "*) return 0 ;;
-    esac
-    return 1
-}
-
-restart_services_for_changed_rust_daemons() {
-    # A freshly installed Rust binary goes live only when its owning
-    # service restarts — `install` replaces the file on disk, but the
-    # running process keeps executing the old inode (observed 2026-07-02:
-    # jasper-usbsink served a stale jasper-usbsink-audio build and its new
-    # HTTP endpoints 404'd until a manual restart).
-    #
-    # jasper-fanin and jasper-outputd are ALWAYS restarted by the
-    # core-graph sequence earlier in the same systemd step
-    # (JASPER_CORE_GRAPH_RESTART_TARGETS + the park list +
-    # require_outputd_ready), binary change or not — bouncing them again
-    # here would interrupt audio twice per deploy. This step owns only the
-    # Rust daemons OUTSIDE that set; today that is
-    # jasper-usbsink-audio -> jasper-usbsink.service.
-    # tests/test_install_rust_daemon_restart.py pins that every built Rust
-    # binary's owning service is covered by one of the two mechanisms.
-    if [[ "${SKIP_RESTART:-0}" == "1" ]]; then
-        echo "  SKIP_RESTART=1 — leaving services on their prior Rust binaries"
-        return 0
-    fi
-    if rust_daemon_binary_changed "jasper-usbsink-audio"; then
-        # try-restart: bounce only if currently running. USB-in is an
-        # opt-in source toggled by /sources/ — never START it from a
-        # deploy. Blast radius when it fires: ~1-2 s gap on USB-in audio.
-        echo "  jasper-usbsink-audio changed — try-restarting jasper-usbsink.service"
-        systemctl try-restart jasper-usbsink.service 2>/dev/null || \
-            echo "  WARN: jasper-usbsink.service try-restart failed; USB-in may keep running the prior binary (systemctl restart jasper-usbsink to recover)"
-    fi
+retire_jasper_usbsink_audio() {
+    # USB ingress is owned entirely by jasper-fanin. Remove the retired helper
+    # image and its persistent Cargo cache on upgrade so deletion actually
+    # reclaims disk instead of leaving an executable that looks supported.
+    rm -f -- /opt/jasper/bin/jasper-usbsink-audio
+    rm -rf -- /var/cache/jasper-usbsink-audio-build
 }

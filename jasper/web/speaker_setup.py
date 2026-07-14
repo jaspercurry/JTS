@@ -43,6 +43,7 @@ from ..atomic_io import atomic_write_text
 from ..control.restart_broker import manage_units
 from ..log_event import log_event
 from ..speaker_name_discovery import NameConflict, find_name_conflicts
+from ..source_intent import kick_source_reconcile
 from ._common import (
     begin_request,
     canonical_banner,
@@ -63,12 +64,17 @@ SPEAKER_NAME_FILE = "/var/lib/jasper/speaker_name.env"
 BLUEZ_MAIN_CONF = "/etc/bluetooth/main.conf"
 
 RESTART_UNITS = [
-    "librespot.service",
-    "shairport-sync.service",
     "jasper-voice.service",
     "jasper-control.service",
     "jasper-mux.service",
-    "bluetooth.service",
+]
+
+# Renderer/advertising units are optional household sources.  A plain
+# `restart` starts an inactive unit even when it is disabled, so rename must
+# use systemd's active-only `try-restart` for this set.
+SOURCE_TRY_RESTART_UNITS = [
+    "librespot.service",
+    "shairport-sync.service",
     "bluealsa.service",
     "bluealsa-aplay.service",
     "bt-agent.service",
@@ -96,20 +102,27 @@ def _unit_active(unit: str) -> bool:
     return rc == 0
 
 
-def _restart_units(units: list[str]) -> None:
+def _restart_units(
+    units: list[str],
+    *,
+    verb: str = "restart",
+    no_block: bool = True,
+    timeout: float = 5.0,
+) -> None:
     # WS1 Phase 3: route through jasper-control's restart broker (the
     # read-only `_systemctl` probes elsewhere in this file stay direct).
     resp = manage_units(
         *units,
-        verb="restart",
+        verb=verb,
         reason="speaker rename",
-        no_block=True,
-        timeout=5.0,
+        no_block=no_block,
+        timeout=timeout,
     )
     if not resp.get("ok"):
         log_event(
             logger,
             "speaker_name.restart_failed",
+            verb=verb,
             units=",".join(units),
             detail=str(resp.get("error") or f"rc={resp.get('rc')}"),
             level=logging.WARNING,
@@ -198,7 +211,7 @@ def _find_conflicts(name: str) -> list[NameConflict]:
         return []
 
 
-def _apply_name(name: str) -> None:
+def _apply_name(name: str) -> bool:
     units = list(RESTART_UNITS)
     # The composite USB gadget owns the host-visible device strings (product =
     # speaker name; the name-patch reruns as its ExecStartPre). It is always-on
@@ -208,10 +221,12 @@ def _apply_name(name: str) -> None:
         units.append("jasper-usbgadget.service")
 
     _write_bluez_main_conf_name(name)
+    bluetooth_alias_applied = False
     try:
         from ..bluetooth.adapter import set_alias as set_bluetooth_alias
 
         asyncio.run(set_bluetooth_alias(name))
+        bluetooth_alias_applied = True
         log_event(logger, "speaker_name.bluetooth_alias", name=repr(name), result="ok")
     except Exception as e:  # noqa: BLE001
         log_event(
@@ -243,8 +258,51 @@ def _apply_name(name: str) -> None:
             level=logging.WARNING,
         )
 
-    log_event(logger, "speaker_name.restart", units=",".join(units))
+    log_event(
+        logger,
+        "speaker_name.restart",
+        units=",".join(units),
+        try_restart_units=",".join(SOURCE_TRY_RESTART_UNITS),
+    )
+    # A successful D-Bus alias update needs no bluetoothd restart. If it failed,
+    # reload the persisted main.conf first and WAIT: a later source pass must be
+    # the final Bluetooth lifecycle mutation so Requires= cannot strand the
+    # agent/dependents after they were restored.
+    if not bluetooth_alias_applied:
+        _restart_units(
+            ["bluetooth.service"],
+            no_block=False,
+            timeout=60.0,
+        )
+
+    # Refresh active source advertisements with a blocking active-only
+    # try-restart. Then synchronously re-assert canonical desired/effective
+    # source state; inactive/Off sources stay Off and a restarted Bluetooth
+    # control plane cannot leave desired-On dependents down.
+    _restart_units(
+        SOURCE_TRY_RESTART_UNITS,
+        verb="try-restart",
+        no_block=False,
+        timeout=60.0,
+    )
+    # A start can join a source oneshot that was already activating before the
+    # rename refresh. The first bounded call drains that snapshot; the second
+    # guarantees a pass began after the Bluetooth/control-plane mutations above.
+    source_result = {"ok": False, "error": "not run"}
+    for _ in range(2):
+        source_result = kick_source_reconcile(reason="speaker rename")
+    if not source_result.get("ok"):
+        log_event(
+            logger,
+            "speaker_name.source_reconcile_failed",
+            detail=str(source_result.get("error") or source_result),
+            level=logging.WARNING,
+        )
+
+    # Core services restart separately because jasper-control's broker has
+    # special self-restart handling for the ordinary non-blocking restart verb.
     _restart_units(units)
+    return bool(source_result.get("ok"))
 
 
 def _index_html(
@@ -389,11 +447,20 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 saved=repr(saved),
                 room=repr(requested_room),
             )
-            _apply_name(saved)
+            sources_ok = _apply_name(saved)
+            if sources_ok:
+                flash = (
+                    f'Saved. Speaker renamed to "{saved}". Services restarting.'
+                )
+            else:
+                flash = (
+                    f'Saved the name "{saved}", but some audio sources could '
+                    "not restart. Try again or check System status."
+                )
             send_see_other(
                 self,
                 "./",
-                flash=f'Saved. Speaker renamed to "{saved}". Services restarting.',
+                flash=flash,
             )
 
     return Handler

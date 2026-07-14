@@ -36,18 +36,97 @@ so it stays import-cheap for the daemons that pull it in at startup.
 """
 from __future__ import annotations
 
+import errno
 import os
+import stat
 import tempfile
+import time
 from collections.abc import Mapping
+from contextlib import contextmanager
+from io import TextIOWrapper
 from typing import Callable
 
 import fcntl
 
 __all__ = [
+    "advisory_file_lock",
     "atomic_write_text",
     "locked_transform_env_file",
     "locked_update_env_file",
+    "read_regular_bytes_nofollow",
 ]
+
+
+@contextmanager
+def advisory_file_lock(
+    path: str | os.PathLike,
+    *,
+    mode: int | None = None,
+    group_from_parent: bool = False,
+    timeout_sec: float | None = None,
+):
+    """Hold an exclusive advisory lock on ``path``.
+
+    The default preserves the historical ``open(..., 'a+')`` ownership and
+    umask behavior. Shared cross-user locks can opt into an explicit ``mode``
+    and the parent directory's group; both are applied before the lock is made
+    available to another process. Existing pre-upgrade ownership drift still
+    requires an install-time heal because a non-owner cannot repair a lock it
+    cannot open. ``timeout_sec`` adds bounded backpressure for request/deploy
+    paths; the historical default remains a blocking lock for tiny internal
+    state updates whose callers do not expose a latency contract.
+    """
+
+    fspath = os.fspath(path)
+    parent = os.path.dirname(fspath) or "."
+    os.makedirs(parent, exist_ok=True)
+    if mode is None and not group_from_parent:
+        lock: TextIOWrapper = open(fspath, "a+", encoding="utf-8")
+    else:
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(fspath, flags, 0o666)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(errno.EINVAL, "lock path is not a regular file", fspath)
+            if group_from_parent:
+                parent_gid = os.stat(parent).st_gid
+                if os.fstat(fd).st_gid != parent_gid:
+                    os.fchown(fd, -1, parent_gid)
+            # A group writer can open a correctly provisioned root-owned lock
+            # but cannot chmod it.  Avoid an unnecessary privileged mutation
+            # when install has already published the requested mode.
+            if mode is not None and stat.S_IMODE(os.fstat(fd).st_mode) != mode:
+                os.fchmod(fd, mode)
+            lock = os.fdopen(fd, "a+", encoding="utf-8")
+        except (OSError, ValueError):
+            os.close(fd)
+            raise
+    acquired = False
+    try:
+        if timeout_sec is None:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            acquired = True
+        else:
+            if timeout_sec < 0:
+                raise ValueError("timeout_sec must be non-negative")
+            deadline = time.monotonic() + timeout_sec
+            while True:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"timed out waiting for lock {fspath}"
+                        ) from None
+                    time.sleep(min(0.05, remaining))
+        yield lock
+    finally:
+        if acquired:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
 
 
 def atomic_write_text(
@@ -122,11 +201,87 @@ def _env_lock_path(path: str) -> str:
     return os.path.join(parent, f".{basename}.lock")
 
 
+def read_regular_bytes_nofollow(
+    path: str | os.PathLike,
+    *,
+    max_bytes: int | None = None,
+) -> bytes:
+    """Read a bounded regular file by descriptor without following symlinks.
+
+    ``O_NONBLOCK`` prevents a hostile FIFO from blocking before its type can be
+    checked. It has no effect on regular-file reads. The byte cap is enforced
+    while reading, not only from an initial size snapshot, so a concurrently
+    growing inode cannot make a privileged reader allocate without bound.
+    """
+
+    fspath = os.fspath(path)
+    if max_bytes is not None and max_bytes < 0:
+        raise ValueError("max_bytes must be nonnegative")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    fd = os.open(fspath, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "path is not a regular file", fspath)
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            read_size = 64 * 1024
+            if max_bytes is not None:
+                read_size = min(read_size, max_bytes + 1 - total)
+                if read_size <= 0:
+                    raise OSError(
+                        errno.EFBIG,
+                        f"path exceeds the {max_bytes}-byte cap",
+                        fspath,
+                    )
+            chunk = os.read(fd, read_size)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+            total += len(chunk)
+            if max_bytes is not None and total > max_bytes:
+                raise OSError(
+                    errno.EFBIG,
+                    f"path exceeds the {max_bytes}-byte cap",
+                    fspath,
+                )
+    finally:
+        os.close(fd)
+
+
+def _read_env_state_nofollow(
+    path: str,
+    *,
+    max_bytes: int | None = None,
+) -> dict[str, str]:
+    """Read one regular env file without following a replaceable symlink.
+
+    Locked env files often live in group-writable state directories and may be
+    updated by a more-privileged peer. Opening the data path by name with plain
+    ``open`` would let another group member redirect that peer to an arbitrary
+    readable file. Hold the returned inode by descriptor, reject non-regular
+    files, and parse only that verified descriptor.
+    """
+
+    return _parse_env_text(
+        read_regular_bytes_nofollow(path, max_bytes=max_bytes).decode("utf-8")
+    )
+
+
 def locked_update_env_file(
     path: str | os.PathLike,
     updates: Mapping[str, str],
     *,
     mode: int = 0o644,
+    group_from_parent: bool = False,
+    lock_mode: int | None = None,
+    max_bytes: int | None = None,
+    lock_timeout_sec: float | None = None,
 ) -> dict[str, str]:
     """Serialize a read-modify-write update of a systemd EnvironmentFile.
 
@@ -140,19 +295,22 @@ def locked_update_env_file(
     parent = os.path.dirname(fspath) or "."
     os.makedirs(parent, exist_ok=True)
     lock_path = _env_lock_path(fspath)
-    with open(lock_path, "a+", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    with advisory_file_lock(
+        lock_path,
+        mode=lock_mode,
+        group_from_parent=group_from_parent,
+        timeout_sec=lock_timeout_sec,
+    ):
         try:
-            try:
-                with open(fspath, encoding="utf-8") as existing:
-                    state = _parse_env_text(existing.read())
-            except FileNotFoundError:
-                state = {}
-            state.update(dict(updates))
-            atomic_write_text(fspath, _format_env_text(state), mode=mode)
-            return dict(state)
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            state = _read_env_state_nofollow(fspath, max_bytes=max_bytes)
+        except FileNotFoundError:
+            state = {}
+        state.update(dict(updates))
+        write_kwargs = {"mode": mode}
+        if group_from_parent:
+            write_kwargs["group_from_parent"] = True
+        atomic_write_text(fspath, _format_env_text(state), **write_kwargs)
+        return dict(state)
 
 
 def locked_transform_env_file(
@@ -160,6 +318,10 @@ def locked_transform_env_file(
     transform: Callable[[dict[str, str]], "dict[str, str] | None"],
     *,
     mode: int = 0o644,
+    group_from_parent: bool = False,
+    lock_mode: int | None = None,
+    max_bytes: int | None = None,
+    lock_timeout_sec: float | None = None,
 ) -> dict[str, str] | None:
     """Serialize a full read-transform-write (or delete) of an EnvironmentFile.
 
@@ -178,22 +340,25 @@ def locked_transform_env_file(
     parent = os.path.dirname(fspath) or "."
     os.makedirs(parent, exist_ok=True)
     lock_path = _env_lock_path(fspath)
-    with open(lock_path, "a+", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    with advisory_file_lock(
+        lock_path,
+        mode=lock_mode,
+        group_from_parent=group_from_parent,
+        timeout_sec=lock_timeout_sec,
+    ):
         try:
+            state = _read_env_state_nofollow(fspath, max_bytes=max_bytes)
+        except FileNotFoundError:
+            state = {}
+        new_state = transform(dict(state))
+        if new_state is None:
             try:
-                with open(fspath, encoding="utf-8") as existing:
-                    state = _parse_env_text(existing.read())
+                os.unlink(fspath)
             except FileNotFoundError:
-                state = {}
-            new_state = transform(dict(state))
-            if new_state is None:
-                try:
-                    os.unlink(fspath)
-                except FileNotFoundError:
-                    pass
-                return None
-            atomic_write_text(fspath, _format_env_text(new_state), mode=mode)
-            return dict(new_state)
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                pass
+            return None
+        write_kwargs = {"mode": mode}
+        if group_from_parent:
+            write_kwargs["group_from_parent"] = True
+        atomic_write_text(fspath, _format_env_text(new_state), **write_kwargs)
+        return dict(new_state)

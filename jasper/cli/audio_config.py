@@ -177,24 +177,15 @@ def _cmd_outputd_capture_device(args: argparse.Namespace) -> int:
     return 0
 
 
-def _route_action_target(key: str) -> str:
-    if key.startswith("JASPER_FANIN_"):
-        return "fanin"
-    if key.startswith("JASPER_USBSINK_"):
-        return "usbsink"
-    return "base"
-
-
 def _cmd_route_actions(args: argparse.Namespace) -> int:
     base = read_env_file_state(args.base_env)
     route = resolve_audio_route_profile(base.values)
     print(f"summary route {route.route_id}")
     for action in route_owned_env_actions(route):
-        target = _route_action_target(action.key)
         if action.action == "set":
-            print(f"{target} set {action.key} {action.value}")
+            print(f"fanin set {action.key} {action.value}")
         else:
-            print(f"{target} unset {action.key}")
+            print(f"fanin unset {action.key}")
     return 0
 
 
@@ -293,7 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     route_actions = sub.add_parser(
         "route-actions",
-        help="emit shell-readable fanin/usbsink env actions for the audio route",
+        help="emit shell-readable fanin env actions for the audio route",
     )
     route_actions.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
     route_actions.set_defaults(func=_cmd_route_actions)

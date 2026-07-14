@@ -18,7 +18,7 @@ SHARED_PACKAGES = [
     "libssl-dev", "libsoxr-dev", "libplist-dev", "libsodium-dev",
     "libgcrypt20-dev", "uuid-dev", "libmbedtls-dev", "libglib2.0-dev",
     "libavutil-dev", "libavcodec-dev", "libavformat-dev",
-    "libswresample-dev", "xxd", "bluez-alsa-utils", "avahi-daemon",
+    "libswresample-dev", "xxd", "bluez-alsa-utils", "rfkill", "avahi-daemon",
     "avahi-utils",
 ]
 

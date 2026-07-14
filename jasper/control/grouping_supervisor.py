@@ -85,7 +85,7 @@ from ..multiroom.snapcast_rpc import ensure_groups_on_stream
 logger = logging.getLogger(__name__)
 
 OUTPUTD_CONTROL_SOCKET = "/run/jasper-outputd/control.sock"
-RECONCILE_UNIT = "jasper-grouping-reconcile.service"
+RECONCILE_KICK_HELPER = "/usr/local/sbin/jasper-grouping-reconcile-kick"
 
 
 def _paired_follower_channel(leader_channel: str) -> str | None:
@@ -545,22 +545,17 @@ class GroupingSupervisor:
         return identity.read_identity().hostname
 
     async def kick_reconciler(self) -> None:
-        """`reset-failed` clears StartLimitBurst parking from prior failed
-        reconciles (rc=1 on unreachable snapserver is by-design); then
-        `--no-block restart` (restart, not start — a oneshot mid-run must
-        not make the kick a no-op; mirrors _kick_grouping_reconciler)."""
-        reset = await asyncio.create_subprocess_exec(
-            "systemctl", "reset-failed", RECONCILE_UNIT,
+        """Launch the shared drain-then-fresh helper without blocking polls.
+
+        The helper resets prior failure parking, joins any in-flight ordered
+        transaction, and queues one fresh pass. It never restarts a oneshot
+        mid-transition.
+        """
+        await asyncio.create_subprocess_exec(
+            RECONCILE_KICK_HELPER,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await asyncio.wait_for(reset.wait(), timeout=5.0)
-        restart = await asyncio.create_subprocess_exec(
-            "systemctl", "--no-block", "restart", RECONCILE_UNIT,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await asyncio.wait_for(restart.wait(), timeout=5.0)
 
     # ---- accessors ----
 

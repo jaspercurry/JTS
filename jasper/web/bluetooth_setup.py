@@ -12,7 +12,7 @@ Routes (nginx strips /bluetooth/):
   GET  /state                  adapter state JSON
   GET  /devices/stream         SSE: device add/update/remove
   POST /scan                   {"action": "start"|"stop"}
-  POST /power                  {"on": bool}
+  POST /power                  {"on": bool} — shared persisted source intent
   POST /discoverable           {"on": bool}
   POST /pair                   {"mac": "..."} — returns {ok: true}
   GET  /pair/<mac>/stream      SSE: pair-flow status events
@@ -32,15 +32,29 @@ import asyncio
 import json
 import logging
 import os
+import re
+import subprocess
 import threading
+import time
+import urllib.parse
 from concurrent.futures import Future
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
+from dbus_next.errors import DBusError  # type: ignore
+
+from ..bluetooth.availability import (
+    BLUETOOTH_CONTROL_PLANE_UNIT,
+    BluetoothAvailability,
+    bluetooth_unavailable_reason,
+    probe_bluetooth_availability,
+)
 from ._common import (
     JsonBodyError,
     begin_request,
+    bonded_follower_active,
     canonical_header,
     canonical_page,
     guard_mutating_request,
@@ -51,27 +65,221 @@ from ._common import (
     send_json_response,
     toggle_html,
 )
+from ._unit_snapshot import UnitSnapshot, probe_unit_snapshot
 from ..bluetooth.adapter import (
     DISCOVERABLE_AUTO_OFF_SEC,
     set_discoverable,
-    set_powered,
     state as adapter_state,
 )
 from ..bluetooth.engine import BluetoothEngine
 from ..log_event import log_event
+from ..local_sources import local_source_lifecycle
+from ..music_sources import Source
+from ..source_intent import (
+    request_source_intent,
+    source_intent_enabled,
+)
 
 # Default scan duration when the user clicks Scan. Server-side
 # enforced — even if the user closes the tab the scan auto-stops.
 # Long enough to catch slow-advertising devices (knobs are ~1-2 s
 # per advertisement), short enough not to leave the radio hot.
 SCAN_DURATION_SEC = 30.0
+STATE_PROBE_TIMEOUT_SEC = 5.0
+MUTATION_TIMEOUT_SEC = 35.0
+_MAC_ADDRESS_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+PAIR_STREAM_TTL_SEC = 120.0
 
 logger = logging.getLogger(__name__)
+
+_BLUETOOTH_LIFECYCLE = local_source_lifecycle(Source.BLUETOOTH)
+_STATE_UNITS = tuple(dict.fromkeys((
+    BLUETOOTH_CONTROL_PLANE_UNIT,
+    *_BLUETOOTH_LIFECYCLE.runtime_units,
+)))
+
+
+def _normalize_mac(value: object, *, url_encoded: bool = False) -> str | None:
+    """Validate one public MAC value and return its canonical spelling."""
+    if not isinstance(value, str):
+        return None
+    candidate = value
+    if url_encoded:
+        # A path segment must stay one segment before and after decoding.
+        if "/" in candidate or "\\" in candidate:
+            return None
+        try:
+            candidate = urllib.parse.unquote(candidate, errors="strict")
+        except UnicodeDecodeError:
+            return None
+    else:
+        candidate = candidate.strip()
+    if not _MAC_ADDRESS_RE.fullmatch(candidate):
+        return None
+    return candidate.upper()
+
+
+def _unit_active(unit: str) -> bool:
+    try:
+        proc = subprocess.run(
+            ["systemctl", "is-active", unit],
+            check=False,
+            timeout=5,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == "active"
+
+
+def _unit_available(unit: str) -> bool:
+    try:
+        proc = subprocess.run(
+            ["systemctl", "show", unit, "-p", "LoadState", "--value"],
+            check=False,
+            timeout=STATE_PROBE_TIMEOUT_SEC,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == "loaded"
+
+
+def _effective_bluetooth_state(
+    *,
+    desired: bool,
+    powered: bool,
+    parked: bool = False,
+    availability: BluetoothAvailability | None = None,
+    unit_snapshot: UnitSnapshot | None = None,
+) -> tuple[str, str]:
+    """Compare desired intent with radio and source-resource truth."""
+    if parked:
+        return "parked", ""
+    active_probe = unit_snapshot.active if unit_snapshot else _unit_active
+    active = {
+        unit: active_probe(unit) for unit in _BLUETOOTH_LIFECYCLE.runtime_units
+    }
+    reasons: list[str] = []
+    unit_available = unit_snapshot.available if unit_snapshot else _unit_available
+    hardware = availability or probe_bluetooth_availability(unit_available)
+    if hardware.error:
+        reasons.append(f"Bluetooth availability probe is incomplete: {hardware.error}")
+    any_soft_blocked = hardware.any_soft_blocked
+    fully_soft_blocked = hardware.all_soft_blocked
+    if desired:
+        if any_soft_blocked is True:
+            reasons.append("the radio is RF-killed")
+        if not powered:
+            reasons.append("BlueZ reports the adapter powered off")
+        inactive = [unit for unit, running in active.items() if not running]
+        if inactive:
+            reasons.append(f"required services are inactive: {', '.join(inactive)}")
+        effective = "on" if not reasons else "degraded"
+    else:
+        still_active = [unit for unit, running in active.items() if running]
+        if still_active:
+            reasons.append(f"services are still active: {', '.join(still_active)}")
+        if powered:
+            reasons.append("BlueZ still reports the adapter powered on")
+        if fully_soft_blocked is False:
+            reasons.append("the radio is not RF-killed")
+        effective = "off" if not reasons else "degraded"
+    return effective, "; ".join(reasons)
+
+
+def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
+    """Return one desired/effective snapshot and its HTTP status.
+
+    Intent is the authoritative switch value. Adapter read failures remain a
+    successful, degraded snapshot when intent is readable; an invalid intent
+    file is unavailable and returns 502 so clients cannot render a guessed Off.
+    """
+    try:
+        desired = source_intent_enabled(Source.BLUETOOTH)
+    except RuntimeError as exc:
+        return ({
+            "error": str(exc),
+            "powered": False,
+            "desired": False,
+            "effective": "unavailable",
+            "available": False,
+            "parked": False,
+            "discoverable": False,
+            "discovering": False,
+        }, HTTPStatus.BAD_GATEWAY)
+
+    parked = bonded_follower_active()
+    unit_snapshot = probe_unit_snapshot(_STATE_UNITS)
+    availability = probe_bluetooth_availability(unit_snapshot.available)
+    try:
+        raw = _dispatch().run(
+            adapter_state(),
+            timeout_sec=STATE_PROBE_TIMEOUT_SEC,
+        )
+    except (DBusError, OSError, RuntimeError, asyncio.TimeoutError) as exc:
+        effective, degraded_reason = _effective_bluetooth_state(
+            desired=desired,
+            powered=False,
+            parked=parked,
+            availability=availability,
+            unit_snapshot=unit_snapshot,
+        )
+        if not availability.available and not parked:
+            effective = "unavailable"
+        payload: dict[str, Any] = {
+            "error": str(exc),
+            "powered": False,
+            "desired": desired,
+            "effective": effective,
+            "available": availability.available,
+            "parked": parked,
+            "discoverable": False,
+            "discovering": False,
+        }
+        if degraded_reason:
+            payload["degradedReason"] = degraded_reason
+        if not availability.available:
+            payload["unavailableReason"] = bluetooth_unavailable_reason(availability)
+        return payload, HTTPStatus.OK
+
+    state = dict(raw)
+    powered = bool(state.get("powered", False))
+    state["desired"] = desired
+    state["available"] = availability.available
+    state["parked"] = parked
+    effective, degraded_reason = _effective_bluetooth_state(
+        desired=desired,
+        powered=powered,
+        parked=parked,
+        availability=availability,
+        unit_snapshot=unit_snapshot,
+    )
+    if not availability.available and not parked:
+        effective = "unavailable"
+    if not availability.available:
+        state["unavailableReason"] = bluetooth_unavailable_reason(availability)
+    state["effective"] = effective
+    if degraded_reason:
+        state["degradedReason"] = degraded_reason
+    else:
+        state.pop("degradedReason", None)
+    return state, HTTPStatus.OK
 
 
 # ============================================================
 # Dispatcher — one asyncio loop on a background thread
 # ============================================================
+
+
+def _close_awaitable(awaitable: Any) -> None:
+    close = getattr(awaitable, "close", None)
+    if callable(close):
+        close()
 
 
 class _AsyncDispatcher:
@@ -108,13 +316,24 @@ class _AsyncDispatcher:
         finally:
             loop.close()
 
-    def run(self, coro):
+    def run(self, coro, *, timeout_sec: float | None = None):
         """Submit a coroutine to the loop and wait for the result.
         Used from sync HTTP handler threads."""
         if self._loop is None:
+            _close_awaitable(coro)
             raise RuntimeError("dispatcher not started")
-        fut: Future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return fut.result()
+        try:
+            fut: Future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        except (RuntimeError, TypeError):
+            # run_coroutine_threadsafe owns the coroutine only after a
+            # successful submission. Close it when the loop rejects it.
+            _close_awaitable(coro)
+            raise
+        try:
+            return fut.result(timeout=timeout_sec)
+        except TimeoutError:
+            fut.cancel()
+            raise
 
     def stream(self, coro_gen):
         """Submit an async generator and yield its items synchronously.
@@ -292,16 +511,8 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             if path == "/state":
                 if not guard_read_request(self):
                     return
-                try:
-                    st = _dispatch().run(adapter_state())
-                except Exception as e:  # noqa: BLE001
-                    self._send_json(
-                        {"error": str(e), "powered": False,
-                         "discoverable": False},
-                        status=502,
-                    )
-                    return
-                self._send_json(st)
+                state, status = _bluetooth_state_snapshot()
+                self._send_json(state, status=status)
                 return
             if path == "/devices/stream":
                 if not guard_read_request(self):
@@ -311,7 +522,11 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             if path.startswith("/pair/") and path.endswith("/stream"):
                 if not guard_read_request(self):
                     return
-                mac = path[len("/pair/"):-len("/stream")]
+                encoded_mac = path[len("/pair/"):-len("/stream")]
+                mac = _normalize_mac(encoded_mac, url_encoded=True)
+                if mac is None:
+                    self.send_error(HTTPStatus.BAD_REQUEST)
+                    return
                 self._stream_pair(mac)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -338,21 +553,62 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 return
             mac = ""
             if path in {"/pair", "/connect", "/disconnect", "/forget"}:
-                raw_mac = body.get("mac")
-                if isinstance(raw_mac, str):
-                    mac = raw_mac.strip()
-                if not mac:
-                    self._send_json({"error": "missing mac"}, status=400)
+                normalized_mac = _normalize_mac(body.get("mac"))
+                if normalized_mac is None:
+                    self._send_json({"error": "invalid mac"}, status=400)
+                    return
+                mac = normalized_mac
+            if bonded_follower_active():
+                # The canonical source coordinator parks every local Bluetooth
+                # resource after grouping applies a bonded-follower role. A direct wizard request must
+                # not temporarily restart, advertise, scan, or mutate it.
+                self._send_json(
+                    {"error": "Bluetooth is managed by the stereo pair "
+                              "while this speaker is a follower — unpair "
+                              "on /rooms/ to change it"},
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
+            activates_radio = (
+                (path == "/discoverable" and body.get("on") is True)
+                or (path == "/scan" and body.get("action") == "start")
+                or path in {"/pair", "/connect"}
+            )
+            if activates_radio:
+                try:
+                    bluetooth_desired = source_intent_enabled(Source.BLUETOOTH)
+                except RuntimeError as exc:
+                    self._send_json(
+                        {"error": f"Bluetooth intent is unavailable: {exc}"},
+                        status=HTTPStatus.BAD_GATEWAY,
+                    )
+                    return
+                if not bluetooth_desired:
+                    self._send_json(
+                        {"error": "Bluetooth is turned off in Sources"},
+                        status=HTTPStatus.CONFLICT,
+                    )
+                    return
+            if (path == "/power" and body.get("on") is True) or activates_radio:
+                availability = probe_bluetooth_availability(_unit_available)
+                if not availability.available:
+                    self._send_json(
+                        {"error": bluetooth_unavailable_reason(availability)},
+                        status=HTTPStatus.CONFLICT,
+                    )
                     return
             try:
                 if path == "/power":
                     on = body["on"]
-                    _dispatch().run(set_powered(on))
-                    self._send_json({"ok": True})
+                    request_source_intent(Source.BLUETOOTH, on)
+                    self._send_json({"ok": True, "desired": on})
                     return
                 if path == "/discoverable":
                     on = body["on"]
-                    _dispatch().run(set_discoverable(on))
+                    _dispatch().run(
+                        set_discoverable(on),
+                        timeout_sec=MUTATION_TIMEOUT_SEC,
+                    )
                     self._send_json({"ok": True})
                     return
                 if path == "/scan":
@@ -366,6 +622,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                             _dispatch().engine.start_discovery(
                                 duration_s=SCAN_DURATION_SEC,
                             ),
+                            timeout_sec=MUTATION_TIMEOUT_SEC,
                         )
                         self._send_json(
                             {"ok": True,
@@ -375,6 +632,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     if action == "stop":
                         _dispatch().run(
                             _dispatch().engine.stop_discovery(),
+                            timeout_sec=MUTATION_TIMEOUT_SEC,
                         )
                         self._send_json({"ok": True})
                         return
@@ -389,12 +647,18 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     # Server-side: kick off the pair coroutine on the
                     # dispatcher loop and stash the generator so the
                     # subsequent /stream request can consume it.
-                    _start_pair_stream(mac)
+                    if not _start_pair_stream(mac):
+                        self._send_json(
+                            {"error": "pair attempt already in flight"},
+                            status=HTTPStatus.CONFLICT,
+                        )
+                        return
                     self._send_json({"ok": True})
                     return
                 if path == "/connect":
                     ok, msg = _dispatch().run(
                         _dispatch().engine.connect(mac),
+                        timeout_sec=MUTATION_TIMEOUT_SEC,
                     )
                     if not ok:
                         self._send_json({"error": msg}, status=502)
@@ -404,6 +668,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 if path == "/disconnect":
                     ok, msg = _dispatch().run(
                         _dispatch().engine.disconnect(mac),
+                        timeout_sec=MUTATION_TIMEOUT_SEC,
                     )
                     if not ok:
                         self._send_json({"error": msg}, status=502)
@@ -413,6 +678,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 if path == "/forget":
                     ok, msg = _dispatch().run(
                         _dispatch().engine.forget(mac),
+                        timeout_sec=MUTATION_TIMEOUT_SEC,
                     )
                     if not ok:
                         self._send_json({"error": msg}, status=502)
@@ -421,7 +687,14 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     return
             except Exception as e:  # noqa: BLE001
                 logger.exception("POST %s failed", path)
-                self._send_json({"error": str(e)}, status=502)
+                payload: dict[str, Any] = {"error": str(e)}
+                if path == "/power":
+                    # request_source_intent persists before it reconciles. If
+                    # convergence fails, return the authoritative readback so
+                    # the client does not falsely restore the old switch.
+                    state, _status = _bluetooth_state_snapshot()
+                    payload["state"] = state
+                self._send_json(payload, status=502)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -449,13 +722,16 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
 
         def _stream_pair(self, mac: str) -> None:
             self._begin_sse()
+            stream = _consume_pair_stream(mac)
             try:
-                for event in _consume_pair_stream(mac):
+                for event in stream:
                     if not self._sse_write(event):
                         return
             except Exception as e:  # noqa: BLE001
                 logger.exception("pair stream failed")
                 self._sse_write({"stage": "error", "message": str(e)})
+            finally:
+                stream.close()
 
     return Handler
 
@@ -465,26 +741,106 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
 # ============================================================
 
 
-# In-flight pair attempts keyed by uppercase MAC. Each entry is an
-# asyncio.Queue produced by `_pair_driver` running on the dispatcher
-# loop. The /stream handler consumes from the queue via the dispatcher.
-_PAIR_STREAMS: dict[str, "asyncio.Queue[dict | None]"] = {}
+@dataclass
+class _PairAttempt:
+    queue: "asyncio.Queue[dict | None]"
+    created_at: float
+    driver_future: Any = None
+    consumer_attached: bool = False
+    expiry_timer: threading.Timer | None = None
+    loop: asyncio.AbstractEventLoop | None = None
+
+
+# In-flight pair attempts keyed by uppercase MAC. Registration precedes the
+# POST response; the sole SSE consumer owns cleanup/cancellation.
+_PAIR_STREAMS: dict[str, _PairAttempt] = {}
 _PAIR_STREAMS_LOCK = threading.Lock()
 
 
-def _start_pair_stream(mac: str) -> None:
+def _cancel_pair_attempt(
+    attempt: _PairAttempt,
+    *,
+    terminal_message: str | None = None,
+) -> None:
+    timer = attempt.expiry_timer
+    if timer is not None:
+        timer.cancel()
+    if terminal_message is not None and attempt.loop is not None:
+        def _wake_consumer() -> None:
+            attempt.queue.put_nowait(
+                {"stage": "error", "message": terminal_message},
+            )
+            attempt.queue.put_nowait(None)
+
+        try:
+            # asyncio.Queue is loop-owned. Wake an attached q.get on that loop,
+            # before cancellation lets the driver append its own sentinel.
+            attempt.loop.call_soon_threadsafe(_wake_consumer)
+        except RuntimeError:
+            # A stopped loop has no live SSE consumer left to wake.
+            pass
+    future = attempt.driver_future
+    cancel = getattr(future, "cancel", None)
+    done = getattr(future, "done", None)
+    if callable(cancel) and (not callable(done) or not done()):
+        cancel()
+
+
+def _release_pair_attempt(
+    mac: str,
+    attempt: _PairAttempt,
+    *,
+    terminal_message: str | None = None,
+) -> bool:
+    """Remove an attempt only when it is still the registered generation."""
+    with _PAIR_STREAMS_LOCK:
+        if _PAIR_STREAMS.get(mac) is not attempt:
+            return False
+        _PAIR_STREAMS.pop(mac, None)
+    _cancel_pair_attempt(attempt, terminal_message=terminal_message)
+    return True
+
+
+def _expire_pair_attempt(mac: str, attempt: _PairAttempt) -> None:
+    if _release_pair_attempt(
+        mac,
+        attempt,
+        terminal_message="Pairing timed out.",
+    ):
+        log_event(logger, "bluetooth.pair_stream_expired", mac=mac)
+
+
+def _start_pair_stream(mac: str) -> bool:
     """Kick off a pair coroutine on the dispatcher loop. Events flow
-    into a queue keyed by MAC; the /stream handler drains it."""
+    into a queue keyed by MAC; the /stream handler drains it.
+
+    Queue registration is synchronous and happens before POST /pair can reply,
+    so an immediately-following SSE GET cannot race ahead of the driver task.
+    Returns False when the same device already has an unconsumed attempt.
+    """
     mac_u = mac.upper()
     dispatcher = _dispatch()
     loop = dispatcher._loop  # noqa: SLF001 — single owner
     if loop is None:
-        return
+        raise RuntimeError("dispatcher not started")
+    q: asyncio.Queue[dict | None] = asyncio.Queue()
+    attempt = _PairAttempt(queue=q, created_at=time.monotonic(), loop=loop)
+    stale_attempt: _PairAttempt | None = None
+    with _PAIR_STREAMS_LOCK:
+        previous = _PAIR_STREAMS.get(mac_u)
+        if previous is not None:
+            if time.monotonic() - previous.created_at < PAIR_STREAM_TTL_SEC:
+                return False
+            _PAIR_STREAMS.pop(mac_u, None)
+            stale_attempt = previous
+        _PAIR_STREAMS[mac_u] = attempt
+    if stale_attempt is not None:
+        _cancel_pair_attempt(
+            stale_attempt,
+            terminal_message="Pair attempt was superseded.",
+        )
 
     async def _drive() -> None:
-        q: asyncio.Queue = asyncio.Queue()
-        with _PAIR_STREAMS_LOCK:
-            _PAIR_STREAMS[mac_u] = q
         try:
             async for event in dispatcher.engine.pair(mac_u):
                 await q.put(event)
@@ -502,7 +858,44 @@ def _start_pair_stream(mac: str) -> None:
             # have started reading yet. Cleanup happens in the
             # consumer's finally block.
 
-    asyncio.run_coroutine_threadsafe(_drive(), loop)
+    drive_coro = _drive()
+    try:
+        driver_future = asyncio.run_coroutine_threadsafe(drive_coro, loop)
+    except (RuntimeError, TypeError):
+        _close_awaitable(drive_coro)
+        _release_pair_attempt(
+            mac_u,
+            attempt,
+            terminal_message="Pairing could not start.",
+        )
+        raise
+    try:
+        expiry_timer = threading.Timer(
+            PAIR_STREAM_TTL_SEC,
+            _expire_pair_attempt,
+            args=(mac_u, attempt),
+        )
+        expiry_timer.daemon = True
+        with _PAIR_STREAMS_LOCK:
+            if _PAIR_STREAMS.get(mac_u) is attempt:
+                attempt.driver_future = driver_future
+                attempt.expiry_timer = expiry_timer
+                registered = True
+            else:
+                registered = False
+        if not registered:
+            attempt.driver_future = driver_future
+            _cancel_pair_attempt(attempt)
+            return False
+        expiry_timer.start()
+    except (OSError, RuntimeError):
+        _release_pair_attempt(
+            mac_u,
+            attempt,
+            terminal_message="Pairing could not start.",
+        )
+        raise
+    return True
 
 
 def _consume_pair_stream(mac: str):
@@ -513,13 +906,21 @@ def _consume_pair_stream(mac: str):
     loop = dispatcher._loop  # noqa: SLF001
     if loop is None:
         return
+    claimed = False
     with _PAIR_STREAMS_LOCK:
-        q = _PAIR_STREAMS.get(mac_u)
-    if q is None:
+        attempt = _PAIR_STREAMS.get(mac_u)
+        if attempt is not None and not attempt.consumer_attached:
+            attempt.consumer_attached = True
+            claimed = True
+    if attempt is None:
         # No pair attempt is in flight for this MAC (the user may
         # have hit the stream URL without POSTing /pair first).
         yield {"stage": "error", "message": "no pair attempt in flight"}
         return
+    if not claimed:
+        yield {"stage": "error", "message": "pair stream already attached"}
+        return
+    q = attempt.queue
     try:
         while True:
             fut: Future = asyncio.run_coroutine_threadsafe(q.get(), loop)
@@ -528,10 +929,7 @@ def _consume_pair_stream(mac: str):
                 return
             yield item
     finally:
-        with _PAIR_STREAMS_LOCK:
-            # Only clean up if the queue's now empty (sentinel drained).
-            if _PAIR_STREAMS.get(mac_u) is q and q.empty():
-                _PAIR_STREAMS.pop(mac_u, None)
+        _release_pair_attempt(mac_u, attempt)
 
 
 # ============================================================

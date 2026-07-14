@@ -52,56 +52,73 @@ ensure_state_dir() {
 # known group-shared, multi-writer state is touched. Fresh installs no-op (the
 # files don't exist until a daemon first creates them).
 heal_shared_state_modes() {
-    getent group jasper >/dev/null 2>&1 || return 0
-    local base sidecar
-    # SQLite stores: the DB file AND any -wal/-shm/-journal sidecars must be
-    # group-writable for a non-owner same-group daemon to open them read-write.
+    local group_line jasper_gid base sidecar
+    group_line="$(getent group jasper 2>/dev/null || true)"
+    [[ -n "${group_line}" ]] || return 0
+    jasper_gid="$(printf '%s\n' "${group_line}" | awk -F: 'NR == 1 { print $3 }')"
+    if [[ ! "${jasper_gid}" =~ ^[0-9]+$ ]]; then
+        echo "  ERROR: could not resolve numeric jasper group id for shared-state heal" >&2
+        return 1
+    fi
+
+    # Pass the complete allowlist through one descriptor-based helper. These
+    # paths live below a group-writable directory, so a root deploy must never
+    # use path-following chgrp/chmod: another group member could replace a name
+    # with a symlink between the check and mutation. O_NOFOLLOW + fstat pins a
+    # regular file/directory inode before fchown/fchmod. A symlink or unexpected
+    # file type aborts install loudly without touching its target.
+    local -a heal_specs=()
     for base in \
         "${STATE_DIR}/usage.db" \
         "${STATE_DIR}/timers.db" \
         "${STATE_DIR}/wake-events/wake-events.sqlite3"; do
         for sidecar in "${base}" "${base}-wal" "${base}-shm" "${base}-journal"; do
-            [[ -e "${sidecar}" ]] || continue
-            chgrp jasper "${sidecar}" 2>/dev/null || true
-            chmod 0660 "${sidecar}" 2>/dev/null || true
+            heal_specs+=("f:0660:${sidecar}")
         done
     done
-    # Plain JSON shared state (single file, no sidecars).
-    for base in \
-        "${STATE_DIR}/speaker_volume.json" \
-        "${STATE_DIR}/mux_mode.json"; do
-        [[ -e "${base}" ]] || continue
-        chgrp jasper "${base}" 2>/dev/null || true
-        chmod 0660 "${base}" 2>/dev/null || true
-    done
-    # Output topology is read by jasper-control before accepting grouping
-    # writes. Older root-run setup paths left it root:root 0640, which made
-    # active-speaker readiness fail closed even for passive/draft topologies.
-    if [[ -e "${STATE_DIR}/output_topology.json" ]]; then
-        chgrp jasper "${STATE_DIR}/output_topology.json" 2>/dev/null || true
-        chmod 0640 "${STATE_DIR}/output_topology.json" 2>/dev/null || true
-    fi
-    # Grouping config + its write-lock. jasper-control (/grouping/set) and the
-    # install-time migrations rewrite grouping.env under .grouping.env.lock
-    # (jasper.atomic_io.locked_update_env_file). A lock created BEFORE UMask=0007
-    # (mode 0644, owned by jasper-voice/-mux) blocks a now-non-root same-group
-    # writer from opening it `a+`, so /grouping/set 502s and /rooms bonding fails
-    # on any box bonded pre-#845 (observed on jts/jts4, 2026-06-23). Same class as
-    # the SQLite/JSON heal above, extended to the grouping env + its lock.
-    for base in \
-        "${STATE_DIR}/grouping.env" \
-        "${STATE_DIR}/.grouping.env.lock"; do
-        [[ -e "${base}" ]] || continue
-        chgrp jasper "${base}" 2>/dev/null || true
-        chmod 0660 "${base}" 2>/dev/null || true
-    done
-    # The wake-events DIR holds the sqlite + its WAL sidecars; a non-owner
-    # same-group daemon needs dir write to create them (historically root:root
-    # 0755). Owner stays whoever the StateDirectory chown last set.
-    if [[ -d "${STATE_DIR}/wake-events" ]]; then
-        chgrp jasper "${STATE_DIR}/wake-events" 2>/dev/null || true
-        chmod 0770 "${STATE_DIR}/wake-events" 2>/dev/null || true
-    fi
+    heal_specs+=(
+        "f:0660:${STATE_DIR}/speaker_volume.json"
+        "f:0660:${STATE_DIR}/mux_mode.json"
+        "f:0640:${STATE_DIR}/output_topology.json"
+        "f:0660:${STATE_DIR}/grouping.env"
+        "f:0660:${STATE_DIR}/.grouping.env.lock"
+        "f:0660:${STATE_DIR}/source_intent.env"
+        "f:0660:${STATE_DIR}/.source_intent.env.lock"
+        "f:0660:${STATE_DIR}/source_intent.env.request.lock"
+        "f:0660:${STATE_DIR}/source_intent.env.reconcile.lock"
+        "d:0770:${STATE_DIR}/wake-events"
+    )
+    /usr/bin/python3 - "${jasper_gid}" "${heal_specs[@]}" <<'PY'
+import os
+import stat
+import sys
+
+gid = int(sys.argv[1])
+for spec in sys.argv[2:]:
+    kind, mode_text, path = spec.split(":", 2)
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    if kind == "d":
+        flags |= os.O_DIRECTORY
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        continue
+    except OSError as exc:
+        raise SystemExit(
+            f"ERROR: refusing unsafe shared-state path {path}: {exc}"
+        ) from exc
+    try:
+        file_stat = os.fstat(fd)
+        expected = stat.S_ISDIR(file_stat.st_mode) if kind == "d" else stat.S_ISREG(file_stat.st_mode)
+        if not expected:
+            raise SystemExit(
+                f"ERROR: refusing unexpected shared-state file type at {path}"
+            )
+        os.fchown(fd, -1, gid)
+        os.fchmod(fd, int(mode_text, 8))
+    finally:
+        os.close(fd)
+PY
 }
 
 # WS1 Phase 4a — the group-`jasper-secrets` secret compartment (LLM API keys +
@@ -778,6 +795,38 @@ migrate_grouping() {
         sed -i.bak "/^${k}=/d" "${jasper_env}"
         rm -f "${jasper_env}.bak"
     done
+}
+
+# Retire generated state that no runtime reads after USB capture moved wholly
+# into jasper-fanin and grouping effective-role state moved under
+# /var/lib/jasper-grouping. These files were generated/reconciler-owned, so the
+# migration removes each retired name without opening or following it. A
+# directory at either path is unexpected and aborts loudly rather than being
+# removed recursively.
+migrate_retired_source_state() {
+    ensure_state_dir
+    if ! /usr/bin/python3 - "${STATE_DIR}" <<'PY'
+import os
+import stat
+import sys
+
+state_dir = sys.argv[1]
+for name in ("usbsink.env", "grouping-follower-status.json"):
+    path = os.path.join(state_dir, name)
+    try:
+        file_stat = os.lstat(path)
+    except FileNotFoundError:
+        continue
+    if stat.S_ISDIR(file_stat.st_mode):
+        raise SystemExit(f"ERROR: refusing retired-state directory {path}")
+    # unlink removes the directory entry itself; it never follows a symlink and
+    # never opens a FIFO/socket/device.
+    os.unlink(path)
+PY
+    then
+        return 1
+    fi
+    echo "  migrate_retired_source_state: retired USB env keys and grouping follower status cleaned"
 }
 
 # Seed the speaker's room label into the speaker-identity home

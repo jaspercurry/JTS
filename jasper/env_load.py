@@ -75,7 +75,6 @@ ENV_FILES = (
     "/var/lib/jasper/outputd.env",
     "/var/lib/jasper/peering.env",
     "/var/lib/jasper/accessory-mics.env",
-    "/var/lib/jasper/usbsink.env",
     "/var/lib/jasper/wake_corpus_bridge.env",
 )
 

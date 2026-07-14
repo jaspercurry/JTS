@@ -363,7 +363,7 @@ DEBUG. As built:
   + the timer). (WS1 Phase 3b-2: `jasper-control` runs as a non-root
   user, so the `systemctl restart <unit>` this issues is now
   **polkit-authorized** against the `MANAGED_UNITS` allowlist —
-  `jasper-voice`/`jasper-aec-bridge`/`jasper-usbsink` are all in it —
+  `jasper-voice`/`jasper-aec-bridge` are in it —
   rather than a uid-0 bypass. See
   [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md).)
 - **Endpoints:** `GET`/`POST /debug` on jasper-control (:8780),
@@ -396,10 +396,8 @@ by `tests/test_debug_mode.py` + `tests/test_debug_control.py`.
 and its toggles trigger real daemon restarts, so after a deploy open
 `http://jts.local/system/`, toggle **voice**, and confirm
 `journalctl -u jasper-voice` shows DEBUG lines + the countdown and
-auto-quiet fire. Also verify USB input while inactive: toggling debug
-must leave `jasper-usbsink.service` stopped and log
-`event=debug.apply_deferred`; with USB input active, the toggle should
-restart `jasper-usbsink.service` normally.
+auto-quiet fire. USB input is not a debug subsystem: its readiness unit has no
+resident process; inspect fan-in STATUS and the usbsink doctor group instead.
 
 **Tier C — flight recorder (built 2026-05-30; pending on-device
 verification).** A bounded in-RAM verbose ring per daemon,
@@ -450,7 +448,7 @@ class RingFlushHandler(logging.Handler):                   # level = DEBUG
   hazard if the handler were ever missing. The SIGUSR1 handler is
   installed *unconditionally* so an unhandled signal can't terminate
   a daemon.)
-- **Scope (v1):** voice + aec + control + usbsink.
+- **Scope (v1):** voice + aec + control.
 
 *Tier-B integration (done).* `apply_for` now also flips the journal
 *handler* level via `set_console_debug` (the logger is held at DEBUG
@@ -469,7 +467,7 @@ unless they become steady-state spam.
 *Cost (measured).* The ring stores **formatted strings**, not
 `LogRecord` objects, so RAM is bounded by line length and never pins a
 large object passed as a log arg. At the default N=1000: ~0.3 MB/daemon,
-~1.2 MB across voice + aec + control + usbsink — around 0.1% of a
+~0.9 MB across voice + aec + control — around 0.1% of a
 1 GB Pi. Tunable (capacity) and off-switchable
 (`JASPER_FLIGHT_RECORDER=disabled`). (An
 earlier draft stored `LogRecord` objects — ~1.3 MB/daemon and an
@@ -498,7 +496,7 @@ it to logs.
 
 *As built.* [`jasper/flight_recorder.py`](../jasper/flight_recorder.py)
 (`RingFlushHandler` + `install()` + `dump()` + a SIGUSR1 handler)
-wired into voice, AEC, control, and usbsink startup;
+wired into voice, AEC, and control startup;
 `debug_mode.apply_for` gained `set_console_debug` so the toggle moves
 the journal handler; explicit
 `dump()` from the `flag_recent_issue` voice tool, plus a manual

@@ -128,7 +128,20 @@ writes `/var/lib/jasper/accessory-mics.env` only when BlueZ has a paired
 WiiM Remote 2. Speakers without that paired profile keep both the UDP
 voice source and BLE decoder stopped. The Bluetooth pair/connect/forget
 flows run the same reconciler, so the optional mic pipeline follows the
-actual BlueZ pair record rather than requiring a deploy. Its HID profile
+actual BlueZ pair record rather than requiring a deploy. The canonical
+source switch still wins: when Bluetooth is Off,
+the reconciler clears the manual mic source and disables every optional
+Bluetooth adapter service without querying or starting BlueZ. Teardown is a
+bounded synchronous `disable --now`, followed by explicit `disabled` and
+`inactive` probes for every declared adapter. It aggregates failures, still
+clears the mic env and refreshes active voice, then fails the oneshot instead
+of reporting success while an adapter remains live. The accessory
+units have passive ordering on `bluetooth.service`, not `Wants=`, so a paired
+remote cannot turn the radio back on at boot. A malformed source-intent file
+fails closed (adapters parked) and fails the reconciler visibly rather than
+falling back to Bluetooth's shipped-on default. Grouping role parking is a
+separate effective-state gate: a follower preserves the household's enabled
+intent but stops the adapter and clears its manual mic source. Its HID profile
 sends `POST /session/start` with `{"source":"wiim_remote_2"}` on
 voice-button press, and `POST /session/end` on release, so the voice turn
 bypasses wake detection and routes only that source while held; the normal
@@ -1018,4 +1031,4 @@ answered or as new ones surface.**
 - [formatBCE/Respeaker-XVF3800-ESPHome-integration](https://github.com/formatBCE/Respeaker-XVF3800-ESPHome-integration)
   — reference integration for the Seeed XVF3800-with-XIAO fallback path.
 
-Last verified: 2026-07-12
+Last verified: 2026-07-14

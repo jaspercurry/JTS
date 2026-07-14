@@ -6,6 +6,82 @@
 **Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
 UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
+## Current operational truth (2026-07-14)
+
+USB Audio Input is an opt-in source controlled from `/sources/`; canonical
+household intent lives in `/var/lib/jasper/source_intent.env`. The root source
+coordinator owns the ordered transition: arm fan-in DIRECT capture before
+advertising UAC2, and withdraw UAC2 before disarming capture. Grouped followers
+park local USB audio while the composite gadget may keep its management-network
+function. [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md) is canonical
+for that transaction; [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) is canonical
+for ConfigFS composition and the NCM network.
+
+There is one audio pipeline:
+
+```text
+host -> UAC2 gadget -> jasper-fanin USB DIRECT lane -> summed music -> CamillaDSP/outputd
+```
+
+`jasper-fanin` owns capture, level/activity, mix-mute, resampling, host-clock,
+xrun, and route-health telemetry. The Rust `jasper-usbsink-audio` crate/binary
+and `/run/jasper-usbsink/state.json` were deleted. Install removes an orphaned
+binary and Cargo cache on upgrade.
+
+`jasper-usbsink.service` remains because source and gadget lifecycle need a
+stable systemd unit. It is a hardened `Type=oneshot`, `RemainAfterExit=yes`
+readiness marker with no resident process. Its two `ExecCondition` gates check
+local-source permission and the composed `uac2.usb0` function;
+`jasper-usbsink-wait-card 30` then bounds the kernel ALSA-card registration
+race. `PartOf=jasper-usbgadget.service` invalidates and re-runs that proof when
+the gadget restarts. Active (exited) means readiness passed, not that audio is
+currently flowing.
+
+Observed state has two live owners:
+
+- fan-in `STATUS`, selected by the identity-bound `label="usbsink"` DIRECT
+  entry, owns `playing`, `rms_dbfs`, `muted`, and direct/resampler counters;
+- `/sys/class/udc/*/state == configured`, read through `jasper.usbgadget`, owns
+  `host_connected`.
+
+`/state.renderers.usbsink` projects those owners directly. It retains
+`combo:true`, `preempted:false`, and `updated_at:null` as lightweight response
+compatibility fields; there is no second bridge state behind them.
+`/state.audio_graph.fanin.usbsink_input` is the detailed ingress block.
+The false `/state.audio_graph.rust_bridge` block no longer exists.
+
+Mux silences a losing USB source with fan-in `MUTE/UNMUTE usbsink`; capture and
+pre-mute telemetry continue so a muted-but-streaming host remains observable.
+Room correction does not write that policy mute. It acquires mux's owner-bound
+`TEST_SELECT correction` diagnostic gate, which excludes every music lane
+while keeping mux as the single fan-in policy owner, then releases only its own
+lease.
+The host-volume observer remains `jasper-usbsink-volume.service` /
+`volume_bridge.py`; the host slider is inbound volume intent, not a second audio
+data plane.
+
+Operational checks:
+
+```sh
+curl -s http://jts.local:8780/state | jq '{renderer:.renderers.usbsink, ingress:.audio_graph.fanin.usbsink_input}'
+systemctl status jasper-usbsink.service jasper-usbgadget.service jasper-fanin.service
+jasper-doctor --group usbsink
+```
+
+The readiness marker has zero resident-process RAM. USB-specific incremental
+userspace cost is the non-real-time volume observer; fan-in is already the
+shared source mixer. A sustained DIRECT-capture failure makes USB unavailable
+and is surfaced by combo health/doctor; there is intentionally no hidden aloop
+fallback.
+
+## Historical implementation appendix
+
+> **Historical appendix.** Everything below this point is preserved for
+> decision archaeology. It contains superseded bridge, standby-daemon,
+> `state.json`, `:8781`, solo/aloop, watchdog, and resource-budget designs.
+> Phrases such as “current” describe the dated snapshot in that subsection,
+> not the shipped 2026-07-14 system. Use the current operational truth above.
+
 > ### Removed 2026-07-10 — the "aloop solo" USB capture path
 >
 > **There is now exactly ONE USB pipeline: `jasper-fanin`
@@ -25,16 +101,16 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > "option A / :8781 listener" mention below the current-state block is
 > archaeology of that deleted path.
 >
-> **What survives:** `jasper-usbsink.service` as the USB-audio INTENT
-> signal + gadget-lifecycle owner and its standby-loop `state.json`
+> **What survives:** `jasper-usbsink.service` as the derived USB-audio lifecycle
+> unit (canonical household intent lives in
+> `/var/lib/jasper/source_intent.env`) and its standby-loop `state.json`
 > publisher / `Type=notify` watchdog; `jasper-usbsink-volume.service`
 > + `volume_bridge.py`; the `/sources/` toggle; the fan-in `usbsink`
 > lane and its IDLE aloop fallback (fan-in still opens `hw:Loopback,1,3`
 > when USB Audio Input is off — nothing writes that lane now, and
 > `snd-aloop pcm_substreams=8` is unchanged, no renumber); the
-> `JASPER_USBSINK_AUDIO_STANDBY` env (now written UNCONDITIONALLY to
-> `1` — the daemon is standby-only, so disarming the combo no longer
-> promotes a bridge capture); and the `JASPER_USBSINK_PREEMPT=disabled`
+> standby/liveness helper with no audio-mode env or generated overlay; and the
+> `JASPER_USBSINK_PREEMPT=disabled`
 > escape hatch (now gates the fan-in lane mute). The combo host clock
 > lives in `jasper-fanin` (`rust/jasper-fanin/src/host_clock.rs` + the
 > shared `jasper-host-clock` crate), surfaced at
@@ -61,28 +137,29 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > audio-source concerns (volume model, fan-in wiring, low-latency route).
 >
 > The installer writes the gadget overlay/config and requires reboot for
-> the dwc2 controller to enter peripheral mode; `/sources/` toggles the
-> disabled-by-default USB intent unit (`jasper-usbsink.service`). The
-> host-visible audio device is composed by `jasper-usbgadget.service`, not
-> owned by it alone: turning the `/sources/` toggle on/off both changes
-> `jasper-usbsink.service`'s enablement **and** restarts
-> `jasper-usbgadget.service` so it recomposes with or without `uac2.usb0` —
-> stopping the intent unit alone no longer touches the gadget descriptor at
-> all (the old "stopping the intent unit alone does not remove the
-> host-visible device" trap is gone: the `/sources/` handler now explicitly
-> restarts the gadget on both directions). When this speaker is a bonded
-> multiroom follower, the local-source lifecycle registry
-> (`jasper/local_sources/registry.py`) parks USB audio by stopping the
-> audio units and **restarting** (not stopping) the gadget unit, so the
-> host-visible audio device disappears while the always-on management
-> network keeps serving that follower's own management UI; unparking
-> mirrors this. `jasper-usbsink.service` keeps its own
-> `ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed`, so a
-> boot or manual start while the speaker is a parked bonded follower skips
-> before the audio daemon can run — the gadget's network function is
-> unaffected by that gate. At runtime, `jasper-usbsink` is
-> **standby-only**: it carries the household's USB-audio intent, drives
-> the gadget lifecycle, publishes `state.json`, and satisfies its
+> the dwc2 controller to enter peripheral mode. `/sources/` writes the
+> disabled-by-default USB household intent; the shared root source coordinator
+> derives `jasper-usbsink.service` enablement and performs the ordered,
+> idempotent stop/recompose/start transition. That transition is owned by
+> [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md), not this audio
+> data-plane reference. `jasper-usbgadget.service` still owns the descriptor
+> and composes it with or without `uac2.usb0`. When this speaker is a bonded
+> multiroom follower, grouping hands the completed role to the same source
+> coordinator, which parks USB: the host-visible audio device disappears while the always-on
+> management network keeps serving the follower's management UI.
+> `jasper-usbsink.service` keeps its own source-aware `ExecCondition`
+> (`jasper-local-source-allowed --source usbsink`, run with systemd's `+`
+> privilege prefix), so a boot, manual start, or maintenance restore rechecks current
+> USB household intent as well as follower role before the audio daemon can run
+> — the gadget's network function is unaffected by that gate. Gadget
+> composition additionally requires this derived unit to be enabled as a
+> lifecycle-readiness mirror before advertising UAC2. Canonical Off/parking
+> still dominates stale enablement, while desired-On with a failed/stale
+> disabled mirror remains NCM-only instead of publishing audio without a ready
+> consumer. At runtime,
+> `jasper-usbsink` is
+> **standby-only**: its enabled/activity state is derived from household
+> USB-audio intent; it publishes `state.json` and satisfies its
 > `Type=notify` watchdog, but opens no PCM. **`jasper-fanin`
 > DIRECT-captures S32_LE stereo/48 kHz from `hw:UAC2Gadget`** into its
 > `usbsink` input lane, narrowing deterministically to S16_LE by signed
@@ -94,13 +171,13 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > `hw:Loopback,0,0`, Python PortAudio data-plane behavior, or the lean
 > FIFO route are historical unless explicitly marked as future/lab work.
 >
-> The production claiming route is `usb_low_latency_48k`: Rust bridge
-> `256` frames / `3` periods, fan-in USB input resampler enabled with
+> The production claiming route is `usb_low_latency_48k`: fan-in DIRECT
+> capture at period `256` / buffer `768`, USB input resampler enabled with
 > target `512` + warm-up cushion `1536` (held target `2048`), fan-in
 > input buffer `4096`, fan-in output buffer `1024`, CamillaDSP
 > `256/1536`, and outputd `128/256` on the Apple USB-C DAC profile.
 > A clean 5-minute jts.local steady-state sample on 2026-07-02 produced
-> zero new bridge xruns/underflows, zero fan-in resampler relocks, and
+> zero new direct-capture xruns, zero fan-in resampler relocks, and
 > zero resampler silence. The low-latency claim still requires a
 > route-latency click/capture artifact before doctor will pass it. Produce that
 > artifact with `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact`
@@ -111,8 +188,10 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > Cross-cutting source metadata lives in `jasper/music_sources.py`:
 > `Source.USBSINK` uses `VolumeMode.CAMILLA_MASTER`, so CamillaDSP is
 > the outbound volume carrier and the host slider is observed inbound.
-> Operational lifecycle resources live in `jasper/local_sources/registry.py`,
-> which separates the USB bridge daemon from the host-visible gadget.
+> Operational resource declarations live in `jasper/local_sources/registry.py`,
+> which separates the USB standby/liveness helper from the host-visible gadget; the
+> cross-source lifecycle semantics live in
+> [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
 > `jasper-mux` owns source selection/preemption, and the landing-page
 > `/source/select` surface can choose USB without enabling/disabling
 > the source.
@@ -123,9 +202,10 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > (impulse tap) or `host_clock` fields, both of which left the bridge with
 > the aloop solo path. On a combo box the live USB `playing` / `rms_dbfs`
 > truth is fan-in's DIRECT lane, not this standby file (see §4.4 / §4.9).
-> `rms_dbfs` is a finite JSON number or `null` before any finite sample exists;
-> the bridge may use `-inf` internally, but state files and `/state` stay
-> standards-compliant JSON.
+> `rms_dbfs` is a standards-compliant finite idle number. The idle
+> compatibility keys remain under
+> `schema_version:1`; removing dead audio config must not silently change that
+> consumer contract.
 > Mux silences USB **one way**: a `MUTE`/`UNMUTE usbsink` on
 > `jasper-fanin`'s control socket, which drops the direct lane at its mix
 > stage while the lane keeps reporting pre-mute frames/level (so mux's
@@ -142,7 +222,7 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > state-publish loop rather than from ALSA playback-period progress.
 >
 > Disabled cost is effectively zero resident daemon memory; enabled
-> bridge cost is about 2 MB Pss for the Rust data plane, plus the
+> standby/liveness cost is about 2 MB Pss, plus the
 > non-real-time host-volume observer when enabled. When adding another music source, use
 > `docs/audio-paths.md#adding-a-new-music-source` as the canonical
 > checklist. This document's phase plan below is retained for
@@ -164,7 +244,7 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > 1. **`jasper-fanin`'s direct capture is the only USB data plane.**
 >    [`deploy/systemd/jasper-usbsink.service`](../deploy/systemd/jasper-usbsink.service)
 >    still runs `/opt/jasper/bin/jasper-usbsink-audio`, but **standby-only**
->    (intent + gadget lifecycle + state/watchdog, no PCM). The old
+>    (derived lifecycle state + state/watchdog, no PCM). The old
 >    Python/PortAudio bridge (`jasper/usbsink/daemon.py`, `audio_bridge.py`,
 >    `usbsink_main.py`, the `jasper-usbsink-python-lab` entrypoint), its
 >    lean-FIFO delivery variant, and — as of 2026-07-10 — the Rust bridge's
@@ -226,15 +306,15 @@ operation assumes the splitter-backed path.
 
 ## Executive summary
 
-The USB gadget feature reuses the existing renderer-into-Loopback
-pattern. A oneshot service `jasper-usbgadget.service` performs the
+The USB audio source enters the existing fan-in graph through direct gadget
+capture. A oneshot service `jasper-usbgadget.service` performs the
 ConfigFS gadget setup at start (the old audio-only
 `jasper-usbsink-init.service` is deleted — see §4.1). The runtime is
 split deliberately:
 
 1. `jasper-usbsink.service` runs the Rust `jasper-usbsink-audio` binary
-   **standby-only** — it carries the USB-audio intent + gadget lifecycle
-   and publishes state, but opens no PCM. `jasper-fanin` DIRECT-captures
+   **standby-only** — its lifecycle is derived from persisted USB-audio intent;
+   it publishes state but opens no PCM. `jasper-fanin` DIRECT-captures
    the gadget capture endpoint into its `usbsink` lane so USB joins the
    fan-in music chain.
 2. `jasper-usbsink-volume.service` is a non-real-time helper that polls the
@@ -246,10 +326,9 @@ split deliberately:
 
 Total new RAM when enabled: low single-digit MB for the Rust data plane plus
 the non-real-time volume helper.
-Total new RAM when disabled: **0 MB** (no service runs, no kernel
-modules loaded, no gadget descriptor present). The dtoverlay
-`dwc2,dr_mode=peripheral` is permanently set after install but costs
-only the ~50 KB dwc2 kernel module loaded at boot.
+Total marginal **audio-service** RAM when disabled: **0 MB**. The composite
+gadget and its NCM management network remain independently available; their
+kernel/network cost is owned by HANDOFF-usb-gadget.md.
 
 The user-facing model is exactly AirPlay's: camilla-as-master for
 volume, mux-arbitrated for source. Implementation mirrors the
@@ -321,7 +400,7 @@ gadget itself is already costing.
 
 | Component | RAM (Pss) | Notes |
 |---|---|---|
-| `jasper-usbsink.service` (Rust bridge) | **~2 MB** | ALSA capture/playback bridge + state/preempt publisher. Runs only when the `/sources/` toggle is on. |
+| `jasper-usbsink.service` (standby native daemon) | **~2 MB** | Intent-derived state/watchdog publisher; opens no PCM. Runs only when the `/sources/` toggle is on. |
 | `jasper-usbsink-volume.service` | non-real-time helper | Host volume observer; separate from the audio data plane. |
 | **Total new RAM for audio, on top of the gadget's own baseline** | **low single-digit MB** | The audio bridge is no longer a Python/PortAudio process. |
 
@@ -333,11 +412,12 @@ It is not the claiming `usb_low_latency_48k` data plane.
 - `jasper-usbgadget.service` (not `jasper-usbsink-init.service`, which is
   deleted) owns `modprobe libcomposite` and the ConfigFS descriptor for
   **both** functions. See HANDOFF-usb-gadget.md for the full truth table.
-- `jasper-usbsink.service` remains the disabled-by-default `/sources/`
-  intent unit for the **audio** function specifically. Toggling it now
-  also restarts `jasper-usbgadget.service` so the gadget recomposes with
-  or without `uac2.usb0` — see HANDOFF-usb-gadget.md "Toggling audio from
-  `/sources/`".
+- `jasper-usbsink.service` remains the disabled-by-default derived lifecycle
+  mirror for the **audio** function specifically. Canonical household intent
+  lives in `source_intent.env`; the shared coordinator owns its ordered
+  transition. See
+  [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md). Gadget
+  composition remains in HANDOFF-usb-gadget.md.
 - Doctor verification: `jasper-doctor`'s composite-aware checks (rewritten
   for the new model — see `jasper/cli/doctor/usbsink.py`) confirm gadget
   composition matches intent, rather than the old binary
@@ -403,10 +483,8 @@ Latency budget (updated 2026-07-01 for the Rust bridge, fan-in USB
 resampler, transport-pipe coupling, and Apple DAC-profile latency floor;
 component estimates only until a route-latency artifact exists):
 - Host → gadget USB endpoint: ~3-5 ms
-- `jasper-usbsink-audio` bridge: 256-frame ALSA period with a bounded
-  3-period ring. 128-frame periods and 256/2 failed on jts.local; 256/3
-  is the stable floor.
-- snd-aloop usbsink lane → fan-in: fan-in keeps the global 4096-frame
+- fan-in DIRECT capture: 256-frame ALSA period with a 768-frame buffer.
+- fan-in keeps the global 4096-frame
   input buffer because lower global input buffers (512/1024/2048/3072)
   failed the USB resampler lock tests and would regress AirPlay burst
   absorption. The USB resampler is the latency-control point, not the
@@ -429,16 +507,12 @@ component estimates only until a route-latency artifact exists):
   artifact from measured samples or aggregate p95/p99 values and bind it to the
   live route identity; it is not itself the audio measurement harness.
 
-> **Production low-latency knobs (2026-07-01).** The current claiming route
-> uses the Rust bridge with `JASPER_USBSINK_BLOCK_FRAMES=256` and
-> `JASPER_USBSINK_RING_PERIODS=3`. `JASPER_USBSINK_LATENCY=low` is now a route
-> hint/state label, not a PortAudio runtime selector. `JASPER_USBSINK_OUTPUT_MODE`
-> is always `aloop` now — the lean-FIFO (`fifo`) delivery variant and its
-> runtime flip were **deleted** (the Rust bridge has only the aloop lane; the
-> route reconciler records `aloop` for route identity and the daemon does not
-> read it). The production
-> `usb_low_latency_48k` route keeps USB in fan-in and uses the fan-in USB input
-> resampler plus direct ALSA loopback through Camilla/outputd. Env action validation lives
+> **Production low-latency knobs (updated 2026-07-14).** The current claiming
+> route owns USB geometry entirely in fan-in (`JASPER_FANIN_USB_DIRECT_*`). The
+> retired Rust bridge geometry/output-mode keys and generated usbsink env file
+> are deleted. The production `usb_low_latency_48k` route uses fan-in DIRECT
+> capture plus the fan-in USB input resampler, then the selected
+> fan-in→Camilla/outputd coupling. Env action validation lives
 > in `jasper.audio_runtime_plan`; the reconciler still owns the env write,
 > restart, and rollback. Grammar lives
 > in `.env.example`; the lane design is in
@@ -1004,33 +1078,30 @@ observer. **Decision: no new UsbSinkObserver.** Saves complexity.
 
 **Owner**: `jasper/source_state.py`.
 
-`usbsink_playing()` reads `/run/jasper-usbsink/state.json` and returns
-the daemon's `playing` flag. Since 2026-07-10 the bridge is standby-only
-on every box, so that flag is always the frozen idle default
-(`playing:false` / `rms_dbfs:-120`) — the live USB truth is fan-in's
-DIRECT lane, read through the combo helpers below. (The deleted solo /
-aloop path is where the bridge owned the gadget capture and
-`usbsink_playing()` was itself the truth.)
+`usbsink_playing()` reads a bounded `jasper-fanin` `STATUS` snapshot off the
+event loop and evaluates its `usbsink` DIRECT lane. The pure
+`usbsink_direct_playing()` helper requires an audible pre-mute `rms_dbfs` and,
+when the direct-health object is present, `direct.health == "capturing"`.
+Missing, malformed, non-direct, quiet, or unhealthy snapshots fail soft to
+`False`. The standby helper's `/run/jasper-usbsink/state.json` publishes a fixed
+compatibility `playing:false`; it is not an activity source.
 
-`JASPER_FANIN_USB_DIRECT=enabled` means jasper-fanin DIRECT-captures the
-gadget and `jasper-usbsink` runs in standby.
-The source-state module therefore also owns the pure helpers used by
-`jasper-mux`: `usbsink_bridge_in_standby()` gates combo mode from the
-bridge's `standby` flag; `usbsink_direct_frames_read()` extracts the
-direct-lane liveness counter from fan-in `STATUS`, preferring
-`resampler.input_frames` and falling back to lane-level `frames_read`;
-and `usbsink_direct_rms_dbfs()` / `usbsink_direct_audible()` read the
-direct lane's live per-period level (`rms_dbfs`, added to every fan-in
-`STATUS` input lane) and compare it against the shared
+The source-state module also owns the lower-level helpers used by `jasper-mux`:
+`usbsink_direct_frames_read()` extracts the direct-lane liveness counter from
+fan-in `STATUS`, preferring `resampler.input_frames` and falling back to
+lane-level `frames_read`; `usbsink_direct_rms_dbfs()` /
+`usbsink_direct_audible()` read the direct lane's live per-period level and
+compare it against the shared
 `USBSINK_PLAYING_RMS_DBFS` gate (`-60.0` dBFS — the single definition, in
 `jasper/source_state.py`; the solo bridge's Rust `PLAYING_RMS_DBFS` anchor
 was deleted 2026-07-11 with the solo path, and
 `tests/test_usbsink_playing_rms_contract.py` now pins the mux ↔ source_state
-identity + value of that one Python constant).
-The level gate exists because the fan-in DIRECT lane keeps
-clocking silence frames when the host is connected but muted (a muted Zoom,
-an idle tab), so **frames-advanced alone would seize the speaker on
-silence**, where a solo box reads `playing=false`.
+identity + value of that one Python constant). Mux combines the frame delta and
+level across ticks for debounced arbitration; the renderer probe below reports
+the current single-snapshot activity. The level gate exists because the fan-in
+DIRECT lane keeps clocking silence frames when the host is connected but muted
+(a muted Zoom, an idle tab), so **frames-advanced alone would seize the speaker
+on silence**.
 
 **Owner**: `jasper/renderer.py`. `active_renderers()` exports
 `usbsinkactive` from `usbsink_playing()`:
@@ -1052,9 +1123,10 @@ async def active_renderers(self) -> dict[str, bool]:
 }
 ```
 
-On combo boxes this raw renderer flag can stay false during live USB
-audio. Voice transport detection therefore prefers mux's
-`selected_source` / `winner` before falling back to raw renderer flags.
+`usbsinkactive` therefore reflects current fan-in USB activity rather than the
+standby helper's frozen value. Policy-aware callers still prefer mux's
+`selected_source` / `winner` when they need the audible winner rather than raw
+renderer activity.
 
 ### 4.5 Mux integration
 
@@ -1070,10 +1142,9 @@ The USB source-specific probe is combo-aware:
 
 ```python
 async def _usbsink_playing(self) -> bool:
-    state = read_usbsink_state()
-    if not usbsink_bridge_in_standby(state):
-        return await usbsink_playing()
     fanin = await self._fanin_status_best_effort()
+    if fanin is None:
+        return False
     frames = usbsink_direct_frames_read(fanin)
     rms_dbfs = usbsink_direct_rms_dbfs(fanin)
     self._usbsink_combo = step_combo_liveness(..., rms_dbfs=rms_dbfs)
@@ -1123,17 +1194,13 @@ if self._usbsink_preempted and no_other_sources_are_playing:
 
 > **Historical note.** This phase-plan sketch predates both the
 > local-source lifecycle registry and the composite gadget. Current code
-> treats `jasper-usbsink.service` as the `/sources/` intent unit for the
-> **audio function only**; the gadget descriptor (both network and audio
-> functions) is owned by `jasper-usbgadget.service`. Enabling/disabling
-> USB Audio Input from `/sources/` toggles `jasper-usbsink.service` **and**
-> restarts `jasper-usbgadget.service` so it recomposes with or without
-> `uac2.usb0` — see [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md)
-> "Toggling audio from `/sources/`". The always-on management network is
-> unaffected by this toggle either way. The toggle then also **kicks
-> `jasper-fanin-coupling-auto.service`** (start-only, via the restart broker)
-> so the USB low-latency combo arms/disarms this session rather than only at
-> the next reboot — see
+> treats `jasper-usbsink.service` as the derived lifecycle unit for the
+> **audio function only**; canonical preference is in `source_intent.env`, and
+> the gadget descriptor (both network and audio
+> functions) is owned by `jasper-usbgadget.service`. The current
+> enable/disable order, idempotence, and coupling kick are owned by
+> [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md); the always-on
+> management network is unaffected by the audio choice. See
 > [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) "USB DIRECT (combo
 > mode)".
 
@@ -1449,7 +1516,7 @@ the same size as the AEC bridge subsystem.
 ### Runtime fallback — combo → USB-unavailable on capture break
 
 **Current state (2026-07-10).** The USB combo (fan-in DIRECT-captures the gadget,
-the usbsink bridge in standby) is only *(re)resolved* on a config change — boot,
+the usbsink helper in standby) is only *(re)resolved* on a config change — boot,
 deploy, or a `/sources/` toggle (all three run
 `jasper-fanin-coupling-reconcile --auto`). Nothing re-resolved it on a **live**
 capture failure, so a gadget rebuilt underneath fan-in's open handle could leave
@@ -1511,10 +1578,17 @@ A real disarm *failure* still exits non-zero (that path holds the lock and does
 work), so it stays doctor-visible.
 
 **The action.** After brokenness **sustained across 2 consecutive ticks (~6 min)**,
-the reconciler — the single writer — disarms the combo exactly the way it arms it
-(the same `fanin.env` + `usbsink.env` writes + ordered fan-in/usbsink restarts).
-`JASPER_USBSINK_AUDIO_STANDBY` stays `1` (the daemon is standby-only, so disarming
-does **not** promote a bridge capture), so the box lands on **USB audio
+the watcher first writes the fallback marker and delegates the host-visible phase
+to the canonical source coordinator. While fan-in's direct consumer still exists,
+that owner stops/disables the derived USB readiness mirror and recomposes the
+composite gadget to NCM-only. Only after UAC2 is proven absent does the coupling
+reconciler disarm DIRECT exactly the way it arms it (the same `fanin.env` write
+plus ordered fan-in restart). If UAC2 withdrawal fails,
+the gadget is stopped fail-closed and the direct lane stays armed for retry; the
+health unit fails visibly rather than leaving an advertised endpoint without a
+consumer.
+The helper remains standby-only, so disarming does **not** promote a bridge
+capture; the box lands on **USB audio
 unavailable** — there is no aloop solo path to fall back to since 2026-07-10 — and
 writes a fallback marker (`/var/lib/jasper/usb_combo_fallback.json`, timestamp +
 reason).
@@ -1531,13 +1605,21 @@ that ever *sets* it.)
 **Observability.**
 - `/state.audio_graph.coupling.combo` → `{state: "armed"|"fallback"|"disarmed",
   fallback: {reason, at_epoch} | null}`.
-- `jasper-doctor`'s `check_usb_combo_fallback` cross-checks the usbsink INTENT
-  (`is-enabled`) vs the resolved `fanin.env` armed state vs the marker, flags a
+- `jasper-doctor`'s `check_usb_combo_fallback` cross-checks canonical USB source
+  intent plus effective role permission against the resolved `fanin.env` armed
+  state and the marker. Desired-On plus bonded-follower parking is therefore a
+  healthy disarmed state; desired-On on a solo/leader remains a warning when
+  disarmed, and malformed intent remains a failure. The check also flags a
   `jasper-usbsink.service` parked in the `failed` state, and (defect 2026-07-11)
   warns when the combo is armed but the watcher's `combo_health_tick.json`
   `consecutive_broken` count is non-zero — surfacing an in-progress genuine break
   BEFORE it disarms, so the repeated broken-tick WARNs no longer go unnoticed until
   an unexplained disarm.
+- Gadget composition and fan-in coupling both require canonical intent/role
+  authorization *and* the derived `jasper-usbsink.service` enablement readiness
+  mirror. Off dominates stale enabled state; desired-On with a stale/failed
+  disabled mirror leaves UAC2 and direct capture disarmed together instead of
+  creating a split-brain audio path.
 - `journalctl -u jasper-fanin-combo-health | grep event=fanin.combo_health`.
 
 **Unit hardening (rider).** `jasper-usbsink.service` gained
@@ -2057,7 +2139,12 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-07-12 (§4.1a rename path re-read against
+Verification history through 2026-07-14 (source-aware USB start/composition gates rechecked
+against canonical intent plus derived lifecycle readiness, with canonical Off
+dominance and NCM preserved; current USB lifecycle ownership rechecked against
+`jasper.source_intent` and linked to HANDOFF-source-lifecycle.md; this doc now
+retains audio data-plane truth rather than duplicating the coordinator order.
+Prior 2026-07-12 §4.1a rename path re-read against
 `jasper-usbgadget.service` + `speaker_setup._apply_name`; the composite gadget,
 not the deleted init unit, owns the best-effort name patch and active rename
 restart). Prior 2026-07-11 (§6 runtime-fallback brokenness definition corrected
@@ -2073,8 +2160,8 @@ bridge `:8781` listener + impulse tap, the bridge's solo `host_clock`, the
 `pcm.usbsink_substream` write alias, and the `check_usbsink_host_clock` /
 `check_usbsink_preempt_port_reachable` doctor checks. The fan-in lane
 `MUTE`/`UNMUTE` is now the only USB-silencing primitive; a runtime capture break
-disarms to USB-unavailable rather than an aloop bridge (`JASPER_USBSINK_AUDIO_STANDBY`
-stays `1`). Added the removed-2026-07-10 callout near the top; updated the top
+disarms to USB-unavailable rather than an aloop bridge. Added the
+removed-2026-07-10 callout near the top; updated the top
 block, §3.1, §3.3, §4.4, §4.5, and §6. Prior 2026-07-10: §3.3 + top blockquote
 updated for the fanin-native
 combo preempt: on a combo box mux `MUTE`/`UNMUTE usbsink` over fan-in's control
@@ -2115,3 +2202,5 @@ sweep); the Rust bridge is the sole data plane. The state.json field list above 
 includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)
+
+Last verified: 2026-07-14

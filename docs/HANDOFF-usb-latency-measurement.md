@@ -7,7 +7,7 @@ them, and the host/bench setup to reproduce it. For the *design* narrative
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) — this doc links to it
 rather than restating it.
 
-`Last verified: 2026-07-11` (§1 gained the 2026-07-11 certified promotion
+Verification history through 2026-07-11 (§1 gained the certified promotion
 result — p50 36.35 / p95 37.93 / p99 38.29 ms, 1094 impulses — as current
 truth, and the cert budget was tightened to p95<=40ms/p99<=42ms in
 `jasper/audio_runtime_plan.py`; §7's "aspirational ~40 ms gated on leads"
@@ -483,18 +483,11 @@ they're queued:
   first Windows validation session (below) forces feedback-endpoint work
   anyway (`usbaudio2.sys` is feedback-driven) — do both in one design pass
   rather than twice.
-- **Retire `jasper-usbsink-audio`'s duplicated state surface.** The
-  standby-only bridge still publishes a `state.json` whose `playing` /
-  `rms_dbfs` are frozen idle values (see AGENTS.md's USB Audio Input
-  section); live USB truth already comes from fan-in STATUS
-  (`usbsink_direct_frames_read` / `usbsink_direct_rms_dbfs`). Deriving
-  `/state.renderers.usbsink` fully from fan-in + sysfs `host_connected`, and
-  dropping the coupling reconciler's self-described "possibly droppable"
-  standby-env restart of the bridge (`_restart_usbsink` in
-  `jasper/fanin/coupling_reconcile.py`), would leave one USB state surface
-  instead of two. **Pickup trigger:** ride along the next time `/state`, the
-  `/sources/` wizard, or a doctor usbsink check is touched anyway — not
-  standalone urgency.
+- **Retired 2026-07-14: duplicated USB bridge/state surface.** The Rust helper
+  crate/binary and its frozen `state.json` are gone. `/state.renderers.usbsink`
+  now derives activity/level/mute from the identity-bound fan-in DIRECT lane and
+  `host_connected` from kernel UDC sysfs. `jasper-usbsink.service` remains only
+  as a process-free readiness/lifecycle marker.
 
 ### Rejected paths (do not re-chase)
 
@@ -561,7 +554,9 @@ conditions"; that section is the single source of truth, this is a pointer.
 
 ---
 
-Last verified: 2026-07-11 (§1 gained the 2026-07-11 certified promotion result
+Last verified: 2026-07-14 (the duplicated USB bridge/state retirement is marked
+complete and rechecked against fan-in STATUS + UDC sysfs ownership. Prior
+2026-07-11: §1 gained the certified promotion result
 as current truth and the cert budget was tightened to p95<=40ms/p99<=42ms in
 `jasper/audio_runtime_plan.py`; §7's aspirational-~40ms framing rewritten to
 "met at the electrical plane". Re-verified against `jasper/audio_runtime_plan.py`

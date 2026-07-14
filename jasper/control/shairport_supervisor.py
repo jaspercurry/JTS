@@ -309,14 +309,18 @@ class ShairportSupervisor:
     def shairport_parked_by_role(self) -> bool:
         """True when this speaker is an ACTIVE bonded follower — the
         dumb-follower profile parks shairport-sync, so the wedge probe
-        must idle. One tiny env read per tick via the shared predicate
-        (jasper.multiroom.config.follower_leader_addr); overridable in
-        tests. Fail-open to NOT-parked: a broken read must never
+        must idle. The grouping reconciler's fingerprinted effective-role fact
+        keeps a refused follower that safely landed solo under supervision;
+        missing/stale status still parks fail-safe. Overridable in tests.
+        Fail-open to NOT-parked: a broken read must never
         silently disable the wedge supervisor on a solo speaker."""
         try:
-            from ..multiroom.config import load_config, local_sources_parked
+            from ..multiroom.config import load_config
+            from ..multiroom.effective_role import (
+                effective_local_sources_park_reason,
+            )
 
-            return local_sources_parked(load_config())
+            return effective_local_sources_park_reason(load_config()) is not None
         except Exception:  # noqa: BLE001 — fail-open, keep supervising
             return False
 
@@ -396,10 +400,14 @@ class ShairportSupervisor:
         return state in {"disabled", "masked", "masked-runtime"}
 
     async def restart_shairport(self) -> None:
-        """`reset-failed` clears StartLimitBurst parking; `--no-block
-        restart` returns as soon as the job is enqueued so we don't sit
-        for shairport's full stop timeout (default 90 s). The next
-        probe (~30 s out) confirms the restart took."""
+        """`reset-failed` clears StartLimitBurst parking; `--no-block restart`
+        returns as soon as the recovery job is enqueued.
+
+        A fully dead desired-On receiver must be started, so active-only
+        ``try-restart`` is insufficient. A concurrent source Off/role park still
+        wins at the final systemd start boundary because both AirPlay units carry
+        the canonical source-intent/effective-role ExecCondition.
+        """
         reset = await asyncio.create_subprocess_exec(
             "systemctl", "reset-failed",
             "shairport-sync.service", "nqptp.service",

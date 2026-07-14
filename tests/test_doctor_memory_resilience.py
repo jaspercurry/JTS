@@ -478,7 +478,6 @@ _PID_MAP = {
     "jasper-fanin": "1003",
     "jasper-aec-bridge": "1004",
     "jasper-control": "1005",
-    "jasper-usbsink": "1006",
     "jasper-voice": "1007",
     "jasper-camilla-crossover": "1008",
     "nginx": "1009",
@@ -497,7 +496,6 @@ _EXPECTED_CONFIG = {
     "jasper-fanin": "-800",
     "jasper-aec-bridge": "-700",
     "jasper-control": "-600",
-    "jasper-usbsink": "-600",
     "jasper-voice": "-500",
     "jasper-camilla-crossover": "-500",
     "nginx": "-450",
@@ -573,8 +571,8 @@ def test_oom_score_adj_skips_units_not_installed_on_streambox():
     assert r.status == "ok", r.detail
     for unit in absent:
         assert unit not in r.detail
-    # The remaining 12 installed daemons are still verified.
-    assert "12 critical daemons protected" in r.detail
+    # The remaining 11 installed daemons are still verified.
+    assert "11 critical daemons protected" in r.detail
 
 
 def test_oom_score_adj_warns_on_present_drift_with_others_absent():
@@ -611,7 +609,7 @@ def test_oom_score_adj_warns_on_present_drift_with_others_absent():
 
 _LIVE_OK = {
     "1001": "-950", "1002": "-900", "1003": "-800",
-    "1004": "-700", "1005": "-600", "1006": "-600",
+    "1004": "-700", "1005": "-600",
     "1007": "-500", "1008": "-500", "1009": "-450",
     "1010": "-300", "1011": "-300", "1012": "-300",
     "1013": "-300", "1014": "-300",
@@ -633,7 +631,7 @@ def test_oom_score_adj_all_match():
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
-    assert "16 critical daemons protected" in r.detail
+    assert "15 critical daemons protected" in r.detail
 
 
 def test_oom_score_adj_warns_if_sshd_drifts():

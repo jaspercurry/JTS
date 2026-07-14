@@ -9,24 +9,29 @@ reworked for the composite-gadget model (docs/HANDOFF-usb-gadget.md). The
 gadget is now ``jasper-usbgadget.service`` — a single ConfigFS owner that
 composes up to two functions onto one UDC: ``ncm.usb0`` (the always-on USB
 management network) and ``uac2.usb0`` (the wizard-toggled USB Audio Input,
-still owned by ``jasper-usbsink.service``). The old invariant "libcomposite
-loaded <=> usbsink active" no longer holds — libcomposite can be loaded for
-the network function alone with the audio daemon fully off. The checks below
+whose readiness marker is ``jasper-usbsink.service``). The old invariant
+"libcomposite loaded <=> usbsink active" no longer holds — libcomposite can be
+loaded for the network function alone with USB audio fully off. The checks below
 compare observed gadget/function state against the *composed intent*
-(network kill-switch + audio enablement + follower-park gate), mirroring the
-truth table ``jasper-usbgadget-up``/``jasper-usbgadget-wanted`` compute.
-``check_usbsink_low_latency_contract`` is unchanged byte-for-byte — its UAC2
-attribute contract does not depend on which other function is composed
-alongside it."""
+(network kill-switch + canonical audio authorization + derived lifecycle
+readiness), mirroring the truth table
+``jasper-usbgadget-up``/``jasper-usbgadget-wanted`` compute.
+``check_usbsink_low_latency_contract`` reads the actual fan-in direct-capture
+lane; the oneshot marker is lifecycle/readiness state, not data-plane liveness
+or latency evidence."""
 from __future__ import annotations
 
 import json
-import math
 import os
 from pathlib import Path
 
 from jasper.audio_runtime_plan import UAC2_LOW_LATENCY_EXPECTED_ATTRS
 from jasper.audio_validation import route_live_state_issues
+from jasper.fanin.status import fanin_usbsink_lane_is_direct, read_fanin_status
+from jasper.music_sources import Source
+from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET, read_status_socket
+from jasper.source_intent import source_intent_enabled
+from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR, udc_host_connected
 
 from ._registry import doctor_check
 from ._shared import CheckResult, _parked_as_bonded_follower, _run
@@ -37,24 +42,13 @@ USBSINK_GADGET_PATH = Path("/sys/kernel/config/usb_gadget/jts-usb-audio")
 UAC2_EXPECTED_LOW_LATENCY_ATTRS = UAC2_LOW_LATENCY_EXPECTED_ATTRS
 
 
-def _format_rms_dbfs(raw: object) -> tuple[str | None, str | None]:
-    if raw is None:
-        return "unknown", None
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return None, f"rms_dbfs not numeric: {raw!r}"
-    value = float(raw)
-    if not math.isfinite(value):
-        return None, f"rms_dbfs not finite: {raw!r}"
-    return f"{value:.1f}", None
-
-
 def _systemd_is_active(unit: str) -> bool:
     """Wrapper around `systemctl is-active`. Cheap; ~5 ms per call."""
     return _run(["systemctl", "is-active", unit]).stdout.strip() == "active"
 
 def _systemd_is_failed(unit: str) -> bool:
     """Wrapper around `systemctl is-failed`. True when the unit is parked in the
-    `failed` state (e.g. Restart=on-failure exhausted its StartLimit). Cheap."""
+    `failed` state. Cheap."""
     return _run(["systemctl", "is-failed", unit]).stdout.strip() == "failed"
 
 def _module_loaded(name: str) -> bool:
@@ -102,19 +96,41 @@ def _network_wanted() -> bool:
 
 
 def _audio_wanted() -> tuple[bool, str]:
-    """Mirror ``jasper-usbgadget-up``'s audio half of the truth table.
+    """Return canonical USB-audio authorization before lifecycle readiness.
 
-    Wanted when the /sources intent unit (``jasper-usbsink.service``) is
-    enabled AND local sources are allowed (a bonded follower parks it).
-    Returns ``(wanted, reason)`` — reason is one of the three the bash
-    script logs (``enabled`` / ``parked_follower`` / ``intent_disabled``)
-    so check details can explain *why* audio isn't composed without a
-    second probe."""
-    enabled = _run(["systemctl", "is-enabled", "--quiet", USBSINK_UNIT]).returncode == 0
+    Wanted when the canonical /sources intent is enabled AND local sources are
+    allowed (a bonded follower parks it). Unit enablement is derived state and
+    is checked separately where drift matters.
+    Returns ``(wanted, reason)`` so callers can distinguish intent Off,
+    follower parking, invalid intent, and effective authorization."""
+    try:
+        enabled = source_intent_enabled(Source.USBSINK)
+    except RuntimeError as exc:
+        return False, f"intent_invalid:{exc}"
     if not enabled:
         return False, "intent_disabled"
     if _parked_as_bonded_follower():
         return False, "parked_follower"
+    return True, "enabled"
+
+
+def _audio_composition_wanted() -> tuple[bool, str]:
+    """Apply every gadget audio-readiness gate to authorization.
+
+    Keep this in lockstep with ``jasper-usbgadget-up`` and
+    ``jasper-usbgadget-wanted``: advertising UAC2 is safe only after canonical
+    authorization, derived unit enablement, and a live fan-in DIRECT consumer.
+    """
+
+    allowed, reason = _audio_wanted()
+    if not allowed:
+        return False, reason
+    if _run(
+        ["systemctl", "is-enabled", "--quiet", USBSINK_UNIT]
+    ).returncode != 0:
+        return False, "derived_unit_disabled"
+    if not fanin_usbsink_lane_is_direct(read_fanin_status(timeout_sec=1.0)):
+        return False, "direct_lane_unarmed"
     return True, "enabled"
 
 @doctor_check(order=57, group="usbsink")
@@ -158,14 +174,10 @@ def check_usbsink_dtoverlay() -> CheckResult:
 
 @doctor_check(order=58, group="usbsink")
 def check_usbsink_state() -> CheckResult:
-    """Status check for jasper-usbsink.service.
-
-    When the service is active, verify the state file is being
-    written recently (catches a wedged daemon that's somehow still
-    showing active to systemd).
+    """Check the USB readiness marker against observed gadget state.
 
     When the service is inactive, verify the host-visible *audio* function
-    (uac2.usb0) is also absent. A composed uac2.usb0 with the bridge down is
+    (uac2.usb0) is also absent. A composed uac2.usb0 with the marker down is
     a split-brain source state: computers still see JTS as USB audio while
     /sources can otherwise appear off. The composite gadget itself
     (jasper-usbgadget.service / ConfigFS dir) legitimately persists for the
@@ -197,7 +209,7 @@ def check_usbsink_state() -> CheckResult:
         return CheckResult(
             "usbsink state",
             "ok",
-            "parked (bonded follower) — bridge and uac2.usb0 function down"
+            "parked (bonded follower) — readiness marker and uac2.usb0 function down"
             + (" (gadget may still carry ncm.usb0 for the management network)"
                if USBSINK_GADGET_PATH.exists() else ""),
         )
@@ -207,7 +219,7 @@ def check_usbsink_state() -> CheckResult:
             return CheckResult(
                 "usbsink state",
                 "fail",
-                "bridge inactive but USB Audio Input is still advertised "
+                "readiness marker inactive but USB Audio Input is still advertised "
                 "(uac2.usb0 function present in the composite gadget). "
                 "Toggle USB Audio Input off in /sources/ or run "
                 "`sudo systemctl restart jasper-usbgadget.service` so "
@@ -228,71 +240,20 @@ def check_usbsink_state() -> CheckResult:
             "always-on USB management network — see check_usbgadget_composition)",
         )
 
-    # Service is active. Verify the daemon is publishing state.
-    state_path = Path("/run/jasper-usbsink/state.json")
-    if not state_path.exists():
-        return CheckResult(
-            "usbsink state", "fail",
-            f"service active but {state_path} missing — daemon may "
-            "have crashed before publishing. Check "
-            "`systemctl status jasper-usbsink` and journalctl.",
-        )
-    try:
-        data = json.loads(state_path.read_text())
-    except (OSError, json.JSONDecodeError) as e:
-        return CheckResult(
-            "usbsink state", "fail",
-            f"can't parse {state_path}: {e}",
-        )
-    updated_str = data.get("updated_at")
-    if not updated_str:
-        return CheckResult(
-            "usbsink state", "warn",
-            "state file has no updated_at field — schema drift?",
-        )
-    try:
-        from datetime import datetime, timezone
-        updated = datetime.fromisoformat(updated_str)
-        age = (datetime.now(timezone.utc) - updated).total_seconds()
-    except (ValueError, TypeError):
-        return CheckResult(
-            "usbsink state", "warn",
-            f"updated_at not ISO 8601: {updated_str!r}",
-        )
-    # State publisher writes at 1 Hz. >10 s of staleness = wedge.
-    if age > 10:
-        return CheckResult(
-            "usbsink state", "warn",
-            f"state file {age:.0f} s stale; daemon may be wedged "
-            "(systemd watchdog should catch it within 15 s — check "
-            "again in a moment)",
-        )
-    rms_text, rms_error = _format_rms_dbfs(data.get("rms_dbfs"))
-    if rms_error is not None:
+    if not uac2_present:
         return CheckResult(
             "usbsink state",
-            "warn",
-            f"{rms_error} — schema drift?",
+            "fail",
+            "readiness marker active but uac2.usb0 is absent — restart "
+            f"{USBGADGET_UNIT} so the marker re-runs its bounded card gate.",
         )
-    if data.get("standby"):
-        # Combo box: jasper-fanin DIRECT-captures the gadget and the bridge
-        # stands by (JASPER_USBSINK_AUDIO_STANDBY=1, opens no PCM), so its
-        # playing/rms_dbfs are frozen idle defaults that measure nothing — the
-        # live audio flows through fan-in's direct lane. Report combo mode rather
-        # than the meaningless numbers, so this diagnostic matches the honest
-        # /state.renderers.usbsink projection (combo=true, playing/rms nulled)
-        # instead of reading as "USB connected but silent" while it plays.
-        return CheckResult(
-            "usbsink state", "ok",
-            "active (USB combo mode — jasper-fanin direct-captures the gadget; "
-            "bridge in standby, playing/rms_dbfs not measured here) "
-            f"host_connected={data.get('host_connected')}",
-        )
+    connected = udc_host_connected(
+        os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR),
+    )
     return CheckResult(
         "usbsink state", "ok",
-        f"active, playing={data.get('playing')} "
-        f"host_connected={data.get('host_connected')} "
-        f"rms_dbfs={rms_text}",
+        "readiness marker active; uac2.usb0 composed; "
+        f"host_connected={connected} (activity/level owned by fan-in STATUS)",
     )
 
 @doctor_check(order=59, group="usbsink")
@@ -320,7 +281,7 @@ def check_usbsink_card() -> CheckResult:
 
 @doctor_check(order=59.5, group="usbsink")
 def check_usbsink_low_latency_contract() -> CheckResult:
-    """When the route claims low latency, verify the USB bridge contract."""
+    """When the route claims low latency, verify the live USB data plane."""
 
     from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
 
@@ -332,43 +293,53 @@ def check_usbsink_low_latency_contract() -> CheckResult:
             f"route_profile={plan.route_profile.route_id} has no USB low-latency claim",
         )
 
-    state_path = Path("/run/jasper-usbsink/state.json")
-    if not state_path.exists():
+    audio_wanted, audio_reason = _audio_wanted()
+    if not audio_wanted:
+        if audio_reason.startswith("intent_invalid:"):
+            return CheckResult(
+                "usbsink low-latency contract",
+                "fail",
+                f"USB source intent is invalid: {audio_reason.removeprefix('intent_invalid:')}",
+            )
         return CheckResult(
             "usbsink low-latency contract",
-            "fail",
-            f"route_profile={plan.route_profile.route_id} requires Rust bridge state at {state_path}",
+            "ok",
+            "live USB low-latency check not applicable: "
+            f"route_profile={plan.route_profile.route_id}, {audio_reason}",
         )
+
     try:
-        data = json.loads(state_path.read_text())
-    except (OSError, json.JSONDecodeError) as e:
+        fanin_status = read_status_socket(FANIN_STATUS_SOCKET)
+    except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as e:
         return CheckResult(
             "usbsink low-latency contract",
             "fail",
-            f"can't parse {state_path}: {e}",
-        )
-    if data.get("implementation") != "rust":
-        return CheckResult(
-            "usbsink low-latency contract",
-            "fail",
-            "usb_low_latency_48k requires implementation='rust' in "
-            f"{state_path}; got {data.get('implementation')!r}",
+            f"can't read fan-in STATUS at {FANIN_STATUS_SOCKET}: {e}",
         )
     live_issues = tuple(
-        issue
-        for issue in route_live_state_issues(
+        route_live_state_issues(
             plan.route_latency_identity(),
-            usbsink_state=data,
+            fanin_status=fanin_status,
+            allow_idle_direct_lane=True,
         )
-        if issue.startswith("live_usbsink_")
     )
     if live_issues:
         return CheckResult(
             "usbsink low-latency contract",
             "fail",
-            "usb_low_latency_48k live Rust bridge state does not match route "
+            "usb_low_latency_48k live fan-in direct-capture state does not match route "
             f"identity: {list(live_issues)}",
         )
+
+    lane = next(
+        (
+            item
+            for item in fanin_status.get("inputs", [])
+            if isinstance(item, dict) and item.get("label") == "usbsink"
+        ),
+        {},
+    )
+    direct = lane.get("direct") if isinstance(lane, dict) else {}
 
     missing: list[str] = []
     mismatched: list[str] = []
@@ -386,8 +357,8 @@ def check_usbsink_low_latency_contract() -> CheckResult:
         if observed != expected:
             mismatched.append(f"{name}={observed!r} expected={expected!r}")
     detail = (
-        f"route_profile={plan.route_profile.route_id}, implementation=rust, "
-        f"ring={data.get('ring')}, counters={data.get('counters')}"
+        f"route_profile={plan.route_profile.route_id}, fanin_source=direct, "
+        f"direct={direct}"
     )
     if mismatched:
         return CheckResult(
@@ -413,9 +384,11 @@ def check_usb_combo_fallback() -> CheckResult:
 
     Three facts that must agree on a healthy combo box:
 
-    1. INTENT — ``jasper-usbsink.service`` is enabled (the household turned USB
-       Audio Input on; the same signal the coupling reconciler's combo arming
-       reads).
+    1. EFFECTIVE PERMISSION — canonical ``source_intent.env`` says USB Audio
+       Input is On *and* the current grouping role allows local sources.
+       Desired-On on a bonded follower is intentionally parked, not drift.
+       ``jasper-usbsink.service`` enablement is a derived composition mirror,
+       not a second preference store. Invalid intent remains a loud failure.
     2. RESOLVED — ``fanin.env`` carries ``JASPER_FANIN_USB_DIRECT=enabled`` (the
        reconciler armed the combo so fan-in DIRECT-captures the gadget).
     3. FALLBACK — the runtime watcher's marker
@@ -425,16 +398,16 @@ def check_usb_combo_fallback() -> CheckResult:
 
     Reported outcomes:
 
-    - ``fail`` — ``jasper-usbsink.service`` is in the ``failed`` state (the
-      StartLimit hardening rider's target: a flap that parked the intent unit; USB
-      audio is dead until a restart).
+    - ``fail`` — ``jasper-usbsink.service`` is in the ``failed`` state (its
+      composed-function or bounded ALSA-card readiness gate failed; USB audio is
+      unavailable until the gadget is reconciled).
     - ``warn`` — the fallback marker is present (combo disarmed — USB audio
       unavailable; surfaces the reason + how it recovers), OR the combo is armed but
       the runtime watcher has a non-zero consecutive-broken count (a real
       direct-capture break in progress, surfaced before it disarms — defect
-      2026-07-11), OR intent is on + gadget present but the combo was never armed
-      (the coupling kick did not land — the PR #1197 nit: a failed wizard kick
-      otherwise leaves no durable surface).
+      2026-07-11), OR USB audio is effectively wanted + gadget present but the
+      combo was never armed (the coupling kick did not land — the PR #1197 nit:
+      a failed wizard kick otherwise leaves no durable surface).
     - ``ok`` — armed coherently, or cleanly disarmed (USB audio off / non-gadget
       box), with no marker and no failed unit.
 
@@ -448,13 +421,13 @@ def check_usb_combo_fallback() -> CheckResult:
         read_boot_config_gadget_present,
     )
 
-    # 1. A failed bridge unit is the most actionable state — report first.
+    # 1. A failed readiness-marker unit is the most actionable state — report first.
     if _systemd_is_failed(USBSINK_UNIT):
         return CheckResult(
             "usb combo fallback", "fail",
-            f"{USBSINK_UNIT} is in the failed state — the USB audio bridge parked "
-            "(likely a fast gadget unplug/replug flap that exhausted the restart "
-            "limit). USB audio is dead until recovery: "
+            f"{USBSINK_UNIT} is in the failed state — the USB readiness marker "
+            "did not pass its composed-function/card gate. USB audio is unavailable "
+            "until recovery: "
             "`sudo systemctl reset-failed jasper-usbsink && sudo systemctl restart "
             "jasper-usbgadget`.",
         )
@@ -471,9 +444,14 @@ def check_usb_combo_fallback() -> CheckResult:
         )
 
     gadget = read_boot_config_gadget_present()
-    intent_enabled = (
-        _run(["systemctl", "is-enabled", "--quiet", USBSINK_UNIT]).returncode == 0
-    )
+    audio_wanted, audio_reason = _audio_wanted()
+    if audio_reason.startswith("intent_invalid:"):
+        return CheckResult(
+            "usb combo fallback",
+            "fail",
+            "USB Audio Input source intent is invalid or unreadable: "
+            + audio_reason.removeprefix("intent_invalid:"),
+        )
     from jasper.env_file import read_value
     from jasper.fanin.coupling_reconcile import FANIN_ENV_PATH
 
@@ -489,21 +467,22 @@ def check_usb_combo_fallback() -> CheckResult:
             "usb combo fallback", "ok",
             "no USB gadget dtoverlay — combo not applicable (see 'usbsink dtoverlay')",
         )
-    if intent_enabled and not armed:
+    if audio_wanted and not armed:
         return CheckResult(
             "usb combo fallback", "warn",
-            "USB Audio Input is on and the gadget is present, but the combo is NOT "
-            "armed in fanin.env (JASPER_FANIN_USB_DIRECT != enabled) and no fallback "
-            "marker is set — the coupling reconcile likely did not run (a failed "
-            "post-toggle kick). Re-run the /sources/ toggle or `sudo systemctl start "
-            "jasper-fanin-coupling-auto.service`.",
+            "USB Audio Input is effectively wanted (intent enabled and role "
+            "allowed) and the gadget is present, but the combo is NOT armed in "
+            "fanin.env (JASPER_FANIN_USB_DIRECT != enabled) and no fallback marker "
+            "is set — the coupling reconcile likely did not run (a failed "
+            "post-toggle kick). Re-run the /sources/ toggle or `sudo systemctl "
+            "start jasper-fanin-coupling-auto.service`.",
         )
-    if armed and not intent_enabled:
+    if armed and not audio_wanted:
         return CheckResult(
             "usb combo fallback", "warn",
-            "combo is armed in fanin.env but USB Audio Input intent is off — a "
-            "stale arm. `sudo systemctl start jasper-fanin-coupling-auto.service` "
-            "to reconcile.",
+            f"combo is armed in fanin.env but USB Audio Input is not effectively "
+            f"wanted ({audio_reason}) — a stale arm. `sudo systemctl start "
+            "jasper-fanin-coupling-auto.service` to reconcile.",
         )
     if armed:
         # Surface an IN-PROGRESS break before it disarms (defect 2026-07-11): the
@@ -529,13 +508,13 @@ def check_usb_combo_fallback() -> CheckResult:
             )
         return CheckResult(
             "usb combo fallback", "ok",
-            "combo armed (fan-in direct-captures the gadget; usbsink bridge in "
-            "standby) — no runtime fallback.",
+            "combo armed (fan-in direct-captures the gadget as the sole live "
+            "ingress owner) — no runtime fallback.",
         )
     return CheckResult(
         "usb combo fallback", "ok",
-        "combo disarmed (USB Audio Input off) — the fan-in DIRECT lane is off and "
-        "the bridge is in standby (USB audio inactive, as intended).",
+        f"combo disarmed (USB Audio Input {audio_reason}) — the fan-in DIRECT lane "
+        "is off (USB audio inactive, as intended).",
     )
 
 @doctor_check(order=62, group="usbsink")
@@ -618,13 +597,13 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
 @doctor_check(order=60, group="usbsink")
 def check_usbsink_active_libcomposite() -> CheckResult:
     """The mirror of check_usbsink_state's RAM-drift check: when the
-    daemon IS active but libcomposite is NOT loaded, the daemon will
-    appear running to systemd but audio won't flow (no gadget = no
+    readiness marker IS active but libcomposite is NOT loaded, the marker will
+    appear active to systemd but audio won't flow (no gadget = no
     capture endpoint) regardless of whether the composite gadget also
     carries the network function. This asymmetry can happen if a user
     manually `rmmod libcomposite` while the daemon is up, or if
     jasper-usbgadget.service succeeded its modprobe but a subsequent
-    reload unloaded the module. The jasper-usbgadget ↔ daemon
+    reload unloaded the module. The jasper-usbgadget ↔ marker
     Requires=/After= chain normally prevents this, but a manual
     override breaks the invariant."""
     if not _systemd_is_active("jasper-usbsink.service"):
@@ -640,7 +619,7 @@ def check_usbsink_active_libcomposite() -> CheckResult:
     return CheckResult(
         "usbsink active+modules", "fail",
         "service active but libcomposite NOT loaded — audio won't "
-        "flow even though the daemon appears healthy to systemd. "
+        "flow even though the readiness marker appears healthy to systemd. "
         f"Run `systemctl restart {USBGADGET_UNIT}` to "
         "re-load the kernel module and re-compose the gadget.",
     )
@@ -652,17 +631,18 @@ def check_usbgadget_composition() -> CheckResult:
     jasper-usbgadget-up computes a function truth table once at start (see
     docs/HANDOFF-usb-gadget.md):
 
-      network intent   audio intent         composed functions
-      --------------   -------------------  --------------------
-      enabled          enabled/allowed      ncm.usb0 + uac2.usb0
-      enabled          off/parked follower  ncm.usb0
-      disabled         enabled/allowed      uac2.usb0 (legacy shape)
-      disabled         off/parked follower  none (unit skips via ExecCondition)
+      network intent   audio authorized+ready    composed functions
+      --------------   ------------------------  --------------------
+      enabled          yes                       ncm.usb0 + uac2.usb0
+      enabled          no / not ready            ncm.usb0
+      disabled         yes                       uac2.usb0 (legacy shape)
+      disabled         no / not ready            none (ExecCondition skip)
 
-    This check recomputes the same intent in Python (network kill-switch env
-    + `systemctl is-enabled jasper-usbsink` + the follower-park gate — the
-    same predicates the bash truth table reads) and compares it against the
-    observed ConfigFS function directories. It is the composite-era
+    This check recomputes the same desired composition in Python: network
+    kill-switch plus canonical USB source intent/role authorization, the
+    coordinator-derived unit-enablement mirror, and live fan-in DIRECT
+    readiness. It compares that against the observed ConfigFS function
+    directories. It is the composite-era
     replacement for the old "libcomposite loaded <=> usbsink active"
     invariant, which stopped holding the moment the network function could
     be composed alone. check_usbsink_state/check_usbsink_active_libcomposite
@@ -690,7 +670,14 @@ def check_usbgadget_composition() -> CheckResult:
         )
 
     want_network = _network_wanted()
-    want_audio, audio_reason = _audio_wanted()
+    want_audio, audio_reason = _audio_composition_wanted()
+    if audio_reason.startswith("intent_invalid:"):
+        return CheckResult(
+            label,
+            "fail",
+            "USB Audio Input source intent is invalid or unreadable: "
+            + audio_reason.removeprefix("intent_invalid:"),
+        )
     ncm_present = _ncm_function_path().exists()
     uac2_present = _uac2_function_path().exists()
     intent = f"network={want_network} audio={want_audio} ({audio_reason})"
@@ -728,109 +715,3 @@ def check_usbgadget_composition() -> CheckResult:
             f"Run `systemctl restart {USBGADGET_UNIT}` to recompose.",
         )
     return CheckResult(label, "ok", f"composition matches intent ({intent})")
-
-def _unit_main_start_epoch(unit: str) -> float | None:
-    """Wall-clock epoch (seconds) when ``unit``'s main process last started, or None.
-
-    Derived from systemd's ``ExecMainStartTimestampMonotonic`` (µs since boot) plus
-    ``/proc/uptime`` so the comparison is boot-relative and immune to wall-clock
-    steps (NTP jumps) between start and now: ``boot_epoch = now - uptime`` then
-    ``start_epoch = boot_epoch + start_us/1e6``. Returns None when the field is
-    absent / unparsable / ``0`` (never started) or ``/proc/uptime`` is unreadable —
-    the caller then skips the drift check rather than guessing.
-    """
-    import time
-
-    out = _run(
-        [
-            "systemctl", "show", unit,
-            "-p", "ExecMainStartTimestampMonotonic", "--value",
-        ]
-    )
-    raw = out.stdout.strip()
-    if not raw.isdigit():
-        return None
-    start_us = int(raw)
-    if start_us == 0:  # not currently running under this main PID
-        return None
-    try:
-        with open("/proc/uptime", encoding="utf-8") as fh:
-            uptime = float(fh.read().split()[0])
-    except (OSError, ValueError, IndexError):
-        return None
-    boot_epoch = time.time() - uptime
-    return boot_epoch + start_us / 1_000_000.0
-
-
-# The reconciler writes usbsink.env then restarts the daemon in the same call, so
-# on a converged box the daemon start is comfortably AFTER the env mtime. Require
-# the env to be newer than the start by this margin before calling it drift, so a
-# within-the-same-second write→restart ordering can't read as a false positive.
-_USBSINK_ENV_DRIFT_SLACK_SEC = 5.0
-
-
-@doctor_check(order=61.5, group="usbsink")
-def check_usbsink_env_drift() -> CheckResult:
-    """Catch jasper-usbsink running STALE env after a rate-limited reconcile (defect D).
-
-    ``jasper-audio-hardware-reconcile`` rewrites ``usbsink.env`` whenever the route
-    profile changes, then try-restarts the daemon — but that restart is rate-limited
-    (a usbsink restart recomposes the USB gadget → a fresh udev card-add → the
-    reconciler runs again; the limiter breaks that storm). When the limiter REFUSES,
-    the env file has already been rewritten while the daemon keeps the old geometry,
-    and nothing schedules a retry — convergence would otherwise wait unbounded for
-    the next udev event / boot / manual run ("I changed the route and nothing
-    happened"). This standing check makes that drift observable: if usbsink.env's
-    mtime is newer than the running daemon's start, the daemon is serving stale env.
-
-    Skips cleanly when USB Audio isn't wanted (disabled / parked follower — the env
-    is irrelevant), when the daemon isn't active, or when the daemon start time /
-    env mtime can't be read (indeterminate → don't guess). Remediation is a single
-    restart: the limiter only damps automatic reconciler churn, not an operator
-    action.
-    """
-    wanted, reason = _audio_wanted()
-    if not wanted:
-        return CheckResult(
-            "usbsink env drift", "ok",
-            f"USB Audio not active ({reason}) — env drift irrelevant",
-        )
-    if not _systemd_is_active(USBSINK_UNIT):
-        return CheckResult(
-            "usbsink env drift", "ok",
-            "service enabled but not active — env drift check skipped",
-        )
-
-    from jasper.fanin.coupling_reconcile import USBSINK_ENV_PATH
-
-    try:
-        env_mtime = os.stat(USBSINK_ENV_PATH).st_mtime
-    except OSError:
-        # No env file → the daemon runs on defaults; there is nothing to drift from.
-        return CheckResult(
-            "usbsink env drift", "ok",
-            f"{USBSINK_ENV_PATH} absent — daemon on defaults, no drift",
-        )
-
-    start_epoch = _unit_main_start_epoch(USBSINK_UNIT)
-    if start_epoch is None:
-        return CheckResult(
-            "usbsink env drift", "ok",
-            "daemon start time unavailable — drift check skipped",
-        )
-
-    drift = env_mtime - start_epoch
-    if drift > _USBSINK_ENV_DRIFT_SLACK_SEC:
-        return CheckResult(
-            "usbsink env drift", "warn",
-            f"{USBSINK_ENV_PATH} was rewritten {drift:.0f} s AFTER jasper-usbsink "
-            "started — the daemon is serving stale route env (a reconcile restart "
-            "was likely rate-limited). Run `sudo systemctl restart "
-            "jasper-usbsink.service jasper-usbsink-volume.service` to converge (the "
-            "reconciler's limiter only damps automatic churn, not this manual "
-            "restart).",
-        )
-    return CheckResult(
-        "usbsink env drift", "ok",
-        "daemon started after the current usbsink.env (running live route env)",
-    )

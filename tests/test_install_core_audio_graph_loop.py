@@ -16,11 +16,14 @@ The fragment is sourced into a harness with stub install.sh globals (REPO_DIR,
 SYSTEMD_DIR) plus `install`/`systemctl` shimmed to record calls into log files,
 so the loop is exercised hardware-free and root-free.
 """
+
 from __future__ import annotations
 
 import re
 import subprocess
 from pathlib import Path
+
+from jasper import source_intent
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
@@ -93,7 +96,9 @@ def _run(tmp_path: Path, *, fail_basename: str | None):
     script = _harness(tmp_path, fail_basename=fail_basename)
     return subprocess.run(
         ["bash", "-c", script],
-        capture_output=True, text=True, timeout=20,
+        capture_output=True,
+        text=True,
+        timeout=20,
     )
 
 
@@ -101,8 +106,11 @@ def _attempted_dsts(tmp_path: Path) -> set[str]:
     log = tmp_path / "install.log"
     if not log.exists():
         return set()
-    return {Path(line.replace("FAIL ", "").strip()).name
-            for line in log.read_text().splitlines() if line.strip()}
+    return {
+        Path(line.replace("FAIL ", "").strip()).name
+        for line in log.read_text().splitlines()
+        if line.strip()
+    }
 
 
 def test_all_units_installed_on_clean_run(tmp_path):
@@ -155,7 +163,8 @@ def test_full_profile_does_not_duplicate_shared_install_rows() -> None:
     source = FRAGMENT.read_text()
     full = source.split("install_systemd_units() {", 1)[1]
     table = source.split("JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(", 1)[1].split(
-        "\n)\n", 1,
+        "\n)\n",
+        1,
     )[0]
     shared_sources = re.findall(r'"(?:0644|0755) ([^ ]+) ', table)
     assert shared_sources
@@ -175,30 +184,62 @@ def _function_body(source: str, name: str) -> str:
     return m.group(1)
 
 
-def test_both_profiles_reapply_source_intent_after_renderer_restart():
-    """S1 regression: a deploy unconditionally re-`enable`s + `restart`s
-    shairport-sync/librespot. If a household disabled AirPlay/Spotify via
-    /sources/, that re-enables AND re-starts the disabled source while
-    source_intent.env still records the disable. BOTH install profiles must
-    therefore re-apply the persisted intent (with --stop-disabled) AFTER that
-    renderer restart, so a disabled source ends disabled and stopped."""
+def test_both_profiles_refresh_only_active_sources_then_reapply_intent():
+    """A deploy must never transiently start a household-Off renderer.
+
+    The coordinator now owns persistent and runtime state for every source,
+    including Bluetooth RF-kill recovery. Both profiles must enable its boot
+    unit and run it after active-only refreshes. It alone starts desired-on
+    sources and repairs any stale derived state.
+    """
     source = FRAGMENT.read_text()
     for fn in ("start_streambox_runtime_units", "install_systemd_units"):
         body = _function_body(source, fn)
-        restart_idx = body.find(
-            "systemctl restart nqptp.service shairport-sync.service"
-        )
-        assert restart_idx != -1, f"{fn}: renderer restart line missing"
+        baseline_idx = body.find("enable_usbgadget")
+        assert baseline_idx != -1, f"{fn}: network-only USB baseline missing"
+        restart_idx = body.find("systemctl try-restart bluealsa-aplay.service")
+        assert restart_idx != -1, f"{fn}: active-only renderer refresh missing"
+        assert "systemctl enable nqptp.service" not in body
+        assert "systemctl restart nqptp.service" not in body
         reapply_idx = body.find("reapply_source_intent")
         assert reapply_idx != -1, f"{fn}: reapply_source_intent not called"
-        assert reapply_idx > restart_idx, (
-            f"{fn}: source-intent reconcile must run AFTER the shairport/"
-            "librespot restart or the deploy undoes a household disable"
+        assert reapply_idx > baseline_idx, (
+            f"{fn}: installer must establish USB audio Off/NCM-only before the "
+            "coordinator owns any canonical On transition"
         )
-    # The shared helper is the ONE place that runs the root reconciler, and it
-    # passes --stop-disabled (the deploy path that also stops a disabled unit).
+        assert reapply_idx > restart_idx, (
+            f"{fn}: source-intent reconcile must run AFTER active renderer "
+            "refreshes so desired-on sources converge on new code"
+        )
+        assert "jasper-source-intent-reconcile.service" in body, (
+            f"{fn}: the coordinator must also be enabled for boot convergence"
+        )
+    # The shared helper is the ONE deploy path that runs the full coordinator.
     helper = _function_body(source, "reapply_source_intent")
-    assert "jasper-source-intent-reconcile --stop-disabled" in helper
+    assert "jasper-source-intent-reconcile --reason install" in helper
+    assert (
+        "/usr/bin/timeout --foreground --kill-after=5s "
+        f"{int(source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS)}s"
+    ) in helper
+    assert "mode=0o660" in helper
+    assert "lock_mode=0o660" in helper
+    assert "--stop-disabled" not in helper
+
+
+def test_streambox_arms_usb_combo_supervision_before_source_intent_reapply():
+    """Streambox uses the same direct USB data plane as a full speaker."""
+
+    body = _function_body(
+        FRAGMENT.read_text(),
+        "start_streambox_runtime_units",
+    )
+    baseline_idx = body.find("enable_usbgadget")
+    coupling_idx = body.find("systemctl enable jasper-fanin-coupling-auto.service")
+    health_idx = body.find("systemctl enable --now jasper-fanin-combo-health.timer")
+    reapply_idx = body.find("reapply_source_intent")
+
+    assert -1 not in (baseline_idx, coupling_idx, health_idx, reapply_idx)
+    assert baseline_idx < coupling_idx < health_idx < reapply_idx
 
 
 def test_midloop_failure_still_attempts_every_later_unit(tmp_path):
@@ -213,7 +254,9 @@ def test_midloop_failure_still_attempts_every_later_unit(tmp_path):
     attempted = _attempted_dsts(tmp_path)
     # Everything except the failed row was still attempted...
     for dst in EXPECTED_DSTS:
-        assert dst in attempted, f"{dst} should still be attempted after a mid-loop failure"
+        assert dst in attempted, (
+            f"{dst} should still be attempted after a mid-loop failure"
+        )
     # ...including later guards and the final pitch-neutralization helper.
     assert "jasper-camilla-crossover-guard" in attempted
     assert "jasper-fanin-pitch-neutralize" in attempted
@@ -250,7 +293,9 @@ def test_reset_failed_clears_fanin_and_camilla_before_restart(tmp_path):
     log = tmp_path / "systemctl.log"
     r = subprocess.run(
         ["bash", "-c", _reset_failed_harness(tmp_path)],
-        capture_output=True, text=True, timeout=20,
+        capture_output=True,
+        text=True,
+        timeout=20,
     )
     assert r.returncode == 0, r.stderr
     calls = log.read_text() if log.exists() else ""
@@ -263,12 +308,17 @@ def test_reset_failed_targets_exclude_parked_units(tmp_path):
     (which park_audio_clients_for_core_graph_restart already reset-failed):
     fanin/camilla are restarted in place, never parked."""
     r = subprocess.run(
-        ["bash", "-c",
-         f'REPO_DIR="{ROOT}"; SYSTEMD_DIR="{tmp_path}"; source "{FRAGMENT}"; '
-         'printf "%s\\n" "${JASPER_CORE_GRAPH_RESTART_TARGETS[@]}"; '
-         'echo "---"; '
-         'printf "%s\\n" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"'],
-        capture_output=True, text=True, timeout=20,
+        [
+            "bash",
+            "-c",
+            f'REPO_DIR="{ROOT}"; SYSTEMD_DIR="{tmp_path}"; source "{FRAGMENT}"; '
+            'printf "%s\\n" "${JASPER_CORE_GRAPH_RESTART_TARGETS[@]}"; '
+            'echo "---"; '
+            'printf "%s\\n" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
     )
     assert r.returncode == 0, r.stderr
     targets_block, _, park_block = r.stdout.partition("---\n")

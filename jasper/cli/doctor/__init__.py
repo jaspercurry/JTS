@@ -264,7 +264,6 @@ from .usbsink import (
     check_usbsink_name,
     check_usbsink_active_libcomposite,
     check_usbgadget_composition,
-    check_usbsink_env_drift,
 )
 from . import network as network
 from .network import (
@@ -584,7 +583,6 @@ __all__ = [
     "check_usbsink_name",
     "check_usbsink_active_libcomposite",
     "check_usbgadget_composition",
-    "check_usbsink_env_drift",
     "_parse_iw_regdom",
     "_format_phy_regdom_detail",
     "check_wifi_regdom",

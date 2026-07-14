@@ -516,7 +516,8 @@ that points at a shared dmix:
    [`deploy/alsa/asoundrc.jasper`](../deploy/alsa/asoundrc.jasper),
    pinned to 48 kHz stereo S16_LE over a private `hw:Loopback,0,N`
    (capture side `hw:Loopback,1,N`). This mirrors
-   `librespot_substream` / `usbsink_substream`.
+   `librespot_substream` / `correction_substream`; USB is different because
+   fan-in captures its UAC2 gadget directly.
 2. **Fan-in input list.** Register the capture side and a stable
    label in
    [`rust/jasper-fanin/src/config.rs`](../rust/jasper-fanin/src/config.rs)
@@ -530,7 +531,8 @@ that points at a shared dmix:
 
 **Substream allocation is nearly full.** The 8 snd-aloop substream
 pairs are already assigned: `0` Spotify, `1` AirPlay, `2` Bluetooth,
-`3` USB sink, `4` correction/test, `5` debug/monitor reserve, `6`
+`3` the USB lane's silent fallback (USB On switches that positional lane to
+direct `hw:UAC2Gadget` capture), `4` correction/test, `5` debug/monitor reserve, `6`
 outputd post-DSP content, `7` fan-in summed output (see
 `asoundrc.jasper` and audio-paths.md). There is **no free
 production lane** — audio-paths.md is explicit that a sixth
@@ -840,10 +842,12 @@ the OS page cache.
 | shairport-sync (AirPlay) | ~12-18 MB | C |
 | librespot (Spotify) | ~25-35 MB | Rust |
 | bluealsa-aplay (BT) | ~8-12 MB | C |
-| jasper-usbsink (USB) | ~18-22 MB | Python |
+| USB readiness marker | 0 MB resident | process-free systemd oneshot |
 | **DLNA (proposed)** | **~13-20 MB** | **C + Python sidecar** |
 
-DLNA fits squarely in the middle of the existing source costs.
+USB's audio ingress is shared fan-in; only its non-real-time volume observer is
+incremental userspace. DLNA fits squarely in the middle of the resident network
+source costs.
 
 ---
 
@@ -851,11 +855,10 @@ DLNA fits squarely in the middle of the existing source costs.
 
 > **Template note.** This section originally pointed at the Python usbsink
 > daemon (`usbsink_main.py`, `daemon.py`, `state_publisher.py`,
-> `preempt_listener.py`) as its structural template. Those modules were
-> **deleted** in the USB dead-pipeline sweep — the production USB bridge is now
-> the Rust `jasper-usbsink-audio` daemon, which has state-publish/preempt built
-> in. If this DLNA sidecar is ever built, mirror a surviving Python daemon's
-> shape (e.g. `jasper/control/`), not the removed usbsink Python package.
+> `preempt_listener.py`) as its structural template. Those modules and the
+> later Rust `jasper-usbsink-audio` bridge were deleted; fan-in now owns the
+> sole USB ingress. If this DLNA sidecar is ever built, mirror a surviving
+> Python daemon's shape (e.g. `jasper/control/`), not either removed bridge.
 
 ### 7.1 Entry point (`jasper/cli/dlna_main.py`)
 

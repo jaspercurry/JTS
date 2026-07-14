@@ -27,14 +27,16 @@
 # rebuilt. The function truth table is computed once and logged as a
 # structured `event=usb_gadget.compose` line.
 #
-# Testability: the ConfigFS root, UDC class dir, and the audio-intent/gate
-# probe commands are overridable via env (defaults are the real paths), so
+# Testability: the ConfigFS root, UDC class dir, canonical audio-allowed probe,
+# and derived-lifecycle-readiness probe are overridable via env (defaults are
+# the real paths), so
 # pytest can drive this hermetically against a temp dir — see
 # tests/test_usbgadget_script.py. Overriding them does NOT change runtime
 # behavior on a real Pi (the defaults are the production values).
 #
 # Reference: Linux Documentation/usb/gadget-testing.txt (UAC2 + NCM).
 set -euo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 CONFIGFS="${JASPER_CONFIGFS_ROOT:-/sys/kernel/config}"
 UDC_CLASS_DIR="${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
@@ -42,13 +44,16 @@ CPUINFO="${JASPER_CPUINFO_FILE:-/proc/cpuinfo}"
 NAME=jts-usb-audio
 GADGET_DIR="${CONFIGFS}/usb_gadget/${NAME}"
 SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
+SPEAKER_NAME_READER="${JASPER_SPEAKER_NAME_READER:-/opt/jasper/.venv/bin/python}"
 
-# Injectable probes (default to the real helpers). The reconciler/units set
-# JASPER_USB_NETWORK; audio intent is "is jasper-usbsink.service enabled" AND
-# "local sources allowed" (the follower-park gate). Overridable so tests can
-# drive every row of the truth table without systemd.
-AUDIO_INTENT_CMD="${JASPER_USBGADGET_AUDIO_INTENT_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
-AUDIO_GATE_CMD="${JASPER_USBGADGET_AUDIO_GATE_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed}"
+# Injectable probes. The canonical source-aware start guard authorizes audio
+# from current household intent plus role. The derived unit enablement is a
+# separate readiness mirror: it can suppress audio after a failed/stale On
+# transition, but can never override canonical Off or follower parking.
+# Overridable so tests can drive every row of the truth table without systemd.
+AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}"
+AUDIO_READY_CMD="${JASPER_USBGADGET_AUDIO_READY_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
+AUDIO_DATA_READY_CMD="${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-/opt/jasper/.venv/bin/python -m jasper.fanin.status --usbsink-direct-armed}"
 
 log() {
     echo "jasper-usbgadget-up: $*"
@@ -64,11 +69,18 @@ emit() {
     fi
 }
 
-if [[ -r "$SPEAKER_NAME_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$SPEAKER_NAME_FILE" 2>/dev/null || true
+SPEAKER_NAME="JTS"
+
+# Management-writable identity state is untrusted at this root boundary.
+# The canonical Python reader owns env quoting plus the 32-character,
+# printable-name policy. Never source/eval/pre-read the path or copy its raw
+# value into ConfigFS strings / structured logs. The reader performs one
+# descriptor-held, no-follow, nonblocking, 64 KiB-capped read so FIFO/symlink/
+# replacement races fail safely to JTS.
+canonical_name="$("${SPEAKER_NAME_READER}" -m jasper.speaker_name "${SPEAKER_NAME_FILE}" 2>/dev/null || true)"
+if [[ -n "${canonical_name}" ]]; then
+    SPEAKER_NAME="${canonical_name}"
 fi
-SPEAKER_NAME="${JASPER_SPEAKER_NAME:-JTS}"
 
 write_if_present() {
     local path="$1"
@@ -82,8 +94,9 @@ write_if_present() {
 #
 # network is on unless the kill switch is the exact literal `disabled`
 # (case-insensitive; any other value logs a warning and stays enabled —
-# mirrors JASPER_SHAIRPORT_SUPERVISOR). audio is on when the /sources intent
-# unit is enabled AND local sources are allowed (a bonded follower is parked).
+# mirrors JASPER_SHAIRPORT_SUPERVISOR). Audio is on only when canonical
+# /sources intent + role authorize it, the derived usbsink unit is enabled,
+# AND live fan-in STATUS proves the DIRECT consumer is armed.
 #
 #   network  audio            functions
 #   -------  ---------------  ----------------------
@@ -103,13 +116,15 @@ elif [[ "${net_lc}" != "enabled" && -n "${net_lc}" ]]; then
 fi
 
 WANT_AUDIO=0
-audio_reason="intent_disabled"
-if ${AUDIO_INTENT_CMD} >/dev/null 2>&1; then
-    if ${AUDIO_GATE_CMD} >/dev/null 2>&1; then
-        WANT_AUDIO=1
-        audio_reason="enabled"
-    else
-        audio_reason="parked_follower"
+audio_reason="intent_disabled_or_parked"
+if ${AUDIO_ALLOWED_CMD} >/dev/null 2>&1; then
+    audio_reason="derived_unit_disabled"
+    if ${AUDIO_READY_CMD} >/dev/null 2>&1; then
+        audio_reason="direct_lane_unarmed"
+        if ${AUDIO_DATA_READY_CMD} >/dev/null 2>&1; then
+            WANT_AUDIO=1
+            audio_reason="enabled_direct_ready"
+        fi
     fi
 fi
 

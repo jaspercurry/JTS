@@ -321,6 +321,7 @@ install_jasper() {
     migrate_wifi_guardian
     migrate_wake_legs_config
     migrate_grouping
+    migrate_retired_source_state
     migrate_speaker_room
     migrate_control_host_bind_seed
     # Relocate JASPER_FANIN_CAMILLA_COUPLING out of jasper.env into the

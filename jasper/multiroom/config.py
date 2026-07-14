@@ -4,9 +4,10 @@
 
 """Multiroom grouping configuration — env-file loader.
 
-Persisted at /var/lib/jasper/grouping.env, mode 0644 (no secrets).
-Written by the grouping web wizard (later phase), sourced into the
-relevant systemd unit's environment via `EnvironmentFile=`.
+Persisted at /var/lib/jasper/grouping.env, mode 0660 root:jasper (no secrets).
+Written by the grouping web wizard. Privileged reconcilers parse the fixed file
+as data; they never import it into a root process environment. The root
+Snapcast units read only the reconciler-owned derived argv file under `/run`.
 
 Same precedence rule as peering.env / wake_model.env / voice_provider.env:
 wizard-managed values override anything in /etc/jasper/jasper.env.
