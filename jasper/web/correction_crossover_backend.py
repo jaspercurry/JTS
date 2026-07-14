@@ -27,6 +27,7 @@ from jasper.active_speaker.commissioning_run import (
     CommissioningRunHandle,
     CommissioningRunStore,
 )
+from jasper.active_speaker.capture_geometry import comparison_set_valid
 from jasper.active_speaker.crossover_level_run import (
     CrossoverLevelRunError,
     CrossoverLevelRunPhase,
@@ -1296,6 +1297,8 @@ def begin_commissioning_run(
 ) -> CommissioningRunHandle:
     """Bind a fresh durable run to one authoritative comparison session."""
 
+    if not comparison_set_valid(comparison_set):
+        raise ValueError("commissioning comparison set is invalid")
     session_id = comparison_set.get("bundle_session_id")
     session_fingerprint = comparison_set.get("fingerprint")
     if not isinstance(session_id, str) or not session_id.strip():
@@ -1319,6 +1322,9 @@ def begin_commissioning_run(
 
 def commissioning_run_status(
     comparison_set: Mapping[str, Any] | None,
+    *,
+    expected_topology_id: str | None,
+    expected_profile_context_id: str | None,
 ) -> dict[str, Any]:
     """Project durable lifecycle authority without exposing process identity."""
 
@@ -1339,6 +1345,14 @@ def commissioning_run_status(
         }
     comparison_current = bool(
         isinstance(comparison_set, Mapping)
+        and comparison_set_valid(comparison_set)
+        and isinstance(expected_topology_id, str)
+        and bool(expected_topology_id)
+        and isinstance(expected_profile_context_id, str)
+        and bool(expected_profile_context_id)
+        and comparison_set.get("topology_id") == expected_topology_id
+        and comparison_set.get("profile_context_id")
+        == expected_profile_context_id
         and current.get("session_id") == comparison_set.get("bundle_session_id")
         and current.get("session_fingerprint") == comparison_set.get("fingerprint")
     )
@@ -1399,7 +1413,9 @@ def status_payload() -> dict[str, Any]:
         "active_comparison_set"
     )
     payload["commissioning_run"] = commissioning_run_status(
-        comparison_set if isinstance(comparison_set, Mapping) else None
+        comparison_set if isinstance(comparison_set, Mapping) else None,
+        expected_topology_id=(payload.get("topology") or {}).get("topology_id"),
+        expected_profile_context_id=current_context_id,
     )
     try:
         durable_repeats = repeat_admission.snapshot(

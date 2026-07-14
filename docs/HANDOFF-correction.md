@@ -46,18 +46,16 @@
   claim does not skip the others, and prior-generation callbacks are stale.
   `/crossover/status` exposes only safe `commissioning_run` status: `not_started`,
   exact `current`, comparison-`stale`, or fail-closed `unavailable`, plus the
-  run/lifecycle summary without process owner id or evidence payloads. A failure
-  to start the durable run revokes the just-published comparison/repeat
-  authority. Production currently leaves the new run `unconfigured`; no route
-  reserves its region-scoped attempts or commits lifecycle transitions.
+  run/lifecycle summary without process owner id or evidence payloads. `current`
+  additionally requires the comparison's complete schema/fingerprint and exact
+  current topology/protected-profile binding. A failure to start the durable
+  run revokes the just-published comparison/repeat authority. Production
+  currently leaves the new run `unconfigured`; no route reserves its region-
+  scoped attempts or commits lifecycle transitions.
 
-  Active's delay-walk host boundary is also present for one explicit crossover
-  region, with one bounded writer lock over fresh candidate graph confirmations,
-  exactly five admitted null captures per candidate, and exact predecessor
-  restoration. Its CamillaDSP/browser/persistence callbacks have no production
-  route, so this is not a live hardware walk. Candidate/apply/verification,
-  receipt issuance, and Room consumption remain unavailable. No sound, live
-  graph mutation, or hardware was exercised.
+  Candidate/delay-walk/apply/verification, receipt issuance, and Room
+  consumption remain unavailable. No sound, live graph mutation, or hardware
+  was exercised.
 - ✅ **Room R1 — envelope v9 owns whole-page visibility, truthful entry
   failures, and disclosed run defaults (hardware-free;
   real-device browser pass pending).** `jasper.correction.envelope` now emits
@@ -1590,8 +1588,6 @@ jasper/
 ├── active_speaker/
 │   ├── commissioning_run.py              durable exact run/owner/attempt/
 │   │                                    lifecycle-journal control plane
-│   ├── commissioning_delay_walk.py       one-region Active host over Shared's
-│   │                                    writer-locked exact-restore null walk
 │   ├── crossover_envelope.py            commissioning screen envelope (aligned
 │   │                                    with the room envelope pattern; passive
 │   │                                    gate) — composes commissioning_coordinator
@@ -2527,10 +2523,9 @@ Last verified: 2026-07-14 (shared DSP-writer admission deadline/cancellation
 semantics checked against Room's terminal mutation policy; Active isolated-driver
 persisted admission, server-owned capture handoff, and summed pre-audio refusal
 checked hardware-free; Active's durable bundle-backed commissioning-run start,
-startup owner-generation claim, stale-callback refusal, fail-closed crossover
-status, and the hardware-free per-region delay host's fresh graph proof, five
-admitted null captures per candidate, and exact restoration were also checked;
-candidate/verification/receipt and Room authority remain unavailable. Wave 2 paid tuning backend extraction checked the
+startup owner-generation claim, stale-callback refusal, and fail-closed
+crossover status were also checked; candidate/delay-walk/verification/receipt
+and Room authority remain unavailable. Wave 2 paid tuning backend extraction checked the
 shared cross-route throttle, fresh household spend gate, exact provider
 arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP
 error translation without moving proposal acceptance or live apply. Acoustic-

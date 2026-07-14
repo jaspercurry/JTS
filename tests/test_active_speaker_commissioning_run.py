@@ -100,7 +100,7 @@ def _reserve_in_process(path: str, handle, start, queue) -> None:
             target_fingerprint=TARGET_FINGERPRINT,
         )
         queue.put(("ok", attempt.attempt_id, attempt.attempt_number))
-    except Exception as exc:  # noqa: BLE001 - child reports the exact outcome
+    except CommissioningRunError as exc:
         queue.put(("error", type(exc).__name__, str(exc)))
 
 

@@ -25,7 +25,7 @@
 > exposes receipt-backed authority. No hardware behavior was changed or
 > revalidated by these hardware-free slices.
 
-> **Wave 3 lifecycle and delay-host boundary (2026-07-14; hardware-free).** A
+> **Wave 3 lifecycle boundary (2026-07-14; hardware-free).** A
 > fresh authoritative comparison set that carries a production bundle session
 > id now starts one durable Active commissioning run. The control-plane store
 > persists the exact session fingerprint, run id, process-owner generation,
@@ -38,15 +38,6 @@
 > lifecycle identity, not acoustic or apply authority: production currently
 > starts the run at `unconfigured`; no production caller yet reserves its
 > region-scoped measurement attempts or advances its transition journal.
->
-> Active also has a narrow delay-walk host adapter around Shared's bounded
-> runner. For one caller-supplied crossover-region spec it holds one bounded DSP
-> writer lock across the entry snapshot, every candidate load and fresh graph
-> confirmation, exactly five admitted null captures per candidate, and exact
-> predecessor restoration. The adapter's graph, admission, capture, and restore
-> callbacks are not wired to the browser or live CamillaDSP yet. Region-scoped
-> measurement-set authority, a candidate evaluator, apply/verification, receipt
-> issuance, and Room consumption remain unavailable. No hardware was touched.
 
 ## Product goal
 
@@ -1086,8 +1077,10 @@ The full household summary below remains the target surface. The crossover
 status now carries a narrower fail-closed `commissioning_run` control-plane
 projection: exact session/run identity, owner generation, lifecycle state,
 attempt count, last transition, update time, and state fingerprint are returned
-only when the durable artifact validates; an absent file is `not_started`, a
-comparison mismatch is `stale`, and corrupt/unreadable state is `unavailable`.
+only when the durable artifact validates; the comparison must also pass its
+complete schema/fingerprint and match the current topology and protected
+profile. An absent file is `not_started`, a comparison mismatch is `stale`, and
+corrupt/unreadable state is `unavailable`.
 Process owner id and raw evidence are not exposed. This block is not an
 eligibility receipt and does not change Room's entry decision. Once candidate,
 apply, verification, and receipt producers land, `/state` or the existing
@@ -1113,8 +1106,7 @@ and friends, all via `jasper.log_event`). New lifecycle events stay under the
 existing `correction.*` family rather than starting a bare parallel
 `crossover.*` prefix. The durable Active store uses the
 `correction.active_commissioning_*` family for successful run, owner, attempt,
-and transition commits; status polling is silent. The delay host emits bounded
-`correction.crossover_delay_walk_started`, `_completed`, or `_failed` events.
+and transition commits; status polling is silent.
 Operators already grep the shipped correction names, and the log-event
 conventions test pins the mechanism. Log important transitions once using stable `event=` names,
 including:
@@ -1388,9 +1380,8 @@ As of 2026-07-14, JTS has much of the substrate but not the full product:
   but the wizard does not yet expose the per-region normal/reverse loop or load
   a transient reverse-polarity graph; the playback boundary refuses those
   candidates before audio so it cannot mislabel the unchanged applied graph.
-  The bounded measured delay *walk* now has a hardware-free Active host boundary,
-  but no browser/live-Camilla orchestration; post-apply verification remains a
-  separate, not-yet-built piece of Slice 2.
+  The bounded measured delay *walk* (a value, not just a status) and post-apply
+  verification remain separate, not-yet-built pieces of Slice 2.
 - The shared delay-walk substrate includes a pure candidate graph-content
   proof (`jasper.audio_measurement.delay_graph`). Active-crossover and bass
   hosts share one typed lane proof while retaining their own authoritative
@@ -1402,21 +1393,14 @@ As of 2026-07-14, JTS has much of the substrate but not the full product:
   pipeline step over that exact channel set; and a candidate may change only
   one bounded delay while retaining a real
   non-positive volume ceiling and every other graph value. The shared core does
-  not parse active-speaker or bass filter names. The Active F2b host boundary
-  now composes that proof with the F1 runner: for one explicit crossover-region
-  `NullWalkSpec`, it acquires one bounded Shared writer lock, rejects replayed
-  readback operation ids or topology/Fc drift, requires a fresh exact graph
-  confirmation after each candidate load, accepts exactly five unique
-  playback-admitted, quality-accepted, alignment-SNR-qualified null captures
-  bound to that confirmation, and retains the runner's exact
-  cancellation-draining predecessor restoration. Started/completed/failed events
-  carry bounded context and failure classes. The callbacks are still
-  dependency-injected test seams: no production browser route, live CamillaDSP
-  reader/loader, capture transport, persistence, or lifecycle orchestrator
-  invokes them. In particular, there is no landed group-level measurement plan
-  that could collapse two regions of a three-way; the next slice must derive and
-  bind admitted evidence separately for every crossover region. Low-frequency
-  bass walks still require a separately reviewed adaptive scheduler.
+  not parse active-speaker or bass filter names. This is deliberately not proof
+  that the supplied `active_raw` is live or fresh. The pending F2b host must hold
+  the DSP writer lock across apply → fresh read-back → typed confirmation, bind
+  the result to the current run and capture evidence, and pass it to the F1
+  runner. A stale/replayed content-identical graph is therefore a named future
+  host contract gap, not a capability claimed by this slice. No CamillaDSP host
+  adapter, capture playback, walk scheduling, geometry source, or three-way
+  orchestration is wired yet.
 - ~~Automatic trim application must not reset a manually applied delay or
   inversion when no new alignment evidence exists.~~ Closed in Slice 0:
   manual tuning never consults alignment evidence for these two
@@ -1497,9 +1481,7 @@ preparation-only safety, level-run correlation contracts and terminal-result
 liveness, permanent historical refusal, the reachable isolated-driver
 Shared-admission/playback adapter and bounded writer transaction,
 summed pre-audio refusal, durable bundle-backed commissioning-run identity,
-startup owner-generation claim, fail-closed crossover status, and the
-hardware-free per-region delay-walk host boundary with fresh graph confirmation,
-five admitted null captures per candidate, and exact restoration,
+startup owner-generation claim, fail-closed crossover status,
 and Room's temporary passive-only admission boundary checked against the current
 implementation and cited measurement literature; no live audio, DSP mutation,
 or hardware behavior was changed or revalidated.)
