@@ -33,6 +33,7 @@ from jasper.audio_measurement.excitation_artifacts import (
     canonical_admission_bytes,
 )
 from jasper.audio_measurement.null_walk import (
+    BoundedNullWalkSchedule,
     MIN_CAPTURE_COUNT,
     NullWalkError,
     NullWalkSpec,
@@ -59,7 +60,7 @@ ACTIVE_REGION_REVERSE_MEASUREMENT_KIND = "active_crossover_region_reverse"
 ACTIVE_REGION_DELAY_NULL_MEASUREMENT_KIND = "active_crossover_region_delay_null"
 STATIONARY_CAPTURE_COUNT = 3
 DELAY_WALK_ALGORITHM_ID = "jts_active_crossover_delay_null_walk"
-DELAY_WALK_ALGORITHM_VERSION = "1"
+DELAY_WALK_ALGORITHM_VERSION = "2"
 
 EvidenceKind: TypeAlias = Literal["normal", "reverse", "delay_null"]
 
@@ -137,13 +138,17 @@ def _strict_object(
     *,
     kind: str,
     fields: frozenset[str],
+    schema_version: int = 1,
 ) -> Mapping[str, Any]:
     if not isinstance(raw, Mapping):
         raise CommissioningEvidenceError(f"{kind} must be an object")
     expected = fields | {"schema_version", "kind", "fingerprint"}
     if set(raw) != expected:
         raise CommissioningEvidenceError(f"{kind} has unknown or missing fields")
-    if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
+    if (
+        type(raw["schema_version"]) is not int
+        or raw["schema_version"] != schema_version
+    ):
         raise CommissioningEvidenceError(f"unsupported {kind} schema")
     if raw["kind"] != kind:
         raise CommissioningEvidenceError(f"unsupported {kind} kind")
@@ -1623,39 +1628,10 @@ class DelayPointEvidence:
 
 
 def _spec_from_mapping(raw: Any) -> NullWalkSpec:
-    expected = {
-        "schema_version",
-        "crossover_fc_hz",
-        "geometry_seed_us",
-        "positive_delay_target",
-        "negative_delay_target",
-        "half_period_us",
-        "lower_bound_us",
-        "upper_bound_us",
-        "step_us",
-        "candidate_count",
-        "candidate_delays_us",
-    }
-    if not isinstance(raw, Mapping) or set(raw) != expected:
-        raise CommissioningEvidenceError("delay walk spec fields are invalid")
-    if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
-        raise CommissioningEvidenceError("delay walk spec schema is unsupported")
     try:
-        result = NullWalkSpec(
-            crossover_fc_hz=raw["crossover_fc_hz"],
-            geometry_seed_us=raw["geometry_seed_us"],
-            positive_delay_target=raw["positive_delay_target"],
-            negative_delay_target=raw["negative_delay_target"],
-            step_us=raw["step_us"],
-        )
-        expected_payload = result.to_dict()
+        return NullWalkSpec.from_mapping(raw)
     except NullWalkError as exc:
         raise CommissioningEvidenceError(str(exc)) from exc
-    if dict(raw) != expected_payload:
-        raise CommissioningEvidenceError(
-            "delay walk spec is not the exact canonical shared grid"
-        )
-    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -1752,7 +1728,7 @@ class RegionGeometryAttestation:
 
 @dataclass(frozen=True, slots=True)
 class DelayWalkEvidence:
-    """A complete shared null-walk grid; this type makes no winning-delay claim."""
+    """A complete bounded null-walk schedule; this makes no winning-delay claim."""
 
     authority: CommissioningEvidenceAuthority
     plan_fingerprint: str
@@ -1762,6 +1738,7 @@ class DelayWalkEvidence:
     algorithm_version: str
     geometry_attestation: RegionGeometryAttestation
     spec: NullWalkSpec
+    schedule: BoundedNullWalkSchedule
     placement_fingerprint: str
     points: tuple[DelayPointEvidence, ...]
     repeatability_artifact: ArtifactIdentity
@@ -1807,6 +1784,14 @@ class DelayWalkEvidence:
         )
         if not isinstance(self.spec, NullWalkSpec):
             raise CommissioningEvidenceError("delay walk spec must be NullWalkSpec")
+        if not isinstance(self.schedule, BoundedNullWalkSchedule):
+            raise CommissioningEvidenceError(
+                "delay walk schedule must be BoundedNullWalkSchedule"
+            )
+        if self.schedule.spec_fingerprint != self.spec.fingerprint:
+            raise CommissioningEvidenceError(
+                "delay walk schedule does not belong to the exact shared spec"
+            )
         if not math.isclose(
             self.spec.geometry_seed_us,
             self.geometry_attestation.signed_geometry_seed_us,
@@ -1816,10 +1801,7 @@ class DelayWalkEvidence:
             raise CommissioningEvidenceError(
                 "delay walk spec is not bound to its signed geometry attestation"
             )
-        try:
-            candidates = self.spec.candidate_delays_us()
-        except NullWalkError as exc:
-            raise CommissioningEvidenceError(str(exc)) from exc
+        candidates = self.schedule.scheduled_delays_us
         object.__setattr__(
             self,
             "placement_fingerprint",
@@ -1834,7 +1816,7 @@ class DelayWalkEvidence:
         coordinates = tuple(item.relative_delay_us for item in self.points)
         if coordinates != candidates:
             raise CommissioningEvidenceError(
-                "delay walk points must cover the exact canonical shared grid"
+                "delay walk points must cover the exact bounded shared schedule"
             )
         if any(
             point.authority != self.authority
@@ -1919,7 +1901,7 @@ class DelayWalkEvidence:
 
     def _core(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "jts_active_delay_walk_evidence",
             "authority": self.authority.to_dict(),
             "plan_fingerprint": self.plan_fingerprint,
@@ -1929,6 +1911,7 @@ class DelayWalkEvidence:
             "algorithm_version": self.algorithm_version,
             "geometry_attestation": self.geometry_attestation.to_dict(),
             "spec": self.spec.to_dict(),
+            "schedule": self.schedule.to_dict(),
             "placement_fingerprint": self.placement_fingerprint,
             "points": [point.to_dict() for point in self.points],
             "repeatability_artifact": self.repeatability_artifact.to_dict(),
@@ -1952,15 +1935,25 @@ class DelayWalkEvidence:
                     "algorithm_version",
                     "geometry_attestation",
                     "spec",
+                    "schedule",
                     "placement_fingerprint",
                     "points",
                     "repeatability_artifact",
                 }
             ),
+            schema_version=2,
         )
         raw_points = value["points"]
         if type(raw_points) is not list:
             raise CommissioningEvidenceError("delay walk points must be a list")
+        spec = _spec_from_mapping(value["spec"])
+        try:
+            schedule = BoundedNullWalkSchedule.from_mapping(
+                value["schedule"],
+                spec=spec,
+            )
+        except NullWalkError as exc:
+            raise CommissioningEvidenceError(str(exc)) from exc
         result = cls(
             authority=CommissioningEvidenceAuthority.from_mapping(value["authority"]),
             plan_fingerprint=value["plan_fingerprint"],
@@ -1971,7 +1964,8 @@ class DelayWalkEvidence:
             geometry_attestation=RegionGeometryAttestation.from_mapping(
                 value["geometry_attestation"]
             ),
-            spec=_spec_from_mapping(value["spec"]),
+            spec=spec,
+            schedule=schedule,
             placement_fingerprint=value["placement_fingerprint"],
             points=tuple(DelayPointEvidence.from_mapping(item) for item in raw_points),
             repeatability_artifact=_artifact_from_mapping(

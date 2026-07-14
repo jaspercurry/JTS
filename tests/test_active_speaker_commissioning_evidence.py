@@ -56,7 +56,11 @@ from jasper.audio_measurement.excitation_artifacts import (
     PLAYBACK_PATH_PREFIX,
     canonical_admission_bytes,
 )
-from jasper.audio_measurement.null_walk import NullWalkSpec
+from jasper.audio_measurement.null_walk import (
+    BoundedNullWalkSchedule,
+    NullWalkError,
+    NullWalkSpec,
+)
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _three_way_preset
@@ -412,8 +416,12 @@ def _delay_walk(
         negative_delay_target=target.lower_role,
         step_us=100.0,
     )
+    schedule = BoundedNullWalkSchedule(
+        spec,
+        refinement_anchor_us=spec.geometry_seed_us,
+    )
     points: list[DelayPointEvidence] = []
-    for point_index, relative_delay_us in enumerate(spec.candidate_delays_us()):
+    for point_index, relative_delay_us in enumerate(schedule.scheduled_delays_us):
         graph = _hash(f"{target.region_id}:delay-graph:{relative_delay_us}")
         target_fp = delay_point_target_fingerprint(target, spec, relative_delay_us)
         context_base_fp = delay_point_context_base_fingerprint(
@@ -478,6 +486,7 @@ def _delay_walk(
         algorithm_version=DELAY_WALK_ALGORITHM_VERSION,
         geometry_attestation=attestation,
         spec=spec,
+        schedule=schedule,
         placement_fingerprint=placement_fingerprint,
         points=tuple(points),
         repeatability_artifact=_artifact(
@@ -780,6 +789,7 @@ def test_delay_walk_requires_explicit_signed_geometry_and_fresh_points(
 
     assert walk.spec.geometry_seed_us == -37.5
     assert walk.geometry_attestation.signed_geometry_seed_us == -37.5
+    assert walk.schedule.refinement_anchor_us == -37.5
     assert walk.spec.candidate_delays_us() == (
         -237.5,
         -137.5,
@@ -798,6 +808,15 @@ def test_delay_walk_requires_explicit_signed_geometry_and_fresh_points(
             geometry_attestation=replace(
                 walk.geometry_attestation,
                 signed_geometry_seed_us=0.0,
+            ),
+        )
+
+    with pytest.raises(CommissioningEvidenceError, match="exact shared spec"):
+        replace(
+            walk,
+            schedule=BoundedNullWalkSchedule(
+                replace(walk.spec, geometry_seed_us=0.0),
+                refinement_anchor_us=0.0,
             ),
         )
 
@@ -831,6 +850,31 @@ def test_zero_geometry_requires_and_retains_explicit_attestation(
     assert walk.geometry_attestation.provenance_kind == "operator_attested"
     assert walk.geometry_attestation.signed_geometry_seed_us == 0.0
     assert walk.spec.geometry_seed_us == 0.0
+
+
+def test_shipped_350_hz_region_uses_bounded_schedule_without_weakening_grid(
+    tmp_path: Path,
+) -> None:
+    walk = _delay_walk(
+        _harness(tmp_path, name="shipped-lower-region"),
+        target_index=0,
+        placement_fingerprint=_hash("placement"),
+        geometry_seed_us=0.0,
+    )
+
+    assert walk.spec.crossover_fc_hz == 350.0
+    assert walk.spec.candidate_count == 29
+    with pytest.raises(NullWalkError, match="candidate budget"):
+        walk.spec.candidate_delays_us()
+    assert len(walk.schedule.coarse_delays_us) == 15
+    assert walk.schedule.coarse_delays_us[0] == -1400.0
+    assert walk.schedule.coarse_delays_us[-1] == 1400.0
+    assert walk.schedule.refinement_delays_us == (-100.0, 100.0)
+    assert len(walk.schedule.scheduled_delays_us) == 17
+    assert tuple(point.relative_delay_us for point in walk.points) == (
+        walk.schedule.scheduled_delays_us
+    )
+    assert DelayWalkEvidence.from_mapping(walk.to_dict()) == walk
 
 
 def test_region_rejects_cross_phase_analysis_quality_and_admission_replay(

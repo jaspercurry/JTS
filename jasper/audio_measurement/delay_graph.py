@@ -366,6 +366,19 @@ class DelayGraphSnapshot:
         if not isinstance(predecessor, DspPredecessor):
             _refuse("snapshot_invalid", "predecessor must be DspPredecessor")
 
+        # Validate the complete physical fine-grid envelope arithmetically.
+        # A resumable schedule may contain more than Shared's exhaustive
+        # 25-point budget, but it may never retain endpoints outside Camilla's
+        # hard delay bound.
+        try:
+            spec.fine_grid_coordinate(spec.fine_grid_index_min)
+            spec.fine_grid_coordinate(spec.fine_grid_index_max)
+        except NullWalkError as exc:
+            raise DelayGraphProofError(
+                "snapshot_invalid",
+                "delay graph spec exceeds the bounded physical grid",
+            ) from exc
+
         frozen_graph = _frozen_json_mapping(
             predecessor.state.get("active_raw"),
             code="snapshot_invalid",

@@ -8,6 +8,9 @@ import logging
 import pytest
 
 from jasper.audio_measurement.null_walk import (
+    MAX_COARSE_CANDIDATES,
+    MAX_SCHEDULED_CANDIDATES,
+    BoundedNullWalkSchedule,
     DspPredecessor,
     DspRestoreConfirmation,
     NullWalkError,
@@ -1057,3 +1060,149 @@ def test_divisible_half_period_includes_bounds_and_fragment_does_not():
     assert fragment.lower_bound_us == -125.0
     assert fragment.upper_bound_us == 125.0
     assert fragment.candidate_delays_us() == (-100.0, 0.0, 100.0)
+
+
+def test_350_hz_schedule_is_bounded_symmetric_deterministic_and_locally_refined():
+    spec = _spec(fc=350.0, seed=37.5)
+
+    assert spec.candidate_count == 29
+    with pytest.raises(NullWalkError, match="candidate budget"):
+        spec.candidate_delays_us()
+
+    first_coarse = spec.coarse_candidate_delays_us()
+    second_coarse = spec.coarse_candidate_delays_us()
+    schedule = BoundedNullWalkSchedule(spec, refinement_anchor_us=37.5)
+
+    assert first_coarse == second_coarse
+    assert len(first_coarse) <= MAX_COARSE_CANDIDATES
+    assert first_coarse[0] == spec.fine_grid_coordinate(spec.fine_grid_index_min)
+    assert first_coarse[-1] == spec.fine_grid_coordinate(spec.fine_grid_index_max)
+    assert 37.5 in first_coarse
+    assert tuple(value - 37.5 for value in first_coarse) == pytest.approx(
+        tuple(-(value - 37.5) for value in reversed(first_coarse))
+    )
+    assert schedule.refinement_delays_us == (-62.5, 137.5)
+    assert len(schedule.scheduled_delays_us) <= MAX_SCHEDULED_CANDIDATES
+    assert schedule.scheduled_delays_us == tuple(
+        sorted({*first_coarse, *schedule.refinement_delays_us})
+    )
+    assert spec.dsp_candidate(-62.5).relative_delay_us == -62.5
+
+
+def test_bounded_spec_and_schedule_have_strict_fingerprinted_roundtrips():
+    spec = _spec(fc=350.0)
+    schedule = BoundedNullWalkSchedule(spec, refinement_anchor_us=0.0)
+
+    assert "candidate_delays_us" not in spec.to_dict()
+    assert NullWalkSpec.from_mapping(spec.to_dict()) == spec
+    assert (
+        BoundedNullWalkSchedule.from_mapping(schedule.to_dict(), spec=spec) == schedule
+    )
+    assert len(spec.fingerprint) == 64
+    assert len(schedule.fingerprint) == 64
+
+    tampered_spec = spec.to_dict()
+    tampered_spec["fingerprint"] = "0" * 64
+    with pytest.raises(NullWalkError, match="exact canonical grid"):
+        NullWalkSpec.from_mapping(tampered_spec)
+
+    tampered_schedule = schedule.to_dict()
+    tampered_schedule["scheduled_delays_us"] = list(
+        reversed(tampered_schedule["scheduled_delays_us"])
+    )
+    with pytest.raises(NullWalkError, match="exact canonical schedule"):
+        BoundedNullWalkSchedule.from_mapping(tampered_schedule, spec=spec)
+
+    wrong_container = schedule.to_dict()
+    wrong_container["coarse_delays_us"] = tuple(wrong_container["coarse_delays_us"])
+    with pytest.raises(NullWalkError, match="coordinate fields must be lists"):
+        BoundedNullWalkSchedule.from_mapping(wrong_container, spec=spec)
+
+
+def test_refinement_anchor_must_be_an_explicit_coarse_coordinate():
+    spec = _spec(fc=350.0)
+
+    # 100 us is a fine coordinate, but the 350 Hz first phase uses a 200 us
+    # coarse stride. The host must persist and name the coarse winner before
+    # Shared admits its immediate fine neighbours.
+    with pytest.raises(NullWalkError, match="exact coarse schedule coordinate"):
+        BoundedNullWalkSchedule(spec, refinement_anchor_us=100.0)
+    with pytest.raises(NullWalkError, match="numeric"):
+        BoundedNullWalkSchedule(spec, refinement_anchor_us=None)
+
+
+def test_refinement_schedule_selects_deepest_complete_repeatable_coarse_anchor():
+    spec = _spec(fc=350.0)
+    evidence = {
+        coordinate: [_capture(20.0, crossover_fc_hz=spec.crossover_fc_hz)] * 5
+        for coordinate in spec.coarse_candidate_delays_us()
+    }
+    tied = BoundedNullWalkSchedule.from_coarse_evidence(spec, evidence)
+    assert tied.refinement_anchor_us == 0.0
+
+    evidence[400.0] = [_capture(30.0, crossover_fc_hz=spec.crossover_fc_hz)] * 5
+
+    schedule = BoundedNullWalkSchedule.from_coarse_evidence(spec, evidence)
+
+    assert schedule.refinement_anchor_us == 400.0
+    assert schedule.refinement_delays_us == (300.0, 500.0)
+
+    missing = dict(evidence)
+    missing.pop(spec.coarse_candidate_delays_us()[0])
+    with pytest.raises(NullWalkError, match="exact coarse schedule"):
+        BoundedNullWalkSchedule.from_coarse_evidence(spec, missing)
+
+    unrepeatable = dict(evidence)
+    unrepeatable[400.0] = [
+        _capture(20.0, crossover_fc_hz=spec.crossover_fc_hz),
+        _capture(23.0, crossover_fc_hz=spec.crossover_fc_hz),
+        _capture(20.0, crossover_fc_hz=spec.crossover_fc_hz),
+        _capture(23.0, crossover_fc_hz=spec.crossover_fc_hz),
+        _capture(20.0, crossover_fc_hz=spec.crossover_fc_hz),
+    ]
+    with pytest.raises(NullWalkError, match="complete repeatable evidence"):
+        BoundedNullWalkSchedule.from_coarse_evidence(spec, unrepeatable)
+
+
+@pytest.mark.parametrize("relative_delay_us", [50.0, 1500.0, True])
+def test_nonallocating_fine_grid_membership_refuses_offgrid_or_out_of_bounds(
+    relative_delay_us,
+):
+    spec = _spec(fc=350.0)
+
+    with pytest.raises(NullWalkError):
+        spec.dsp_candidate(relative_delay_us)
+
+
+def test_low_frequency_schedule_reaches_aligned_dsp_bounds_and_fails_beyond_them():
+    exactly_bounded = _spec(fc=25.0)
+    coarse = exactly_bounded.coarse_candidate_delays_us()
+    schedule = BoundedNullWalkSchedule(
+        exactly_bounded,
+        refinement_anchor_us=0.0,
+    )
+
+    assert coarse[0] == -20_000.0
+    assert coarse[-1] == 20_000.0
+    assert len(coarse) <= MAX_COARSE_CANDIDATES
+    assert len(schedule.scheduled_delays_us) <= MAX_SCHEDULED_CANDIDATES
+
+    beyond_dsp = _spec(fc=24.0)
+    with pytest.raises(NullWalkError, match="20 ms delay ceiling"):
+        beyond_dsp.coarse_candidate_delays_us()
+
+    epsilon_over = _spec(fc=500_000.0, seed=20_000.000001)
+    with pytest.raises(NullWalkError, match="20 ms delay ceiling"):
+        epsilon_over.coarse_candidate_delays_us()
+
+
+def test_existing_exhaustive_paths_remain_capped_after_nonallocating_membership():
+    spec = _spec(fc=350.0)
+    complete_evidence = {
+        spec.fine_grid_coordinate(index): [_capture(20.0)] * 5
+        for index in range(spec.fine_grid_index_min, spec.fine_grid_index_max + 1)
+    }
+
+    assert spec.dsp_candidate(0.0).delay_us == 0.0
+    with pytest.raises(NullWalkError, match="candidate budget"):
+        select_delay(spec, complete_evidence)
