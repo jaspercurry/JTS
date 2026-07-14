@@ -395,21 +395,26 @@ exercises the real request path and can refresh the fixtures from live
 captures. Spend is **observable AND ledgered** against the household daily
 spend cap. Each paid call:
 
-1. is **gated before** — `_tuning_spend_cap_gate()` builds a `SpendCap` over
+1. is **gated before** —
+   [`correction_tuning._tuning_spend_cap_gate()`](../jasper/web/correction_tuning.py)
+   builds a `SpendCap` over
    `household_usage_reader(usage_db)` (the voice ledger + the tuning sibling,
    summed); if the cap is reached it raises `SpendCapExceeded` → **HTTP 429**
    with a closed, rollover-worded Room failure block. The panel renders that
    bounded homeowner copy rather than the raw response body. Reading the
    cap is **fail-open** (an unreadable ledger reads as zero spend, never
    blocks — matching the module direction).
-2. is **recorded after** — `_record_tuning_spend()` writes one priced row into
+2. is **recorded after** —
+   [`correction_tuning._record_tuning_spend()`](../jasper/web/correction_tuning.py)
+   writes one priced row into
    a **separate** SQLite ledger, `usage-tuning.db` (a derived sibling of
    `JASPER_USAGE_DB`), of which root `jasper-correction-web` is the **sole
    writer**. It must never open the jasper-voice-owned `usage.db` read-write —
    a root-created file or `-journal` sidecar wedges the voice ledger (the
    2026-06-19 "readonly database" class). The write is serialised under a
-   module lock, `chmod 0644` on first create (so the 0077-umask root unit
-   still leaves it readable by the jasper-group readers), and **fail-soft**
+   module lock, checked and self-healed to `0644` on every record (so the
+   0077-umask root unit still leaves it readable by the jasper-group readers),
+   and **fail-soft**
    (an OSError/sqlite error logs `event=tuning_spend.record_failed` and returns
    the normal response — a ledger problem never blocks the user).
 
@@ -1321,20 +1326,26 @@ Codebase:
 - [`HANDOFF-correction.md`](HANDOFF-correction.md) — the existing substrate this sits on
 - [`jasper/correction/`](../jasper/correction/) — DSP pipeline
 - [`jasper/web/correction_setup.py`](../jasper/web/correction_setup.py) — wizard
+- [`jasper/web/correction_tuning.py`](../jasper/web/correction_tuning.py) —
+  paid-call throttling, provider invocation, spend gate, and tuning ledger
 - [`jasper/voice/`](../jasper/voice/) — `LiveConnection`/`LiveTurn` pattern to mirror
 - [`HANDOFF-voice-providers.md`](HANDOFF-voice-providers.md) — provider-abstraction precedent
 - [`HANDOFF-prompting.md`](HANDOFF-prompting.md) — playbook for LLM prompts (cross-provider principles, conditional vs absolute rules, `confirm` field handling) that this agent should respect
 
 ---
 
-Last verified: 2026-07-13 (Wave 2 Room R1b typed failure and unsafe-evidence
+Last verified: 2026-07-13 (Wave 2 paid tuning backend extraction rechecked the
+shared interpret/propose throttle, gate-before/provider/record-after order,
+fresh cap settings, provider-error translation, and fail-soft ledger behavior
+against `jasper/web/correction_tuning.py` and the thin adapters in
+`jasper/web/correction_setup.py`. Room R1b typed failure and unsafe-evidence
 gates, neutral playback ownership, and the retained Room device/cache
 compatibility surface rechecked hardware-free; prior 2026-07-06
 P6 tuning-spend ledger landed: per-surface
 `usage-tuning.db` written solely by correction-web, gate-before/record-after
 in the two paid handlers, and the `household_usage_reader` aggregation seam
 that the voice cap + `/voice` card + doctor all read — verified against
-`jasper/usage.py`, `jasper/web/correction_setup.py`, `jasper/voice/daemon_main.py`,
+`jasper/usage.py`, `jasper/web/correction_tuning.py`, `jasper/voice/daemon_main.py`,
 `jasper/web/voice_setup.py`, and `jasper/cli/doctor/voice.py`; prior 2026-07-05
 pass covered the P6 tuning surface landing: key seam, vocabulary
 extension, interpreter, confirm-gated proposer with simulate-before-apply,

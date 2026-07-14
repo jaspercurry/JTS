@@ -1596,10 +1596,13 @@ jasper/
 │   ├── correction_crossover_backend.py  active-speaker acoustic evidence bridge
 │   ├── correction_crossover_flow.py     /correction/crossover/ page + routes
 │   ├── correction_bass_flow.py          /correction/bass/ placeholder
+│   ├── correction_tuning.py              paid-call throttle/provider/spend owner;
+│   │                                    no acceptance or live-apply authority
 │   └── correction_setup.py              mirrors voice_setup.py shape
 │                                        ThreadingHTTPServer on 127.0.0.1:8770
 │                                        polling status, POST for upload+apply,
-│                                        and correction subflow dispatch
+│                                        correction subflow dispatch, and thin
+│                                        tuning HTTP adapters
 │
 ├── voice_daemon.py                      MEASURE_PAUSE / MEASURE_RESUME
 │                                        UDS commands; gate WakeLoop +
@@ -2430,9 +2433,13 @@ Internal:
 
 ---
 
-Last verified: 2026-07-13 (Wave 2 acoustic-trust kernels and admitted capture
-analysis extraction checked against exact status/artifact bytes, quality issue
-logging, calibration-before-normalization, and replay orchestration. Neutral
+Last verified: 2026-07-13 (Wave 2 paid tuning backend extraction checked the
+shared cross-route throttle, fresh household spend gate, exact provider
+arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP
+error translation without moving proposal acceptance or live apply. Acoustic-
+trust kernels and admitted capture analysis extraction checked against exact
+status/artifact bytes, quality issue logging, calibration-before-normalization,
+and replay orchestration. Neutral
 playback extraction and the Room compatibility wrapper checked against current
 callers and deterministic tone bytes. Room envelope v8
 section/action/blocker/failure/default ownership,

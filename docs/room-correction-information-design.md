@@ -472,7 +472,7 @@ web handler, Room session host, Active host, or CamillaDSP controller.
 | Bundle and playback neutral migration | Shared lane's selected `jasper.audio_measurement` homes | Room racing `correction/bundles.py` or `correction/playback.py` during migration |
 | Level ramp kernel | `jasper.audio_measurement.ramp` | Room/Active product policy |
 | Room level adapters | `jasper.correction.level_match`; local fallback in `jasper.correction.autolevel` | Relay session minting or HTTP responses |
-| Tuning paid call and spend cap | Dedicated Room tuning backend under `jasper.web` | Acceptance authority or live apply |
+| Tuning paid call and spend cap | `jasper.web.correction_tuning` | Acceptance authority or live apply |
 | Capture transport | `jasper.capture_relay.spec.CaptureSpec` and relay client/session | Position, target, or verdict semantics |
 | Capture-page stage UX | `capture-page/`, driven by Pi-authored specs | Room policy or analysis |
 | Target and filter policy | `jasper.correction.strategy` / `jasper.correction.peq` | Browser-selected unbounded values |

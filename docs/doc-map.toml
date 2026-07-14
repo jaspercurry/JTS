@@ -660,6 +660,7 @@ code = [
   "jasper/audio_measurement/**",
   "jasper/calibration_agent/**",
   "jasper/web/correction_setup.py",
+  "jasper/web/correction_tuning.py",
   "jasper/web/correction_hub.py",
   "jasper/web/correction_report.py",
   "jasper/web/balance_flow.py",
@@ -694,6 +695,7 @@ requires_docs_when = [
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",
   "pytest tests/test_web_correction_setup.py",
+  "pytest tests/test_web_correction_tuning.py",
   "bash scripts/check-js-syntax.sh",
   "pytest tests/test_measurement_volume_guard.py tests/test_web_balance_flow.py tests/test_web_sync_flow.py",
   "pytest tests/test_audio_measurement_excitation_admission.py tests/test_audio_measurement_evidence_identity.py tests/test_active_speaker_driver_safety.py tests/test_active_speaker_commissioning_lifecycle.py tests/test_active_speaker_commissioning_receipt.py",

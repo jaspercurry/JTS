@@ -45,7 +45,6 @@ import math
 import os
 import re
 import secrets
-import sqlite3
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -60,6 +59,7 @@ from urllib.parse import parse_qs, urlparse
 from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 from ..log_event import log_event
+from . import correction_tuning
 
 if TYPE_CHECKING:
     from jasper.capture_relay.client import RelayClient
@@ -94,30 +94,6 @@ MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
 MAX_CROSSOVER_WAV_BODY_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 MAX_DEVICE_FIELD_CHARS = 160
-# P6 tuning-LLM per-tap call budget. A frontier text model answering the
-# interpret / propose packet is a few seconds; 90 s is a generous ceiling
-# that still bounds a stalled provider connection on the Pi web process.
-# Parse defensively: a jasper.env typo must degrade to the default, not
-# crash the whole /correction/ wizard at import.
-def _tuning_timeout_sec() -> float:
-    try:
-        value = float(os.environ.get("JASPER_TUNING_LLM_TIMEOUT_SEC", "90") or "90")
-    except ValueError:
-        return 90.0
-    return value if value > 0 else 90.0
-
-
-TUNING_LLM_TIMEOUT_SEC = _tuning_timeout_sec()
-# The per-call output-token cap for the paid tuning calls lives at the
-# model boundary — jasper.calibration_agent.model_client
-# .TUNING_LLM_MAX_OUTPUT_TOKENS — shared with the live harness so the
-# deployed cap and the live-validated cap cannot drift. The paid handlers
-# reference it through their existing lazy model_client import.
-# Minimum spacing between PAID tuning calls (interpret/propose), per
-# process. Human taps are seconds apart; a stuck client retry loop must not
-# silently burn spend. A second call inside the window gets an honest JSON
-# error (409) the panel shows — never a silent drop.
-TUNING_LLM_MIN_INTERVAL_SEC = 3.0
 _FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/balance", "/sync"})
 _RETURN_HOST_RE = re.compile(
     r"^(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$"
@@ -145,14 +121,6 @@ class RoomRequestFailure(RequestConflict):
         super().__init__(diagnostic)
         self.failure = dict(failure)
         self.status = status
-
-
-class SpendCapExceeded(RuntimeError):
-    """The household daily spend cap is reached, so a PAID tuning call is
-    refused. Distinct from RequestConflict (409, transient session/rate
-    conflict) because this maps to HTTP 429 (Too Many Requests) with a
-    rollover-worded message — the condition clears at the daily UTC rollover,
-    not by retrying in a moment."""
 
 
 class TuningSetupUnavailable(RequestConflict):
@@ -4848,7 +4816,8 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 # (no polling — the envelope's `tuning_llm` block gates the button, but
 # the paid call happens only here). The surface is hidden with a nudge
 # when no OpenAI key is configured; if a request still arrives without a
-# key, the advisor raises AdvisorModelError which surfaces as a 400.
+# key, the availability preflight returns the closed 409 setup-unavailable
+# failure. Provider/advisor request failures remain closed 400 responses.
 
 def _require_tuning_key() -> None:
     from jasper.calibration_agent.key_provisioning import tuning_llm_available
@@ -4859,303 +4828,9 @@ def _require_tuning_key() -> None:
         )
 
 
-# Monotonic timestamp of the last PAID tuning call attempt, shared across
-# the two paid handlers. A mutable single-slot list so tests can reset it;
-# guarded by a lock because the wizard is a ThreadingHTTPServer.
-_tuning_paid_call_lock = threading.Lock()
-_tuning_last_paid_call: list[float] = [0.0]
-
-
-def _tuning_paid_call_gate() -> None:
-    """Refuse a second PAID call within TUNING_LLM_MIN_INTERVAL_SEC.
-
-    Stamped at ATTEMPT time (before the provider call), so concurrent or
-    rapid-fire requests — a stuck client retry loop, a double-tap — cannot
-    silently burn spend while one call is already in flight. The refusal
-    is an honest 409 the panel shows, never a silent drop.
-    """
-    now = time.monotonic()
-    with _tuning_paid_call_lock:
-        since = now - _tuning_last_paid_call[0]
-        if since < TUNING_LLM_MIN_INTERVAL_SEC:
-            raise RequestConflict(
-                "the tuning assistant just made a paid call — wait a "
-                "moment and tap again"
-            )
-        _tuning_last_paid_call[0] = now
-
-
-# Writes to the tuning-surface spend ledger — jasper-correction-web is its
-# SOLE writer (never usage.db, which jasper-voice owns; a root-created file
-# there wedges the voice ledger — the 2026-06-19 outage class). Serialised
-# under this module lock, and each record opens a FRESH UsageStore
-# (open → record → close). A process-global store would silently die on every
-# handler thread except its creator's: this server is a ThreadingHTTPServer
-# (one thread per TCP connection) and sqlite3 connections default to
-# check_same_thread=True, so a store created on thread A raises
-# ProgrammingError from thread B — which open_session's fail-soft catch
-# swallows while the "recorded" event still logs (the review-proven
-# one-row-of-three shape). Per-call open also makes the 0644 perms
-# self-healing and removes any partial-init state.
-_tuning_usage_lock = threading.Lock()
-
-
-# Models already warned about as unpriced — once per process per model
-# (mirrors the voice surface's once-per-daemon-start pricing.unpriced posture;
-# this process is socket-activated with a 10-min idle exit, so the warning
-# re-arms regularly without spamming per tap). Mutated under
-# _tuning_usage_lock like the rest of the ledger state.
-_tuning_unpriced_warned: set[str] = set()
-
-
-def _warn_if_tuning_model_unpriced(model: str, overrides: dict[str, dict]) -> None:
-    """WARN (once per process per model) when the tuning model has no rate.
-
-    An operator ``JASPER_TUNING_LLM_MODEL`` override pointing at a model with
-    no row in the bundled pricing (nor the /voice override file) records $0 —
-    silently re-opening the exact hole this ledger closes. Mirror the voice
-    surface's ``pricing.unpriced`` event with ``surface="tuning"`` so the
-    journal carries the same signal. Caller MUST hold ``_tuning_usage_lock``
-    and pass the same ``overrides`` the record itself prices with, so the
-    warning and the recorded cost can never disagree."""
-    from jasper.usage import pricing_for_model
-
-    if not pricing_for_model(model, overrides=overrides).label.startswith(
-        "unpriced:"
-    ):
-        return
-    if model in _tuning_unpriced_warned:
-        return
-    _tuning_unpriced_warned.add(model)
-    log_event(
-        logger,
-        "pricing.unpriced",
-        model=model,
-        surface="tuning",
-        note=(
-            "no rate available for the tuning model; its paid calls record "
-            "$0 and the daily spend cap cannot bound tuning spend until a "
-            "rate is set at /voice"
-        ),
-        level=logging.WARNING,
-    )
-
-
-def _heal_tuning_ledger_mode(tuning_db: str) -> None:
-    """Ensure the ledger file is 0644 so the jasper-group readers
-    (jasper-voice, jasper-web, doctor) can open it read-only.
-
-    Self-healing on EVERY record, not just first create: a crash between
-    sqlite-create (0600 under the root unit's UMask=0077) and the chmod, or a
-    single failed chmod, must not permanently — and invisibly, since readers
-    count an unopenable member as zero at DEBUG — break household-spend
-    aggregation for the non-root surfaces. Root chmod'ing its own file is
-    trivially cheap. Failure logs at WARNING: a wrong mode means other
-    surfaces are under-counting household spend."""
-    try:
-        mode = os.stat(tuning_db).st_mode & 0o777
-        if mode != 0o644:
-            os.chmod(tuning_db, 0o644)
-    except OSError:
-        logger.warning(
-            "tuning ledger mode heal failed for %s", tuning_db, exc_info=True,
-        )
-
-
-def _record_tuning_spend(out: dict[str, Any], usage_db: str) -> None:
-    """Record one paid tuning call into the tuning ledger. FAIL-SOFT: any
-    OSError / sqlite error logs ``tuning_spend.record_failed`` and returns —
-    never raises, so a ledger problem cannot block the response the user is
-    waiting on.
-
-    The advisor's ``out["usage"]`` carries only aggregate token counts
-    (``input_tokens`` / ``output_tokens``); gpt-5.4 has ONLY text rates, so
-    pricing those aggregates as-is would charge the (absent) audio rate and
-    record $0. Synthesize text-modality details (the research idiom) so the
-    cost prices at the text rate — all-text with no cached refinement is the
-    decided, conservative (slight over-estimate) simplification.
-    """
-    from jasper.calibration_agent.key_provisioning import resolve_tuning_model
-
-    usage_in = out.get("usage") or {}
-    try:
-        input_tokens = int(usage_in.get("input_tokens") or 0)
-        output_tokens = int(usage_in.get("output_tokens") or 0)
-    except (TypeError, ValueError):
-        input_tokens = output_tokens = 0
-    # Text-modality details (note the SINGULAR "token" in the detail keys —
-    # that is what usage.py's breakdown reads).
-    usage = {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "input_token_details": {"text_tokens": input_tokens},
-        "output_token_details": {"text_tokens": output_tokens},
-    }
-    model = resolve_tuning_model()
-    from jasper.usage import (
-        UsageStore,
-        load_pricing_overrides,
-        tuning_usage_db_path,
-    )
-
-    tuning_db = tuning_usage_db_path(usage_db)
-    # The /voice pricing editor's override file applies to tuning records too
-    # (an operator who priced a custom tuning model there must get that rate),
-    # and the unpriced warning below checks with the SAME overrides so the
-    # warning and the recorded cost can never disagree.
-    overrides = load_pricing_overrides()
-    try:
-        with _tuning_usage_lock:
-            _warn_if_tuning_model_unpriced(model, overrides)
-            # Fresh store per record — sqlite connections are thread-bound
-            # (see the lock's comment block) and each handler request runs on
-            # its own server thread. Open → record → close, all under the lock.
-            store = UsageStore(tuning_db, pricing_overrides=overrides)
-            try:
-                _heal_tuning_ledger_mode(tuning_db)
-                cost = store.record_background_usage(
-                    provider="openai",
-                    model=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    usage=usage,
-                )
-                write_degraded = store.write_degraded
-            finally:
-                store._conn.close()
-    except (OSError, sqlite3.Error) as e:
-        log_event(
-            logger,
-            "tuning_spend.record_failed",
-            level=logging.WARNING,
-            error=type(e).__name__,
-        )
-        return
-    if write_degraded:
-        # The store's own fail-soft (open_session/close_session) swallowed a
-        # write error, so NO row was persisted — the store already WARN-logged
-        # the detail. Emit record_failed, never a "recorded" event for a row
-        # that does not exist (the observability-lies half of the review's
-        # Blocker 1).
-        log_event(
-            logger,
-            "tuning_spend.record_failed",
-            level=logging.WARNING,
-            error="write_degraded",
-        )
-        return
-    log_event(
-        logger,
-        "tuning_spend.recorded",
-        model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cost_usd=round(cost, 6),
-    )
-
-
-def _spend_settings() -> tuple[str, float, float]:
-    """The three spend knobs (usage_db, daily cap, safety multiplier), read
-    FRESH per call: the wizard-owned SSOT file wins over ``os.environ``.
-
-    The /voice spend-cap form writes ``JASPER_DAILY_SPEND_CAP_USD`` /
-    ``_SAFETY_MULTIPLIER`` into ``/var/lib/jasper/voice_provider.env``.
-    jasper-voice sources that file LAST in its EnvironmentFile chain, but this
-    unit does not source it at all — and this socket-activated process is not
-    restarted on a save (it can outlive one by its 10-min idle window), so a
-    start-time env would go stale anyway. Overlaying the file's values over
-    ``os.environ`` per call is the :mod:`jasper.voice.provider_state` idiom
-    for exactly this stale-``os.environ`` trap, and matches what the running
-    jasper-voice sees (file wins).
-
-    Deliberately NOT ``Config.from_env()``: that hard-raises
-    ``VoiceProviderNotConfigured`` when no voice provider is set, which would
-    crash the tuning spend gate on an otherwise-valid box (OpenAI key + spend
-    cap configured, voice provider not yet picked). Defaults are shared with
-    ``Config`` via the ``jasper.usage`` constants (no mirrored literals);
-    malformed values fall back to those defaults — deliberately SOFTER than
-    ``Config.from_env``'s hard-raise, because a jasper.env typo must not 500
-    the tuning surface."""
-    from jasper.env_load import read_env_file_state
-    from jasper.usage import (
-        DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
-        DEFAULT_DAILY_SPEND_CAP_USD,
-        DEFAULT_USAGE_DB,
-    )
-    from jasper.voice.provider_state import PROVIDER_FILE
-
-    # Path resolution mirrors provider_state._resolve_path: the path override
-    # is a static deploy constant, so reading it from os.environ once per call
-    # is fine — only the file's CONTENTS need the fresh read.
-    provider_file = os.environ.get("JASPER_VOICE_PROVIDER_FILE", PROVIDER_FILE)
-    file_state = read_env_file_state(provider_file)
-    file_values = file_state.values if file_state.loaded else {}
-
-    def _value(name: str) -> str:
-        return (file_values.get(name) or os.environ.get(name) or "").strip()
-
-    def _float(name: str, default: float) -> float:
-        raw = _value(name)
-        if not raw:
-            return default
-        try:
-            return float(raw)
-        except ValueError:
-            return default
-
-    usage_db = _value("JASPER_USAGE_DB") or DEFAULT_USAGE_DB
-    cap_usd = _float("JASPER_DAILY_SPEND_CAP_USD", DEFAULT_DAILY_SPEND_CAP_USD)
-    multiplier = _float(
-        "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER",
-        DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
-    )
-    return usage_db, cap_usd, multiplier
-
-
-def _spend_usage_db() -> str:
-    """The voice usage DB path (JASPER_USAGE_DB), so the tuning ledger sibling
-    lands in the same directory the voice daemon uses."""
-    return _spend_settings()[0]
-
-
-def _tuning_spend_cap_gate() -> None:
-    """Refuse a PAID tuning call when the household daily spend cap is reached.
-
-    Built fresh per call over ``household_usage_reader(usage_db)`` — so tuning
-    spend AND voice spend share one ceiling. When blocked, raise
-    ``SpendCapExceeded`` (→ 429) with a rollover-worded message.
-
-    Fail-OPEN on a read error, matching the rest of the spend accounting: if
-    the cap can't read (SpendCap's store returns zero on an unreadable DB),
-    ``allowed()`` is True — a ledger problem never blocks the user. We do NOT
-    invent fail-closed here."""
-    from jasper.usage import SpendCap, household_usage_reader
-
-    usage_db, cap_usd, multiplier = _spend_settings()
-    reader = household_usage_reader(usage_db)
-    cap = SpendCap(reader, cap_usd, multiplier)
-    if cap.allowed():
-        return
-    log_event(
-        logger,
-        "tuning_spend.cap_blocked",
-        level=logging.WARNING,
-        # Public surface only (no SpendCap._padded_spend): the raw summed
-        # spend plus the multiplier lets the journal reader recompute the
-        # padded comparison. One extra ledger read, blocked path only.
-        spend_last_24h_usd=round(reader.spend_last_24h_usd(), 6),
-        safety_multiplier=multiplier,
-        cap_usd=cap_usd,
-    )
-    raise SpendCapExceeded(
-        "daily spend cap reached — the tuning assistant will be "
-        "available again after the daily rollover"
-    )
-
-
 def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /interpret: one paid call. Read-only "explain my room"."""
-    from jasper.calibration_agent import correction_advisor, model_client
+    from jasper.calibration_agent import correction_advisor
 
     _require_tuning_key()
     body = _read_json_body(handler)
@@ -5163,19 +4838,28 @@ def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if user_message is not None and not isinstance(user_message, str):
         raise BadRequest("message must be a string")
     sess = _get_or_create_session()
-    _tuning_paid_call_gate()
-    _tuning_spend_cap_gate()
-    try:
-        out = correction_advisor.interpret(
+
+    def _advisor_call(
+        *,
+        user_message: str | None,
+        timeout_sec: float,
+        max_output_tokens: int,
+    ) -> dict[str, Any]:
+        return correction_advisor.interpret(
             sess,
             user_message=user_message,
-            timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
-            max_output_tokens=model_client.TUNING_LLM_MAX_OUTPUT_TOKENS,
+            timeout_sec=timeout_sec,
+            max_output_tokens=max_output_tokens,
         )
-    except model_client.AdvisorModelError as e:
-        raise BadRequest(str(e)) from e
-    _record_tuning_spend(out, _spend_usage_db())
-    return out
+
+    try:
+        return correction_tuning.interpret(
+            _advisor_call, user_message=user_message,
+        )
+    except correction_tuning.TuningBusy as exc:
+        raise RequestConflict(str(exc)) from exc
+    except correction_tuning.TuningProviderError as exc:
+        raise BadRequest(str(exc)) from exc
 
 
 def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -5185,7 +4869,7 @@ def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     simulated, and returned with their sim verdict for the UI to surface
     for user confirmation. Applying happens only via /propose/apply.
     """
-    from jasper.calibration_agent import correction_advisor, model_client
+    from jasper.calibration_agent import correction_advisor
 
     _require_tuning_key()
     body = _read_json_body(handler)
@@ -5193,19 +4877,28 @@ def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if user_message is not None and not isinstance(user_message, str):
         raise BadRequest("message must be a string")
     sess = _get_or_create_session()
-    _tuning_paid_call_gate()
-    _tuning_spend_cap_gate()
-    try:
-        out = correction_advisor.propose(
+
+    def _advisor_call(
+        *,
+        user_message: str | None,
+        timeout_sec: float,
+        max_output_tokens: int,
+    ) -> dict[str, Any]:
+        return correction_advisor.propose(
             sess,
             user_message=user_message,
-            timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
-            max_output_tokens=model_client.TUNING_LLM_MAX_OUTPUT_TOKENS,
+            timeout_sec=timeout_sec,
+            max_output_tokens=max_output_tokens,
         )
-    except model_client.AdvisorModelError as e:
-        raise BadRequest(str(e)) from e
-    _record_tuning_spend(out, _spend_usage_db())
-    return out
+
+    try:
+        return correction_tuning.propose(
+            _advisor_call, user_message=user_message,
+        )
+    except correction_tuning.TuningBusy as exc:
+        raise RequestConflict(str(exc)) from exc
+    except correction_tuning.TuningProviderError as exc:
+        raise BadRequest(str(exc)) from exc
 
 
 def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -6364,7 +6057,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             diagnostic=str(e),
                             status=HTTPStatus.BAD_REQUEST,
                         )
-                    except SpendCapExceeded as e:
+                    except correction_tuning.SpendCapExceeded as e:
                         self._send_room_failure(
                             failures.public_failure(
                                 failures.TUNING_SPEND_LIMIT,
@@ -6397,7 +6090,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             diagnostic=str(e),
                             status=HTTPStatus.BAD_REQUEST,
                         )
-                    except SpendCapExceeded as e:
+                    except correction_tuning.SpendCapExceeded as e:
                         self._send_room_failure(
                             failures.public_failure(
                                 failures.TUNING_SPEND_LIMIT,

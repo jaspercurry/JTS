@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.web import correction_setup
+from jasper.web import correction_setup, correction_tuning
 from .correction_session_fixtures import make_measurement_session
 
 
@@ -48,11 +48,11 @@ def _reset_paid_call_gate(tmp_path, monkeypatch):
     )
     monkeypatch.delenv("JASPER_DAILY_SPEND_CAP_USD", raising=False)
     monkeypatch.delenv("JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER", raising=False)
-    correction_setup._tuning_last_paid_call[0] = 0.0
-    correction_setup._tuning_unpriced_warned.clear()
+    correction_tuning._tuning_last_paid_call[0] = 0.0
+    correction_tuning._tuning_unpriced_warned.clear()
     yield
-    correction_setup._tuning_last_paid_call[0] = 0.0
-    correction_setup._tuning_unpriced_warned.clear()
+    correction_tuning._tuning_last_paid_call[0] = 0.0
+    correction_tuning._tuning_unpriced_warned.clear()
 
 
 def _fake_session(state_value="ready"):
@@ -168,7 +168,7 @@ def test_paid_call_min_interval_gate(monkeypatch):
     with pytest.raises(correction_setup.RequestConflict, match="paid call"):
         correction_setup._handle_propose(_FakeHandler())
     # Once the window has passed, calls flow again.
-    correction_setup._tuning_last_paid_call[0] = 0.0
+    correction_tuning._tuning_last_paid_call[0] = 0.0
     out = correction_setup._handle_propose(_FakeHandler())
     assert out["kind"] == "jts_correction_proposal_review"
 
@@ -177,11 +177,151 @@ def test_tuning_timeout_env_typo_degrades_to_default(monkeypatch):
     """A garbage JASPER_TUNING_LLM_TIMEOUT_SEC must degrade to the 90 s
     default, never crash the whole /correction/ wizard at import."""
     monkeypatch.setenv("JASPER_TUNING_LLM_TIMEOUT_SEC", "ninety")
-    assert correction_setup._tuning_timeout_sec() == 90.0
+    assert correction_tuning._tuning_timeout_sec() == 90.0
     monkeypatch.setenv("JASPER_TUNING_LLM_TIMEOUT_SEC", "-5")
-    assert correction_setup._tuning_timeout_sec() == 90.0
+    assert correction_tuning._tuning_timeout_sec() == 90.0
     monkeypatch.setenv("JASPER_TUNING_LLM_TIMEOUT_SEC", "120")
-    assert correction_setup._tuning_timeout_sec() == 120.0
+    assert correction_tuning._tuning_timeout_sec() == 120.0
+
+
+def test_tuning_backend_admits_only_one_simultaneous_paid_call():
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def claim():
+        barrier.wait(timeout=5)
+        try:
+            correction_tuning._tuning_paid_call_gate()
+        except correction_tuning.TuningBusy:
+            outcomes.append("busy")
+        else:
+            outcomes.append("allowed")
+
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive(), "paid-call admission thread hung"
+
+    assert sorted(outcomes) == ["allowed", "busy"]
+
+
+@pytest.mark.parametrize(
+    ("entry_name", "kind"),
+    [
+        ("interpret", "jts_correction_interpret"),
+        ("propose", "jts_correction_proposal_review"),
+    ],
+)
+def test_tuning_backend_preserves_call_order_and_provider_contract(
+    monkeypatch,
+    entry_name,
+    kind,
+):
+    """The extracted backend owns exactly one paid call and returns its
+    payload unchanged after the fail-soft spend record."""
+    from jasper.calibration_agent import model_client
+
+    order = []
+    provider_out = {"kind": kind, "usage": {"input_tokens": 2}}
+
+    monkeypatch.setattr(
+        correction_tuning,
+        "_tuning_paid_call_gate",
+        lambda: order.append("rate"),
+    )
+    monkeypatch.setattr(
+        correction_tuning,
+        "_tuning_spend_cap_gate",
+        lambda: order.append("cap"),
+    )
+
+    def fake_advisor(**kwargs):
+        order.append("provider")
+        assert kwargs == {
+            "user_message": "hello",
+            "timeout_sec": float(correction_tuning.TUNING_LLM_TIMEOUT_SEC),
+            "max_output_tokens": model_client.TUNING_LLM_MAX_OUTPUT_TOKENS,
+        }
+        return provider_out
+
+    monkeypatch.setattr(
+        correction_tuning,
+        "_spend_usage_db",
+        lambda: order.append("settings") or "/tmp/usage.db",
+    )
+
+    def fake_record(out, usage_db):
+        order.append("record")
+        assert out is provider_out
+        assert usage_db == "/tmp/usage.db"
+
+    monkeypatch.setattr(correction_tuning, "_record_tuning_spend", fake_record)
+
+    result = getattr(correction_tuning, entry_name)(
+        fake_advisor,
+        user_message="hello",
+    )
+
+    assert result is provider_out
+    assert order == ["rate", "cap", "provider", "settings", "record"]
+
+
+@pytest.mark.parametrize("entry_name", ["interpret", "propose"])
+def test_tuning_backend_translates_provider_error_before_record(
+    monkeypatch,
+    entry_name,
+):
+    from jasper.calibration_agent import model_client
+
+    monkeypatch.setattr(correction_tuning, "_tuning_paid_call_gate", lambda: None)
+    monkeypatch.setattr(correction_tuning, "_tuning_spend_cap_gate", lambda: None)
+    monkeypatch.setattr(
+        correction_tuning,
+        "_record_tuning_spend",
+        lambda *_args, **_kwargs: pytest.fail("failed provider call was recorded"),
+    )
+
+    def fail_provider(**_kwargs):
+        raise model_client.AdvisorModelError("provider refused")
+
+    with pytest.raises(
+        correction_tuning.TuningProviderError,
+        match="provider refused",
+    ):
+        getattr(correction_tuning, entry_name)(
+            fail_provider,
+            user_message=None,
+        )
+
+
+@pytest.mark.parametrize(
+    ("handler_name", "advisor_name"),
+    [
+        ("_handle_interpret", "interpret"),
+        ("_handle_propose", "propose"),
+    ],
+)
+def test_paid_adapter_translates_backend_provider_error(
+    monkeypatch,
+    handler_name,
+    advisor_name,
+):
+    from jasper.calibration_agent import correction_advisor, model_client
+
+    monkeypatch.setattr(
+        "jasper.calibration_agent.key_provisioning.tuning_llm_available",
+        lambda **_: True,
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", _fake_session)
+
+    def fail_provider(*_args, **_kwargs):
+        raise model_client.AdvisorModelError("provider refused")
+
+    monkeypatch.setattr(correction_advisor, advisor_name, fail_provider)
+    with pytest.raises(correction_setup.BadRequest, match="provider refused"):
+        getattr(correction_setup, handler_name)(_FakeHandler())
 
 
 # --- /propose/apply: the safety core ----------------------------------
@@ -257,6 +397,20 @@ def test_propose_apply_good_cut_routes_through_apply(monkeypatch):
 
     sess = _fake_session("ready")
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_tuning,
+        "interpret",
+        lambda *_args, **_kwargs: pytest.fail(
+            "proposal apply called the paid interpret backend"
+        ),
+    )
+    monkeypatch.setattr(
+        correction_tuning,
+        "propose",
+        lambda *_args, **_kwargs: pytest.fail(
+            "proposal apply called the paid propose backend"
+        ),
+    )
     applied = {"peqs": None}
 
     def fake_apply(handler):
@@ -560,7 +714,7 @@ def test_record_from_two_concurrent_threads_lands_two_priced_rows(_tuning_ledger
         # does, threading's default excepthook prints the traceback and the
         # row-count assertion below fails.
         barrier.wait(timeout=5)
-        correction_setup._record_tuning_spend(dict(out), str(usage_db))
+        correction_tuning._record_tuning_spend(dict(out), str(usage_db))
         # Hold this thread alive briefly so the sibling's write overlaps a
         # still-live peer thread (defeats the thread-liveness escape hatch).
         barrier.wait(timeout=5)
@@ -646,7 +800,7 @@ def test_cap_exceeded_refuses_both_handlers(
         "jasper.calibration_agent.correction_advisor.propose", _boom
     )
     handler = getattr(correction_setup, handler_name)
-    with pytest.raises(correction_setup.SpendCapExceeded, match="rollover"):
+    with pytest.raises(correction_tuning.SpendCapExceeded, match="rollover"):
         handler(_FakeHandler())
     assert called["advisor"] is False  # refused BEFORE any paid call
 
@@ -708,7 +862,7 @@ def test_wizard_file_cap_wins_over_process_env(
     )
     _fund_household_over_cap(usage_db, cost_usd=0.50)  # over 0.25, under 100
 
-    _db, cap_usd, multiplier = correction_setup._spend_settings()
+    _db, cap_usd, multiplier = correction_tuning._spend_settings()
     assert cap_usd == pytest.approx(0.25)  # file wins
     assert multiplier == pytest.approx(1.0)
 
@@ -721,7 +875,7 @@ def test_wizard_file_cap_wins_over_process_env(
     monkeypatch.setattr(
         "jasper.calibration_agent.correction_advisor.interpret", _boom
     )
-    with pytest.raises(correction_setup.SpendCapExceeded):
+    with pytest.raises(correction_tuning.SpendCapExceeded):
         correction_setup._handle_interpret(_FakeHandler())
     assert called["advisor"] is False
 
@@ -738,13 +892,13 @@ def test_wizard_file_absent_falls_back_to_env_then_default(
 
     # The autouse fixture points JASPER_VOICE_PROVIDER_FILE at an absent tmp
     # file and clears the cap env vars → pure defaults.
-    _db, cap_usd, multiplier = correction_setup._spend_settings()
+    _db, cap_usd, multiplier = correction_tuning._spend_settings()
     assert cap_usd == pytest.approx(DEFAULT_DAILY_SPEND_CAP_USD)
     assert multiplier == pytest.approx(DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER)
 
     # Env applies when the file stays absent.
     monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_USD", "3.50")
-    _db, cap_usd, _m = correction_setup._spend_settings()
+    _db, cap_usd, _m = correction_tuning._spend_settings()
     assert cap_usd == pytest.approx(3.50)
 
 
@@ -784,7 +938,7 @@ def test_unpriced_tuning_model_records_zero_and_warns_once(
     )
     with caplog.at_level("WARNING"):
         correction_setup._handle_interpret(_FakeHandler())
-        correction_setup._tuning_last_paid_call[0] = 0.0  # re-arm min-interval
+        correction_tuning._tuning_last_paid_call[0] = 0.0  # re-arm min-interval
         correction_setup._handle_interpret(_FakeHandler())
 
     from jasper.usage import UsageStore, tuning_usage_db_path
