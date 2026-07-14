@@ -1493,6 +1493,66 @@ def test_backend_status_includes_active_speaker_commission_state(monkeypatch):
     assert payload["commission"] == {"ramp": {"pending": None}}
 
 
+def test_commissioning_run_status_is_current_only_for_exact_comparison(
+    monkeypatch, tmp_path
+):
+    from jasper.active_speaker.commissioning_run import CommissioningRunStore
+
+    store = CommissioningRunStore(
+        path=tmp_path / "commissioning-run.json",
+        owner_id="1" * 32,
+    )
+    monkeypatch.setattr(backend, "_COMMISSIONING_RUN_STORE", store)
+    comparison = {
+        "bundle_session_id": "session-1",
+        "fingerprint": "a" * 64,
+    }
+
+    handle = backend.begin_commissioning_run(comparison)
+    current = backend.commissioning_run_status(comparison)
+    stale = backend.commissioning_run_status(
+        {"bundle_session_id": "session-2", "fingerprint": "b" * 64}
+    )
+
+    assert current == {
+        "status": "current",
+        "reason": None,
+        "session_id": "session-1",
+        "run_id": handle.run_id,
+        "owner_generation": 1,
+        "lifecycle_state": "unconfigured",
+        "attempt_count": 0,
+        "last_transition": None,
+        "updated_at": current["updated_at"],
+        "state_fingerprint": store.snapshot()["fingerprint"],
+    }
+    assert stale["status"] == "stale"
+    assert stale["reason"] == "commissioning_comparison_set_changed"
+    assert stale["run_id"] == handle.run_id
+
+
+def test_commissioning_run_status_is_fail_closed_for_absent_and_corrupt_state(
+    monkeypatch, tmp_path
+):
+    from jasper.active_speaker.commissioning_run import CommissioningRunStore
+
+    path = tmp_path / "commissioning-run.json"
+    store = CommissioningRunStore(path=path, owner_id="1" * 32)
+    monkeypatch.setattr(backend, "_COMMISSIONING_RUN_STORE", store)
+
+    absent = backend.commissioning_run_status(None)
+    path.write_text("not json", encoding="utf-8")
+    corrupt = backend.commissioning_run_status(None)
+
+    assert absent["status"] == "not_started"
+    assert absent["reason"] == "commissioning_run_not_started"
+    assert corrupt == {
+        "status": "unavailable",
+        "reason": "commissioning_run_state_unavailable",
+        "error_type": "CommissioningRunError",
+    }
+
+
 def test_crossover_module_is_a_thin_server_envelope_renderer():
     source = Path("deploy/assets/correction/js/crossover/main.js").read_text(
         encoding="utf-8",

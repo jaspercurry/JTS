@@ -51,7 +51,7 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the Wave 3 isolated-driver consumer and the Shared manifest, playback, admission, and guarded-playback implementation, 2026-07-14)
+## Current state (verified against the Wave 3 isolated-driver consumer, durable Active run boundary, per-region delay host, and the Shared manifest, playback, admission, and guarded-playback implementation, 2026-07-14)
 
 ### Wave 1 contract-only foundation (2026-07-13)
 
@@ -68,7 +68,9 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   The strict SHA-256 values are content identities, not signatures, trusted
   issuers, or transferable playback capabilities. The original Wave 1 slice had
   no producer; Active's isolated-driver production adapter now supplies the
-  trusted live consumer, while summed and lifecycle authority remain blocked.
+  trusted live consumer. Summed/candidate/receipt authority remains blocked;
+  the separate lifecycle control plane is only partially integrated as the
+  bundle-backed run identity described below.
 - `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
   `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
   replay inputs, admission artifacts, algorithm id/version, geometry, placement,
@@ -100,17 +102,21 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   target to pass exactly three distinct admitted fixed-axis post-apply captures
   from one session/threshold profile, and binds the retained applied candidate,
   fresh graph proof, predecessor, and rollback result bound to the same
-  operation, mutation, and observed applied graph. Those types are
-  inert until the Active integration lane issues and persists them.
+  operation, mutation, and observed applied graph. The transition value remains
+  pure, while Wave 3 now persists one exact current-run identity and provides
+  bounded attempt/journal mutation APIs. No production measurement adapter uses
+  those APIs yet, and the eligibility receipt remains inert.
 
-Contract status is not current `/state`. Existing Active bundles remain
-forensic/fail-soft, and `active_speaker.setup_status` still reports the legacy
+The full contract is not current Room `/state` authority. Existing Active
+bundles remain forensic/fail-soft, and `active_speaker.setup_status` still reports the legacy
 applied-recomposition decision. Room R1b no longer accepts that legacy positive
 decision for an active topology: it admits only passive/not-required and blocks
 active entry until Active issues and exposes the exact receipt-backed result.
 Room does not parse the receipt or reconstruct it from historical B2b evidence;
 automatic authority requires Active's fresh excitation-admitted captures and
-measured delay walk. No hardware behavior was changed or revalidated.
+measured delay walk. The crossover status has a separate fail-closed
+`commissioning_run` control-plane projection; it is not an eligibility receipt
+and Room does not consume it. No hardware behavior was changed or revalidated.
 
 ### Wave 2 neutral artifact-manifest ownership (2026-07-13)
 
@@ -260,8 +266,40 @@ production path has adopted these APIs. It holds the bounded Shared writer lock
 across transient load, fresh generation/playback proofs, exact playback, and
 restoration, and threads the verified playback-role handoff through the
 server-owned capture call. Summed capture is intentionally refused before graph
-load until its group-level proof exists; lifecycle, candidate, receipt, and
-Room-gate authority are still unchanged.
+load until its group-level proof exists; candidate, receipt, and Room-gate
+authority are still unchanged. Lifecycle identity now has the narrow production
+start/status integration below, but no production evidence transition consumer.
+
+### Wave 3 Active run identity and delay host (2026-07-14)
+
+`jasper.active_speaker.commissioning_run` is an Active-owned control-plane
+store, not a new Shared evidence bundle. A fresh production comparison set starts
+one run only when it carries its bundle session id and exact comparison
+fingerprint. The store atomically persists bounded, fully validated
+session/run/process-owner-generation identity, immutable generation-bound target
+attempts, and a hash-chained journal of typed nine-state transitions. Every
+public read revalidates the complete artifact. Correction-web claims the owner
+generation on service start, making prior-process handles stale, and exposes a
+safe `commissioning_run` projection on crossover status. Absent state is
+`not_started`; an exact active comparison is `current`; comparison drift is
+`stale`; corrupt/unreadable state is `unavailable`. Production currently starts
+only `unconfigured`; no live consumer reserves attempts or advances the journal.
+
+`jasper.active_speaker.commissioning_delay_walk` is the Active host adapter for
+one caller-supplied crossover-region `NullWalkSpec`. It holds one bounded Shared
+DSP-writer lock across the exact entry snapshot, every candidate load and fresh
+topology/Fc-bound graph confirmation, exactly five unique playback-admitted,
+quality-accepted, alignment-SNR-qualified null captures per candidate, and the
+Shared runner's exact cancellation-draining predecessor restoration. Replayed
+readback operation ids and stale candidate/snapshot capture bindings refuse.
+The concrete CamillaDSP loader/reader, browser capture path, persistence, and
+region-scoped lifecycle orchestration remain injected callback ports with no
+production caller. No general measurement-set authority landed: the next slice
+must derive evidence separately for every region of a three-way rather than
+collapsing them to a speaker-group plan. Candidate evaluation, apply,
+post-apply verification, receipt issuance, and Room consumption remain
+unavailable. This slice performed no live graph mutation, audio, or hardware
+validation.
 
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
@@ -345,7 +383,7 @@ Room-gate authority are still unchanged.
   still own the actual DSP mutation, exact restore, read-back, writer exclusion,
   and capture transport. The exhaustive runner preflights and refuses above 25
   candidates or beyond CamillaDSP's 20 ms delay ceiling before touching DSP.
-  `delay_graph.py` is the inert candidate graph-*content* seam beside that
+  `delay_graph.py` is the pure candidate graph-*content* seam beside that
   runner. Inside an outer exact-restore transaction, a host stages both delay
   lanes to numeric zero and supplies the same `DspPredecessor` the F1 runner
   will restore, with parsed CamillaDSP `active_raw` in its frozen state. Typed
@@ -363,16 +401,24 @@ Room-gate authority are still unchanged.
   field. It derives the signed relative delay from both bound slots and requires
   a real numeric non-positive `devices.volume_limit`; every other graph value,
   including any pre-existing compensated positive PEQ, must remain byte-model
-  equivalent in canonical JSON. This helper does **not** establish that a
-  read-back is live, fresh, or from the current writer transaction. F2b must
-  own writer-locked candidate apply → fresh `active_raw` → typed confirmation,
-  bind that confirmation to the current run/evidence, and feed it into the F1
-  runner. Until that host contract lands, stale/replayed but content-identical
-  graphs remain an explicit integration gap, not admitted measurement
-  authority. Emitted-file hashes are never compared with CamillaDSP's
-  normalized/default-expanded graph. Production CamillaDSP/web/persistence
-  wiring is not shipped yet, and low-frequency bass walks require a separately
-  reviewed adaptive scheduler before they are executable.
+  equivalent in canonical JSON. This helper alone does **not** establish that a
+  read-back is live, fresh, or from the current writer transaction. Active's
+  `commissioning_delay_walk.run_active_delay_walk` now supplies that F2b host
+  boundary for one explicit crossover-region spec: one bounded Shared writer
+  lock spans candidate apply → fresh operation-identified `active_raw` → typed
+  confirmation → five admitted null captures per candidate → exact restore.
+  The adapter rejects duplicate readback ids, topology/Fc drift, missing or
+  stale confirmation bindings, duplicate capture/admission/null ids, rejected
+  quality, and non-affirmative alignment SNR. Emitted-file hashes are never
+  compared with CamillaDSP's normalized/default-expanded graph.
+
+  The adapter is hardware-free composition, not a live walk: its actual
+  CamillaDSP loader/reader, browser capture, persistence, and per-region
+  lifecycle callbacks are not wired by a production route. There is no landed
+  group-level measurement plan; a future orchestrator must bind each crossover
+  region independently, including both regions of a three-way. Low-frequency
+  bass walks require their own host and a separately reviewed adaptive
+  scheduler before they are executable.
 - The relay level target is reusable state, not a long-lived live gain. A
   successful ramp restores the original listening volume immediately. Room,
   verification, and active-crossover adapters reassert the target only inside
@@ -888,9 +934,11 @@ summary in `tests/js/active_speaker_ui_test.mjs`.
 **Owed: on-Pi (jts3) calibrated pass** — with the Dayton USB-C near-field on each
 driver, confirm the captured FR is sane and the reverse-polarity null margin reads
 the right polarity; nothing exceeds the 0 dB ceiling. The interactive `main.js`
-render of the proposal card + FR-curve plot, and the timing-locked **delay walk**,
-are the deferred follow-ups (the pure summary helper `crossoverAlignmentSummary` +
-the JSON contract ship here).
+render of the proposal card + FR-curve plot and the live timing-locked **delay
+walk** remain deferred follow-ups. The latter now has a hardware-free Active host
+boundary for one region, but no CamillaDSP/browser caller or region-scoped
+evidence orchestrator (the pure summary helper `crossoverAlignmentSummary` + the
+JSON contract ship here).
 
 > **Correction (2026-06-21).** The initial cut (#918) proposed a *delay value* from
 > per-driver IR arrival deltas and a one-click confirm POST. A staff review found
@@ -1130,8 +1178,12 @@ outcomes carrying the persisted artifact; one authority per fresh session with
 unique attempt ids; closed guarded-playback terminal events; and
 no-bundle-migration/no-backfill boundaries plus Active isolated-driver adoption,
 server-owned capture handoff, and summed pre-audio refusal checked
-hardware-free. No hardware behavior revalidated. Wave 1 excitation/evidence
-identities and
-`null_walk.DspPredecessor` reuse remain contract-only. Crossover adapter
+hardware-free. Durable bundle-backed Active run identity, startup owner claim,
+stale-callback refusal, and fail-closed crossover status were checked alongside
+the hardware-free per-region Active delay host's single writer lock, fresh graph
+confirmation, five admitted null captures per candidate, and exact restoration.
+No hardware behavior revalidated. Wave 1 excitation/evidence identities remain
+pure contracts; `null_walk.DspPredecessor` now also has this Active host consumer.
+Candidate/verification/receipt and Room authority remain unavailable. Crossover adapter
 volume-lease participation and measurement-flow admission ownership rechecked
 against correction, balance, sync, and the coordinator mutex)
