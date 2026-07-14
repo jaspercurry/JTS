@@ -35,6 +35,27 @@
   with `active_summed_persisted_admission_unavailable`; it must not record new
   authoritative summed evidence until the group-level delay/protection adapter
   lands. This is a software-only change; no sound or hardware was exercised.
+- 🧱 **Wave 3 Active run authority is durable and visible; the measured
+  lifecycle is not yet driven.** When crossover level finalization publishes a
+  fresh authoritative comparison set with a production bundle session id,
+  correction-web now starts one Active commissioning run bound to that exact
+  session and comparison fingerprint. The bounded atomic store retains the run
+  id, process-owner generation, immutable generation-bound attempt slots, and a
+  hash-chained nine-state transition journal. Service startup independently
+  claims the repeat, level-run, and commissioning-run owners; a failure in one
+  claim does not skip the others, and prior-generation callbacks are stale.
+  `/crossover/status` exposes only safe `commissioning_run` status: `not_started`,
+  exact `current`, comparison-`stale`, or fail-closed `unavailable`, plus the
+  run/lifecycle summary without process owner id or evidence payloads. `current`
+  additionally requires the comparison's complete schema/fingerprint and exact
+  current topology/protected-profile binding. A failure to start the durable
+  run revokes the just-published comparison/repeat authority. Production
+  currently leaves the new run `unconfigured`; no route reserves its region-
+  scoped attempts or commits lifecycle transitions.
+
+  Candidate/delay-walk/apply/verification, receipt issuance, and Room
+  consumption remain unavailable. No sound, live graph mutation, or hardware
+  was exercised.
 - ✅ **Room R1 — envelope v9 owns whole-page visibility, truthful entry
   failures, and disclosed run defaults (hardware-free;
   real-device browser pass pending).** `jasper.correction.envelope` now emits
@@ -129,17 +150,22 @@
   graph. An attempted/unknown mutation, a failed restore, or even a
   successful rollback cannot mint this positive receipt.
 
-  This is an inert contract in Wave 1. No Active production flow issues or
-  persists the receipt; current Active bundles remain forensic/fail-soft, and
+  The receipt remains an inert contract. No Active production flow issues or
+  persists it; current Active bundles remain forensic/fail-soft, and
   `active_speaker.setup_status` still derives its positive boolean from the
   topology-current applied recomposition snapshot. Room no longer treats that
   legacy positive boolean as modern authority: its R1b adapter admits passive
   speakers and rejects active topologies before session reservation. It neither
-  parses the receipt nor inspects historical B2b evidence. The new nine-state
-  Active lifecycle is likewise not current `/state`. The Active integration
-  lane must add
-  writer-locked apply/readback/restore, receipt issuance/persistence, and the
-  Room consumer together before this becomes authority. No generic graph
+  parses the receipt nor inspects historical B2b evidence. The nine-state
+  lifecycle now has a separate durable, bundle-backed current-run store and a
+  fail-closed `commissioning_run` projection on `/crossover/status`; startup
+  claims its owner generation so stale callbacks cannot commit. Production does
+  not yet reserve evidence attempts or advance that run from `unconfigured`, and
+  this status is not Room authority. The Active integration lane must still add
+  region-scoped admitted evidence, writer-locked candidate
+  apply/readback/restore, post-apply verification, receipt
+  issuance/persistence, and the Room consumer together before this becomes
+  authority. No generic graph
   transaction landed; exact rollback state reuses
   `audio_measurement.null_walk.DspPredecessor`. No hardware behavior was changed
   or revalidated by this slice.
@@ -1560,6 +1586,8 @@ mid-sweep would attenuate the sweep itself.
 ```
 jasper/
 ├── active_speaker/
+│   ├── commissioning_run.py              durable exact run/owner/attempt/
+│   │                                    lifecycle-journal control plane
 │   ├── crossover_envelope.py            commissioning screen envelope (aligned
 │   │                                    with the room envelope pattern; passive
 │   │                                    gate) — composes commissioning_coordinator
@@ -2494,7 +2522,10 @@ Internal:
 Last verified: 2026-07-14 (shared DSP-writer admission deadline/cancellation
 semantics checked against Room's terminal mutation policy; Active isolated-driver
 persisted admission, server-owned capture handoff, and summed pre-audio refusal
-checked hardware-free; Wave 2 paid tuning backend extraction checked the
+checked hardware-free; Active's durable bundle-backed commissioning-run start,
+startup owner-generation claim, stale-callback refusal, and fail-closed
+crossover status were also checked; candidate/delay-walk/verification/receipt
+and Room authority remain unavailable. Wave 2 paid tuning backend extraction checked the
 shared cross-route throttle, fresh household spend gate, exact provider
 arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP
 error translation without moving proposal acceptance or live apply. Acoustic-

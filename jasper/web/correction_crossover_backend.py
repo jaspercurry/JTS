@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from jasper.active_speaker import web_commissioning, web_measurement
+from jasper.active_speaker.commissioning_run import (
+    CommissioningRunHandle,
+    CommissioningRunStore,
+)
+from jasper.active_speaker.capture_geometry import comparison_set_valid
 from jasper.active_speaker.crossover_level_run import (
     CrossoverLevelRunError,
     CrossoverLevelRunPhase,
@@ -1268,6 +1273,7 @@ _LEVEL_LEASE = CrossoverLevelLease(
     volume_safety_state_path=_DEFAULT_VOLUME_SAFETY_STATE_PATH,
     level_run_state_path=_level_run_state_path(),
 )
+_COMMISSIONING_RUN_STORE = CommissioningRunStore()
 
 
 def level_lease() -> CrossoverLevelLease:
@@ -1278,6 +1284,95 @@ def claim_level_run_owner() -> dict[str, Any] | None:
     """Service-lifecycle adapter for the Room-owned web entry point."""
 
     return _LEVEL_LEASE.claim_level_run_owner()
+
+
+def claim_commissioning_run_owner() -> CommissioningRunHandle | None:
+    """Retire callbacks owned by a prior correction-web process."""
+
+    return _COMMISSIONING_RUN_STORE.claim_owner()
+
+
+def begin_commissioning_run(
+    comparison_set: Mapping[str, Any],
+) -> CommissioningRunHandle:
+    """Bind a fresh durable run to one authoritative comparison session."""
+
+    if not comparison_set_valid(comparison_set):
+        raise ValueError("commissioning comparison set is invalid")
+    session_id = comparison_set.get("bundle_session_id")
+    session_fingerprint = comparison_set.get("fingerprint")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError(
+            "commissioning run requires a fresh production evidence bundle"
+        )
+    if (
+        not isinstance(session_fingerprint, str)
+        or len(session_fingerprint) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in session_fingerprint
+        )
+    ):
+        raise ValueError("commissioning comparison identity is unavailable")
+    return _COMMISSIONING_RUN_STORE.replace_current(
+        session_id=session_id,
+        session_fingerprint=session_fingerprint,
+    )
+
+
+def commissioning_run_status(
+    comparison_set: Mapping[str, Any] | None,
+    *,
+    expected_topology_id: str | None,
+    expected_profile_context_id: str | None,
+) -> dict[str, Any]:
+    """Project durable lifecycle authority without exposing process identity."""
+
+    try:
+        snapshot = _COMMISSIONING_RUN_STORE.snapshot()
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {
+            "status": "unavailable",
+            "reason": "commissioning_run_state_unavailable",
+            "error_type": type(exc).__name__,
+        }
+    current = snapshot.get("current")
+    if not isinstance(current, Mapping):
+        return {
+            "status": "not_started",
+            "reason": "commissioning_run_not_started",
+            "state_fingerprint": snapshot.get("fingerprint"),
+        }
+    comparison_current = bool(
+        isinstance(comparison_set, Mapping)
+        and comparison_set_valid(comparison_set)
+        and isinstance(expected_topology_id, str)
+        and bool(expected_topology_id)
+        and isinstance(expected_profile_context_id, str)
+        and bool(expected_profile_context_id)
+        and comparison_set.get("topology_id") == expected_topology_id
+        and comparison_set.get("profile_context_id")
+        == expected_profile_context_id
+        and current.get("session_id") == comparison_set.get("bundle_session_id")
+        and current.get("session_fingerprint") == comparison_set.get("fingerprint")
+    )
+    journal = current.get("transition_journal")
+    last_transition = journal[-1] if isinstance(journal, list) and journal else None
+    attempts = current.get("attempts")
+    return {
+        "status": "current" if comparison_current else "stale",
+        "reason": (
+            None if comparison_current else "commissioning_comparison_set_changed"
+        ),
+        "session_id": current.get("session_id"),
+        "run_id": current.get("run_id"),
+        "owner_generation": current.get("owner_generation"),
+        "lifecycle_state": current.get("lifecycle_state"),
+        "attempt_count": len(attempts) if isinstance(attempts, list) else 0,
+        "last_transition": last_transition,
+        "updated_at": current.get("updated_at"),
+        "state_fingerprint": snapshot.get("fingerprint"),
+    }
 
 
 def status_payload() -> dict[str, Any]:
@@ -1316,6 +1411,11 @@ def status_payload() -> dict[str, Any]:
 
     comparison_set = (payload.get("measurements") or {}).get(
         "active_comparison_set"
+    )
+    payload["commissioning_run"] = commissioning_run_status(
+        comparison_set if isinstance(comparison_set, Mapping) else None,
+        expected_topology_id=(payload.get("topology") or {}).get("topology_id"),
+        expected_profile_context_id=current_context_id,
     )
     try:
         durable_repeats = repeat_admission.snapshot(

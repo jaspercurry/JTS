@@ -25,6 +25,20 @@
 > exposes receipt-backed authority. No hardware behavior was changed or
 > revalidated by these hardware-free slices.
 
+> **Wave 3 lifecycle boundary (2026-07-14; hardware-free).** A
+> fresh authoritative comparison set that carries a production bundle session
+> id now starts one durable Active commissioning run. The control-plane store
+> persists the exact session fingerprint, run id, process-owner generation,
+> immutable target-attempt reservations, and a bounded hash-chained journal of
+> the nine-state transitions. Correction-web claims that owner at service start,
+> making prior-generation callbacks stale, and
+> `/correction/crossover/status` reports its `commissioning_run` block as
+> `not_started`, exact
+> `current`, comparison-`stale`, or fail-closed `unavailable` state. This is
+> lifecycle identity, not acoustic or apply authority: production currently
+> starts the run at `unconfigured`; no production caller yet reserves its
+> region-scoped measurement attempts or advances its transition journal.
+
 ## Product goal
 
 JTS should let a user commission an active two-way or three-way speaker in one
@@ -671,13 +685,18 @@ restoration; after playback admission has persisted, timeout, cancellation, or
 failure returns typed possible-audio authority and consumes the one-shot
 identity.
 
-This slice does **not** make the lifecycle or candidate ready. Combined/summed
+The isolated-driver playback slice does **not** make the candidate ready.
+The later Wave 3 control-plane integration now starts and exposes a durable
+`unconfigured` commissioning run only from the fresh bundle-backed comparison
+set, claims its process owner at correction-web startup, and classifies a
+different active comparison as stale. It still has no production measurement
+attempt/transition orchestrator. Combined/summed
 capture remains pre-audio refused with
 `active_summed_persisted_admission_unavailable` until the group-level protection
-and delay-walk authority lands. Historical B2b captures remain permanently
-non-admitted, and current projections still expose no candidate, apply,
-verification, or receipt authority until the later Wave 3 lifecycle gates are
-satisfied.
+and per-region measurement authority land. Historical B2b captures remain
+permanently non-admitted, and current projections still expose no candidate,
+apply, verification, receipt, or Room authority until the later Wave 3 gates
+are satisfied.
 
 ### Wave 2 level-run correlation and timeout boundary
 
@@ -988,9 +1007,18 @@ rollback outcome bound to that same operation, mutation, and observed applied
 graph. A failed, restored, attempted, or unknown mutation cannot mint the
 positive receipt.
 
-These are inert types in Wave 1. Current Active bundles remain forensic and
-fail-soft, the new lifecycle is not the source of current `/state`, and no
-production code issues or persists an eligibility receipt. Room's current
+The Wave 1 transition and receipt values remain pure contracts. Wave 3 now
+persists the lifecycle's exact current-run identity in
+`active_speaker_commissioning_run.json` and projects it as the
+`commissioning_run` block on the crossover status surface. A production run is
+created only with a fresh bundle-backed comparison set; owner generation is
+claimed at correction-web startup, and stale run/attempt callbacks cannot
+commit. The store can persist bounded target-attempt reservations and a
+hash-chained transition journal, but no production measurement orchestrator
+uses those two mutation APIs yet, so the live run remains `unconfigured`.
+
+Current Active bundles remain forensic and fail-soft, and no production code
+issues or persists an eligibility receipt. Room's current
 `active_speaker.setup_status` producer still derives readiness from the legacy
 topology-current applied-recomposition snapshot, but the R1b Room adapter no
 longer accepts that positive result for active topologies. It admits only
@@ -1045,9 +1073,18 @@ bundle records:
 
 ### Runtime surface
 
-The following remains the target surface; Wave 1 contract status is **not** the
-current `/state`. Once the lifecycle and receipt have a real issuing/persistence
-adapter, `/state` or the existing active-speaker aggregation should expose a small
+The full household summary below remains the target surface. The crossover
+status now carries a narrower fail-closed `commissioning_run` control-plane
+projection: exact session/run identity, owner generation, lifecycle state,
+attempt count, last transition, update time, and state fingerprint are returned
+only when the durable artifact validates; the comparison must also pass its
+complete schema/fingerprint and match the current topology and protected
+profile. An absent file is `not_started`, a comparison mismatch is `stale`, and
+corrupt/unreadable state is `unavailable`.
+Process owner id and raw evidence are not exposed. This block is not an
+eligibility receipt and does not change Room's entry decision. Once candidate,
+apply, verification, and receipt producers land, `/state` or the existing
+active-speaker aggregation should additionally expose a small
 household/operator summary:
 
 - idle, measuring, proposal ready, applying, verified, or failed;
@@ -1065,10 +1102,13 @@ the top-level state payload.
 The shipped crossover flow already logs under the `correction.crossover_*`
 namespace (`correction.crossover_driver_capture_sweep`,
 `correction.crossover_summed_capture`, `correction.crossover_relay_recorded`,
-and friends, all via `jasper.log_event`). New lifecycle events extend that
-namespace rather than starting a parallel `crossover.*` prefix — operators
-already grep the shipped names, and the log-event conventions test pins the
-mechanism. Log important transitions once using stable `event=` names,
+and friends, all via `jasper.log_event`). New lifecycle events stay under the
+existing `correction.*` family rather than starting a bare parallel
+`crossover.*` prefix. The durable Active store uses the
+`correction.active_commissioning_*` family for successful run, owner, attempt,
+and transition commits; status polling is silent.
+Operators already grep the shipped correction names, and the log-event
+conventions test pins the mechanism. Log important transitions once using stable `event=` names,
 including:
 
 - `correction.crossover_session_started`;
@@ -1248,16 +1288,24 @@ trim calculation is a complete automatic crossover.
 
 ## Current implementation gap summary
 
-As of 2026-07-12, JTS has much of the substrate but not the full product:
+As of 2026-07-14, JTS has much of the substrate but not the full product:
 
-- **Wave 1 contract foundation (2026-07-13) is landed but inert.** `/sound/`
+- **Wave 1 contract foundation (2026-07-13) is landed; lifecycle identity is
+  partially integrated in Wave 3.** `/sound/`
   owns a revisioned, per-physical-target version-1 server request plus
   request-bound version-2 research result and visible confirmed version-1
   safety-profile shape; the pure measurement layer owns exact
   excitation admission and neutral evidence identities; Active owns the
-  nine-state lifecycle and exact positive Room-eligibility receipt. These do
-  not yet replace existing playback gates, bundles, graph mutation, persistence,
-  or `/state`. Room's temporary R1b adapter admits passive/not-required and
+  nine-state lifecycle and exact positive Room-eligibility receipt. A new
+  bounded, atomically persisted run store now binds a fresh bundle-backed
+  comparison to exact session/run/owner-generation identity, attempt slots, and
+  a hash-chained transition journal. Correction-web claims the owner at startup
+  and exposes a fail-closed `commissioning_run` status; comparison drift is
+  reported stale and prior-generation callbacks cannot commit. The production
+  integration currently only begins an `unconfigured` run—there is no live
+  attempt/transition orchestrator—so this does not yet replace the candidate,
+  graph mutation, verification, receipt, or Room authority paths. Room's
+  temporary R1b adapter admits passive/not-required and
   blocks every active topology rather than trusting the applied-snapshot
   positive. Live receipt production/consumption and on-device proof remain later
   slices.
@@ -1332,10 +1380,9 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   but the wizard does not yet expose the per-region normal/reverse loop or load
   a transient reverse-polarity graph; the playback boundary refuses those
   candidates before audio so it cannot mislabel the unchanged applied graph.
-  The bounded measured
-  delay *walk* (a value, not just a status) and post-apply verification
-  remain separate, not-yet-built pieces of Slice 2.
-- The shared delay-walk substrate now includes a pure candidate graph-content
+  The bounded measured delay *walk* (a value, not just a status) and post-apply
+  verification remain separate, not-yet-built pieces of Slice 2.
+- The shared delay-walk substrate includes a pure candidate graph-content
   proof (`jasper.audio_measurement.delay_graph`). Active-crossover and bass
   hosts share one typed lane proof while retaining their own authoritative
   topology and emitter vocabularies: each target supplies its exact non-empty
@@ -1347,12 +1394,11 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   one bounded delay while retaining a real
   non-positive volume ceiling and every other graph value. The shared core does
   not parse active-speaker or bass filter names. This is deliberately not proof
-  that the supplied
-  `active_raw` is live or fresh. The pending F2b host must hold the DSP writer
-  lock across apply → fresh read-back → typed confirmation, bind the result to
-  the current run and capture evidence, and pass it to the F1 runner. A
-  stale/replayed content-identical graph is therefore a named future host
-  contract gap, not a capability claimed by this slice. No CamillaDSP host
+  that the supplied `active_raw` is live or fresh. The pending F2b host must hold
+  the DSP writer lock across apply → fresh read-back → typed confirmation, bind
+  the result to the current run and capture evidence, and pass it to the F1
+  runner. A stale/replayed content-identical graph is therefore a named future
+  host contract gap, not a capability claimed by this slice. No CamillaDSP host
   adapter, capture playback, walk scheduling, geometry source, or three-way
   orchestration is wired yet.
 - ~~Automatic trim application must not reset a manually applied delay or
@@ -1434,7 +1480,8 @@ Last verified: 2026-07-14 (Wave 2 reconstruction, measured-candidate input,
 preparation-only safety, level-run correlation contracts and terminal-result
 liveness, permanent historical refusal, the reachable isolated-driver
 Shared-admission/playback adapter and bounded writer transaction,
-summed pre-audio refusal,
-and Room's temporary passive-only admission boundary checked against the merged
+summed pre-audio refusal, durable bundle-backed commissioning-run identity,
+startup owner-generation claim, fail-closed crossover status,
+and Room's temporary passive-only admission boundary checked against the current
 implementation and cited measurement literature; no live audio, DSP mutation,
 or hardware behavior was changed or revalidated.)

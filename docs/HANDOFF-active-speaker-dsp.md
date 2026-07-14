@@ -695,6 +695,23 @@
 > captures plus the measured delay walk. No hardware behavior was changed or
 > revalidated by these hardware-free slices.
 
+> **Update, 2026-07-14 (Wave 3 durable run;
+> hardware-free):** `jasper.active_speaker.commissioning_run` is now the bounded
+> control-plane store for one current automatic commissioning run. The
+> correction-web integration starts it only after the exact authoritative
+> comparison set has a fresh production-bundle session id and fingerprint. It
+> persists the exact session/run/process-owner-generation identity, immutable
+> generation-bound target attempts, and a bounded hash-chained journal of typed
+> nine-state transitions under an atomic, advisory-locked file. Service startup
+> claims the owner generation beside the repeat and level-run owners, so a prior
+> process's callbacks are stale. `/correction/crossover/status` exposes the safe
+> `commissioning_run` projection as `not_started`, exact `current`, comparison-
+> `stale`, or fail-closed `unavailable`; `current` additionally requires the
+> comparison's complete schema/fingerprint and current topology/protected-
+> profile binding. It never exposes the process owner id.
+> Production currently creates only the `unconfigured` run. No live adapter yet
+> reserves the store's attempts or advances its transition journal.
+
 ## Current Operational Truth
 
 Active speaker DSP is a separate layer from room correction and from
@@ -730,6 +747,10 @@ For JTS, that means:
 - Every measurement bundle should eventually record the active
   speaker profile ID so later analysis knows what acoustic baseline
   was measured.
+- A fresh bundle-backed automatic comparison now also owns one durable
+  `commissioning_run` identity on the crossover status surface. Treat it as
+  fail-closed control-plane correlation only: `current` does not mean measured,
+  candidate-ready, applied, verified, or Room-eligible.
 
 The existing deployed audio topology now has the runtime substrate for
 the constrained dual Apple active-output profile, but commissioning
@@ -853,6 +874,10 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    complete. The server/core path above is covered with synthetic capture fixtures;
    the implemented hardware-free slice is the bounded WAV submit/analyze/record
    and gate progression, not proof that JTS3 has emitted and captured the sweep.
+   The later Wave 3 control-plane slice adds a durable bundle-backed run identity,
+   startup owner-generation claim, and fail-closed status projection, but the
+   production flow currently leaves that run `unconfigured`; it does not yet
+   reserve region-scoped attempts or commit lifecycle transitions.
    The live playback window, browser mic timing, and actual speaker acoustics
    still need on-device validation. Per-driver isolation is the CamillaDSP
    **mute mask**, not a channel-targeted WAV — so
@@ -2003,8 +2028,10 @@ Key external prior-art families named by the reports:
 Last verified: 2026-07-14 (Wave 1 target-bound research, visible confirmed
 driver-safety profile, excitation admission, nine-state lifecycle, exact
 eligibility receipt, reachable isolated-driver persisted admission under one
-bounded writer transaction, summed pre-audio refusal, no-live receipt producer,
-and temporary passive-only Room
+bounded writer transaction, summed pre-audio refusal, and the durable bundle-
+backed commissioning-run store/start/status boundary and service owner-
+generation claim; no live candidate/verification/receipt producer, and
+temporary passive-only Room
 admission checked contract-only; no hardware behavior revalidated. Frozen applied-preset startup anchor, durable
 crossover-volume intent, confirmed recovery,
 and relay lease ownership checked; bounded CamillaDSP worker cancellation checked

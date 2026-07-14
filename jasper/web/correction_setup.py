@@ -3724,6 +3724,26 @@ def _open_commissioning_bundle_for_level_match(
     )
 
 
+def _activate_crossover_comparison_authorities(
+    topology: Any,
+    comparison_set: Mapping[str, Any],
+) -> None:
+    """Publish repeat and lifecycle authority as one fail-closed boundary."""
+
+    from jasper.active_speaker import repeat_admission
+    from jasper.active_speaker.measurement import clear_active_comparison_set
+    from . import correction_crossover_backend as backend
+
+    try:
+        repeat_admission.activate(comparison_set)
+        if comparison_set.get("bundle_session_id"):
+            backend.begin_commissioning_run(comparison_set)
+    except (OSError, RuntimeError, ValueError):
+        clear_active_comparison_set(topology)
+        repeat_admission.invalidate()
+        raise
+
+
 def _assert_crossover_reference_axis_level_action(
     status: Mapping[str, Any],
     *,
@@ -4172,14 +4192,7 @@ def _handle_crossover_relay_level_match(
             driver_level_locks=driver_level_locks,
             bundle_session_id=(bundle or {}).get("session_id"),
         )
-        from jasper.active_speaker import repeat_admission
-
-        try:
-            repeat_admission.activate(comparison_set)
-        except (OSError, RuntimeError, ValueError):
-            clear_active_comparison_set(topology)
-            repeat_admission.invalidate()
-            raise
+        _activate_crossover_comparison_authorities(topology, comparison_set)
         if bundle is not None:
             from jasper.active_speaker import bundles as active_speaker_bundles
 
@@ -6197,6 +6210,38 @@ def make_server(
     return _systemd.make_http_server(target, _make_handler(cfg))
 
 
+def _claim_crossover_state_owners() -> None:
+    """Retire prior-process Active work before this service accepts requests."""
+
+    from jasper.active_speaker import repeat_admission
+    from . import correction_crossover_backend
+
+    claims = (
+        (
+            "correction.crossover_repeat_admission_unavailable",
+            repeat_admission.claim_owner,
+        ),
+        (
+            "correction.crossover_level_run_unavailable",
+            correction_crossover_backend.claim_level_run_owner,
+        ),
+        (
+            "correction.active_commissioning_run_unavailable",
+            correction_crossover_backend.claim_commissioning_run_owner,
+        ),
+    )
+    for event, claim in claims:
+        try:
+            claim()
+        except (OSError, RuntimeError, ValueError) as exc:
+            log_event(
+                logger,
+                event,
+                level=logging.ERROR,
+                reason=type(exc).__name__,
+            )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jasper-correction-web",
@@ -6223,17 +6268,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Socket Accept=no + one service ExecStart make this the sole lifecycle
     # boundary that may retire unfinished work from a previous process.
-    from jasper.active_speaker import repeat_admission
-
-    try:
-        repeat_admission.claim_owner()
-    except (OSError, RuntimeError, ValueError) as exc:
-        log_event(
-            logger,
-            "correction.crossover_repeat_admission_unavailable",
-            level=logging.ERROR,
-            reason=type(exc).__name__,
-        )
+    _claim_crossover_state_owners()
 
     from . import _systemd
     sockets = _systemd.adopt_systemd_sockets()

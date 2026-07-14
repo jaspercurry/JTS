@@ -1493,6 +1493,178 @@ def test_backend_status_includes_active_speaker_commission_state(monkeypatch):
     assert payload["commission"] == {"ramp": {"pending": None}}
 
 
+def _commissioning_comparison(
+    *,
+    session_id: str = "session-1",
+    comparison_id: str = "1" * 32,
+) -> dict:
+    comparison = {
+        "schema_version": 2,
+        "comparison_set_id": comparison_id,
+        "created_at": "2026-07-14T12:00:00+00:00",
+        "topology_id": "topology-1",
+        "profile_context_id": "protected-profile",
+        "setup_sha256": "3" * 64,
+        "device_sha256": "4" * 64,
+        "calibration_id": "",
+        "driver_level_locks": {
+            "mono:woofer": {
+                "target_id": "mono:woofer",
+                "speaker_group_id": "mono",
+                "role": "woofer",
+                "tone_frequency_hz": 100.0,
+                "tone_peak_dbfs": -20.0,
+                "commissioning_gain_db": 0.0,
+                "locked_main_volume_db": -12.0,
+            },
+        },
+    }
+    comparison["fingerprint"] = comparison_set_fingerprint(comparison)
+    comparison["bundle_session_id"] = session_id
+    return comparison
+
+
+def test_commissioning_run_status_is_current_only_for_exact_comparison(
+    monkeypatch, tmp_path
+):
+    from jasper.active_speaker.commissioning_run import CommissioningRunStore
+
+    store = CommissioningRunStore(
+        path=tmp_path / "commissioning-run.json",
+        owner_id="1" * 32,
+    )
+    monkeypatch.setattr(backend, "_COMMISSIONING_RUN_STORE", store)
+    comparison = _commissioning_comparison()
+    other = _commissioning_comparison(
+        session_id="session-2",
+        comparison_id="2" * 32,
+    )
+
+    handle = backend.begin_commissioning_run(comparison)
+    current = backend.commissioning_run_status(
+        comparison,
+        expected_topology_id="topology-1",
+        expected_profile_context_id="protected-profile",
+    )
+    stale = backend.commissioning_run_status(
+        other,
+        expected_topology_id="topology-1",
+        expected_profile_context_id="protected-profile",
+    )
+
+    assert current == {
+        "status": "current",
+        "reason": None,
+        "session_id": "session-1",
+        "run_id": handle.run_id,
+        "owner_generation": 1,
+        "lifecycle_state": "unconfigured",
+        "attempt_count": 0,
+        "last_transition": None,
+        "updated_at": current["updated_at"],
+        "state_fingerprint": store.snapshot()["fingerprint"],
+    }
+    assert stale["status"] == "stale"
+    assert stale["reason"] == "commissioning_comparison_set_changed"
+    assert stale["run_id"] == handle.run_id
+
+
+def test_commissioning_run_status_refuses_malformed_hash_and_context_drift(
+    monkeypatch, tmp_path
+):
+    from jasper.active_speaker.commissioning_run import CommissioningRunStore
+
+    store = CommissioningRunStore(
+        path=tmp_path / "commissioning-run.json",
+        owner_id="1" * 32,
+    )
+    monkeypatch.setattr(backend, "_COMMISSIONING_RUN_STORE", store)
+    comparison = _commissioning_comparison()
+    backend.begin_commissioning_run(comparison)
+    malformed = {
+        "bundle_session_id": comparison["bundle_session_id"],
+        "fingerprint": comparison["fingerprint"],
+    }
+    hash_drift = {**comparison, "setup_sha256": "5" * 64}
+
+    refused = (
+        backend.commissioning_run_status(
+            malformed,
+            expected_topology_id="topology-1",
+            expected_profile_context_id="protected-profile",
+        ),
+        backend.commissioning_run_status(
+            hash_drift,
+            expected_topology_id="topology-1",
+            expected_profile_context_id="protected-profile",
+        ),
+        backend.commissioning_run_status(
+            comparison,
+            expected_topology_id="topology-2",
+            expected_profile_context_id="protected-profile",
+        ),
+        backend.commissioning_run_status(
+            comparison,
+            expected_topology_id="topology-1",
+            expected_profile_context_id="other-profile",
+        ),
+    )
+
+    assert all(item["status"] == "stale" for item in refused)
+    assert all(
+        item["reason"] == "commissioning_comparison_set_changed"
+        for item in refused
+    )
+
+
+def test_begin_commissioning_run_refuses_malformed_comparison(monkeypatch, tmp_path):
+    from jasper.active_speaker.commissioning_run import CommissioningRunStore
+
+    path = tmp_path / "commissioning-run.json"
+    monkeypatch.setattr(
+        backend,
+        "_COMMISSIONING_RUN_STORE",
+        CommissioningRunStore(path=path, owner_id="1" * 32),
+    )
+
+    with pytest.raises(ValueError, match="comparison set is invalid"):
+        backend.begin_commissioning_run(
+            {"bundle_session_id": "session-1", "fingerprint": "a" * 64}
+        )
+
+    assert not path.exists()
+
+
+def test_commissioning_run_status_is_fail_closed_for_absent_and_corrupt_state(
+    monkeypatch, tmp_path
+):
+    from jasper.active_speaker.commissioning_run import CommissioningRunStore
+
+    path = tmp_path / "commissioning-run.json"
+    store = CommissioningRunStore(path=path, owner_id="1" * 32)
+    monkeypatch.setattr(backend, "_COMMISSIONING_RUN_STORE", store)
+
+    absent = backend.commissioning_run_status(
+        None,
+        expected_topology_id="topology-1",
+        expected_profile_context_id="protected-profile",
+    )
+    path.write_text("not json", encoding="utf-8")
+    corrupt = backend.commissioning_run_status(
+        None,
+        expected_topology_id="topology-1",
+        expected_profile_context_id="protected-profile",
+    )
+
+    assert absent["status"] == "not_started"
+    assert absent["reason"] == "commissioning_run_not_started"
+    assert corrupt == {
+        "status": "unavailable",
+        "reason": "commissioning_run_state_unavailable",
+        "error_type": "CommissioningRunError",
+    }
+
+
 def test_crossover_module_is_a_thin_server_envelope_renderer():
     source = Path("deploy/assets/correction/js/crossover/main.js").read_text(
         encoding="utf-8",
