@@ -67,6 +67,16 @@
 > reserves those attempts, applies the
 > normal/reverse/delay graphs, captures or persists the sets, evaluates a
 > candidate, or advances the lifecycle.
+>
+> **Wave 3 relay Stop boundary (2026-07-14; hardware-free).** The Crossover
+> page exposes one Stop action for active relay level and sweep work through
+> `/correction/crossover/relay-cancel`. While cancellation and exact cleanup are
+> in flight, the server envelope reports `stopping` and withholds forward
+> actions; terminal `stopped` appears only after the owning worker has drained.
+> The subsequent phone-upload and persistence phases are visibly non-stoppable.
+> User Stop is cancellation, not a measurement failure or failure-cue event.
+> The exact boundary and operational mechanics are canonical in
+> [`phone-mic-relay-plan.md`](phone-mic-relay-plan.md).
 
 ## Product goal
 
@@ -1197,6 +1207,9 @@ needs a small non-negotiable safety floor:
 - Keep tweeter sweeps short and protected — sweep length is a bounded,
   protected parameter like level.
 - Provide immediate Stop and bounded session expiry.
+- While Stop cleanup is `stopping`, expose no forward action or second run.
+- While phone close/encrypt/upload is `finishing`, expose no Stop or forward action.
+- While verified evidence is `committing`, expose no Stop or forward action.
 - Reject clipped recordings and stale topology/graph evidence.
 - Keep automatic gain attenuation-only until positive-gain headroom and driver
   limits have a proven contract.

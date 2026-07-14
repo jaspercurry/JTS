@@ -73,6 +73,25 @@
 > “armed but never uploaded” so `/status.relay` and structured logs preserve
 > the failed phase.
 >
+> **Cooperative host Stop — LANDED (2026-07-14):** Crossover level and sweep
+> relays expose one host Stop control. Stop sets the owning run to `stopping`
+> and signals the same worker that owns polling and the armed callback. The
+> global relay slot remains held while that worker cancels/reaps playback,
+> completes graph and exact-or-emergency volume restoration, drains its relay
+> cleanup, and exits. Only then may the host publish terminal `stopped` and
+> admit another action. A Stop observed before or after a relay poll prevents a
+> later armed callback. A meter-only level ramp atomically chooses Stop or
+> non-stoppable `committing` after its protected ramp and volume restoration; it
+> has no WAV upload phase. A sweep instead chooses Stop or non-stoppable
+> `finishing` after playback and rollback while the phone closes, encrypts, and
+> uploads; this prevents host DELETE from racing an in-flight relay PUT. A
+> verified upload then moves `finishing` to non-stoppable `committing` until
+> evidence persistence is terminal. Explicit operator Stop is expected control
+> flow: a level ramp posts terminal `ramp.state="cancelled"`, a sweep posts
+> `sweep_cancelled`, both are logged as `capture_relay.stopped`, and neither
+> plays a failure cue. Timeout, phone abort, integrity failure, and failed
+> cleanup remain failures under §12.
+>
 > **Crossover relay kind — LANDED (P7, 2026-07-03):** `POST
 > /correction/crossover/relay-capture` (the third `RelayCaptureKind` caller)
 > plays the driver/summed capture sweep on `armed` — reading the play payload's
@@ -297,6 +316,15 @@ audio. Full sequence:
    **cross-correlates** against the stimulus it knows it played → aligned
    measurement.
 
+For a Crossover sweep, the speaker page may request Stop while the host is waiting,
+preparing, playing, or restoring. The cooperative signal crosses both the relay
+polling loop and playback watchdog; `stopping` withholds the next action until
+the exact worker and cleanup finish. Once playback and rollback complete, the
+host atomically chooses `stopping` or `finishing`. The latter hides Stop while
+the phone closes, encrypts, and uploads, then advances to `committing` only for
+the synchronous evidence write. This is distinct from `sweep_complete`, which
+ends the phone's recorder window but is not evidence authority.
+
 The Pi's existing status-poll loop (it already polls to learn when the audio is
 ready) carries the "armed, go play" signal too — **one loop, two jobs.**
 
@@ -328,8 +356,8 @@ page understanding. (Same pure-data-registry boundary used elsewhere in JTS; see
 [extensibility.md](extensibility.md).) An acceptance criterion (§15) enforces the
 boundary so it cannot erode.
 
-For room correction, `duration_ms` is now the hard recording timeout; the normal
-stop condition is the Pi's `host_event.phase="sweep_complete"` plus
+For room correction, `duration_ms` is now the hard recording timeout; normal
+recorder completion is the Pi's `host_event.phase="sweep_complete"` plus
 `post_roll_ms`.
 
 ```
@@ -337,7 +365,7 @@ capture_spec:
   kind: "room_sweep" | "balance_burst" | "sync_marker" | "crossover_sweep" | "noise_floor" | <string>
   sample_rate_hz: 48000
   channels: 1
-  duration_ms: 30000          # hard timeout; normal stop waits for Pi sweep_complete
+  duration_ms: 30000          # hard timeout; normal completion waits for sweep_complete
   pre_roll_ms: 500            # legacy/fallback margin; Pi still plays only after armed
   post_roll_ms: 650
   position: 1                  # optional signed, Pi-owned display progress
@@ -623,6 +651,19 @@ dependency **only at commissioning**; an outage breaks **new** measurements only
 is unreachable. Pre-tone setup/ambient failures publish the same token-scoped
 terminal ramp error as in-ramp failures and remain observable briefly before
 relay cleanup, so the phone cannot be left waiting on a purged session.
+Explicit operator Stop is not a failure: it emits stopped lifecycle events and
+phone/UI state without a failure cue. Level ramps publish terminal
+`ramp.state="cancelled"`; sweeps publish `sweep_cancelled`. The host first
+exposes `stopping`, retains the one relay slot through playback/graph/volume/
+purge cleanup, and only then publishes terminal `stopped`. A level ramp
+atomically enters `committing` after its restored ramp. After a sweep's
+cancellable audio boundary, `finishing` owns phone close/encrypt/upload and
+`committing` owns evidence persistence; both are visible, non-stoppable phases
+with no forward action. If a cancelled
+finalizer exceeds the 45-second recovery warning threshold, the host emits the critical
+`correction.async_cancel_drain_timeout` event and remains fail-closed until the
+finalizer actually exits. A timeout or cleanup failure remains a failure and
+keeps its normal logging and cue policy.
 
 ---
 
@@ -722,16 +763,17 @@ pairing proof, not a guess based on the Pages dashboard.
 
 ---
 
-Last updated: 2026-07-13 — Room defaults are speaker-owned (six positions,
+Last updated: 2026-07-14 — Room defaults are speaker-owned (six positions,
 flat target, balanced strategy, and an automatic main-seat trust repeat). The
 Room level check no longer collects a phone-owned position count; later Room
 links carry signed position/total metadata and authenticate the realized
 microphone against the Pi-retained level identity before playback. The trust
 repeat uses the same Room relay handler and state machine; its generic
 `presentation_variant` changes phone copy only and cannot own sequencing,
-timeout, or admission. Repo-pinned capture page build 20260713.1 adds the
-repeat-specific phone copy; external publication is intentionally pending
-coordinator release. Active-crossover capture uses
+timeout, or admission. Repo-pinned capture page build 20260714.1 adds the
+repeat-specific phone copy and renders host sweep cancellation as expected
+control flow; external publication is intentionally pending coordinator
+release. Active-crossover capture uses
 role-sized sweeps,
 a signal-bounded controlled quiet crop, paired-window deconvolved per-band SNR,
 and the server-owned three-repeat admission loop; selecting a UMIK-2 preselects

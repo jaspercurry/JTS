@@ -44,6 +44,7 @@ _HARNESSES = [
     "capture_calibration_model_test.mjs",
     "capture_protocol_test.mjs",
     "capture_transport_integrity_test.mjs",
+    "capture_host_stop_lifecycle_test.mjs",
 ]
 
 
@@ -91,14 +92,22 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260713.1",
+        "capture_page_build": "20260714.1",
     }
-    assert "main.js?v=20260713-1" in index_html
+    assert "main.js?v=20260714-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
     assert 'from "./constraints.js?v=20260711-4"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
+
+
+def test_capture_page_treats_host_stop_as_expected_control_flow():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert 'phase === "sweep_cancelled"' in main_js
+    assert "Measurement stopped safely. Return to the speaker" in main_js
+    assert "if (sweepCompleted === false) return;" in main_js
 
 
 def test_capture_page_csp_allows_version_handshake_and_relay():

@@ -95,6 +95,23 @@
   preparation/sweep/verification audio; the server cancels and reaps the exact
   playback task (including `aplay`) before restoring the graph. CPU-only
   analysis remains non-cancellable so its worker cannot mutate a reset session.
+  Crossover relay level and sweep screens expose the same visible Stop via
+  `POST /crossover/relay-cancel`. The shared relay slot reports `stopping` and
+  withholds every forward action until the polling worker, protected playback,
+  graph/volume rollback, and relay cleanup have drained; only then does it
+  publish terminal `stopped`. Explicit Stop is expected control flow and emits
+  terminal `ramp.state="cancelled"` for level runs or `sweep_cancelled` for
+  sweeps, with no failure cue. A restored level ramp atomically enters
+  `committing`; after sweep playback/rollback, non-stoppable `finishing`
+  protects phone close/encrypt/upload from a relay DELETE race before verified
+  persistence uses `committing`. The full lifecycle and exact Stop boundary are canonical in
+  [phone-mic-relay-plan.md](phone-mic-relay-plan.md).
+  `_run_async` likewise cancels on its caller deadline and waits for the
+  coroutine's finalizer before returning the timeout. If the existing
+  45-second recovery warning threshold is exceeded, it logs critical
+  `event=correction.async_cancel_drain_timeout` and remains fail-closed until
+  cleanup exits. A terminal HTTP/relay result must not stand in for cleanup
+  that is still running.
   Idle envelopes consume the Active-owned setup status, admit its explicit
   passive/not-required result, and withhold Start on incomplete, unknown,
   missing, malformed, or active authority. The active case is intentionally
@@ -306,7 +323,7 @@
   quiet interval before playback and their hard deadline is 45 s; the phone's
   `duration_ms` remains only a backstop because normal completion follows the
   Pi's `sweep_complete` event. The generic builder retains the 30 s floor like `room_sweep`'s
-  `hard_timeout_ms` (the normal stop is the Pi's `sweep_complete` relay
+  `hard_timeout_ms` (normal recorder completion is the Pi's `sweep_complete` relay
   event; the deadline is only the backstop). During the quiet interval and
   playback, an authenticated phone-activity watchdog cancels on backgrounding,
   early recorder completion, or loss of armed state. Cancellation kills/reaps
@@ -373,9 +390,10 @@
   calibration-file match), is `capture_page_build=20260712.3`, supporting
   protocols 1 and 2. The public
   `https://capture.jasper.tech/version.json` reported `20260712.3` on
-  2026-07-12. Repo build 20260713.1 adds Room-specific trust-repeat copy and is
-  intentionally not published by this hardware-free lane; the external release
-  artifact is therefore still pending.
+  2026-07-12. Repo build 20260714.1 adds the Room-specific trust-repeat copy and
+  renders host `sweep_cancelled` as expected Stop control flow; it is
+  intentionally not published by this hardware-free lane, so that external
+  release artifact remains pending.
   Crossover level and sweep volume transitions now use one durable backend
   intent for both near-field and fixed-axis work. If restart or failed readback
   leaves the volume unconfirmed, `GET /crossover/envelope` exposes only
@@ -1362,6 +1380,9 @@ POST /crossover/relay-capture body: {kind: driver|summed, speaker_group_id,
                              is active — server-computed at POST and
                              re-checked when the phone arms). ON-DEVICE:
                              not exercised hardware-free — H2.
+POST /crossover/relay-cancel cooperatively stop the active crossover level/sweep
+                             relay; reports `stopping` until exact cleanup drains
+                             and refuses Stop during `finishing`/`committing`
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 

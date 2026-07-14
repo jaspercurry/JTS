@@ -142,12 +142,20 @@ _loop_thread: threading.Thread | None = None
 # Set by POST /relay/capture, updated by its background runner. Guarded by
 # _session_lock (same single-session scope).
 _relay_capture: dict[str, Any] | None = None
+_relay_stop_request: Callable[[], None] | None = None
+_RELAY_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_phone"})
+_RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {
+    "finishing",
+    "committing",
+    "stopping",
+}
 # Bound the foreground relay registration so a slow/unreachable relay fails fast
 # rather than hanging the request thread for RelayClient's 15 s default.
 _RELAY_REGISTER_TIMEOUT_S = 10.0
 # Exact set/readback plus the emergency set/readback each use Camilla's bounded
 # reconnect contract. Keep the HTTP owner alive for the complete sequence.
 _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
+_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S = _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S
 _ROOM_RELAY_RETURN_PATH = "/correction/room/"
 # Require a short rolling ambient window before the Pi starts the level tone.
 # A single USB-mic startup block is too noisy to become the trust-floor SSOT;
@@ -190,6 +198,7 @@ _POST_ROUTES = frozenset({
     "/crossover/summed-capture",
     "/crossover/level-match",
     "/crossover/relay-capture",
+    "/crossover/relay-cancel",
     "/crossover/apply",
     "/crossover/recover-volume",
     "/balance/start",
@@ -210,9 +219,11 @@ _POST_ROUTES = frozenset({
 
 
 def _set_relay_capture(value: dict[str, Any] | None) -> None:
-    global _relay_capture
+    global _relay_capture, _relay_stop_request
     with _session_lock:
         _relay_capture = value
+        if value is None or value.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
+            _relay_stop_request = None
 
 
 def _get_relay_capture() -> dict[str, Any] | None:
@@ -237,25 +248,128 @@ def _active_relay_phase() -> str | None:
     """Return the in-flight global relay phase that excludes DSP apply."""
 
     relay = _get_relay_capture()
-    if relay is None or relay.get("status") not in {"starting", "awaiting_phone"}:
+    if relay is None or relay.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
         return None
     return f"relay:{str(relay.get('kind') or 'measurement')}"
 
 
-def _begin_relay_capture(kind_label: str) -> bool:
+def _begin_relay_capture(
+    kind_label: str,
+    *,
+    request_stop: Callable[[], None] | None = None,
+) -> bool:
     """Atomically claim the single relay-capture slot. Returns False if one is
     already in flight (so a double-tap can't spawn two relay sessions + a file
     race for one position — mirrors /autolevel's "already in progress" guard).
     The slot is released by `_set_relay_capture(None)` on a failed open, or by the
     background runner setting `complete`/`failed`."""
-    global _relay_capture
+    global _relay_capture, _relay_stop_request
     with _session_lock:
-        if _relay_capture and _relay_capture.get("status") in (
-            "starting",
-            "awaiting_phone",
+        if (
+            _relay_capture
+            and _relay_capture.get("status") in _RELAY_IN_FLIGHT_STATUSES
         ):
             return False
         _relay_capture = {"status": "starting", "kind": kind_label}
+        _relay_stop_request = request_stop
+        return True
+
+
+def _publish_relay_waiting(kind_label: str, tap_link: str) -> dict[str, Any]:
+    """Publish a registered link without overwriting a concurrent Stop."""
+
+    global _relay_capture
+    with _session_lock:
+        relay = _relay_capture
+        if (
+            relay is None
+            or relay.get("kind") != kind_label
+            or relay.get("status") not in {"starting", "stopping"}
+        ):
+            raise RuntimeError("phone capture ownership changed during registration")
+        status = "awaiting_phone" if relay.get("status") == "starting" else "stopping"
+        _relay_capture = {**relay, "tap_link": tap_link, "status": status}
+        return dict(_relay_capture)
+
+
+def _request_relay_stop(*kind_prefixes: str) -> dict[str, Any]:
+    """Signal the active matching relay owner and expose Stop as in progress.
+
+    The owner publishes ``stopped`` only after its transport worker, audio
+    player, and rollback have all drained. Keeping ``stopping`` in the global
+    slot prevents a second run from entering during cleanup.
+    """
+
+    global _relay_capture
+    with _session_lock:
+        relay = _relay_capture
+        if relay is None or relay.get("status") not in _RELAY_STOPPABLE_STATUSES:
+            raise ValueError("no matching phone capture is running")
+        kind = str(relay.get("kind") or "")
+        if not any(kind.startswith(prefix) for prefix in kind_prefixes):
+            raise ValueError("no matching phone capture is running")
+        callback = _relay_stop_request
+        if callback is None:
+            raise RuntimeError("this phone capture cannot be stopped safely")
+        try:
+            # Request callbacks are deliberately non-blocking signals. Fire
+            # one under the same lock as the public state so another tab can
+            # never observe ``stopping`` before the owner is actually signaled.
+            callback()
+        except (OSError, RuntimeError, ValueError) as exc:
+            _relay_capture = {
+                **relay,
+                "status": "failed",
+                "error": "the measurement stop signal failed",
+            }
+            raise RuntimeError("the measurement stop signal failed") from exc
+        _relay_capture = {**relay, "status": "stopping"}
+        return dict(_relay_capture)
+
+
+def _begin_relay_commit(kind_label: str) -> bool:
+    """Atomically choose evidence commit over a concurrent Stop request.
+
+    ``False`` means Stop won the same lock first, so the caller must not write
+    evidence. A missing/different owner is a failure, not a safe cancellation.
+    Once this returns ``True``, the capture is no longer stoppable and retains
+    the shared slot until its synchronous persistence call reaches a terminal
+    result.
+    """
+
+    global _relay_capture, _relay_stop_request
+    with _session_lock:
+        relay = _relay_capture
+        if relay is None or relay.get("kind") != kind_label:
+            raise RuntimeError("phone capture ownership changed before evidence commit")
+        if relay.get("status") == "stopping":
+            return False
+        if relay.get("status") not in _RELAY_STOPPABLE_STATUSES | {"finishing"}:
+            raise RuntimeError("phone capture is not ready to commit evidence")
+        _relay_capture = {**relay, "status": "committing"}
+        _relay_stop_request = None
+        return True
+
+
+def _begin_relay_finishing(kind_label: str) -> bool:
+    """Atomically end the Stop window after playback and rollback finish.
+
+    ``False`` means Stop won the same lock first. Once this returns ``True``,
+    the phone owns bounded recorder close/encryption/upload and the host cannot
+    delete its relay session underneath an in-flight PUT.
+    """
+
+    global _relay_capture, _relay_stop_request
+    with _session_lock:
+        relay = _relay_capture
+        if relay is None or relay.get("kind") != kind_label:
+            raise RuntimeError("phone capture ownership changed before upload")
+        if relay.get("status") == "stopping":
+            return False
+        if relay.get("status") not in _RELAY_STOPPABLE_STATUSES:
+            raise RuntimeError("phone capture is not ready to finish")
+        _relay_capture = {**relay, "status": "finishing"}
+        _relay_stop_request = None
         return True
 
 
@@ -280,6 +394,7 @@ class RelayCaptureKind:
     label: str
     open: Callable[[RelayClient, str, str, str], "RelayCapture"]
     run_and_consume: Callable[[RelayClient, PiCaptureSession], Awaitable[None]]
+    request_stop: Callable[[], None] | None = None
 
 
 def _request_local_return_url(
@@ -321,7 +436,7 @@ def _run_relay_capture(
     from jasper.capture_relay.client import RelayClient
     from jasper.capture_relay.health import relay_registration_token_from_env
 
-    if not _begin_relay_capture(kind.label):
+    if not _begin_relay_capture(kind.label, request_stop=kind.request_stop):
         raise ValueError("a phone-mic relay capture is already in progress")
     capture_origin = correction_adapter.capture_origin_from_env()
     spawned = False
@@ -336,21 +451,32 @@ def _run_relay_capture(
         rc = kind.open(client, relay_base, capture_origin, return_url)
 
         async def _run() -> None:
+            from jasper.capture_relay.session import CaptureStopped
+
             try:
                 await kind.run_and_consume(client, rc.pi_session)
+                relay = _get_relay_capture()
+                if (
+                    relay is not None
+                    and relay.get("kind") == kind.label
+                    and relay.get("status") == "stopping"
+                ):
+                    raise CaptureStopped("capture stopped")
                 _set_relay_capture(
                     {"tap_link": rc.tap_link, "status": "complete", "kind": kind.label}
                 )
-            except asyncio.CancelledError:
-                # Emergency Stop owns this cancellation. Retire the global
-                # relay slot as a terminal failure instead of leaving a stale
-                # awaiting-phone link that blocks the next run.
+            except (asyncio.CancelledError, CaptureStopped):
                 _set_relay_capture({
                     "tap_link": rc.tap_link,
-                    "status": "failed",
+                    "status": "stopped",
                     "kind": kind.label,
-                    "error": "measurement stopped",
+                    "error": "Measurement stopped safely.",
                 })
+                log_event(
+                    logger,
+                    "capture_relay.adapter_stopped",
+                    kind=kind.label,
+                )
             except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
                 # run_capture already logs event=capture_relay.failed with a
                 # traceback; this outer net also flips /status.relay to failed and
@@ -371,12 +497,10 @@ def _run_relay_capture(
                     "error": str(exc),
                 })
 
-        _set_relay_capture(
-            {"tap_link": rc.tap_link, "status": "awaiting_phone", "kind": kind.label}
-        )
+        waiting = _publish_relay_waiting(kind.label, rc.tap_link)
         asyncio.run_coroutine_threadsafe(_run(), _ensure_loop())
         spawned = True
-        return {"tap_link": rc.tap_link, "status": "awaiting_phone"}
+        return {"tap_link": rc.tap_link, "status": waiting["status"]}
     finally:
         if not spawned:
             _set_relay_capture(None)  # release the slot on any early failure
@@ -525,7 +649,15 @@ def _run_async(coro, *, timeout: float | None = 60.0):
     margin. Endpoints that should be fast (status / apply / reset)
     pass shorter timeouts.
     """
-    fut = asyncio.run_coroutine_threadsafe(coro, _ensure_loop())
+    drained = threading.Event()
+
+    async def _tracked():
+        try:
+            return await coro
+        finally:
+            drained.set()
+
+    fut = asyncio.run_coroutine_threadsafe(_tracked(), _ensure_loop())
     try:
         return fut.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
@@ -534,6 +666,18 @@ def _run_async(coro, *, timeout: float | None = 60.0):
         # caller has already reported failure. Owning coroutines retain their
         # bounded/shielded rollback in ``finally`` blocks.
         fut.cancel()
+        if not drained.wait(_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S):
+            log_event(
+                logger,
+                "correction.async_cancel_drain_timeout",
+                level=logging.CRITICAL,
+                timeout_s=_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S,
+            )
+            # A terminal response must never release measurement ownership
+            # while its graph/volume finalizer can still mutate the speaker.
+            # The threshold above is an observability alarm, not permission to
+            # abandon cleanup; fail closed until the owner actually drains.
+            drained.wait()
         raise
 
 
@@ -3188,11 +3332,15 @@ async def _run_relay_level_match(
     geometry: str,
     run_token: str,
     setup_binding_id: str = "",
+    context_id: str | None = None,
     tone_frequency_hz: float = 1000.0,
     prepare_tone: Callable[[], Any] | None = None,
     restore_tone: Callable[[Any], Any] | None = None,
     expected_level_identity: _RelayLevelIdentity | None = None,
     reuse_noise_floor: bool = True,
+    stop_requested: Callable[[], bool] | None = None,
+    stop_lock: Any = None,
+    begin_commit: Callable[[], bool] | None = None,
 ) -> None:
     """Run one relay-fed level match without blocking the correction loop.
 
@@ -3202,13 +3350,20 @@ async def _run_relay_level_match(
     control loop and never gains a direct reference to the relay client.
     """
     from jasper.capture_relay.integrity import CaptureIntegrityError
-    from jasper.capture_relay.session import CaptureFailed, PhoneEventVerifier, purge
+    from jasper.capture_relay.session import (
+        CaptureFailed,
+        CaptureStopped,
+        PhoneEventVerifier,
+        purge,
+    )
     from jasper.correction import coordinator, playback
 
     cached_status: dict[str, Any] = {}
     outbound: list[dict[str, Any]] = []
     stop_pump = asyncio.Event()
-    pump_error: list[RuntimeError] = []
+    pump_error: list[Exception] = []
+    level_task: asyncio.Task[Any] | None = None
+    stop_lock = stop_lock or threading.Lock()
     event_verifier = PhoneEventVerifier(pi_session)
 
     def _read_status() -> dict[str, Any]:
@@ -3220,6 +3375,20 @@ async def _run_relay_level_match(
     async def _pump() -> None:
         unhealthy = False
         while not stop_pump.is_set():
+            if stop_requested is not None and stop_requested():
+                cancel_level_match = getattr(sess, "cancel_level_match", None)
+                try:
+                    cancelled = False
+                    if callable(cancel_level_match):
+                        cancelled = bool(await cancel_level_match())
+                    if not cancelled and level_task is not None:
+                        level_task.cancel()
+                except (OSError, RuntimeError, ValueError) as exc:
+                    pump_error.append(exc)
+                else:
+                    pump_error.append(CaptureStopped("capture stopped"))
+                stop_pump.set()
+                return
             try:
                 while outbound:
                     payload = outbound.pop(0)
@@ -3509,8 +3678,14 @@ async def _run_relay_level_match(
                 AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
             )
 
+            if stop_requested is not None and stop_requested():
+                raise CaptureStopped("capture stopped")
             prepared_tone = await prepare_tone() if prepare_tone is not None else None
             try:
+                if pump_error:
+                    raise pump_error[0]
+                if stop_requested is not None and stop_requested():
+                    raise CaptureStopped("capture stopped")
                 tone_wav = playback._ensure_tone_wav(
                     freq_hz=tone_frequency_hz,
                     duration_s=90.0,
@@ -3545,21 +3720,40 @@ async def _run_relay_level_match(
                             "CamillaDSP rejected the measurement volume"
                         )
 
-                outcome = await sess.run_level_match(
-                    geometry,
-                    get_main_volume_db=_get_volume,
-                    set_main_volume_db=_set_volume,
-                    play_continuous_tone=player.play,
-                    cancel_tone=player.cancel,
-                    read_status=_read_status,
-                    post_host_event=_queue_host_event,
-                    noise_floor_dbfs=initial_noise_floor,
-                    run_token=run_token,
-                )
+                with stop_lock:
+                    if stop_requested is not None and stop_requested():
+                        raise CaptureStopped("capture stopped")
+                    level_ports: dict[str, Any] = {}
+                    if context_id is not None:
+                        # CrossoverLevelLease owns a profile-scoped continuation;
+                        # Room's explicit session port does not accept this key.
+                        level_ports["context_id"] = context_id
+                    level_task = asyncio.create_task(
+                        sess.run_level_match(
+                            geometry,
+                            get_main_volume_db=_get_volume,
+                            set_main_volume_db=_set_volume,
+                            play_continuous_tone=player.play,
+                            cancel_tone=player.cancel,
+                            read_status=_read_status,
+                            post_host_event=_queue_host_event,
+                            noise_floor_dbfs=initial_noise_floor,
+                            run_token=run_token,
+                            **level_ports,
+                        )
+                    )
+                try:
+                    outcome = await level_task
+                except asyncio.CancelledError:
+                    if stop_requested is not None and stop_requested():
+                        raise CaptureStopped("capture stopped") from None
+                    raise
             finally:
                 if restore_tone is not None and prepared_tone is not None:
                     await restore_tone(prepared_tone)
 
+        if stop_requested is not None and stop_requested():
+            raise CaptureStopped("capture stopped")
         if not outcome.locked:
             detail = outcome.ramp.error or "safe measurement level was not reached"
             raise ValueError(detail)
@@ -3574,6 +3768,8 @@ async def _run_relay_level_match(
                     lambda db: cam.set_volume_db(db, best_effort=False)
                 )
             raise ValueError(mismatch)
+        if begin_commit is not None and not begin_commit():
+            raise CaptureStopped("capture stopped")
     except (
         OSError,
         RuntimeError,
@@ -3586,13 +3782,16 @@ async def _run_relay_level_match(
         # the same terminal shape as the ramp and leave a short observation
         # window before cleanup.
         try:
+            terminal_state = (
+                "cancelled" if isinstance(exc, CaptureStopped) else "error"
+            )
             await asyncio.to_thread(
                 client.post_host_event,
                 pi_session.session_id,
                 pi_session.pull_token,
                 {
                     "ramp": {
-                        "state": "error",
+                        "state": terminal_state,
                         "terminal": True,
                         "run_token": run_token,
                         "error": str(exc),
@@ -4000,6 +4199,12 @@ def _handle_crossover_relay_level_match(
         expected_level_identity = _relay_level_identity(lease) if continuing else None
     run_token = secrets.token_urlsafe(18)
     setup_binding_id = context_id
+    stop_event = threading.Event()
+    stop_lock = threading.Lock()
+
+    def _request_stop() -> None:
+        with stop_lock:
+            stop_event.set()
 
     def _open(
         client: RelayClient,
@@ -4056,6 +4261,8 @@ def _handle_crossover_relay_level_match(
         )
 
     async def _run(client: RelayClient, pi_session: PiCaptureSession) -> None:
+        from jasper.capture_relay.session import CaptureStopped
+
         # `_run_relay_capture` has acquired the global relay slot before this
         # callback starts. A continuation preserves earlier driver locks; a
         # complete retune invalidates only after this run owns the slot.
@@ -4082,73 +4289,87 @@ def _handle_crossover_relay_level_match(
             if fixed_axis_request
             else nullcontext()
         )
-        async with identity_guard:
-            await _run_relay_level_match(
-                lease,
-                client,
-                pi_session,
-                geometry=str(target["geometry"]),
-                run_token=run_token,
-                setup_binding_id=setup_binding_id,
-                tone_frequency_hz=float(target["tone_frequency_hz"]),
-                prepare_tone=_prepare_driver_tone,
-                restore_tone=_restore_driver_tone,
-                expected_level_identity=expected_level_identity,
-                reuse_noise_floor=False,
-            )
-            binding = getattr(lease, "relay_setup_binding", None)
-            identity = _relay_level_identity(lease)
-            if (
-                binding is None
-                or not getattr(binding, "sha256", "")
-                or not identity.device_key
-            ):
-                raise ValueError(
-                    "the level check did not produce a complete microphone binding; "
-                    "run it again"
+        try:
+            async with identity_guard:
+                await _run_relay_level_match(
+                    lease,
+                    client,
+                    pi_session,
+                    geometry=str(target["geometry"]),
+                    run_token=run_token,
+                    setup_binding_id=setup_binding_id,
+                    context_id=context_id,
+                    tone_frequency_hz=float(target["tone_frequency_hz"]),
+                    prepare_tone=_prepare_driver_tone,
+                    restore_tone=_restore_driver_tone,
+                    expected_level_identity=expected_level_identity,
+                    reuse_noise_floor=False,
+                    stop_requested=stop_event.is_set,
+                    stop_lock=stop_lock,
+                    begin_commit=lambda: _begin_relay_commit(
+                        "level_ramp:crossover"
+                    ),
                 )
-            if fixed_axis_request:
-                assert fixed_comparison_set is not None
-                actual_device_sha256 = hashlib.sha256(
-                    identity.device_key.encode("utf-8")
-                ).hexdigest()
-                expected_device_sha256 = str(
-                    fixed_comparison_set.get("device_sha256") or ""
-                )
-                expected_calibration_id = str(
-                    fixed_comparison_set.get("calibration_id") or ""
-                )
-                fixed_lock = lease.driver_sweep_locked_main_volume_db(
-                    str(target["speaker_group_id"]),
-                    str(target["role"]),
-                    capture_geometry="reference_axis",
-                )
+                binding = getattr(lease, "relay_setup_binding", None)
+                identity = _relay_level_identity(lease)
                 if (
-                    actual_device_sha256 != expected_device_sha256
-                    or identity.calibration_id != expected_calibration_id
-                    or fixed_lock is None
+                    binding is None
+                    or not getattr(binding, "sha256", "")
+                    or not identity.device_key
                 ):
                     raise ValueError(
-                        "the fixed-axis level check changed microphone identity, "
-                        "calibration, or failed to lock; use the comparison-set "
-                        "microphone and try again"
+                        "the level check did not produce a complete microphone binding; "
+                        "run it again"
                     )
-                lease.context_id = context_id
-                from jasper.audio_measurement.ramp import (
-                    LISTENING_POSITION_CAP_BUMP_DB,
-                    LISTENING_POSITION_CAP_CEIL_DB,
-                )
+                if fixed_axis_request:
+                    assert fixed_comparison_set is not None
+                    actual_device_sha256 = hashlib.sha256(
+                        identity.device_key.encode("utf-8")
+                    ).hexdigest()
+                    expected_device_sha256 = str(
+                        fixed_comparison_set.get("device_sha256") or ""
+                    )
+                    expected_calibration_id = str(
+                        fixed_comparison_set.get("calibration_id") or ""
+                    )
+                    fixed_lock = lease.driver_sweep_locked_main_volume_db(
+                        str(target["speaker_group_id"]),
+                        str(target["role"]),
+                        capture_geometry="reference_axis",
+                    )
+                    if (
+                        actual_device_sha256 != expected_device_sha256
+                        or identity.calibration_id != expected_calibration_id
+                        or fixed_lock is None
+                    ):
+                        raise ValueError(
+                            "the fixed-axis level check changed microphone identity, "
+                            "calibration, or failed to lock; use the comparison-set "
+                            "microphone and try again"
+                        )
+                    lease.context_id = context_id
+                    from jasper.audio_measurement.ramp import (
+                        LISTENING_POSITION_CAP_BUMP_DB,
+                        LISTENING_POSITION_CAP_CEIL_DB,
+                    )
 
-                log_event(
-                    logger,
-                    "correction.crossover_reference_axis_level_locked",
-                    topology_id=topology.topology_id,
-                    target_id=target["target_id"],
-                    locked_main_volume_db=f"{fixed_lock:.1f}",
-                    cap_bump_db=f"{LISTENING_POSITION_CAP_BUMP_DB:.1f}",
-                    cap_ceil_db=f"{LISTENING_POSITION_CAP_CEIL_DB:.1f}",
-                )
-                return
+                    log_event(
+                        logger,
+                        "correction.crossover_reference_axis_level_locked",
+                        topology_id=topology.topology_id,
+                        target_id=target["target_id"],
+                        locked_main_volume_db=f"{fixed_lock:.1f}",
+                        cap_bump_db=f"{LISTENING_POSITION_CAP_BUMP_DB:.1f}",
+                        cap_ceil_db=f"{LISTENING_POSITION_CAP_CEIL_DB:.1f}",
+                    )
+                    return
+        except CaptureStopped:
+            lease.discard_driver_level_outcome(
+                str(target["speaker_group_id"]),
+                str(target["role"]),
+                capture_geometry=requested_geometry,
+            )
+            raise
         lease.context_id = context_id
         level_snapshot = lease.level_match_snapshot(current_context_id=context_id)
         if level_snapshot.get("ready") is not True:
@@ -4217,6 +4438,7 @@ def _handle_crossover_relay_level_match(
             label="level_ramp:crossover",
             open=_open,
             run_and_consume=_run,
+            request_stop=_request_stop,
         ),
         relay_base,
         return_url=_request_local_return_url(handler, "/correction/crossover/"),
@@ -4709,6 +4931,13 @@ def _handle_crossover_relay_capture(
             status=repeat_admission.failure_status(reservation.get("attempt")),
         )
 
+    stop_event = threading.Event()
+    stop_lock = threading.Lock()
+
+    def _request_stop() -> None:
+        with stop_lock:
+            stop_event.set()
+
     base_run_and_consume = correction_crossover_flow.build_crossover_relay_run_and_consume(
         raw,
         _run_async,
@@ -4734,12 +4963,21 @@ def _handle_crossover_relay_capture(
         finish_failed_repeat_attempt=(
             _finish_failed_repeat_attempt if kind_id == "driver" else None
         ),
+        begin_finishing=lambda: _begin_relay_finishing(
+            f"crossover_sweep:{kind_id}"
+        ),
+        begin_commit=lambda: _begin_relay_commit(
+            f"crossover_sweep:{kind_id}"
+        ),
+        stop_event=stop_event,
+        stop_lock=stop_lock,
     )
 
     kind = RelayCaptureKind(
         label=f"crossover_sweep:{kind_id}",
         open=_open,
         run_and_consume=base_run_and_consume,
+        request_stop=_request_stop,
     )
     return {
         "relay": _run_relay_capture(
@@ -4748,6 +4986,13 @@ def _handle_crossover_relay_capture(
             return_url=_request_local_return_url(handler, "/correction/crossover/"),
         )
     }
+
+
+def _handle_crossover_relay_cancel() -> dict[str, Any]:
+    """Stop Crossover relay work and keep its slot until cleanup completes."""
+
+    relay = _request_relay_stop("crossover_sweep:", "level_ramp:crossover")
+    return {"relay": relay}
 
 
 def _maybe_restore_main_volume(sess, cam) -> None:
@@ -5597,6 +5842,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # The relay handler reads its own JSON body (mirrors the room
                     # /relay/capture and /sync/relay-capture handlers).
                     self._send_json(_handle_crossover_relay_capture(self))
+                    return
+
+                if path == "/crossover/relay-cancel":
+                    self._send_json(_handle_crossover_relay_cancel())
                     return
 
                 if path == "/crossover/level-match":

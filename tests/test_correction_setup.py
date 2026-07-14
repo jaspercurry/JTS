@@ -20,11 +20,14 @@ the original Phase 0 pins.
 """
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import io
 import inspect
 import json
 from types import SimpleNamespace
 import threading
+import time
 import urllib.error
 import urllib.request
 from email.message import Message
@@ -218,6 +221,275 @@ def test_relay_capture_client_uses_registration_token(monkeypatch):
         "capture_origin": "capture.jasper.tech",
         "return_url": "http://jts5.local/correction/",
     }
+
+
+def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
+    stop_event = threading.Event()
+    cleanup_started = threading.Event()
+    release_cleanup = threading.Event()
+
+    def open_capture(_client, _relay_base, _capture_origin, _return_url):
+        return SimpleNamespace(
+            tap_link="https://capture.test/#s=cap_1",
+            pi_session=object(),
+        )
+
+    async def run_and_consume(_client, _pi_session):
+        await asyncio.to_thread(stop_event.wait)
+        cleanup_started.set()
+        await asyncio.to_thread(release_cleanup.wait)
+
+    correction_setup._set_relay_capture(None)
+    try:
+        correction_setup._run_relay_capture(
+            correction_setup.RelayCaptureKind(
+                label="crossover_sweep:driver",
+                open=open_capture,
+                run_and_consume=run_and_consume,
+                request_stop=stop_event.set,
+            ),
+            "https://relay.test",
+            return_url="http://jts.local/correction/crossover/",
+        )
+        response = correction_setup._request_relay_stop("crossover_sweep:")
+        assert response["status"] == "stopping"
+        assert stop_event.is_set()
+        assert cleanup_started.wait(timeout=2)
+        assert correction_setup._get_relay_capture()["status"] == "stopping"
+        assert not correction_setup._begin_relay_capture("crossover_sweep:summed")
+        assert correction_setup._active_relay_phase() == (
+            "relay:crossover_sweep:driver"
+        )
+        release_cleanup.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if correction_setup._get_relay_capture()["status"] == "stopped":
+                break
+            time.sleep(0.01)
+        assert correction_setup._get_relay_capture()["status"] == "stopped"
+    finally:
+        release_cleanup.set()
+        correction_setup._set_relay_capture(None)
+
+
+def test_relay_commit_and_stop_have_one_atomic_winner():
+    stopped = threading.Event()
+    kind = "crossover_sweep:driver"
+
+    correction_setup._set_relay_capture(None)
+    try:
+        assert correction_setup._begin_relay_capture(
+            kind,
+            request_stop=stopped.set,
+        )
+        assert correction_setup._get_relay_capture()["status"] == "starting"
+        correction_setup._publish_relay_waiting(
+            kind,
+            "https://capture.test/#s=cap_1",
+        )
+        assert correction_setup._begin_relay_commit(kind) is True
+        assert correction_setup._get_relay_capture()["status"] == "committing"
+        with pytest.raises(ValueError, match="no matching phone capture"):
+            correction_setup._request_relay_stop("crossover_sweep:")
+        assert not stopped.is_set()
+
+        correction_setup._set_relay_capture(None)
+        assert correction_setup._begin_relay_capture(
+            kind,
+            request_stop=stopped.set,
+        )
+        assert correction_setup._request_relay_stop("crossover_sweep:")["status"] == "stopping"
+        assert stopped.is_set()
+        assert correction_setup._begin_relay_commit(kind) is False
+    finally:
+        correction_setup._set_relay_capture(None)
+
+
+def test_relay_finishing_and_stop_have_one_atomic_winner():
+    stopped = threading.Event()
+    kind = "crossover_sweep:driver"
+
+    correction_setup._set_relay_capture(None)
+    try:
+        assert correction_setup._begin_relay_capture(
+            kind,
+            request_stop=stopped.set,
+        )
+        correction_setup._publish_relay_waiting(
+            kind,
+            "https://capture.test/#s=cap_1",
+        )
+        assert correction_setup._begin_relay_finishing(kind) is True
+        assert correction_setup._get_relay_capture()["status"] == "finishing"
+        with pytest.raises(ValueError, match="no matching phone capture"):
+            correction_setup._request_relay_stop("crossover_sweep:")
+        assert correction_setup._begin_relay_commit(kind) is True
+        assert correction_setup._get_relay_capture()["status"] == "committing"
+        assert not stopped.is_set()
+
+        correction_setup._set_relay_capture(None)
+        assert correction_setup._begin_relay_capture(
+            kind,
+            request_stop=stopped.set,
+        )
+        assert correction_setup._request_relay_stop("crossover_sweep:")["status"] == "stopping"
+        assert correction_setup._begin_relay_finishing(kind) is False
+        assert stopped.is_set()
+    finally:
+        correction_setup._set_relay_capture(None)
+
+
+def test_relay_stop_callback_is_atomic_with_starting_state():
+    stopped = threading.Event()
+    kind = "crossover_sweep:driver"
+
+    correction_setup._set_relay_capture(None)
+    try:
+        assert correction_setup._begin_relay_capture(
+            kind,
+            request_stop=stopped.set,
+        )
+        response = correction_setup._request_relay_stop("crossover_sweep:")
+        assert response["status"] == "stopping"
+        assert stopped.is_set()
+        waiting = correction_setup._publish_relay_waiting(
+            kind,
+            "https://capture.test/#s=cap_1",
+        )
+        assert waiting["status"] == "stopping"
+        assert waiting["tap_link"] == "https://capture.test/#s=cap_1"
+    finally:
+        correction_setup._set_relay_capture(None)
+
+
+def test_run_async_timeout_waits_for_coroutine_cleanup():
+    started = threading.Event()
+    cleanup_started = threading.Event()
+    release_cleanup = threading.Event()
+    finished = threading.Event()
+    failures = []
+
+    async def operation():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await asyncio.to_thread(release_cleanup.wait)
+
+    def invoke():
+        try:
+            correction_setup._run_async(operation(), timeout=0.05)
+        except concurrent.futures.TimeoutError:
+            pass
+        except (OSError, RuntimeError, ValueError) as exc:
+            failures.append(exc)
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=invoke, daemon=True)
+    worker.start()
+    assert started.wait(timeout=2)
+    assert cleanup_started.wait(timeout=2)
+    assert not finished.is_set()
+    release_cleanup.set()
+    assert finished.wait(timeout=2)
+    worker.join(timeout=2)
+    assert failures == []
+
+
+def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
+    cleanup_started = threading.Event()
+    release_cleanup = threading.Event()
+    drain_alarm = threading.Event()
+    finished = threading.Event()
+
+    async def operation():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await asyncio.to_thread(release_cleanup.wait)
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S",
+        0.01,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "log_event",
+        lambda _logger, event, **_fields: (
+            drain_alarm.set()
+            if event == "correction.async_cancel_drain_timeout"
+            else None
+        ),
+    )
+
+    def invoke():
+        try:
+            correction_setup._run_async(operation(), timeout=0.01)
+        except concurrent.futures.TimeoutError:
+            pass
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=invoke, daemon=True)
+    worker.start()
+    try:
+        assert cleanup_started.wait(timeout=2)
+        assert drain_alarm.wait(timeout=2)
+        assert not finished.is_set()
+    finally:
+        release_cleanup.set()
+    assert finished.wait(timeout=2)
+    worker.join(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeypatch):
+    from jasper.capture_relay.session import CaptureStopped
+
+    host_events = []
+    purged = []
+
+    class Session:
+        session_id = "active-crossover"
+        noise_floor_db = None
+
+        async def cancel_level_match(self):
+            return True
+
+    class Client:
+        def post_host_event(self, _session_id, _pull_token, payload):
+            host_events.append(payload)
+
+        def delete(self, session_id, _pull_token):
+            purged.append(session_id)
+
+        def status(self, *_args):  # pragma: no cover - Stop wins first
+            raise AssertionError("Stop must win before another relay poll")
+
+    pi_session = SimpleNamespace(
+        session_id="cap-stop",
+        pull_token="pull",
+        spec=SimpleNamespace(capture_protocol_version=2, kind="level_ramp"),
+    )
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+
+    with pytest.raises(CaptureStopped, match="capture stopped"):
+        await correction_setup._run_relay_level_match(
+            Session(),
+            Client(),
+            pi_session,
+            geometry="near_field_driver:mono:woofer",
+            run_token="run-stop",
+            stop_requested=lambda: True,
+        )
+
+    assert host_events[-1]["ramp"]["state"] == "cancelled"
+    assert host_events[-1]["ramp"]["terminal"] is True
+    assert purged == ["cap-stop"]
 
 
 def test_relay_capture_return_url_uses_request_host(monkeypatch):

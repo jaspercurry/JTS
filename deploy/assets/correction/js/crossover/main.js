@@ -12,6 +12,7 @@ const els = {
   relay: document.getElementById('crossover-relay'),
   relayStatus: document.getElementById('crossover-relay-status'),
   relayLink: document.getElementById('crossover-relay-link'),
+  relayStop: document.getElementById('crossover-relay-stop'),
   status: document.getElementById('capture-status'),
 };
 
@@ -24,6 +25,13 @@ let pollTimer = null;
 
 const POLL_MS = 1500;
 const RETRY_MS = 5000;
+const RELAY_STOPPABLE = new Set(['starting', 'awaiting_phone']);
+const RELAY_IN_FLIGHT = new Set([
+  ...RELAY_STOPPABLE,
+  'finishing',
+  'committing',
+  'stopping',
+]);
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
@@ -90,15 +98,32 @@ function renderActions(primary, alternates = []) {
 }
 
 function renderRelay(relay) {
-  const active = relay && ['starting', 'awaiting_phone'].includes(relay.status);
+  const active = relay && RELAY_IN_FLIGHT.has(relay.status);
+  const stoppable = relay && RELAY_STOPPABLE.has(relay.status);
   els.relay.classList.toggle('hidden', !active);
   els.relayLink.classList.add('hidden');
+  els.relayStop.classList.toggle('hidden', !stoppable);
+  els.relayStop.disabled = busy;
   if (!active) {
     if (relay && relay.status === 'failed') {
       setStatus(relay.error || 'Phone capture failed. Retry this step.', 'bad');
+    } else if (relay && relay.status === 'stopped') {
+      setStatus(relay.error || 'Measurement stopped safely.', 'ok');
     } else if (relay && relay.status === 'complete') {
       setStatus('Phone capture complete.', 'ok');
     }
+    return;
+  }
+  if (relay.status === 'stopping') {
+    els.relayStatus.textContent = 'Stopping playback and restoring the speaker safely…';
+    return;
+  }
+  if (relay.status === 'committing') {
+    els.relayStatus.textContent = 'Saving the verified measurement…';
+    return;
+  }
+  if (relay.status === 'finishing') {
+    els.relayStatus.textContent = 'The phone is finishing and uploading the measurement…';
     return;
   }
   if (relay.tap_link) {
@@ -116,12 +141,37 @@ function render(env) {
   renderSteps(env.steps);
   renderNudges(env.nudges);
   renderRelay(env.relay);
-  const relayActive = env.relay && ['starting', 'awaiting_phone'].includes(env.relay.status);
+  const relayActive = env.relay && RELAY_IN_FLIGHT.has(env.relay.status);
   renderActions(
     relayActive ? null : env.next_action,
     relayActive ? [] : env.alternate_actions,
   );
   schedulePoll(relayActive ? POLL_MS : null);
+}
+
+async function stopRelay() {
+  if (busy) return;
+  busy = true;
+  renderEpoch += 1;
+  els.relayStop.disabled = true;
+  setStatus('Stopping safely…');
+  try {
+    const response = await postJSON('/correction/crossover/relay-cancel', {});
+    renderRelay(response.relay);
+    schedulePoll(POLL_MS);
+    await refresh();
+  } catch (error) {
+    setStatus(error && error.message ? error.message : String(error), 'bad');
+  } finally {
+    busy = false;
+    if (envelope) {
+      const relayActive = envelope.relay && RELAY_IN_FLIGHT.has(envelope.relay.status);
+      renderActions(
+        relayActive ? null : envelope.next_action,
+        relayActive ? [] : envelope.alternate_actions,
+      );
+    }
+  }
 }
 
 async function runAction(action, button) {
@@ -213,6 +263,7 @@ function refresh() {
 }
 
 if (typeof document !== 'undefined') {
+  els.relayStop.addEventListener('click', stopRelay);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       schedulePoll(null);

@@ -645,6 +645,14 @@ class CrossoverLevelLease:
                 self.context_id = context_id
         return outcome
 
+    async def cancel_level_match(self) -> bool:
+        """Ask the retained crossover ramp to stop through its safe restore."""
+
+        running = self._running
+        if running is None:
+            return False
+        return await running.cancel()
+
     def invalidate_comparison_context(self) -> None:
         """Drop a prior lock/setup before a newly acquired level run begins."""
 
@@ -739,7 +747,11 @@ class CrossoverLevelLease:
             speaker_group_id, role, capture_geometry
         )
         with self._level_result_lock:
-            self._outcomes.pop(geometry, None)
+            discarded = self._outcomes.pop(geometry, None)
+            if self._last is discarded:
+                self._last = next(reversed(self._outcomes.values()), None)
+            if not self._outcomes:
+                self.context_id = None
             self.level_lock_store.discard(geometry)
             self._level_run_store.invalidate_succeeded_result(geometry=geometry)
 

@@ -39,6 +39,7 @@ from jasper.capture_relay.session import (
     CaptureAborted,
     CaptureFailed,
     CapturePageIncompatible,
+    CaptureStopped,
     CaptureTimeout,
     classify_status,
     mint_session,
@@ -262,6 +263,34 @@ def test_full_round_trip_returns_decrypted_wav():
     assert result.wav == wav  # bit-identical, decrypted + verified
     assert result.device is None  # phone reported no device this time
     assert armed_calls == [True]  # on_armed fired exactly once
+
+
+def test_host_stop_after_poll_prevents_arm_without_failure_cue(caplog):
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    backend.phone_arm(session.session_id)
+    checks = iter((False, True))
+    armed_calls = []
+    cues = []
+
+    with caplog.at_level(logging.INFO), pytest.raises(
+        CaptureStopped, match="capture stopped"
+    ):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: armed_calls.append(True),
+            stop_requested=lambda: next(checks),
+            poll_interval_s=0.0,
+            timeout_s=5.0,
+            sleep=lambda _s: None,
+            play_cue=cues.append,
+        )
+
+    assert armed_calls == []
+    assert cues == []
+    assert "event=capture_relay.stopped" in caplog.text
+    assert "event=capture_relay.failed" not in caplog.text
 
 
 def test_required_acknowledgement_is_verified_before_stimulus():

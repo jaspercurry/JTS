@@ -127,7 +127,13 @@ def _level_state(status: Mapping[str, Any]) -> tuple[bool, str, bool]:
 
 def _relay_active(status: Mapping[str, Any]) -> bool:
     relay = _mapping(status.get("relay"))
-    return str(relay.get("status") or "") in {"starting", "awaiting_phone"}
+    return str(relay.get("status") or "") in {
+        "starting",
+        "awaiting_phone",
+        "finishing",
+        "committing",
+        "stopping",
+    }
 
 
 def _relay_kind(status: Mapping[str, Any]) -> str:
@@ -682,7 +688,15 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         ]
     elif _relay_active(status) or _level_run_active(status) or level_running:
         screen = "waiting"
+        relay_phase = str(_mapping(status.get("relay")).get("status") or "")
         verdict = (
+            "JTS is stopping playback and restoring the speaker safely."
+            if relay_phase == "stopping"
+            else "The phone is finishing and uploading this measurement."
+            if relay_phase == "finishing"
+            else "JTS is saving the verified measurement."
+            if relay_phase == "committing"
+            else
             "JTS is finishing the same exact level-check run. This page will "
             "advance automatically when its terminal result is saved."
             if level_run.get("phone_timeout") is True

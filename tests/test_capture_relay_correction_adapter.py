@@ -620,9 +620,12 @@ def test_relay_repeat_sweep_uses_repeat_state_machine_and_progress(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("post_ramp_mismatch", (False, True))
+@pytest.mark.parametrize(
+    ("post_ramp_mismatch", "commit_allowed"),
+    ((False, True), (True, True), (False, False)),
+)
 async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
-    monkeypatch, post_ramp_mismatch,
+    monkeypatch, post_ramp_mismatch, commit_allowed,
 ):
     """The transport adapter binds setup/noise before asking the kernel to ramp."""
     from jasper.capture_relay import session as relay_session
@@ -756,6 +759,7 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
         current_position = 0
 
         async def run_level_match(self, _geometry, **ports):
+            assert "context_id" not in ports
             assert ports["noise_floor_dbfs"] == -52.0
             await ports["set_main_volume_db"](-41.0)
             if post_ramp_mismatch:
@@ -773,11 +777,16 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
         setup_binding_id=setup_binding_id,
         tone_frequency_hz=875.0,
         reuse_noise_floor=False,
+        begin_commit=lambda: commit_allowed,
     )
     if post_ramp_mismatch:
         with pytest.raises(ValueError, match="calibration is loaded"):
             await operation
         assert terminal_events[-1]["state"] == "error"
+    elif not commit_allowed:
+        with pytest.raises(relay_session.CaptureStopped, match="capture stopped"):
+            await operation
+        assert terminal_events[-1]["state"] == "cancelled"
     else:
         await operation
 
@@ -876,6 +885,100 @@ async def test_relay_level_mismatched_context_cannot_poison_ambient_floor(
         )
 
     assert sess.noise_floor_db is None
+
+
+@pytest.mark.asyncio
+async def test_relay_level_stop_during_prepare_never_starts_ramp(monkeypatch):
+    import asyncio
+    from contextlib import asynccontextmanager
+    import threading
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator, playback
+    from jasper.web import correction_setup
+
+    stop_event = threading.Event()
+    prepare_started = asyncio.Event()
+    release_prepare = asyncio.Event()
+    ramp_calls = []
+    restores = []
+    status = {
+        "event": {
+            "capture_page": dict(_CAPTURE_PAGE),
+            "level_batch": {
+                "schema": 1,
+                "run_token": "run-stop-prepare",
+                "armed": True,
+                "samples": [
+                    {
+                        "seq": 1,
+                        "t_client_ms": 200,
+                        "rms_dbfs": -50.0,
+                        "peak_dbfs": -45.0,
+                    }
+                ],
+            },
+        }
+    }
+
+    class Client:
+        def status(self, *_args):
+            return status
+
+        def post_host_event(self, *_args):
+            return None
+
+    class Session:
+        session_id = "active-crossover"
+        noise_floor_db = -55.0
+        mic_calibration = None
+        input_device = None
+
+        async def cancel_level_match(self):
+            return False
+
+        async def run_level_match(self, *_args, **_kwargs):
+            ramp_calls.append(True)
+            return SimpleNamespace(locked=True, ramp=SimpleNamespace(error=None))
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    async def prepare():
+        prepare_started.set()
+        await release_prepare.wait()
+        return object()
+
+    async def restore(_prepared):
+        restores.append(True)
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: "tone.wav")
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    task = asyncio.create_task(
+        correction_setup._run_relay_level_match(
+            Session(),
+            Client(),
+            _level_pi_session(),
+            geometry="near_field_driver:mono:woofer",
+            run_token="run-stop-prepare",
+            prepare_tone=prepare,
+            restore_tone=restore,
+            stop_requested=stop_event.is_set,
+        )
+    )
+    assert await asyncio.wait_for(prepare_started.wait(), timeout=2)
+    stop_event.set()
+    await asyncio.sleep(0.3)
+    release_prepare.set()
+
+    with pytest.raises(relay_session.CaptureStopped, match="capture stopped"):
+        await task
+    assert ramp_calls == []
+    assert restores == [True]
 
 
 @pytest.mark.asyncio
