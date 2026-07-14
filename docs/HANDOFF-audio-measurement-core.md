@@ -51,7 +51,7 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the Wave 3 isolated-driver consumer, durable Active run boundary, and the Shared manifest, playback, admission, and guarded-playback implementation, 2026-07-14)
+## Current state (verified against the Wave 3 isolated-driver consumer, durable Active run and pure region-evidence boundaries, and the Shared manifest, playback, admission, and guarded-playback implementation, 2026-07-14)
 
 ### Wave 1 contract-only foundation (2026-07-13)
 
@@ -68,9 +68,10 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   The strict SHA-256 values are content identities, not signatures, trusted
   issuers, or transferable playback capabilities. The original Wave 1 slice had
   no producer; Active's isolated-driver production adapter now supplies the
-  trusted live consumer. Summed/candidate/receipt authority remains blocked;
-  the separate lifecycle control plane is only partially integrated as the
-  bundle-backed run identity described below.
+  trusted live consumer. A strict pure per-region evidence shape now exists,
+  but its summed playback/capture/persistence host, candidate evaluator, and
+  receipt producer remain blocked; the separate lifecycle control plane is only
+  partially integrated as the bundle-backed run identity described below.
 - `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
   `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
   replay inputs, admission artifacts, algorithm id/version, geometry, placement,
@@ -100,8 +101,11 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   A positive receipt requires an evaluated-`verified` topology and every
   topology-derived combined active-speaker
   target to pass exactly three distinct admitted fixed-axis post-apply captures
-  from one session/threshold profile, and binds the retained applied candidate,
-  fresh graph proof, predecessor, and rollback result bound to the same
+  from one session/threshold profile. Every capture has a unique one-shot
+  admission id, separate canonical generation/playback artifacts, and a
+  playback decision that retains its generation request and limits. The receipt
+  binds the retained applied candidate, fresh graph proof, predecessor, and
+  rollback result bound to the same
   operation, mutation, and observed applied graph. The transition value remains
   pure, while Wave 3 now persists one exact current-run identity and provides
   bounded attempt/journal mutation APIs. No production measurement adapter uses
@@ -260,15 +264,19 @@ historical session. There is no migration, ensure, repair, synthesis, or
 backfill API. The current B2b replay remains permanently diagnostic-only. At
 adoption, Active must classify B2b before authority resolution, use a fixed
 production authority root and `bundle_kind`, require a playback-role artifact,
-and never add/copy an authority marker for a historical session. Its current
-receipt does not yet enforce those origin checks. Active's isolated-driver
+and never add/copy an authority marker for a historical session. Active's pure
+receipt and region-evidence values now require the production Active bundle
+kind plus canonical, distinct generation/playback roles; filesystem marker and
+fresh-live-issuer trust remain responsibilities of the production host/store.
+Active's isolated-driver
 production path has adopted these APIs. It holds the bounded Shared writer lock
 across transient load, fresh generation/playback proofs, exact playback, and
 restoration, and threads the verified playback-role handoff through the
 server-owned capture call. Summed capture is intentionally refused before graph
-load until its group-level proof exists; candidate, receipt, and Room-gate
-authority are still unchanged. Lifecycle identity now has the narrow production
-start/status integration below, but no production evidence transition consumer.
+load until its production group-level host exists; candidate, receipt, and
+Room-gate authority are still unchanged. Lifecycle identity now has the narrow
+production start/status integration below, but no production evidence
+transition consumer.
 
 ### Wave 3 Active run identity (2026-07-14)
 
@@ -286,6 +294,29 @@ profile before status can call the run current. Absent state is
 `not_started`; an exact active comparison is `current`; comparison drift is
 `stale`; corrupt/unreadable state is `unavailable`. Production currently starts
 only `unconfigured`; no live consumer reserves attempts or advances the journal.
+
+### Wave 3 Active per-region evidence authority (2026-07-14)
+
+`jasper.active_speaker.commissioning_evidence` is a strict, pure Active-owned
+contract over Shared identities; it is not another bundle or a production
+capture service. It derives the exact group-by-crossover-region plan from the
+current run, topology, preset, protected profile, comparison, threshold
+profile, and session. A two-way has one target per active group; a three-way
+keeps its lower and upper crossover regions separate. Normal, reverse, and
+delay identities are distinct. Each stationary set requires three fresh
+one-shot captures from one durable attempt, and each shared `NullWalkSpec`
+coordinate requires five fresh one-shot captures from its own attempt. Every
+capture binds exact graph and placement identities, separate generation and
+playback protection proofs, a generated immutable WAV, and canonical Active
+generation/playback admission artifacts. Cross-role and cross-set artifact
+replay fails closed.
+
+The module performs no I/O, persistence, playback, scoring, graph mutation, or
+lifecycle transition. Production must still retain a run handle, reserve the
+bounded attempts, build and freshly confirm each adjacent-pair graph under the
+writer lock, persist the strict values only after exact restoration, and supply
+an operator-attested signed geometry seed. Therefore summed playback remains
+pre-audio refused and candidate/receipt/Room authority remains unavailable.
 
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
@@ -1154,7 +1185,9 @@ outcomes carrying the persisted artifact; one authority per fresh session with
 unique attempt ids; closed guarded-playback terminal events; and
 no-bundle-migration/no-backfill boundaries plus Active isolated-driver adoption,
 server-owned capture handoff, and summed pre-audio refusal checked
-hardware-free. Durable bundle-backed Active run identity, startup owner claim,
+hardware-free. Strict Active group-by-region normal/reverse/delay evidence
+values and receipt one-shot generation/playback roles were checked pure.
+Durable bundle-backed Active run identity, startup owner claim,
 stale-callback refusal, and fail-closed crossover status were checked hardware-
 free. No hardware behavior revalidated. Wave 1 excitation/evidence identities
 and `null_walk.DspPredecessor` reuse remain contract-only.
