@@ -81,6 +81,14 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   the existing `null_walk.DspPredecessor` canonical JSON and fingerprint rules.
   No generic graph-transaction abstraction landed. The feature host must still
   hold the real writer lock across apply, fresh readback, and exact restoration.
+  Shared writer admission is bounded and cancellation-safe: it polls a
+  non-blocking file lock to a monotonic deadline, closes a cancelled/timed-out
+  waiter's descriptor immediately, and reports only contention transitions.
+  Public lock callers must supply a stable feature source, so contention and
+  timeout events identify the owner rather than collapsing to an anonymous
+  shared-boundary failure.
+  The deadline governs admission only; a host that has acquired the boundary
+  must still drain mutation and restoration to an exact terminal result.
 - Active owns the nine-state lifecycle and positive eligibility receipt built on
   these shared identities. The lifecycle's
   `blocked_live_state_unknown` state prevents an attempted/unknown mutation from
@@ -1103,7 +1111,8 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-13 (Wave 2 neutral artifact-manifest, playback,
+Last verified: 2026-07-14 (bounded, cancellation-safe shared DSP-writer
+admission and contention observability checked hardware-free; Wave 2 neutral artifact-manifest, playback,
 admission-artifact, and guarded-playback ownership; exact Room byte/schema/path
 compatibility; Room playback shim; temporary passive-only Room admission
 pending exact Active receipt authority; deterministic tone bytes; bounded

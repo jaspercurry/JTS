@@ -72,10 +72,11 @@
   reloads the Room entry. `/start` repeats the same check before reading the
   body or reserving a session. Measurement-baseline load, Apply, Reset, and
   automatic revert wait for a terminal result after any shared writer
-  admission; Camilla transport attempts are bounded, while shared writer-lock
-  admission itself is currently blocking and remains a Shared/coordinator gap.
-  Room does not add an outer deadline after entry that could cancel between
-  graph mutation and rollback/state persistence. Active's
+  admission. Camilla transport attempts and shared writer-lock admission are
+  bounded; a cancelled or timed-out waiter cannot acquire later. Room does not
+  apply an outer deadline after admission that could cancel between graph
+  mutation and rollback/state persistence.
+  Active's
   `unknown` status remains retryable/503,
   not mislabeled as ordinary incomplete setup. `jasper.correction.failures`
   owns stable homeowner codes/copy for Start, relay, tuning, session, apply,
@@ -2477,7 +2478,8 @@ Internal:
 
 ---
 
-Last verified: 2026-07-13 (Wave 2 paid tuning backend extraction checked the
+Last verified: 2026-07-14 (shared DSP-writer admission deadline/cancellation
+semantics checked against Room's terminal mutation policy; Wave 2 paid tuning backend extraction checked the
 shared cross-route throttle, fresh household spend gate, exact provider
 arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP
 error translation without moving proposal acceptance or live apply. Acoustic-

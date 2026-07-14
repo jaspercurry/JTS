@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import stat
@@ -15,6 +16,7 @@ from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
     DspApplyState,
+    DspWriterLockTimeout,
     ValidationStatus,
     apply_dsp_config,
     dsp_apply_lock_path,
@@ -85,13 +87,202 @@ async def test_dsp_writer_lock_file_is_group_writable_under_restrictive_umask(
 ):
     old_umask = os.umask(0o077)
     try:
-        async with dsp_writer_lock(tmp_path):
+        async with dsp_writer_lock(tmp_path, source="test_lock_mode"):
             pass
     finally:
         os.umask(old_umask)
 
     mode = stat.S_IMODE((tmp_path / ".dsp_apply.lock").stat().st_mode)
     assert mode == 0o660
+
+
+async def test_dsp_writer_lock_times_out_without_stealing_ownership(
+    tmp_path: Path,
+    caplog,
+):
+    caplog.set_level("INFO")
+    async with dsp_writer_lock(tmp_path, source="holder"):
+        with pytest.raises(DspWriterLockTimeout) as caught:
+            async with dsp_writer_lock(
+                tmp_path,
+                timeout_s=0.05,
+                source="contender",
+            ):
+                pytest.fail("contended writer lock was admitted")
+
+    assert caught.value.source == "contender"
+    assert caught.value.timeout_s == pytest.approx(0.05)
+    assert caught.value.waited_s >= 0.04
+    assert any(
+        "event=dsp.writer_lock" in record.message
+        and "result=timeout" in record.message
+        and "source=contender" in record.message
+        for record in caplog.records
+    )
+
+
+async def test_cancelled_dsp_writer_waiter_cannot_acquire_late(tmp_path: Path):
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def hold() -> None:
+        async with dsp_writer_lock(tmp_path, source="holder"):
+            holder_entered.set()
+            await release_holder.wait()
+
+    holder = asyncio.create_task(hold())
+    await holder_entered.wait()
+
+    async def wait_then_mark() -> None:
+        async with dsp_writer_lock(
+            tmp_path,
+            timeout_s=1.0,
+            source="cancelled_waiter",
+        ):
+            pytest.fail("cancelled waiter acquired the writer lock")
+
+    waiter = asyncio.create_task(wait_then_mark())
+    await asyncio.sleep(0.03)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    release_holder.set()
+    await holder
+    async with dsp_writer_lock(
+        tmp_path,
+        timeout_s=0.1,
+        source="successor",
+    ):
+        pass
+
+
+async def test_dsp_writer_lock_does_not_retry_after_late_wakeup(
+    tmp_path: Path,
+    monkeypatch,
+):
+    attempts = 0
+    real_sleep = asyncio.sleep
+
+    def pretend_contended_then_available(_lock) -> bool:
+        nonlocal attempts
+        attempts += 1
+        return attempts > 1
+
+    async def oversleep(_delay: float) -> None:
+        await real_sleep(0.03)
+
+    monkeypatch.setattr(
+        "jasper.dsp_apply._FileLock.try_acquire",
+        pretend_contended_then_available,
+    )
+    monkeypatch.setattr("jasper.dsp_apply.asyncio.sleep", oversleep)
+
+    with pytest.raises(DspWriterLockTimeout):
+        async with dsp_writer_lock(
+            tmp_path,
+            timeout_s=0.01,
+            source="late_waiter",
+        ):
+            pytest.fail("waiter was admitted after its deadline")
+
+    assert attempts == 1
+
+
+async def test_cancelling_contended_owner_is_not_logged_as_wait_cancellation(
+    tmp_path: Path,
+    caplog,
+):
+    caplog.set_level("INFO")
+    release_holder = asyncio.Event()
+    holder_entered = asyncio.Event()
+
+    async def hold() -> None:
+        async with dsp_writer_lock(tmp_path, source="holder"):
+            holder_entered.set()
+            await release_holder.wait()
+
+    holder = asyncio.create_task(hold())
+    await holder_entered.wait()
+    owner_entered = asyncio.Event()
+
+    async def own_then_wait() -> None:
+        async with dsp_writer_lock(
+            tmp_path,
+            timeout_s=0.5,
+            source="contended_owner",
+        ):
+            owner_entered.set()
+            await asyncio.Event().wait()
+
+    owner = asyncio.create_task(own_then_wait())
+    await asyncio.sleep(0.03)
+    release_holder.set()
+    await holder
+    await owner_entered.wait()
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+
+    assert not any(
+        "event=dsp.writer_lock" in record.message
+        and "result=cancelled" in record.message
+        and "source=contended_owner" in record.message
+        for record in caplog.records
+    )
+
+
+async def test_dsp_writer_lock_acquires_after_contention_before_deadline(
+    tmp_path: Path,
+):
+    release_holder = asyncio.Event()
+    holder_entered = asyncio.Event()
+
+    async def hold() -> None:
+        async with dsp_writer_lock(tmp_path, source="holder"):
+            holder_entered.set()
+            await release_holder.wait()
+
+    holder = asyncio.create_task(hold())
+    await holder_entered.wait()
+    acquired = asyncio.Event()
+
+    async def contend() -> None:
+        async with dsp_writer_lock(
+            tmp_path,
+            timeout_s=0.5,
+            source="contender",
+        ):
+            acquired.set()
+
+    contender = asyncio.create_task(contend())
+    await asyncio.sleep(0.03)
+    release_holder.set()
+    await holder
+    await contender
+    assert acquired.is_set()
+
+
+async def test_apply_dsp_config_skips_lock_when_caller_already_owns_it(
+    tmp_path: Path,
+):
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\ndevices:\n  volume_limit: 0.0\n")
+
+    async with dsp_writer_lock(tmp_path, source="outer"):
+        result = await apply_dsp_config(
+            source="nested_apply",
+            candidate_path=cfg,
+            load_config=lambda _path: asyncio.sleep(0, result=True),
+            acquire_lock=False,
+            validate=lambda path: CamillaConfigValidationResult(
+                status=ValidationStatus.VALID,
+                path=str(path),
+            ),
+            state_path=tmp_path / "state.json",
+        )
+
+    assert result.result == "success"
 
 
 def test_validate_camilla_config_classifies_invalid_config(

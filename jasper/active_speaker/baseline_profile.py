@@ -1908,7 +1908,10 @@ async def apply_baseline_profile(
 ) -> dict[str, Any]:
     """Serialize candidate proof, compile, load, confirmation, and rollback."""
 
-    async with dsp_writer_lock(baseline_config_path(config_path).parent):
+    async with dsp_writer_lock(
+        baseline_config_path(config_path).parent,
+        source="active_speaker_baseline_apply",
+    ):
         if refresh_inputs is not None:
             topology, design_draft, crossover_preview, measurements = refresh_inputs()
         return await _apply_baseline_profile_locked(

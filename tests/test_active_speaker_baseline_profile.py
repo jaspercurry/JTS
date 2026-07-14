@@ -1410,11 +1410,13 @@ async def test_apply_holds_writer_lock_and_refuses_config_race(
     )
     real_lock = baseline_profile_mod.dsp_writer_lock
     lock_held = False
+    observed_sources: list[str] = []
 
     @asynccontextmanager
-    async def observed_lock(config_dir):
+    async def observed_lock(config_dir, *, source):
         nonlocal lock_held
-        async with real_lock(config_dir):
+        observed_sources.append(source)
+        async with real_lock(config_dir, source=source):
             lock_held = True
             try:
                 yield
@@ -1461,6 +1463,7 @@ async def test_apply_holds_writer_lock_and_refuses_config_race(
     assert validations == 2
     assert loads == []
     assert lock_held is False
+    assert observed_sources == ["active_speaker_baseline_apply"]
 
 
 async def test_apply_baseline_profile_threads_capture_device(

@@ -447,7 +447,8 @@ and it still does not emit audio or authorize playback.
   generated-config inspector. It must stay import-cheap; do not import
   NumPy/SciPy here.
 - `jasper/dsp_apply.py` — import-cheap shared DSP apply substrate:
-  typed CamillaDSP validation, config reload, rollback, file locking,
+  typed CamillaDSP validation, config reload, rollback, bounded
+  cancellation-safe writer-lock admission with a required feature identity,
   compact last-result persistence, and the durable DSP write epoch used
   to fence stale live updates.
 - `jasper/sound/runtime.py` — shared durable sound-profile runtime:
@@ -828,7 +829,8 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-07-13 (target-bound research, confirmation/revision behavior,
+Last verified: 2026-07-14 (sound writer call sites checked against bounded,
+cancellation-safe shared admission; target-bound research, confirmation/revision behavior,
 active-speaker file inventory, and commission-ramp /
 summed-planner ownership checked after obsolete readiness removal; prior
 2026-06-25 pass covered active-leader program-bake carrier support
