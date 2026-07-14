@@ -343,6 +343,21 @@ scheduler itself still chooses only where to refine. The production host must
 consume the exact schedule and evaluator before it can issue evidence. This
 pure slice does not play or capture and does not weaken either bound.
 
+`jasper.active_speaker.commissioning_evidence_store` is the separate strict I/O
+boundary for these values. It reopens one exact bundle admission authority,
+publishes canonical artifacts once with durable no-replace semantics, and
+reopens the exact bytes before returning progress. Paths are normalized and
+bundle-relative; symlinks, non-regular files, oversized artifacts, noncanonical
+or duplicate-key JSON, cross-session identities, and conflicting retries fail
+closed. A deep reopen verifies every raw, analysis, quality, stimulus,
+generation-admission, and playback-admission artifact. The fail-soft forensic
+manifest and `info.json` remain metadata, never evidence authority. Run plans
+and incomplete aggregates are process-owner-generation scoped; the completed
+aggregate is run scoped so a restart can recover a durable complete-before-
+transition result without accepting an incomplete prior generation. This store
+does not schedule, score, mutate DSP, play audio, advance the lifecycle, or
+create a second retention system.
+
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
   since P1b; the correction-specific rest stays in `jasper/correction/`):
@@ -1227,7 +1242,10 @@ complete-plan replay guards, and receipt
 schema-v2 one-shot generation/playback roles were checked pure.
 Durable bundle-backed Active run identity, startup owner claim,
 stale-callback refusal, and fail-closed crossover status were checked hardware-
-free. No hardware behavior revalidated. Wave 1 excitation/evidence identities
+free. The strict write-once commissioning evidence store, exact typed reopen,
+deep child-artifact verification, generation-scoped incomplete state, and
+run-scoped complete recovery were checked hardware-free. No hardware behavior
+revalidated. Wave 1 excitation/evidence identities
 and `null_walk.DspPredecessor` reuse remain contract-only.
 Candidate/verification/receipt and Room authority remain unavailable. Crossover adapter
 volume-lease participation and measurement-flow admission ownership rechecked
