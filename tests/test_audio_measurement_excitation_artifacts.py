@@ -34,6 +34,7 @@ from jasper.audio_measurement.excitation_artifacts import (
     AdmissionArtifactError,
     AdmissionArtifactErrorCode,
     HistoricalExcitationEvidence,
+    admission_artifact_relative_path,
     canonical_admission_bytes,
     create_admission_authority,
     open_admission_authority,
@@ -56,6 +57,14 @@ OTHER = "f" * 64
 BUNDLE_KIND = "jts_active_speaker_commissioning_authority"
 BUNDLE_ID = "authority-session-1"
 ADMISSION_ID = "combined-main-repeat-1"
+
+
+def test_admission_role_path_owns_the_shared_id_vocabulary() -> None:
+    assert admission_artifact_relative_path("generation", ADMISSION_ID) == (
+        f"{GENERATION_PATH_PREFIX}/{ADMISSION_ID}.json"
+    )
+    with pytest.raises(ValueError, match="admission_id"):
+        admission_artifact_relative_path("generation", "not:shared")
 
 
 def _limits(**changes: object) -> ExcitationLimits:

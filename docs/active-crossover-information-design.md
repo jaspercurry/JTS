@@ -41,15 +41,20 @@
 
 > **Wave 3 region-evidence boundary (2026-07-14; hardware-free).**
 > `jasper.active_speaker.commissioning_evidence` now derives an immutable
-> group-by-region plan from the exact run, topology, preset, protected profile,
+> group-by-region plan from the exact typed durable-run handle, topology, preset, protected profile,
 > comparison set, threshold profile, and commissioning session. Its strict pure
 > values require separate normal, reverse, and delay identities for every
 > crossover region (including both regions of a three-way); exactly three fresh
 > one-shot stationary captures for normal and reverse; and five fresh one-shot
 > captures at every coordinate of the shared bounded delay walk. Capture
-> contexts bind the durable attempt, exact graph, placement, and both generation
-> and playback protection proofs. This is an authority *shape*, not a production
-> authority issuer: no live host yet reserves those attempts, applies the
+> contexts retain the typed reserved-attempt handle (including owner generation,
+> attempt number, and reserved target), exact graph, placement, and both
+> generation and playback protection proofs. An explicit per-region operator
+> attestation supplies the signed geometry seed; even `0.0` cannot be assumed.
+> A complete aggregate requires exactly one region value per plan target and
+> makes artifact paths, admissions, and attempts globally unique. This is an
+> authority *shape*, not a production authority issuer: no live host yet
+> reserves those attempts, applies the
 > normal/reverse/delay graphs, captures or persists the sets, evaluates a
 > candidate, or advances the lifecycle.
 
@@ -1026,6 +1031,10 @@ rollback outcome bound to that same operation, mutation, and observed applied
 graph. A failed, restored, attempted, or unknown mutation cannot mint the
 positive receipt.
 
+The admitted-capture, post-apply-target, and eligibility-receipt containers are
+schema version 2. There is no schema-v1 migration because no production issuer
+or persisted receipt exists yet; version 1 is rejected rather than guessed.
+
 The Wave 1 transition and receipt values remain pure contracts. Wave 3 now
 persists the lifecycle's exact current-run identity in
 `active_speaker_commissioning_run.json` and projects it as the
@@ -1318,8 +1327,9 @@ As of 2026-07-14, JTS has much of the substrate but not the full product:
   nine-state lifecycle and exact positive Room-eligibility receipt. Active now
   also owns a strict pure group-by-region evidence plan/set contract: it keeps
   every three-way region separate, binds each set to an immutable durable
-  attempt and exact graph/protection context, and refuses capture/admission
-  replay across normal, reverse, and delay roles. A new
+  typed attempt and exact graph/protection/geometry context, requires one
+  globally unique region set per plan target, and refuses capture/admission
+  replay across normal, reverse, delay, and region roles. A new
   bounded, atomically persisted run store now binds a fresh bundle-backed
   comparison to exact session/run/owner-generation identity, attempt slots, and
   a hash-chained transition journal. Correction-web claims the owner at startup
@@ -1506,7 +1516,8 @@ liveness, permanent historical refusal, the reachable isolated-driver
 Shared-admission/playback adapter and bounded writer transaction,
 summed pre-audio refusal, durable bundle-backed commissioning-run identity,
 startup owner-generation claim, fail-closed crossover status, strict pure
-group-by-region evidence sets, receipt one-shot generation/playback roles,
+group-by-region evidence sets with typed run/attempt and geometry authority,
+complete-plan replay guards, receipt schema-v2 one-shot roles,
 and Room's temporary passive-only admission boundary checked against the current
 implementation and cited measurement literature; no live audio, DSP mutation,
 or hardware behavior was changed or revalidated.)

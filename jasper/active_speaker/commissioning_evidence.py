@@ -29,8 +29,7 @@ from jasper.audio_measurement.evidence_identity import (
 from jasper.audio_measurement.admitted_playback import GeneratedExcitationWav
 from jasper.audio_measurement.excitation_admission import ExcitationAdmission
 from jasper.audio_measurement.excitation_artifacts import (
-    GENERATION_PATH_PREFIX,
-    PLAYBACK_PATH_PREFIX,
+    admission_artifact_relative_path,
     canonical_admission_bytes,
 )
 from jasper.audio_measurement.null_walk import (
@@ -42,6 +41,11 @@ from jasper.output_topology import OutputTopology
 
 from .baseline_profile import topology_config_fingerprint
 from .bundles import BUNDLE_KIND
+from .commissioning_run import (
+    CommissioningAttemptHandle,
+    CommissioningRunError,
+    CommissioningRunHandle,
+)
 from .profile import (
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
@@ -103,18 +107,21 @@ def _positive_int(value: Any, *, field_name: str) -> int:
     return value
 
 
-def _non_negative_int(value: Any, *, field_name: str) -> int:
-    if type(value) is not int or value < 0:
-        raise CommissioningEvidenceError(f"{field_name} must be a non-negative integer")
-    return value
-
-
 def _finite_positive(value: Any, *, field_name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise CommissioningEvidenceError(f"{field_name} must be a finite number")
     result = float(value)
     if not math.isfinite(result) or result <= 0.0:
         raise CommissioningEvidenceError(f"{field_name} must be positive and finite")
+    return result
+
+
+def _finite(value: Any, *, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise CommissioningEvidenceError(f"{field_name} must be a finite number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise CommissioningEvidenceError(f"{field_name} must be finite")
     return result
 
 
@@ -164,33 +171,85 @@ def _capture_from_mapping(raw: Any) -> CaptureIdentity:
         raise CommissioningEvidenceError(str(exc)) from exc
 
 
+def _run_handle_to_dict(value: CommissioningRunHandle) -> dict[str, Any]:
+    return {
+        "session_id": value.session_id,
+        "session_fingerprint": value.session_fingerprint,
+        "run_id": value.run_id,
+        "owner_id": value.owner_id,
+        "owner_generation": value.owner_generation,
+    }
+
+
+def _run_handle_from_mapping(raw: Any) -> CommissioningRunHandle:
+    fields = {
+        "session_id",
+        "session_fingerprint",
+        "run_id",
+        "owner_id",
+        "owner_generation",
+    }
+    if not isinstance(raw, Mapping) or set(raw) != fields:
+        raise CommissioningEvidenceError("commissioning run handle fields are invalid")
+    try:
+        return CommissioningRunHandle(**{name: raw[name] for name in fields})
+    except (CommissioningRunError, TypeError) as exc:
+        raise CommissioningEvidenceError(str(exc)) from exc
+
+
+def _attempt_handle_to_dict(value: CommissioningAttemptHandle) -> dict[str, Any]:
+    return {
+        "run": _run_handle_to_dict(value.run),
+        "attempt_id": value.attempt_id,
+        "attempt_number": value.attempt_number,
+        "target_id": value.target_id,
+        "target_fingerprint": value.target_fingerprint,
+    }
+
+
+def _attempt_handle_from_mapping(raw: Any) -> CommissioningAttemptHandle:
+    fields = {
+        "run",
+        "attempt_id",
+        "attempt_number",
+        "target_id",
+        "target_fingerprint",
+    }
+    if not isinstance(raw, Mapping) or set(raw) != fields:
+        raise CommissioningEvidenceError(
+            "commissioning attempt handle fields are invalid"
+        )
+    try:
+        return CommissioningAttemptHandle(
+            run=_run_handle_from_mapping(raw["run"]),
+            attempt_id=raw["attempt_id"],
+            attempt_number=raw["attempt_number"],
+            target_id=raw["target_id"],
+            target_fingerprint=raw["target_fingerprint"],
+        )
+    except (CommissioningRunError, TypeError) as exc:
+        raise CommissioningEvidenceError(str(exc)) from exc
+
+
 @dataclass(frozen=True, slots=True)
 class CommissioningEvidenceAuthority:
     """Exact run and immutable environment bound into every evidence value."""
 
-    run_id: str
-    owner_generation: int
+    run: CommissioningRunHandle
     topology_id: str
     topology_fingerprint: str
     protected_safety_profile_fingerprint: str
     comparison_set_fingerprint: str
-    commissioning_session_id: str
     threshold_profile_fingerprint: str
     context_fingerprint: str
     expected_geometry_id: str = REFERENCE_AXIS_GEOMETRY_ID
     fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
-        for name in ("run_id", "topology_id", "commissioning_session_id"):
-            object.__setattr__(
-                self,
-                name,
-                _identifier(getattr(self, name), field_name=name),
-            )
+        if not isinstance(self.run, CommissioningRunHandle):
+            raise CommissioningEvidenceError("run must be CommissioningRunHandle")
         object.__setattr__(
-            self,
-            "owner_generation",
-            _positive_int(self.owner_generation, field_name="owner_generation"),
+            self, "topology_id", _identifier(self.topology_id, field_name="topology_id")
         )
         for name in (
             "topology_fingerprint",
@@ -204,25 +263,39 @@ class CommissioningEvidenceAuthority:
                 name,
                 _sha256(getattr(self, name), field_name=name),
             )
+        if self.comparison_set_fingerprint != self.run.session_fingerprint:
+            raise CommissioningEvidenceError(
+                "comparison set must equal the durable run session fingerprint"
+            )
         if self.expected_geometry_id != REFERENCE_AXIS_GEOMETRY_ID:
             raise CommissioningEvidenceError(
                 "region evidence authority requires reference_axis geometry"
             )
         object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
 
+    @property
+    def run_id(self) -> str:
+        return self.run.run_id
+
+    @property
+    def owner_generation(self) -> int:
+        return self.run.owner_generation
+
+    @property
+    def commissioning_session_id(self) -> str:
+        return self.run.session_id
+
     def _core(self) -> dict[str, Any]:
         return {
             "schema_version": 1,
             "kind": "jts_active_commissioning_evidence_authority",
-            "run_id": self.run_id,
-            "owner_generation": self.owner_generation,
+            "run": _run_handle_to_dict(self.run),
             "topology_id": self.topology_id,
             "topology_fingerprint": self.topology_fingerprint,
             "protected_safety_profile_fingerprint": (
                 self.protected_safety_profile_fingerprint
             ),
             "comparison_set_fingerprint": self.comparison_set_fingerprint,
-            "commissioning_session_id": self.commissioning_session_id,
             "threshold_profile_fingerprint": self.threshold_profile_fingerprint,
             "context_fingerprint": self.context_fingerprint,
             "expected_geometry_id": self.expected_geometry_id,
@@ -238,13 +311,11 @@ class CommissioningEvidenceAuthority:
             kind="jts_active_commissioning_evidence_authority",
             fields=frozenset(
                 {
-                    "run_id",
-                    "owner_generation",
+                    "run",
                     "topology_id",
                     "topology_fingerprint",
                     "protected_safety_profile_fingerprint",
                     "comparison_set_fingerprint",
-                    "commissioning_session_id",
                     "threshold_profile_fingerprint",
                     "context_fingerprint",
                     "expected_geometry_id",
@@ -252,15 +323,13 @@ class CommissioningEvidenceAuthority:
             ),
         )
         result = cls(
-            run_id=value["run_id"],
-            owner_generation=value["owner_generation"],
+            run=_run_handle_from_mapping(value["run"]),
             topology_id=value["topology_id"],
             topology_fingerprint=value["topology_fingerprint"],
             protected_safety_profile_fingerprint=value[
                 "protected_safety_profile_fingerprint"
             ],
             comparison_set_fingerprint=value["comparison_set_fingerprint"],
-            commissioning_session_id=value["commissioning_session_id"],
             threshold_profile_fingerprint=value["threshold_profile_fingerprint"],
             context_fingerprint=value["context_fingerprint"],
             expected_geometry_id=value["expected_geometry_id"],
@@ -363,14 +432,18 @@ class RegionEvidenceTarget:
             return self.normal_target_fingerprint
         if evidence_kind == "reverse":
             return self.reverse_target_fingerprint
-        return self.delay_target_base_fingerprint
+        if evidence_kind == "delay_null":
+            return self.delay_target_base_fingerprint
+        raise CommissioningEvidenceError("target evidence_kind is unsupported")
 
     def context_base_fingerprint_for(self, evidence_kind: EvidenceKind) -> str:
         if evidence_kind == "normal":
             return self.normal_context_base_fingerprint
         if evidence_kind == "reverse":
             return self.reverse_context_base_fingerprint
-        return self.delay_context_base_fingerprint
+        if evidence_kind == "delay_null":
+            return self.delay_context_base_fingerprint
+        raise CommissioningEvidenceError("context evidence_kind is unsupported")
 
     def _core(self) -> dict[str, Any]:
         return {
@@ -526,11 +599,9 @@ def derive_region_evidence_plan(
     preset: ActiveSpeakerPreset,
     topology: OutputTopology,
     *,
-    run_id: str,
-    owner_generation: int,
+    run: CommissioningRunHandle,
     protected_safety_profile_fingerprint: str,
     comparison_set_fingerprint: str,
-    commissioning_session_id: str,
     threshold_profile_fingerprint: str,
     context_fingerprint: str,
 ) -> RegionEvidencePlan:
@@ -540,6 +611,8 @@ def derive_region_evidence_plan(
         raise CommissioningEvidenceError("preset must be ActiveSpeakerPreset")
     if not isinstance(topology, OutputTopology):
         raise CommissioningEvidenceError("topology must be OutputTopology")
+    if not isinstance(run, CommissioningRunHandle):
+        raise CommissioningEvidenceError("run must be CommissioningRunHandle")
     try:
         preset.validate()
     except ActiveSpeakerConfigError as exc:
@@ -550,13 +623,11 @@ def derive_region_evidence_plan(
         )
     topology_fingerprint = topology_config_fingerprint(topology)
     authority = CommissioningEvidenceAuthority(
-        run_id=run_id,
-        owner_generation=owner_generation,
+        run=run,
         topology_id=topology.topology_id,
         topology_fingerprint=topology_fingerprint,
         protected_safety_profile_fingerprint=protected_safety_profile_fingerprint,
         comparison_set_fingerprint=comparison_set_fingerprint,
-        commissioning_session_id=commissioning_session_id,
         threshold_profile_fingerprint=threshold_profile_fingerprint,
         context_fingerprint=context_fingerprint,
     )
@@ -671,7 +742,7 @@ def _assert_authority_artifact(
 def capture_attempt_context_fingerprint(
     authority: CommissioningEvidenceAuthority,
     *,
-    attempt_id: str,
+    attempt: CommissioningAttemptHandle,
     evidence_kind: EvidenceKind,
     target_fingerprint: str,
     context_base_fingerprint: str,
@@ -685,7 +756,12 @@ def capture_attempt_context_fingerprint(
         raise CommissioningEvidenceError(
             "authority must be CommissioningEvidenceAuthority"
         )
-    attempt = _identifier(attempt_id, field_name="attempt_id")
+    if not isinstance(attempt, CommissioningAttemptHandle):
+        raise CommissioningEvidenceError("attempt must be CommissioningAttemptHandle")
+    if attempt.run != authority.run:
+        raise CommissioningEvidenceError(
+            "attempt does not belong to the exact durable run authority"
+        )
     if evidence_kind not in _MEASUREMENT_KIND_BY_EVIDENCE:
         raise CommissioningEvidenceError("capture evidence_kind is unsupported")
     target = _sha256(target_fingerprint, field_name="target_fingerprint")
@@ -707,7 +783,7 @@ def capture_attempt_context_fingerprint(
             "schema_version": 1,
             "kind": "jts_active_capture_attempt_context",
             "authority_fingerprint": authority.fingerprint,
-            "attempt_id": attempt,
+            "attempt": _attempt_handle_to_dict(attempt),
             "evidence_kind": evidence_kind,
             "target_fingerprint": target,
             "context_base_fingerprint": context_base,
@@ -718,13 +794,25 @@ def capture_attempt_context_fingerprint(
     )
 
 
+def evidence_attempt_target_id(
+    evidence_kind: EvidenceKind,
+    target_fingerprint: str,
+) -> str:
+    """Return the bounded durable reservation id for one evidence target."""
+
+    if evidence_kind not in _MEASUREMENT_KIND_BY_EVIDENCE:
+        raise CommissioningEvidenceError("attempt evidence_kind is unsupported")
+    target = _sha256(target_fingerprint, field_name="target_fingerprint")
+    return f"active:{evidence_kind}:{target}"
+
+
 @dataclass(frozen=True, slots=True)
 class AdmittedRegionCapture:
     """One fresh, one-shot, graph-confirmed region capture."""
 
     authority: CommissioningEvidenceAuthority
     plan_fingerprint: str
-    attempt_id: str
+    attempt: CommissioningAttemptHandle
     speaker_group_id: str
     region_id: str
     evidence_kind: EvidenceKind
@@ -754,17 +842,29 @@ class AdmittedRegionCapture:
             "plan_fingerprint",
             _sha256(self.plan_fingerprint, field_name="plan_fingerprint"),
         )
-        for name in ("speaker_group_id", "region_id", "admission_id"):
+        for name in ("speaker_group_id", "region_id"):
             object.__setattr__(
                 self,
                 name,
                 _identifier(getattr(self, name), field_name=name),
             )
-        object.__setattr__(
-            self,
-            "attempt_id",
-            _identifier(self.attempt_id, field_name="attempt_id"),
-        )
+        try:
+            expected_generation_path = admission_artifact_relative_path(
+                "generation", self.admission_id
+            )
+            expected_playback_path = admission_artifact_relative_path(
+                "playback", self.admission_id
+            )
+        except ValueError as exc:
+            raise CommissioningEvidenceError(str(exc)) from exc
+        if not isinstance(self.attempt, CommissioningAttemptHandle):
+            raise CommissioningEvidenceError(
+                "capture attempt must be CommissioningAttemptHandle"
+            )
+        if self.attempt.run != self.authority.run:
+            raise CommissioningEvidenceError(
+                "capture attempt does not belong to the exact durable run authority"
+            )
         if self.evidence_kind not in _MEASUREMENT_KIND_BY_EVIDENCE:
             raise CommissioningEvidenceError("capture evidence_kind is unsupported")
         for name in (
@@ -781,9 +881,20 @@ class AdmittedRegionCapture:
                 name,
                 _sha256(getattr(self, name), field_name=name),
             )
+        if (
+            self.attempt.target_fingerprint != self.target_fingerprint
+            or self.attempt.target_id
+            != evidence_attempt_target_id(
+                self.evidence_kind,
+                self.target_fingerprint,
+            )
+        ):
+            raise CommissioningEvidenceError(
+                "capture does not equal its reserved attempt target"
+            )
         expected_context = capture_attempt_context_fingerprint(
             self.authority,
-            attempt_id=self.attempt_id,
+            attempt=self.attempt,
             evidence_kind=self.evidence_kind,
             target_fingerprint=self.target_fingerprint,
             context_base_fingerprint=self.context_base_fingerprint,
@@ -837,8 +948,6 @@ class AdmittedRegionCapture:
             raise CommissioningEvidenceError(
                 "capture consumer, target, context, geometry, or placement is stale"
             )
-        expected_generation_path = f"{GENERATION_PATH_PREFIX}/{self.admission_id}.json"
-        expected_playback_path = f"{PLAYBACK_PATH_PREFIX}/{self.admission_id}.json"
         if self.generation_artifact.relative_path != expected_generation_path:
             raise CommissioningEvidenceError(
                 "generation artifact does not occupy its canonical admission role"
@@ -931,13 +1040,17 @@ class AdmittedRegionCapture:
     def canonical_key(self) -> tuple[str, str]:
         return self.capture.capture_id, self.admission_id
 
+    @property
+    def attempt_id(self) -> str:
+        return self.attempt.attempt_id
+
     def _core(self) -> dict[str, Any]:
         return {
             "schema_version": 1,
             "kind": "jts_active_admitted_region_capture",
             "authority": self.authority.to_dict(),
             "plan_fingerprint": self.plan_fingerprint,
-            "attempt_id": self.attempt_id,
+            "attempt": _attempt_handle_to_dict(self.attempt),
             "speaker_group_id": self.speaker_group_id,
             "region_id": self.region_id,
             "evidence_kind": self.evidence_kind,
@@ -970,7 +1083,7 @@ class AdmittedRegionCapture:
             {
                 "authority",
                 "plan_fingerprint",
-                "attempt_id",
+                "attempt",
                 "speaker_group_id",
                 "region_id",
                 "evidence_kind",
@@ -1011,7 +1124,7 @@ class AdmittedRegionCapture:
         result = cls(
             authority=CommissioningEvidenceAuthority.from_mapping(value["authority"]),
             plan_fingerprint=value["plan_fingerprint"],
-            attempt_id=value["attempt_id"],
+            attempt=_attempt_handle_from_mapping(value["attempt"]),
             speaker_group_id=value["speaker_group_id"],
             region_id=value["region_id"],
             evidence_kind=value["evidence_kind"],
@@ -1058,7 +1171,20 @@ def _assert_fresh_capture_set(
         "capture ids": [item.capture.capture_id for item in captures],
         "capture identities": [item.capture.fingerprint for item in captures],
         "raw artifacts": [item.capture.raw_artifact.fingerprint for item in captures],
+        "raw paths": [item.capture.raw_artifact.relative_path for item in captures],
         "raw bytes": [item.capture.raw_artifact.sha256 for item in captures],
+        "analysis-input artifacts": [
+            item.capture.analysis_input_artifact.fingerprint for item in captures
+        ],
+        "analysis-input paths": [
+            item.capture.analysis_input_artifact.relative_path for item in captures
+        ],
+        "quality artifacts": [
+            item.capture.quality_artifact.fingerprint for item in captures
+        ],
+        "quality paths": [
+            item.capture.quality_artifact.relative_path for item in captures
+        ],
         "admission ids": [item.admission_id for item in captures],
         "generation artifacts": [
             item.generation_artifact.fingerprint for item in captures
@@ -1070,9 +1196,33 @@ def _assert_fresh_capture_set(
         "playback paths": [item.playback_artifact.relative_path for item in captures],
         "stimulus artifacts": [item.stimulus.artifact.fingerprint for item in captures],
         "stimulus paths": [item.stimulus.artifact.relative_path for item in captures],
+        "artifact roles": [
+            artifact.fingerprint
+            for item in captures
+            for artifact in (
+                item.capture.raw_artifact,
+                item.capture.analysis_input_artifact,
+                item.capture.quality_artifact,
+                item.playback_artifact,
+                item.stimulus.artifact,
+                item.generation_artifact,
+            )
+        ],
+        "artifact role paths": [
+            artifact.relative_path
+            for item in captures
+            for artifact in (
+                item.capture.raw_artifact,
+                item.capture.analysis_input_artifact,
+                item.capture.quality_artifact,
+                item.playback_artifact,
+                item.stimulus.artifact,
+                item.generation_artifact,
+            )
+        ],
     }
     for label, values in unique_fields.items():
-        if len(set(values)) != expected_count:
+        if len(set(values)) != len(values):
             raise CommissioningEvidenceError(
                 f"fresh one-shot evidence requires unique {label}"
             )
@@ -1084,7 +1234,7 @@ class StationaryRegionEvidence:
 
     authority: CommissioningEvidenceAuthority
     plan_fingerprint: str
-    attempt_id: str
+    attempt: CommissioningAttemptHandle
     speaker_group_id: str
     region_id: str
     evidence_kind: Literal["normal", "reverse"]
@@ -1118,14 +1268,28 @@ class StationaryRegionEvidence:
                 name,
                 _identifier(getattr(self, name), field_name=name),
             )
-        object.__setattr__(
-            self,
-            "attempt_id",
-            _identifier(self.attempt_id, field_name="attempt_id"),
-        )
+        if not isinstance(self.attempt, CommissioningAttemptHandle):
+            raise CommissioningEvidenceError(
+                "stationary attempt must be CommissioningAttemptHandle"
+            )
+        if self.attempt.run != self.authority.run:
+            raise CommissioningEvidenceError(
+                "stationary attempt does not belong to the exact durable run authority"
+            )
         if self.evidence_kind not in {"normal", "reverse"}:
             raise CommissioningEvidenceError(
                 "stationary evidence must be normal or reverse"
+            )
+        expected_attempt_target_id = evidence_attempt_target_id(
+            self.evidence_kind,
+            self.target_fingerprint,
+        )
+        if (
+            self.attempt.target_id != expected_attempt_target_id
+            or self.attempt.target_fingerprint != self.target_fingerprint
+        ):
+            raise CommissioningEvidenceError(
+                "stationary evidence does not equal its reserved attempt target"
             )
         _assert_fresh_capture_set(
             self.captures,
@@ -1134,7 +1298,7 @@ class StationaryRegionEvidence:
         if any(
             capture.authority != self.authority
             or capture.plan_fingerprint != self.plan_fingerprint
-            or capture.attempt_id != self.attempt_id
+            or capture.attempt != self.attempt
             or capture.speaker_group_id != self.speaker_group_id
             or capture.region_id != self.region_id
             or capture.evidence_kind != self.evidence_kind
@@ -1149,13 +1313,17 @@ class StationaryRegionEvidence:
             )
         object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
 
+    @property
+    def attempt_id(self) -> str:
+        return self.attempt.attempt_id
+
     def _core(self) -> dict[str, Any]:
         return {
             "schema_version": 1,
             "kind": "jts_active_stationary_region_evidence",
             "authority": self.authority.to_dict(),
             "plan_fingerprint": self.plan_fingerprint,
-            "attempt_id": self.attempt_id,
+            "attempt": _attempt_handle_to_dict(self.attempt),
             "speaker_group_id": self.speaker_group_id,
             "region_id": self.region_id,
             "evidence_kind": self.evidence_kind,
@@ -1176,7 +1344,7 @@ class StationaryRegionEvidence:
             {
                 "plan_fingerprint",
                 "authority",
-                "attempt_id",
+                "attempt",
                 "speaker_group_id",
                 "region_id",
                 "evidence_kind",
@@ -1206,7 +1374,7 @@ class StationaryRegionEvidence:
         result = cls(
             authority=CommissioningEvidenceAuthority.from_mapping(value["authority"]),
             plan_fingerprint=value["plan_fingerprint"],
-            attempt_id=value["attempt_id"],
+            attempt=_attempt_handle_from_mapping(value["attempt"]),
             speaker_group_id=value["speaker_group_id"],
             region_id=value["region_id"],
             evidence_kind=value["evidence_kind"],
@@ -1278,7 +1446,7 @@ class DelayPointEvidence:
 
     authority: CommissioningEvidenceAuthority
     plan_fingerprint: str
-    attempt_id: str
+    attempt: CommissioningAttemptHandle
     speaker_group_id: str
     region_id: str
     relative_delay_us: float
@@ -1312,11 +1480,14 @@ class DelayPointEvidence:
                 name,
                 _identifier(getattr(self, name), field_name=name),
             )
-        object.__setattr__(
-            self,
-            "attempt_id",
-            _identifier(self.attempt_id, field_name="attempt_id"),
-        )
+        if not isinstance(self.attempt, CommissioningAttemptHandle):
+            raise CommissioningEvidenceError(
+                "delay point attempt must be CommissioningAttemptHandle"
+            )
+        if self.attempt.run != self.authority.run:
+            raise CommissioningEvidenceError(
+                "delay point attempt does not belong to the exact durable run authority"
+            )
         if isinstance(self.relative_delay_us, bool) or not isinstance(
             self.relative_delay_us, (int, float)
         ):
@@ -1325,11 +1496,22 @@ class DelayPointEvidence:
         if not math.isfinite(relative_delay):
             raise CommissioningEvidenceError("relative_delay_us must be finite")
         object.__setattr__(self, "relative_delay_us", relative_delay)
+        expected_attempt_target_id = evidence_attempt_target_id(
+            "delay_null",
+            self.target_fingerprint,
+        )
+        if (
+            self.attempt.target_id != expected_attempt_target_id
+            or self.attempt.target_fingerprint != self.target_fingerprint
+        ):
+            raise CommissioningEvidenceError(
+                "delay point evidence does not equal its reserved attempt target"
+            )
         _assert_fresh_capture_set(self.captures, expected_count=MIN_CAPTURE_COUNT)
         if any(
             capture.authority != self.authority
             or capture.plan_fingerprint != self.plan_fingerprint
-            or capture.attempt_id != self.attempt_id
+            or capture.attempt != self.attempt
             or capture.speaker_group_id != self.speaker_group_id
             or capture.region_id != self.region_id
             or capture.evidence_kind != "delay_null"
@@ -1345,6 +1527,10 @@ class DelayPointEvidence:
         object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
 
     @property
+    def attempt_id(self) -> str:
+        return self.attempt.attempt_id
+
+    @property
     def canonical_key(self) -> float:
         return self.relative_delay_us
 
@@ -1354,7 +1540,7 @@ class DelayPointEvidence:
             "kind": "jts_active_delay_point_evidence",
             "authority": self.authority.to_dict(),
             "plan_fingerprint": self.plan_fingerprint,
-            "attempt_id": self.attempt_id,
+            "attempt": _attempt_handle_to_dict(self.attempt),
             "speaker_group_id": self.speaker_group_id,
             "region_id": self.region_id,
             "relative_delay_us": self.relative_delay_us,
@@ -1375,7 +1561,7 @@ class DelayPointEvidence:
             {
                 "plan_fingerprint",
                 "authority",
-                "attempt_id",
+                "attempt",
                 "speaker_group_id",
                 "region_id",
                 "relative_delay_us",
@@ -1405,7 +1591,7 @@ class DelayPointEvidence:
         result = cls(
             authority=CommissioningEvidenceAuthority.from_mapping(value["authority"]),
             plan_fingerprint=value["plan_fingerprint"],
-            attempt_id=value["attempt_id"],
+            attempt=_attempt_handle_from_mapping(value["attempt"]),
             speaker_group_id=value["speaker_group_id"],
             region_id=value["region_id"],
             relative_delay_us=value["relative_delay_us"],
@@ -1458,6 +1644,98 @@ def _spec_from_mapping(raw: Any) -> NullWalkSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class RegionGeometryAttestation:
+    """Explicit signed acoustic-center provenance for one exact region target."""
+
+    speaker_group_id: str
+    region_id: str
+    region_target_fingerprint: str
+    signed_geometry_seed_us: float
+    provenance_kind: Literal["operator_attested"]
+    provenance_id: str
+    attestation_artifact: ArtifactIdentity
+    fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        for name in ("speaker_group_id", "region_id", "provenance_id"):
+            object.__setattr__(
+                self,
+                name,
+                _identifier(getattr(self, name), field_name=name),
+            )
+        object.__setattr__(
+            self,
+            "region_target_fingerprint",
+            _sha256(
+                self.region_target_fingerprint,
+                field_name="region_target_fingerprint",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "signed_geometry_seed_us",
+            _finite(
+                self.signed_geometry_seed_us,
+                field_name="signed_geometry_seed_us",
+            ),
+        )
+        if self.provenance_kind != "operator_attested":
+            raise CommissioningEvidenceError(
+                "region geometry requires explicit operator attestation"
+            )
+        if not isinstance(self.attestation_artifact, ArtifactIdentity):
+            raise CommissioningEvidenceError(
+                "geometry attestation artifact must be ArtifactIdentity"
+            )
+        object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
+
+    def _core(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "kind": "jts_active_region_geometry_attestation",
+            "speaker_group_id": self.speaker_group_id,
+            "region_id": self.region_id,
+            "region_target_fingerprint": self.region_target_fingerprint,
+            "signed_geometry_seed_us": self.signed_geometry_seed_us,
+            "provenance_kind": self.provenance_kind,
+            "provenance_id": self.provenance_id,
+            "attestation_artifact": self.attestation_artifact.to_dict(),
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._core(), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "RegionGeometryAttestation":
+        value = _strict_object(
+            raw,
+            kind="jts_active_region_geometry_attestation",
+            fields=frozenset(
+                {
+                    "speaker_group_id",
+                    "region_id",
+                    "region_target_fingerprint",
+                    "signed_geometry_seed_us",
+                    "provenance_kind",
+                    "provenance_id",
+                    "attestation_artifact",
+                }
+            ),
+        )
+        result = cls(
+            speaker_group_id=value["speaker_group_id"],
+            region_id=value["region_id"],
+            region_target_fingerprint=value["region_target_fingerprint"],
+            signed_geometry_seed_us=value["signed_geometry_seed_us"],
+            provenance_kind=value["provenance_kind"],
+            provenance_id=value["provenance_id"],
+            attestation_artifact=_artifact_from_mapping(value["attestation_artifact"]),
+        )
+        _declared_fingerprint(value, result.fingerprint)
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class DelayWalkEvidence:
     """A complete shared null-walk grid; this type makes no winning-delay claim."""
 
@@ -1467,6 +1745,7 @@ class DelayWalkEvidence:
     region_id: str
     algorithm_id: str
     algorithm_version: str
+    geometry_attestation: RegionGeometryAttestation
     spec: NullWalkSpec
     placement_fingerprint: str
     points: tuple[DelayPointEvidence, ...]
@@ -1495,8 +1774,33 @@ class DelayWalkEvidence:
             raise CommissioningEvidenceError(
                 "delay walk algorithm version is unsupported"
             )
+        if not isinstance(self.geometry_attestation, RegionGeometryAttestation):
+            raise CommissioningEvidenceError(
+                "delay walk requires explicit region geometry attestation"
+            )
+        if (
+            self.geometry_attestation.speaker_group_id != self.speaker_group_id
+            or self.geometry_attestation.region_id != self.region_id
+        ):
+            raise CommissioningEvidenceError(
+                "geometry attestation does not belong to this delay-walk region"
+            )
+        _assert_authority_artifact(
+            self.geometry_attestation.attestation_artifact,
+            self.authority,
+            field_name="geometry_attestation.attestation_artifact",
+        )
         if not isinstance(self.spec, NullWalkSpec):
             raise CommissioningEvidenceError("delay walk spec must be NullWalkSpec")
+        if not math.isclose(
+            self.spec.geometry_seed_us,
+            self.geometry_attestation.signed_geometry_seed_us,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        ):
+            raise CommissioningEvidenceError(
+                "delay walk spec is not bound to its signed geometry attestation"
+            )
         try:
             candidates = self.spec.candidate_delays_us()
         except NullWalkError as exc:
@@ -1529,7 +1833,10 @@ class DelayWalkEvidence:
                 "delay walk points do not share one exact plan and placement"
             )
         attempts = [point.attempt_id for point in self.points]
-        if len(set(attempts)) != len(attempts):
+        attempt_numbers = [point.attempt.attempt_number for point in self.points]
+        if len(set(attempts)) != len(attempts) or len(set(attempt_numbers)) != len(
+            attempt_numbers
+        ):
             raise CommissioningEvidenceError(
                 "every delay coordinate requires a distinct durable attempt"
             )
@@ -1567,10 +1874,32 @@ class DelayWalkEvidence:
         if (
             self.repeatability_artifact.fingerprint in capture_artifact_fingerprints
             or self.repeatability_artifact.relative_path in capture_artifact_paths
+            or self.geometry_attestation.attestation_artifact.fingerprint
+            in capture_artifact_fingerprints
+            or self.geometry_attestation.attestation_artifact.relative_path
+            in capture_artifact_paths
+            or self.repeatability_artifact.fingerprint
+            == self.geometry_attestation.attestation_artifact.fingerprint
+            or self.repeatability_artifact.relative_path
+            == self.geometry_attestation.attestation_artifact.relative_path
         ):
             raise CommissioningEvidenceError(
-                "delay repeatability artifact must have a distinct artifact role"
+                "delay metadata artifacts must have distinct artifact roles"
             )
+        accumulated: dict[str, set[str]] | None = None
+        for point in self.points:
+            point_ids = _capture_role_identities(point.captures)
+            if accumulated is not None and any(
+                accumulated[key] & point_ids[key] for key in accumulated
+            ):
+                raise CommissioningEvidenceError(
+                    "every delay point requires globally fresh capture roles"
+                )
+            if accumulated is None:
+                accumulated = point_ids
+            else:
+                for key in accumulated:
+                    accumulated[key].update(point_ids[key])
         object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
 
     def _core(self) -> dict[str, Any]:
@@ -1583,6 +1912,7 @@ class DelayWalkEvidence:
             "region_id": self.region_id,
             "algorithm_id": self.algorithm_id,
             "algorithm_version": self.algorithm_version,
+            "geometry_attestation": self.geometry_attestation.to_dict(),
             "spec": self.spec.to_dict(),
             "placement_fingerprint": self.placement_fingerprint,
             "points": [point.to_dict() for point in self.points],
@@ -1605,6 +1935,7 @@ class DelayWalkEvidence:
                     "region_id",
                     "algorithm_id",
                     "algorithm_version",
+                    "geometry_attestation",
                     "spec",
                     "placement_fingerprint",
                     "points",
@@ -1622,6 +1953,9 @@ class DelayWalkEvidence:
             region_id=value["region_id"],
             algorithm_id=value["algorithm_id"],
             algorithm_version=value["algorithm_version"],
+            geometry_attestation=RegionGeometryAttestation.from_mapping(
+                value["geometry_attestation"]
+            ),
             spec=_spec_from_mapping(value["spec"]),
             placement_fingerprint=value["placement_fingerprint"],
             points=tuple(DelayPointEvidence.from_mapping(item) for item in raw_points),
@@ -1638,10 +1972,28 @@ def _capture_role_identities(
 ) -> dict[str, set[str]]:
     return {
         "capture_ids": {capture.capture.capture_id for capture in captures},
+        "capture_identities": {capture.capture.fingerprint for capture in captures},
         "raw_artifacts": {
             capture.capture.raw_artifact.fingerprint for capture in captures
         },
+        "raw_paths": {
+            capture.capture.raw_artifact.relative_path for capture in captures
+        },
         "raw_bytes": {capture.capture.raw_artifact.sha256 for capture in captures},
+        "analysis_input_artifacts": {
+            capture.capture.analysis_input_artifact.fingerprint for capture in captures
+        },
+        "analysis_input_paths": {
+            capture.capture.analysis_input_artifact.relative_path
+            for capture in captures
+        },
+        "quality_artifacts": {
+            capture.capture.quality_artifact.fingerprint for capture in captures
+        },
+        "quality_paths": {
+            capture.capture.quality_artifact.relative_path for capture in captures
+        },
+        "admission_ids": {capture.admission_id for capture in captures},
         "generation_artifacts": {
             capture.generation_artifact.fingerprint for capture in captures
         },
@@ -1659,6 +2011,30 @@ def _capture_role_identities(
         },
         "stimulus_paths": {
             capture.stimulus.artifact.relative_path for capture in captures
+        },
+        "all_artifact_roles": {
+            artifact.fingerprint
+            for capture in captures
+            for artifact in (
+                capture.capture.raw_artifact,
+                capture.capture.analysis_input_artifact,
+                capture.capture.quality_artifact,
+                capture.playback_artifact,
+                capture.stimulus.artifact,
+                capture.generation_artifact,
+            )
+        },
+        "all_artifact_paths": {
+            artifact.relative_path
+            for capture in captures
+            for artifact in (
+                capture.capture.raw_artifact,
+                capture.capture.analysis_input_artifact,
+                capture.capture.quality_artifact,
+                capture.playback_artifact,
+                capture.stimulus.artifact,
+                capture.generation_artifact,
+            )
         },
     }
 
@@ -1754,7 +2130,14 @@ class RegionCommissioningEvidence:
             self.reverse.attempt_id,
             *(point.attempt_id for point in self.delay_walk.points),
         ]
-        if len(set(attempts)) != len(attempts):
+        attempt_numbers = [
+            self.normal.attempt.attempt_number,
+            self.reverse.attempt.attempt_number,
+            *(point.attempt.attempt_number for point in self.delay_walk.points),
+        ]
+        if len(set(attempts)) != len(attempts) or len(set(attempt_numbers)) != len(
+            attempt_numbers
+        ):
             raise CommissioningEvidenceError(
                 "normal, reverse, and every delay point require distinct attempts"
             )
@@ -1769,6 +2152,13 @@ class RegionCommissioningEvidence:
         ):
             raise CommissioningEvidenceError(
                 "delay walk spec does not match the region electrical crossover"
+            )
+        if (
+            self.delay_walk.geometry_attestation.region_target_fingerprint
+            != self.target.fingerprint
+        ):
+            raise CommissioningEvidenceError(
+                "geometry attestation does not belong to the exact region target"
             )
         for point in self.delay_walk.points:
             expected_target = delay_point_target_fingerprint(
@@ -1804,6 +2194,57 @@ class RegionCommissioningEvidence:
                 )
             for key in accumulated:
                 accumulated[key].update(point_ids[key])
+        all_capture_artifacts = {
+            artifact.fingerprint
+            for capture in (
+                *self.normal.captures,
+                *self.reverse.captures,
+                *(
+                    capture
+                    for point in self.delay_walk.points
+                    for capture in point.captures
+                ),
+            )
+            for artifact in (
+                capture.capture.raw_artifact,
+                capture.capture.analysis_input_artifact,
+                capture.capture.quality_artifact,
+                capture.playback_artifact,
+                capture.stimulus.artifact,
+                capture.generation_artifact,
+            )
+        }
+        all_capture_paths = {
+            artifact.relative_path
+            for capture in (
+                *self.normal.captures,
+                *self.reverse.captures,
+                *(
+                    capture
+                    for point in self.delay_walk.points
+                    for capture in point.captures
+                ),
+            )
+            for artifact in (
+                capture.capture.raw_artifact,
+                capture.capture.analysis_input_artifact,
+                capture.capture.quality_artifact,
+                capture.playback_artifact,
+                capture.stimulus.artifact,
+                capture.generation_artifact,
+            )
+        }
+        for artifact in (
+            self.delay_walk.repeatability_artifact,
+            self.delay_walk.geometry_attestation.attestation_artifact,
+        ):
+            if (
+                artifact.fingerprint in all_capture_artifacts
+                or artifact.relative_path in all_capture_paths
+            ):
+                raise CommissioningEvidenceError(
+                    "region metadata and capture artifact roles must be distinct"
+                )
         object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
 
     def _core(self) -> dict[str, Any]:
@@ -1833,6 +2274,134 @@ class RegionCommissioningEvidence:
             normal=StationaryRegionEvidence.from_mapping(value["normal"]),
             reverse=StationaryRegionEvidence.from_mapping(value["reverse"]),
             delay_walk=DelayWalkEvidence.from_mapping(value["delay_walk"]),
+        )
+        _declared_fingerprint(value, result.fingerprint)
+        return result
+
+
+def _region_captures(
+    region: RegionCommissioningEvidence,
+) -> tuple[AdmittedRegionCapture, ...]:
+    return (
+        *region.normal.captures,
+        *region.reverse.captures,
+        *(capture for point in region.delay_walk.points for capture in point.captures),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CompleteCommissioningEvidence:
+    """Exactly one fresh evidence value for every target in an immutable plan."""
+
+    plan: RegionEvidencePlan
+    regions: tuple[RegionCommissioningEvidence, ...]
+    fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, RegionEvidencePlan):
+            raise CommissioningEvidenceError("complete evidence plan is invalid")
+        if type(self.regions) is not tuple or any(
+            not isinstance(item, RegionCommissioningEvidence) for item in self.regions
+        ):
+            raise CommissioningEvidenceError(
+                "complete evidence regions must be a tuple of region evidence"
+            )
+        if tuple(region.target for region in self.regions) != self.plan.targets:
+            raise CommissioningEvidenceError(
+                "complete evidence requires exactly one canonically ordered region per plan target"
+            )
+        if any(region.plan != self.plan for region in self.regions):
+            raise CommissioningEvidenceError(
+                "complete region evidence must retain the exact shared plan"
+            )
+
+        captures = tuple(
+            capture for region in self.regions for capture in _region_captures(region)
+        )
+        role_artifacts = [
+            artifact
+            for capture in captures
+            for artifact in (
+                capture.capture.raw_artifact,
+                capture.capture.analysis_input_artifact,
+                capture.capture.quality_artifact,
+                capture.playback_artifact,
+                capture.stimulus.artifact,
+                capture.generation_artifact,
+            )
+        ]
+        role_artifacts.extend(
+            artifact
+            for region in self.regions
+            for artifact in (
+                region.delay_walk.repeatability_artifact,
+                region.delay_walk.geometry_attestation.attestation_artifact,
+            )
+        )
+        if len({artifact.fingerprint for artifact in role_artifacts}) != len(
+            role_artifacts
+        ) or len({artifact.relative_path for artifact in role_artifacts}) != len(
+            role_artifacts
+        ):
+            raise CommissioningEvidenceError(
+                "complete evidence requires globally unique artifact roles and paths"
+            )
+        for label, values in (
+            ("capture ids", [capture.capture.capture_id for capture in captures]),
+            ("admission ids", [capture.admission_id for capture in captures]),
+            (
+                "raw bytes",
+                [capture.capture.raw_artifact.sha256 for capture in captures],
+            ),
+        ):
+            if len(set(values)) != len(values):
+                raise CommissioningEvidenceError(
+                    f"complete evidence requires globally unique {label}"
+                )
+
+        attempts = [
+            attempt
+            for region in self.regions
+            for attempt in (
+                region.normal.attempt,
+                region.reverse.attempt,
+                *(point.attempt for point in region.delay_walk.points),
+            )
+        ]
+        if len({attempt.attempt_id for attempt in attempts}) != len(attempts) or len(
+            {attempt.attempt_number for attempt in attempts}
+        ) != len(attempts):
+            raise CommissioningEvidenceError(
+                "complete evidence requires globally distinct durable attempts"
+            )
+        object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
+
+    def _core(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "kind": "jts_active_complete_commissioning_evidence",
+            "plan": self.plan.to_dict(),
+            "regions": [region.to_dict() for region in self.regions],
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._core(), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "CompleteCommissioningEvidence":
+        value = _strict_object(
+            raw,
+            kind="jts_active_complete_commissioning_evidence",
+            fields=frozenset({"plan", "regions"}),
+        )
+        raw_regions = value["regions"]
+        if type(raw_regions) is not list:
+            raise CommissioningEvidenceError("complete evidence regions must be a list")
+        result = cls(
+            plan=RegionEvidencePlan.from_mapping(value["plan"]),
+            regions=tuple(
+                RegionCommissioningEvidence.from_mapping(item) for item in raw_regions
+            ),
         )
         _declared_fingerprint(value, result.fingerprint)
         return result

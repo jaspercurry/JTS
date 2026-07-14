@@ -39,6 +39,7 @@ from jasper.audio_measurement.excitation_admission import ExcitationAdmission
 from jasper.audio_measurement.excitation_artifacts import (
     GENERATION_PATH_PREFIX,
     PLAYBACK_PATH_PREFIX,
+    admission_artifact_relative_path,
     canonical_admission_bytes,
 )
 from jasper.output_topology import OutputTopology, OutputTopologyError
@@ -47,7 +48,6 @@ from .bundles import BUNDLE_KIND
 from .measurement import active_summed_targets
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_ADMISSION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 POST_APPLY_CONSUMER_ID = "active_crossover"
 POST_APPLY_MEASUREMENT_KIND = "active_crossover_post_apply"
 REFERENCE_AXIS_GEOMETRY_ID = "reference_axis"
@@ -212,11 +212,12 @@ def _admission_id_from_role_path(
     field_name: str,
 ) -> str:
     path = PurePosixPath(artifact.relative_path)
-    if (
-        path.parent != PurePosixPath(role_prefix)
-        or path.suffix != ".json"
-        or _ADMISSION_ID_RE.fullmatch(path.stem) is None
-    ):
+    role = "generation" if role_prefix == GENERATION_PATH_PREFIX else "playback"
+    try:
+        expected_path = admission_artifact_relative_path(role, path.stem)
+    except ValueError as exc:
+        raise CommissioningReceiptError(str(exc)) from exc
+    if artifact.relative_path != expected_path:
         raise CommissioningReceiptError(
             f"{field_name} must use the canonical {PurePosixPath(role_prefix).name} path role"
         )
@@ -1289,7 +1290,7 @@ class PostApplyTargetVerification:
 
     def _core(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "jts_active_post_apply_target_verification",
             "speaker_group_id": self.speaker_group_id,
             "target_id": self.target_id,
@@ -1333,6 +1334,7 @@ class PostApplyTargetVerification:
                     "admitted_captures",
                 }
             ),
+            schema_version=2,
         )
         if (
             type(value["required_repeats"]) is not int
@@ -1480,6 +1482,31 @@ class CommissioningEligibilityReceipt:
             raise CommissioningReceiptError(
                 "capture admission safety profile must equal the applied candidate"
             )
+        admission_ids = [proof.admission_id for proof in all_admissions]
+        generation_artifacts = [proof.generation_artifact for proof in all_admissions]
+        playback_artifacts = [proof.playback_artifact for proof in all_admissions]
+        global_admission_roles = {
+            "admission ids": admission_ids,
+            "generation artifact identities": [
+                artifact.fingerprint for artifact in generation_artifacts
+            ],
+            "generation artifact paths": [
+                artifact.relative_path for artifact in generation_artifacts
+            ],
+            "playback artifact identities": [
+                artifact.fingerprint for artifact in playback_artifacts
+            ],
+            "playback artifact paths": [
+                artifact.relative_path for artifact in playback_artifacts
+            ],
+        }
+        if any(
+            len(set(values)) != len(values)
+            for values in global_admission_roles.values()
+        ):
+            raise CommissioningReceiptError(
+                "eligibility one-shot admission ids and role artifacts must be globally unique"
+            )
         capture_ids = [capture.capture_id for capture in all_captures]
         raw_artifacts = [capture.raw_artifact.fingerprint for capture in all_captures]
         raw_content_hashes = [capture.raw_artifact.sha256 for capture in all_captures]
@@ -1527,7 +1554,7 @@ class CommissioningEligibilityReceipt:
 
     def _core(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "jts_active_commissioning_eligibility_receipt",
             "target_plan": self.target_plan.to_dict(),
             "applied_candidate": self.applied_candidate.to_dict(),
@@ -1555,6 +1582,7 @@ class CommissioningEligibilityReceipt:
                     "rollback",
                 }
             ),
+            schema_version=2,
         )
         targets = value["post_apply_targets"]
         if type(targets) is not list:

@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -20,19 +22,27 @@ from jasper.active_speaker.commissioning_evidence import (
     DELAY_WALK_ALGORITHM_VERSION,
     AdmittedRegionCapture,
     CommissioningEvidenceError,
+    CompleteCommissioningEvidence,
     DelayPointEvidence,
     DelayWalkEvidence,
+    EvidenceKind,
     RegionCommissioningEvidence,
     RegionEvidencePlan,
+    RegionGeometryAttestation,
     StationaryRegionEvidence,
     capture_attempt_context_fingerprint,
     delay_point_context_base_fingerprint,
     delay_point_target_fingerprint,
     derive_region_evidence_plan,
+    evidence_attempt_target_id,
+)
+from jasper.active_speaker.commissioning_run import (
+    CommissioningAttemptHandle,
+    CommissioningRunStore,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.audio_measurement.evidence_identity import ArtifactIdentity, CaptureIdentity
 from jasper.audio_measurement.admitted_playback import GeneratedExcitationWav
+from jasper.audio_measurement.evidence_identity import ArtifactIdentity, CaptureIdentity
 from jasper.audio_measurement.excitation_admission import (
     ExcitationAdmission,
     ExcitationLimits,
@@ -59,22 +69,46 @@ def _preset() -> ActiveSpeakerPreset:
     return ActiveSpeakerPreset.from_mapping(_three_way_preset())
 
 
-def _plan(**overrides: object) -> RegionEvidencePlan:
-    kwargs: dict[str, object] = {
-        "run_id": "run-1",
-        "owner_generation": 3,
-        "protected_safety_profile_fingerprint": _hash("profile"),
-        "comparison_set_fingerprint": _hash("comparison"),
-        "commissioning_session_id": "session-1",
-        "threshold_profile_fingerprint": _hash("thresholds"),
-        "context_fingerprint": _hash("context"),
-    }
-    kwargs.update(overrides)
-    return derive_region_evidence_plan(
-        _preset(),
-        mono_output_topology(mode="active_3_way"),
-        **kwargs,  # type: ignore[arg-type]
+@dataclass(frozen=True)
+class _Harness:
+    store: CommissioningRunStore
+    plan: RegionEvidencePlan
+
+
+def _harness(
+    tmp_path: Path,
+    *,
+    name: str = "base",
+    bounded_regions: bool = False,
+) -> _Harness:
+    session_fingerprint = _hash(f"session:{name}")
+    store = CommissioningRunStore(
+        path=tmp_path / f"{name}.json",
+        owner_id=_hash(f"owner:{name}")[:32],
     )
+    run = store.start(
+        session_id=f"session-{name}",
+        session_fingerprint=session_fingerprint,
+    )
+    preset = _preset()
+    if bounded_regions:
+        preset = replace(
+            preset,
+            crossover_regions=(
+                replace(preset.crossover_regions[0], fc_hz=1_000.0),
+                preset.crossover_regions[1],
+            ),
+        )
+    plan = derive_region_evidence_plan(
+        preset,
+        mono_output_topology(mode="active_3_way"),
+        run=run,
+        protected_safety_profile_fingerprint=_hash("profile"),
+        comparison_set_fingerprint=session_fingerprint,
+        threshold_profile_fingerprint=_hash("thresholds"),
+        context_fingerprint=_hash("context"),
+    )
+    return _Harness(store=store, plan=plan)
 
 
 def _artifact(
@@ -112,7 +146,7 @@ def _admission_artifact(
 def _allowed_admission(
     plan: RegionEvidencePlan, target_fingerprint: str
 ) -> ExcitationAdmission:
-    plan_fingerprint = _hash(f"excitation:{target_fingerprint}")
+    excitation_plan = _hash(f"excitation:{target_fingerprint}")
     requirement = _hash(f"protection:{target_fingerprint}")
     limits = ExcitationLimits(
         permitted_band=FrequencyBand(100.0, 8_000.0),
@@ -124,7 +158,7 @@ def _allowed_admission(
             plan.authority.protected_safety_profile_fingerprint
         ),
         protection_requirement_fingerprint=requirement,
-        excitation_plan_fingerprint=plan_fingerprint,
+        excitation_plan_fingerprint=excitation_plan,
     )
     request = ExcitationRequest(
         band=FrequencyBand(200.0, 5_000.0),
@@ -136,42 +170,57 @@ def _allowed_admission(
         authority_fingerprint=limits.fingerprint,
         excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
     )
-    protection = ProtectionEvidence(
-        target_fingerprint=target_fingerprint,
-        safety_profile_fingerprint=limits.safety_profile_fingerprint,
-        protection_requirement_fingerprint=requirement,
-        authority_fingerprint=limits.fingerprint,
-        excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
-        evidence_fingerprint=_hash(f"graph-proof:{target_fingerprint}"),
-        current=True,
-    )
     admission = admit_excitation(
         request,
         limits,
-        protection_evidence=protection,
+        protection_evidence=ProtectionEvidence(
+            target_fingerprint=target_fingerprint,
+            safety_profile_fingerprint=limits.safety_profile_fingerprint,
+            protection_requirement_fingerprint=requirement,
+            authority_fingerprint=limits.fingerprint,
+            excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
+            evidence_fingerprint=_hash(f"graph-proof:{target_fingerprint}"),
+            current=True,
+        ),
     )
     assert admission.allowed
     return admission
 
 
+def _reserve(
+    harness: _Harness,
+    *,
+    evidence_kind: EvidenceKind,
+    target_fingerprint: str,
+) -> CommissioningAttemptHandle:
+    return harness.store.reserve_attempt(
+        harness.plan.authority.run,
+        target_id=evidence_attempt_target_id(
+            evidence_kind,
+            target_fingerprint,
+        ),
+        target_fingerprint=target_fingerprint,
+    )
+
+
 def _capture(
-    plan: RegionEvidencePlan,
+    harness: _Harness,
     *,
     target_index: int,
-    evidence_kind: str,
-    attempt_id: str,
+    evidence_kind: EvidenceKind,
+    attempt: CommissioningAttemptHandle,
     index: int,
     placement_fingerprint: str,
     graph_fingerprint: str,
     target_fingerprint: str | None = None,
     context_base_fingerprint: str | None = None,
     raw_token: str | None = None,
-    plan_fingerprint: str | None = None,
 ) -> AdmittedRegionCapture:
+    plan = harness.plan
     target = plan.targets[target_index]
-    target_fp = target_fingerprint or target.target_fingerprint_for(evidence_kind)  # type: ignore[arg-type]
-    context_base_fp = (
-        context_base_fingerprint or target.context_base_fingerprint_for(evidence_kind)  # type: ignore[arg-type]
+    target_fp = target_fingerprint or target.target_fingerprint_for(evidence_kind)
+    context_base_fp = context_base_fingerprint or target.context_base_fingerprint_for(
+        evidence_kind
     )
     admission_id = f"{target.region_id}-{evidence_kind}-{index}"
     admission = _allowed_admission(plan, target_fp)
@@ -180,34 +229,33 @@ def _capture(
     assert proof_fingerprint is not None
     context_fp = capture_attempt_context_fingerprint(
         plan.authority,
-        attempt_id=attempt_id,
-        evidence_kind=evidence_kind,  # type: ignore[arg-type]
+        attempt=attempt,
+        evidence_kind=evidence_kind,
         target_fingerprint=target_fp,
         context_base_fingerprint=context_base_fp,
         graph_fingerprint=graph_fingerprint,
         generation_protection_evidence_fingerprint=proof_fingerprint,
         playback_protection_evidence_fingerprint=proof_fingerprint,
     )
+    session_id = plan.authority.commissioning_session_id
     generation = _admission_artifact(
-        plan.authority.commissioning_session_id,
+        session_id,
         f"{GENERATION_PATH_PREFIX}/{admission_id}.json",
         admission,
     )
     playback = _admission_artifact(
-        plan.authority.commissioning_session_id,
+        session_id,
         f"{PLAYBACK_PATH_PREFIX}/{admission_id}.json",
         admission,
-    )
-    session_id = plan.authority.commissioning_session_id
-    stimulus_artifact = _artifact(
-        session_id,
-        f"excitation/{admission_id}.wav",
-        content_token=f"stimulus:{target.region_id}:{evidence_kind}",
     )
     stimulus = GeneratedExcitationWav(
         generation_artifact_fingerprint=generation.fingerprint,
         excitation_plan_fingerprint=admission.limits.excitation_plan_fingerprint,
-        artifact=stimulus_artifact,
+        artifact=_artifact(
+            session_id,
+            f"excitation/{admission_id}.wav",
+            content_token=f"stimulus:{target.region_id}:{evidence_kind}:{index}",
+        ),
     )
     prefix = f"captures/{target.region_id}/{evidence_kind}/{index}"
     capture = CaptureIdentity(
@@ -242,11 +290,11 @@ def _capture(
     )
     return AdmittedRegionCapture(
         authority=plan.authority,
-        plan_fingerprint=plan_fingerprint or plan.fingerprint,
-        attempt_id=attempt_id,
+        plan_fingerprint=plan.fingerprint,
+        attempt=attempt,
         speaker_group_id=target.speaker_group_id,
         region_id=target.region_id,
-        evidence_kind=evidence_kind,  # type: ignore[arg-type]
+        evidence_kind=evidence_kind,
         target_fingerprint=target_fp,
         context_base_fingerprint=context_base_fp,
         context_fingerprint=context_fp,
@@ -265,39 +313,42 @@ def _capture(
 
 
 def _stationary(
-    plan: RegionEvidencePlan,
+    harness: _Harness,
     *,
     target_index: int,
-    evidence_kind: str,
-    attempt_id: str | None = None,
+    evidence_kind: EvidenceKind,
     placement_fingerprint: str,
     graph_fingerprint: str,
-    plan_fingerprint: str | None = None,
 ) -> StationaryRegionEvidence:
+    plan = harness.plan
     target = plan.targets[target_index]
-    resolved_attempt_id = attempt_id or f"{evidence_kind}-attempt"
+    target_fp = target.target_fingerprint_for(evidence_kind)
+    attempt = _reserve(
+        harness,
+        evidence_kind=evidence_kind,
+        target_fingerprint=target_fp,
+    )
     captures = tuple(
         _capture(
-            plan,
+            harness,
             target_index=target_index,
             evidence_kind=evidence_kind,
-            attempt_id=resolved_attempt_id,
+            attempt=attempt,
             index=index,
             placement_fingerprint=placement_fingerprint,
             graph_fingerprint=graph_fingerprint,
-            plan_fingerprint=plan_fingerprint,
         )
         for index in range(3)
     )
     return StationaryRegionEvidence(
         authority=plan.authority,
-        plan_fingerprint=plan_fingerprint or plan.fingerprint,
-        attempt_id=resolved_attempt_id,
+        plan_fingerprint=plan.fingerprint,
+        attempt=attempt,
         speaker_group_id=target.speaker_group_id,
         region_id=target.region_id,
         evidence_kind=evidence_kind,  # type: ignore[arg-type]
-        target_fingerprint=target.target_fingerprint_for(evidence_kind),  # type: ignore[arg-type]
-        context_base_fingerprint=target.context_base_fingerprint_for(evidence_kind),  # type: ignore[arg-type]
+        target_fingerprint=target_fp,
+        context_base_fingerprint=target.context_base_fingerprint_for(evidence_kind),
         placement_fingerprint=placement_fingerprint,
         graph_fingerprint=graph_fingerprint,
         captures=captures,
@@ -305,22 +356,24 @@ def _stationary(
 
 
 def _delay_walk(
-    plan: RegionEvidencePlan,
+    harness: _Harness,
     *,
     target_index: int,
     placement_fingerprint: str,
+    geometry_seed_us: float = 37.5,
 ) -> DelayWalkEvidence:
+    plan = harness.plan
     target = plan.targets[target_index]
     spec = NullWalkSpec(
         crossover_fc_hz=target.electrical_fc_hz,
-        geometry_seed_us=0.0,
+        geometry_seed_us=geometry_seed_us,
         positive_delay_target=target.upper_role,
         negative_delay_target=target.lower_role,
         step_us=100.0,
     )
     points: list[DelayPointEvidence] = []
     for point_index, relative_delay_us in enumerate(spec.candidate_delays_us()):
-        graph = _hash(f"delay-graph:{relative_delay_us}")
+        graph = _hash(f"{target.region_id}:delay-graph:{relative_delay_us}")
         target_fp = delay_point_target_fingerprint(target, spec, relative_delay_us)
         context_base_fp = delay_point_context_base_fingerprint(
             target,
@@ -328,26 +381,16 @@ def _delay_walk(
             relative_delay_us,
             graph,
         )
-        attempt_id = f"delay-attempt-{point_index}"
-        captures = tuple(
-            _capture(
-                plan,
-                target_index=target_index,
-                evidence_kind="delay_null",
-                attempt_id=attempt_id,
-                index=point_index * 10 + repeat,
-                placement_fingerprint=placement_fingerprint,
-                graph_fingerprint=graph,
-                target_fingerprint=target_fp,
-                context_base_fingerprint=context_base_fp,
-            )
-            for repeat in range(5)
+        attempt = _reserve(
+            harness,
+            evidence_kind="delay_null",
+            target_fingerprint=target_fp,
         )
         points.append(
             DelayPointEvidence(
                 authority=plan.authority,
                 plan_fingerprint=plan.fingerprint,
-                attempt_id=attempt_id,
+                attempt=attempt,
                 speaker_group_id=target.speaker_group_id,
                 region_id=target.region_id,
                 relative_delay_us=relative_delay_us,
@@ -355,9 +398,36 @@ def _delay_walk(
                 context_base_fingerprint=context_base_fp,
                 placement_fingerprint=placement_fingerprint,
                 graph_fingerprint=graph,
-                captures=captures,
+                captures=tuple(
+                    _capture(
+                        harness,
+                        target_index=target_index,
+                        evidence_kind="delay_null",
+                        attempt=attempt,
+                        index=point_index * 10 + repeat,
+                        placement_fingerprint=placement_fingerprint,
+                        graph_fingerprint=graph,
+                        target_fingerprint=target_fp,
+                        context_base_fingerprint=context_base_fp,
+                    )
+                    for repeat in range(5)
+                ),
             )
         )
+    session_id = plan.authority.commissioning_session_id
+    attestation = RegionGeometryAttestation(
+        speaker_group_id=target.speaker_group_id,
+        region_id=target.region_id,
+        region_target_fingerprint=target.fingerprint,
+        signed_geometry_seed_us=geometry_seed_us,
+        provenance_kind="operator_attested",
+        provenance_id=f"geometry-{target.region_id}",
+        attestation_artifact=_artifact(
+            session_id,
+            f"evidence/{target.region_id}/geometry-attestation.json",
+            content_token=f"geometry:{target.region_id}:{geometry_seed_us}",
+        ),
+    )
     return DelayWalkEvidence(
         authority=plan.authority,
         plan_fingerprint=plan.fingerprint,
@@ -365,491 +435,448 @@ def _delay_walk(
         region_id=target.region_id,
         algorithm_id=DELAY_WALK_ALGORITHM_ID,
         algorithm_version=DELAY_WALK_ALGORITHM_VERSION,
+        geometry_attestation=attestation,
         spec=spec,
         placement_fingerprint=placement_fingerprint,
         points=tuple(points),
         repeatability_artifact=_artifact(
-            plan.authority.commissioning_session_id,
+            session_id,
             f"evidence/{target.region_id}/delay-repeatability.json",
             content_token=f"repeatability:{target.region_id}",
         ),
     )
 
 
-def test_three_way_plan_preserves_both_regions_and_round_trips() -> None:
-    plan = _plan()
+def _region(
+    harness: _Harness,
+    *,
+    target_index: int,
+    placement_fingerprint: str,
+) -> RegionCommissioningEvidence:
+    normal = _stationary(
+        harness,
+        target_index=target_index,
+        evidence_kind="normal",
+        placement_fingerprint=placement_fingerprint,
+        graph_fingerprint=_hash(f"normal-graph:{target_index}"),
+    )
+    reverse = _stationary(
+        harness,
+        target_index=target_index,
+        evidence_kind="reverse",
+        placement_fingerprint=placement_fingerprint,
+        graph_fingerprint=_hash(f"reverse-graph:{target_index}"),
+    )
+    return RegionCommissioningEvidence(
+        plan=harness.plan,
+        target=harness.plan.targets[target_index],
+        normal=normal,
+        reverse=reverse,
+        delay_walk=_delay_walk(
+            harness,
+            target_index=target_index,
+            placement_fingerprint=placement_fingerprint,
+        ),
+    )
 
+
+def test_plan_consumes_exact_durable_run_handle_and_round_trips(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    plan = harness.plan
+
+    assert len(plan.authority.run.run_id) == 32
+    assert plan.authority.run.owner_generation == 1
+    assert plan.authority.commissioning_session_id == plan.authority.run.session_id
     assert [target.region_id for target in plan.targets] == [
         "woofer_mid",
         "mid_tweeter",
     ]
-    assert [(target.lower_role, target.upper_role) for target in plan.targets] == [
-        ("woofer", "mid"),
-        ("mid", "tweeter"),
-    ]
-    assert len({target.region_fingerprint for target in plan.targets}) == 2
-    assert all(
-        len(
-            {
-                target.normal_target_fingerprint,
-                target.reverse_target_fingerprint,
-                target.delay_target_base_fingerprint,
-            }
-        )
-        == 3
-        for target in plan.targets
-    )
     assert RegionEvidencePlan.from_mapping(plan.to_dict()) == plan
 
-
-def test_plan_is_exact_to_run_comparison_topology_and_regions() -> None:
-    base = _plan()
-
-    assert _plan(run_id="run-2").fingerprint != base.fingerprint
-    assert _plan(owner_generation=4).fingerprint != base.fingerprint
-    assert (
-        _plan(comparison_set_fingerprint=_hash("replacement")).fingerprint
-        != base.fingerprint
-    )
-    raw = _three_way_preset()
-    raw["crossover_regions"][0]["id"] = "lower_region_v2"
-    changed_preset = ActiveSpeakerPreset.from_mapping(raw)
-    changed = derive_region_evidence_plan(
-        changed_preset,
-        mono_output_topology(mode="active_3_way"),
-        run_id="run-1",
-        owner_generation=3,
-        protected_safety_profile_fingerprint=_hash("profile"),
-        comparison_set_fingerprint=_hash("comparison"),
-        commissioning_session_id="session-1",
-        threshold_profile_fingerprint=_hash("thresholds"),
-        context_fingerprint=_hash("context"),
-    )
-    assert changed.fingerprint != base.fingerprint
-    assert changed.targets[0].region_id == "lower_region_v2"
-
-
-def test_plan_rejects_unknown_fields_tampering_and_nonpositive_owner() -> None:
-    plan = _plan()
-    unknown = plan.to_dict()
-    unknown["extra"] = True
-    with pytest.raises(CommissioningEvidenceError, match="unknown or missing"):
-        RegionEvidencePlan.from_mapping(unknown)
-
-    tampered = plan.to_dict()
-    tampered["preset_id"] = "different"
-    with pytest.raises(CommissioningEvidenceError, match="fingerprint"):
+    tampered = copy.deepcopy(plan.to_dict())
+    tampered["authority"]["run"]["run_id"] = "synthetic-run"
+    with pytest.raises(CommissioningEvidenceError, match="UUID hex"):
         RegionEvidencePlan.from_mapping(tampered)
 
-    with pytest.raises(CommissioningEvidenceError, match="positive integer"):
-        _plan(owner_generation=0)
-
-    valid_preset = _preset()
-    invalid_region = replace(
-        valid_preset.crossover_regions[0],
-        lower_driver="tweeter",
-        upper_driver="woofer",
-    )
-    invalid_preset = replace(
-        valid_preset,
-        crossover_regions=(invalid_region, *valid_preset.crossover_regions[1:]),
-    )
-    with pytest.raises(CommissioningEvidenceError, match="capture preset is invalid"):
+    with pytest.raises(CommissioningEvidenceError, match="durable run session"):
         derive_region_evidence_plan(
-            invalid_preset,
+            _preset(),
             mono_output_topology(mode="active_3_way"),
-            run_id="run-1",
-            owner_generation=3,
+            run=plan.authority.run,
             protected_safety_profile_fingerprint=_hash("profile"),
-            comparison_set_fingerprint=_hash("comparison"),
-            commissioning_session_id="session-1",
+            comparison_set_fingerprint=_hash("different-comparison"),
             threshold_profile_fingerprint=_hash("thresholds"),
             context_fingerprint=_hash("context"),
         )
 
 
-def test_stationary_evidence_is_three_fresh_one_shots_with_canonical_artifacts() -> (
-    None
-):
-    plan = _plan()
+def test_plan_identity_changes_with_real_run_generation_and_region(
+    tmp_path: Path,
+) -> None:
+    base = _harness(tmp_path, name="base")
+    other = _harness(tmp_path, name="other")
+    assert other.plan.fingerprint != base.plan.fingerprint
+
+    restarted = CommissioningRunStore(
+        path=tmp_path / "base.json",
+        owner_id="f" * 32,
+    )
+    claimed = restarted.claim_owner()
+    assert claimed is not None and claimed.owner_generation == 2
+    changed = derive_region_evidence_plan(
+        _preset(),
+        mono_output_topology(mode="active_3_way"),
+        run=claimed,
+        protected_safety_profile_fingerprint=_hash("profile"),
+        comparison_set_fingerprint=claimed.session_fingerprint,
+        threshold_profile_fingerprint=_hash("thresholds"),
+        context_fingerprint=_hash("context"),
+    )
+    assert changed.fingerprint != base.plan.fingerprint
+
+    raw = _three_way_preset()
+    raw["crossover_regions"][0]["id"] = "lower_region_v2"
+    changed_preset = derive_region_evidence_plan(
+        ActiveSpeakerPreset.from_mapping(raw),
+        mono_output_topology(mode="active_3_way"),
+        run=claimed,
+        protected_safety_profile_fingerprint=_hash("profile"),
+        comparison_set_fingerprint=claimed.session_fingerprint,
+        threshold_profile_fingerprint=_hash("thresholds"),
+        context_fingerprint=_hash("context"),
+    )
+    assert changed_preset.targets[0].region_id == "lower_region_v2"
+
+
+def test_public_kind_lookups_reject_unsupported_values(tmp_path: Path) -> None:
+    target = _harness(tmp_path).plan.targets[0]
+    with pytest.raises(CommissioningEvidenceError, match="unsupported"):
+        target.target_fingerprint_for("typo")  # type: ignore[arg-type]
+    with pytest.raises(CommissioningEvidenceError, match="unsupported"):
+        target.context_base_fingerprint_for("typo")  # type: ignore[arg-type]
+    with pytest.raises(CommissioningEvidenceError, match="unsupported"):
+        evidence_attempt_target_id("typo", _hash("target"))  # type: ignore[arg-type]
+
+
+def test_stationary_evidence_retains_minted_attempt_and_one_shots(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path)
     evidence = _stationary(
-        plan,
+        harness,
         target_index=0,
         evidence_kind="normal",
         placement_fingerprint=_hash("placement"),
         graph_fingerprint=_hash("normal-graph"),
     )
 
-    assert len(evidence.captures) == 3
-    assert {
-        capture.playback_admission.fingerprint for capture in evidence.captures
-    } == {evidence.captures[0].playback_admission.fingerprint}
+    assert evidence.attempt.run == harness.plan.authority.run
+    assert evidence.attempt.attempt_number == 1
+    assert evidence.attempt.target_id == evidence_attempt_target_id(
+        "normal", evidence.target_fingerprint
+    )
+    assert all(capture.attempt == evidence.attempt for capture in evidence.captures)
     assert all(
         capture.playback_admission.request.repeat_count == 1
         for capture in evidence.captures
     )
     assert StationaryRegionEvidence.from_mapping(evidence.to_dict()) == evidence
 
+    wrong_attempt = harness.store.reserve_attempt(
+        harness.plan.authority.run,
+        target_id="active:normal:wrong",
+        target_fingerprint=evidence.target_fingerprint,
+    )
+    with pytest.raises(CommissioningEvidenceError, match="reserved attempt target"):
+        replace(evidence, attempt=wrong_attempt)
+    with pytest.raises(CommissioningEvidenceError, match="reserved attempt target"):
+        replace(evidence.captures[0], attempt=wrong_attempt)
 
-def test_multi_repeat_or_historical_artifact_cannot_become_region_authority() -> None:
-    plan = _plan()
-    capture = _capture(
-        plan,
+
+@pytest.mark.parametrize(
+    ("artifact_field", "message"),
+    (
+        ("raw_artifact", "raw paths"),
+        ("analysis_input_artifact", "analysis-input paths"),
+        ("quality_artifact", "quality paths"),
+    ),
+)
+def test_stationary_rejects_all_capture_role_path_replay(
+    tmp_path: Path,
+    artifact_field: str,
+    message: str,
+) -> None:
+    harness = _harness(tmp_path)
+    evidence = _stationary(
+        harness,
         target_index=0,
         evidence_kind="normal",
-        attempt_id="normal-attempt",
-        index=0,
-        placement_fingerprint=_hash("placement"),
-        graph_fingerprint=_hash("normal-graph"),
-    )
-    raw = capture.to_dict()
-    request = raw["playback_admission"]["request"]
-    request["repeat_count"] = 3
-    request["fingerprint"] = _hash("not-canonical")
-    with pytest.raises(CommissioningEvidenceError):
-        AdmittedRegionCapture.from_mapping(raw)
-
-    historical = copy.deepcopy(capture.to_dict())
-    for field in (
-        "capture",
-        "stimulus",
-        "generation_artifact",
-        "playback_artifact",
-    ):
-        artifacts = [historical[field]]
-        if field == "capture":
-            artifacts = [
-                historical[field][name]
-                for name in (
-                    "raw_artifact",
-                    "analysis_input_artifact",
-                    "quality_artifact",
-                    "admission_artifact",
-                )
-            ]
-        elif field == "stimulus":
-            artifacts = [historical[field]["artifact"]]
-        for artifact in artifacts:
-            artifact["bundle_kind"] = "jts_historical_capture_bundle"
-            artifact["fingerprint"] = _hash("tampered-artifact")
-    with pytest.raises(CommissioningEvidenceError):
-        AdmittedRegionCapture.from_mapping(historical)
-
-
-def test_stationary_rejects_duplicate_raw_bytes_and_reverse_replay() -> None:
-    plan = _plan()
-    target = plan.targets[0]
-    placement = _hash("placement")
-    graph = _hash("normal-graph")
-    captures = tuple(
-        _capture(
-            plan,
-            target_index=0,
-            evidence_kind="normal",
-            attempt_id="normal-attempt",
-            index=index,
-            placement_fingerprint=placement,
-            graph_fingerprint=graph,
-            raw_token="same-raw-bytes",
-        )
-        for index in range(3)
-    )
-    with pytest.raises(CommissioningEvidenceError, match="unique raw bytes"):
-        StationaryRegionEvidence(
-            authority=plan.authority,
-            plan_fingerprint=plan.fingerprint,
-            attempt_id="normal-attempt",
-            speaker_group_id=target.speaker_group_id,
-            region_id=target.region_id,
-            evidence_kind="normal",
-            target_fingerprint=target.normal_target_fingerprint,
-            context_base_fingerprint=target.normal_context_base_fingerprint,
-            placement_fingerprint=placement,
-            graph_fingerprint=graph,
-            captures=captures,
-        )
-
-    normal = _stationary(
-        plan,
-        target_index=0,
-        evidence_kind="normal",
-        placement_fingerprint=placement,
-        graph_fingerprint=graph,
-    )
-    with pytest.raises(CommissioningEvidenceError, match="do not share"):
-        StationaryRegionEvidence(
-            authority=plan.authority,
-            plan_fingerprint=plan.fingerprint,
-            attempt_id="wrong-reverse-attempt",
-            speaker_group_id=target.speaker_group_id,
-            region_id=target.region_id,
-            evidence_kind="reverse",
-            target_fingerprint=target.reverse_target_fingerprint,
-            context_base_fingerprint=target.reverse_context_base_fingerprint,
-            placement_fingerprint=placement,
-            graph_fingerprint=graph,
-            captures=normal.captures,
-        )
-
-
-def test_delay_walk_uses_exact_shared_half_period_grid_and_five_fresh_captures() -> (
-    None
-):
-    plan = _plan()
-    placement = _hash("placement")
-    # mid/tweeter at 2500 Hz => half-period 200 us and five 100-us grid points.
-    walk = _delay_walk(plan, target_index=1, placement_fingerprint=placement)
-
-    assert walk.spec.half_period_us == 200.0
-    assert walk.spec.candidate_delays_us() == (-200.0, -100.0, 0.0, 100.0, 200.0)
-    assert [point.relative_delay_us for point in walk.points] == list(
-        walk.spec.candidate_delays_us()
-    )
-    assert all(len(point.captures) == 5 for point in walk.points)
-    assert DelayWalkEvidence.from_mapping(walk.to_dict()) == walk
-
-    tampered = walk.to_dict()
-    tampered["spec"]["candidate_delays_us"][0] = -250.0
-    with pytest.raises(CommissioningEvidenceError, match="exact canonical"):
-        DelayWalkEvidence.from_mapping(tampered)
-
-    first_raw = walk.points[0].captures[0].capture.raw_artifact
-    path_collision = _artifact(
-        plan.authority.commissioning_session_id,
-        first_raw.relative_path,
-        content_token="different-repeatability-content",
-    )
-    with pytest.raises(CommissioningEvidenceError, match="distinct artifact role"):
-        replace(walk, repeatability_artifact=path_collision)
-
-
-def test_complete_region_evidence_requires_distinct_normal_reverse_and_delay() -> None:
-    plan = _plan()
-    placement = _hash("placement")
-    normal = _stationary(
-        plan,
-        target_index=1,
-        evidence_kind="normal",
-        placement_fingerprint=placement,
-        graph_fingerprint=_hash("normal-graph"),
-    )
-    reverse = _stationary(
-        plan,
-        target_index=1,
-        evidence_kind="reverse",
-        placement_fingerprint=placement,
-        graph_fingerprint=_hash("reverse-graph"),
-    )
-    evidence = RegionCommissioningEvidence(
-        plan=plan,
-        target=plan.targets[1],
-        normal=normal,
-        reverse=reverse,
-        delay_walk=_delay_walk(plan, target_index=1, placement_fingerprint=placement),
-    )
-
-    assert RegionCommissioningEvidence.from_mapping(evidence.to_dict()) == evidence
-
-    swapped_spec = NullWalkSpec(
-        crossover_fc_hz=evidence.target.electrical_fc_hz,
-        geometry_seed_us=0.0,
-        positive_delay_target=evidence.target.lower_role,
-        negative_delay_target=evidence.target.upper_role,
-        step_us=100.0,
-    )
-    with pytest.raises(CommissioningEvidenceError, match="electrical crossover"):
-        RegionCommissioningEvidence(
-            plan=plan,
-            target=plan.targets[1],
-            normal=normal,
-            reverse=reverse,
-            delay_walk=replace(evidence.delay_walk, spec=swapped_spec),
-        )
-
-    reverse_first = reverse.captures[0]
-    reused_stimulus = GeneratedExcitationWav(
-        generation_artifact_fingerprint=reverse_first.generation_artifact.fingerprint,
-        excitation_plan_fingerprint=(
-            reverse_first.generation_admission.limits.excitation_plan_fingerprint
-        ),
-        artifact=normal.captures[0].stimulus.artifact,
-    )
-    replayed_reverse_capture = replace(reverse_first, stimulus=reused_stimulus)
-    replayed_reverse = replace(
-        reverse,
-        captures=(replayed_reverse_capture, *reverse.captures[1:]),
-    )
-    with pytest.raises(CommissioningEvidenceError, match="replayed as reverse"):
-        RegionCommissioningEvidence(
-            plan=plan,
-            target=plan.targets[1],
-            normal=normal,
-            reverse=replayed_reverse,
-            delay_walk=evidence.delay_walk,
-        )
-
-    with pytest.raises(CommissioningEvidenceError, match="phase targets"):
-        RegionCommissioningEvidence(
-            plan=plan,
-            target=plan.targets[1],
-            normal=normal,
-            reverse=StationaryRegionEvidence(
-                authority=plan.authority,
-                plan_fingerprint=plan.fingerprint,
-                attempt_id="reverse-wrong-attempt",
-                speaker_group_id=plan.targets[1].speaker_group_id,
-                region_id=plan.targets[1].region_id,
-                evidence_kind="reverse",
-                target_fingerprint=normal.target_fingerprint,
-                context_base_fingerprint=normal.context_base_fingerprint,
-                placement_fingerprint=placement,
-                graph_fingerprint=normal.graph_fingerprint,
-                captures=tuple(
-                    _capture(
-                        plan,
-                        target_index=1,
-                        evidence_kind="reverse",
-                        attempt_id="reverse-wrong-attempt",
-                        index=index,
-                        placement_fingerprint=placement,
-                        graph_fingerprint=normal.graph_fingerprint,
-                        target_fingerprint=normal.target_fingerprint,
-                        context_base_fingerprint=normal.context_base_fingerprint,
-                    )
-                    for index in range(3)
-                ),
-            ),
-            delay_walk=evidence.delay_walk,
-        )
-
-
-def test_attempt_id_is_content_bound_and_one_set_cannot_mix_retries() -> None:
-    plan = _plan()
-    placement = _hash("placement")
-    graph = _hash("graph")
-    capture = _capture(
-        plan,
-        target_index=0,
-        evidence_kind="normal",
-        attempt_id="attempt-a",
-        index=0,
-        placement_fingerprint=placement,
-        graph_fingerprint=graph,
-    )
-    with pytest.raises(CommissioningEvidenceError, match="exact run attempt"):
-        replace(capture, attempt_id="attempt-b")
-    with pytest.raises(CommissioningEvidenceError, match="exact run attempt"):
-        replace(capture, graph_fingerprint=_hash("different-graph"))
-
-    captures = tuple(
-        _capture(
-            plan,
-            target_index=0,
-            evidence_kind="normal",
-            attempt_id="attempt-b" if index == 2 else "attempt-a",
-            index=index,
-            placement_fingerprint=placement,
-            graph_fingerprint=graph,
-        )
-        for index in range(3)
-    )
-    target = plan.targets[0]
-    with pytest.raises(CommissioningEvidenceError, match="one exact target"):
-        StationaryRegionEvidence(
-            authority=plan.authority,
-            plan_fingerprint=plan.fingerprint,
-            attempt_id="attempt-a",
-            speaker_group_id=target.speaker_group_id,
-            region_id=target.region_id,
-            evidence_kind="normal",
-            target_fingerprint=target.normal_target_fingerprint,
-            context_base_fingerprint=target.normal_context_base_fingerprint,
-            placement_fingerprint=placement,
-            graph_fingerprint=graph,
-            captures=captures,
-        )
-
-
-def test_capture_rejects_cross_role_artifact_and_unbound_stimulus() -> None:
-    plan = _plan()
-    capture = _capture(
-        plan,
-        target_index=0,
-        evidence_kind="normal",
-        attempt_id="attempt-a",
-        index=0,
         placement_fingerprint=_hash("placement"),
         graph_fingerprint=_hash("graph"),
     )
-    cross_role_capture = replace(
-        capture.capture,
-        raw_artifact=capture.generation_artifact,
+    first = evidence.captures[0]
+    second = evidence.captures[1]
+    replay_path = getattr(first.capture, artifact_field).relative_path
+    replacement = _artifact(
+        harness.plan.authority.commissioning_session_id,
+        replay_path,
+        content_token=f"different:{artifact_field}",
     )
-    with pytest.raises(CommissioningEvidenceError, match="roles must be distinct"):
-        replace(capture, capture=cross_role_capture)
+    changes: Any = {artifact_field: replacement}
+    replayed_capture_identity = replace(second.capture, **changes)
+    replayed = replace(second, capture=replayed_capture_identity)
+    with pytest.raises(CommissioningEvidenceError, match=message):
+        replace(evidence, captures=(first, replayed, evidence.captures[2]))
 
-    unbound_stimulus = GeneratedExcitationWav(
-        generation_artifact_fingerprint=_hash("different-generation"),
-        excitation_plan_fingerprint=capture.stimulus.excitation_plan_fingerprint,
-        artifact=capture.stimulus.artifact,
+
+def test_capture_rejects_synthetic_attempt_projection_and_multirepeat(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path)
+    evidence = _stationary(
+        harness,
+        target_index=0,
+        evidence_kind="normal",
+        placement_fingerprint=_hash("placement"),
+        graph_fingerprint=_hash("graph"),
     )
+    raw = evidence.captures[0].to_dict()
+    raw["attempt"]["attempt_id"] = "not-a-uuid"
+    with pytest.raises(CommissioningEvidenceError, match="UUID hex"):
+        AdmittedRegionCapture.from_mapping(raw)
+
+    raw = evidence.captures[0].to_dict()
+    raw["playback_admission"]["request"]["repeat_count"] = 3
+    raw["playback_admission"]["request"]["fingerprint"] = _hash("tampered")
+    with pytest.raises(CommissioningEvidenceError):
+        AdmittedRegionCapture.from_mapping(raw)
+
+
+def test_stationary_rejects_cross_capture_cross_role_path_replay(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path)
+    evidence = _stationary(
+        harness,
+        target_index=0,
+        evidence_kind="normal",
+        placement_fingerprint=_hash("placement"),
+        graph_fingerprint=_hash("graph"),
+    )
+    first = evidence.captures[0]
+    second = evidence.captures[1]
+    replayed_analysis = replace(
+        second.capture.analysis_input_artifact,
+        relative_path=first.capture.raw_artifact.relative_path,
+    )
+    replayed = replace(
+        second,
+        capture=replace(
+            second.capture,
+            analysis_input_artifact=replayed_analysis,
+        ),
+    )
+    with pytest.raises(CommissioningEvidenceError, match="artifact role paths"):
+        replace(evidence, captures=(first, replayed, evidence.captures[2]))
+
+
+def test_delay_walk_requires_explicit_signed_geometry_and_fresh_points(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path)
+    walk = _delay_walk(
+        harness,
+        target_index=1,
+        placement_fingerprint=_hash("placement"),
+        geometry_seed_us=-37.5,
+    )
+
+    assert walk.spec.geometry_seed_us == -37.5
+    assert walk.geometry_attestation.signed_geometry_seed_us == -37.5
+    assert walk.spec.candidate_delays_us() == (
+        -237.5,
+        -137.5,
+        -37.5,
+        62.5,
+        162.5,
+    )
+    assert [point.attempt.attempt_number for point in walk.points] == [1, 2, 3, 4, 5]
+    assert DelayWalkEvidence.from_mapping(walk.to_dict()) == walk
+
+    with pytest.raises(CommissioningEvidenceError, match="requires explicit"):
+        replace(walk, geometry_attestation=None)  # type: ignore[arg-type]
     with pytest.raises(CommissioningEvidenceError, match="not bound"):
-        replace(capture, stimulus=unbound_stimulus)
-
-
-def test_region_rejects_cross_generation_authority_and_reused_attempts() -> None:
-    plan = _plan()
-    stale_plan = _plan(owner_generation=4)
-    placement = _hash("placement")
-    normal = _stationary(
-        plan,
-        target_index=1,
-        evidence_kind="normal",
-        attempt_id="normal-attempt",
-        placement_fingerprint=placement,
-        graph_fingerprint=_hash("normal-graph"),
-    )
-    reverse = _stationary(
-        plan,
-        target_index=1,
-        evidence_kind="reverse",
-        attempt_id="reverse-attempt",
-        placement_fingerprint=placement,
-        graph_fingerprint=_hash("reverse-graph"),
-    )
-    walk = _delay_walk(plan, target_index=1, placement_fingerprint=placement)
-
-    stale_normal = _stationary(
-        stale_plan,
-        target_index=1,
-        evidence_kind="normal",
-        attempt_id="stale-attempt",
-        placement_fingerprint=placement,
-        graph_fingerprint=_hash("stale-graph"),
-        plan_fingerprint=plan.fingerprint,
-    )
-    with pytest.raises(CommissioningEvidenceError, match="authorities"):
-        RegionCommissioningEvidence(
-            plan=plan,
-            target=plan.targets[1],
-            normal=stale_normal,
-            reverse=reverse,
-            delay_walk=walk,
+        replace(
+            walk,
+            geometry_attestation=replace(
+                walk.geometry_attestation,
+                signed_geometry_seed_us=0.0,
+            ),
         )
 
-    same_attempt_reverse = _stationary(
-        plan,
-        target_index=1,
-        evidence_kind="reverse",
-        attempt_id=normal.attempt_id,
-        placement_fingerprint=placement,
-        graph_fingerprint=_hash("reverse-graph"),
+    first_capture = walk.points[0].captures[0]
+    second_capture = walk.points[1].captures[0]
+    replayed_raw_path = replace(
+        second_capture.capture.raw_artifact,
+        relative_path=first_capture.capture.raw_artifact.relative_path,
     )
-    with pytest.raises(CommissioningEvidenceError, match="distinct attempts"):
-        RegionCommissioningEvidence(
-            plan=plan,
-            target=plan.targets[1],
-            normal=normal,
-            reverse=same_attempt_reverse,
-            delay_walk=walk,
+    replayed_capture = replace(
+        second_capture,
+        capture=replace(second_capture.capture, raw_artifact=replayed_raw_path),
+    )
+    replayed_point = replace(
+        walk.points[1],
+        captures=(replayed_capture, *walk.points[1].captures[1:]),
+    )
+    with pytest.raises(CommissioningEvidenceError, match="globally fresh"):
+        replace(walk, points=(walk.points[0], replayed_point, *walk.points[2:]))
+
+
+def test_zero_geometry_requires_and_retains_explicit_attestation(
+    tmp_path: Path,
+) -> None:
+    walk = _delay_walk(
+        _harness(tmp_path),
+        target_index=1,
+        placement_fingerprint=_hash("placement"),
+        geometry_seed_us=0.0,
+    )
+    assert walk.geometry_attestation.provenance_kind == "operator_attested"
+    assert walk.geometry_attestation.signed_geometry_seed_us == 0.0
+    assert walk.spec.geometry_seed_us == 0.0
+
+
+def test_region_rejects_cross_phase_analysis_quality_and_admission_replay(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path)
+    region = _region(
+        harness,
+        target_index=1,
+        placement_fingerprint=_hash("placement"),
+    )
+    assert RegionCommissioningEvidence.from_mapping(region.to_dict()) == region
+
+    first_normal = region.normal.captures[0]
+    first_reverse = region.reverse.captures[0]
+    for field_name in ("analysis_input_artifact", "quality_artifact"):
+        replayed_identity = replace(
+            first_reverse.capture,
+            **{field_name: getattr(first_normal.capture, field_name)},
+        )
+        replayed_capture = replace(first_reverse, capture=replayed_identity)
+        replayed_reverse = replace(
+            region.reverse,
+            captures=(replayed_capture, *region.reverse.captures[1:]),
+        )
+        with pytest.raises(CommissioningEvidenceError, match="replayed as reverse"):
+            replace(region, reverse=replayed_reverse)
+
+    replayed_generation = replace(
+        first_reverse.generation_artifact,
+        relative_path=first_normal.generation_artifact.relative_path,
+    )
+    replayed_playback = replace(
+        first_reverse.playback_artifact,
+        relative_path=first_normal.playback_artifact.relative_path,
+    )
+    replayed_capture = replace(
+        first_reverse,
+        admission_id=first_normal.admission_id,
+        generation_artifact=replayed_generation,
+        playback_artifact=replayed_playback,
+        stimulus=replace(
+            first_reverse.stimulus,
+            generation_artifact_fingerprint=replayed_generation.fingerprint,
+        ),
+        capture=replace(
+            first_reverse.capture,
+            admission_artifact=replayed_playback,
+        ),
+    )
+    replayed_reverse = replace(
+        region.reverse,
+        captures=(replayed_capture, *region.reverse.captures[1:]),
+    )
+    with pytest.raises(CommissioningEvidenceError, match="replayed as reverse"):
+        replace(region, reverse=replayed_reverse)
+
+
+def test_complete_plan_requires_every_region_and_round_trips(tmp_path: Path) -> None:
+    harness = _harness(tmp_path, bounded_regions=True)
+    regions = tuple(
+        _region(
+            harness,
+            target_index=index,
+            placement_fingerprint=_hash("placement"),
+        )
+        for index in range(len(harness.plan.targets))
+    )
+    complete = CompleteCommissioningEvidence(plan=harness.plan, regions=regions)
+
+    assert [region.target for region in complete.regions] == list(harness.plan.targets)
+    assert CompleteCommissioningEvidence.from_mapping(complete.to_dict()) == complete
+    with pytest.raises(CommissioningEvidenceError, match="exactly one"):
+        CompleteCommissioningEvidence(plan=harness.plan, regions=regions[:1])
+    with pytest.raises(CommissioningEvidenceError, match="exactly one"):
+        CompleteCommissioningEvidence(plan=harness.plan, regions=regions[::-1])
+
+
+def test_complete_three_way_plan_rejects_cross_region_role_replay(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path, bounded_regions=True)
+    lower = _region(
+        harness,
+        target_index=0,
+        placement_fingerprint=_hash("placement"),
+    )
+    upper = _region(
+        harness,
+        target_index=1,
+        placement_fingerprint=_hash("placement"),
+    )
+    lower_capture = lower.normal.captures[0]
+    upper_capture = upper.normal.captures[0]
+
+    replayed_identity = replace(
+        upper_capture.capture,
+        raw_artifact=replace(
+            upper_capture.capture.raw_artifact,
+            relative_path=lower_capture.capture.analysis_input_artifact.relative_path,
+        ),
+    )
+    replayed_capture = replace(upper_capture, capture=replayed_identity)
+    replayed_normal = replace(
+        upper.normal,
+        captures=(replayed_capture, *upper.normal.captures[1:]),
+    )
+    replayed_upper = replace(upper, normal=replayed_normal)
+    with pytest.raises(CommissioningEvidenceError, match="globally unique"):
+        CompleteCommissioningEvidence(
+            plan=harness.plan,
+            regions=(lower, replayed_upper),
+        )
+
+    raw_bytes_replay = replace(
+        upper_capture.capture.raw_artifact,
+        sha256=lower_capture.capture.raw_artifact.sha256,
+        byte_size=lower_capture.capture.raw_artifact.byte_size,
+    )
+    replayed_identity = replace(
+        upper_capture.capture,
+        raw_artifact=raw_bytes_replay,
+    )
+    replayed_capture = replace(upper_capture, capture=replayed_identity)
+    replayed_upper = replace(
+        upper,
+        normal=replace(
+            upper.normal,
+            captures=(replayed_capture, *upper.normal.captures[1:]),
+        ),
+    )
+    with pytest.raises(CommissioningEvidenceError, match="raw bytes"):
+        CompleteCommissioningEvidence(
+            plan=harness.plan,
+            regions=(lower, replayed_upper),
         )

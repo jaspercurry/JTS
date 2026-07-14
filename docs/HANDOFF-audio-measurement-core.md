@@ -110,6 +110,9 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   pure, while Wave 3 now persists one exact current-run identity and provides
   bounded attempt/journal mutation APIs. No production measurement adapter uses
   those APIs yet, and the eligibility receipt remains inert.
+  The breaking admitted-capture shape and its post-apply/receipt containers are
+  all schema version 2; schema version 1 is intentionally rejected because no
+  production receipt issuer or persisted receipt exists.
 
 The full contract is not current Room `/state` authority. Existing Active
 bundles remain forensic/fail-soft, and `active_speaker.setup_status` still reports the legacy
@@ -298,7 +301,8 @@ only `unconfigured`; no live consumer reserves attempts or advances the journal.
 ### Wave 3 Active per-region evidence authority (2026-07-14)
 
 `jasper.active_speaker.commissioning_evidence` is a strict, pure Active-owned
-contract over Shared identities; it is not another bundle or a production
+contract over Shared identities and exact `CommissioningRunHandle` /
+`CommissioningAttemptHandle` values; it is not another bundle or a production
 capture service. It derives the exact group-by-crossover-region plan from the
 current run, topology, preset, protected profile, comparison, threshold
 profile, and session. A two-way has one target per active group; a three-way
@@ -309,7 +313,11 @@ coordinate requires five fresh one-shot captures from its own attempt. Every
 capture binds exact graph and placement identities, separate generation and
 playback protection proofs, a generated immutable WAV, and canonical Active
 generation/playback admission artifacts. Cross-role and cross-set artifact
-replay fails closed.
+replay fails closed. Each delay walk also requires an explicit typed
+operator-attested signed geometry seed, including when the attested value is
+zero. `CompleteCommissioningEvidence` requires one canonically ordered region
+per plan target and makes artifact roles/paths, admission ids, raw bytes, and
+durable attempts globally unique across a three-way or multiple groups.
 
 The module performs no I/O, persistence, playback, scoring, graph mutation, or
 lifecycle transition. Production must still retain a run handle, reserve the
@@ -317,6 +325,10 @@ bounded attempts, build and freshly confirm each adjacent-pair graph under the
 writer lock, persist the strict values only after exact restoration, and supply
 an operator-attested signed geometry seed. Therefore summed playback remains
 pre-audio refused and candidate/receipt/Room authority remains unavailable.
+The shipped 350 Hz lower crossover exceeds the shared 25-point exhaustive-walk
+budget at the allowed 100 µs maximum step. The production host must therefore
+land the reviewed adaptive scheduler contract before it can issue complete
+evidence for that region; this pure slice does not weaken the shared bound.
 
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
@@ -1186,7 +1198,8 @@ unique attempt ids; closed guarded-playback terminal events; and
 no-bundle-migration/no-backfill boundaries plus Active isolated-driver adoption,
 server-owned capture handoff, and summed pre-audio refusal checked
 hardware-free. Strict Active group-by-region normal/reverse/delay evidence
-values and receipt one-shot generation/playback roles were checked pure.
+values, typed run/attempt and geometry authority, complete-plan replay guards,
+and receipt schema-v2 one-shot generation/playback roles were checked pure.
 Durable bundle-backed Active run identity, startup owner claim,
 stale-callback refusal, and fail-closed crossover status were checked hardware-
 free. No hardware behavior revalidated. Wave 1 excitation/evidence identities

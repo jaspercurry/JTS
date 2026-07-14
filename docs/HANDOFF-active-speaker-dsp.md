@@ -715,15 +715,20 @@
 > **Update, 2026-07-14 (Wave 3 per-region evidence contract;
 > hardware-free):** `jasper.active_speaker.commissioning_evidence` now owns the
 > immutable pure shape for authoritative group-by-region capture sets. The plan
-> keeps both crossover regions of a three-way distinct and binds the exact run,
+> keeps both crossover regions of a three-way distinct and binds the exact typed durable-run handle,
 > topology, preset, protected profile, comparison, threshold profile, and
 > session. Normal and reverse each require three fresh one-shot captures from
-> one durable attempt; every shared delay-walk coordinate requires five fresh
+> one typed reserved attempt; every shared delay-walk coordinate requires five fresh
 > one-shot captures from its own attempt. Each capture binds exact graph,
 > placement, generated-WAV, generation/playback protection, and canonical
-> generation/playback admission identities, with cross-role replay refused.
+> generation/playback admission identities, with cross-role replay refused. A
+> typed operator attestation binds the signed geometry seed, and a complete-plan
+> aggregate enforces one region per target plus global artifact, admission, and
+> attempt uniqueness.
 > The positive receipt now likewise requires a unique one-shot generation and
-> playback pair for each of its three post-apply captures. These are pure
+> playback pair for each of its three post-apply captures; its admitted-capture,
+> post-apply-target, and receipt containers are explicitly schema version 2.
+> These are pure
 > contracts only: no live summed host, persistence adapter, candidate evaluator,
 > graph mutation, lifecycle transition, verification producer, receipt issuer,
 > or Room consumer is added by this slice.
@@ -771,6 +776,9 @@ For JTS, that means:
   delay capture authority must contain. Until the production summed host issues
   and persists them from reserved run attempts, their existence does not make
   the current run measured or candidate-ready.
+- The shipped 350 Hz lower crossover needs a reviewed adaptive delay scheduler:
+  its exhaustive 100 µs grid exceeds Shared's 25-point bound. The production
+  host must add that scheduler contract rather than weakening the bound.
 
 The existing deployed audio topology now has the runtime substrate for
 the constrained dual Apple active-output profile, but commissioning
@@ -2049,7 +2057,8 @@ Last verified: 2026-07-14 (Wave 1 target-bound research, visible confirmed
 driver-safety profile, excitation admission, nine-state lifecycle, exact
 eligibility receipt, reachable isolated-driver persisted admission under one
 bounded writer transaction, summed pre-audio refusal, strict group-by-region
-normal/reverse/delay evidence values, receipt one-shot role semantics, and the
+normal/reverse/delay evidence values with typed run/attempt and geometry
+authority, complete-plan replay guards, receipt schema-v2 one-shot roles, and the
 durable bundle-backed commissioning-run store/start/status boundary and service owner-
 generation claim; no live candidate/verification/receipt producer, and
 temporary passive-only Room

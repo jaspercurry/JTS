@@ -779,6 +779,40 @@ def test_target_rejects_reused_admission_id_and_role_paths() -> None:
         replace(left, admitted_captures=(first, reused, third))
 
 
+def test_receipt_rejects_admission_role_replay_across_required_targets() -> None:
+    receipt = _receipt()
+    left = receipt.post_apply_targets[0]
+    right = receipt.post_apply_targets[1]
+    left_proof = left.admitted_captures[0]
+    right_proof = right.admitted_captures[0]
+    replayed_right_proof = replace(
+        right_proof,
+        generation_artifact=_admission_artifact(
+            left_proof.generation_artifact.relative_path,
+            right_proof.generation_admission,
+            session=SESSION_ID,
+        ),
+        capture=replace(
+            right_proof.capture,
+            admission_artifact=_admission_artifact(
+                left_proof.playback_artifact.relative_path,
+                right_proof.admission,
+                session=SESSION_ID,
+            ),
+        ),
+    )
+    replayed_right = replace(
+        right,
+        admitted_captures=(
+            replayed_right_proof,
+            *right.admitted_captures[1:],
+        ),
+    )
+
+    with pytest.raises(CommissioningReceiptError, match="globally unique"):
+        replace(receipt, post_apply_targets=(left, replayed_right))
+
+
 def test_target_and_receipt_enforce_unique_capture_ids_raws_and_one_session():
     receipt = _receipt()
     left = receipt.post_apply_targets[0]
@@ -1011,3 +1045,19 @@ def test_admitted_capture_schema_rejects_missing_and_tampered_role_proof():
     tampered["capture"]["admission_artifact"]["byte_size"] += 1
     with pytest.raises(CommissioningReceiptError, match="declared fingerprint"):
         AdmittedCaptureProof.from_mapping(tampered)
+
+
+def test_breaking_receipt_containers_require_schema_v2() -> None:
+    target_payload = _receipt().post_apply_targets[0].to_dict()
+    receipt_payload = _receipt().to_dict()
+
+    assert target_payload["schema_version"] == 2
+    assert receipt_payload["schema_version"] == 2
+
+    target_payload["schema_version"] = 1
+    with pytest.raises(CommissioningReceiptError, match="unsupported"):
+        PostApplyTargetVerification.from_mapping(target_payload)
+
+    receipt_payload["schema_version"] = 1
+    with pytest.raises(CommissioningReceiptError, match="unsupported"):
+        CommissioningEligibilityReceipt.from_mapping(receipt_payload)
