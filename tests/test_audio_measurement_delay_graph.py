@@ -21,8 +21,10 @@ from jasper.audio_measurement.delay_graph import (
 )
 from jasper.audio_measurement.null_walk import (
     MAX_DSP_DELAY_US,
+    BoundedNullWalkSchedule,
     DelayCandidate,
     DspPredecessor,
+    NullWalkError,
     NullWalkSpec,
 )
 from jasper.bass_alignment import SUB_MAINS_DELAY_WALK_SCOPE, sub_mains_delay_walk_spec
@@ -730,3 +732,40 @@ def test_confirmation_refuses_noncanonical_or_incoherent_candidate(candidate):
         _confirm(snapshot, candidate, copy.deepcopy(snapshot.graph))
 
     assert caught.value.code == "candidate_invalid"
+
+
+def test_350_hz_scheduled_coordinate_is_proven_without_exhaustive_materialization():
+    spec = NullWalkSpec(
+        crossover_fc_hz=350.0,
+        geometry_seed_us=0.0,
+        positive_delay_target="upper",
+        negative_delay_target="lower",
+    )
+    schedule = BoundedNullWalkSchedule(spec, refinement_anchor_us=0.0)
+    candidate = spec.dsp_candidate(schedule.refinement_delays_us[-1])
+    snapshot = _snapshot(spec)
+
+    confirmation = _confirm(
+        snapshot,
+        candidate,
+        _readback(snapshot, positive_ms=0.1),
+    )
+
+    assert spec.candidate_count == 29
+    with pytest.raises(NullWalkError, match="candidate budget"):
+        spec.candidate_delays_us()
+    assert confirmation.readback_relative_delay_us == pytest.approx(100.0)
+
+
+def test_snapshot_refuses_a_fine_grid_whose_endpoint_exceeds_dsp_delay_bound():
+    spec = NullWalkSpec(
+        crossover_fc_hz=24.0,
+        geometry_seed_us=0.0,
+        positive_delay_target="upper",
+        negative_delay_target="lower",
+    )
+
+    with pytest.raises(DelayGraphProofError) as caught:
+        _snapshot(spec)
+
+    assert caught.value.code == "snapshot_invalid"

@@ -720,7 +720,8 @@
 > session. Mono plans require exactly one mono active group; stereo plans
 > require exactly left and right active groups, with exact way-count modes and
 > complete driver-role sets. Normal and reverse each require three fresh one-shot captures from
-> one typed reserved attempt; every shared delay-walk coordinate requires five fresh
+> one typed reserved attempt; every coordinate in the exact Shared bounded
+> coarse-plus-refinement schedule requires five fresh
 > one-shot captures from its own attempt. Each capture binds exact graph,
 > placement, generated-WAV, generation/playback protection, and canonical
 > generation/playback admission identities, with cross-role replay refused. A
@@ -780,9 +781,11 @@ For JTS, that means:
   delay capture authority must contain. Until the production summed host issues
   and persists them from reserved run attempts, their existence does not make
   the current run measured or candidate-ready.
-- The shipped 350 Hz lower crossover needs a reviewed adaptive delay scheduler:
-  its exhaustive 100 µs grid exceeds Shared's 25-point bound. The production
-  host must add that scheduler contract rather than weakening the bound.
+- The shipped 350 Hz lower crossover now has a reviewed bounded schedule
+  contract: its 29-coordinate fine grid becomes 15 symmetric coarse
+  coordinates plus at most two adjacent fine refinements around an explicit
+  coarse anchor. The exhaustive runner remains capped at 25. The production
+  host must consume this exact schedule; no host or selected delay exists yet.
 
 The existing deployed audio topology now has the runtime substrate for
 the constrained dual Apple active-output profile, but commissioning
@@ -2062,7 +2065,8 @@ driver-safety profile, excitation admission, nine-state lifecycle, exact
 eligibility receipt, reachable isolated-driver persisted admission under one
 bounded writer transaction, summed pre-audio refusal, strict group-by-region
 normal/reverse/delay evidence values with typed run/attempt and geometry
-authority, complete-plan replay guards, receipt schema-v2 one-shot roles, and the
+authority, the bounded low-frequency coarse-plus-refinement schedule,
+complete-plan replay guards, receipt schema-v2 one-shot roles, and the
 durable bundle-backed commissioning-run store/start/status boundary and service owner-
 generation claim; no live candidate/verification/receipt producer, and
 temporary passive-only Room

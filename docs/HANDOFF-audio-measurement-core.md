@@ -311,8 +311,9 @@ groups; every group must match the preset way count and complete driver-role
 set. A two-way has one target per active group; a three-way
 keeps its lower and upper crossover regions separate. Normal, reverse, and
 delay identities are distinct. Each stationary set requires three fresh
-one-shot captures from one durable attempt, and each shared `NullWalkSpec`
-coordinate requires five fresh one-shot captures from its own attempt. Every
+one-shot captures from one durable attempt, and each coordinate in the exact
+Shared `BoundedNullWalkSchedule` requires five fresh one-shot captures from its
+own attempt. Every
 capture binds exact graph and placement identities, separate generation and
 playback protection proofs, a generated immutable WAV, and canonical Active
 generation/playback admission artifacts. Cross-role and cross-set artifact
@@ -332,9 +333,12 @@ writer lock, persist the strict values only after exact restoration, and supply
 an operator-attested signed geometry seed. Therefore summed playback remains
 pre-audio refused and candidate/receipt/Room authority remains unavailable.
 The shipped 350 Hz lower crossover exceeds the shared 25-point exhaustive-walk
-budget at the allowed 100 µs maximum step. The production host must therefore
-land the reviewed adaptive scheduler contract before it can issue complete
-evidence for that region; this pure slice does not weaken the shared bound.
+budget at the allowed 100 µs maximum step. Shared now represents it with a
+deterministic schedule of 15 symmetric coarse coordinates plus at most two
+adjacent fine refinements around an explicit coarse anchor; the exhaustive
+runner remains capped at 25 and the complete schedule at 27. The production
+host must consume that exact schedule before it can issue evidence; this pure
+slice does not play, capture, select a delay, or weaken either bound.
 
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
@@ -418,6 +422,13 @@ evidence for that region; this pure slice does not weaken the shared bound.
   still own the actual DSP mutation, exact restore, read-back, writer exclusion,
   and capture transport. The exhaustive runner preflights and refuses above 25
   candidates or beyond CamillaDSP's 20 ms delay ceiling before touching DSP.
+  `BoundedNullWalkSchedule` is the separate resumable-host scheduling contract:
+  it retains the seed and both aligned endpoints, chooses at most 25 symmetric
+  coarse coordinates, and adds only the two immediate fine-grid neighbors of
+  one explicit coarse refinement anchor. Its schedule is capped at 27 and
+  carries no selected-delay authority. Non-allocating fine-grid membership lets
+  graph proof validate one scheduled coordinate without bypassing the
+  exhaustive runner's refusal.
   `delay_graph.py` is the inert candidate graph-*content* seam beside that
   runner. Inside an outer exact-restore transaction, a host stages both delay
   lanes to numeric zero and supplies the same `DspPredecessor` the F1 runner
@@ -444,8 +455,8 @@ evidence for that region; this pure slice does not weaken the shared bound.
   graphs remain an explicit integration gap, not admitted measurement
   authority. Emitted-file hashes are never compared with CamillaDSP's
   normalized/default-expanded graph. Production CamillaDSP/web/persistence
-  wiring is not shipped yet, and low-frequency bass walks require a separately
-  reviewed adaptive scheduler before they are executable.
+  wiring is not shipped yet; low-frequency hosts must consume the bounded
+  schedule explicitly before they are executable.
 - The relay level target is reusable state, not a long-lived live gain. A
   successful ramp restores the original listening volume immediately. Room,
   verification, and active-crossover adapters reassert the target only inside
@@ -1204,8 +1215,9 @@ unique attempt ids; closed guarded-playback terminal events; and
 no-bundle-migration/no-backfill boundaries plus Active isolated-driver adoption,
 server-owned capture handoff, and summed pre-audio refusal checked
 hardware-free. Strict Active group-by-region normal/reverse/delay evidence
-values, typed run/attempt and geometry authority, complete-plan replay guards,
-and receipt schema-v2 one-shot generation/playback roles were checked pure.
+values, typed run/attempt and geometry authority, the bounded low-frequency
+coarse-plus-refinement schedule, complete-plan replay guards, and receipt
+schema-v2 one-shot generation/playback roles were checked pure.
 Durable bundle-backed Active run identity, startup owner claim,
 stale-callback refusal, and fail-closed crossover status were checked hardware-
 free. No hardware behavior revalidated. Wave 1 excitation/evidence identities

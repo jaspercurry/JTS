@@ -48,9 +48,9 @@ Modules:
   - :mod:`~jasper.audio_measurement.playback` — production WAV/tone emission,
     cancellation, and process cleanup after feature-owned admission.
   - :mod:`~jasper.audio_measurement.null_walk` — the geometry-bounded,
-    timing-locked delay search contract shared by active-speaker and bass
-    alignment; it consumes repeated gated null depths, never browser arrival
-    times.
+    timing-locked delay search contract and bounded coarse-plus-refinement
+    schedule shared by active-speaker and bass alignment; it consumes repeated
+    gated null depths, never browser arrival times.
   - :mod:`~jasper.audio_measurement.delay_graph` — the pure, typed graph-content
     proof that a null-walk DSP candidate differs from a graph-proven,
     zero-relative predecessor by only one bounded delay lane; each host supplies
