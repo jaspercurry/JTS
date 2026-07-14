@@ -107,7 +107,8 @@ Ownership is deliberately split:
   CamillaDSP or by a push-to-source volume API. Operational lifecycle
   resources live in `jasper/local_sources/registry.py`: the systemd units
   that run, advertise, park while paired as a follower, restore on unpair,
-  and refresh after audio graph changes.
+  and refresh after audio graph changes, plus the explicit source-critical
+  subset used for cached readiness health.
 - Before mux exposes a new lane, it asks
   `VolumeCoordinator.prepare_source_handoff(...)` to make the target
   volume carrier safe. Only then does it send `SELECT <label>` to

@@ -26,6 +26,19 @@ def test_usb_runtime_includes_composite_gadget_owner():
     lifecycle = local_source_lifecycle(Source.USBSINK)
     assert "jasper-usbgadget.service" in lifecycle.runtime_units
     assert "jasper-usbsink-volume.service" in lifecycle.runtime_units
+    assert set(lifecycle.health_units) == {
+        "jasper-usbgadget.service",
+        "jasper-usbsink.service",
+    }
+
+
+def test_source_health_units_exclude_ancillary_pairing_agent():
+    bluetooth = local_source_lifecycle(Source.BLUETOOTH)
+
+    assert set(bluetooth.health_units) <= set(bluetooth.runtime_units)
+    assert "bluealsa-aplay.service" in bluetooth.health_units
+    assert "bluealsa.service" in bluetooth.health_units
+    assert "bt-agent.service" not in bluetooth.health_units
 
 
 def test_usb_parking_stops_audio_bridge_not_the_composite_gadget():

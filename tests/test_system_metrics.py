@@ -81,6 +81,24 @@ def test_snapshot_returns_independent_copy() -> None:
     assert list(s._t) == [0.0, 1.0, 2.0, 3.0, 4.0]
 
 
+def test_service_states_snapshot_returns_independent_cached_copy() -> None:
+    s = SystemSampler()
+    s._service_state_snapshot = {
+        "librespot.service": {
+            "active_state": "failed",
+            "result": "exit-code",
+        },
+    }
+
+    states = s.service_states_snapshot()
+    states["librespot.service"]["active_state"] = "active"
+
+    assert (
+        s.service_states_snapshot()["librespot.service"]["active_state"]
+        == "failed"
+    )
+
+
 # ---------- /proc readers handle real data ------------------------------
 
 

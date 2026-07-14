@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""System dashboard at /system/.
+"""Status dashboard at /system/ (System) and /system/audio/ (Audio).
 
 Read-only(ish) view of what the speaker is doing — RAM/CPU/temp/disk
 with 60-min sparklines, software version, network + renderer state,
@@ -66,7 +66,8 @@ logger = logging.getLogger(__name__)
 IDLE_SHUTDOWN_SEC = 1800.0
 
 
-def _render_page(csrf_token: str = "") -> bytes:
+def _render_page(csrf_token: str = "", *, view: str = "system") -> bytes:
+    view = "audio" if view == "audio" else "system"
     # The page renders entirely client-side from /system/snapshot, so the
     # body is just a mount point plus the ES module entry. canonical_page
     # emits the shared app.css link, the CSRF meta tag (read by main.js for
@@ -77,13 +78,13 @@ def _render_page(csrf_token: str = "") -> bytes:
         # A visible placeholder inside the mount point: buildPage() replaces
         # it on first render, so if the ES module graph ever fails to load
         # the page shows "Loading…" rather than a silent blank.
-        '<div id="app" aria-busy="true">'
+        f'<div id="app" data-view="{view}" aria-busy="true">'
         '<p class="boot-note">Loading the dashboard…</p>'
         '</div>\n'
         '<script type="module" src="/assets/system-status/js/main.js"></script>'
     )
     return canonical_page(
-        "System", body, csrf_token=csrf_token,
+        "Status", body, csrf_token=csrf_token,
         page_css_href="/assets/system-status/system.css",
     )
 
@@ -101,11 +102,17 @@ def _make_handler(
             # "/" and "/data.json".
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            if path == "/":
+            if path in ("/", "/audio"):
                 if not guard_read_request(self):
                     return
                 ctx = begin_request(self)
-                send_html_response(self, _render_page(ctx["csrf_token"]))
+                send_html_response(
+                    self,
+                    _render_page(
+                        ctx["csrf_token"],
+                        view="audio" if path == "/audio" else "system",
+                    ),
+                )
                 return
             if path == "/data.json":
                 if not guard_read_request(self):
@@ -173,7 +180,7 @@ def make_server(target, *, control_base: str = DEFAULT_CONTROL_BASE) -> Threadin
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jasper-system-web",
-        description="System dashboard at /system/ for the JTS speaker",
+        description="Status dashboard at /system/ and /system/audio/ for JTS",
     )
     parser.add_argument(
         "--host",

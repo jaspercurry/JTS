@@ -1288,6 +1288,7 @@ def _make_handler(
     voice_socket_path: str,
     sampler: Any = None,
     airplay_health_sampler: Any = None,
+    audio_health_sampler: Any = None,
     ha_status_cache: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
 
@@ -1794,6 +1795,24 @@ def _make_handler(
                         ha_status_snapshot=ha_status_cache.snapshot,
                     )),
                 )
+                # The audio-health sampler is the single normalized health
+                # contract shared by /state and /system/snapshot. Copy the
+                # cached aggregate before attaching it so the cross-request
+                # state cache never retains a stale health object.
+                if audio_health_sampler is not None:
+                    state = dict(state)
+                    try:
+                        state["audio_health"] = audio_health_sampler.snapshot()
+                    except (
+                        AttributeError,
+                        KeyError,
+                        OSError,
+                        RuntimeError,
+                        TypeError,
+                        ValueError,
+                    ):
+                        logger.exception("/state audio health snapshot failed")
+                        state["audio_health"] = None
             except Exception as e:  # noqa: BLE001
                 logger.exception("/state aggregation failed")
                 self._send_json({"error": str(e)}, status=502)
@@ -1813,7 +1832,14 @@ def _make_handler(
             # a broken read returns 200 with null rather than 500.
             try:
                 grouping = read_grouping_state()
-            except Exception:  # noqa: BLE001
+            except (
+                AttributeError,
+                KeyError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ):
                 logger.exception("grouping state read failed")
                 grouping = None
             # grouping_response is the ONE home for the envelope shape; the
@@ -1857,10 +1883,13 @@ def _make_handler(
                 }
 
             try:
-                airplay_health = (
-                    airplay_health_sampler.snapshot()
-                    if airplay_health_sampler is not None else None
-                )
+                if audio_health_sampler is not None:
+                    airplay_health = audio_health_sampler.airplay_snapshot()
+                else:
+                    airplay_health = (
+                        airplay_health_sampler.snapshot()
+                        if airplay_health_sampler is not None else None
+                    )
             except Exception:  # noqa: BLE001
                 logger.exception("airplay health snapshot failed")
                 airplay_health = {
@@ -1869,10 +1898,22 @@ def _make_handler(
                 }
 
             try:
-                outputd_status = asyncio.run(_outputd_status())
+                if audio_health_sampler is not None:
+                    outputd_status = audio_health_sampler.outputd_snapshot()
+                else:
+                    outputd_status = asyncio.run(_outputd_status())
             except Exception:  # noqa: BLE001
                 logger.exception("outputd status snapshot failed")
                 outputd_status = None
+
+            try:
+                audio_health = (
+                    audio_health_sampler.snapshot()
+                    if audio_health_sampler is not None else None
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("audio health snapshot failed")
+                audio_health = None
 
             install_profile = _control_install_profile()
             payload: dict[str, Any] = {
@@ -1881,6 +1922,7 @@ def _make_handler(
                     sampler.snapshot() if sampler is not None else None
                 ),
                 "airplay_health": airplay_health,
+                "audio_health": audio_health,
                 "active_speaker_output_safety": (
                     _active_speaker_output_safety_snapshot(airplay_health)
                 ),
@@ -3235,6 +3277,7 @@ def build_server(
     voice_socket_path: str = "/run/jasper/voice.sock",
     sampler: Any = None,
     airplay_health_sampler: Any = None,
+    audio_health_sampler: Any = None,
 ) -> ControlHTTPServer:
     return ControlHTTPServer(
         (host, port),
@@ -3244,6 +3287,7 @@ def build_server(
             voice_socket_path,
             sampler,
             airplay_health_sampler,
+            audio_health_sampler,
         ),
     )
 
@@ -3328,21 +3372,23 @@ def main(argv: list[str] | None = None) -> int:
     from .system_metrics import SystemSampler
     sampler = SystemSampler()
     sampler.start()
-    # AirPlay health sampler — cheap fan-in counters at 5 s, slower
-    # journal/MPRIS/Camilla probes for the /system AirPlay card.
-    from .airplay_health import AirPlayHealthSampler
-    airplay_health_sampler = AirPlayHealthSampler(
+    # One audio-health sampler — composes the existing AirPlay probes with
+    # cheap outputd state + slow route certification reads. It is the only
+    # resident audio-monitor thread.
+    from .audio_health import AudioHealthSampler
+    audio_health_sampler = AudioHealthSampler(
         camilla_host=args.camilla_host,
         camilla_port=args.camilla_port,
+        service_probe=sampler.service_states_snapshot,
     )
-    airplay_health_sampler.start()
+    audio_health_sampler.start()
 
     server = build_server(
         args.host, args.port,
         args.camilla_host, args.camilla_port,
         args.voice_socket,
         sampler=sampler,
-        airplay_health_sampler=airplay_health_sampler,
+        audio_health_sampler=audio_health_sampler,
     )
     # WS1 Phase 2: arm the control-token gate before serving. ensure_token()
     # auto-generates the token (0640 group jasper) if absent, so the destructive

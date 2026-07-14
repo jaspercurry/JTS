@@ -287,6 +287,33 @@ convergence pass. `/state.audio.output_hardware`, `/sound/output-topology`,
 and `jasper-doctor` read that same artifact so output hardware diagnostics can
 distinguish the active runtime role from the best observed physical shape.
 
+**Audio health is one normalized, cached production surface.**
+[`jasper/control/audio_health.py`](../jasper/control/audio_health.py) composes
+the existing bounded AirPlay collector, one local outputd `STATUS` read, and a
+slow route/artifact assessment into `/state.audio_health` and
+`/system/snapshot.audio_health`. The browser renders those conclusions; it
+does not run probes or classify raw counters. Production starts one
+`AudioHealthSampler` thread in place of the former standalone AirPlay sampler
+thread, so opening `/system/audio/` adds no resident worker and no probe work.
+The fast cadence is fixed-shape local UDS state; journal, MPRIS, Camilla, and
+route-artifact work stays on slower bounded cadences; the route check reads one
+atomic, route-specific latest pointer rather than scanning accumulated history
+(with one constant-work `latest.json` fallback for pre-upgrade evidence).
+Source readiness reuses the System sampler's cached 30-second systemd snapshot
+and the local-source registry's explicit health-unit set to distinguish Ready,
+Not running, and failed without treating pairing/advertising helpers as the
+renderer. Audio health does not spawn a second `systemctl` cadence.
+
+The contract separates playback continuity from timing. A USB `l2_fallback`
+is a latency warning while playback remains protected; `l0_locked` is runtime
+clock state and never substitutes for a matching measured route artifact.
+AirPlay synchronization remains source-specific rather than becoming a USB
+low-latency claim. Recent issues are a bounded in-memory lifecycle: ongoing
+conditions cannot be evicted by recovered blips, recovered entries coalesce,
+and known-inaudible Camilla short reads remain collapsed technical evidence
+unless an audible boundary also fails. The legacy `airplay_health` block is
+retained for existing consumers and deeper AirPlay forensics.
+
 ---
 
 ## Built tiers and removed surfaces
@@ -545,7 +572,11 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-07-12 (full operational pass; structured event values with
+Last verified: 2026-07-14 (normalized audio-health ownership, cadence,
+continuity-vs-timing semantics, bounded issue lifecycle, and legacy AirPlay
+compatibility rechecked against `jasper/control/audio_health.py`,
+`jasper/control/airplay_health.py`, `jasper/control/server.py`, and their
+contract tests). Prior full operational pass 2026-07-12 (structured event values with
 backslashes, every ASCII control, NEL, and Unicode line/paragraph separators
 rechecked against the one-physical-line logfmt and JSON contracts; the 13-file
 deferred inventory was cross-checked against the machine-enforced allowlist,

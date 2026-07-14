@@ -42,9 +42,11 @@ JTS already has the right system ownership:
 The missing boundary is that source capability details are still spread
 across these modules. `jasper/music_sources.py` declares static source
 facts and `VolumeMode`, and `jasper/local_sources/registry.py` declares
-runtime lifecycle resources for built-in local sources. Source-specific
-volume I/O, transport support, metadata, health, and provider prerequisites
-still live as local branches in several callers.
+runtime lifecycle resources for built-in local sources. That lifecycle entry
+also declares the small `health_units` subset whose failure affects playback;
+pairing/advertising helpers stay out of renderer availability. Source-specific
+volume I/O, transport support, metadata, and provider prerequisites still live
+as local branches in several callers.
 
 That is acceptable for four built-in sources. It becomes awkward when
 future sources arrive: Apple Music, local library playback, internet

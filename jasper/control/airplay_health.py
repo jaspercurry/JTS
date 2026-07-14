@@ -31,10 +31,11 @@ import subprocess
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from jasper.log_event import log_event
+from jasper.music_sources import MUSIC_SOURCE_SPECS
 
 logger = logging.getLogger(__name__)
 
@@ -571,6 +572,14 @@ class AirPlayHealthSampler:
         """For tests; production runs the daemon thread to process exit."""
         self._stopped = True
 
+    def sample_once(self) -> None:
+        """Take one sample without starting this collector's own thread.
+
+        The speaker-wide audio-health sampler composes this AirPlay-specific
+        collector and calls it from the one existing monitoring loop.
+        """
+        self._tick()
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             summary_5m = self._summary_locked(5 * 60.0)
@@ -729,6 +738,11 @@ class AirPlayHealthSampler:
         inputs = status.get("inputs")
         if not isinstance(inputs, list):
             inputs = []
+        inputs_by_label = {
+            entry.get("label"): entry
+            for entry in inputs
+            if isinstance(entry, dict) and isinstance(entry.get("label"), str)
+        }
         airplay = next(
             (inp for inp in inputs if inp.get("label") == "airplay"),
             None,
@@ -747,6 +761,16 @@ class AirPlayHealthSampler:
         prev = self._last_fanin_counts
         airplay_rate: float | None = None
         output_rate: float | None = None
+        input_rates: dict[str, float | None] = {
+            spec.id.value: None for spec in MUSIC_SOURCE_SPECS
+        }
+        input_frames = {
+            spec.id.value: (
+                _as_int(inputs_by_label[spec.fanin_label].get("frames_read"))
+                if spec.fanin_label in inputs_by_label else 0
+            )
+            for spec in MUSIC_SOURCE_SPECS
+        }
         if prev is not None:
             dt = max(0.001, now - float(prev.get("ts", now)))
             prev_airplay_frames = _as_int(prev.get("airplay_frames"))
@@ -755,6 +779,12 @@ class AirPlayHealthSampler:
                 airplay_rate = (airplay_frames - prev_airplay_frames) / dt
             if output_frames >= prev_output_frames:
                 output_rate = (output_frames - prev_output_frames) / dt
+            previous_inputs = prev.get("input_frames")
+            if isinstance(previous_inputs, Mapping):
+                for source_id, frames in input_frames.items():
+                    previous_frames = _as_int(previous_inputs.get(source_id))
+                    if frames >= previous_frames:
+                        input_rates[source_id] = (frames - previous_frames) / dt
 
             airplay_delta = airplay_xruns - _as_int(prev.get("airplay_xruns"))
             output_delta = output_xruns - _as_int(prev.get("output_xruns"))
@@ -789,15 +819,79 @@ class AirPlayHealthSampler:
             "airplay_xruns": airplay_xruns,
             "output_frames": output_frames,
             "output_xruns": output_xruns,
+            "input_frames": input_frames,
         }
 
         input_buffer_frames = _as_int(status.get("input_buffer_frames"))
         output_buffer_frames = _as_int(output.get("buffer_frames"))
+        # Fixed-shape, source-neutral observations for the outer audio-health
+        # composer. Keep only what explains health; /state retains the full
+        # fan-in STATUS for deep debugging. Every declared source gets a slot,
+        # even when its lane is absent, so adding a source extends the existing
+        # metadata seam rather than another dashboard conditional.
+        input_observations: dict[str, dict[str, Any]] = {}
+        for spec in MUSIC_SOURCE_SPECS:
+            entry = inputs_by_label.get(spec.fanin_label)
+            resampler = (
+                entry.get("resampler")
+                if isinstance(entry, dict)
+                and isinstance(entry.get("resampler"), dict)
+                else None
+            )
+            direct = (
+                entry.get("direct")
+                if isinstance(entry, dict)
+                and isinstance(entry.get("direct"), dict)
+                else None
+            )
+            input_observations[spec.id.value] = {
+                "label": spec.fanin_label,
+                "present": isinstance(entry, dict),
+                "source": entry.get("source") if isinstance(entry, dict) else None,
+                "frames_read": (
+                    _as_int(entry.get("frames_read"))
+                    if isinstance(entry, dict) else 0
+                ),
+                "frames_per_sec": (
+                    round(input_rates[spec.id.value], 1)
+                    if input_rates[spec.id.value] is not None else None
+                ),
+                "xrun_count": (
+                    _as_int(entry.get("xrun_count"))
+                    if isinstance(entry, dict) else 0
+                ),
+                "rms_dbfs": (
+                    _as_float(entry.get("rms_dbfs"))
+                    if isinstance(entry, dict) else None
+                ),
+                "muted": (
+                    entry.get("muted")
+                    if isinstance(entry, dict)
+                    and isinstance(entry.get("muted"), bool)
+                    else None
+                ),
+                "health": direct.get("health") if direct is not None else None,
+                "resampler": (
+                    {
+                        "health": resampler.get("health"),
+                        "locked": resampler.get("locked"),
+                        "fill_frames": resampler.get("fill_frames"),
+                        "target_fill_frames": resampler.get("target_fill_frames"),
+                    }
+                    if resampler is not None else None
+                ),
+            }
         current = {
             "available": True,
             "input_buffer_frames": input_buffer_frames,
             "output_buffer_frames": output_buffer_frames,
             "selected_input": status.get("selected_input"),
+            "inputs": input_observations,
+            "host_clock": (
+                copy.deepcopy(status.get("host_clock"))
+                if isinstance(status.get("host_clock"), dict)
+                else None
+            ),
             "airplay": {
                 "present": airplay is not None,
                 "frames_read": airplay_frames,
@@ -1111,8 +1205,7 @@ class AirPlayHealthSampler:
         watchdog = fanin.get("watchdog", {})
         if isinstance(watchdog, dict):
             progress_age = _as_int(watchdog.get("last_progress_age_ms"))
-            skipped = _as_int(watchdog.get("pings_skipped"))
-            if progress_age > 3000 or skipped > 0:
+            if progress_age > 5000:
                 return "issue", "fan-in watchdog stale"
 
         if (

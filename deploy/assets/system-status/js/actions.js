@@ -70,7 +70,7 @@ export async function setQuality(refs, converter) {
   aq.buttons.forEach((b) => { b.el.disabled = true; b.el.dataset.applying = "1"; });
   aq.status.textContent = "Applying…";
   try {
-    const r = await fetch("audio-quality", {
+    const r = await fetch("/system/audio-quality", {
       method: "POST", headers: jsonHeaders(), body: JSON.stringify({ converter }),
     });
     const body = await r.json();

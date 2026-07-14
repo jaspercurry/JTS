@@ -58,6 +58,7 @@ CURRENT_SCHEMA_VERSION = 1
 SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 DEFAULT_ARTIFACT_DIR = Path("/var/lib/jasper/audio-validation")
 LATEST_POINTER_NAME = "latest.json"
+ROUTE_LATENCY_POINTER_NAME = "latest-route-latency.json"
 DEFAULT_STALE_AFTER = timedelta(days=30)
 DEFAULT_FUTURE_SKEW = timedelta(minutes=5)
 ALLOWED_STATUSES = frozenset({"pass", "warn", "fail", "unknown"})
@@ -695,11 +696,14 @@ def write_latest_pointer(
     *,
     directory: Path | str = DEFAULT_ARTIFACT_DIR,
     file_mode: int = 0o644,
+    pointer_name: str = LATEST_POINTER_NAME,
 ) -> Path:
-    """Atomically update the convenience latest pointer for status surfaces."""
+    """Atomically update one trusted latest pointer for status surfaces."""
 
     directory_path = Path(directory)
-    path = directory_path / LATEST_POINTER_NAME
+    if Path(pointer_name).name != pointer_name or not pointer_name.endswith(".json"):
+        raise ValueError("pointer_name must be a JSON filename")
+    path = directory_path / pointer_name
     _write_artifact_json(path, artifact, file_mode=file_mode)
     return path
 
@@ -797,7 +801,8 @@ def load_latest_artifact(
     try:
         paths = sorted(
             p for p in directory_path.glob("*.json")
-            if p.is_file() and p.name != LATEST_POINTER_NAME
+            if p.is_file()
+            and p.name not in {LATEST_POINTER_NAME, ROUTE_LATENCY_POINTER_NAME}
         )
     except OSError as e:
         return ArtifactLoadResult(

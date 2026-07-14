@@ -115,9 +115,15 @@ export function collapsible({ title, open = true, body }) {
   return root;
 }
 
-// Sticky page header: back affordance + centred title. Uses the shared icon
-// sprite (#icon-back) that canonical_page() emits into the document.
-export function header({ title = "System", backHref = "/" } = {}) {
+// Sticky page header: back affordance + centred title plus the shared
+// System/Audio status navigation. These are links between documents, not
+// in-page tab panels, so aria-current communicates selection without a
+// misleading tablist role.
+export function header({ title = "Status", backHref = "/", activeView = "system" } = {}) {
+  const viewLink = (id, label, href) => h("a.segmented__btn", {
+    href,
+    "attr:aria-current": activeView === id ? "page" : null,
+  }, label);
   return h("header.app-header", null,
     h("div.app-header__row", null,
       h("a.icon-button", { href: backHref, "attr:aria-label": "Home" },
@@ -125,6 +131,14 @@ export function header({ title = "System", backHref = "/" } = {}) {
           svg("use", { href: "#icon-back" }))),
       h("h1.app-header__title", null, title),
       h("span"),
+    ),
+    h("div.app-header__tabs", null,
+      h("div", null,
+        h("nav.segmented", { "attr:aria-label": "Status views" },
+          viewLink("system", "System", "/system/"),
+          viewLink("audio", "Audio", "/system/audio/"),
+        ),
+      ),
     ),
   );
 }
@@ -138,4 +152,24 @@ export function livePill(initial = "Loading…") {
     label,
   );
   return { el, label };
+}
+
+// Refresh one poll-driven section without letting a malformed optional block
+// blank the page. The JSON memo avoids DOM churn (and preserves text
+// selection) when a slice is unchanged. Both Status views use this seam.
+export function renderSection(refs, key, container, data, build) {
+  let json = null;
+  try { json = JSON.stringify(data); } catch { /* unserialisable -> always render */ }
+  if (json === undefined) json = null;
+  if (json !== null && refs._memo[key] === json) return;
+  try {
+    const out = build();
+    container.replaceChildren(...(Array.isArray(out) ? out : [out]));
+    refs._memo[key] = json;
+  } catch (e) {
+    console.error(`status: rendering section '${key}' failed`, e);
+    refs._memo[key] = null;
+    container.replaceChildren(
+      h("p.info-card__note", null, "Couldn't render this section — see the console."));
+  }
 }

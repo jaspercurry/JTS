@@ -1,9 +1,9 @@
-/* System dashboard — page-specific styles.
+/* Status dashboard — page-specific styles.
    Shared tokens, the sticky header, cards, key/value lists, status
    pills, and buttons live in /assets/app.css. This is the dashboard's
    own visualisation vocabulary: vital-stat tiles, sparklines, per-core
-   CPU bars, tables, the audio-conversion choice cards, the AirPlay
-   event list, and the collapsible. Token-based; served static and
+   CPU bars, tables, the audio-health/source cards, the audio-conversion
+   choices, and the collapsible. Token-based; served static and
    cache-busted by build SHA (see jasper.web._common.canonical_page). */
 .app-main {
   max-width: 48rem;
@@ -142,15 +142,77 @@ a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
   }
 }
 
-/* AirPlay event list */
-.ap-events { display: grid; gap: 6px; }
-.ap-event {
-  border-left: 2px solid var(--border); padding-left: 12px;
-  font-size: 13px; color: var(--text);
+/* Audio health */
+.audio-overview,
+.timing-summary { display: flex; flex-direction: column; gap: 12px; }
+.audio-overview > *,
+.timing-summary > * { margin-top: 0 !important; }
+.audio-overview__headline {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
 }
-.ap-event.watch { border-left-color: var(--status-warn); }
-.ap-event.issue { border-left-color: var(--status-danger); }
-.ap-event .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+.audio-overview__detail { color: var(--muted); font-size: 14px; line-height: 1.45; }
+.inline-status { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.audio-empty { color: var(--muted); font-size: 13px; }
+
+/* Recent issue lifecycle — backend supplies ongoing/recovered state and copy. */
+.issue-list { display: grid; gap: 12px; }
+.issue-row {
+  padding: 14px 0 14px 14px;
+  border-left: 2px solid var(--border);
+}
+.issue-row:first-child { padding-top: 0; }
+.issue-row:last-child { padding-bottom: 0; }
+.issue-row.is-ongoing { border-left-color: var(--tone, var(--status-danger)); }
+.issue-row__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.issue-row__title { font-family: var(--font-display); font-size: 14px; font-weight: 600; }
+.issue-row__detail { margin-top: 6px; color: var(--muted); font-size: 13px; line-height: 1.4; }
+.issue-row__meta {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Source-specific health stays compact; timing appears only when supplied. */
+.source-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 620px) { .source-grid { grid-template-columns: 1fr 1fr; } }
+.source-card {
+  padding: 16px;
+  border-radius: var(--radius-sm);
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.source-card__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.source-card__title { font-family: var(--font-display); font-size: 14px; font-weight: 600; }
+.source-card__headline { margin-top: 12px; font-size: 13px; font-weight: 500; }
+.source-card__detail { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.source-card__timing {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.source-card__timing .inline-status { margin-top: 8px; font-size: 12px; }
+
+/* Raw bounded snapshots live behind the closed Technical details disclosure. */
+.technical-stack { display: grid; gap: 18px; }
+.technical-block { min-width: 0; }
+.technical-json {
+  max-width: 100%;
+  max-height: 18rem;
+  margin: 8px 0 0;
+  padding: 12px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--foreground-005);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+}
 
 /* Collapsible (per-service usage) */
 .collapsible__toggle {

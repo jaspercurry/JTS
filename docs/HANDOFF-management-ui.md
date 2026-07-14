@@ -427,7 +427,16 @@ reordering better than the prior flat enumeration):
 | **Accessories** | Dial → `/dial/` |
 | **System** | Status → `/system/` · Speaker name → `/speaker/` · Software → `/system/` · Developer tools (operator) → `/wake-corpus/` |
 
-### 3.2 `/system/` dashboard — ~11 sub-cards
+### 3.2 `/system/` status dashboard — System and Audio views
+
+One socket-activated server owns both documents. A shared **Status** header
+uses the canonical segmented-navigation component for **System**
+(`/system/`) and **Audio** (`/system/audio/`); these are ordinary links with
+`aria-current="page"`, not client-side tab panels. Both views poll the same
+cached `/system/data.json` snapshot every 5 seconds and build their structure
+once, so polling does not reset controls, disclosure state, or text selection.
+
+**System** contains the host/operator view:
 
 - Status line (sampler health)
 - 6 metric tiles: Memory, Load, CPU, Temp, Fan (if present), Disk —
@@ -437,15 +446,36 @@ reordering better than the prior flat enumeration):
 - Software (sha · branch · install date · uptime · voice provider)
 - Home Assistant connection status (including a "Checking" transient while
   the child-process probe cache refreshes)
-- AirPlay health (status, recent drop/xrun summary, fan-in/outputd/Camilla
-  state, including outputd cgroup memory)
-- Audio conversion (Medium/Best ALSA rate-converter preference)
 - Network (RX / TX bytes since boot, throttle bits)
 - Actions (Restart voice / Restart audio / Reboot speaker / Power off)
 - Diagnostics (collapsible — runs `jasper-doctor`)
-- Per-service usage (cgroup CPU + memory plus cached systemd
-  `ActiveState` / `SubState` / `NRestarts`; failed or repeatedly
-  restarted units surface even if their cgroup has disappeared)
+- Debug logging and per-service usage (cgroup CPU + memory plus cached systemd
+  `ActiveState` / `SubState` / `NRestarts`; failed or repeatedly restarted
+  units surface even if their cgroup has disappeared)
+
+**Audio** is the single household-facing audio-health view:
+
+- one concise overall conclusion plus the shared signal-path stages;
+- a conditional Timing card: USB shows the declared low-latency route's
+  runtime clock mode separately from its measured certification, while
+  AirPlay timing stays a source-specific synchronization concern;
+- a bounded recent-issues list that distinguishes ongoing trouble from a
+  recovered blip and reports time since the transition;
+- compact AirPlay, Spotify, Bluetooth, and USB Audio source cards derived
+  from the canonical music-source registry; cached service state distinguishes
+  Ready, Not running, and a failed source-critical service without treating
+  ancillary helpers as renderers or starting another systemd probe cadence,
+  and source-specific timing appears only where the source has a real contract;
+- collapsed technical details for raw fan-in/Camilla/outputd context; and
+- Audio conversion (Medium/Best ALSA rate-converter preference).
+
+The browser does not infer health from raw counters or contain latency
+thresholds. It renders the normalized `/system/snapshot.audio_health`
+contract and fails soft to an explicit unavailable card if that block is
+missing. Playback continuity and timing are separate axes: a USB L2 fallback
+can protect clean playback while honestly reporting increased latency, and an
+L0 lock is never presented as end-to-end certification without a fresh,
+matching route-latency artifact.
 
 ### 3.3 Web surfaces under `jasper/web/`
 
@@ -463,7 +493,7 @@ surfaces such as `/bluetooth/`, `/dial/`, `/system/`, `/chat/`, and
 | `/bluetooth/` | `bluetooth_setup.py` | 8769 | Adapter + pairing |
 | `/correction/` | `correction_setup.py` | 8770 | Room measurement (HTTPS) |
 | `/airplay/` | `airplay_setup.py` | 8771 | Sync mode |
-| `/system/` | `system_setup.py` | 8772 | Dashboard |
+| `/system/`, `/system/audio/` | `system_setup.py` | 8772 | System and audio-health dashboard |
 | `/sources/` | `sources_setup.py` | 8773 | AirPlay/BT/Spotify/USB toggles |
 | `/wake/` | `wake_setup.py` | 8774 | Microphone, echo cancellation, wake word, sensitivity, advanced fusion |
 | `/wifi/` | `wifi_setup.py` | 8775 | NetworkManager wrapper |
@@ -1412,8 +1442,14 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-07-12 (canonical toggle ownership and the no-focus-outline
-contract rechecked against `app.css` and the design-system guards; `/system/`
+Last verified: 2026-07-14 (`/system/` and `/system/audio/` Status navigation,
+the normalized audio-health rendering boundary, and shared header-tab ownership
+rechecked against `jasper/web/system_setup.py`,
+`deploy/assets/system-status/js/`, `jasper/control/audio_health.py`, and
+`app.css`; the browser renders backend conclusions and keeps USB runtime mode
+separate from measured route certification). Prior 2026-07-12: canonical toggle
+ownership and the no-focus-outline contract rechecked against `app.css` and the
+design-system guards; `/system/`
 memory tile now surfaces root
 cgroup-v2 memory buckets and the Home Assistant card handles the child-cache
 "Checking" state; rechecked against `jasper/control/system_metrics.py`,

@@ -12,11 +12,13 @@
 // or masquerades as a disconnect.
 
 import { buildPage, update } from "./views.js";
+import { buildAudioPage, updateAudio } from "./audio-view.js";
 import { getJSON } from "./api.js";
 import { postAction, setQuality, runDiagnostics } from "./actions.js";
 
 const POLL_MS = 5000;
 const root = document.getElementById("app");
+const isAudioView = root.dataset.view === "audio";
 
 let refs;
 const handlers = {
@@ -41,12 +43,13 @@ const handlers = {
   setQuality: (converter) => setQuality(refs, converter),
   runDiagnostics: (btn, out) => runDiagnostics(btn, out),
 };
-refs = buildPage(root, handlers);
+refs = isAudioView ? buildAudioPage(root, handlers) : buildPage(root, handlers);
+const updatePage = isAudioView ? updateAudio : update;
 
 async function poll() {
   let snap;
   try {
-    snap = await getJSON("data.json");
+    snap = await getJSON("/system/data.json");
   } catch (e) {
     document.body.classList.add("stale");
     refs.staleness.textContent = "Disconnected (" + e.message + "). Retrying…";
@@ -56,8 +59,14 @@ async function poll() {
   // Fetch succeeded: a render failure is isolated + logged per-section inside
   // update(), so it can't masquerade as a disconnect here.
   document.body.classList.remove("stale");
-  update(refs, snap);
-  setTimeout(poll, POLL_MS);
+  try {
+    updatePage(refs, snap);
+  } catch (e) {
+    console.error("status: page update failed", e);
+    refs.staleness.textContent = "Dashboard data was incomplete. Retrying…";
+  } finally {
+    setTimeout(poll, POLL_MS);
+  }
 }
 
 poll();

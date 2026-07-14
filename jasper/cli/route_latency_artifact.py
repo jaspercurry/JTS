@@ -28,6 +28,7 @@ from jasper.audio_runtime_plan import (
     build_audio_runtime_plan_from_system,
 )
 from jasper.audio_validation import (
+    ROUTE_LATENCY_POINTER_NAME,
     ROUTE_LATENCY_P95_BUDGET_MS,
     ROUTE_LATENCY_P95_MIN_DURATION_SECONDS,
     ROUTE_LATENCY_P99_BUDGET_MS,
@@ -477,6 +478,11 @@ def main(argv: list[str] | None = None) -> int:
         directory = args.directory or artifact_directory()
         path = write_artifact(artifact, directory=directory)
         write_latest_pointer(artifact, directory=directory)
+        write_latest_pointer(
+            artifact,
+            directory=directory,
+            pointer_name=ROUTE_LATENCY_POINTER_NAME,
+        )
     if args.stdout:
         json.dump(artifact.to_dict(), sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")

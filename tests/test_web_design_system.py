@@ -68,6 +68,7 @@ def test_app_css_carries_shared_primitives():
         ".segmented", ".btn", ".sr-only", "prefers-reduced-motion",
         '.segmented__btn[aria-pressed="true"],',
         '.segmented__btn[aria-current="page"]',
+        ".app-header__tabs",
         "[hidden] { display: none !important; }",
     ):
         assert marker in css, f"app.css missing shared primitive: {marker}"
@@ -182,6 +183,25 @@ def test_app_css_does_not_force_global_svg_size():
     m = re.search(r"\bsvg\s*\{([^}]*)\}", APP_CSS.read_text())
     assert m, "expected a base svg rule"
     assert "width" not in m.group(1), "shared svg rule must not force a size"
+
+
+def test_app_header_tab_strip_is_shared_not_page_local():
+    """Sound originated the strip; Status now reuses it, so its layout has
+    one owner in app.css while Sound keeps only its genuinely local live dot."""
+    shared = _without_css_comments(APP_CSS.read_text())
+    sound = _without_css_comments(
+        (ROOT / "deploy/assets/sound-profile/sound.css").read_text()
+    )
+    assert re.search(r"\.app-header__tabs\s*\{", shared)
+    assert re.search(r"\.app-header__tabs\s*>\s*div\s*\{", shared)
+    assert not re.search(r"\.app-header__tabs\s*\{", sound)
+    assert not re.search(r"\.app-header__tabs\s*>\s*div\s*\{", sound)
+    assert ".app-header__tabs .segmented__btn.is-live::after" in sound
+
+
+def test_segmented_labels_are_centered_for_links_and_buttons():
+    body = _css_body(APP_CSS.read_text(), ".segmented__btn")
+    assert "text-align: center" in body
 
 
 def test_shared_styles_suppress_browser_focus_outlines():
