@@ -58,7 +58,6 @@ from jasper.audio_measurement.calibration import CalibrationRecord
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
-from jasper.audio_measurement.quality_model import ROOM as ROOM_QUALITY
 from jasper.audio_measurement.ramp import (
     LISTENING_POSITION_CAP_BUMP_DB,
     LISTENING_POSITION_CAP_CEIL_DB,
@@ -997,12 +996,6 @@ class MeasurementSession:
             noise_report,
         )
 
-    def _direct_arrival_report(self, impulse_response: np.ndarray) -> dict[str, Any]:
-        return acoustic_quality.direct_arrival_report(
-            impulse_response,
-            sample_rate=self.cfg.sample_rate,
-        )
-
     def _repeatability_from_arrays(
         self,
         first: np.ndarray,
@@ -1031,90 +1024,43 @@ class MeasurementSession:
     ]:
         """Read capture, assess quality, deconvolve, smooth, log-resample.
 
-        Returns (log_freqs, smoothed_db, capture_quality) for both the
-        design positions and the verify pass.
+        Returns ``(log_freqs, smoothed_db, capture_quality, direct_arrival,
+        replay_artifacts)`` for design positions, the main-seat repeat, and
+        the verify pass.
         """
-        if self.sweep_meta is None:
-            raise RuntimeError(
-                "no sweep_meta — flow ordering bug (call _ensure_sweep_cache first)"
-            )
 
-        captured, sr = sweep.read_wav_mono(captured_wav_path)
-        # Bound the capture once, here at the session boundary, so the
-        # recorded capture quality and the deconvolved IR describe the
-        # same signal (deconvolve re-caps, idempotently). Pass the
-        # pre-cap length so assess_capture can surface a truncation
-        # warning at /status / bundle / doctor, not just the journal.
-        raw_capture_samples = len(captured)
-        captured = deconv.cap_capture_length(
-            captured,
-            sweep_len=self.sweep_meta.n_samples,
-            sample_rate=sr,
-        )
-        capture_quality = quality.assess_capture(
-            captured,
-            sample_rate=sr,
-            expected_sample_rate=self.cfg.sample_rate,
-            sweep_n_samples=self.sweep_meta.n_samples,
-            has_mic_calibration=self.mic_calibration is not None,
-            input_device=self.input_device,
-            truncated_from_samples=raw_capture_samples,
-            quality_model=ROOM_QUALITY,
-        )
-        for issue in capture_quality.issues:
+        def _log_quality_issue(issue: quality.QualityIssue) -> None:
             logger.warning(
                 "capture_quality session=%s code=%s severity=%s detail=%s",
                 self.session_id, issue.code, issue.severity, issue.message,
             )
-        if capture_quality.failed:
-            raise quality.CaptureQualityError(capture_quality)
-        sweep_signal, _ = sweep.synchronized_swept_sine(
-            f1=self.sweep_meta.f1,
-            f2=self.sweep_meta.f2,
-            duration_approx_s=self.sweep_meta.duration_s,
-            sample_rate=self.sweep_meta.sample_rate,
-            amplitude_dbfs=self.sweep_meta.amplitude_dbfs,
-        )
-        ir = deconv.deconvolve(
-            captured.astype(np.float64),
-            sweep_signal.astype(np.float64),
-            sample_rate=self.cfg.sample_rate,
-        )
-        direct_arrival = self._direct_arrival_report(ir)
-        freqs, mag_db = deconv.magnitude_response(
-            ir,
-            self.cfg.sample_rate,
-            normalize=False,
-        )
-        smoothed = analysis.smooth_fractional_octave(freqs, mag_db, fraction=48)
-        log_freqs, log_mag = analysis.resample_log(freqs, smoothed)
-        if self.mic_calibration is not None:
-            log_mag = calibration.apply_calibration_curve(
-                log_freqs, log_mag, self.mic_calibration.curve,
-            )
-        log_mag = analysis.normalize_to_band(
-            log_freqs,
-            log_mag,
-            f_low=ANALYSIS_NORMALIZE_BAND_HZ[0],
-            f_high=ANALYSIS_NORMALIZE_BAND_HZ[1],
+
+        result = acoustic_quality.analyze_capture(
+            captured_wav_path,
+            sweep_meta=self.sweep_meta,
+            expected_sample_rate=self.cfg.sample_rate,
+            mic_calibration=self.mic_calibration,
+            input_device=self.input_device,
+            normalize_band_hz=ANALYSIS_NORMALIZE_BAND_HZ,
+            on_quality_issue=_log_quality_issue,
         )
         replay_artifact_info = self._write_capture_replay_artifacts(
             captured_wav_path,
             capture_kind=capture_kind,
             position_index=position_index,
-            ir=ir,
-            raw_freqs_hz=freqs,
-            raw_magnitude_db=mag_db,
-            smoothed_magnitude_db=smoothed,
-            log_freqs_hz=log_freqs,
-            log_magnitude_db=log_mag,
-            direct_arrival=direct_arrival,
+            ir=result.impulse_response,
+            raw_freqs_hz=result.raw_freqs_hz,
+            raw_magnitude_db=result.raw_magnitude_db,
+            smoothed_magnitude_db=result.smoothed_magnitude_db,
+            log_freqs_hz=result.log_freqs_hz,
+            log_magnitude_db=result.log_magnitude_db,
+            direct_arrival=result.direct_arrival,
         )
         return (
-            log_freqs,
-            log_mag,
-            capture_quality,
-            direct_arrival,
+            result.log_freqs_hz,
+            result.log_magnitude_db,
+            result.capture_quality,
+            result.direct_arrival,
             replay_artifact_info,
         )
 

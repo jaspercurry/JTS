@@ -1365,8 +1365,8 @@ def _relay_device_calibration_block(
                                             USB measurement mic the curve is for).
 
     Returns a refusal message, or None to allow. The calibration itself is applied
-    Pi-side during analysis (`MeasurementSession._smooth_capture`); this only gates
-    whether the capture is trustworthy to analyze.
+    Pi-side in the owning analysis path; this only gates whether the capture
+    is trustworthy to analyze.
     """
     if mic_calibration is None:
         return None
