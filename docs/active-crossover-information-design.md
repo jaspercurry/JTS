@@ -39,6 +39,28 @@
 > starts the run at `unconfigured`; no production caller yet reserves its
 > region-scoped measurement attempts or advances its transition journal.
 
+> **Wave 3 region-evidence boundary (2026-07-14; hardware-free).**
+> `jasper.active_speaker.commissioning_evidence` now derives an immutable
+> group-by-region plan from the exact typed durable-run handle, topology, preset, protected profile,
+> comparison set, threshold profile, and commissioning session. Its strict pure
+> values require separate normal, reverse, and delay identities for every
+> crossover region (including both regions of a three-way); exactly three fresh
+> one-shot stationary captures for normal and reverse; and five fresh one-shot
+> captures at every coordinate of the shared bounded delay walk. Capture
+> planning requires the preset's exact group set: one mono active group for a
+> mono preset, or exactly left and right active groups for a stereo preset, all
+> using the preset's way-count mode and complete driver-role set. Capture
+> contexts retain the typed reserved-attempt handle (including owner generation,
+> attempt number, and reserved target), exact graph, placement, and both
+> generation and playback protection proofs. An explicit per-region operator
+> attestation supplies the signed geometry seed; even `0.0` cannot be assumed.
+> A complete aggregate requires exactly one region value per plan target and
+> makes artifact paths, admissions, and attempts globally unique. This is an
+> authority *shape*, not a production authority issuer: no live host yet
+> reserves those attempts, applies the
+> normal/reverse/delay graphs, captures or persists the sets, evaluates a
+> candidate, or advances the lifecycle.
+
 ## Product goal
 
 JTS should let a user commission an active two-way or three-way speaker in one
@@ -685,15 +707,23 @@ restoration; after playback admission has persisted, timeout, cancellation, or
 failure returns typed possible-audio authority and consumes the one-shot
 identity.
 
+Positive schema-v2 receipt validation treats every post-apply raw,
+analysis-input, quality, generation-admission, and playback-admission identity
+and relative path as one global namespace across all required speaker groups.
+Cross-target reuse is refused even when a colliding raw path names different
+bytes.
+
 The isolated-driver playback slice does **not** make the candidate ready.
 The later Wave 3 control-plane integration now starts and exposes a durable
 `unconfigured` commissioning run only from the fresh bundle-backed comparison
 set, claims its process owner at correction-web startup, and classifies a
 different active comparison as stale. It still has no production measurement
-attempt/transition orchestrator. Combined/summed
+attempt/transition orchestrator. The pure per-region evidence contract now
+pins the exact normal/reverse/delay capture sets that orchestrator must issue,
+but does not play, capture, persist, or score them. Combined/summed
 capture remains pre-audio refused with
 `active_summed_persisted_admission_unavailable` until the group-level protection
-and per-region measurement authority land. Historical B2b captures remain
+host and persisted per-region authority land. Historical B2b captures remain
 permanently non-admitted, and current projections still expose no candidate,
 apply, verification, receipt, or Room authority until the later Wave 3 gates
 are satisfied.
@@ -1000,12 +1030,19 @@ required targets are derived from a current, evaluated-`verified`
 blocked or physically unverified maps cannot create target authority. Every
 required target must pass one
 post-apply verdict over exactly three distinct, admitted, fixed-reference-axis
-captures from one commissioning session and threshold profile. The receipt also
-binds the confirmed safety profile, applied candidate, expected and freshly read
+captures from one commissioning session and threshold profile. Each capture
+retains its own unique admission id and canonical generation- and playback-role
+artifacts; both admissions authorize exactly one playback, and the playback
+decision must retain the generation request and limits. The receipt also binds
+the confirmed safety profile, applied candidate, expected and freshly read
 back normalized graph, exact predecessor state, and an honest retained-apply
 rollback outcome bound to that same operation, mutation, and observed applied
 graph. A failed, restored, attempted, or unknown mutation cannot mint the
 positive receipt.
+
+The admitted-capture, post-apply-target, and eligibility-receipt containers are
+schema version 2. There is no schema-v1 migration because no production issuer
+or persisted receipt exists yet; version 1 is rejected rather than guessed.
 
 The Wave 1 transition and receipt values remain pure contracts. Wave 3 now
 persists the lifecycle's exact current-run identity in
@@ -1296,14 +1333,20 @@ As of 2026-07-14, JTS has much of the substrate but not the full product:
   request-bound version-2 research result and visible confirmed version-1
   safety-profile shape; the pure measurement layer owns exact
   excitation admission and neutral evidence identities; Active owns the
-  nine-state lifecycle and exact positive Room-eligibility receipt. A new
+  nine-state lifecycle and exact positive Room-eligibility receipt. Active now
+  also owns a strict pure group-by-region evidence plan/set contract: it keeps
+  every three-way region separate, binds each set to an immutable durable
+  typed attempt and exact graph/protection/geometry context, requires one
+  globally unique region set per plan target, and refuses capture/admission
+  replay across normal, reverse, delay, and region roles. A new
   bounded, atomically persisted run store now binds a fresh bundle-backed
   comparison to exact session/run/owner-generation identity, attempt slots, and
   a hash-chained transition journal. Correction-web claims the owner at startup
   and exposes a fail-closed `commissioning_run` status; comparison drift is
   reported stale and prior-generation callbacks cannot commit. The production
   integration currently only begins an `unconfigured` run—there is no live
-  attempt/transition orchestrator—so this does not yet replace the candidate,
+  attempt/transition or evidence producer—so the strict evidence values are not
+  current acoustic authority and this does not yet replace the candidate,
   graph mutation, verification, receipt, or Room authority paths. Room's
   temporary R1b adapter admits passive/not-required and
   blocks every active topology rather than trusting the applied-snapshot
@@ -1481,7 +1524,9 @@ preparation-only safety, level-run correlation contracts and terminal-result
 liveness, permanent historical refusal, the reachable isolated-driver
 Shared-admission/playback adapter and bounded writer transaction,
 summed pre-audio refusal, durable bundle-backed commissioning-run identity,
-startup owner-generation claim, fail-closed crossover status,
+startup owner-generation claim, fail-closed crossover status, strict pure
+group-by-region evidence sets with typed run/attempt and geometry authority,
+complete-plan replay guards, receipt schema-v2 one-shot roles,
 and Room's temporary passive-only admission boundary checked against the current
 implementation and cited measurement literature; no live audio, DSP mutation,
 or hardware behavior was changed or revalidated.)

@@ -481,7 +481,9 @@ def _write_once(path: Path, payload: bytes, *, root: Path) -> None:
         raise AssertionError("admission artifact was not published")
 
 
-def _artifact_relative_path(role: str, admission_id: str) -> str:
+def admission_artifact_relative_path(role: str, admission_id: str) -> str:
+    """Return the canonical role path after validating the shared admission id."""
+
     _identifier(admission_id, field="admission_id")
     if role not in {"generation", "playback"}:
         raise ValueError("unsupported admission artifact role")
@@ -786,7 +788,7 @@ def _persist_admission(
             AdmissionArtifactErrorCode.ARTIFACT_NOT_ALLOWED,
             "a refused admission cannot be persisted as authority",
         )
-    relative_path = _artifact_relative_path(role, admission_id)
+    relative_path = admission_artifact_relative_path(role, admission_id)
     raw = canonical_admission_bytes(admission)
     artifact = ArtifactIdentity(
         bundle_kind=authority.bundle_kind,

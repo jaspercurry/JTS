@@ -11,6 +11,7 @@ from dataclasses import replace
 
 import pytest
 
+from jasper.active_speaker.bundles import BUNDLE_KIND
 from jasper.active_speaker.commissioning_receipt import (
     POST_APPLY_REQUIRED_REPEATS,
     POST_APPLY_VERIFICATION_ALGORITHM_ID,
@@ -186,7 +187,7 @@ def _retained_rollback(proof: AppliedCandidateProof) -> CommissioningRollbackEvi
 
 def _artifact(path: str, digest: str, *, session: str = SESSION_ID) -> ArtifactIdentity:
     return ArtifactIdentity(
-        bundle_kind="jts_active_speaker_commissioning_authority",
+        bundle_kind=BUNDLE_KIND,
         bundle_id=session,
         relative_path=path,
         sha256=_hash(digest),
@@ -199,7 +200,8 @@ def _admission(
     *,
     safety_profile_fingerprint: str = "a" * 64,
     protection_evidence: bool = True,
-    repeat_count: int = POST_APPLY_REQUIRED_REPEATS,
+    repeat_count: int = 1,
+    evidence_fingerprint: str = "d" * 64,
 ) -> ExcitationAdmission:
     limits = ExcitationLimits(
         permitted_band=FrequencyBand(500, 10_000),
@@ -227,7 +229,7 @@ def _admission(
         protection_requirement_fingerprint=(limits.protection_requirement_fingerprint),
         authority_fingerprint=limits.fingerprint,
         excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
-        evidence_fingerprint=_hash("d"),
+        evidence_fingerprint=evidence_fingerprint,
         current=True,
     )
     return admit_excitation(
@@ -251,7 +253,7 @@ def _admission_artifact(
         sort_keys=True,
     ).encode("utf-8")
     return ArtifactIdentity(
-        bundle_kind="jts_active_speaker_commissioning_authority",
+        bundle_kind=BUNDLE_KIND,
         bundle_id=session,
         relative_path=path,
         sha256=hashlib.sha256(canonical).hexdigest(),
@@ -266,14 +268,18 @@ def _capture(
     context: str,
     session: str = SESSION_ID,
     capture_id: str | None = None,
-    repeat_count: int = POST_APPLY_REQUIRED_REPEATS,
+    repeat_count: int = 1,
 ) -> CaptureIdentity:
     prefix = f"post_apply/{target.speaker_group_id}_{index}"
-    admission = _admission(target.target_fingerprint, repeat_count=repeat_count)
+    resolved_capture_id = capture_id or f"{target.speaker_group_id}-{index}"
+    admission = _admission(
+        target.target_fingerprint,
+        repeat_count=repeat_count,
+    )
     return CaptureIdentity(
         consumer_id="active_crossover",
         measurement_kind="active_crossover_post_apply",
-        capture_id=capture_id or f"{target.speaker_group_id}-{index}",
+        capture_id=resolved_capture_id,
         raw_artifact=_artifact(f"{prefix}.wav", f"{index:x}", session=session),
         analysis_input_artifact=_artifact(f"{prefix}_input.json", "6", session=session),
         target_fingerprint=target.target_fingerprint,
@@ -282,7 +288,7 @@ def _capture(
         placement_fingerprint=target.placement_fingerprint,
         quality_artifact=_artifact(f"{prefix}_quality.json", "7", session=session),
         admission_artifact=_admission_artifact(
-            f"{prefix}_admission.json",
+            f"admission/v1/playback/{resolved_capture_id}.json",
             admission,
             session=session,
         ),
@@ -293,12 +299,26 @@ def _admitted(
     capture: CaptureIdentity,
     *,
     session: str = SESSION_ID,
-    repeat_count: int = POST_APPLY_REQUIRED_REPEATS,
+    repeat_count: int = 1,
 ) -> AdmittedCaptureProof:
+    generation_admission = _admission(
+        capture.target_fingerprint,
+        repeat_count=repeat_count,
+    )
+    playback_admission = _admission(
+        capture.target_fingerprint,
+        repeat_count=repeat_count,
+    )
     return AdmittedCaptureProof(
         capture=capture,
         commissioning_session_id=session,
-        admission=_admission(capture.target_fingerprint, repeat_count=repeat_count),
+        generation_admission=generation_admission,
+        admission=playback_admission,
+        generation_artifact=_admission_artifact(
+            f"admission/v1/generation/{capture.capture_id}.json",
+            generation_admission,
+            session=session,
+        ),
     )
 
 
@@ -308,7 +328,7 @@ def _target_verification(
     context: str,
     start: int,
     session: str = SESSION_ID,
-    repeat_count: int = POST_APPLY_REQUIRED_REPEATS,
+    repeat_count: int = 1,
 ) -> PostApplyTargetVerification:
     captures = tuple(
         _capture(
@@ -510,132 +530,338 @@ def test_self_declared_partial_plan_cannot_reuse_real_stereo_topology_authority(
 def test_target_authority_requires_typed_admission_and_passing_verdict():
     receipt = _receipt()
     target = receipt.post_apply_targets[0]
-    capture = target.captures[0]
-
-    valid_admission = _admission(capture.target_fingerprint)
-    wrong_artifact_capture = replace(
-        capture,
-        admission_artifact=_artifact(
-            "post_apply/wrong_admission.json",
-            "0",
-        ),
-    )
-    with pytest.raises(CommissioningReceiptError, match="canonical typed admission"):
-        AdmittedCaptureProof(
-            capture=wrong_artifact_capture,
-            commissioning_session_id=SESSION_ID,
-            admission=valid_admission,
-        )
-    refused = _admission(capture.target_fingerprint, protection_evidence=False)
-    refused_capture = replace(
-        capture,
-        admission_artifact=_admission_artifact(
-            "post_apply/refused_admission.json",
-            refused,
-            session=SESSION_ID,
-        ),
-    )
-    with pytest.raises(CommissioningReceiptError, match="allowed excitation"):
-        AdmittedCaptureProof(
-            capture=refused_capture,
-            commissioning_session_id=SESSION_ID,
-            admission=refused,
-        )
-    other_target_admission = _admission(_hash("e"))
-    wrong_target_capture = replace(
-        capture,
-        admission_artifact=_admission_artifact(
-            "post_apply/wrong_target_admission.json",
-            other_target_admission,
-            session=SESSION_ID,
-        ),
-    )
-    with pytest.raises(CommissioningReceiptError, match="admission target"):
-        AdmittedCaptureProof(
-            capture=wrong_target_capture,
-            commissioning_session_id=SESSION_ID,
-            admission=other_target_admission,
-        )
     proof = target.admitted_captures[0]
+    capture = proof.capture
+
+    wrong_generation = _artifact(proof.generation_artifact.relative_path, "0")
+    with pytest.raises(CommissioningReceiptError, match="canonical typed admission"):
+        replace(proof, generation_artifact=wrong_generation)
+    wrong_playback = _artifact(proof.playback_artifact.relative_path, "0")
+    with pytest.raises(CommissioningReceiptError, match="canonical typed admission"):
+        replace(
+            proof,
+            capture=replace(capture, admission_artifact=wrong_playback),
+        )
+
+    refused = _admission(capture.target_fingerprint, protection_evidence=False)
+    with pytest.raises(CommissioningReceiptError, match="allowed playback admission"):
+        replace(
+            proof,
+            admission=refused,
+            capture=replace(
+                capture,
+                admission_artifact=_admission_artifact(
+                    proof.playback_artifact.relative_path,
+                    refused,
+                    session=SESSION_ID,
+                ),
+            ),
+        )
+
+    other_target_admission = _admission(_hash("e"))
+    with pytest.raises(CommissioningReceiptError, match="admission targets"):
+        replace(
+            proof,
+            admission=other_target_admission,
+            capture=replace(
+                capture,
+                admission_artifact=_admission_artifact(
+                    proof.playback_artifact.relative_path,
+                    other_target_admission,
+                    session=SESSION_ID,
+                ),
+            ),
+        )
+
+    wrong_generation_role = _admission_artifact(
+        "admission/v1/playback/wrong-generation-role.json",
+        proof.generation_admission,
+        session=SESSION_ID,
+    )
+    with pytest.raises(CommissioningReceiptError, match="generation path role"):
+        replace(proof, generation_artifact=wrong_generation_role)
+    wrong_playback_role = _admission_artifact(
+        f"admission/v1/generation/other-{proof.admission_id}.json",
+        proof.admission,
+        session=SESSION_ID,
+    )
+    with pytest.raises(CommissioningReceiptError, match="playback path role"):
+        replace(
+            proof,
+            capture=replace(capture, admission_artifact=wrong_playback_role),
+        )
+    mismatched_playback_id = _admission_artifact(
+        "admission/v1/playback/another-admission.json",
+        proof.admission,
+        session=SESSION_ID,
+    )
+    with pytest.raises(CommissioningReceiptError, match="share one admission ID"):
+        replace(
+            proof,
+            capture=replace(capture, admission_artifact=mismatched_playback_id),
+        )
+
+    changed_playback = _admission(
+        capture.target_fingerprint,
+        safety_profile_fingerprint=_hash("e"),
+    )
+    with pytest.raises(CommissioningReceiptError, match="retain its generation"):
+        replace(
+            proof,
+            admission=changed_playback,
+            capture=replace(
+                capture,
+                admission_artifact=_admission_artifact(
+                    proof.playback_artifact.relative_path,
+                    changed_playback,
+                    session=SESSION_ID,
+                ),
+            ),
+        )
+
     assert proof.admission_decision_fingerprint == proof.admission.fingerprint
     assert proof.authority_fingerprint == proof.admission.limits.fingerprint
     assert (
         proof.excitation_plan_fingerprint
         == proof.admission.limits.excitation_plan_fingerprint
     )
+    assert proof.generation_artifact.relative_path.startswith(
+        "admission/v1/generation/"
+    )
+    assert proof.playback_artifact.relative_path.startswith("admission/v1/playback/")
+    assert proof.playback_artifact == proof.capture.admission_artifact
+    assert proof.generation_artifact != proof.playback_artifact
     with pytest.raises(CommissioningReceiptError, match="passing verdict"):
         replace(target, verdict="failed")  # type: ignore[arg-type]
     with pytest.raises(CommissioningReceiptError, match="verification algorithm"):
         replace(target, verification_algorithm_version="2")
 
 
-def test_target_repeats_require_one_exact_admission_and_receipt_profile():
+def test_admitted_capture_requires_active_bundle_and_distinct_playback_role():
+    proof = _receipt().post_apply_targets[0].admitted_captures[0]
+
+    def historical(artifact: ArtifactIdentity) -> ArtifactIdentity:
+        return ArtifactIdentity(
+            bundle_kind="jts_active_speaker_historical_bundle",
+            bundle_id=artifact.bundle_id,
+            relative_path=artifact.relative_path,
+            sha256=artifact.sha256,
+            byte_size=artifact.byte_size,
+        )
+
+    capture = proof.capture
+    historical_capture = replace(
+        capture,
+        raw_artifact=historical(capture.raw_artifact),
+        analysis_input_artifact=historical(capture.analysis_input_artifact),
+        quality_artifact=historical(capture.quality_artifact),
+        admission_artifact=historical(capture.admission_artifact),
+    )
+    with pytest.raises(CommissioningReceiptError, match="Active commissioning bundle"):
+        replace(
+            proof,
+            capture=historical_capture,
+            generation_artifact=historical(proof.generation_artifact),
+        )
+
+    colliding_capture = replace(
+        capture,
+        raw_artifact=_artifact(proof.generation_artifact.relative_path, "9"),
+    )
+    with pytest.raises(CommissioningReceiptError, match="distinct capture artifact"):
+        replace(proof, capture=colliding_capture)
+
+
+def test_target_accepts_byte_identical_one_shots_when_admission_ids_are_unique():
+    target = _receipt().post_apply_targets[0]
+
+    assert (
+        len(
+            {
+                proof.generation_admission.fingerprint
+                for proof in target.admitted_captures
+            }
+        )
+        == 1
+    )
+    assert len({proof.admission.fingerprint for proof in target.admitted_captures}) == 1
+    assert (
+        len({proof.generation_artifact.sha256 for proof in target.admitted_captures})
+        == 1
+    )
+    assert (
+        len({proof.playback_artifact.sha256 for proof in target.admitted_captures}) == 1
+    )
+    assert len({proof.admission_id for proof in target.admitted_captures}) == 3
+
+
+def test_target_captures_bind_receipt_safety_profile():
     receipt = _receipt()
     left = receipt.post_apply_targets[0]
-    capture = left.captures[1]
-    other_profile_admission = _admission(
-        capture.target_fingerprint,
+    proof = left.admitted_captures[1]
+    other_generation = _admission(
+        proof.capture.target_fingerprint,
         safety_profile_fingerprint=_hash("e"),
     )
-    changed_capture = replace(
-        capture,
-        admission_artifact=_admission_artifact(
-            "post_apply/changed_profile_admission.json",
-            other_profile_admission,
+    other_playback = _admission(
+        proof.capture.target_fingerprint,
+        safety_profile_fingerprint=_hash("e"),
+    )
+    changed_proof = replace(
+        proof,
+        capture=replace(
+            proof.capture,
+            admission_artifact=_admission_artifact(
+                proof.capture.admission_artifact.relative_path,
+                other_playback,
+                session=SESSION_ID,
+            ),
+        ),
+        generation_admission=other_generation,
+        admission=other_playback,
+        generation_artifact=_admission_artifact(
+            proof.generation_artifact.relative_path,
+            other_generation,
             session=SESSION_ID,
         ),
     )
-    changed_proof = AdmittedCaptureProof(
-        capture=changed_capture,
-        commissioning_session_id=SESSION_ID,
-        admission=other_profile_admission,
-    )
-    with pytest.raises(CommissioningReceiptError, match="one exact excitation"):
-        replace(
-            left,
-            admitted_captures=(
-                left.admitted_captures[0],
-                changed_proof,
-                left.admitted_captures[2],
-            ),
-        )
-
-    all_changed = replace(
+    changed_left = replace(
         left,
-        admitted_captures=tuple(
-            AdmittedCaptureProof(
-                capture=replace(
-                    proof.capture,
-                    admission_artifact=_admission_artifact(
-                        f"post_apply/profile_{index}.json",
-                        other_profile_admission,
-                        session=SESSION_ID,
-                    ),
-                ),
-                commissioning_session_id=SESSION_ID,
-                admission=other_profile_admission,
-            )
-            for index, proof in enumerate(left.admitted_captures)
+        admitted_captures=(
+            left.admitted_captures[0],
+            changed_proof,
+            left.admitted_captures[2],
         ),
     )
     with pytest.raises(CommissioningReceiptError, match="safety profile"):
         replace(
             receipt,
-            post_apply_targets=(all_changed, receipt.post_apply_targets[1]),
+            post_apply_targets=(changed_left, receipt.post_apply_targets[1]),
         )
 
 
-@pytest.mark.parametrize("repeat_count", [2, 4])
-def test_target_repeats_bind_exact_admission_repeat_count(repeat_count: int):
+@pytest.mark.parametrize("repeat_count", [2, POST_APPLY_REQUIRED_REPEATS])
+def test_target_captures_require_one_shot_admission(repeat_count: int):
     receipt = _receipt()
     target = receipt.target_plan.targets[0]
-    with pytest.raises(CommissioningReceiptError, match="admission repeat count"):
+    with pytest.raises(CommissioningReceiptError, match="exactly one playback"):
         _target_verification(
             target,
             context=receipt.commissioning_context_fingerprint,
             start=8,
             repeat_count=repeat_count,
         )
+
+
+def test_target_rejects_reused_admission_id_and_role_paths() -> None:
+    left = _receipt().post_apply_targets[0]
+    first, second, third = left.admitted_captures
+    reused = replace(
+        second,
+        capture=replace(
+            second.capture,
+            admission_artifact=_admission_artifact(
+                first.capture.admission_artifact.relative_path,
+                second.admission,
+                session=SESSION_ID,
+            ),
+        ),
+        generation_artifact=_admission_artifact(
+            first.generation_artifact.relative_path,
+            second.generation_admission,
+            session=SESSION_ID,
+        ),
+    )
+
+    with pytest.raises(
+        CommissioningReceiptError, match="distinct one-shot admission IDs"
+    ):
+        replace(left, admitted_captures=(first, reused, third))
+
+
+def test_receipt_rejects_admission_role_replay_across_required_targets() -> None:
+    receipt = _receipt()
+    left = receipt.post_apply_targets[0]
+    right = receipt.post_apply_targets[1]
+    left_proof = left.admitted_captures[0]
+    right_proof = right.admitted_captures[0]
+    replayed_right_proof = replace(
+        right_proof,
+        generation_artifact=_admission_artifact(
+            left_proof.generation_artifact.relative_path,
+            right_proof.generation_admission,
+            session=SESSION_ID,
+        ),
+        capture=replace(
+            right_proof.capture,
+            admission_artifact=_admission_artifact(
+                left_proof.playback_artifact.relative_path,
+                right_proof.admission,
+                session=SESSION_ID,
+            ),
+        ),
+    )
+    replayed_right = replace(
+        right,
+        admitted_captures=(
+            replayed_right_proof,
+            *right.admitted_captures[1:],
+        ),
+    )
+
+    with pytest.raises(CommissioningReceiptError, match="globally unique"):
+        replace(receipt, post_apply_targets=(left, replayed_right))
+
+
+@pytest.mark.parametrize(
+    "artifact_field",
+    ("analysis_input_artifact", "quality_artifact"),
+)
+def test_receipt_rejects_capture_artifact_replay_across_required_targets(
+    artifact_field: str,
+) -> None:
+    receipt = _receipt()
+    left, right = receipt.post_apply_targets
+    left_proof = left.admitted_captures[0]
+    right_proof = right.admitted_captures[0]
+    replayed_capture = replace(
+        right_proof.capture,
+        **{artifact_field: getattr(left_proof.capture, artifact_field)},
+    )
+    replayed_right = replace(
+        right,
+        admitted_captures=(
+            replace(right_proof, capture=replayed_capture),
+            *right.admitted_captures[1:],
+        ),
+    )
+
+    with pytest.raises(CommissioningReceiptError, match="artifact roles and paths"):
+        replace(receipt, post_apply_targets=(left, replayed_right))
+
+
+def test_receipt_rejects_raw_path_collision_with_distinct_bytes() -> None:
+    receipt = _receipt()
+    left, right = receipt.post_apply_targets
+    left_proof = left.admitted_captures[0]
+    right_proof = right.admitted_captures[0]
+    collided_capture = replace(
+        right_proof.capture,
+        raw_artifact=_artifact(
+            left_proof.capture.raw_artifact.relative_path,
+            "9",
+        ),
+    )
+    collided_right = replace(
+        right,
+        admitted_captures=(
+            replace(right_proof, capture=collided_capture),
+            *right.admitted_captures[1:],
+        ),
+    )
+
+    with pytest.raises(CommissioningReceiptError, match="artifact roles and paths"):
+        replace(receipt, post_apply_targets=(left, collided_right))
 
 
 def test_target_and_receipt_enforce_unique_capture_ids_raws_and_one_session():
@@ -645,7 +871,10 @@ def test_target_and_receipt_enforce_unique_capture_ids_raws_and_one_session():
         left.captures[1],
         capture_id=left.captures[0].capture_id,
     )
-    duplicated_id_proof = _admitted(duplicated_id_capture)
+    duplicated_id_proof = replace(
+        left.admitted_captures[1],
+        capture=duplicated_id_capture,
+    )
     with pytest.raises(CommissioningReceiptError, match="must be unique"):
         replace(
             left,
@@ -855,3 +1084,31 @@ def test_nested_evidence_tamper_invalidates_serialized_receipt():
 
     with pytest.raises(CommissioningReceiptError, match="declared fingerprint"):
         CommissioningEligibilityReceipt.from_mapping(payload)
+
+
+def test_admitted_capture_schema_rejects_missing_and_tampered_role_proof():
+    missing = _receipt().post_apply_targets[0].admitted_captures[0].to_dict()
+    del missing["generation_artifact"]
+    with pytest.raises(CommissioningReceiptError, match="unknown or missing fields"):
+        AdmittedCaptureProof.from_mapping(missing)
+
+    tampered = _receipt().post_apply_targets[0].admitted_captures[0].to_dict()
+    tampered["capture"]["admission_artifact"]["byte_size"] += 1
+    with pytest.raises(CommissioningReceiptError, match="declared fingerprint"):
+        AdmittedCaptureProof.from_mapping(tampered)
+
+
+def test_breaking_receipt_containers_require_schema_v2() -> None:
+    target_payload = _receipt().post_apply_targets[0].to_dict()
+    receipt_payload = _receipt().to_dict()
+
+    assert target_payload["schema_version"] == 2
+    assert receipt_payload["schema_version"] == 2
+
+    target_payload["schema_version"] = 1
+    with pytest.raises(CommissioningReceiptError, match="unsupported"):
+        PostApplyTargetVerification.from_mapping(target_payload)
+
+    receipt_payload["schema_version"] = 1
+    with pytest.raises(CommissioningReceiptError, match="unsupported"):
+        CommissioningEligibilityReceipt.from_mapping(receipt_payload)

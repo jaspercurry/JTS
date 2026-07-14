@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.active_speaker.bundles import BUNDLE_KIND as ACTIVE_BUNDLE_KIND
 from jasper.active_speaker.commissioning_receipt import AdmittedCaptureProof
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity, CaptureIdentity
 from jasper.audio_measurement.excitation_admission import (
@@ -33,6 +34,7 @@ from jasper.audio_measurement.excitation_artifacts import (
     AdmissionArtifactError,
     AdmissionArtifactErrorCode,
     HistoricalExcitationEvidence,
+    admission_artifact_relative_path,
     canonical_admission_bytes,
     create_admission_authority,
     open_admission_authority,
@@ -55,6 +57,14 @@ OTHER = "f" * 64
 BUNDLE_KIND = "jts_active_speaker_commissioning_authority"
 BUNDLE_ID = "authority-session-1"
 ADMISSION_ID = "combined-main-repeat-1"
+
+
+def test_admission_role_path_owns_the_shared_id_vocabulary() -> None:
+    assert admission_artifact_relative_path("generation", ADMISSION_ID) == (
+        f"{GENERATION_PATH_PREFIX}/{ADMISSION_ID}.json"
+    )
+    with pytest.raises(ValueError, match="admission_id"):
+        admission_artifact_relative_path("generation", "not:shared")
 
 
 def _limits(**changes: object) -> ExcitationLimits:
@@ -207,18 +217,19 @@ def test_one_session_authority_persists_multiple_unique_attempts(
     )
 
     assert {generation.authority for generation in generations} == {authority}
-    assert {generation.admission_id for generation in generations} == set(
-        admission_ids
-    )
+    assert {generation.admission_id for generation in generations} == set(admission_ids)
     for generation, playback in zip(generations, playbacks, strict=True):
         assert playback.artifact is not None
         assert playback.artifact.generation.authority == authority
         assert playback.artifact.generation.admission_id == generation.admission_id
-        assert read_playback_admission(
-            authority,
-            generation,
-            playback.artifact.artifact,
-        ) == playback.artifact
+        assert (
+            read_playback_admission(
+                authority,
+                generation,
+                playback.artifact.artifact,
+            )
+            == playback.artifact
+        )
 
 
 def test_authority_requires_a_feature_owned_existing_parent(tmp_path: Path) -> None:
@@ -564,8 +575,32 @@ def test_pure_recheck_does_not_treat_hash_inequality_as_freshness() -> None:
 
 
 def test_playback_artifact_preserves_active_receipt_encoding(tmp_path: Path) -> None:
-    authority, generation = _generation(tmp_path)
-    limits = generation.admission.limits
+    authority = create_admission_authority(
+        tmp_path / BUNDLE_ID,
+        bundle_kind=ACTIVE_BUNDLE_KIND,
+        bundle_id=BUNDLE_ID,
+    )
+    limits = _limits()
+    request = ExcitationRequest(
+        band=FrequencyBand(1_000, 8_000),
+        effective_peak_dbfs=-18,
+        duration_s=4,
+        repeat_count=1,
+        target_fingerprint=limits.target_fingerprint,
+        safety_profile_fingerprint=limits.safety_profile_fingerprint,
+        authority_fingerprint=limits.fingerprint,
+        excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
+    )
+    generation_admission = admit_excitation(
+        request,
+        limits,
+        protection_evidence=_evidence(limits, GENERATION_PROOF),
+    )
+    generation = persist_generation_admission(
+        authority,
+        admission_id=ADMISSION_ID,
+        admission=generation_admission,
+    )
     result = readmit_and_persist_playback_admission(
         authority,
         generation,
@@ -595,7 +630,9 @@ def test_playback_artifact_preserves_active_receipt_encoding(tmp_path: Path) -> 
     proof = AdmittedCaptureProof(
         capture=capture,
         commissioning_session_id=BUNDLE_ID,
+        generation_admission=generation.admission,
         admission=result.decision,
+        generation_artifact=generation.artifact,
     )
     assert proof.admission_decision_fingerprint == result.decision.fingerprint
 

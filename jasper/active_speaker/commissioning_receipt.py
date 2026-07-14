@@ -24,9 +24,11 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any, Literal, Mapping, TypeAlias, cast
 
 from jasper.audio_measurement.evidence_identity import (
+    ArtifactIdentity,
     CaptureIdentity,
     EvidenceIdentityError,
     ExactDspStateIdentity,
@@ -34,8 +36,15 @@ from jasper.audio_measurement.evidence_identity import (
     json_fingerprint,
 )
 from jasper.audio_measurement.excitation_admission import ExcitationAdmission
+from jasper.audio_measurement.excitation_artifacts import (
+    GENERATION_PATH_PREFIX,
+    PLAYBACK_PATH_PREFIX,
+    admission_artifact_relative_path,
+    canonical_admission_bytes,
+)
 from jasper.output_topology import OutputTopology, OutputTopologyError
 
+from .bundles import BUNDLE_KIND
 from .measurement import active_summed_targets
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -98,9 +107,8 @@ _ROLLBACK_OPERATION_FAILURE_CODES = frozenset(
 _FAILED_ROLLBACK_FAILURE_CODES = _ROLLBACK_OPERATION_FAILURE_CODES - {
     "rollback_readback_failed"
 }
-_UNKNOWN_ROLLBACK_FAILURE_CODES = (
-    _POST_MUTATION_TRIGGER_FAILURE_CODES
-    | (_ROLLBACK_OPERATION_FAILURE_CODES - _FAILED_ROLLBACK_FAILURE_CODES)
+_UNKNOWN_ROLLBACK_FAILURE_CODES = _POST_MUTATION_TRIGGER_FAILURE_CODES | (
+    _ROLLBACK_OPERATION_FAILURE_CODES - _FAILED_ROLLBACK_FAILURE_CODES
 )
 
 
@@ -155,13 +163,17 @@ def _strict_serialized_object(
     *,
     kind: str,
     fields: frozenset[str],
+    schema_version: int = 1,
 ) -> Mapping[str, Any]:
     if not isinstance(raw, Mapping):
         raise CommissioningReceiptError(f"{kind} must be an object")
     expected = fields | {"schema_version", "kind", "fingerprint"}
     if set(raw) != expected:
         raise CommissioningReceiptError(f"{kind} has unknown or missing fields")
-    if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
+    if (
+        type(raw["schema_version"]) is not int
+        or raw["schema_version"] != schema_version
+    ):
         raise CommissioningReceiptError(f"unsupported {kind} schema")
     if raw["kind"] != kind:
         raise CommissioningReceiptError(f"unsupported {kind} kind")
@@ -191,6 +203,25 @@ def _topology_authority_fingerprint(topology: OutputTopology) -> str:
             "topology": topology.to_dict(),
         }
     )
+
+
+def _admission_id_from_role_path(
+    artifact: ArtifactIdentity,
+    *,
+    role_prefix: str,
+    field_name: str,
+) -> str:
+    path = PurePosixPath(artifact.relative_path)
+    role = "generation" if role_prefix == GENERATION_PATH_PREFIX else "playback"
+    try:
+        expected_path = admission_artifact_relative_path(role, path.stem)
+    except ValueError as exc:
+        raise CommissioningReceiptError(str(exc)) from exc
+    if artifact.relative_path != expected_path:
+        raise CommissioningReceiptError(
+            f"{field_name} must use the canonical {PurePosixPath(role_prefix).name} path role"
+        )
+    return path.stem
 
 
 @dataclass(frozen=True)
@@ -881,14 +912,18 @@ class AdmittedCaptureProof:
 
     The trusted host issues this only after parsing the shared excitation
     admission result and observing ``allowed=true``.  The proof binds that
-    decision to the capture's admission artifact, exact authority/plan, target
-    context, and one commissioning session.  This pure type does not inspect
-    artifact bytes.
+    generation decision to a separate generation-role artifact and one
+    independently re-admitted playback decision to the final admission artifact
+    retained by the capture.  Both bind exact canonical typed bytes, one shared
+    admission ID, authority/plan, target context, and commissioning session.
+    This pure type does not read either artifact from disk.
     """
 
     capture: CaptureIdentity
     commissioning_session_id: str
+    generation_admission: ExcitationAdmission
     admission: ExcitationAdmission
+    generation_artifact: ArtifactIdentity
     fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -902,42 +937,124 @@ class AdmittedCaptureProof:
                 field_name="commissioning_session_id",
             ),
         )
+        if not isinstance(self.generation_admission, ExcitationAdmission):
+            raise CommissioningReceiptError(
+                "generation_admission must be a typed ExcitationAdmission"
+            )
         if not isinstance(self.admission, ExcitationAdmission):
             raise CommissioningReceiptError(
-                "admission must be a typed ExcitationAdmission"
+                "admission must be a typed playback ExcitationAdmission"
+            )
+        if not isinstance(self.generation_artifact, ArtifactIdentity):
+            raise CommissioningReceiptError(
+                "generation_artifact must be an ArtifactIdentity"
+            )
+        if not self.generation_admission.allowed:
+            raise CommissioningReceiptError(
+                "admitted capture proof requires an allowed generation admission"
             )
         if not self.admission.allowed:
             raise CommissioningReceiptError(
-                "admitted capture proof requires an allowed excitation admission"
+                "admitted capture proof requires an allowed playback admission"
             )
-        if self.admission.request.target_fingerprint != self.capture.target_fingerprint:
+        if (
+            self.generation_admission.request.target_fingerprint
+            != self.capture.target_fingerprint
+            or self.admission.request.target_fingerprint
+            != self.capture.target_fingerprint
+        ):
             raise CommissioningReceiptError(
-                "excitation admission target must equal the capture target"
+                "generation and playback admission targets must equal the capture target"
             )
         if self.commissioning_session_id != self.capture.raw_artifact.bundle_id:
             raise CommissioningReceiptError(
                 "admitted capture proof must belong to its commissioning session"
             )
-        canonical_admission = json.dumps(
-            self.admission.to_dict(),
-            allow_nan=False,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        if self.capture.admission_artifact.sha256 != hashlib.sha256(
-            canonical_admission
-        ).hexdigest() or self.capture.admission_artifact.byte_size != len(
-            canonical_admission
+        capture_bundle = (
+            self.capture.raw_artifact.bundle_kind,
+            self.capture.raw_artifact.bundle_id,
+        )
+        if capture_bundle != (BUNDLE_KIND, self.commissioning_session_id):
+            raise CommissioningReceiptError(
+                "admitted capture proof requires the Active commissioning bundle kind"
+            )
+        if (
+            self.generation_artifact.bundle_kind,
+            self.generation_artifact.bundle_id,
+        ) != capture_bundle:
+            raise CommissioningReceiptError(
+                "generation, playback, and capture artifacts must share one authority bundle"
+            )
+        capture_artifacts = (
+            self.capture.raw_artifact,
+            self.capture.analysis_input_artifact,
+            self.capture.quality_artifact,
+            self.capture.admission_artifact,
+        )
+        if self.generation_artifact.fingerprint in {
+            artifact.fingerprint for artifact in capture_artifacts
+        } or self.generation_artifact.relative_path in {
+            artifact.relative_path for artifact in capture_artifacts
+        }:
+            raise CommissioningReceiptError(
+                "generation admission requires a distinct capture artifact role"
+            )
+        generation_id = _admission_id_from_role_path(
+            self.generation_artifact,
+            role_prefix=GENERATION_PATH_PREFIX,
+            field_name="generation admission artifact",
+        )
+        playback_id = _admission_id_from_role_path(
+            self.capture.admission_artifact,
+            role_prefix=PLAYBACK_PATH_PREFIX,
+            field_name="capture admission artifact",
+        )
+        if playback_id != generation_id:
+            raise CommissioningReceiptError(
+                "generation and playback artifacts must share one admission ID"
+            )
+        if (
+            self.admission.request != self.generation_admission.request
+            or self.admission.limits != self.generation_admission.limits
         ):
             raise CommissioningReceiptError(
-                "capture admission artifact must equal canonical typed admission bytes"
+                "playback admission must retain its generation request and limits"
+            )
+        canonical_generation = canonical_admission_bytes(self.generation_admission)
+        if self.generation_artifact.sha256 != hashlib.sha256(
+            canonical_generation
+        ).hexdigest() or self.generation_artifact.byte_size != len(
+            canonical_generation
+        ):
+            raise CommissioningReceiptError(
+                "generation admission artifact must equal canonical typed admission bytes"
+            )
+        canonical_playback = canonical_admission_bytes(self.admission)
+        if self.capture.admission_artifact.sha256 != hashlib.sha256(
+            canonical_playback
+        ).hexdigest() or self.capture.admission_artifact.byte_size != len(
+            canonical_playback
+        ):
+            raise CommissioningReceiptError(
+                "playback admission artifact must equal canonical typed admission bytes"
             )
         object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
 
     @property
     def admission_decision_fingerprint(self) -> str:
         return self.admission.fingerprint
+
+    @property
+    def admission_id(self) -> str:
+        """Shared canonical generation/playback attempt identity."""
+
+        return PurePosixPath(self.capture.admission_artifact.relative_path).stem
+
+    @property
+    def playback_artifact(self) -> ArtifactIdentity:
+        """Final playback decision retained by the canonical capture identity."""
+
+        return self.capture.admission_artifact
 
     @property
     def authority_fingerprint(self) -> str:
@@ -953,11 +1070,13 @@ class AdmittedCaptureProof:
 
     def _core(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "jts_active_admitted_capture_proof",
             "capture": self.capture.to_dict(),
             "commissioning_session_id": self.commissioning_session_id,
+            "generation_admission": self.generation_admission.to_dict(),
             "admission": self.admission.to_dict(),
+            "generation_artifact": self.generation_artifact.to_dict(),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -972,19 +1091,30 @@ class AdmittedCaptureProof:
                 {
                     "capture",
                     "commissioning_session_id",
+                    "generation_admission",
                     "admission",
+                    "generation_artifact",
                 }
             ),
+            schema_version=2,
         )
         try:
             capture = CaptureIdentity.from_mapping(value["capture"])
+            generation_admission = ExcitationAdmission.from_dict(
+                value["generation_admission"]
+            )
             admission = ExcitationAdmission.from_dict(value["admission"])
+            generation_artifact = ArtifactIdentity.from_mapping(
+                value["generation_artifact"]
+            )
         except (EvidenceIdentityError, ValueError) as exc:
             raise CommissioningReceiptError(str(exc)) from exc
         result = cls(
             capture=capture,
             commissioning_session_id=_raw(value, "commissioning_session_id"),
+            generation_admission=generation_admission,
             admission=admission,
+            generation_artifact=generation_artifact,
         )
         _declared_fingerprint(value, result.fingerprint)
         return result
@@ -1092,19 +1222,44 @@ class PostApplyTargetVerification:
             raise CommissioningReceiptError(
                 "post-apply captures must belong to one commissioning session"
             )
-        admission_fingerprints = {
-            proof.admission_decision_fingerprint for proof in self.admitted_captures
-        }
-        if len(admission_fingerprints) != 1:
+        admission_ids = [proof.admission_id for proof in self.admitted_captures]
+        if len(set(admission_ids)) != POST_APPLY_REQUIRED_REPEATS:
             raise CommissioningReceiptError(
-                "post-apply repeats must share one exact excitation admission"
+                "post-apply captures require distinct one-shot admission IDs"
             )
         if any(
-            proof.admission.request.repeat_count != POST_APPLY_REQUIRED_REPEATS
+            proof.generation_admission.request.repeat_count != 1
+            or proof.admission.request.repeat_count != 1
             for proof in self.admitted_captures
         ):
             raise CommissioningReceiptError(
-                "post-apply admission repeat count must equal required captures"
+                "post-apply generation and playback admissions must authorize exactly one playback"
+            )
+        generation_artifacts = [
+            proof.generation_artifact for proof in self.admitted_captures
+        ]
+        playback_artifacts = [
+            proof.playback_artifact for proof in self.admitted_captures
+        ]
+        generation_identities = [
+            artifact.fingerprint for artifact in generation_artifacts
+        ]
+        generation_paths = [artifact.relative_path for artifact in generation_artifacts]
+        playback_identities = [artifact.fingerprint for artifact in playback_artifacts]
+        playback_paths = [artifact.relative_path for artifact in playback_artifacts]
+        if (
+            len(set(generation_identities)) != POST_APPLY_REQUIRED_REPEATS
+            or len(set(generation_paths)) != POST_APPLY_REQUIRED_REPEATS
+        ):
+            raise CommissioningReceiptError(
+                "post-apply generation admission artifacts must be unique"
+            )
+        if (
+            len(set(playback_identities)) != POST_APPLY_REQUIRED_REPEATS
+            or len(set(playback_paths)) != POST_APPLY_REQUIRED_REPEATS
+        ):
+            raise CommissioningReceiptError(
+                "post-apply playback admission artifacts must be unique"
             )
         capture_ids = [capture.capture_id for capture in captures]
         raw_artifacts = [capture.raw_artifact.fingerprint for capture in captures]
@@ -1135,7 +1290,7 @@ class PostApplyTargetVerification:
 
     def _core(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "jts_active_post_apply_target_verification",
             "speaker_group_id": self.speaker_group_id,
             "target_id": self.target_id,
@@ -1179,6 +1334,7 @@ class PostApplyTargetVerification:
                     "admitted_captures",
                 }
             ),
+            schema_version=2,
         )
         if (
             type(value["required_repeats"]) is not int
@@ -1326,16 +1482,54 @@ class CommissioningEligibilityReceipt:
             raise CommissioningReceiptError(
                 "capture admission safety profile must equal the applied candidate"
             )
+        admission_ids = [proof.admission_id for proof in all_admissions]
+        generation_artifacts = [proof.generation_artifact for proof in all_admissions]
+        playback_artifacts = [proof.playback_artifact for proof in all_admissions]
+        global_admission_roles = {
+            "admission ids": admission_ids,
+            "generation artifact identities": [
+                artifact.fingerprint for artifact in generation_artifacts
+            ],
+            "generation artifact paths": [
+                artifact.relative_path for artifact in generation_artifacts
+            ],
+            "playback artifact identities": [
+                artifact.fingerprint for artifact in playback_artifacts
+            ],
+            "playback artifact paths": [
+                artifact.relative_path for artifact in playback_artifacts
+            ],
+        }
+        if any(
+            len(set(values)) != len(values)
+            for values in global_admission_roles.values()
+        ):
+            raise CommissioningReceiptError(
+                "eligibility one-shot admission ids and role artifacts must be globally unique"
+            )
         capture_ids = [capture.capture_id for capture in all_captures]
-        raw_artifacts = [capture.raw_artifact.fingerprint for capture in all_captures]
+        artifact_roles = [
+            artifact
+            for proof in all_admissions
+            for artifact in (
+                proof.capture.raw_artifact,
+                proof.capture.analysis_input_artifact,
+                proof.capture.quality_artifact,
+                proof.generation_artifact,
+                proof.playback_artifact,
+            )
+        ]
         raw_content_hashes = [capture.raw_artifact.sha256 for capture in all_captures]
         if (
             len(set(capture_ids)) != len(capture_ids)
-            or len(set(raw_artifacts)) != len(raw_artifacts)
             or len(set(raw_content_hashes)) != len(raw_content_hashes)
+            or len({artifact.fingerprint for artifact in artifact_roles})
+            != len(artifact_roles)
+            or len({artifact.relative_path for artifact in artifact_roles})
+            != len(artifact_roles)
         ):
             raise CommissioningReceiptError(
-                "eligibility capture ids and raw artifacts must be globally unique"
+                "eligibility capture ids, artifact roles and paths, and raw bytes must be globally unique"
             )
         bundle_keys = {
             (capture.raw_artifact.bundle_kind, capture.raw_artifact.bundle_id)
@@ -1373,7 +1567,7 @@ class CommissioningEligibilityReceipt:
 
     def _core(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "jts_active_commissioning_eligibility_receipt",
             "target_plan": self.target_plan.to_dict(),
             "applied_candidate": self.applied_candidate.to_dict(),
@@ -1401,6 +1595,7 @@ class CommissioningEligibilityReceipt:
                     "rollback",
                 }
             ),
+            schema_version=2,
         )
         targets = value["post_apply_targets"]
         if type(targets) is not list:
