@@ -47,6 +47,9 @@
 > crossover region (including both regions of a three-way); exactly three fresh
 > one-shot stationary captures for normal and reverse; and five fresh one-shot
 > captures at every coordinate of the shared bounded delay walk. Capture
+> planning requires the preset's exact group set: one mono active group for a
+> mono preset, or exactly left and right active groups for a stereo preset, all
+> using the preset's way-count mode and complete driver-role set. Capture
 > contexts retain the typed reserved-attempt handle (including owner generation,
 > attempt number, and reserved target), exact graph, placement, and both
 > generation and playback protection proofs. An explicit per-region operator
@@ -703,6 +706,12 @@ flow and revalidated before capture persistence. Cancellation cannot bypass
 restoration; after playback admission has persisted, timeout, cancellation, or
 failure returns typed possible-audio authority and consumes the one-shot
 identity.
+
+Positive schema-v2 receipt validation treats every post-apply raw,
+analysis-input, quality, generation-admission, and playback-admission identity
+and relative path as one global namespace across all required speaker groups.
+Cross-target reuse is refused even when a colliding raw path names different
+bytes.
 
 The isolated-driver playback slice does **not** make the candidate ready.
 The later Wave 3 control-plane integration now starts and exposes a durable

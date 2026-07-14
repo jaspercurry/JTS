@@ -305,7 +305,10 @@ contract over Shared identities and exact `CommissioningRunHandle` /
 `CommissioningAttemptHandle` values; it is not another bundle or a production
 capture service. It derives the exact group-by-crossover-region plan from the
 current run, topology, preset, protected profile, comparison, threshold
-profile, and session. A two-way has one target per active group; a three-way
+profile, and session. The preset layout is authoritative: mono requires exactly
+one mono active group, while stereo requires exactly left and right active
+groups; every group must match the preset way count and complete driver-role
+set. A two-way has one target per active group; a three-way
 keeps its lower and upper crossover regions separate. Normal, reverse, and
 delay identities are distinct. Each stationary set requires three fresh
 one-shot captures from one durable attempt, and each shared `NullWalkSpec`
@@ -318,6 +321,9 @@ operator-attested signed geometry seed, including when the attested value is
 zero. `CompleteCommissioningEvidence` requires one canonically ordered region
 per plan target and makes artifact roles/paths, admission ids, raw bytes, and
 durable attempts globally unique across a three-way or multiple groups.
+The schema-v2 eligibility receipt applies the same global-namespace rule to
+every post-apply raw, analysis-input, quality, generation-admission, and
+playback-admission identity and path across all required groups.
 
 The module performs no I/O, persistence, playback, scoring, graph mutation, or
 lifecycle transition. Production must still retain a run handle, reserve the

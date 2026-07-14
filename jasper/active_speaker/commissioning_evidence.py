@@ -639,20 +639,35 @@ def derive_region_evidence_plan(
         }
     )
     expected_mode = f"active_{preset.way_count}_way"
+    active_groups = [
+        group for group in topology.speaker_groups if group.mode.startswith("active_")
+    ]
+    if any(group.mode != expected_mode for group in active_groups):
+        raise CommissioningEvidenceError(
+            "current topology active group modes do not match the capture preset"
+        )
+    if preset.channel_map.layout == "mono":
+        if len(active_groups) != 1 or active_groups[0].kind != "mono":
+            raise CommissioningEvidenceError(
+                "mono capture preset requires exactly one mono active speaker group"
+            )
+        groups = active_groups
+    elif preset.channel_map.layout == "stereo":
+        by_kind = {group.kind: group for group in active_groups}
+        if len(active_groups) != 2 or set(by_kind) != {"left", "right"}:
+            raise CommissioningEvidenceError(
+                "stereo capture preset requires exactly left and right active speaker groups"
+            )
+        groups = [by_kind["left"], by_kind["right"]]
+    else:  # ActiveSpeakerPreset.validate() owns the supported layout vocabulary.
+        raise CommissioningEvidenceError("capture preset layout is unsupported")
+
     expected_roles = set(required_driver_roles(preset.way_count))
-    groups = []
-    for group in topology.speaker_groups:
-        if group.mode != expected_mode:
-            continue
+    for group in groups:
         if {channel.role for channel in group.channels} != expected_roles:
             raise CommissioningEvidenceError(
                 f"speaker group {group.id} does not match preset driver roles"
             )
-        groups.append(group)
-    if not groups:
-        raise CommissioningEvidenceError(
-            "current topology has no active group matching the capture preset"
-        )
 
     targets: list[RegionEvidenceTarget] = []
     for group in groups:

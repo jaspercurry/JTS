@@ -1508,15 +1508,28 @@ class CommissioningEligibilityReceipt:
                 "eligibility one-shot admission ids and role artifacts must be globally unique"
             )
         capture_ids = [capture.capture_id for capture in all_captures]
-        raw_artifacts = [capture.raw_artifact.fingerprint for capture in all_captures]
+        artifact_roles = [
+            artifact
+            for proof in all_admissions
+            for artifact in (
+                proof.capture.raw_artifact,
+                proof.capture.analysis_input_artifact,
+                proof.capture.quality_artifact,
+                proof.generation_artifact,
+                proof.playback_artifact,
+            )
+        ]
         raw_content_hashes = [capture.raw_artifact.sha256 for capture in all_captures]
         if (
             len(set(capture_ids)) != len(capture_ids)
-            or len(set(raw_artifacts)) != len(raw_artifacts)
             or len(set(raw_content_hashes)) != len(raw_content_hashes)
+            or len({artifact.fingerprint for artifact in artifact_roles})
+            != len(artifact_roles)
+            or len({artifact.relative_path for artifact in artifact_roles})
+            != len(artifact_roles)
         ):
             raise CommissioningReceiptError(
-                "eligibility capture ids and raw artifacts must be globally unique"
+                "eligibility capture ids, artifact roles and paths, and raw bytes must be globally unique"
             )
         bundle_keys = {
             (capture.raw_artifact.bundle_kind, capture.raw_artifact.bundle_id)

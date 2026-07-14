@@ -717,7 +717,9 @@
 > immutable pure shape for authoritative group-by-region capture sets. The plan
 > keeps both crossover regions of a three-way distinct and binds the exact typed durable-run handle,
 > topology, preset, protected profile, comparison, threshold profile, and
-> session. Normal and reverse each require three fresh one-shot captures from
+> session. Mono plans require exactly one mono active group; stereo plans
+> require exactly left and right active groups, with exact way-count modes and
+> complete driver-role sets. Normal and reverse each require three fresh one-shot captures from
 > one typed reserved attempt; every shared delay-walk coordinate requires five fresh
 > one-shot captures from its own attempt. Each capture binds exact graph,
 > placement, generated-WAV, generation/playback protection, and canonical
@@ -726,7 +728,9 @@
 > aggregate enforces one region per target plus global artifact, admission, and
 > attempt uniqueness.
 > The positive receipt now likewise requires a unique one-shot generation and
-> playback pair for each of its three post-apply captures; its admitted-capture,
+> playback pair for each of its three post-apply captures, with raw,
+> analysis-input, quality, generation, and playback identities and paths unique
+> across the complete receipt; its admitted-capture,
 > post-apply-target, and receipt containers are explicitly schema version 2.
 > These are pure
 > contracts only: no live summed host, persistence adapter, candidate evaluator,

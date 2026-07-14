@@ -57,6 +57,7 @@ from jasper.audio_measurement.excitation_artifacts import (
     canonical_admission_bytes,
 )
 from jasper.audio_measurement.null_walk import NullWalkSpec
+from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _three_way_preset
 
@@ -65,8 +66,48 @@ def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _preset() -> ActiveSpeakerPreset:
-    return ActiveSpeakerPreset.from_mapping(_three_way_preset())
+def _preset(*, layout: str = "mono") -> ActiveSpeakerPreset:
+    return ActiveSpeakerPreset.from_mapping(_three_way_preset(layout=layout))
+
+
+def _stereo_three_way_topology(
+    *,
+    include_right: bool = True,
+    right_mode: str = "active_3_way",
+) -> OutputTopology:
+    raw = mono_output_topology(mode="active_3_way").to_dict()
+    source = raw["speaker_groups"][0]
+    left = copy.deepcopy(source)
+    left.update({"id": "left", "label": "Left cabinet", "kind": "left"})
+    groups = [left]
+    if include_right:
+        right = copy.deepcopy(source)
+        right.update(
+            {
+                "id": "right",
+                "label": "Right cabinet",
+                "kind": "right",
+                "mode": right_mode,
+            }
+        )
+        if right_mode == "active_2_way":
+            right["channels"] = [
+                channel
+                for channel in right["channels"]
+                if channel["role"] in {"woofer", "tweeter"}
+            ]
+        for index, channel in enumerate(right["channels"], start=3):
+            channel["physical_output_index"] = index
+            channel["human_output_label"] = f"DAC output {index + 1}"
+        groups.append(right)
+    raw["speaker_groups"] = groups
+    raw["routing"] = {
+        "main_left_group_id": "left",
+        "main_right_group_id": "right" if include_right else None,
+        "mono_group_id": None,
+        "subwoofer_group_ids": [],
+    }
+    return OutputTopology.from_mapping(raw)
 
 
 @dataclass(frozen=True)
@@ -510,6 +551,52 @@ def test_plan_consumes_exact_durable_run_handle_and_round_trips(tmp_path: Path) 
         )
 
 
+def test_plan_requires_exact_preset_layout_and_active_group_set(tmp_path: Path) -> None:
+    run = _harness(tmp_path, name="layout-authority").plan.authority.run
+
+    def derive(
+        preset: ActiveSpeakerPreset,
+        topology: OutputTopology,
+    ) -> RegionEvidencePlan:
+        return derive_region_evidence_plan(
+            preset,
+            topology,
+            run=run,
+            protected_safety_profile_fingerprint=_hash("profile"),
+            comparison_set_fingerprint=run.session_fingerprint,
+            threshold_profile_fingerprint=_hash("thresholds"),
+            context_fingerprint=_hash("context"),
+        )
+
+    with pytest.raises(CommissioningEvidenceError, match="stereo capture preset"):
+        derive(
+            _preset(layout="stereo"),
+            mono_output_topology(mode="active_3_way"),
+        )
+    with pytest.raises(CommissioningEvidenceError, match="mono capture preset"):
+        derive(_preset(layout="mono"), _stereo_three_way_topology())
+    with pytest.raises(CommissioningEvidenceError, match="left and right"):
+        derive(
+            _preset(layout="stereo"),
+            _stereo_three_way_topology(include_right=False),
+        )
+    with pytest.raises(CommissioningEvidenceError, match="active group modes"):
+        derive(
+            _preset(layout="stereo"),
+            _stereo_three_way_topology(right_mode="active_2_way"),
+        )
+
+    stereo = derive(_preset(layout="stereo"), _stereo_three_way_topology())
+    assert [
+        (target.speaker_group_id, target.region_id) for target in stereo.targets
+    ] == [
+        ("left", "woofer_mid"),
+        ("left", "mid_tweeter"),
+        ("right", "woofer_mid"),
+        ("right", "mid_tweeter"),
+    ]
+
+
 def test_plan_identity_changes_with_real_run_generation_and_region(
     tmp_path: Path,
 ) -> None:
@@ -534,7 +621,7 @@ def test_plan_identity_changes_with_real_run_generation_and_region(
     )
     assert changed.fingerprint != base.plan.fingerprint
 
-    raw = _three_way_preset()
+    raw = _three_way_preset(layout="mono")
     raw["crossover_regions"][0]["id"] = "lower_region_v2"
     changed_preset = derive_region_evidence_plan(
         ActiveSpeakerPreset.from_mapping(raw),

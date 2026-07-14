@@ -813,6 +813,57 @@ def test_receipt_rejects_admission_role_replay_across_required_targets() -> None
         replace(receipt, post_apply_targets=(left, replayed_right))
 
 
+@pytest.mark.parametrize(
+    "artifact_field",
+    ("analysis_input_artifact", "quality_artifact"),
+)
+def test_receipt_rejects_capture_artifact_replay_across_required_targets(
+    artifact_field: str,
+) -> None:
+    receipt = _receipt()
+    left, right = receipt.post_apply_targets
+    left_proof = left.admitted_captures[0]
+    right_proof = right.admitted_captures[0]
+    replayed_capture = replace(
+        right_proof.capture,
+        **{artifact_field: getattr(left_proof.capture, artifact_field)},
+    )
+    replayed_right = replace(
+        right,
+        admitted_captures=(
+            replace(right_proof, capture=replayed_capture),
+            *right.admitted_captures[1:],
+        ),
+    )
+
+    with pytest.raises(CommissioningReceiptError, match="artifact roles and paths"):
+        replace(receipt, post_apply_targets=(left, replayed_right))
+
+
+def test_receipt_rejects_raw_path_collision_with_distinct_bytes() -> None:
+    receipt = _receipt()
+    left, right = receipt.post_apply_targets
+    left_proof = left.admitted_captures[0]
+    right_proof = right.admitted_captures[0]
+    collided_capture = replace(
+        right_proof.capture,
+        raw_artifact=_artifact(
+            left_proof.capture.raw_artifact.relative_path,
+            "9",
+        ),
+    )
+    collided_right = replace(
+        right,
+        admitted_captures=(
+            replace(right_proof, capture=collided_capture),
+            *right.admitted_captures[1:],
+        ),
+    )
+
+    with pytest.raises(CommissioningReceiptError, match="artifact roles and paths"):
+        replace(receipt, post_apply_targets=(left, collided_right))
+
+
 def test_target_and_receipt_enforce_unique_capture_ids_raws_and_one_session():
     receipt = _receipt()
     left = receipt.post_apply_targets[0]
