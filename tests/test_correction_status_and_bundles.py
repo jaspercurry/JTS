@@ -30,6 +30,7 @@ import urllib.error
 import urllib.request
 from http import HTTPStatus
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1159,6 +1160,9 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     assert prior["current_correction"]["session_id"] == "xyz"
     assert body["strategy_choice"] == "balanced"
     assert body["correction_strategy"]["strategy_id"] == "balanced"
+    assert sess.total_positions == 6
+    assert sess.target_choice == "flat"
+    assert sess.repeat_main_position is True
     assert body["measurement_config_path"] == fake_cam.set_calls[0]
     assert sess.pre_measurement_config_path == Path(
         tmp_path / "configs" / "correction_xyz_1700.yml"
@@ -1426,6 +1430,146 @@ def test_start_handler_rejects_failed_browser_audio_before_sweep(
 
     # Validation happens before replacing the prior session or touching DSP.
     assert captured == {}
+    assert correction_setup._start_in_progress is False
+
+
+@pytest.mark.parametrize("strategy_choice", ["assertive", "unknown"])
+def test_start_rejects_non_household_strategy_before_dsp(
+    monkeypatch,
+    strategy_choice,
+):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: _READY_ROOM_CORRECTION_SETUP,
+    )
+    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(
+        correction_setup,
+        "_camilla",
+        lambda: pytest.fail("CamillaDSP should not be touched"),
+    )
+
+    with pytest.raises(ValueError, match="authorized household strategy"):
+        correction_setup._handle_start(
+            _DummyJsonHandler({"strategy_choice": strategy_choice})
+        )
+
+    assert correction_setup._start_in_progress is False
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({"total_positions": 5}, "supported count"),
+        ({"total_positions": False}, "supported count"),
+        ({"total_positions": 6.5}, "supported count"),
+        ({"total_positions": "6"}, "supported count"),
+        ({"target_choice": "future"}, "registered Room target"),
+        ({"repeat_main_position": False}, "automatic trust check"),
+        ({"capture_transport": "future"}, "relay or local"),
+    ],
+)
+def test_start_rejects_values_outside_the_disclosed_run_contract_before_dsp(
+    monkeypatch,
+    body,
+    message,
+):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: _READY_ROOM_CORRECTION_SETUP,
+    )
+    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(
+        correction_setup,
+        "_camilla",
+        lambda: pytest.fail("CamillaDSP should not be touched"),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        correction_setup._handle_start(_DummyJsonHandler(body))
+
+    assert correction_setup._start_in_progress is False
+
+
+def test_start_defaults_to_configured_relay_before_session_admission(
+    monkeypatch,
+):
+    from jasper.capture_relay import correction_adapter
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: _READY_ROOM_CORRECTION_SETUP,
+    )
+    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(correction_adapter, "relay_enabled", lambda: True)
+
+    async def restore_level_match_volume(_setter):
+        return True
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_get_or_create_session",
+        lambda: SimpleNamespace(
+            restore_level_match_volume=restore_level_match_volume,
+        ),
+    )
+    captured = {}
+
+    def replace_session(**kwargs):
+        captured.update(kwargs)
+        sess = SimpleNamespace(
+            browser_audio_report={
+                "failed": True,
+                "refusal_reasons": ["test stop after admission"],
+            },
+        )
+        captured["session"] = sess
+        return sess
+
+    monkeypatch.setattr(correction_setup, "_replace_session", replace_session)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+
+    with pytest.raises(ValueError, match="not safe for measurement"):
+        correction_setup._handle_start(_DummyJsonHandler())
+
+    assert captured["total_positions"] == 6
+    assert captured["target_choice"] == "flat"
+    assert captured["strategy_choice"] == "balanced"
+    assert captured["repeat_main_position"] is True
+    assert captured["session"].capture_transport == "relay"
+    assert correction_setup._start_in_progress is False
+
+
+def test_start_rejects_explicit_relay_when_it_is_not_configured(monkeypatch):
+    from jasper.capture_relay import correction_adapter
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: _READY_ROOM_CORRECTION_SETUP,
+    )
+    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(correction_adapter, "relay_enabled", lambda: False)
+    monkeypatch.setattr(
+        correction_setup,
+        "_camilla",
+        lambda: pytest.fail("CamillaDSP should not be touched"),
+    )
+
+    with pytest.raises(ValueError, match="phone capture is not configured"):
+        correction_setup._handle_start(
+            _DummyJsonHandler({"capture_transport": "relay"})
+        )
+
     assert correction_setup._start_in_progress is False
 
 
@@ -1800,7 +1944,7 @@ def test_render_page_includes_current_correction_banner():
     assert 'id="current-correction-reset"' in body
     # The hint near the Run measurement button explains the bypass behavior so
     # users aren't surprised by sweeps ignoring correction/preference layers.
-    assert "Each measurement bypasses your current correction" in body
+    assert "JTS temporarily pauses your current sound settings" in body
     module_js = (
         Path(__file__).resolve().parents[1]
         / "deploy" / "assets" / "correction" / "js" / "main.js"

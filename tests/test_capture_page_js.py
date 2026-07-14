@@ -91,9 +91,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260712.3",
+        "capture_page_build": "20260713.1",
     }
-    assert "main.js?v=20260712-3" in index_html
+    assert "main.js?v=20260713-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -213,7 +213,7 @@ def test_capture_page_level_ramp_uses_guided_mic_calibration_setup():
     assert "device: capture.device" in level_path
 
 
-def test_capture_page_binds_setup_once_and_streams_only_identity():
+def test_capture_page_supports_bound_and_pi_owned_capture_only_setup():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     level_js = (_REPO / "capture-page/js/level-events.js").read_text(
         encoding="utf-8",
@@ -237,6 +237,15 @@ def test_capture_page_binds_setup_once_and_streams_only_identity():
     assert "setup: setupWirePayload()" in main_js
     assert "Raw serials/calibration text are forbidden" in level_js
     assert "validated compact setup binding" in level_js
+
+
+def test_capture_page_names_the_signed_room_trust_repeat():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert 'ctx.spec.presentation_variant === "trust_repeat"' in main_js
+    assert "Ready to repeat the main seat" in main_js
+    assert "Ready for the main-seat trust check." in main_js
+    assert "This extra capture checks that the result is trustworthy." in main_js
 
 
 def test_capture_page_rejects_oversize_calibration_and_unproven_agc():

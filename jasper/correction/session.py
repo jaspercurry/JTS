@@ -99,6 +99,14 @@ from .status import (
 )
 from ..log_event import log_event
 
+
+# Household run policy. These values are intentionally owned by the session
+# layer so HTTP, relay, and browser entry paths cannot drift into different
+# measurement semantics.
+DEFAULT_ROOM_POSITION_COUNT = 6
+ROOM_POSITION_COUNT_CHOICES = (1, 3, DEFAULT_ROOM_POSITION_COUNT)
+DEFAULT_REPEAT_MAIN_POSITION = True
+
 logger = logging.getLogger(__name__)
 
 
@@ -267,12 +275,12 @@ class MeasurementSession:
         self,
         cfg: SessionConfig | None = None,
         *,
-        total_positions: int = 1,
-        target_choice: str = "flat",
+        total_positions: int = DEFAULT_ROOM_POSITION_COUNT,
+        target_choice: str = strategy.DEFAULT_TARGET_PROFILE_ID,
         strategy_choice: str | None = None,
         mic_calibration: CalibrationRecord | None = None,
         input_device: dict[str, Any] | None = None,
-        repeat_main_position: bool = False,
+        repeat_main_position: bool = DEFAULT_REPEAT_MAIN_POSITION,
     ) -> None:
         self.cfg = cfg or SessionConfig()
         self.session_id = uuid.uuid4().hex[:12]

@@ -255,6 +255,11 @@ source = source.replace(
     setLastVerify: function (v) { lastVerify = v; },
     // P3b stepped-wizard router surfaces (all IIFE-local).
     renderEnvelope,
+    renderRunDefaults,
+    validateRunDefaults,
+    setMeasurementOptionsOpen,
+    updateRunDefaultsSummaryFromControls,
+    measurementStartPayload,
     renderNudges,
     renderPrimaryAction,
     renderProgress,
@@ -288,14 +293,20 @@ source = source.replace(
       wizardActionInFlight = !!value;
     },
     setRelayMode,
+    setRelayConfigured: function (value) {
+      relayConfigured = !!value;
+      setRelayMode(relayMode);
+    },
     getRelayMode: function () { return relayMode; },
     getRunTransportLocked: function () { return runTransportLocked; },
+    hasPollTimer: function () { return !!pollTimer; },
     resetEnvelopeBookkeeping: function () {
       envelopeFetchCount = 0;
       lastEnvelopeState = null;
       lastAutolevelStatus = null;
       envelopeRetryArmed = false;
       if (envelopeTimer) { clearTimeout(envelopeTimer); envelopeTimer = null; }
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     },
   };
 })();`,
@@ -357,6 +368,36 @@ const fakeWindow = {
   cancelAnimationFrame() {},
 };
 
+function configureSelect(id, options, selectedValue) {
+  const select = getOrMake(id);
+  select.options = options.map(([value, label]) => {
+    const option = makeEl(`${id}-${value}`);
+    option.value = String(value);
+    option.textContent = label;
+    return option;
+  });
+  select.selectedIndex = Math.max(
+    0,
+    select.options.findIndex((option) => option.value === String(selectedValue)),
+  );
+  select.value = String(selectedValue);
+}
+
+configureSelect("positions-select", [
+  ["1", "1 position — quick check"],
+  ["3", "3 positions"],
+  ["6", "6 positions — recommended"],
+], "6");
+configureSelect("target-select", [
+  ["flat", "Flat"],
+  ["warm", "Warm"],
+], "flat");
+configureSelect("strategy-select", [
+  ["safe", "Safe"],
+  ["balanced", "Balanced"],
+], "balanced");
+getOrMake("measurement-options").classList.add("hidden");
+
 // Inject stubs for the named imports (csrfHeaders, jsonHeaders, etc.)
 const preamble = `
 const navigator = window.navigator;
@@ -389,8 +430,17 @@ const safeConsole = {
 // /sessions calls resolve to a benign idle payload (tests override below).
 setFetchRoute("/status", () => ({ state: "idle" }));
 setFetchRoute("/envelope", () => ({
-  schema_version: 7, screen: "idle", state: "idle",
+  schema_version: 8, screen: "idle", state: "idle",
   sections: ["current-correction", "run-defaults"],
+  run_defaults: {
+    summary: "Measuring 6 positions with the flat target",
+    total_positions: 6,
+    target: { id: "flat", label: "Flat" },
+    strategy: { id: "balanced", label: "Balanced" },
+    repeat_main_position: true,
+    capture_transport: "relay",
+    change_allowed: true,
+  },
   curves: {}, fill_segments: [], headline: null,
   verdict_text: "Ready to measure your room.", nudges: [],
   next_action: { label: "Start measuring", endpoint: "/start" },
@@ -420,6 +470,11 @@ const {
   drawChart,
   setLastVerify,
   renderEnvelope,
+  renderRunDefaults,
+  validateRunDefaults,
+  setMeasurementOptionsOpen,
+  updateRunDefaultsSummaryFromControls,
+  measurementStartPayload,
   renderNudges,
   renderPrimaryAction,
   renderProgress,
@@ -447,8 +502,10 @@ const {
   getEnvelopeFetchCount,
   setWizardActionInFlight,
   setRelayMode,
+  setRelayConfigured,
   getRelayMode,
   getRunTransportLocked,
+  hasPollTimer,
   resetEnvelopeBookkeeping,
 } = globalThis.__testProbe;
 delete globalThis.__testProbe;
@@ -480,7 +537,7 @@ function canvasEl() { return getOrMake("chart"); }
 // ---- Tests ----
 
 // 1. Applied correction (cc has applied_at_epoch)
-// Expect: className='applied', label contains PEQ count, reset button visible
+// Expect: className='applied', label contains adjustment count, reset visible
 {
   renderCurrentCorrection(
     { applied_at_epoch: 1718000000, peq_count: 5 },
@@ -489,29 +546,29 @@ function canvasEl() { return getOrMake("chart"); }
   assert(banner().className === "applied",
     "applied correction must set banner class to 'applied'",
     { got: banner().className });
-  assert(label().textContent.includes("5 PEQ filters"),
-    "applied label must mention PEQ filter count",
+  assert(label().textContent.includes("5 adjustments"),
+    "applied label must mention household adjustment count",
     { got: label().textContent });
   assert(!resetBtn().classList.contains("hidden"),
     "applied correction must show reset button");
 }
 
-// 2. Applied with 1 filter (singular noun)
+// 2. Applied with 1 adjustment (singular noun)
 {
   renderCurrentCorrection({ applied_at_epoch: 1718000001, peq_count: 1 }, null);
-  assert(label().textContent.includes("1 PEQ filter"),
-    "single filter should use singular 'filter'",
+  assert(label().textContent.includes("1 adjustment"),
+    "single adjustment should use the singular noun",
     { got: label().textContent });
-  assert(!label().textContent.includes("filters"),
-    "single filter must not use plural 'filters'",
+  assert(!label().textContent.includes("adjustments"),
+    "single adjustment must not use the plural noun",
     { got: label().textContent });
 }
 
-// 3. Applied with 0 filters
+// 3. Applied with 0 adjustments
 {
   renderCurrentCorrection({ applied_at_epoch: 1718000002, peq_count: 0 }, null);
-  assert(label().textContent.includes("0 PEQ filters"),
-    "zero filters should use plural 'filters'",
+  assert(label().textContent.includes("0 adjustments"),
+    "zero adjustments should use the plural noun",
     { got: label().textContent });
 }
 
@@ -919,11 +976,20 @@ function curveOf(fn) {
 
 // A complete envelope with sensible defaults; override per test.
 function makeEnvelope(over) {
-  return Object.assign({
-    schema_version: 7,
+  const env = Object.assign({
+    schema_version: 8,
     screen: "idle",
     state: "idle",
     sections: ["current-correction", "run-defaults"],
+    run_defaults: {
+      summary: "Measuring 6 positions with the flat target",
+      total_positions: 6,
+      target: { id: "flat", label: "Flat" },
+      strategy: { id: "balanced", label: "Balanced" },
+      repeat_main_position: true,
+      capture_transport: "relay",
+      change_allowed: true,
+    },
     curves: {},
     fill_segments: [],
     headline: null,
@@ -934,6 +1000,13 @@ function makeEnvelope(over) {
     failure: null,
     progress: { position: 1, total: 6 },
   }, over || {});
+  if (
+    !(over && Object.prototype.hasOwnProperty.call(over, "run_defaults")) &&
+    (env.screen !== "idle" || env.state !== "idle")
+  ) {
+    env.run_defaults = { ...env.run_defaults, change_allowed: false };
+  }
+  return env;
 }
 
 function nudgeRows() {
@@ -1155,6 +1228,11 @@ await (async () => {
     "active local status overrides relay-configured browser default");
   assert(getRunTransportLocked() === true,
     "active status locks transport/default mutation controls");
+  assert(getOrMake("change-run-defaults").disabled === true &&
+      getOrMake("measurement-options").classList.contains("hidden") &&
+      getOrMake("change-run-defaults").getAttribute("aria-expanded") === "false" &&
+      getOrMake("local-capture-fallback").classList.contains("hidden"),
+    "active status closes and disables every transport/default control");
   setFetchRoute("/status", () => ({ state: "idle", capture_transport: "local" }));
   setFetchRoute("/envelope", () => makeEnvelope());
   setRelayMode(false);
@@ -1298,13 +1376,108 @@ await (async () => {
   resetEnvelopeBookkeeping();
 })();
 
-// 29. The v7 contract is closed. Unknown versions, screens, sections,
+// 28f. Run defaults are rendered verbatim, Change stays bounded, and the
+//      browser sends selected values without inventing defaults or transport-
+//      specific repeat policy.
+{
+  renderEnvelope(makeEnvelope());
+  assert(getOrMake("run-defaults-summary").textContent ===
+    "Measuring 6 positions with the flat target",
+  "run defaults: server summary renders verbatim");
+
+  setMeasurementOptionsOpen(false);
+  getOrMake("change-run-defaults").click();
+  assert(!getOrMake("measurement-options").classList.contains("hidden") &&
+    getOrMake("change-run-defaults").getAttribute("aria-expanded") === "true",
+  "run defaults: Change opens one bounded panel and updates ARIA");
+
+  getOrMake("positions-select").value = "3";
+  getOrMake("positions-select").selectedIndex = 1;
+  getOrMake("target-select").value = "warm";
+  getOrMake("target-select").selectedIndex = 1;
+  for (const fn of getOrMake("target-select")._listeners.change || []) fn({});
+  assert(getOrMake("run-defaults-summary").textContent ===
+    "Measuring 3 positions with the warm target",
+  "run defaults: disclosure follows the permitted choice");
+
+  setRelayMode(true);
+  const relayPayload = measurementStartPayload();
+  setRelayMode(false);
+  const localPayload = measurementStartPayload();
+  assert(relayPayload.total_positions === 3 &&
+      relayPayload.target_choice === "warm" &&
+      relayPayload.strategy_choice === "balanced" &&
+      relayPayload.capture_transport === "relay" &&
+      localPayload.capture_transport === "local",
+    "run defaults: selected choices reach Start unchanged");
+  assert(!Object.prototype.hasOwnProperty.call(relayPayload, "repeat_main_position") &&
+    !Object.prototype.hasOwnProperty.call(localPayload, "repeat_main_position"),
+  "run defaults: repeat remains server-owned for both transports");
+}
+
+// 28g. Before Start, a relay-capable speaker offers a reversible transport
+//      choice inside Change. Once local capture is selected, the same control
+//      can return to phone capture instead of becoming a one-way fallback.
+await (async () => {
+  setRelayConfigured(true);
+  setRelayMode(true);
+  setFetchRoute("/envelope", () => makeEnvelope());
+  const transportChoice = getOrMake("local-capture-fallback");
+  assert(!transportChoice.classList.contains("hidden") &&
+      transportChoice.textContent === "Use this device's microphone",
+    "relay default offers the unlocked local-capture choice");
+  transportChoice.click();
+  await settle();
+  assert(getRelayMode() === false &&
+      !transportChoice.classList.contains("hidden") &&
+      transportChoice.textContent === "Use phone capture",
+    "local choice keeps one visible route back to phone capture");
+  transportChoice.click();
+  await settle();
+  assert(getRelayMode() === true &&
+      transportChoice.textContent === "Use this device's microphone",
+    "phone capture can be restored before Start");
+  setRelayConfigured(false);
+  setRelayMode(false);
+})();
+
+// 29. The v8 contract is closed. Unknown versions, screens, sections,
 //     duplicates, or actions are rejected before any of them become policy.
 {
   const invalid = [
-    makeEnvelope({ schema_version: 6 }),
-    makeEnvelope({ schema_version: 8 }),
-    makeEnvelope({ schema_version: "7" }),
+    makeEnvelope({ schema_version: 7 }),
+    makeEnvelope({ schema_version: 9 }),
+    makeEnvelope({ schema_version: "8" }),
+    makeEnvelope({ run_defaults: null }),
+    makeEnvelope({ run_defaults: {
+      summary: "Measuring 6 positions with the flat target",
+      total_positions: 6,
+      target: { id: "flat", label: "Flat" },
+      strategy: { id: "balanced", label: "Balanced" },
+      repeat_main_position: "true",
+      capture_transport: "relay",
+      change_allowed: true,
+    } }),
+    makeEnvelope({ run_defaults: {
+      ...makeEnvelope().run_defaults,
+      total_positions: 5,
+    } }),
+    makeEnvelope({ run_defaults: {
+      ...makeEnvelope().run_defaults,
+      target: { id: "future-target", label: "Future target" },
+    } }),
+    makeEnvelope({ run_defaults: {
+      ...makeEnvelope().run_defaults,
+      strategy: { id: "future-strategy", label: "Future strategy" },
+    } }),
+    makeEnvelope({ run_defaults: {
+      ...makeEnvelope().run_defaults,
+      change_allowed: false,
+    } }),
+    makeEnvelope({
+      screen: "level", state: "needs_noise_capture",
+      run_defaults: {...makeEnvelope().run_defaults, change_allowed: true},
+    }),
     makeEnvelope({ screen: "future-screen" }),
     makeEnvelope({ sections: null }),
     makeEnvelope({ sections: [] }),
@@ -1403,9 +1576,61 @@ await (async () => {
   invalid.forEach((env, index) => {
     let rejected = false;
     try { validateEnvelope(env); } catch (_e) { rejected = true; }
-    assert(rejected, "malformed/unknown v7 envelope fails closed", { index });
+    assert(rejected, "malformed/unknown v8 envelope fails closed", { index });
   });
 }
+
+// 29a0. The main-seat relay repeat stays single-action while the phone link is
+//       being created. Polling continues through that pre-arm window, and a
+//       terminal relay failure refreshes the envelope so one retry reappears.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  resetFetchCounts();
+  setRelayMode(true);
+  let relayStatus = "awaiting_phone";
+  setFetchRoute("/status", () => ({
+    state: "needs_repeat_capture",
+    capture_transport: "relay",
+    relay: {status: relayStatus, tap_link: "https://capture.example/repeat"},
+    autolevel: {status: "idle"},
+  }));
+  setFetchRoute("/envelope", () => makeEnvelope({
+    screen: "sweep", state: "needs_repeat_capture",
+    sections: ["capture-handoff", "placement"],
+    next_action: relayStatus === "failed"
+      ? {label: "Repeat the main seat", endpoint: "/relay/capture"}
+      : null,
+  }));
+
+  renderEnvelope(makeEnvelope({
+    screen: "sweep", state: "needs_repeat_capture",
+    sections: ["capture-handoff", "placement"],
+    next_action: null,
+  }));
+  await pollState();
+  assert(hasPollTimer(),
+    "pending relay repeat keeps status polling alive before phone arm");
+  assert(wizNext().classList.contains("hidden"),
+    "pending relay repeat offers no duplicate capture action");
+
+  relayStatus = "failed";
+  await pollState();
+  await settle();
+  assert(fetchCountFor("/envelope") >= 1 &&
+      wizNext().getAttribute("data-endpoint") === "/relay/capture" &&
+      !wizNext().classList.contains("hidden"),
+    "terminal relay failure refreshes one server-owned repeat retry", {
+      envelopeFetches: fetchCountFor("/envelope"),
+      endpoint: wizNext().getAttribute("data-endpoint"),
+      hidden: wizNext().classList.contains("hidden"),
+      verdict: wizVerdict().textContent,
+    });
+
+  setRelayMode(false);
+  setFetchRoute("/status", () => ({state: "idle", capture_transport: "local"}));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
 
 // 29aa. A review evidence failure is a valid non-terminal failure envelope:
 //       it drives the visible verdict, withholds Apply, and suppresses tuning.

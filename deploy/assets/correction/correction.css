@@ -4,7 +4,7 @@
    Loaded by canonical_page(..., page_css_href="/assets/correction/correction.css").
 
    Shared primitives (.page, .app-header, .btn--*, .field, .info-card,
-   .eyebrow, .disclosure-twin, .jts-dialog) come from app.css — don't
+   .eyebrow, .jts-dialog) come from app.css — don't
    redefine them. Only the measurement-viz vocabulary unique to room
    correction lives here: the live mic-level meter, the capture-settings
    constraint table, the quality / confidence / runtime cards, the
@@ -30,6 +30,14 @@
 
 .page-sub { color: var(--muted); margin: 0 0 0.5rem; font-size: 0.95rem; }
 .hint { color: var(--muted); font-size: 0.9rem; }
+
+.run-defaults-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.run-defaults-line p { margin: 0; }
 
 /* Generic heading sizes for the <h2>/<h3> the page (and the relocated JS)
    write into cards / workflow blocks. Quiet and on-brand. */

@@ -34,6 +34,7 @@ ENVELOPE_KEYS = {
     "screen",
     "state",
     "sections",
+    "run_defaults",
     "curves",
     "fill_segments",
     "headline",
@@ -90,6 +91,10 @@ class _FakeSession:
         self.error: str | None = None
         self.total_positions = 3
         self.current_position = 0
+        self.target_choice = "flat"
+        self.strategy_choice = "balanced"
+        self.repeat_main_position = True
+        self.capture_transport = "local"
         self.autolevel = _FakeAutolevel("idle")
         self.measured_curve: CurveJSON | None = None
         self.target_curve: CurveJSON | None = None
@@ -199,16 +204,16 @@ def test_unknown_state_value_fails_closed_instead_of_offering_start():
 # ---------- top-level shape ------------------------------------------------
 
 
-def test_schema_version_is_seven():
+def test_schema_version_is_eight():
     # v2 added the P4 `verdict` block; v3 added the P5 crossover-region
     # distinction (REVIEW verdict_text + crossover_region_dip_not_boosted nudge);
     # v4 (P6) added the `tuning_llm` affordance block.
     # v5 wires the relay-owned level-before-sweep actions; v6 makes the
     # ordered section list the sole whole-page visibility authority; v7 adds
-    # closed blocker/failure presentation data.
-    assert envelope.ENVELOPE_SCHEMA_VERSION == 7
+    # closed blocker/failure presentation data; v8 adds run defaults.
+    assert envelope.ENVELOPE_SCHEMA_VERSION == 8
     env = envelope.build_envelope(_FakeSession())
-    assert env["schema_version"] == 7
+    assert env["schema_version"] == 8
 
 
 def test_tuning_llm_block_offered_on_review_shape_pinned(monkeypatch):
@@ -256,6 +261,65 @@ def test_tuning_llm_not_offered_before_measurement():
 def test_envelope_top_level_shape_is_pinned():
     env = envelope.build_envelope(_FakeSession())
     assert set(env) == ENVELOPE_KEYS
+
+
+def test_run_defaults_disclose_server_owned_choices_and_lock_active_run():
+    from jasper.correction.session import DEFAULT_ROOM_POSITION_COUNT
+
+    idle = _FakeSession(SessionState.IDLE)
+    idle.total_positions = DEFAULT_ROOM_POSITION_COUNT
+    env = envelope.build_envelope(
+        idle,
+        capture_transport="relay",
+        readiness_blocker=None,
+    )
+
+    assert env["run_defaults"] == {
+        "summary": "Measuring 6 positions with the flat target",
+        "total_positions": DEFAULT_ROOM_POSITION_COUNT,
+        "target": {"id": "flat", "label": "Flat"},
+        "strategy": {"id": "balanced", "label": "Balanced"},
+        "repeat_main_position": True,
+        "capture_transport": "relay",
+        "change_allowed": True,
+    }
+
+    active = _FakeSession(SessionState.NEEDS_NOISE_CAPTURE)
+    active.total_positions = 3
+    active.target_choice = "warm"
+    active.strategy_choice = "safe"
+    active.capture_transport = "local"
+    active_env = envelope.build_envelope(active)
+    assert active_env["run_defaults"]["summary"] == (
+        "Measuring 3 positions with the warm target"
+    )
+    assert active_env["run_defaults"]["change_allowed"] is False
+
+
+@pytest.mark.parametrize(
+    ("transport", "endpoint"),
+    [("relay", "/relay/capture"), ("local", "/repeat-position")],
+)
+def test_repeat_action_uses_the_current_capture_transport(transport, endpoint):
+    sess = _FakeSession(SessionState.NEEDS_REPEAT_CAPTURE)
+    sess.capture_transport = transport
+
+    env = envelope.build_envelope(sess)
+
+    assert env["next_action"] == {
+        "label": "Repeat the main seat",
+        "endpoint": endpoint,
+    }
+    assert "trustworthy" in env["verdict_text"]
+
+
+def test_pending_relay_capture_withholds_duplicate_repeat_action():
+    sess = _FakeSession(SessionState.NEEDS_REPEAT_CAPTURE)
+    sess.capture_transport = "relay"
+
+    env = envelope.build_envelope(sess, relay_capture_pending=True)
+
+    assert env["next_action"] is None
 
 
 def test_section_vocabulary_is_exact_and_room_owned():
@@ -440,6 +504,28 @@ def test_web_handler_never_scans_reports_on_active_poll(monkeypatch):
     )
     assert body["screen"] == "sweep"
     assert "reports" not in body["sections"]
+
+
+def test_web_handler_starting_room_repeat_withholds_duplicate_action(monkeypatch):
+    from jasper.web import correction_setup
+
+    sess = _FakeSession(SessionState.NEEDS_REPEAT_CAPTURE)
+    sess.capture_transport = "relay"
+    sess.cfg = SimpleNamespace(sessions_dir="unused")
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    correction_setup._set_relay_capture({
+        "status": "starting",
+        "kind": "room_repeat",
+    })
+    try:
+        body = correction_setup._handle_envelope(
+            SimpleNamespace(path="/envelope?capture_transport=relay")
+        )
+    finally:
+        correction_setup._set_relay_capture(None)
+
+    assert body["state"] == "needs_repeat_capture"
+    assert body["next_action"] is None
 
 
 def test_web_handler_active_to_idle_race_fails_closed(monkeypatch):
@@ -1066,7 +1152,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         server.server_close()
 
     assert set(body) == ENVELOPE_KEYS
-    assert body["schema_version"] == 7
+    assert body["schema_version"] == 8
     assert body["screen"] == "review"
     assert body["state"] == "ready"
     assert body["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}

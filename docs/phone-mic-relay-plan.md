@@ -19,19 +19,25 @@
 > (`RelayCaptureKind` + `_run_relay_capture` in `correction_setup.py`); a new kind
 > is a descriptor, not a new handler. **A USB-C measurement mic plugged into the
 > phone is supported:** the room level-check page runs a guided setup on
-> `capture.jasper.tech` (permission → mic choice → calibration choice → position
-> count). Level-ramp specs set `setup_validation=true`, so vendor serial lookup
+> `capture.jasper.tech` (permission → mic choice → calibration choice). Room's
+> position count is speaker-owned and is not collected from the phone.
+> Level-ramp specs set `setup_validation=true`, so vendor serial lookup
 > / calibration-file parsing preflights through the Pi before the phone shows
 > Start. The full setup is sent exactly once and frozen under a session-scoped
-> SHA-256 binding; meter batches and later capture-only room links carry only
-> that compact identity. Raw serials/calibration text are not persisted in
-> browser storage or repeated through the relay. Calibration is still applied
+> SHA-256 binding for the level stream. Later Room links are signed capture-only
+> specs carrying the Pi-owned position/total; their authenticated `armed` event
+> reports the realized device, which the Pi compares with the level-check
+> microphone and calibration before sound. Raw serials/calibration text are not
+> persisted in browser storage or repeated through the relay. Crossover retains
+> its compact setup binding under the Active-owned flow. Calibration is still
+> applied
 > **Pi-side during analysis, never at record
 > time** (it's a post-hoc FR correction in `MeasurementSession._smooth_capture`);
 > the phone records raw and reports *which* mic it used in the opaque `armed`
-> event. A device-aware gate (`_relay_device_calibration_block`, POST-capture)
-> refuses a vendor curve on the phone's built-in mic but allows it for the
-> matching USB mic. Supported measurement-mic model options are Pi-owned data in
+> event. A device-aware gate (`_relay_device_calibration_block`, before playback
+> and again after capture) refuses a vendor curve on the phone's built-in mic but
+> allows it for the matching USB mic. Supported measurement-mic model options
+> are Pi-owned data in
 > the `CaptureSpec`, derived from `SUPPORTED_MODELS`, so adding a mic is a Pi
 > registry change rather than a separate Cloudflare page edit. The phone also
 > records a passive noise-floor window before the Pi plays anything, and the Pi
@@ -234,13 +240,15 @@ speaker + the brain** — it *plays* the stimulus and *analyzes*. The Pi does **
 record** anything; it already knows the stimulus because it generated it, and it
 aligns the phone's recording against that known stimulus.
 
-**Guided setup once, then one Start tap per capture.** The speaker page is
+**Guided level setup once, then one Start tap per capture.** The speaker page is
 intentionally simple and exposes one server-owned next action. The jasper.tech page
 owns the phone-only setup the Pi page cannot do reliably: microphone permission,
-input choice, calibration choice (none / vendor serial / uploaded file), and
-measurement count. The automatic level stage validates and freezes setup through
-the Pi before playing its quiet-start tone. Each later room link verifies the
-compact binding and opens directly on **Start measurement**; that tap does both:
+input choice, and calibration choice (none / vendor serial / uploaded file).
+Room's measurement count remains Pi-owned. The automatic level stage validates
+and freezes the mic/calibration setup through the Pi before playing its
+quiet-start tone. Each later Room link carries signed Pi-owned position metadata,
+checks the realized mic against the level identity, and opens directly on
+**Start measurement**; that tap does both:
 
 1. records a short passive room-noise floor, then starts the sweep recording
    **locally** on the phone (instant — `getUserMedia`),
@@ -260,7 +268,7 @@ audio. Full sequence:
 1. **Pi** mints the session + capture-spec, registers it with the relay, shows
    the tap-link on `jts.local`.
 2. **Phone** opens the level-ramp page, asks for microphone permission, and lets
-   the user pick mic/calibration/count once.
+   the user pick the microphone/calibration once. The Pi retains the Room count.
 3. **Phone** verifies that the spec's `capture_protocol_version` is in the
    public page's `supported_capture_protocol_versions`, then includes the page
    build/protocol identity in every control event. The Pi validates that identity
@@ -271,11 +279,12 @@ audio. Full sequence:
    The phone then streams compact level batches, and the Pi raises software gain
    gradually from quiet until stable, restores listening volume, and retains the
    target for sweeps. Unsupported/unknown AGC is refused before the tone.
-5. **Phone** opens a capture-only room link, records passive room noise, starts
-   the sweep recording, and drops `armed` plus the compact setup binding in the
-   relay.
-6. **Pi** — already polling `GET /sessions/:id/status` — verifies the binding,
-   sees `armed`, reasserts the retained target inside the measurement window,
+5. **Phone** opens a signed capture-only Room link carrying the Pi-owned
+   position/total, records passive room noise, starts the sweep recording, and
+   drops authenticated `armed` metadata with the realized device in the relay.
+6. **Pi** — already polling `GET /sessions/:id/status` — sees `armed`, verifies
+   the device/calibration against the level-check identity, reasserts the
+   retained target inside the measurement window,
    publishes `host_event.phase="sweep_started"`,
    and **plays the stimulus** through the speaker.
 7. In the room, the phone's mic (still recording) captures it.
@@ -330,6 +339,9 @@ capture_spec:
   duration_ms: 30000          # hard timeout; normal stop waits for Pi sweep_complete
   pre_roll_ms: 500            # legacy/fallback margin; Pi still plays only after armed
   post_roll_ms: 650
+  position: 1                  # optional signed, Pi-owned display progress
+  total_positions: 6          # supplied as a pair with position
+  presentation_variant: "trust_repeat"  # copy only; never state authority
   constraints:                # measurement-critical: do NOT let the browser process the signal
     echoCancellation: false
     autoGainControl: false
@@ -709,22 +721,31 @@ pairing proof, not a guess based on the Pages dashboard.
 
 ---
 
-Last updated: 2026-07-12 — active-crossover capture now uses role-sized sweeps,
-a signal-bounded controlled quiet crop, paired-window deconvolved per-band SNR, and the
-server-owned three-repeat admission loop; selecting a UMIK-2 preselects only
-the miniDSP UMIK-2 model/mode. Browser labels do not contain a trustworthy
+Last updated: 2026-07-13 — Room defaults are speaker-owned (six positions,
+flat target, balanced strategy, and an automatic main-seat trust repeat). The
+Room level check no longer collects a phone-owned position count; later Room
+links carry signed position/total metadata and authenticate the realized
+microphone against the Pi-retained level identity before playback. The trust
+repeat uses the same Room relay handler and state machine; its generic
+`presentation_variant` changes phone copy only and cannot own sequencing,
+timeout, or admission. Repo-pinned capture page build 20260713.1 adds the
+repeat-specific phone copy; external publication is intentionally pending
+coordinator release. Active-crossover capture uses
+role-sized sweeps,
+a signal-bounded controlled quiet crop, paired-window deconvolved per-band SNR,
+and the server-owned three-repeat admission loop; selecting a UMIK-2 preselects
+only the miniDSP UMIK-2 model/mode. Browser labels do not contain a trustworthy
 serial, so the operator must still enter and validate it once; there is no
 automatic calibration-file match. Capture specs are MAC-bound to their fragment
 links and protocol-v2 phone events are authenticated end to end before any
 correctness-critical field can reach playback; protocol 1 remains compatible
-but cannot satisfy v2 evidence. The level stage now preflights and freezes microphone,
-calibration, and room-count setup once; successful leveling restores listening
-volume immediately, sweeps assert the retained target only inside their guarded
-playback windows, and later room links are capture-only with compact binding and
-a sliding 20-minute idle / fixed two-hour absolute browser-storage lifetime;
-the page/Pi compatibility version is checked before tone and published at
-`capture.jasper.tech/version.json` with a page-before-Pi release contract;
-the crossover page is a serialized single-next-action relay flow;
+but cannot satisfy v2 evidence. The level stage preflights and freezes the
+microphone/calibration setup; successful leveling restores listening volume
+immediately, and sweeps assert the retained target only inside their guarded
+playback windows. Crossover retains its compact setup binding and bounded
+browser-storage lifetime. The page/Pi compatibility version is checked before
+tone and published at `capture.jasper.tech/version.json` with a page-before-Pi
+release contract; the crossover page is a serialized single-next-action flow;
 blank legacy `JASPER_CAPTURE_RELAY_BASE` / `JASPER_CAPTURE_ORIGIN` values now
 migrate to the public relay defaults on install/update; explicit
 `disabled`/`off`/`0`/`none` remains the persistent on-Pi fallback opt-out. Prior

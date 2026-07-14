@@ -69,8 +69,9 @@ logger = logging.getLogger(__name__)
 # authority. The browser maps this fixed vocabulary to DOM nodes; it does not
 # carry a second screen-to-section policy. v7 adds the closed `blocker` and
 # `failure` presentation blocks so raw readiness/session diagnostics never
-# become homeowner copy.
-ENVELOPE_SCHEMA_VERSION = 7
+# become homeowner copy. v8 adds the server-owned `run_defaults` block: the
+# disclosed run choices, capture transport, and whether Change is still legal.
+ENVELOPE_SCHEMA_VERSION = 8
 
 # 1/N-octave smoothing applied to the empirical display curves. 6 =
 # 1/6-octave — visibly smoothed (no raw jaggedness) while preserving
@@ -895,6 +896,14 @@ def _verdict_text(
     if screen == SCREEN_VERIFY:
         return "Measuring again to check the correction worked."
     if screen == SCREEN_SWEEP:
+        if session.state.value in {
+            "needs_repeat_capture",
+            "awaiting_repeat_capture",
+        }:
+            return (
+                "Repeating the main seat once to check that the measurement "
+                "is trustworthy."
+            )
         total = int(getattr(session, "total_positions", 1) or 1)
         pos = int(getattr(session, "current_position", 0) or 0) + 1
         if total > 1:
@@ -939,7 +948,12 @@ def _verdict_text(
 
 
 def _next_action_for(
-    session: Any, screen: str, verdict: dict[str, Any] | None,
+    session: Any,
+    screen: str,
+    verdict: dict[str, Any] | None,
+    *,
+    capture_transport: str,
+    relay_capture_pending: bool,
 ) -> dict[str, str] | None:
     """The single forward button, verdict-aware on the result screen.
 
@@ -959,6 +973,8 @@ def _next_action_for(
     reverts, the correction stays applied, and /reset remains the manual
     undo.
     """
+    if relay_capture_pending and capture_transport == "relay":
+        return None
     if session.state.value == "failed":
         return {
             "label": "Start over",
@@ -972,7 +988,11 @@ def _next_action_for(
     if session.state.value == "needs_repeat_capture":
         return {
             "label": "Repeat the main seat",
-            "endpoint": "/repeat-position",
+            "endpoint": (
+                "/relay/capture"
+                if capture_transport == "relay"
+                else "/repeat-position"
+            ),
         }
     if (
         screen == SCREEN_MIC
@@ -1043,10 +1063,72 @@ def _next_action_for(
     return _NEXT_ACTION.get(screen)
 
 
+def _run_defaults(
+    session: Any,
+    *,
+    screen: str,
+    capture_transport: str,
+) -> dict[str, Any]:
+    """Disclose the exact Room choices the current or next run will use."""
+    from .session import (
+        DEFAULT_REPEAT_MAIN_POSITION,
+        DEFAULT_ROOM_POSITION_COUNT,
+    )
+    from .strategy import (
+        DEFAULT_CORRECTION_STRATEGY_ID,
+        DEFAULT_TARGET_PROFILE_ID,
+        resolve_correction_strategy,
+        resolve_target_profile,
+    )
+
+    total_positions = int(
+        getattr(session, "total_positions", DEFAULT_ROOM_POSITION_COUNT)
+        or DEFAULT_ROOM_POSITION_COUNT
+    )
+    target = resolve_target_profile(
+        str(getattr(session, "target_choice", DEFAULT_TARGET_PROFILE_ID))
+    )
+    correction_strategy = resolve_correction_strategy(
+        str(
+            getattr(
+                session,
+                "strategy_choice",
+                DEFAULT_CORRECTION_STRATEGY_ID,
+            )
+        )
+    )
+    repeat_main_position = bool(
+        getattr(
+            session,
+            "repeat_main_position",
+            DEFAULT_REPEAT_MAIN_POSITION,
+        )
+    )
+    position_word = "position" if total_positions == 1 else "positions"
+    return {
+        "summary": (
+            f"Measuring {total_positions} {position_word} with the "
+            f"{target.label.casefold()} target"
+        ),
+        "total_positions": total_positions,
+        "target": {"id": target.target_id, "label": target.label},
+        "strategy": {
+            "id": correction_strategy.strategy_id,
+            "label": correction_strategy.label,
+        },
+        "repeat_main_position": repeat_main_position,
+        "capture_transport": capture_transport,
+        "change_allowed": (
+            screen == SCREEN_IDLE and session.state.value == "idle"
+        ),
+    }
+
+
 def build_envelope(
     session: Any,
     *,
     capture_transport: str | None = None,
+    relay_capture_pending: bool = False,
     reports_available: bool = False,
     readiness_blocker: dict[str, Any] | None | _ReadinessUnset = _READINESS_UNSET,
 ) -> dict[str, Any]:
@@ -1060,7 +1142,18 @@ def build_envelope(
     """
     screen = _screen_for(session)
     verdict = _verdict(session)
-    next_action = _next_action_for(session, screen, verdict)
+    transport = str(
+        capture_transport
+        or getattr(session, "capture_transport", "local")
+        or "local"
+    )
+    next_action = _next_action_for(
+        session,
+        screen,
+        verdict,
+        capture_transport=transport,
+        relay_capture_pending=relay_capture_pending,
+    )
     blocker = None
     if screen == SCREEN_IDLE:
         if isinstance(readiness_blocker, _ReadinessUnset):
@@ -1106,11 +1199,6 @@ def build_envelope(
     tuning_llm = _tuning_llm(screen)
     if failure is not None:
         tuning_llm["offered"] = False
-    transport = str(
-        capture_transport
-        or getattr(session, "capture_transport", "local")
-        or "local"
-    )
     envelope: dict[str, Any] = {
         "schema_version": ENVELOPE_SCHEMA_VERSION,
         "screen": screen,
@@ -1121,6 +1209,11 @@ def build_envelope(
             reports_available=reports_available,
             tuning_offered=bool(tuning_llm.get("offered")),
             readiness_blocked=blocker is not None,
+        ),
+        "run_defaults": _run_defaults(
+            session,
+            screen=screen,
+            capture_transport=transport,
         ),
         "curves": _curves(session),
         "fill_segments": _fill_segments(session),
@@ -1169,6 +1262,7 @@ def build_envelope_logged(
     session: Any,
     *,
     capture_transport: str | None = None,
+    relay_capture_pending: bool = False,
     reports_available: bool = False,
     readiness_blocker: dict[str, Any] | None | _ReadinessUnset = _READINESS_UNSET,
 ) -> dict[str, Any]:
@@ -1180,6 +1274,7 @@ def build_envelope_logged(
     envelope = build_envelope(
         session,
         capture_transport=capture_transport,
+        relay_capture_pending=relay_capture_pending,
         reports_available=reports_available,
         readiness_blocker=readiness_blocker,
     )

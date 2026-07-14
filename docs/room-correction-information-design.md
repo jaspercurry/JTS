@@ -13,8 +13,9 @@
 
 > **Implementation boundary (2026-07-13).** The sequential Room envelope,
 > multi-position measurement, IIR PEQ design, deterministic verification, and
-> automatic revert loop ship today. R1a/R1b now ship the hardware-free
-> server-owned entry and whole-page visibility contract: envelope schema v7
+> automatic revert loop ship today. R1 now ships the hardware-free
+> server-owned entry, defaults, and whole-page visibility contract: envelope
+> schema v8
 > supplies the exact ordered section list plus closed blocker/failure blocks,
 > the browser fails closed without a policy mirror, the named legacy
 > containers/actions and certificate-install guide are deleted, and reports are
@@ -26,7 +27,11 @@
 > Start, relay, tuning, and stored session failures use closed homeowner copy;
 > raw diagnostics remain in logs/evidence, not primary Room surfaces. The local
 > fallback binds its realized microphone before level matching and capture.
-> Disclosed six/flat/default-repeat policy remains the next R1 patch.
+> The envelope and `/start` share the disclosed six-position, flat-target,
+> balanced-strategy, automatic-main-seat-repeat policy; the household can choose
+> one, three, or six positions and safe or balanced strategy. Relay is preferred
+> when configured, the phone's position count is not authority, and follow-up
+> capture-only sweeps authenticate the level-check microphone before sound.
 > Returning-user preferences, one persistent phone handoff,
 > and mandatory proof remain Wave 3 target behavior. Wave 1 added inert evidence
 > identities, excitation admission, and an exact Active eligibility-receipt
@@ -138,8 +143,9 @@ The Room experience follows these principles:
    form controls.
 4. Safety and authority may block. Measurement quality and preference do not
    block when continuing is safe.
-5. Room keeps its reverberant, cross-position evidence. Same-target stationary
-   repeats and reflection-gated driver evidence remain Active concerns.
+5. Room keeps its reverberant, cross-position evidence and its separate
+   main-seat trust repeat. Active's fixed-axis, per-driver same-target repeats
+   and reflection-gated driver evidence remain Active concerns.
 6. A proposal is not live, an applied correction is not verified, and a
    verification result is not accepted until the owning authority says so.
 

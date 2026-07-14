@@ -26,16 +26,31 @@ from scipy.signal import fftconvolve
 
 from jasper.audio_measurement import deconv, quality, sweep
 from jasper.audio_measurement.calibration import store_calibration
-from jasper.correction import bundles, runtime_integrity
+from jasper.correction import bundles, runtime_integrity, strategy
 from jasper.correction.session import (
     AutolevelData,
     AutolevelStatus,
+    DEFAULT_REPEAT_MAIN_POSITION,
+    DEFAULT_ROOM_POSITION_COUNT,
+    MeasurementSession,
     SessionBusyError,
     SessionState,
 )
 from .correction_session_fixtures import (
     make_measurement_session as _make_session,
 )
+
+
+def test_session_room_defaults_match_named_owners(tmp_path):
+    fixture = _make_session(tmp_path)
+    sess = MeasurementSession(fixture.cfg)
+
+    assert sess.total_positions == DEFAULT_ROOM_POSITION_COUNT == 6
+    assert sess.target_choice == strategy.DEFAULT_TARGET_PROFILE_ID == "flat"
+    assert sess.strategy_choice == strategy.DEFAULT_CORRECTION_STRATEGY_ID == (
+        "balanced"
+    )
+    assert sess.repeat_main_position is DEFAULT_REPEAT_MAIN_POSITION is True
 
 
 def _synthesize_room_capture(

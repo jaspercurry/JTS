@@ -295,13 +295,23 @@ class CaptureSpec:
     # Whether the phone page should preflight its guided setup (notably vendor
     # mic serial lookup) through the Pi before advancing to the Start step.
     setup_validation: bool = False
-    # Opaque session binding shared by the guided level stage and its later
-    # capture-only room links. The relay does not interpret it; the phone and Pi
-    # use it to reject stale setup identities.
+    # Opaque setup binding used by flows that retain browser-side setup identity
+    # (notably Active crossover). Modern Room follow-up links instead carry
+    # Pi-owned placement fields and authenticate the realized level-check mic.
     setup_binding_id: str = ""
     # Whether the guided setup asks for the room position count. Crossover level
     # matching uses the same setup flow without that room-only question.
     setup_collect_positions: bool = False
+    # Optional Pi-owned placement progress. The public capture page already
+    # consumes these fields when a capture-only Room link has no persisted
+    # browser setup; carrying them in the signed spec keeps position authority
+    # on the speaker.
+    position: int | None = None
+    total_positions: int | None = None
+    # Optional kind-owned presentation variant. It may change capture-page copy
+    # only; the owning flow still controls sequencing, timeouts, and admission.
+    # The shared schema validates its shape without enumerating per-kind values.
+    presentation_variant: str = ""
     acknowledgement: CaptureAcknowledgement | None = None
     # Optional per-run nonce (additive, empty for kinds that don't use it). The
     # level_ramp flow mints one per ramp run; the phone echoes it in every
@@ -347,6 +357,19 @@ class CaptureSpec:
             "setup_validation": self.setup_validation,
             "setup_binding_id": self.setup_binding_id,
             "setup_collect_positions": self.setup_collect_positions,
+            **(
+                {
+                    "position": self.position,
+                    "total_positions": self.total_positions,
+                }
+                if self.position is not None
+                else {}
+            ),
+            **(
+                {"presentation_variant": self.presentation_variant}
+                if self.presentation_variant
+                else {}
+            ),
             "acknowledgement": (
                 self.acknowledgement.to_dict() if self.acknowledgement else None
             ),
@@ -419,6 +442,17 @@ class CaptureSpec:
             setup_collect_positions=_as_bool(
                 data, "setup_collect_positions", default=False
             ),
+            position=(
+                _as_int(data, "position")
+                if data.get("position") is not None
+                else None
+            ),
+            total_positions=(
+                _as_int(data, "total_positions")
+                if data.get("total_positions") is not None
+                else None
+            ),
+            presentation_variant=data.get("presentation_variant", ""),
             acknowledgement=(
                 CaptureAcknowledgement.from_dict(acknowledgement_raw)
                 if isinstance(acknowledgement_raw, Mapping)
@@ -502,6 +536,37 @@ class CaptureSpec:
         if self.setup_collect_positions and not self.setup_validation:
             raise CaptureSpecError(
                 "setup_collect_positions requires setup_validation=true"
+            )
+        if (self.position is None) != (self.total_positions is None):
+            raise CaptureSpecError(
+                "position and total_positions must be supplied together"
+            )
+        if self.position is not None:
+            if (
+                not isinstance(self.position, int)
+                or isinstance(self.position, bool)
+                or not isinstance(self.total_positions, int)
+                or isinstance(self.total_positions, bool)
+            ):
+                raise CaptureSpecError(
+                    "position and total_positions must be integers"
+                )
+            if (
+                self.position <= 0
+                or self.total_positions <= 0
+                or self.position > self.total_positions
+            ):
+                raise CaptureSpecError(
+                    "position must be within 1..total_positions"
+                )
+        if not isinstance(self.presentation_variant, str) or (
+            self.presentation_variant
+            and not re.fullmatch(
+                r"[a-z][a-z0-9_-]{0,63}", self.presentation_variant
+            )
+        ):
+            raise CaptureSpecError(
+                "presentation_variant must be an empty or 1..64-character slug"
             )
         if (
             not isinstance(self.max_upload_bytes, int)
@@ -741,6 +806,7 @@ def build_room_sweep_spec(
     calibration_models: Sequence[Mapping[str, Any]] | None = None,
     guided_setup: bool = True,
     setup_binding_id: str = "",
+    presentation_variant: str = "",
 ) -> CaptureSpec:
     """Build the `kind="room_sweep"` capture spec (plan §6, build step 1).
 
@@ -763,6 +829,10 @@ def build_room_sweep_spec(
         raise CaptureSpecError("stimulus_duration_ms must be positive")
     if pre_roll_ms < 0 or post_roll_ms < 0:
         raise CaptureSpecError("pre_roll_ms / post_roll_ms must be >= 0")
+    if presentation_variant not in {"", "trust_repeat"}:
+        raise CaptureSpecError(
+            "room_sweep presentation_variant must be empty or trust_repeat"
+        )
     duration_ms = max(
         pre_roll_ms + stimulus_duration_ms + post_roll_ms,
         int(hard_timeout_ms),
@@ -812,9 +882,12 @@ def build_room_sweep_spec(
         # Mic choice + calibration are session setup, not per-position work.
         # The first level-check link validates and freezes them on the Pi; later
         # position links are intentionally capture-only and report the realized
-        # device for the Pi's identity check after upload.
+        # device for the Pi's identity check before playback and after upload.
         setup_validation=guided_setup,
         setup_binding_id=setup_binding_id,
+        position=position,
+        total_positions=total_positions,
+        presentation_variant=presentation_variant,
     )
     return spec.validate()
 

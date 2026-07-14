@@ -24,11 +24,11 @@
   explicit device, timeout, and cache; they do not choose an excitation or prove
   current admission. No browser/Active flow changed, and no hardware behavior
   was revalidated.
-- ✅ **Room R1a/R1b — envelope v7 owns whole-page visibility and truthful
-  entry failures (hardware-free;
+- ✅ **Room R1 — envelope v8 owns whole-page visibility, truthful entry
+  failures, and disclosed run defaults (hardware-free;
   real-device browser pass pending).** `jasper.correction.envelope` now emits
   one exact ordered `sections` list from a closed 15-name Room vocabulary.
-  The browser validates schema `7`, screen, unique known sections, bounded
+  The browser validates schema `8`, screen, unique known sections, bounded
   blocker/failure codes, safe recovery paths, and the action endpoint before
   rendering; a missing, old, future, or
   malformed envelope clears every section and forward action, shows one
@@ -75,9 +75,20 @@
   review evidence rejects both normal Apply and tuning-proposal Apply at the
   HTTP mutation seam as well as withholding their browser actions, while
   an exactly failed automatic revert still says the correction is **STILL
-  APPLIED**. This slice does **not** claim the disclosed
-  six/flat/default-repeat policy; that remains the next R1 patch. `/status`
-  adds the compatible `local_capture_setup_bound` mechanic,
+  APPLIED**. The same envelope now owns a typed `run_defaults` block. A fresh
+  run is six positions against the flat target with the balanced strategy and
+  an automatic same-seat trust repeat; the bounded household choices are one,
+  three, or six positions and safe or balanced strategy. The page renders that
+  summary before sound, and `/start` resolves and validates the same
+  server-owned policy instead of accepting browser fallbacks. Relay is the
+  default transport when configured, while the same-device path remains an
+  explicit local backup. The phone's setup position count is never Room
+  authority. Follow-up relay sweeps use signed capture-only specs carrying
+  position/total metadata, then authenticate the actual microphone against the
+  level-check identity before playback. The automatic trust repeat uses the
+  same `/relay/capture` route and Room session state machine; it does not
+  introduce another browser timeout authority. `/status` adds the compatible
+  `local_capture_setup_bound` mechanic,
   and the existing bundle `info.json` is refreshed with the realized local
   microphone/calibration binding. Shared-owned bundle/playback code, DSP
   design/apply safety, bundle schema, raw audio artifacts, and relay protocol
@@ -308,13 +319,15 @@
   tweeter or horn mouth, and remains fixed across the normal/reverse pair. The prior
   listening-position policy remains historical only and cannot authorize an
   alignment proposal. The
-  public page release that implements this contract, including UMIK-2
+  public page release that implements this crossover contract, including UMIK-2
   model/mode preselection (the
   serial is still entered and validated once; there is no automatic
   calibration-file match), is `capture_page_build=20260712.3`, supporting
-  protocols 1 and 2. The repo version and public
-  `https://capture.jasper.tech/version.json` both reported `20260712.3` on
-  2026-07-12; there is no pending capture-page publish gate for this contract.
+  protocols 1 and 2. The public
+  `https://capture.jasper.tech/version.json` reported `20260712.3` on
+  2026-07-12. Repo build 20260713.1 adds Room-specific trust-repeat copy and is
+  intentionally not published by this hardware-free lane; the external release
+  artifact is therefore still pending.
   Crossover level and sweep volume transitions now use one durable backend
   intent for both near-field and fixed-axis work. If restart or failed readback
   leaves the volume unconfirmed, `GET /crossover/envelope` exposes only
@@ -332,9 +345,10 @@
   placement, and auto-level, then restores a fresh bound for the actual room
   capture. Every room-relay completion page (level, position sweep, and verify)
   returns directly to `/correction/room/`; `/correction/` remains only the
-  legacy local-microphone preflight. Room verification's armed callback is
-  state-aware (a required `state` parameter), so the relay passes the frozen
-  setup binding through the zero-argument compatibility seam before playback.
+  legacy local-microphone preflight. Modern Room sweep/verify links are signed
+  capture-only specs: the Pi supplies position progress and verifies the
+  realized microphone/calibration against the level-check identity before
+  playback. Active crossover retains its own compact setup binding.
 - ✅ **Phone-mic capture relay path (fresh-install default,
   JTS3-verified).** As of 2026-07-02 fresh installs default to an
   alternative capture transport that moves the room capture setup/recording page
@@ -352,13 +366,14 @@
   fragile on iOS and blocked for microphone access by Android Chrome.
   The transport + the `correction_setup.py` adapter
   (`jasper/capture_relay/correction_adapter.py`) are hardware-free tested; the
-  room relay now guides mic choice, calibration choice, and position count on the
-  phone during the level check. The Pi validates the full setup once; later
-  position links carry only its bounded digest and open directly on one Start
-  action, so calibration contents and the position count are not re-entered or
-  re-posted per sweep. Successful capture-only positions slide a 20-minute idle
-  expiry, while a fixed two-hour absolute privacy lifetime tied to the setup
-  binding never moves. The page publishes its build and supported wire versions
+  room relay guides mic and calibration choice on the phone during the level
+  check; the phone never chooses Room's position count. The Pi validates setup
+  once. Later Room links carry signed Pi-owned position/total fields and open
+  directly on one Start action, so calibration contents are not re-entered or
+  re-posted per sweep. Their authenticated `armed` event reports the realized
+  device for a pre-playback identity check. Active crossover retains the compact
+  setup binding and bounded browser-storage lifetime. The page publishes its
+  build and supported wire versions
   at `https://capture.jasper.tech/version.json`; every phone event carries that
   identity and the Pi refuses/logs an incompatible page before a setup or armed
   callback can play a tone. Publish the compatible Pages build and verify that
@@ -1197,9 +1212,10 @@ GET  /status                 session + currently-loaded correction snapshot
                              correction_strategy, design_report,
                              current_correction: {path, session_id,
                              applied_at_epoch, peq_count} | null})
-GET  /envelope               room-correction envelope schema v7; exact ordered
+GET  /envelope               room-correction envelope schema v8; exact ordered
                              `sections` plus closed `blocker`/`failure` blocks
-                             own whole-page visibility and safe entry copy
+                             own whole-page visibility and safe entry copy;
+                             typed `run_defaults` owns the disclosed run summary
                              (reports discovered only on idle/result)
 GET  /sessions               debug: 20 most-recent session bundles
 GET  /session-report?id=<id> read-only evidence report for one bundle
@@ -1232,7 +1248,8 @@ POST /reset                  → SetConfig(topology-safe reset graph) + Reload
 POST /verify                 fresh single-position sweep for the verify pass
 POST /relay/level-match      ambient-baselined, gradual listening-position ramp;
                              stores a bounded gain lease or restores on failure
-POST /relay/capture          relay room sweep using the bound mic + gain lease
+POST /relay/capture          relay room sweep or automatic main-seat trust repeat
+                             using the level-checked mic + gain lease
 POST /relay/verify           relay post-apply sweep; restores the lease and lands
                              on the terminal result (or pending-confirm loop)
 POST /session/delete         delete one historical measurement bundle
@@ -2414,8 +2431,11 @@ Internal:
 
 Last verified: 2026-07-13 (Wave 2 neutral playback extraction and the Room
 compatibility wrapper checked against current callers and deterministic tone
-bytes. Room envelope v7 section/action/blocker/failure ownership, passive-only
-readiness admission and `/start` defense pending exact Active receipt authority,
+bytes. Room envelope v8 section/action/blocker/failure/default ownership,
+six/flat/balanced/automatic-repeat policy, relay-first transport resolution,
+capture-only positioned relay specs, and pre-playback level-microphone checks;
+passive-only readiness admission and `/start` defense pending exact Active
+receipt authority,
 typed Start/relay/tuning/session/apply failures, static-edge report discovery,
 local capture setup binding, and the
 deleted legacy/certificate surfaces checked hardware-free against
