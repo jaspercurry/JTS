@@ -9,6 +9,7 @@ from __future__ import annotations
 import html
 import logging
 import math
+import threading
 from http import HTTPStatus
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
@@ -28,6 +29,9 @@ CamillaFactory = Callable[[], Any]
 # crossover sweep in place of a same-origin `postWav`. Kind-specific behaviour is
 # only which play/record pair runs; the transport is identical.
 CROSSOVER_RELAY_KINDS = ("driver", "summed")
+# The capture page polls host progress every 250 ms by default. Keep a stopped
+# session readable for several polls before deleting its one-time relay state.
+CROSSOVER_CANCEL_OBSERVATION_GRACE_S = 1.0
 
 
 def render_page(hostname: str, csrf_token: str = "") -> bytes:
@@ -56,6 +60,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div id="crossover-relay" class="hidden">
       <p id="crossover-relay-status" class="form-hint"></p>
       <a id="crossover-relay-link" class="btn btn--primary hidden" href="#">Open phone capture</a>
+      <button id="crossover-relay-stop" class="btn btn--danger hidden" type="button">Stop measurement</button>
     </div>
     <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
   </section>
@@ -731,7 +736,11 @@ def build_crossover_relay_run_and_consume(
     validate_current_context: Callable[[], None] | None = None,
     reserve_repeat_attempt: Callable[[], Mapping[str, Any]] | None = None,
     finish_failed_repeat_attempt: Callable[[Mapping[str, Any], str], None] | None = None,
+    begin_finishing: Callable[[], bool] | None = None,
+    begin_commit: Callable[[], bool] | None = None,
     ambient_duration_s: float | None = None,
+    stop_event: threading.Event | None = None,
+    stop_lock: Any = None,
 ) -> Callable[[Any, Any], Any]:
     """Return the relay ``run_and_consume(client, pi_session)`` coroutine.
 
@@ -755,6 +764,8 @@ def build_crossover_relay_run_and_consume(
     """
     from . import correction_crossover_backend as backend
 
+    stop_event = stop_event or threading.Event()
+    stop_lock = stop_lock or threading.Lock()
     kind = relay_kind_from_raw(raw)
     group_id = str((raw or {}).get("speaker_group_id") or "").strip()
     role = str((raw or {}).get("role") or "").strip().lower()
@@ -780,6 +791,16 @@ def build_crossover_relay_run_and_consume(
         repeat_reservation.clear()
         failure_type = type(error).__name__
         finish_failed_repeat_attempt(reservation, failure_type)
+
+    def _raise_if_stopped() -> None:
+        from jasper.capture_relay.session import CaptureStopped
+
+        if stop_event.is_set():
+            raise CaptureStopped("capture stopped")
+
+    def _request_stop() -> None:
+        with stop_lock:
+            stop_event.set()
 
     if ambient_duration_s is None:
         from jasper.active_speaker.test_signal_plan import (
@@ -905,15 +926,41 @@ def build_crossover_relay_run_and_consume(
                 exc_info=True,
             )
 
+    def _post_cancelled(session_id: str, pull_token: str) -> None:
+        if post_host_event is None:
+            return
+        try:
+            post_host_event(
+                session_id,
+                pull_token,
+                {"phase": "sweep_cancelled"},
+            )
+        except (RuntimeError, OSError, ValueError):
+            logger.warning(
+                "crossover relay sweep_cancelled host-event post failed",
+                exc_info=True,
+            )
+
     async def _run_and_consume(client: Any, pi_session: Any) -> None:
         import asyncio
 
         from jasper.capture_relay.session import (
             CaptureActivityProbe,
+            CaptureStopped,
             purge,
             run_capture,
             validate_capture_acknowledgement,
         )
+
+        async def _publish_cancelled_then_purge() -> None:
+            await asyncio.to_thread(
+                _post_cancelled,
+                pi_session.session_id,
+                pi_session.pull_token,
+            )
+            if post_host_event is not None:
+                await asyncio.sleep(CROSSOVER_CANCEL_OBSERVATION_GRACE_S)
+            await asyncio.to_thread(purge, client, pi_session)
 
         async def _play_while_phone_active(
             activity: CaptureActivityProbe,
@@ -923,7 +970,11 @@ def build_crossover_relay_run_and_consume(
 
             async def watch_phone() -> None:
                 while True:
+                    if stop_event.is_set():
+                        raise CaptureStopped("capture stopped")
                     await asyncio.to_thread(activity.assert_active)
+                    if stop_event.is_set():
+                        raise CaptureStopped("capture stopped")
                     await asyncio.sleep(0.2)
 
             play_task = asyncio.create_task(_play(on_sweep_ready))
@@ -945,13 +996,24 @@ def build_crossover_relay_run_and_consume(
                 for task in (play_task, watch_task):
                     if not task.done():
                         task.cancel()
-                await asyncio.gather(play_task, watch_task, return_exceptions=True)
+                play_result, _watch_result = await asyncio.gather(
+                    play_task,
+                    watch_task,
+                    return_exceptions=True,
+                )
+                if isinstance(play_result, BaseException) and not isinstance(
+                    play_result, asyncio.CancelledError
+                ):
+                    # A failed graph/volume restore is a hardware-safety
+                    # failure, even when an ordinary Stop triggered cleanup.
+                    raise play_result
 
         def _on_armed(state: Any) -> None:
             # Called from run_capture's poll thread. `run_async` posts the play
             # coroutine back to the correction event loop (run_coroutine_threadsafe)
             # and blocks THIS thread — never the loop — until the sweep finishes.
             try:
+                _raise_if_stopped()
                 if validate_current_context is not None:
                     validate_current_context()
                 elif current_comparison_set is not None:
@@ -996,7 +1058,12 @@ def build_crossover_relay_run_and_consume(
                 if kind == "driver" and reserve_repeat_attempt is not None:
                     repeat_reservation.clear()
                     try:
-                        repeat_reservation.update(reserve_repeat_attempt())
+                        # Stop and the bounded repeat reservation have one
+                        # ordering point: a Stop that wins this lock cannot be
+                        # followed by a new evidence attempt.
+                        with stop_lock:
+                            _raise_if_stopped()
+                            repeat_reservation.update(reserve_repeat_attempt())
                     except (OSError, RuntimeError, ValueError) as exc:
                         log_event(
                             logger,
@@ -1030,7 +1097,11 @@ def build_crossover_relay_run_and_consume(
                     # request. This synchronous pre-audio proof prevents the
                     # backend from starting until one fresh authenticated armed
                     # event has actually returned.
+                    if stop_event.is_set():
+                        raise CaptureStopped("capture stopped")
                     activity.assert_active()
+                    if stop_event.is_set():
+                        raise CaptureStopped("capture stopped")
                     _post_phase(
                         pi_session.session_id,
                         pi_session.pull_token,
@@ -1057,6 +1128,8 @@ def build_crossover_relay_run_and_consume(
                 played.update(payload)
                 if repeat_reservation:
                     played["repeat_reservation"] = dict(repeat_reservation)
+                if begin_finishing is not None and not begin_finishing():
+                    raise CaptureStopped("capture stopped")
                 _post_phase(
                     pi_session.session_id,
                     pi_session.pull_token,
@@ -1073,25 +1146,57 @@ def build_crossover_relay_run_and_consume(
                         exc_info=True,
                         reason=type(persist_exc).__name__,
                     )
-                _post_failed(
-                    pi_session.session_id,
-                    pi_session.pull_token,
-                    str(exc),
-                )
+                if not isinstance(exc, CaptureStopped):
+                    _post_failed(
+                        pi_session.session_id,
+                        pi_session.pull_token,
+                        str(exc),
+                    )
                 raise
 
         # run_capture blocks until the phone finishes recording, so it MUST run
         # off the correction event loop (mirrors the room flow's
         # `await asyncio.to_thread(run_and_store, ...)`) — otherwise the whole
         # capture window would freeze the loop the play coroutine schedules onto.
+        capture_task = asyncio.create_task(asyncio.to_thread(
+            run_capture,
+            client,
+            pi_session,
+            on_armed=_on_armed,
+            stop_requested=stop_event.is_set,
+        ))
+        capture_received = False
         try:
-            result = await asyncio.to_thread(
-                run_capture, client, pi_session, on_armed=_on_armed
-            )
-            purge(client, pi_session)
-
+            try:
+                result = await asyncio.shield(capture_task)
+            except asyncio.CancelledError:
+                # ``to_thread`` cancellation does not stop its worker. Signal
+                # the transport + playback watchdog, then keep this owner alive
+                # until the worker has observed it and all protected cleanup has
+                # completed. Only then may the relay publish a terminal state.
+                _request_stop()
+                while not capture_task.done():
+                    try:
+                        await asyncio.shield(capture_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except (OSError, RuntimeError, ValueError):
+                        # Worker failure is secondary to the owning Stop.
+                        break
+                if capture_task.done() and not capture_task.cancelled():
+                    capture_task.exception()  # consume a stopped worker error
+                await _publish_cancelled_then_purge()
+                raise
+            capture_received = True
+            if stop_event.is_set():
+                raise CaptureStopped("capture stopped")
             if validate_capture is not None:
                 validate_capture(result)
+            if stop_event.is_set():
+                raise CaptureStopped("capture stopped")
+            if begin_commit is not None and not begin_commit():
+                raise CaptureStopped("capture stopped")
+            await asyncio.to_thread(purge, client, pi_session)
         except (RuntimeError, OSError, ValueError) as exc:
             try:
                 _finish_reservation_failure(exc)
@@ -1103,6 +1208,10 @@ def build_crossover_relay_run_and_consume(
                     exc_info=True,
                     reason=type(persist_exc).__name__,
                 )
+            if isinstance(exc, CaptureStopped):
+                await _publish_cancelled_then_purge()
+            elif capture_received:
+                await asyncio.to_thread(purge, client, pi_session)
             raise
 
         # Calibration identity and measurement mode are injected by the host

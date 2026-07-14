@@ -69,6 +69,10 @@ class CaptureAborted(RuntimeError):
     """The phone aborted mid-capture (e.g. backgrounded / screen locked)."""
 
 
+class CaptureStopped(RuntimeError):
+    """The host explicitly stopped this capture."""
+
+
 class CapturePageIncompatible(RuntimeError):
     """The public capture page does not implement this Pi's protocol."""
 
@@ -404,6 +408,7 @@ def run_capture(
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
     play_cue: Callable[[str], None] | None = None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> CaptureResult:
     """Poll the relay until the phone uploads; pull, decrypt, verify, return it.
 
@@ -416,12 +421,14 @@ def run_capture(
       - `CaptureTimeout`: no arm within the initial `timeout_s`, or no ready
         blob within one refreshed `timeout_s` window after arming;
       - `CaptureAborted`: the phone posted an `aborted` event (backgrounded);
+      - `CaptureStopped`: the host's cooperative Stop signal was observed;
       - `CaptureFailed`: the pulled blob failed decrypt/integrity;
       - `RelayError` / `OSError`: the relay died or became unreachable mid-poll.
     `play_cue` (host-injected, no-silent-failure) is called with the matching cue
-    slug before ANY of those propagate — so a host that passes `play_cue` gets a
-    complete no-silent-failure contract and need not re-cue run_capture failures
-    itself (the cue for a connectivity loss is `measurement_relay_unreachable`).
+    slug before failures propagate, so a host need not re-cue them itself (the
+    cue for connectivity loss is `measurement_relay_unreachable`). Explicit
+    `CaptureStopped` is expected control flow: it is logged without a failure
+    cue.
     """
     try:
         return _poll_until_capture(
@@ -433,7 +440,16 @@ def run_capture(
             timeout_s=timeout_s,
             sleep=sleep,
             monotonic=monotonic,
+            stop_requested=stop_requested,
         )
+    except CaptureStopped:
+        log_event(
+            logger,
+            "capture_relay.stopped",
+            session_id=session.session_id,
+            kind=session.spec.kind,
+        )
+        raise
     except Exception as exc:  # noqa: BLE001 — cue on ANY failure, then re-raise
         slug = classify_failure_cue(exc)
         # Operator-facing half of no-silent-failure: a WARNING with the failure
@@ -471,7 +487,12 @@ def _poll_until_capture(
     timeout_s: float,
     sleep: Callable[[float], None],
     monotonic: Callable[[], float],
+    stop_requested: Callable[[], bool] | None,
 ) -> CaptureResult:
+    def raise_if_stopped() -> None:
+        if stop_requested is not None and stop_requested():
+            raise CaptureStopped("capture stopped")
+
     deadline = monotonic() + timeout_s
     armed_fired = False
     capture_device: dict | None = None
@@ -481,7 +502,9 @@ def _poll_until_capture(
     page_compatible = False
     event_verifier = PhoneEventVerifier(session)
     while True:
+        raise_if_stopped()
         status = client.status(session.session_id, session.pull_token)
+        raise_if_stopped()
         relay_event = status.get("event") if isinstance(status, dict) else None
         if session.spec.capture_protocol_version >= 2 and relay_event is not None:
             try:
@@ -589,6 +612,7 @@ def _poll_until_capture(
             _call_state_callback(on_setup, state)
 
         if state.armed and not armed_fired:
+            raise_if_stopped()
             try:
                 validate_capture_acknowledgement(state, session.spec)
             except CaptureFailed:
@@ -640,12 +664,15 @@ def _poll_until_capture(
                 )
             log_event(logger, "capture_relay.armed", session_id=session.session_id)
             _call_state_callback(on_armed, state)
+            raise_if_stopped()
 
         if state.ready:
+            raise_if_stopped()
             log_event(logger, "capture_relay.ready", session_id=session.session_id)
             blob, header_integrity = client.pull_blob(
                 session.session_id, session.pull_token
             )
+            raise_if_stopped()
             integrity = state.integrity or header_integrity
             try:
                 expected_len = int(integrity["plaintext_len"])
@@ -657,6 +684,7 @@ def _poll_until_capture(
                 raise CaptureFailed(
                     "relay-pulled capture failed decrypt/integrity"
                 ) from exc
+            raise_if_stopped()
             log_event(
                 logger,
                 "capture_relay.captured",

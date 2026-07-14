@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1683,11 +1685,29 @@ def test_crossover_module_is_a_thin_server_envelope_renderer():
     assert "renderEpoch" in source
     assert "visibilitychange" in source
     assert "schedulePoll(relayActive ? POLL_MS : null)" in source
+    assert "postJSON('/correction/crossover/relay-cancel', {})" in source
+    assert "RELAY_IN_FLIGHT.has(env.relay.status)" in source
     assert "renderActions(null);" in source
     assert "env.alternate_actions" in source
     assert "baseline_candidate_fingerprint_mismatch" in source
     assert "candidateChanged" in source
     assert "await refresh();" in source
+
+
+def test_fast_terminal_stop_reenables_the_authoritative_next_action():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not on PATH")
+    harness = Path("tests/js/crossover_stop_render_test.mjs")
+    proc = subprocess.run(
+        [node, str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result == {"ok": True, "passed": 3}
 
 
 # --- passive-gating: Layer A hidden for a full-range passive speaker ----------
@@ -1776,6 +1796,47 @@ def test_discard_driver_level_outcome_invalidates_matching_terminal_run(monkeypa
     assert invalidations == [
         {"geometry": "near_field_driver:mono:woofer"},
     ]
+
+
+def test_discard_driver_level_outcome_restores_prior_continuation_context(
+    monkeypatch,
+):
+    lease = backend.CrossoverLevelLease()
+    monkeypatch.setattr(
+        lease._level_run_store,
+        "invalidate_succeeded_result",
+        lambda **_kwargs: None,
+    )
+    prior = SimpleNamespace()
+    discarded = SimpleNamespace()
+    prior_geometry = "near_field_driver:mono:woofer"
+    discarded_geometry = "reference_axis_driver:mono:tweeter"
+    lease._outcomes = {
+        prior_geometry: prior,
+        discarded_geometry: discarded,
+    }
+    lease._last = discarded
+    lease.context_id = "protected-profile-1"
+
+    lease.discard_driver_level_outcome(
+        "mono",
+        "tweeter",
+        capture_geometry="reference_axis",
+    )
+
+    assert lease._outcomes == {prior_geometry: prior}
+    assert lease._last is prior
+    assert lease.context_id == "protected-profile-1"
+
+    lease.discard_driver_level_outcome(
+        "mono",
+        "woofer",
+        capture_geometry="near_field",
+    )
+
+    assert lease._outcomes == {}
+    assert lease._last is None
+    assert lease.context_id is None
 
 
 # --- crossover screen envelope: exactly one sequential next action -----------
@@ -4436,12 +4497,17 @@ def test_orphaned_inflight_or_ready_without_measurement_restarts_level_check(
     )
 
 
-def test_live_relay_does_not_misclassify_its_inflight_repeat_as_orphaned():
+@pytest.mark.parametrize(
+    "relay_status", ["awaiting_phone", "finishing", "committing", "stopping"]
+)
+def test_live_relay_does_not_misclassify_its_inflight_repeat_as_orphaned(
+    relay_status,
+):
     from jasper.active_speaker import crossover_envelope
 
     status = _envelope_status()
     _locked_level(status)
-    status["relay"] = {"status": "awaiting_phone", "kind": "crossover_sweep:driver"}
+    status["relay"] = {"status": relay_status, "kind": "crossover_sweep:driver"}
     status["level_match"]["repeats"] = {
         "targets": {},
         "failures": {},
@@ -4458,6 +4524,13 @@ def test_live_relay_does_not_misclassify_its_inflight_repeat_as_orphaned():
     }
     env = crossover_envelope.build_crossover_envelope(status)
     assert env["screen"] == "waiting"
+    assert env["next_action"] is None
+    if relay_status == "stopping":
+        assert "restoring the speaker safely" in env["verdict_text"]
+    elif relay_status == "finishing":
+        assert "phone is finishing and uploading" in env["verdict_text"]
+    elif relay_status == "committing":
+        assert "saving the verified measurement" in env["verdict_text"]
     assert not any(
         nudge["code"] == "crossover_repeat_persistence_interrupted"
         for nudge in env["nudges"]
@@ -5622,6 +5695,536 @@ async def test_authenticated_phone_abort_during_ambient_restores_before_window_e
 
 
 @pytest.mark.asyncio
+async def test_host_stop_drains_crossover_restore_before_returning(monkeypatch):
+    import asyncio
+    import threading
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.web import correction_crossover_backend as be
+
+    stop_event = threading.Event()
+    play_started = threading.Event()
+    restore_started = threading.Event()
+    release_restore = threading.Event()
+    order = []
+
+    class AlwaysActive:
+        def __init__(self, *_args):
+            pass
+
+        def assert_active(self):
+            return None
+
+    def fake_run_capture(
+        client,
+        pi_session,
+        *,
+        on_armed,
+        stop_requested,
+        **_kwargs,
+    ):
+        required = pi_session.spec.acknowledgement
+        on_armed(SimpleNamespace(
+            acknowledgement={
+                "schema_version": required.schema_version,
+                "id": required.id,
+                "binding_id": required.binding_id,
+                "accepted": True,
+            },
+            capture_page={
+                "capture_protocol_version": 2,
+                "capture_page_build": "20260711.1",
+            },
+        ))
+        if stop_requested():
+            raise relay_session.CaptureStopped("capture stopped")
+        raise AssertionError("capture returned without observing Stop")
+
+    async def play(*_args, **_kwargs):
+        order.append("play")
+        play_started.set()
+        await asyncio.Event().wait()
+
+    async def restore():
+        order.append("restore_start")
+        restore_started.set()
+        await asyncio.to_thread(release_restore.wait)
+        order.append("restore_done")
+        return True
+
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "CaptureActivityProbe", AlwaysActive)
+    monkeypatch.setattr(
+        relay_session,
+        "purge",
+        lambda *_args: order.append("purge"),
+    )
+    monkeypatch.setattr(flow, "CROSSOVER_CANCEL_OBSERVATION_GRACE_S", 0.0)
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        post_host_event=lambda _sid, _token, payload: order.append(
+            payload["phase"]
+        ),
+        restore_play=restore,
+        stop_event=stop_event,
+        **_relay_contract(),
+    )
+
+    task = asyncio.create_task(
+        run_and_consume(object(), _relay_pi_session("driver"))
+    )
+    assert await asyncio.to_thread(play_started.wait, 2)
+    stop_event.set()
+    assert await asyncio.to_thread(restore_started.wait, 2)
+    assert not task.done()
+    release_restore.set()
+    with pytest.raises(relay_session.CaptureStopped, match="capture stopped"):
+        await task
+    assert order == [
+        "sweep_started",
+        "play",
+        "restore_start",
+        "restore_done",
+        "sweep_cancelled",
+        "purge",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pre_arm_stop_is_observable_before_relay_session_purge(monkeypatch):
+    import asyncio
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.capture_relay.client import RelayClient
+    from tests.test_capture_relay_session import FakeRelayBackend
+
+    backend = FakeRelayBackend()
+    backend.sessions["sid"] = {
+        "pull_token": "ptok",
+        "host_event": None,
+    }
+    client = RelayClient("https://relay.test", transport=backend)
+
+    def stopped_before_arm(*_args, **_kwargs):
+        raise relay_session.CaptureStopped("capture stopped")
+
+    monkeypatch.setattr(relay_session, "run_capture", stopped_before_arm)
+    monkeypatch.setattr(flow, "CROSSOVER_CANCEL_OBSERVATION_GRACE_S", 0.05)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        post_host_event=client.post_host_event,
+        **_relay_contract(),
+    )
+
+    task = asyncio.create_task(
+        run_and_consume(client, _relay_pi_session("driver"))
+    )
+    for _ in range(100):
+        session = backend.sessions.get("sid")
+        if session is not None and session["host_event"] is not None:
+            break
+        await asyncio.sleep(0.001)
+
+    assert backend.sessions["sid"]["host_event"] == {
+        "phase": "sweep_cancelled"
+    }
+    with pytest.raises(relay_session.CaptureStopped, match="capture stopped"):
+        await task
+    assert "sid" not in backend.sessions
+
+
+@pytest.mark.asyncio
+async def test_finishing_gate_follows_restore_and_precedes_phone_release(monkeypatch):
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    order = []
+
+    async def play(*_args, **_kwargs):
+        order.append("play")
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+            "sweep_meta": {"sample_rate": 48000},
+        }
+
+    async def restore():
+        order.append("restore")
+        return True
+
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    monkeypatch.setattr(
+        be,
+        "record_driver_capture",
+        lambda *_args, **_kwargs: order.append("record") or {"recorded": True},
+    )
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        post_host_event=lambda _sid, _token, payload: order.append(
+            payload["phase"]
+        ),
+        restore_play=restore,
+        begin_finishing=lambda: order.append("finishing") or True,
+        **_relay_contract(),
+    )
+
+    await run_and_consume(object(), _relay_pi_session("driver"))
+
+    assert order == [
+        "sweep_started",
+        "play",
+        "restore",
+        "finishing",
+        "sweep_complete",
+        "record",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_finishing_gate_refusal_withholds_phone_release_and_evidence(monkeypatch):
+    from jasper.capture_relay import session as relay_session
+    from jasper.web import correction_crossover_backend as be
+
+    purged = _fake_relay_transport(monkeypatch)
+    monkeypatch.setattr(flow, "CROSSOVER_CANCEL_OBSERVATION_GRACE_S", 0.0)
+    host_events = []
+    record_calls = []
+
+    async def play(*_args, **_kwargs):
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+            "sweep_meta": {"sample_rate": 48000},
+        }
+
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    monkeypatch.setattr(
+        be,
+        "record_driver_capture",
+        lambda *_args, **_kwargs: record_calls.append(True),
+    )
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        post_host_event=lambda _sid, _token, payload: host_events.append(
+            payload["phase"]
+        ),
+        begin_finishing=lambda: False,
+        **_relay_contract(),
+    )
+
+    with pytest.raises(relay_session.CaptureStopped, match="capture stopped"):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+
+    assert host_events == ["sweep_started", "sweep_cancelled"]
+    assert purged == {"done": True}
+    assert record_calls == []
+
+
+@pytest.mark.asyncio
+async def test_host_stop_after_capture_prevents_late_evidence_write(monkeypatch):
+    import threading
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.web import correction_crossover_backend as be
+
+    stop_event = threading.Event()
+    record_calls = []
+
+    class AlwaysActive:
+        def __init__(self, *_args):
+            pass
+
+        def assert_active(self):
+            return None
+
+    def fake_run_capture(client, pi_session, *, on_armed, **_kwargs):
+        required = pi_session.spec.acknowledgement
+        on_armed(SimpleNamespace(
+            acknowledgement={
+                "schema_version": required.schema_version,
+                "id": required.id,
+                "binding_id": required.binding_id,
+                "accepted": True,
+            },
+            capture_page={
+                "capture_protocol_version": 2,
+                "capture_page_build": "20260711.1",
+            },
+        ))
+        stop_event.set()
+        return SimpleNamespace(wav=b"wav", device={"label": "UMIK-2"})
+
+    async def play(*_args, **_kwargs):
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+            "sweep_meta": {"sample_rate": 48000},
+        }
+
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "CaptureActivityProbe", AlwaysActive)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    monkeypatch.setattr(
+        be,
+        "record_driver_capture",
+        lambda *_args, **_kwargs: record_calls.append(True),
+    )
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        stop_event=stop_event,
+        **_relay_contract(),
+    )
+
+    with pytest.raises(relay_session.CaptureStopped, match="capture stopped"):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+    assert record_calls == []
+
+
+@pytest.mark.asyncio
+async def test_commit_gate_refusal_prevents_evidence_write(monkeypatch):
+    from jasper.capture_relay import session as relay_session
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    record_calls = []
+
+    async def play(*_args, **_kwargs):
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+            "sweep_meta": {"sample_rate": 48000},
+        }
+
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    monkeypatch.setattr(
+        be,
+        "record_driver_capture",
+        lambda *_args, **_kwargs: record_calls.append(True),
+    )
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        begin_commit=lambda: False,
+        **_relay_contract(),
+    )
+
+    with pytest.raises(relay_session.CaptureStopped, match="capture stopped"):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+    assert record_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restore_result", [False, RuntimeError("graph restore failed")])
+async def test_stop_does_not_mask_playback_restore_failure(
+    monkeypatch,
+    restore_result,
+):
+    import asyncio
+    import threading
+
+    from jasper.web import correction_crossover_backend as be
+
+    stop_event = threading.Event()
+    _fake_relay_transport(monkeypatch)
+
+    async def play(*_args, **_kwargs):
+        stop_event.set()
+        await asyncio.Event().wait()
+
+    async def restore():
+        if isinstance(restore_result, BaseException):
+            raise restore_result
+        return restore_result
+
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        restore_play=restore,
+        stop_event=stop_event,
+        **_relay_contract(),
+    )
+
+    expected = (
+        "graph restore failed"
+        if isinstance(restore_result, BaseException)
+        else "volume was not restored"
+    )
+    with pytest.raises(RuntimeError, match=expected):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+
+
+@pytest.mark.asyncio
+async def test_stop_that_wins_armed_entry_cannot_reserve_repeat(monkeypatch):
+    import threading
+
+    from jasper.capture_relay import session as relay_session
+
+    stop_event = threading.Event()
+    stop_event.set()
+    reservations = []
+    host_events = []
+
+    def fake_run_capture(_client, pi_session, *, on_armed, **_kwargs):
+        required = pi_session.spec.acknowledgement
+        on_armed(SimpleNamespace(
+            acknowledgement={
+                "schema_version": required.schema_version,
+                "id": required.id,
+                "binding_id": required.binding_id,
+                "accepted": True,
+            },
+            capture_page={
+                "capture_protocol_version": 2,
+                "capture_page_build": "20260711.1",
+            },
+        ))
+
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        reserve_repeat_attempt=lambda: reservations.append(True) or {
+            "token": "late",
+            "attempt": 1,
+        },
+        post_host_event=lambda _sid, _token, payload: host_events.append(payload),
+        stop_event=stop_event,
+        **_relay_contract(),
+    )
+
+    with pytest.raises(relay_session.CaptureStopped, match="capture stopped"):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+    assert reservations == []
+    assert host_events == [{"phase": "sweep_cancelled"}]
+
+
+@pytest.mark.asyncio
+async def test_stop_is_refused_after_commit_begins(monkeypatch):
+    import asyncio
+    import threading
+
+    from jasper.web import correction_crossover_backend as be
+    from jasper.web import correction_setup
+
+    kind = "crossover_sweep:driver"
+    record_started = threading.Event()
+    release_record = threading.Event()
+    stop_event = threading.Event()
+    _fake_relay_transport(monkeypatch)
+
+    async def play(*_args, **_kwargs):
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+            "sweep_meta": {"sample_rate": 48000},
+        }
+
+    def record(*_args, **_kwargs):
+        record_started.set()
+        assert release_record.wait(timeout=2)
+        return {"recorded": True}
+
+    monkeypatch.setattr(be, "record_driver_capture", record)
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    correction_setup._set_relay_capture(None)
+    assert correction_setup._begin_relay_capture(
+        kind,
+        request_stop=stop_event.set,
+    )
+    correction_setup._publish_relay_waiting(kind, "https://capture.test/#s=cap")
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        begin_commit=lambda: correction_setup._begin_relay_commit(kind),
+        stop_event=stop_event,
+        **_relay_contract(),
+    )
+
+    task = asyncio.create_task(
+        asyncio.to_thread(
+            asyncio.run,
+            run_and_consume(object(), _relay_pi_session("driver")),
+        )
+    )
+    try:
+        assert await asyncio.to_thread(record_started.wait, 2)
+        assert correction_setup._get_relay_capture()["status"] == "committing"
+        with pytest.raises(ValueError, match="no matching phone capture"):
+            correction_setup._request_relay_stop("crossover_sweep:")
+        assert not stop_event.is_set()
+        release_record.set()
+        await task
+    finally:
+        release_record.set()
+        correction_setup._set_relay_capture(None)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_relay_owner_drains_poll_worker_without_late_arm(monkeypatch):
+    import asyncio
+    import threading
+    import time
+
+    from jasper.capture_relay import session as relay_session
+
+    worker_started = threading.Event()
+    worker_stopped = threading.Event()
+    purged = []
+
+    def fake_run_capture(
+        _client,
+        _pi_session,
+        *,
+        on_armed: object,
+        stop_requested,
+        **_kwargs,
+    ):
+        assert callable(on_armed)
+        worker_started.set()
+        while not stop_requested():
+            time.sleep(0.001)
+        worker_stopped.set()
+        raise relay_session.CaptureStopped("capture stopped")
+
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: purged.append(True))
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        **_relay_contract(),
+    )
+
+    task = asyncio.create_task(
+        run_and_consume(object(), _relay_pi_session("driver"))
+    )
+    assert await asyncio.to_thread(worker_started.wait, 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert worker_stopped.is_set()
+    assert purged == [True]
+
+
+@pytest.mark.asyncio
 async def test_prepare_side_effect_then_failure_restores_before_window_exit(
     monkeypatch
 ):
@@ -5957,6 +6560,7 @@ def test_crossover_relay_route_is_registered():
     from jasper.web import correction_setup
 
     assert "/crossover/relay-capture" in correction_setup._POST_ROUTES
+    assert "/crossover/relay-cancel" in correction_setup._POST_ROUTES
 
 
 @pytest.mark.parametrize(

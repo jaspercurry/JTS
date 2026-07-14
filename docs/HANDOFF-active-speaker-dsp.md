@@ -164,6 +164,16 @@
 > ambient + the longest sweep + graph/relay work fit the phone deadline,
 > exact role-bounded WAV playback, a post-play volume-drift refusal, and exact
 > restore.
+> The Crossover page now keeps a visible Stop for both relay level and sweep
+> runs (`POST /correction/crossover/relay-cancel`). Stop cooperatively signals
+> the exact relay owner, holds status at `stopping`, and withholds another
+> action until player reap, graph/volume restoration, and relay cleanup finish;
+> then it publishes `stopped`. A restored level ramp enters non-stoppable
+> `committing` directly. A sweep first enters non-stoppable `finishing` for
+> phone upload, then `committing` for evidence persistence. Explicit Stop is
+> cancellation, not a failure-cue event, and the phone renders it as such. The
+> exact boundary and low-level lifecycle are canonical in
+> [phone-mic-relay-plan.md](phone-mic-relay-plan.md).
 > The returned playback-role handoff is a server-only argument to capture
 > persistence; browser JSON cannot mint it. Existing bundles without a Shared
 > authority marker remain historical. Combined/summed capture is temporarily
@@ -177,7 +187,7 @@
 > pure recorder). Each driver recording includes a 14-second controlled quiet
 > interval before playback; a signal locator excludes pre-armed audio. The
 > phone's hard deadline is 45 s and the Pi's `sweep_complete` event
-> remains the normal stop. The safe probe owns only non-clipping level. The
+> remains normal recorder completion. The safe probe owns only non-clipping level. The
 > deconvolved per-band sweep-versus-ambient verdict and the server-owned
 > three-repeat aggregator own evidence admission; one bounded fourth attempt is
 > allowed, and a durable measurement is written only after at least two repeats

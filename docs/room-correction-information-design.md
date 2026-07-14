@@ -192,6 +192,9 @@ ordered `sections` list. JavaScript maps the pinned section vocabulary to DOM
 nodes; an unsupported envelope version or unknown section fails closed to a
 bounded refresh/error state with no forward action. It must not carry a second
 screen-to-section map or invent a fallback Start action.
+When Stop is requested, the shell renders `stopping` and no forward action until
+the owning cleanup reaches terminal `stopped`; it does not present that expected
+cancellation as a measurement failure.
 
 The section vocabulary is intentionally Room-specific:
 

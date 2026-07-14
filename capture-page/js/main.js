@@ -928,7 +928,7 @@ async function waitForSweepComplete(client, spec, isAborted) {
   const deadline = Date.now() + timeoutMs;
   let lastPhase = "";
   while (Date.now() < deadline) {
-    if (isAborted()) return;
+    if (isAborted()) return false;
     const status = await client.fetchPhoneStatus();
     const event = status && status.host_event || {};
     const phase = String(event.phase || "");
@@ -948,7 +948,11 @@ async function waitForSweepComplete(client, spec, isAborted) {
         setStatus("Tone finished — capturing the room tail.", "recording");
       }
     }
-    if (phase === "sweep_complete") return;
+    if (phase === "sweep_complete") return true;
+    if (phase === "sweep_cancelled") {
+      setStatus("Measurement stopped safely. Return to the speaker to continue.", "info");
+      return false;
+    }
     if (phase === "sweep_failed") {
       throw new Error(event.error || "speaker sweep failed");
     }
@@ -1063,7 +1067,8 @@ async function onStart(ctx) {
     // Record until the Pi reports that the real sweep finished, then keep a
     // short tail. `duration_ms` is now the hard timeout, not the normal stop
     // condition.
-    await waitForSweepComplete(client, spec, () => aborted);
+    const sweepCompleted = await waitForSweepComplete(client, spec, () => aborted);
+    if (sweepCompleted === false) return;
     await delayMs(Math.max(0, Number(spec.post_roll_ms) || 700));
     if (aborted) return;
     const samples = await recorder.stop({ timeoutMs: 5000 });
@@ -1096,17 +1101,21 @@ async function onStart(ctx) {
     renderCaptureComplete(ctx);
     setStatus("Done — your speaker is analyzing the measurement.", "done");
   } catch (err) {
+    if (!aborted) {
+      setStatus(captureFailureMessage(err), "error");
+    }
+  } finally {
+    // Host Stop is expected control flow and returns above without throwing.
+    // Close here so every exit path tears down the mic track, worklet, and
+    // AudioContext; abort() already nulls the recorder after doing the same.
     if (recorder) {
       try {
         await recorder.close();
       } catch {
         /* already closed */
       }
+      recorder = null;
     }
-    if (!aborted) {
-      setStatus(captureFailureMessage(err), "error");
-    }
-  } finally {
     disposeWatch();
     if (wakeLock) await wakeLock.release();
   }
