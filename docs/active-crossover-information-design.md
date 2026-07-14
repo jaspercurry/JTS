@@ -625,7 +625,7 @@ not change current product readiness: until real captures satisfy every gate,
 `ready = false`, no automatic candidate is persisted, and the UI does not
 offer **Replace with measured crossover**.
 
-Wave 2 deliberately stops before implementing a score. Its typed input contract
+Wave 2 deliberately stopped before implementing a score. Its typed input contract
 pins the prerequisites that must precede any future frequency/family evaluation:
 three distinct admitted stationary captures per required driver/normal/reverse
 target, five distinct admitted null captures per graph-confirmed delay, a
@@ -636,40 +636,48 @@ cabinets. The future graph proof is topology-wide and exact: routing, complete
 filter chains, gains, permanent protection, and `devices.volume_limit <= 0` all
 belong to the same proof. Fresh persisted admission must be issued from Active's
 exact current safety plan and independently rechecked by the playback backend.
-The Shared persisted-admission/protection and guarded-playback boundaries are
-merged, but Active deliberately does not adopt them during the Wave 2
-synchronization barrier. The Wave 2 module therefore accepts no captures and
-exposes no scorer. Both historical and pending-current projections return
-`ready = false`, `score_available = false`, and no candidate, persistence,
-apply, or receipt authority.
+The first Wave 3 production slice adopts those Shared boundaries for an
+**isolated driver capture only**. `active_speaker.commissioning_admission`
+turns the former preparation-only plan into the trusted adapter: it intersects
+the code and confirmed-profile frequency/level/duration/repeat limits, binds the
+exact current topology, applied profile, comparison session, volume lock, and
+fresh running-graph fingerprint, then proves the required directional filters,
+per-output limiter, exact admitted per-output commissioning gain, capture route,
+audible/mute mask, headroom, and a `devices.volume_limit` no higher than the
+locked listening volume from a non-best-effort CamillaDSP readback. That
+transient ceiling makes the output envelope independent of a racing dial or
+control-process main-volume write; a fresh post-play volume read rejects any
+remaining quieter drift without issuing capture authority. The profile's
+minimum cooldown is enforced as a cancellation-safe pre-play wait on every
+one-shot attempt; values above the bounded five-second automatic ceiling are
+refused rather than clipped. That ceiling is derived from the phone relay's
+armed-to-sweep deadline after reserving the controlled ambient interval, the
+longest protected sweep, and nine seconds for graph/relay operations. The
+browser cannot supply protection or capture-admission authority.
 
-Active's Wave 2 isolated-driver safety boundary is preparation-only. It derives
-one closed sweep request and effective-peak ledger from the exact target and
-confirmed-current profile, intersects code and profile band/level/duration/
-repeat ceilings, retains the profile cooldown, and always returns
-`shared_persisted_admission_unavailable`. Here, "unavailable" means unavailable
-to this deliberately unintegrated Active boundary, not absent from Shared. It
-has no playback callback and accepts no caller-supplied protection evidence.
-Execution stays impossible until an Active-owned production adapter consumes
-the merged Shared boundary under its feature-owned live graph/protection guard.
+Every fresh commissioning bundle is created once as the exact Shared admission
+authority. Existing directories without its marker remain historical and the
+reopen path never repairs or upgrades them. Each driver attempt mints a unique
+`admission_id`, persists generation admission before allocating PCM, writes one
+no-replace role-bounded WAV, and binds its exact bytes. Active holds one bounded
+Shared DSP-writer lock across transient graph load, both live readbacks,
+`play_admitted_wav()`, fan-in cleanup, and production-graph restoration. The
+playback issuer rebuilds the current plan and protection evidence under that
+same lock, so profile, topology, comparison, applied-profile, pre/post volume, graph,
+filter, route, or target drift refuses before audio. A persisted playback-role
+artifact—not the generation decision—is threaded through the server-side relay
+flow and revalidated before capture persistence. Cancellation cannot bypass
+restoration; after playback admission has persisted, timeout, cancellation, or
+failure returns typed possible-audio authority and consumes the one-shot
+identity.
 
-The synchronization-barrier API sequence is exact. Active classifies evidence
-origin before authority resolution; historical B2b calls
-`refuse_historical_evidence(HistoricalExcitationEvidence(...))` and stops. One
-fresh commissioning session/bundle exclusively calls
-`create_admission_authority()` once (or `open_admission_authority()` with the
-exact expected kind/id after restart). Each capture or retry uses a unique
-`admission_id`, calls `admit_excitation()` then
-`persist_generation_admission()`, records the exact generated WAV, and calls
-`bind_generated_excitation_wav()`. While holding the existing
-`dsp_writer_lock`, Active calls `play_admitted_wav()` with one
-`issue_current_inputs()` callback that obtains fresh
-`CamillaController.get_active_config_raw()` evidence and returns
-`CurrentPlaybackAdmissionInputs`; the high-level call owns playback-side
-re-admission, no-replace persistence, reread, and emission ordering. A capture
-and eventual `AdmittedCaptureProof` reference the returned playback-role
-artifact, never the generation artifact. Every post-persistence cancellation or
-failure consumes that one-shot id and requires a new generation id for retry.
+This slice does **not** make the lifecycle or candidate ready. Combined/summed
+capture remains pre-audio refused with
+`active_summed_persisted_admission_unavailable` until the group-level protection
+and delay-walk authority lands. Historical B2b captures remain permanently
+non-admitted, and current projections still expose no candidate, apply,
+verification, or receipt authority until the later Wave 3 lifecycle gates are
+satisfied.
 
 ### Wave 2 level-run correlation and timeout boundary
 
@@ -943,10 +951,12 @@ effective peak, duration, and repeat count. Their SHA-256 fingerprints are
 content identities, not signatures or capabilities. A trusted owning adapter
 must intersect code-owned, profile-owned, and plan-owned limits; bind the plan
 to normalized generator/effective-peak inputs; derive protection evidence from
-fresh readback; and rerun admission immediately before playback. No current
-Active producer performs that integration yet. The merged Shared
-`play_admitted_wav()` consumer performs the independent playback-side recheck
-and persistence once its trusted feature callback supplies the fresh values.
+fresh readback; and rerun admission immediately before playback. The current
+isolated-driver producer performs that integration through
+`active_speaker.commissioning_admission`; summed capture and the full lifecycle
+remain blocked pending their distinct group-level authority. Shared's
+`play_admitted_wav()` performs the independent playback-side recheck and
+persistence once that trusted Active callback supplies the fresh values.
 
 ### Wave 1 evidence, lifecycle, and Room handoff contracts
 
@@ -1420,10 +1430,11 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-13 (Wave 2 reconstruction, measured-candidate input,
+Last verified: 2026-07-14 (Wave 2 reconstruction, measured-candidate input,
 preparation-only safety, level-run correlation contracts and terminal-result
-liveness, permanent historical refusal, Shared-adoption status, the merged
-Shared admission/playback boundary and exact future Active adapter sequence,
+liveness, permanent historical refusal, the reachable isolated-driver
+Shared-admission/playback adapter and bounded writer transaction,
+summed pre-audio refusal,
 and Room's temporary passive-only admission boundary checked against the merged
 implementation and cited measurement literature; no live audio, DSP mutation,
 or hardware behavior was changed or revalidated.)

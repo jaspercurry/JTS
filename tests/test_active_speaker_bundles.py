@@ -19,6 +19,12 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker import bundles
+from jasper.audio_measurement.excitation_artifacts import (
+    ADMISSION_AUTHORITY_MARKER,
+    AdmissionArtifactError,
+    AdmissionArtifactErrorCode,
+    create_admission_authority,
+)
 from jasper.correction.bundles import read_artifact_manifest
 from tests.active_speaker_fixtures import mono_output_topology
 
@@ -187,6 +193,44 @@ def test_open_bundle_info_json_is_a_manifest_artifact(tmp_path: Path) -> None:
     assert entry["sensitivity"] == "config"
     assert len(entry["sha256"]) == 64
     assert entry["byte_size"] == (bundle_dir / "info.json").stat().st_size
+
+
+def test_new_bundle_is_reopenable_production_admission_authority(
+    tmp_path: Path,
+) -> None:
+    info = _open(tmp_path)
+    bundle_dir = Path(info["bundle_dir"])
+
+    first = bundles.open_bundle_admission_authority(
+        bundle_dir,
+        expected_session_id=info["session_id"],
+    )
+    second = bundles.open_bundle_admission_authority(
+        bundle_dir,
+        expected_session_id=info["session_id"],
+    )
+
+    assert first == second
+    assert first.directory == bundle_dir
+    assert first.marker.relative_path == ADMISSION_AUTHORITY_MARKER
+
+
+def test_historical_bundle_without_marker_is_never_upgraded(
+    tmp_path: Path,
+) -> None:
+    info = _open(tmp_path)
+    bundle_dir = Path(info["bundle_dir"])
+    marker = bundle_dir / ADMISSION_AUTHORITY_MARKER
+    marker.unlink()
+
+    with pytest.raises(AdmissionArtifactError) as raised:
+        bundles.open_bundle_admission_authority(
+            bundle_dir,
+            expected_session_id=info["session_id"],
+        )
+
+    assert raised.value.code is AdmissionArtifactErrorCode.AUTHORITY_MISSING
+    assert not marker.exists()
 
 
 def test_open_bundle_mints_a_fresh_session_each_call(tmp_path: Path) -> None:
@@ -783,6 +827,22 @@ def test_enforce_retention_deletes_oldest_first_by_started_at(
     assert Path(newest["bundle_dir"]).exists()
 
 
+def test_enforce_retention_counts_and_deletes_partial_authority_dirs(
+    tmp_path: Path,
+) -> None:
+    partial = tmp_path / "partial-session"
+    create_admission_authority(
+        partial,
+        bundle_kind=bundles.BUNDLE_KIND,
+        bundle_id=partial.name,
+    )
+    assert not (partial / "info.json").exists()
+
+    bundles.enforce_retention(tmp_path, max_bytes=0, max_bundles=0)
+
+    assert not partial.exists()
+
+
 def test_enforce_retention_never_evicts_the_open_session(
     tmp_path: Path,
 ) -> None:
@@ -830,7 +890,7 @@ def test_enforce_retention_is_fail_soft(tmp_path: Path, caplog, monkeypatch) -> 
     def boom(*_args, **_kwargs):
         raise OSError("disk gone")
 
-    monkeypatch.setattr(bundles, "_iter_bundle_dirs", boom)
+    monkeypatch.setattr(bundles, "_iter_retention_dirs", boom)
 
     with caplog.at_level(logging.WARNING):
         bundles.enforce_retention(tmp_path)  # must not raise

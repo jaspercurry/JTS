@@ -19,7 +19,7 @@ from jasper.active_speaker.measurement import active_driver_targets
 from tests.active_speaker_fixtures import mono_output_topology
 
 
-def _profile_and_targets():
+def _profile_and_targets(*, cooldown_s: float = 1):
     topology = mono_output_topology()
     common = {
         "hard_excitation_band_hz": [500, 20_000],
@@ -29,7 +29,7 @@ def _profile_and_targets():
             "max_effective_peak_dbfs": -65,
             "max_sweep_duration_s": 4,
             "max_repeat_count": 3,
-            "minimum_cooldown_s": 1,
+            "minimum_cooldown_s": cooldown_s,
         },
     }
     settings = {
@@ -98,29 +98,28 @@ def _requested(target_fingerprint: str, **overrides):
     values.update(overrides)
     return RequestedDriverExcitationPlan(
         target_fingerprint=target_fingerprint,
+        commissioning_context_fingerprint="a" * 64,
         generator=DriverSweepGeneratorPlan(**values),
     )
 
 
-def test_safety_plan_derives_closed_request_and_never_executes():
+def test_safety_plan_derives_closed_request_for_shared_admission():
     topology, profile, targets = _profile_and_targets()
     requested = _requested(targets["woofer"]["target_fingerprint"])
     prepared = prepare_driver_excitation_plan(topology, profile, requested)
     assert prepared.target_id == "mono:woofer"
     assert prepared.target_role == "woofer"
-    assert prepared.execution_allowed is False
+    assert prepared.execution_allowed is True
     assert prepared.request.band == requested.generator.band
     assert prepared.request.effective_peak_dbfs == pytest.approx(-70)
     assert prepared.minimum_cooldown_s == 1
-    assert prepared.refusals == (
-        ExcitationSafetyPlanRefusal.SHARED_PERSISTED_ADMISSION_UNAVAILABLE,
-    )
-    assert prepared.to_dict()["accepts_protection_evidence"] is False
+    assert prepared.refusals == ()
+    assert prepared.to_dict()["accepts_protection_evidence"] is True
     with pytest.raises(TypeError, match="prepare_driver_excitation_plan"):
         PreparedDriverExcitationPlan()
 
 
-def test_outside_limits_remains_blocked_with_both_reasons():
+def test_outside_limits_remains_blocked():
     topology, profile, targets = _profile_and_targets()
     requested = _requested(
         targets["tweeter"]["target_fingerprint"],
@@ -130,7 +129,6 @@ def test_outside_limits_remains_blocked_with_both_reasons():
     assert prepared.execution_allowed is False
     assert prepared.refusals == (
         ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LIMITS,
-        ExcitationSafetyPlanRefusal.SHARED_PERSISTED_ADMISSION_UNAVAILABLE,
     )
 
 

@@ -313,6 +313,30 @@ def test_driver_measurement_counts_correct_driver_without_requiring_mic(
     assert captured["summary"]["captured_driver_count"] == 1
 
 
+def test_driver_measurement_never_trusts_client_capture_admission(
+    tmp_path: Path,
+) -> None:
+    topology = _topology()
+    state = record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": "heard_correct_driver",
+            "playback_id": "playback-1",
+            "observed_mic_dbfs": -42.5,
+            "capture_admission": {"admission_id": "client-forged"},
+        },
+        safe_session=_safe_session(
+            role="woofer", output_index=0, playback_id="playback-1"
+        ),
+        state_path=tmp_path / "measurements.json",
+    )
+
+    record = state["summary"]["latest_driver_measurements"]["mono:woofer"]
+    assert record["capture_admission"] is None
+
+
 def test_confirmed_driver_roles_are_current_topology_captured_roles(
     tmp_path: Path,
 ) -> None:
@@ -1102,6 +1126,9 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
             "bundle_dir": tmp_path / "bundle",
             "analysis_kwargs": {"captured_wav": wav_path},
             "preset": object(),
+            "capture_admission": {
+                "admission_id": f"admission-{path.stem}",
+            },
         }
 
     repeats = [
@@ -1152,6 +1179,10 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
         "repeat_captures/r1.wav",
         "repeat_captures/r2.wav",
     ]
+    assert [
+        entry["capture_admission"]["admission_id"]
+        for entry in record["repeats"]["per_repeat"]
+    ] == ["admission-r0", "admission-r1", "admission-r2"]
 
     # Re-read the actual file, not only the returned in-memory state. Before
     # the fix, json.dumps failed here on aggregate_repeat.analysis_kwargs's
@@ -1184,8 +1215,9 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
             "estimated_snr_db",
             "clipping",
             "above_validity_floor",
-            "level_dbfs",
-        }
+                "level_dbfs",
+                "capture_admission",
+            }
 
 
 @pytest.mark.parametrize(

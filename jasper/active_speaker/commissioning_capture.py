@@ -307,6 +307,7 @@ def record_driver_acoustic_capture(
     ambient_duration_s: float | None = None,
     test_level_dbfs: float | None = None,
     excitation: Mapping[str, Any] | None = None,
+    capture_admission: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
@@ -483,6 +484,7 @@ def record_driver_acoustic_capture(
         calibration_level=calibration_level,
         safe_session=safe_session,
         durable_floor_confirmation=durable_floor_confirmation,
+        capture_admission=capture_admission,
         bundle_ref=bundle_ref,
         state_path=state_path,
         now=now,
@@ -1407,6 +1409,11 @@ def aggregate_driver_repeats(
             "clipping": bool(acoustic.get("mic_clipping")),
             "above_validity_floor": above_validity_floor,
             "level_dbfs": level_dbfs,
+            "capture_admission": (
+                dict(item["capture_admission"])
+                if isinstance(item.get("capture_admission"), Mapping)
+                else None
+            ),
         })
         if accepted and level_dbfs is not None:
             accepted_levels.append(level_dbfs)

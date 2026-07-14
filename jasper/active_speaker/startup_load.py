@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from jasper.control.restart_broker import manage_units
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
@@ -796,6 +797,7 @@ async def load_protected_startup_config(
     path_safety_evidence_path: str | Path | None = None,
     state_path: str | Path | None = None,
     require_physical_identity: bool = True,
+    acquire_lock: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -919,6 +921,7 @@ async def load_protected_startup_config(
             load_config=load_config,
             get_current_config_path=get_current_config_path,
             persist=_persist_loaded_anchor,
+            acquire_lock=acquire_lock,
             validate=validate,
         )
     except DspApplyError as exc:
@@ -1410,6 +1413,7 @@ def build_driver_commission_load_preflight(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     path_safety_evidence_path: str | Path | None = None,
     current_config_path: str | Path | None = None,
@@ -1452,6 +1456,7 @@ def build_driver_commission_load_preflight(
         crossover_preview=crossover_preview,
         playback_device=playback_device,
         audible_gain_db=audible_gain_db,
+        volume_limit_db=volume_limit_db,
         filter_mode=filter_mode,
         config_dir=config_dir,
         config_path=config_path,
@@ -1558,6 +1563,7 @@ async def load_driver_commissioning_config(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     path_safety_evidence_path: str | Path | None = None,
     staged_config: dict[str, Any] | None = None,
@@ -1567,6 +1573,7 @@ async def load_driver_commissioning_config(
     state_path: str | Path | None = None,
     reconcile_output_hardware: bool = True,
     require_physical_identity: bool = True,
+    acquire_lock: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -1625,6 +1632,7 @@ async def load_driver_commissioning_config(
         crossover_preview=crossover_preview,
         playback_device=playback_device,
         audible_gain_db=audible_gain_db,
+        volume_limit_db=volume_limit_db,
         filter_mode=filter_mode,
         path_safety_evidence_path=path_safety_evidence_path,
         current_config_path=prior_config_path,
@@ -1740,6 +1748,7 @@ async def load_driver_commissioning_config(
             crossover_preview=crossover_preview,
             playback_device=playback_device,
             audible_gain_db=audible_gain_db,
+            volume_limit_db=volume_limit_db,
             filter_mode=filter_mode,
             config_dir=config_dir,
             config_path=config_path,
@@ -1823,6 +1832,7 @@ async def load_driver_commissioning_config(
             get_current_config_path=None,
             prepare=_emit_in_lock,
             persist=_live_confirm,
+            acquire_lock=acquire_lock,
             validate=validate,
         )
     except DspApplyError as exc:

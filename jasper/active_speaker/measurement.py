@@ -1102,6 +1102,7 @@ _DURABLE_REPEAT_ENTRY_KEYS = (
     "clipping",
     "above_validity_floor",
     "level_dbfs",
+    "capture_admission",
 )
 _PROCESS_REPEAT_KEYS = frozenset({"aggregate_repeat"})
 
@@ -1223,6 +1224,11 @@ def _durable_repeat_summary(raw: Any) -> dict[str, Any] | None:
             "level_dbfs": _repeat_number(
                 item["level_dbfs"], "per_repeat.level_dbfs"
             ),
+            "capture_admission": (
+                dict(item["capture_admission"])
+                if isinstance(item["capture_admission"], Mapping)
+                else None
+            ),
         })
 
     summary = {
@@ -1257,6 +1263,7 @@ def record_driver_measurement(
     calibration_level: Mapping[str, Any] | None = None,
     safe_session: Mapping[str, Any] | None = None,
     durable_floor_confirmation: Mapping[str, Any] | None = None,
+    capture_admission: Mapping[str, Any] | None = None,
     bundle_ref: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
     now: str | None = None,
@@ -1363,6 +1370,13 @@ def record_driver_measurement(
             else None
         ),
         "playback_id": _text(raw.get("playback_id"), max_chars=120),
+        # Exact production excitation authority. Legacy/direct captures leave
+        # this absent and remain diagnostic-only.
+        "capture_admission": (
+            dict(capture_admission)
+            if isinstance(capture_admission, Mapping)
+            else None
+        ),
         "floor_confirmation": dict(
             durable_floor_confirmation or _safe_floor_result(safe_session) or {}
         ),

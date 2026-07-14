@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 import yaml
 
+from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
@@ -1966,6 +1967,7 @@ def prepare_driver_commissioning_config(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     config_dir: str | Path | None = None,
     config_path: str | Path | None = None,
@@ -2079,6 +2081,7 @@ def prepare_driver_commissioning_config(
                 playback_device=resolved_playback_device,
                 audible_outputs=audible_outputs,
                 audible_gain_db=audible_gain_db,
+                volume_limit_db=volume_limit_db,
                 startup_headroom_db=COMMISSIONING_HEADROOM_DB,
                 out_path=out_path,
                 baseline_id=f"commission-{_safe_stem(topology.topology_id)}-{role}",

@@ -155,6 +155,21 @@
 > play payload's real shape (`status` + nested `playback.audio_emitted`,
 > top-level `test_level_dbfs`/`sweep_meta`) and refuses while room/balance/sync
 > is active (server-computed at POST, re-checked when the phone arms). The
+> isolated-driver playback leg now uses
+> `active_speaker.commissioning_admission`: one bounded Shared writer lock spans
+> transient graph load, fresh graph/volume proof (including the exact admitted
+> per-output commissioning gain and a graph ceiling at the locked listening
+> volume), unique persisted generation and playback
+> admission, a cancellation-safe profile cooldown bounded to five seconds so
+> ambient + the longest sweep + graph/relay work fit the phone deadline,
+> exact role-bounded WAV playback, a post-play volume-drift refusal, and exact
+> restore.
+> The returned playback-role handoff is a server-only argument to capture
+> persistence; browser JSON cannot mint it. Existing bundles without a Shared
+> authority marker remain historical. Combined/summed capture is temporarily
+> refused before graph load with
+> `active_summed_persisted_admission_unavailable` until the group-level
+> delay/protection authority lands; its legacy evidence cannot be promoted. The
 > `crossover_sweep` capture spec's stimulus length derives from the protected
 > per-driver signal plan (12 s woofer/subwoofer, 8 s midrange, 4 s tweeter;
 > one sweep definition; the deconv
@@ -1985,9 +2000,11 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-13 (Wave 1 target-bound research, visible confirmed
+Last verified: 2026-07-14 (Wave 1 target-bound research, visible confirmed
 driver-safety profile, excitation admission, nine-state lifecycle, exact
-eligibility receipt, no-live receipt producer, and temporary passive-only Room
+eligibility receipt, reachable isolated-driver persisted admission under one
+bounded writer transaction, summed pre-audio refusal, no-live receipt producer,
+and temporary passive-only Room
 admission checked contract-only; no hardware behavior revalidated. Frozen applied-preset startup anchor, durable
 crossover-volume intent, confirmed recovery,
 and relay lease ownership checked; bounded CamillaDSP worker cancellation checked

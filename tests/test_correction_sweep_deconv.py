@@ -52,6 +52,43 @@ def test_synchronized_swept_sine_basic_shape():
     assert actual_peak > expected_peak * 0.85  # allow fade-edge dip
 
 
+def test_synchronized_sweep_metadata_matches_realized_generator_plan():
+    planned = sweep.synchronized_sweep_metadata(
+        f1=500.0,
+        f2=8000.0,
+        duration_approx_s=3.7,
+        sample_rate=48000,
+        amplitude_dbfs=-12.0,
+    )
+    signal, realized = sweep.synchronized_swept_sine(
+        f1=500.0,
+        f2=8000.0,
+        duration_approx_s=3.7,
+        sample_rate=48000,
+        amplitude_dbfs=-12.0,
+    )
+
+    assert planned == realized
+    assert planned.n_samples == len(signal)
+    assert sweep.SweepMeta.from_dict(planned.to_dict()) == planned
+
+
+def test_synchronized_sweep_metadata_does_not_allocate_pcm(monkeypatch):
+    monkeypatch.setattr(
+        sweep.np,
+        "arange",
+        lambda *_args, **_kwargs: pytest.fail("metadata planning allocated PCM"),
+    )
+
+    meta = sweep.synchronized_sweep_metadata(
+        f1=500.0,
+        f2=8000.0,
+        duration_approx_s=4.0,
+    )
+
+    assert meta.n_samples > 0
+
+
 def test_synchronized_swept_sine_starts_and_ends_near_zero():
     """The sweep has a 5 ms quadratic fade at each end. Verify the
     boundary samples are near zero — guards against the

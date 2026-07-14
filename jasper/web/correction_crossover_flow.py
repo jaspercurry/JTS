@@ -1015,12 +1015,13 @@ def build_crossover_relay_run_and_consume(
                     )
                 from jasper.active_speaker.test_signal_plan import (
                     CROSSOVER_CAPTURE_HARD_TIMEOUT_S,
+                    CROSSOVER_CAPTURE_PLAY_DEADLINE_S,
                 )
 
                 # Finish and publish sweep_complete with margin before the
                 # phone's own recorder deadline. asyncio.wait_for cancellation
                 # reaches play_sweep, which kills/reaps aplay.
-                play_deadline_s = CROSSOVER_CAPTURE_HARD_TIMEOUT_S - 5.0
+                play_deadline_s = CROSSOVER_CAPTURE_PLAY_DEADLINE_S
                 runner_deadline_s = CROSSOVER_CAPTURE_HARD_TIMEOUT_S - 2.0
                 activity = CaptureActivityProbe(client, pi_session)
 
@@ -1135,6 +1136,7 @@ def build_crossover_relay_run_and_consume(
             record_kwargs: dict[str, Any] = {
                 "placement_proof": placement_proof,
                 "repeat_store": backend.level_lease(),
+                "admission_handoff": played.get("capture_admission"),
             }
             if frozen_capture_preset is not None:
                 record_kwargs["preset"] = frozen_capture_preset

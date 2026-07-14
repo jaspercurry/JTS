@@ -298,6 +298,10 @@ def _normalise_protection_filters(value: Any, field_name: str) -> list[dict[str,
             f"{prefix}.family_or_equivalent",
             max_chars=80,
         )
+        if family != "equivalent_or_steeper":
+            raise DriverSafetyProfileError(
+                f"{prefix}.family_or_equivalent must be equivalent_or_steeper"
+            )
         filters.append(
             {
                 "kind": kind,
@@ -1046,7 +1050,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "recommended_lowpass_hz": 2200,',
             '    "do_not_test_below_hz": 1200,',
             '    "hard_excitation_band_hz": [1200, 20000],',
-            '    "required_protection_filters": [{"kind":"highpass","cutoff_hz":1800,"minimum_slope_db_per_octave":24,"family_or_equivalent":"Linkwitz-Riley or equivalent"}],',
+            '    "required_protection_filters": [{"kind":"highpass","cutoff_hz":1800,"minimum_slope_db_per_octave":24,"family_or_equivalent":"equivalent_or_steeper"}],',
             '    "measurement_band_hz": [1800, 18000],',
             '    "crossover_search_band_hz": [2200, 4000],',
             '    "level_duration_limits": {"max_effective_peak_dbfs":null,"max_sweep_duration_s":4,"max_repeat_count":3,"minimum_cooldown_s":0},',
