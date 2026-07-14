@@ -5,9 +5,11 @@
 """Active-owned, fail-closed preparation for future driver excitation.
 
 The closed sweep/level ledger below derives every field passed to the frozen
-Shared admission types.  This module intentionally has no protection-evidence
-parameter and no execution callback: a future persisted Shared boundary must
-issue fresh graph/protection authority immediately before playback.
+Shared admission types. Shared's persisted-admission and guarded-playback APIs
+are merged, but this Wave 2 preparation boundary intentionally does not adopt
+them: it has no protection-evidence parameter and no execution callback. The
+future Active integration must issue fresh graph/protection authority
+immediately before playback.
 """
 
 from __future__ import annotations

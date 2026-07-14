@@ -394,6 +394,11 @@ class CrossoverLevelRunStore:
         self._now_clock = now
         self._uuid_factory = uuid_factory
         self._memory_state = _base_state()
+        # A terminal success is deduplicable only while this service process
+        # still holds the corresponding process-local level result. Durable
+        # run state records what happened; it is not proof that the volatile
+        # result still exists.
+        self._live_succeeded_run_id: str | None = None
 
     def _now(self) -> str:
         value = float(self._now_clock())
@@ -617,6 +622,7 @@ class CrossoverLevelRunStore:
                     current.get("phase") == CrossoverLevelRunPhase.SUCCEEDED.value
                     and same
                     and current.get("owner_id") == self.owner_id
+                    and current.get("run_id") == self._live_succeeded_run_id
                 ):
                     claim = self._claim_from_current(
                         current, CrossoverLevelRunDisposition.DUPLICATE_SUCCEEDED
@@ -630,6 +636,7 @@ class CrossoverLevelRunStore:
                     )
                     return claim
             now = self._now()
+            self._live_succeeded_run_id = None
             current = {
                 "run_id": self._uuid_factory().hex,
                 "owner_id": self.owner_id,
@@ -694,6 +701,39 @@ class CrossoverLevelRunStore:
                 reason=CrossoverLevelRunFailure.SERVICE_RESTARTED.value,
             )
         return self.snapshot()
+
+    def invalidate_succeeded_result(self, *, geometry: str | None = None) -> bool:
+        """Stop deduplicating a success whose process-local result was discarded."""
+
+        requested_geometry = (
+            _text(geometry, field_name="geometry") if geometry is not None else None
+        )
+        invalidated: dict[str, Any] | None = None
+        with self._locked():
+            current = self._read().get("current")
+            if (
+                not isinstance(current, Mapping)
+                or current.get("phase") != CrossoverLevelRunPhase.SUCCEEDED.value
+                or current.get("owner_id") != self.owner_id
+                or current.get("run_id") != self._live_succeeded_run_id
+            ):
+                return False
+            request = CrossoverLevelRunRequest.from_dict(current["request"])
+            if requested_geometry is not None and request.geometry != requested_geometry:
+                return False
+            self._live_succeeded_run_id = None
+            invalidated = {
+                "run_id": current["run_id"],
+                "request_fingerprint": request.fingerprint,
+                "geometry": request.geometry,
+            }
+        assert invalidated is not None
+        log_event(
+            logger,
+            "correction.crossover_level_run_result_invalidated",
+            **invalidated,
+        )
+        return True
 
     def _update_active(
         self,
@@ -849,11 +889,20 @@ class CrossoverLevelRunStore:
             raise ValueError("successful crossover level run has no failure reason")
         if not succeeded and not isinstance(reason, CrossoverLevelRunFailure):
             raise TypeError("failed crossover level run requires a typed reason")
+        _uuid_hex(run_id, field_name="run_id")
         reason_value = reason.value if reason is not None else None
         late_success = False
-
-        def update(current: dict[str, Any]) -> bool:
-            nonlocal late_success
+        with self._locked():
+            state = self._read()
+            current_raw = state.get("current")
+            if (
+                not isinstance(current_raw, Mapping)
+                or current_raw.get("run_id") != run_id
+                or current_raw.get("phase") not in _ACTIVE_PHASES
+                or current_raw.get("owner_id") != self.owner_id
+            ):
+                return False
+            current = dict(current_raw)
             if succeeded and (
                 current.get("phone_armed_at") is None
                 or current.get("backend_started_at") is None
@@ -876,24 +925,26 @@ class CrossoverLevelRunStore:
                 }
             )
             late_success = current["late_success"]
-            return True
-
-        changed = self._update_active(run_id, update)
-        if changed:
-            log_event(
-                logger,
-                "correction.crossover_level_run_completed",
-                level=(logging.INFO if succeeded else logging.WARNING),
-                run_id=run_id,
-                phase=(
-                    CrossoverLevelRunPhase.SUCCEEDED.value
-                    if succeeded
-                    else CrossoverLevelRunPhase.FAILED.value
-                ),
-                reason=reason_value,
-                late_success=late_success,
-            )
-        return changed
+            state["current"] = current
+            self._write(state)
+            if succeeded:
+                self._live_succeeded_run_id = run_id
+            elif self._live_succeeded_run_id == run_id:
+                self._live_succeeded_run_id = None
+        log_event(
+            logger,
+            "correction.crossover_level_run_completed",
+            level=(logging.INFO if succeeded else logging.WARNING),
+            run_id=run_id,
+            phase=(
+                CrossoverLevelRunPhase.SUCCEEDED.value
+                if succeeded
+                else CrossoverLevelRunPhase.FAILED.value
+            ),
+            reason=reason_value,
+            late_success=late_success,
+        )
+        return True
 
     def succeed(self, run_id: str) -> bool:
         """Complete the exact current run; stale completions are ignored."""
@@ -910,6 +961,12 @@ class CrossoverLevelRunStore:
 
         with self._locked():
             current = self._read().get("current")
+            result_available = bool(
+                isinstance(current, Mapping)
+                and current.get("phase") == CrossoverLevelRunPhase.SUCCEEDED.value
+                and current.get("owner_id") == self.owner_id
+                and current.get("run_id") == self._live_succeeded_run_id
+            )
         if not isinstance(current, Mapping):
             return None
         request = CrossoverLevelRunRequest.from_dict(current["request"])
@@ -936,4 +993,5 @@ class CrossoverLevelRunStore:
             "completed_at": current["completed_at"],
             "terminal_reason": current["terminal_reason"],
             "late_success": current["late_success"],
+            "result_available": result_available,
         }

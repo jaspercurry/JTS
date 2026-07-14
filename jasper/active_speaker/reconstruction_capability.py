@@ -17,6 +17,10 @@ RECONSTRUCTION_MODEL_ID = "sealed_single_radiator_v1"
 RECONSTRUCTION_THRESHOLD_SET_ID = RECONSTRUCTION_MODEL_ID
 
 
+class ReconstructionCapabilityError(ValueError):
+    """A reconstruction capability value is malformed or unsafe."""
+
+
 class ReconstructionRefusal(StrEnum):
     PROFILE_UNCONFIRMED = "reconstruction_profile_unconfirmed"
     PROFILE_STALE = "reconstruction_profile_stale"
@@ -56,12 +60,45 @@ class ReconstructionRefusal(StrEnum):
     DECISION_BAND_UNCOVERED = "reconstruction_decision_band_uncovered"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ReconstructionCapability:
     """A classification result, never an apply or playback capability."""
 
     refusals: tuple[ReconstructionRefusal, ...]
     evidence_classification: str
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise TypeError("use a reconstruction capability factory")
+
+    @classmethod
+    def _refused(
+        cls,
+        *,
+        refusals: tuple[ReconstructionRefusal, ...],
+        evidence_classification: str,
+    ) -> "ReconstructionCapability":
+        if (
+            type(refusals) is not tuple
+            or not refusals
+            or any(not isinstance(item, ReconstructionRefusal) for item in refusals)
+            or len(set(refusals)) != len(refusals)
+        ):
+            raise ReconstructionCapabilityError(
+                "a refused reconstruction capability requires unique typed refusals"
+            )
+        if (
+            not isinstance(evidence_classification, str)
+            or not evidence_classification
+            or evidence_classification != evidence_classification.strip()
+        ):
+            raise ReconstructionCapabilityError(
+                "evidence_classification must be non-empty trimmed text"
+            )
+        self = object.__new__(cls)
+        object.__setattr__(self, "refusals", refusals)
+        object.__setattr__(self, "evidence_classification", evidence_classification)
+        return self
 
     @property
     def ready(self) -> bool:
@@ -124,7 +161,7 @@ def legacy_reconstruction_capability(
     refusals = list(cabinet_refusals(cabinet))
     if ReconstructionRefusal.CAPTURE_NOT_ADMITTED not in refusals:
         refusals.append(ReconstructionRefusal.CAPTURE_NOT_ADMITTED)
-    return ReconstructionCapability(
+    return ReconstructionCapability._refused(
         refusals=tuple(refusals),
         evidence_classification=LEGACY_EVIDENCE_CLASSIFICATION,
     )

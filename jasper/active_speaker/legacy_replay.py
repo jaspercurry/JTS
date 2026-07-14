@@ -19,12 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.correction.bundles import (
+from jasper.audio_measurement.bundles import (
     CURRENT_ARTIFACT_MANIFEST_VERSION,
     BundleError,
-    _relative_artifact_path,
-    _sha256_file,
     read_artifact_manifest,
+    relative_artifact_path,
+    sha256_file,
 )
 from jasper.output_topology import OutputTopology
 
@@ -172,7 +172,7 @@ def _manifest_entries(
                 "bundle_manifest_invalid", "artifact manifest entry is malformed"
             )
         try:
-            relative = _relative_artifact_path(bundle_dir, raw["path"])
+            relative = relative_artifact_path(bundle_dir, raw["path"])
         except BundleError as exc:
             raise _error("bundle_manifest_invalid", str(exc)) from exc
         if relative != raw["path"] or relative in by_path:
@@ -217,7 +217,7 @@ def _verified_artifact(
     path = bundle_dir / relative_path
     try:
         stat = path.stat()
-        actual_sha = _sha256_file(path)
+        actual_sha = sha256_file(path)
     except OSError as exc:
         raise _error(
             "bundle_artifact_missing", f"could not read {relative_path}: {exc}"
@@ -395,7 +395,7 @@ def resolve_legacy_current_winner(
     root = sessions_root if sessions_root is not None else bundles.sessions_dir()
     bundle_dir = root / session_id
     try:
-        wav_relative_path = _relative_artifact_path(bundle_dir, raw_wav_path)
+        wav_relative_path = relative_artifact_path(bundle_dir, raw_wav_path)
     except BundleError as exc:
         raise _error("bundle_pointer_invalid", str(exc)) from exc
     if (
@@ -660,8 +660,8 @@ def replay_legacy_current_winner(evidence: LegacyWinnerEvidence) -> LegacyReplay
     analysis_path = evidence.bundle_dir / evidence.analysis_relative_path
     try:
         if (
-            _sha256_file(evidence.wav_path) != evidence.wav_sha256
-            or _sha256_file(analysis_path) != evidence.analysis_sha256
+            sha256_file(evidence.wav_path) != evidence.wav_sha256
+            or sha256_file(analysis_path) != evidence.analysis_sha256
         ):
             raise _error(
                 "legacy_replay_input_changed",

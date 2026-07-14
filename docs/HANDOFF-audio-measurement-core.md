@@ -112,6 +112,12 @@ schema from authoritative `info.json` or an explicit schema argument. Room's
 legacy schema-5 fallback is private to the `jasper.correction.bundles`
 compatibility wrapper.
 
+Feature readers use the public `relative_artifact_path()` validator for the
+same traversal, normalization, and manifest-self-reference checks as the
+writers. They use the neutral public `sha256_file()` and
+`read_artifact_manifest()` APIs directly rather than reaching through another
+feature's compatibility wrapper.
+
 The feature packages still own everything that gives a bundle meaning. Room
 retains schema 5, `/var/lib/jasper/correction/sessions`, validation, replay,
 latest-session, retention, and private-audio policy. Active retains schema 1,

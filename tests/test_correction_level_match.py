@@ -1206,6 +1206,42 @@ async def test_crossover_claimed_run_executes_its_frozen_env_config(
     assert lease.level_run_snapshot()["backend_started_at"] is not None
 
 
+def test_crossover_terminal_success_requires_process_local_level_result(tmp_path):
+    from jasper.active_speaker.crossover_level_run import CrossoverLevelRunError
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease(level_run_state_path=tmp_path / "run.json")
+    target = {
+        "target_id": "mono:woofer",
+        "target_fingerprint": "b" * 64,
+        "geometry": "near_field_driver:mono:woofer",
+    }
+    claim = lease.claim_level_match_run(
+        topology_id="topology-1",
+        protected_profile_fingerprint="a" * 64,
+        target=target,
+    )
+    assert lease.mark_level_run_phone_armed(claim.run_id) is True
+    lease._level_run_store.begin_backend(
+        claim.run_id,
+        geometry=target["geometry"],
+    )
+
+    with pytest.raises(CrossoverLevelRunError, match="process-local result"):
+        lease.mark_level_run_succeeded(claim.run_id)
+    assert lease.level_run_snapshot()["phase"] == "running"
+
+    lease._outcomes[target["geometry"]] = object()
+    assert lease.mark_level_run_succeeded(claim.run_id) is True
+    assert lease.level_run_snapshot()["result_available"] is True
+    lease.discard_driver_level_outcome(
+        "mono",
+        "woofer",
+        capture_geometry="near_field",
+    )
+    assert lease.mark_level_run_succeeded(claim.run_id) is False
+
+
 @pytest.mark.asyncio
 async def test_crossover_explicit_claimed_run_id_fails_closed_when_stale(tmp_path):
     from jasper.active_speaker.capture_geometry import driver_level_geometry

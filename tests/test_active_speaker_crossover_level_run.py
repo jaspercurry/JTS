@@ -165,9 +165,35 @@ def test_phone_timeout_then_same_run_success_is_late_success(tmp_path):
     assert snapshot["phase"] == "succeeded"
     assert snapshot["phone_timeout"] is True
     assert snapshot["late_success"] is True
+    assert snapshot["result_available"] is True
     duplicate = store.claim(_request())
     assert duplicate.disposition is CrossoverLevelRunDisposition.DUPLICATE_SUCCEEDED
     assert duplicate.should_dispatch is False
+
+
+def test_discarded_process_local_result_stops_terminal_success_deduplication(
+    tmp_path,
+):
+    store = CrossoverLevelRunStore(path=tmp_path / "run.json")
+    claim = store.claim(_request())
+    store.mark_phone_armed(claim.run_id)
+    store.begin_backend(claim.run_id, geometry=GEOMETRY)
+    assert store.succeed(claim.run_id) is True
+
+    assert (
+        store.invalidate_succeeded_result(
+            geometry=driver_level_geometry("mono", "tweeter", "near_field")
+        )
+        is False
+    )
+    assert store.snapshot()["result_available"] is True
+    assert store.invalidate_succeeded_result(geometry=GEOMETRY) is True
+    assert store.invalidate_succeeded_result(geometry=GEOMETRY) is False
+    assert store.snapshot()["result_available"] is False
+
+    retry = store.claim(_request())
+    assert retry.disposition is CrossoverLevelRunDisposition.NEW
+    assert retry.run_id != claim.run_id
 
 
 def test_delayed_same_run_timeout_annotates_already_persisted_success(tmp_path):
@@ -275,6 +301,7 @@ def test_public_snapshot_and_durable_file_contain_no_transport_secrets(tmp_path)
 
     assert "ramp_config" not in public
     assert "owner_id" not in public
+    assert public["result_available"] is False
     for forbidden in ("tap_link", "pull_token", "relay_token", "credential"):
         assert forbidden not in serialized
 

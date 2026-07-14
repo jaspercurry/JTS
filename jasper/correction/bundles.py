@@ -24,7 +24,7 @@ from jasper.audio_measurement.bundles import (
     _is_exact_version,
     _manifest_path,
     _read_json,
-    _relative_artifact_path,
+    relative_artifact_path as _relative_artifact_path,
     read_artifact_manifest as read_artifact_manifest,
     record_artifact as _record_artifact,
     sha256_file as _sha256_file,

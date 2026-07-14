@@ -1560,8 +1560,14 @@ def test_status_active_flag_false_for_passive_speaker(monkeypatch):
     assert payload["active"] is False
 
 
-def test_new_level_run_drops_prior_in_memory_comparison_context():
+def test_new_level_run_drops_prior_in_memory_comparison_context(monkeypatch):
     lease = backend.CrossoverLevelLease()
+    invalidations = []
+    monkeypatch.setattr(
+        lease._level_run_store,
+        "invalidate_succeeded_result",
+        lambda **kwargs: invalidations.append(kwargs),
+    )
     lease._last = SimpleNamespace(snapshot=lambda: {"ramp": {"state": "locked"}})
     lease.context_id = "old-profile"
     lease.noise_floor_db = -42.0
@@ -1577,6 +1583,27 @@ def test_new_level_run_drops_prior_in_memory_comparison_context():
     assert lease.mic_calibration is None
     assert lease.input_device is None
     assert lease.relay_setup_binding is None
+    assert invalidations == [{}]
+
+
+def test_discard_driver_level_outcome_invalidates_matching_terminal_run(monkeypatch):
+    lease = backend.CrossoverLevelLease()
+    invalidations = []
+    monkeypatch.setattr(
+        lease._level_run_store,
+        "invalidate_succeeded_result",
+        lambda **kwargs: invalidations.append(kwargs),
+    )
+
+    lease.discard_driver_level_outcome(
+        "mono",
+        "woofer",
+        capture_geometry="near_field",
+    )
+
+    assert invalidations == [
+        {"geometry": "near_field_driver:mono:woofer"},
+    ]
 
 
 # --- crossover screen envelope: exactly one sequential next action -----------
