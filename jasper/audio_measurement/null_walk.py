@@ -790,9 +790,19 @@ def select_delay(
         )
         summarized.append(summarize_candidate(spec, candidate, captures))
 
+    return _select_summarized_delay(spec, summarized)
+
+
+def _select_summarized_delay(
+    spec: NullWalkSpec,
+    summarized: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Apply the one repeatability, plateau, and tie policy to candidates."""
+
+    candidates = [dict(item) for item in summarized]
     incomplete = [
         item
-        for item in summarized
+        for item in candidates
         if item["capture_count"] < MIN_CAPTURE_COUNT
         or item["accepted_capture_count"] != item["capture_count"]
     ]
@@ -805,10 +815,10 @@ def select_delay(
             "selected_relative_delay_us": None,
             "selected_delay_target": None,
             "spec": spec.to_dict(),
-            "candidates": summarized,
+            "candidates": candidates,
         }
-    eligible = [item for item in summarized if item["repeatable"]]
-    if len(eligible) != len(summarized):
+    eligible = [item for item in candidates if item["repeatable"]]
+    if len(eligible) != len(candidates):
         return {
             "schema_version": 1,
             "status": "refused",
@@ -817,7 +827,7 @@ def select_delay(
             "selected_relative_delay_us": None,
             "selected_delay_target": None,
             "spec": spec.to_dict(),
-            "candidates": summarized,
+            "candidates": candidates,
         }
     deepest = max(float(item["median_null_depth_db"]) for item in eligible)
     # Candidate-to-candidate differences inside the measured repeat spread are
@@ -855,8 +865,69 @@ def select_delay(
         "best_measured_null_depth_db": deepest,
         "indistinguishable_delays_us": [item["relative_delay_us"] for item in plateau],
         "spec": spec.to_dict(),
-        "candidates": summarized,
+        "candidates": candidates,
     }
+
+
+def select_scheduled_delay(
+    spec: NullWalkSpec,
+    schedule: BoundedNullWalkSchedule,
+    evidence_by_delay: Mapping[Any, Sequence[Mapping[str, Any]]],
+) -> dict[str, Any]:
+    """Select from one exact bounded coarse-plus-refinement schedule.
+
+    This is the final evaluator for low-frequency grids whose exhaustive fine
+    grid exceeds :data:`MAX_EXHAUSTIVE_CANDIDATES`.  It changes only which
+    coordinates are eligible: evidence must cover the persisted schedule
+    exactly, while candidate quality, repeatability, plateau handling, and tie
+    breaking remain owned by :func:`_select_summarized_delay`.
+    """
+
+    if not isinstance(spec, NullWalkSpec):
+        raise NullWalkError("scheduled selection spec must be NullWalkSpec")
+    if not isinstance(schedule, BoundedNullWalkSchedule):
+        raise NullWalkError(
+            "scheduled selection schedule must be BoundedNullWalkSchedule"
+        )
+    if schedule.spec_fingerprint != spec.fingerprint:
+        raise NullWalkError("bounded schedule belongs to a different null-walk spec")
+    if not isinstance(evidence_by_delay, Mapping):
+        raise NullWalkError("scheduled evidence must be a mapping")
+
+    evidence: dict[float, Sequence[Mapping[str, Any]]] = {}
+    allowed = set(schedule.scheduled_delays_us)
+    for raw_delay, captures in evidence_by_delay.items():
+        index = spec.fine_grid_index(raw_delay)
+        coordinate = spec.fine_grid_coordinate(index)
+        if coordinate not in allowed:
+            raise NullWalkError(
+                "scheduled evidence contains a coordinate outside the exact schedule"
+            )
+        if coordinate in evidence:
+            raise NullWalkError("scheduled evidence contains a duplicate coordinate")
+        evidence[coordinate] = captures
+    if set(evidence) != allowed:
+        raise NullWalkError("scheduled evidence must cover the exact schedule")
+    expected_schedule = BoundedNullWalkSchedule.from_coarse_evidence(
+        spec,
+        {
+            coordinate: evidence[coordinate]
+            for coordinate in schedule.coarse_delays_us
+        },
+    )
+    if expected_schedule.fingerprint != schedule.fingerprint:
+        raise NullWalkError(
+            "bounded schedule refinement does not match its coarse evidence"
+        )
+
+    result = _select_summarized_delay(
+        spec,
+        [
+            summarize_candidate(spec, coordinate, evidence[coordinate])
+            for coordinate in schedule.scheduled_delays_us
+        ],
+    )
+    return {**result, "schedule": schedule.to_dict()}
 
 
 async def _resolve(value: Any) -> Any:

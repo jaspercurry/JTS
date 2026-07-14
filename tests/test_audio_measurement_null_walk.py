@@ -18,6 +18,7 @@ from jasper.audio_measurement.null_walk import (
     geometry_seed_us,
     run_null_walk as _run_null_walk,
     select_delay,
+    select_scheduled_delay,
     summarize_candidate,
 )
 
@@ -1245,3 +1246,139 @@ def test_existing_exhaustive_paths_remain_capped_after_nonallocating_membership(
     assert spec.dsp_candidate(0.0).delay_us == 0.0
     with pytest.raises(NullWalkError, match="candidate budget"):
         select_delay(spec, complete_evidence)
+
+
+def test_scheduled_selection_reuses_plateau_policy_without_relaxing_grid_cap():
+    spec = _spec(fc=350.0)
+    coarse = {
+        coordinate: [
+            _capture(10.0, crossover_fc_hz=spec.crossover_fc_hz)
+        ]
+        * 5
+        for coordinate in spec.coarse_candidate_delays_us()
+    }
+    coarse[400.0] = [
+        _capture(20.0, crossover_fc_hz=spec.crossover_fc_hz)
+    ] * 5
+    schedule = BoundedNullWalkSchedule.from_coarse_evidence(spec, coarse)
+    evidence = dict(coarse)
+    evidence[300.0] = [
+        _capture(value, crossover_fc_hz=spec.crossover_fc_hz)
+        for value in (20.0, 20.2, 20.1, 20.0, 20.1)
+    ]
+    evidence[500.0] = [
+        _capture(value, crossover_fc_hz=spec.crossover_fc_hz)
+        for value in (15.0, 15.1, 15.0, 15.1, 15.0)
+    ]
+
+    result = select_scheduled_delay(spec, schedule, evidence)
+
+    assert spec.candidate_count == 29
+    with pytest.raises(NullWalkError, match="candidate budget"):
+        select_delay(spec, evidence)
+    assert result["status"] == "selected"
+    assert result["selected_relative_delay_us"] == 300.0
+    assert result["indistinguishable_delays_us"] == [300.0, 400.0]
+    assert result["schedule"] == schedule.to_dict()
+    assert [row["relative_delay_us"] for row in result["candidates"]] == list(
+        schedule.scheduled_delays_us
+    )
+
+
+def test_scheduled_selection_requires_exact_schedule_coverage():
+    spec = _spec(fc=350.0)
+    coarse = {
+        coordinate: [
+            _capture(20.0, crossover_fc_hz=spec.crossover_fc_hz)
+        ]
+        * 5
+        for coordinate in spec.coarse_candidate_delays_us()
+    }
+    schedule = BoundedNullWalkSchedule.from_coarse_evidence(spec, coarse)
+    evidence = {
+        coordinate: [
+            _capture(20.0, crossover_fc_hz=spec.crossover_fc_hz)
+        ]
+        * 5
+        for coordinate in schedule.scheduled_delays_us
+    }
+
+    missing = dict(evidence)
+    missing.pop(schedule.scheduled_delays_us[0])
+    with pytest.raises(NullWalkError, match="cover the exact schedule"):
+        select_scheduled_delay(spec, schedule, missing)
+
+    outside = dict(evidence)
+    outside[300.0] = [
+        _capture(20.0, crossover_fc_hz=spec.crossover_fc_hz)
+    ] * 5
+    with pytest.raises(NullWalkError, match="outside the exact schedule"):
+        select_scheduled_delay(spec, schedule, outside)
+
+
+def test_scheduled_selection_refuses_incomplete_or_unrepeatable_coordinates():
+    spec = _spec(fc=350.0)
+    coarse = {
+        coordinate: [
+            _capture(20.0, crossover_fc_hz=spec.crossover_fc_hz)
+        ]
+        * 5
+        for coordinate in spec.coarse_candidate_delays_us()
+    }
+    schedule = BoundedNullWalkSchedule.from_coarse_evidence(spec, coarse)
+    evidence = {
+        coordinate: [
+            _capture(20.0, crossover_fc_hz=spec.crossover_fc_hz)
+        ]
+        * 5
+        for coordinate in schedule.scheduled_delays_us
+    }
+
+    refinement = schedule.refinement_delays_us[0]
+    incomplete = dict(evidence)
+    incomplete[refinement] = incomplete[refinement][:-1]
+    assert select_scheduled_delay(spec, schedule, incomplete)["reason"] == (
+        "candidate_evidence_incomplete"
+    )
+
+    unrepeatable = dict(evidence)
+    unrepeatable[refinement] = [
+        _capture(value, crossover_fc_hz=spec.crossover_fc_hz)
+        for value in (20.0, 23.0, 20.0, 23.0, 20.0)
+    ]
+    assert select_scheduled_delay(spec, schedule, unrepeatable)["reason"] == (
+        "candidate_repeatability_failed"
+    )
+
+
+def test_scheduled_selection_rejects_a_schedule_for_another_spec():
+    spec = _spec(fc=350.0)
+    other = _spec(fc=300.0)
+    schedule = BoundedNullWalkSchedule(
+        other,
+        refinement_anchor_us=0.0,
+    )
+
+    with pytest.raises(NullWalkError, match="different null-walk spec"):
+        select_scheduled_delay(spec, schedule, {})
+
+
+def test_scheduled_selection_rederives_refinement_from_coarse_evidence():
+    spec = _spec(fc=350.0)
+    wrong_schedule = BoundedNullWalkSchedule(
+        spec,
+        refinement_anchor_us=spec.coarse_candidate_delays_us()[0],
+    )
+    evidence = {
+        coordinate: [
+            _capture(
+                30.0 if coordinate == 400.0 else 20.0,
+                crossover_fc_hz=spec.crossover_fc_hz,
+            )
+        ]
+        * 5
+        for coordinate in wrong_schedule.scheduled_delays_us
+    }
+
+    with pytest.raises(NullWalkError, match="does not match its coarse evidence"):
+        select_scheduled_delay(spec, wrong_schedule, evidence)

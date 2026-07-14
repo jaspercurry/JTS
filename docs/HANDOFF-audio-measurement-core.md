@@ -336,9 +336,12 @@ The shipped 350 Hz lower crossover exceeds the shared 25-point exhaustive-walk
 budget at the allowed 100 µs maximum step. Shared now represents it with a
 deterministic schedule of 15 symmetric coarse coordinates plus at most two
 adjacent fine refinements around an explicit coarse anchor; the exhaustive
-runner remains capped at 25 and the complete schedule at 27. The production
-host must consume that exact schedule before it can issue evidence; this pure
-slice does not play, capture, select a delay, or weaken either bound.
+runner remains capped at 25 and the complete schedule at 27. The separate
+`select_scheduled_delay()` evaluator requires evidence for that exact schedule
+and reuses `select_delay()`'s repeatability, plateau, and tie policy; the
+scheduler itself still chooses only where to refine. The production host must
+consume the exact schedule and evaluator before it can issue evidence. This
+pure slice does not play or capture and does not weaken either bound.
 
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
@@ -426,9 +429,12 @@ slice does not play, capture, select a delay, or weaken either bound.
   it retains the seed and both aligned endpoints, chooses at most 25 symmetric
   coarse coordinates, and adds only the two immediate fine-grid neighbors of
   one explicit coarse refinement anchor. Its schedule is capped at 27 and
-  carries no selected-delay authority. Non-allocating fine-grid membership lets
-  graph proof validate one scheduled coordinate without bypassing the
-  exhaustive runner's refusal.
+  carries no selected-delay authority. `select_scheduled_delay()` is the
+  separate final evaluator: it requires exact scheduled-coordinate coverage
+  and delegates to the same quality, repeatability, plateau, and tie policy as
+  exhaustive `select_delay()`. Non-allocating fine-grid membership lets graph
+  proof validate one scheduled coordinate without bypassing the exhaustive
+  runner's refusal.
   `delay_graph.py` is the inert candidate graph-*content* seam beside that
   runner. Inside an outer exact-restore transaction, a host stages both delay
   lanes to numeric zero and supplies the same `DspPredecessor` the F1 runner
@@ -1216,7 +1222,8 @@ no-bundle-migration/no-backfill boundaries plus Active isolated-driver adoption,
 server-owned capture handoff, and summed pre-audio refusal checked
 hardware-free. Strict Active group-by-region normal/reverse/delay evidence
 values, typed run/attempt and geometry authority, the bounded low-frequency
-coarse-plus-refinement schedule, complete-plan replay guards, and receipt
+coarse-plus-refinement schedule and schedule-aware final evaluator,
+complete-plan replay guards, and receipt
 schema-v2 one-shot generation/playback roles were checked pure.
 Durable bundle-backed Active run identity, startup owner claim,
 stale-callback refusal, and fail-closed crossover status were checked hardware-
