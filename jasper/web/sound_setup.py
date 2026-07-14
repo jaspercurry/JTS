@@ -1443,7 +1443,7 @@ async def _live_draft_profile(
             current_epoch=dsp_write_epoch(),
         )
 
-    async with dsp_writer_lock(config_path):
+    async with dsp_writer_lock(config_path, source="sound_live_draft"):
         current_epoch = dsp_write_epoch()
         if expected_dsp_write_epoch != current_epoch:
             log_event(

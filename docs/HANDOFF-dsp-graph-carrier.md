@@ -181,7 +181,9 @@ to a **`200` with `{status:"blocked", reason_code, message}`** (NOT a
 UI's existing `status:"blocked"` vocabulary handles it directly. The carrier
 is resolved **under the dsp-apply writer lock** so it always re-emits against
 the config actually loaded — never a stereo config over an active graph a
-concurrent load swapped in (a TOCTOU crossover-drop). The durable path also
+concurrent load swapped in (a TOCTOU crossover-drop). Admission to that shared
+boundary is deadline-bounded and cancellation-safe; once admitted, the caller
+still owns the full mutation/confirmation/rollback transaction. The durable path also
 does a **pre-transaction fast-check**: a steady-state non-hostable graph raises
 `CarrierCannotHostEq` before recording an apply transaction, so a household EQ
 apply on an active speaker records no `prepare_failed` state (a refusal is a
@@ -463,4 +465,5 @@ boundary:
   `tests/test_active_speaker_runtime_contract.py`,
   `tests/test_active_speaker_baseline_profile.py`
 
-Last verified: 2026-07-10
+Last verified: 2026-07-14 (graph-carrier ownership rechecked against bounded,
+cancellation-safe shared DSP-writer admission; carrier dispatch is unchanged)

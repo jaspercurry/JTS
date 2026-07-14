@@ -27,6 +27,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -42,6 +43,29 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 DEFAULT_DSP_APPLY_STATE_PATH = Path("/var/lib/jasper/dsp_apply_state.json")
+DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S = 10.0
+DEFAULT_DSP_WRITER_LOCK_POLL_INTERVAL_S = 0.05
+
+
+class DspWriterLockTimeout(TimeoutError):
+    """The shared DSP writer boundary was not admitted before its deadline."""
+
+    def __init__(
+        self,
+        lock_path: str | Path,
+        *,
+        timeout_s: float,
+        waited_s: float,
+        source: str,
+    ) -> None:
+        super().__init__(
+            f"DSP writer lock was unavailable after {waited_s:.3f}s "
+            f"(deadline {timeout_s:.3f}s)"
+        )
+        self.lock_path = Path(lock_path)
+        self.timeout_s = timeout_s
+        self.waited_s = waited_s
+        self.source = source
 
 
 class ValidationStatus(str, Enum):
@@ -343,23 +367,35 @@ class _FileLock:
         self.path = path
         self._fh: Any | None = None
 
-    def acquire(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o660)
-        try:
-            # The generated-config directory is root:jasper setgid; the lock has
-            # to be writable by whichever process reaches the apply path first
-            # (root CLI, jasper-web, future jasper group writers). O_CREAT still
-            # respects umask, so publish the intended mode explicitly.
+    def try_acquire(self) -> bool:
+        """Attempt one non-blocking acquisition.
+
+        Keeping the operation synchronous is intentional: ``LOCK_NB`` cannot
+        wait in the kernel, so cancellation cannot strand a worker which later
+        acquires the lock after its coroutine has gone away.
+        """
+
+        if self._fh is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o660)
             try:
-                os.fchmod(fd, 0o660)
-            except OSError:
-                pass
-            self._fh = os.fdopen(fd, "a+", encoding="utf-8")
-        except Exception:  # noqa: BLE001
-            os.close(fd)
-            raise
-        fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+                # The generated-config directory is root:jasper setgid; the lock
+                # has to be writable by whichever process reaches the apply path
+                # first. O_CREAT still respects umask, so publish the intended
+                # mode explicitly.
+                try:
+                    os.fchmod(fd, 0o660)
+                except OSError:
+                    pass
+                self._fh = os.fdopen(fd, "a+", encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                os.close(fd)
+                raise
+        try:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
 
     def release(self) -> None:
         if self._fh is None:
@@ -371,22 +407,118 @@ class _FileLock:
             self._fh = None
 
 
+def _positive_finite(value: float, *, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a positive finite number")
+    result = float(value)
+    if not math.isfinite(result) or result <= 0.0:
+        raise ValueError(f"{field_name} must be a positive finite number")
+    return result
+
+
 @contextlib.asynccontextmanager
-async def _dsp_apply_lock(path: Path):
+async def _dsp_apply_lock(
+    path: Path,
+    *,
+    timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
+    poll_interval_s: float = DEFAULT_DSP_WRITER_LOCK_POLL_INTERVAL_S,
+    source: str = "unspecified",
+):
+    timeout = _positive_finite(timeout_s, field_name="timeout_s")
+    poll_interval = _positive_finite(
+        poll_interval_s,
+        field_name="poll_interval_s",
+    )
+    if not isinstance(source, str) or not source or source != source.strip():
+        raise ValueError("source must be non-empty trimmed text")
     lock = _FileLock(path)
-    await asyncio.to_thread(lock.acquire)
+    started = time.monotonic()
+    deadline = started + timeout
+    contended = False
+    first_attempt = True
+    admitted = False
     try:
+        while True:
+            # The first non-blocking attempt is immediate. Every retry checks
+            # its monotonic deadline before touching flock, so an event-loop
+            # stall cannot turn a timed-out waiter into a late owner.
+            if not first_attempt and time.monotonic() >= deadline:
+                acquired = False
+            else:
+                acquired = lock.try_acquire()
+            first_attempt = False
+            if acquired and time.monotonic() < deadline:
+                admitted = True
+                break
+            if acquired:
+                # The local open/flock attempt itself crossed the deadline.
+                # Release in the outer finally and report no admission.
+                lock.release()
+            if not contended:
+                contended = True
+                log_event(
+                    logger,
+                    "dsp.writer_lock",
+                    result="waiting",
+                    source=source,
+                    timeout_ms=round(timeout * 1000),
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                waited = max(0.0, time.monotonic() - started)
+                log_event(
+                    logger,
+                    "dsp.writer_lock",
+                    result="timeout",
+                    source=source,
+                    wait_ms=round(waited * 1000),
+                    timeout_ms=round(timeout * 1000),
+                    level=logging.WARNING,
+                )
+                raise DspWriterLockTimeout(
+                    path,
+                    timeout_s=timeout,
+                    waited_s=waited,
+                    source=source,
+                )
+            await asyncio.sleep(min(poll_interval, remaining))
+        if contended:
+            log_event(
+                logger,
+                "dsp.writer_lock",
+                result="acquired",
+                source=source,
+                wait_ms=round(max(0.0, time.monotonic() - started) * 1000),
+            )
         yield
+    except asyncio.CancelledError:
+        if contended and not admitted:
+            log_event(
+                logger,
+                "dsp.writer_lock",
+                result="cancelled",
+                source=source,
+                wait_ms=round(max(0.0, time.monotonic() - started) * 1000),
+            )
+        raise
     finally:
-        await asyncio.to_thread(lock.release)
+        # Release synchronously so cancellation cannot interrupt ownership
+        # cleanup. flock(LOCK_UN) and close are local, non-blocking operations.
+        lock.release()
 
 
 @contextlib.asynccontextmanager
-async def _maybe_dsp_apply_lock(path: Path, *, acquire: bool = True):
+async def _maybe_dsp_apply_lock(
+    path: Path,
+    *,
+    acquire: bool = True,
+    timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
+    source: str = "unspecified",
+):
     if not acquire:
         yield
         return
-    async with _dsp_apply_lock(path):
+    async with _dsp_apply_lock(path, timeout_s=timeout_s, source=source):
         yield
 
 
@@ -397,10 +529,19 @@ def dsp_apply_lock_path(config_dir: str | Path) -> Path:
 
 
 @contextlib.asynccontextmanager
-async def dsp_writer_lock(config_dir: str | Path):
-    """Serialize all JTS writers for the generated CamillaDSP config dir."""
+async def dsp_writer_lock(
+    config_dir: str | Path,
+    *,
+    source: str,
+    timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
+):
+    """Serialize JTS DSP writers with bounded, cancellation-safe admission."""
 
-    async with _dsp_apply_lock(dsp_apply_lock_path(config_dir)):
+    async with _dsp_apply_lock(
+        dsp_apply_lock_path(config_dir),
+        timeout_s=timeout_s,
+        source=source,
+    ):
         yield
 
 
@@ -458,6 +599,7 @@ async def apply_dsp_config(
     state_path: str | Path | None = None,
     lock_path: str | Path | None = None,
     acquire_lock: bool = True,
+    lock_timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
     expected_candidate_sha256: str | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
@@ -473,6 +615,10 @@ async def apply_dsp_config(
     :func:`dsp_writer_lock`, so it can make a lock-protected decision and then
     use the same validation/reload/rollback lifecycle without re-entering the
     file lock.
+
+    ``lock_timeout_s`` bounds only admission to the shared writer boundary.
+    Once admitted, this function runs validation, mutation, confirmation, and
+    rollback to their terminal result without an outer transaction deadline.
 
     When ``expected_candidate_sha256`` is provided, the candidate is hashed
     again after validation and immediately before load. A changed file is
@@ -495,7 +641,12 @@ async def apply_dsp_config(
         sound_filter_count=sound_filter_count,
     )
 
-    async with _maybe_dsp_apply_lock(lock, acquire=acquire_lock):
+    async with _maybe_dsp_apply_lock(
+        lock,
+        acquire=acquire_lock,
+        timeout_s=lock_timeout_s,
+        source=source,
+    ):
         if prepare is not None:
             state.phase = "prepare"
             record_dsp_apply_state(state, state_path=state_path)

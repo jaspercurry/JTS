@@ -224,7 +224,10 @@ async def reconcile_current_dsp(
     default_out_path = sound_config_path(config_path)
     audition_path = sound_audition_config_path(config_path)
 
-    async with dsp_writer_lock(config_path):
+    async with dsp_writer_lock(
+        config_path,
+        source="sound_reconcile_current_dsp",
+    ):
         current_path = await cam.get_config_file_path(best_effort=False)
         if not current_path:
             return _log_reconcile_result(
