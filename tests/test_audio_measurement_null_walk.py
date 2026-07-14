@@ -1090,40 +1090,42 @@ def test_350_hz_schedule_is_bounded_symmetric_deterministic_and_locally_refined(
 
 
 def test_bounded_schedule_contract_holds_across_supported_grid_widths():
-    for half_width_steps in range(201):
-        crossover_fc_hz = (
-            10_000.0
-            if half_width_steps == 0
-            else 1_000_000.0 / (2.0 * half_width_steps * 100.0)
-        )
-        spec = _spec(fc=crossover_fc_hz)
-        coarse = spec.coarse_candidate_delays_us()
-
-        assert spec.steps_each_side == half_width_steps
-        assert coarse == spec.coarse_candidate_delays_us()
-        assert len(coarse) <= MAX_COARSE_CANDIDATES
-        assert coarse[0] == spec.fine_grid_coordinate(spec.fine_grid_index_min)
-        assert coarse[-1] == spec.fine_grid_coordinate(spec.fine_grid_index_max)
-        assert 0.0 in coarse
-        assert coarse == tuple(-value for value in reversed(coarse))
-
-        for anchor in coarse:
-            schedule = BoundedNullWalkSchedule(
-                spec,
-                refinement_anchor_us=anchor,
+    for step_us, maximum_half_width_steps in ((100.0, 200), (50.0, 400)):
+        for half_width_steps in range(maximum_half_width_steps + 1):
+            crossover_fc_hz = (
+                1_000_000.0 / step_us
+                if half_width_steps == 0
+                else 1_000_000.0 / (2.0 * half_width_steps * step_us)
             )
-            anchor_index = spec.fine_grid_index(anchor)
-            refinement_indexes = {
-                spec.fine_grid_index(value) for value in schedule.refinement_delays_us
-            }
+            spec = _spec(fc=crossover_fc_hz, step=step_us)
+            coarse = spec.coarse_candidate_delays_us()
 
-            assert len(schedule.refinement_delays_us) <= 2
-            assert len(schedule.scheduled_delays_us) <= MAX_SCHEDULED_CANDIDATES
-            assert refinement_indexes <= {anchor_index - 1, anchor_index + 1}
-            assert not set(schedule.refinement_delays_us) & set(coarse)
-            assert schedule.scheduled_delays_us == tuple(
-                sorted({*coarse, *schedule.refinement_delays_us})
-            )
+            assert spec.steps_each_side == half_width_steps
+            assert coarse == spec.coarse_candidate_delays_us()
+            assert len(coarse) <= MAX_COARSE_CANDIDATES
+            assert coarse[0] == spec.fine_grid_coordinate(spec.fine_grid_index_min)
+            assert coarse[-1] == spec.fine_grid_coordinate(spec.fine_grid_index_max)
+            assert 0.0 in coarse
+            assert coarse == tuple(-value for value in reversed(coarse))
+
+            for anchor in coarse:
+                schedule = BoundedNullWalkSchedule(
+                    spec,
+                    refinement_anchor_us=anchor,
+                )
+                anchor_index = spec.fine_grid_index(anchor)
+                refinement_indexes = {
+                    spec.fine_grid_index(value)
+                    for value in schedule.refinement_delays_us
+                }
+
+                assert len(schedule.refinement_delays_us) <= 2
+                assert len(schedule.scheduled_delays_us) <= MAX_SCHEDULED_CANDIDATES
+                assert refinement_indexes <= {anchor_index - 1, anchor_index + 1}
+                assert not set(schedule.refinement_delays_us) & set(coarse)
+                assert schedule.scheduled_delays_us == tuple(
+                    sorted({*coarse, *schedule.refinement_delays_us})
+                )
 
 
 def test_bounded_spec_and_schedule_have_strict_fingerprinted_roundtrips():
