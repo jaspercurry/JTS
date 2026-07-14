@@ -40,7 +40,7 @@ full = [
     # which we don't use. Pulls in `websockets` as the realtime
     # transport. Skippable at install time only if the active
     # provider is gemini AND the user is sure they'll never switch.
-    "openai>=2.36.0",
+    "openai>=2.45.0",
     # `audioop` was removed from Python 3.13's stdlib (PEP 594). PiOS
     # Trixie ships 3.13, and jasper.voice.openai_session uses
     # audioop.ratecv to upsample 16 kHz mic audio to the 24 kHz that
