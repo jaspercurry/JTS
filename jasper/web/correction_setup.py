@@ -184,6 +184,7 @@ _ROOM_RELAY_RETURN_PATH = "/correction/room/"
 # ten 200 ms samples gives a stable two-second median while keeping setup
 # bounded and well inside the relay's rolling three-second sample window.
 _RELAY_LEVEL_AMBIENT_MIN_SAMPLES = 10
+_ROOM_SWEEP_PHONE_FAILURE = "the speaker could not complete this measurement"
 
 # Mutating routes this handler accepts. Module-scoped so route membership is
 # pinnable by a test (deleting a line would otherwise 404 a route silently).
@@ -271,7 +272,7 @@ def _active_relay_phase() -> str | None:
     return f"relay:{str(relay.get('kind') or 'measurement')}"
 
 
-def _begin_relay_capture() -> bool:
+def _begin_relay_capture(kind_label: str) -> bool:
     """Atomically claim the single relay-capture slot. Returns False if one is
     already in flight (so a double-tap can't spawn two relay sessions + a file
     race for one position — mirrors /autolevel's "already in progress" guard).
@@ -284,7 +285,7 @@ def _begin_relay_capture() -> bool:
             "awaiting_phone",
         ):
             return False
-        _relay_capture = {"status": "starting"}
+        _relay_capture = {"status": "starting", "kind": kind_label}
         return True
 
 
@@ -350,7 +351,7 @@ def _run_relay_capture(
     from jasper.capture_relay.client import RelayClient
     from jasper.capture_relay.health import relay_registration_token_from_env
 
-    if not _begin_relay_capture():
+    if not _begin_relay_capture(kind.label):
         raise ValueError("a phone-mic relay capture is already in progress")
     capture_origin = correction_adapter.capture_origin_from_env()
     spawned = False
@@ -580,12 +581,12 @@ def _get_or_create_session():
 
 def _replace_session(
     *,
-    total_positions: int = 1,
-    target_choice: str = "flat",
-    strategy_choice: str | None = None,
+    total_positions: int,
+    target_choice: str,
+    strategy_choice: str,
     mic_calibration=None,
     input_device: dict[str, Any] | None = None,
-    repeat_main_position: bool = False,
+    repeat_main_position: bool,
 ):
     """Replace the global session with a fresh one. Called by /start
     so the user can re-run measurements without restarting the
@@ -630,7 +631,7 @@ _PAGE_BODY = """
 __HEADER__
 <main class="page correction-stack" data-required-sr="__REQUIRED_SR__" data-capture-relay-enabled="__CAPTURE_RELAY_ENABLED__">
 __TABS__
-<p class="page-sub">Measure your room with a phone, design correction filters, and apply them to the speaker.</p>
+<p class="page-sub">Measure your room with a phone and apply the result to the speaker.</p>
 
 <!-- Stepped-wizard chrome (P3b). Server-computed screen envelope (GET
      /envelope) drives everything here: which step you're on, the one
@@ -685,7 +686,7 @@ __TABS__
   <h2 class="section__title">Place the microphone</h2>
   <p id="placement-instruction">Put the phone or microphone at head height where you normally listen. For a phone, lay it flat screen up, point the bottom edge toward the speakers, and remove its case. Keep the room quiet.</p>
   <div id="position-prompt" class="note-box hidden">
-    <p style="margin:0; font-weight:600">Move to position <span id="position-current">2</span> of <span id="position-total">5</span>.</p>
+    <p style="margin:0; font-weight:600">Move to position <span id="position-current">2</span> of <span id="position-total">__DEFAULT_ROOM_POSITION_COUNT__</span>.</p>
     <p class="hint" style="margin-top:0.3em">Move about 30 cm from the previous position, keep the microphone at ear height, then continue.</p>
   </div>
 </section>
@@ -742,13 +743,13 @@ __TABS__
       </label>
       <button id="upload-calibration" type="button" class="btn btn--ghost">Upload calibration</button>
     </div>
-    <p id="calibration-status" class="mic-status">No calibration loaded. This is okay for a quick check, but a calibrated mic is recommended before trusting filter decisions.</p>
+    <p id="calibration-status" class="mic-status">No calibration loaded. This is okay for a quick check; use a calibrated microphone before relying on the final result.</p>
     <p id="calibration-preview" class="cal-preview hidden"></p>
   </div>
 
 <div id="constraints" class="hidden" aria-live="polite">
   <h2>Capture settings</h2>
-  <p class="hint">iOS Safari may silently ignore audio constraints (WebKit Bug 179411). The measurement refuses to start unless every row reads <span class="ok">✓ ok</span>.</p>
+  <p class="hint">JTS checks that this browser can record a clean measurement. Continue when every row reads <span class="ok">✓ ok</span>.</p>
   <table class="constraint-table">
     <thead><tr><th>Setting</th><th>Requested</th><th>Actual</th><th>Status</th></tr></thead>
     <tbody id="constraint-rows"></tbody>
@@ -757,27 +758,26 @@ __TABS__
   <div id="browser-audio-report" class="browser-audio-card hidden"></div>
 
   <h2>Live mic level</h2>
-  <p class="hint">Talk into the bottom of the phone — the bar should respond within 50 ms.</p>
+  <p class="hint">Speak near the microphone. The meter should move with your voice.</p>
   <div class="level-bar-track" aria-label="microphone level">
     <div id="level-bar-fill" class="level-bar-fill"></div>
   </div>
-  <div class="level-readout">RMS: <span id="level-db">—</span> dBFS</div>
 </div>
 </section>
 
 <section id="run-defaults" data-envelope-section="run-defaults" class="info-card hidden">
-  <div class="actions">
-    <p id="run-defaults-summary" style="margin:0">Measurement choices</p>
-    <button id="change-run-defaults" type="button" class="btn btn--ghost">Change</button>
+  <div class="run-defaults-line">
+    <p id="run-defaults-summary">__RUN_DEFAULTS_SUMMARY__</p>
+    <span aria-hidden="true">—</span>
+    <button id="change-run-defaults" type="button" class="btn btn--ghost" aria-controls="measurement-options" aria-expanded="false">Change</button>
   </div>
+  <p id="repeat-main-position-disclosure" class="hint">__REPEAT_MAIN_POSITION_DISCLOSURE__</p>
   <div id="measurement-options" class="hidden">
     <label for="positions-select">Positions to measure</label>
     <select id="positions-select" form="dummy">
-      <option value="1">1 — quick (single position)</option>
-      <option value="5" selected>5 — recommended (MMM averaging)</option>
-      <option value="3">3 — compromise</option>
+      __ROOM_POSITION_OPTIONS__
     </select>
-    <p class="hint" style="margin-top:0.3em">5 positions across your couch / listening area give a much better correction than a single point. We'll guide you through each one.</p>
+    <p class="hint" style="margin-top:0.3em">More positions describe more of the listening area. We'll guide you through each one.</p>
 
     <label for="target-select" style="margin-top:0.6em">Target curve</label>
     <select id="target-select" form="dummy">
@@ -788,12 +788,7 @@ __TABS__
     <select id="strategy-select" form="dummy">
       __CORRECTION_STRATEGY_OPTIONS__
     </select>
-    <p class="hint" style="margin-top:0.3em">Strategy controls the correction band, filter count, cut/boost policy, and safety bounds. Balanced is the default; Assertive is for calibrated, repeatable measurements.</p>
-    <label id="repeat-main-position-row" style="margin-top:0.6em">
-      <input id="repeat-main-position" type="checkbox" checked>
-      Repeat the main seat once for a trust check
-    </label>
-    <p id="repeat-main-position-hint" class="hint" style="margin-top:0.3em">This adds one extra sweep at the first position and helps JTS tell measurement noise from real room behavior.</p>
+    <p class="hint" style="margin-top:0.3em">Balanced is the recommended household setting. Safe makes fewer, gentler adjustments.</p>
     <button id="local-capture-fallback" type="button" class="btn btn--ghost">Use this device's microphone</button>
   </div>
 </section>
@@ -804,8 +799,8 @@ __TABS__
     <button id="autolevel-lock" type="button" class="btn btn--primary hidden">Lock now</button>
     <button id="autolevel-cancel" type="button" class="btn btn--danger hidden">Cancel</button>
   </p>
-  <p id="autolevel-hint" class="hint" style="margin-top:0.4em">The speaker plays a 1 kHz tone while we gradually raise the volume from quiet to a measurement-friendly level (capped at −6 dB software volume — your amp's analog gain is still the final say). When the phone mic hears it in the target range, we lock automatically. If the volume sounds right to <em>you</em> first, tap <strong>Lock now</strong>. Takes ~6 seconds at most.</p>
-  <p class="hint" style="margin-top:0.4em">Each measurement bypasses your current correction and preference EQ first so the sweep captures the raw room. After you tap <strong>Apply</strong>, the new correction takes over.</p>
+  <p id="autolevel-hint" class="hint" style="margin-top:0.4em">The speaker slowly raises a short test tone until the microphone hears a clear measurement level, then stops automatically. If it sounds comfortably loud first, choose <strong>Lock now</strong>. This takes only a few seconds.</p>
+  <p class="hint" style="margin-top:0.4em">JTS temporarily pauses your current sound settings so it can measure the room clearly. They return unless you apply the new correction.</p>
   <div id="autolevel-status" class="note-box hidden">
     <p style="margin:0; font-weight:600" id="autolevel-line">Auto-leveling…</p>
     <p class="hint" style="margin-top:0.3em" id="autolevel-detail"></p>
@@ -923,8 +918,13 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
     from jasper.correction.strategy import (
         DEFAULT_CORRECTION_STRATEGY_ID,
         DEFAULT_TARGET_PROFILE_ID,
-        correction_strategy_options,
+        household_correction_strategy_options,
         target_profile_options,
+    )
+    from jasper.correction.session import (
+        DEFAULT_REPEAT_MAIN_POSITION,
+        DEFAULT_ROOM_POSITION_COUNT,
+        ROOM_POSITION_COUNT_CHOICES,
     )
 
     # data-aliases carries the registry's label tokens to the wizard so it can
@@ -938,7 +938,7 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         for key, spec in SUPPORTED_MODELS.items()
     )
     target_profile_options_html = "\n      ".join(
-        '<option value="{key}"{selected}>{label} — {description}</option>'.format(
+        '<option value="{key}"{selected}>{label}</option>'.format(
             key=html.escape(str(spec["target_id"]), quote=True),
             selected=(
                 " selected"
@@ -946,12 +946,11 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
                 else ""
             ),
             label=html.escape(str(spec["label"])),
-            description=html.escape(str(spec["description"])),
         )
         for spec in target_profile_options()
     )
     correction_strategy_options_html = "\n      ".join(
-        '<option value="{key}"{selected}>{label} — {description}</option>'.format(
+        '<option value="{key}"{selected}>{label}</option>'.format(
             key=html.escape(str(spec["strategy_id"]), quote=True),
             selected=(
                 " selected"
@@ -959,9 +958,37 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
                 else ""
             ),
             label=html.escape(str(spec["label"])),
-            description=html.escape(str(spec["description"])),
         )
-        for spec in correction_strategy_options()
+        for spec in household_correction_strategy_options()
+    )
+    room_position_options_html = "\n      ".join(
+        '<option value="{count}"{selected}>{label}</option>'.format(
+            count=count,
+            selected=(" selected" if count == DEFAULT_ROOM_POSITION_COUNT else ""),
+            label=html.escape(
+                (
+                    "1 position — quick check"
+                    if count == 1
+                    else f"{count} positions"
+                    + (
+                        " — recommended"
+                        if count == DEFAULT_ROOM_POSITION_COUNT
+                        else ""
+                    )
+                )
+            ),
+        )
+        for count in ROOM_POSITION_COUNT_CHOICES
+    )
+    run_defaults_summary = (
+        f"Measuring {DEFAULT_ROOM_POSITION_COUNT} positions with the "
+        f"{DEFAULT_TARGET_PROFILE_ID} target"
+    )
+    repeat_main_position_disclosure = (
+        "JTS automatically repeats the main-seat measurement once to check "
+        "that the result is trustworthy."
+        if DEFAULT_REPEAT_MAIN_POSITION
+        else ""
     )
     from jasper.capture_relay import correction_adapter
     capture_relay_enabled = correction_adapter.relay_enabled()
@@ -978,6 +1005,16 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         .replace("__HEADER__", header)
         .replace("__TABS__", section_tabs("room"))
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))
+        .replace(
+            "__DEFAULT_ROOM_POSITION_COUNT__",
+            str(DEFAULT_ROOM_POSITION_COUNT),
+        )
+        .replace("__RUN_DEFAULTS_SUMMARY__", run_defaults_summary)
+        .replace("__ROOM_POSITION_OPTIONS__", room_position_options_html)
+        .replace(
+            "__REPEAT_MAIN_POSITION_DISCLOSURE__",
+            repeat_main_position_disclosure,
+        )
         .replace(
             "__CAPTURE_RELAY_ENABLED__",
             "1" if capture_relay_enabled else "0",
@@ -1127,8 +1164,9 @@ def _run_relay_measurement_sweep(
     *,
     client: RelayClient,
     pi_session: PiCaptureSession,
+    repeat: bool = False,
 ) -> None:
-    """Play one relay-triggered sweep and publish real progress to the phone.
+    """Play one relay-triggered Room sweep and publish progress to the phone.
 
     The old relay flow relied on a fixed phone-side recording window. The phone
     now records until it sees ``phase=sweep_complete`` from the Pi, then keeps
@@ -1141,8 +1179,13 @@ def _run_relay_measurement_sweep(
     def _host_event(phase: str, **extra: Any) -> None:
         payload = {
             "phase": phase,
-            "position": int(getattr(sess, "current_position", 0)) + 1,
+            "position": (
+                1
+                if repeat
+                else int(getattr(sess, "current_position", 0)) + 1
+            ),
             "total_positions": int(getattr(sess, "total_positions", 1)),
+            "capture_kind": "repeat" if repeat else "measurement",
             **extra,
         }
         client.post_host_event(pi_session.session_id, pi_session.pull_token, payload)
@@ -1161,7 +1204,12 @@ def _run_relay_measurement_sweep(
                 )
             try:
                 await asyncio.to_thread(_host_event, "sweep_started")
-                await sess.prepare_and_play_sweep(
+                prepare = (
+                    sess.prepare_and_play_repeat_sweep
+                    if repeat
+                    else sess.prepare_and_play_sweep
+                )
+                await prepare(
                     playback.play_sweep,
                     runtime_probe_async=_runtime_probe,
                 )
@@ -1179,9 +1227,13 @@ def _run_relay_measurement_sweep(
             _run_session_background_audio(sess, _run_sweep),
             timeout=90.0,
         )
-    except (concurrent.futures.TimeoutError, RuntimeError, OSError, ValueError) as exc:
+    except (concurrent.futures.TimeoutError, RuntimeError, OSError, ValueError):
         try:
-            _host_event("sweep_failed", error=str(exc))
+            _host_event(
+                "sweep_failed",
+                error=_ROOM_SWEEP_PHONE_FAILURE,
+                error_code="room_sweep_unavailable",
+            )
         except (RuntimeError, OSError, ValueError):
             logger.debug("could not publish relay sweep failure", exc_info=True)
         raise
@@ -1300,9 +1352,10 @@ def _relay_device_calibration_block(
     A relay capture is recorded by whatever input the phone selected — its
     built-in mic, OR a USB-C measurement mic plugged into the phone. A loaded
     vendor calibration curve is valid only for that USB measurement mic, never the
-    phone's built-in. We can't know which until the phone records, so this runs
-    POST-capture against the phone-reported `device` (the same built-in-vs-USB
-    decision the same-origin browser flow makes via `_calibration_device_mismatch`):
+    phone's built-in. We can't know which until the phone arms a recording, so
+    this runs before playback and again post-capture against the phone-reported
+    `device` (the same built-in-vs-USB decision the same-origin browser flow
+    makes via `_calibration_device_mismatch`):
 
       - no calibration loaded            → allow (nothing to mis-apply);
       - calibration loaded, no device    → refuse (can't verify the mic — an older
@@ -1621,13 +1674,14 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     after `POST /upload-noise` lands.
 
     Body fields:
-      - total_positions: int = 1 (Phase 1 default; UI sends 5 for MMM)
-      - target_choice:   str = 'flat' | 'neutral' | 'warm' | 'bright'
-      - strategy_choice: str = 'safe' | 'balanced' | 'assertive'
+      - total_positions: supported household count; defaults to the
+        session-owned six-position policy.
+      - target_choice:   one registered Room target; defaults to flat.
+      - strategy_choice: 'safe' | 'balanced' on the household surface.
       - noise_floor_db:  float | None — optional, client autolevel
         preflight measurement; only saved into the debug bundle.
-      - repeat_main_position: bool = true — optional same-seat repeat
-        for repeatability evidence.
+      - repeat_main_position: when present, must agree with the session-owned
+        automatic same-seat trust repeat.
 
     Why strip layers before sweeping: if a correction or preference EQ is
     loaded, the sweep traverses that layer and the resulting curve reflects
@@ -1636,7 +1690,18 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     gains, limiters) and strips only Layer B/C.
     """
     from jasper.correction import failures
-    from jasper.correction.session import SessionState
+    from jasper.correction.session import (
+        DEFAULT_REPEAT_MAIN_POSITION,
+        DEFAULT_ROOM_POSITION_COUNT,
+        ROOM_POSITION_COUNT_CHOICES,
+        SessionState,
+    )
+    from jasper.correction.strategy import (
+        DEFAULT_CORRECTION_STRATEGY_ID,
+        DEFAULT_TARGET_PROFILE_ID,
+        HOUSEHOLD_CORRECTION_STRATEGY_IDS,
+        TARGET_PROFILES,
+    )
     readiness = _room_readiness()
     if not readiness.allowed:
         log_event(
@@ -1674,13 +1739,52 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
 
     try:
-        total_positions = max(1, min(10, int(body.get("total_positions", 1))))
-        target_choice = str(body.get("target_choice", "flat"))
-        strategy_choice = str(body.get("strategy_choice", "balanced"))
+        total_raw = body.get("total_positions", DEFAULT_ROOM_POSITION_COUNT)
+        if not isinstance(total_raw, int) or isinstance(total_raw, bool):
+            raise ValueError("total_positions must be a supported count")
+        total_positions = total_raw
+        if total_positions not in ROOM_POSITION_COUNT_CHOICES:
+            raise ValueError("total_positions must be a supported count")
+        target_choice = str(
+            body.get("target_choice", DEFAULT_TARGET_PROFILE_ID)
+        )
+        if target_choice not in TARGET_PROFILES:
+            raise ValueError("target_choice must be a registered Room target")
+        strategy_choice = str(
+            body.get("strategy_choice", DEFAULT_CORRECTION_STRATEGY_ID)
+        )
+        if strategy_choice not in HOUSEHOLD_CORRECTION_STRATEGY_IDS:
+            raise ValueError(
+                "strategy_choice must be an authorized household strategy"
+            )
         noise_floor_db_raw = body.get("noise_floor_db")
         calibration_id = str(body.get("calibration_id") or "").strip()
         input_device = _sanitize_input_device(body.get("input_device"))
-        repeat_main_position = bool(body.get("repeat_main_position", True))
+        repeat_raw = body.get(
+            "repeat_main_position",
+            DEFAULT_REPEAT_MAIN_POSITION,
+        )
+        if repeat_raw is not DEFAULT_REPEAT_MAIN_POSITION:
+            raise ValueError(
+                "repeat_main_position must use the automatic trust check"
+            )
+        repeat_main_position = DEFAULT_REPEAT_MAIN_POSITION
+        from jasper.capture_relay import correction_adapter
+
+        requested_transport = body.get("capture_transport")
+        if requested_transport is None:
+            capture_transport = (
+                "relay" if correction_adapter.relay_enabled() else "local"
+            )
+        else:
+            capture_transport = str(requested_transport)
+            if capture_transport not in {"relay", "local"}:
+                raise ValueError("capture_transport must be relay or local")
+            if (
+                capture_transport == "relay"
+                and not correction_adapter.relay_enabled()
+            ):
+                raise ValueError("phone capture is not configured")
         noise_floor_db: float | None
         try:
             noise_floor_db = (
@@ -1753,10 +1857,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             input_device=input_device,
             repeat_main_position=repeat_main_position,
         )
-        requested_transport = str(body.get("capture_transport") or "local")
-        sess.capture_transport = (
-            "relay" if requested_transport == "relay" else "local"
-        )
+        sess.capture_transport = capture_transport
         sess.noise_floor_db = noise_floor_db
 
         if sess.browser_audio_report.get("failed") is True:
@@ -2300,20 +2401,9 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
 
 
 def _apply_relay_setup_to_session(sess: Any, setup: dict[str, Any] | None) -> None:
-    """Apply phone-side setup before the relay-triggered sweep starts."""
+    """Apply phone microphone/calibration setup without changing Room policy."""
     if not isinstance(setup, dict):
         return
-    if "total_positions" in setup:
-        try:
-            total_raw = setup.get("total_positions")
-            if total_raw is None:
-                raise ValueError
-            requested_total = int(total_raw)
-        except (TypeError, ValueError):
-            requested_total = int(getattr(sess, "total_positions", 1))
-        min_total = int(getattr(sess, "current_position", 0)) + 1
-        sess.total_positions = max(min_total, min(10, requested_total))
-
     if isinstance(setup.get("calibration"), dict):
         sess.mic_calibration = _relay_calibration_from_setup(setup)
 
@@ -2412,9 +2502,15 @@ def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # it, the omitted argument takes the builder's fail-closed path rather
         # than accidentally treating `None` as a positive readiness decision.
         envelope_kwargs["readiness_blocker"] = readiness_blocker
+    relay_snapshot = _get_relay_capture_for("room_", "level_ramp:room")
+    relay_capture_pending = bool(
+        relay_snapshot
+        and relay_snapshot.get("status") in {"starting", "awaiting_phone"}
+    )
     return envelope.build_envelope_logged(
         sess,
         capture_transport=capture_transport,
+        relay_capture_pending=relay_capture_pending,
         reports_available=reports_available,
         **envelope_kwargs,
     )
@@ -2744,15 +2840,15 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     phone runs the capture page on jasper.tech) instead of a same-origin browser
     upload.
 
-    GATED + DEFAULT-OFF. Inert unless an operator sets JASPER_CAPTURE_RELAY_BASE,
-    so the standard on-Pi /correction/ flow is byte-identical without it. When
-    enabled it mints a relay session, returns the phone tap-link, and runs the
-    capture in the background: when the phone is recording (it drops `armed`), the
-    Pi plays the sweep through the SAME measurement_window()/prepare_and_play_sweep
-    path the browser flow uses (loud-output safety + renderer/voice pause
-    preserved), then pulls + decrypts + verifies and feeds the WAV into
-    on_capture_uploaded — the identical 48 kHz / mono / 32 MB seam as a
-    same-origin upload.
+    The relay remains config-gated, but is the fresh-install Room default when
+    configured. It mints a relay session, returns the phone tap-link, and runs
+    the capture in the background: when the phone is recording (it drops
+    `armed`), the Pi first verifies the level-check microphone identity and then
+    plays the sweep through the SAME measurement_window()/
+    prepare_and_play_sweep path the browser flow uses (loud-output safety +
+    renderer/voice pause preserved). It then pulls + decrypts + verifies and
+    feeds the WAV into the normal position or same-seat repeat seam at the
+    identical 48 kHz / mono / 32 MB boundary as a same-origin upload.
 
     ON-DEVICE: the background sweep playback and the real measurement cannot be
     exercised hardware-free — only the config gate, the state guard, and the seam
@@ -2761,8 +2857,7 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     jasper-web -> jasper-voice cue bridge; until then failures surface on the
     capture page, on the jts.local status page (`relay.status`), and in
     `event=capture_relay.*` logs. This is the integration point the
-    docs/phone-mic-relay-plan.md adapter step describes, shipped gated so the
-    default flow is unaffected while it is validated on hardware.
+    docs/phone-mic-relay-plan.md adapter step describes.
     """
     from jasper.capture_relay import correction_adapter
     from jasper.correction.session import SessionState
@@ -2772,18 +2867,22 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     sess = _get_or_create_session()
     if sess is None:
         raise RuntimeError("no session — POST /start first")
-    # A relay capture owns the sweep for one position (it plays on `armed`), so it
-    # starts from the pre-sweep state, not the post-sweep AWAITING_CAPTURE.
-    if sess.state != SessionState.NEEDS_NOISE_CAPTURE:
+    # A relay capture owns either the next distinct position or the automatic
+    # main-seat trust repeat. Freeze that mode before background work starts.
+    if sess.state not in {
+        SessionState.NEEDS_NOISE_CAPTURE,
+        SessionState.NEEDS_REPEAT_CAPTURE,
+    }:
         raise ValueError(
-            "relay capture starts a measurement position; expected state "
-            f"needs_noise_capture, got {sess.state.value}"
+            "relay capture starts a measurement position or trust repeat; got "
+            f"{sess.state.value}"
         )
+    is_repeat = sess.state == SessionState.NEEDS_REPEAT_CAPTURE
     level_identity = _relay_level_identity(sess)
-    setup_binding_id = str(sess.session_id)
-    # The mic-calibration / device check runs POST-capture (in _run_and_consume),
-    # not here: the phone's mic — its built-in, or a USB-C measurement mic plugged
-    # into it — isn't known until it records and reports its device.
+    if not level_identity.device_key:
+        raise ValueError(
+            "the level check did not identify its microphone; run it again"
+        )
 
     def _open(
         client: RelayClient,
@@ -2793,13 +2892,13 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     ) -> RelayCapture:
         return correction_adapter.open_room_sweep_capture(
             client,
-            position=sess.current_position + 1,
+            position=1 if is_repeat else sess.current_position + 1,
             total_positions=sess.total_positions,
             relay_base=base,
             capture_origin=capture_origin,
             return_url=return_url,
             guided_setup=False,
-            setup_binding_id=setup_binding_id,
+            presentation_variant="trust_repeat" if is_repeat else "",
         )
 
     async def _run_and_consume(
@@ -2810,16 +2909,26 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # (loud-output safety + renderer/voice pause preserved). run_capture's
         # default 120 s timeout is intentionally ~ the AWAITING_CAPTURE watchdog;
         # keep them aligned if either constant changes.
-        capture_path = sess.capture_path_for_position(sess.current_position)
+        capture_path = (
+            sess.repeat_capture_path_for_position(0)
+            if is_repeat
+            else sess.capture_path_for_position(sess.current_position)
+        )
 
         def _on_armed(state: Any) -> None:
             try:
-                _assert_relay_setup_binding(
+                device = state.device if isinstance(state.device, dict) else None
+                _assert_relay_level_identity(
                     sess,
-                    state.setup,
-                    expected_binding_id=setup_binding_id,
+                    level_identity,
+                    device=device,
                 )
-                _assert_relay_level_identity(sess, level_identity)
+                calibration_block = _relay_device_calibration_block(
+                    sess.mic_calibration,
+                    device,
+                )
+                if calibration_block is not None:
+                    raise ValueError(calibration_block)
                 if state.noise_floor:
                     try:
                         sess.noise_floor_db = float(
@@ -2830,12 +2939,16 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                             "relay noise_floor ignored: %r",
                             state.noise_floor,
                         )
-            except (RuntimeError, ValueError) as exc:
+            except (RuntimeError, ValueError):
                 try:
                     client.post_host_event(
                         pi_session.session_id,
                         pi_session.pull_token,
-                        {"phase": "sweep_failed", "error": str(exc)},
+                        {
+                            "phase": "sweep_failed",
+                            "error": _ROOM_SWEEP_PHONE_FAILURE,
+                            "error_code": "room_sweep_unavailable",
+                        },
                     )
                 except (RuntimeError, OSError, ValueError):
                     logger.debug("relay setup failure event failed", exc_info=True)
@@ -2845,6 +2958,7 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 _camilla(),
                 client=client,
                 pi_session=pi_session,
+                repeat=is_repeat,
             )
 
         try:
@@ -2877,7 +2991,10 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                         "relay noise_floor ignored: %r",
                         result.noise_floor,
                     )
-            await sess.on_capture_uploaded(capture_path)
+            if is_repeat:
+                await sess.on_repeat_capture_uploaded(capture_path)
+            else:
+                await sess.on_capture_uploaded(capture_path)
         finally:
             # Idempotent backstop for failures before the armed/sweep window.
             await sess.restore_level_match_volume(
@@ -2885,7 +3002,9 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             )
 
     kind = RelayCaptureKind(
-        label="room_sweep", open=_open, run_and_consume=_run_and_consume
+        label="room_repeat" if is_repeat else "room_sweep",
+        open=_open,
+        run_and_consume=_run_and_consume,
     )
     relay = _run_relay_capture(
         kind,
@@ -2913,7 +3032,10 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     ):
         raise ValueError("check the listening-position level before verification")
     level_identity = _relay_level_identity(sess)
-    setup_binding_id = str(sess.session_id)
+    if not level_identity.device_key:
+        raise ValueError(
+            "the level check did not identify its microphone; run it again"
+        )
 
     def _open(
         client: RelayClient,
@@ -2927,7 +3049,6 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 position=1,
                 total_positions=1,
                 guided_setup=False,
-                setup_binding_id=setup_binding_id,
             ),
             relay_base=base,
             capture_origin=capture_origin,
@@ -2978,13 +3099,36 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                     )
 
         def _on_armed(state: Any) -> None:
-            setup = getattr(state, "setup", None)
-            _assert_relay_setup_binding(
-                sess,
-                setup if isinstance(setup, dict) else None,
-                expected_binding_id=setup_binding_id,
-            )
-            _assert_relay_level_identity(sess, level_identity)
+            try:
+                device = state.device if isinstance(state.device, dict) else None
+                _assert_relay_level_identity(
+                    sess,
+                    level_identity,
+                    device=device,
+                )
+                calibration_block = _relay_device_calibration_block(
+                    sess.mic_calibration,
+                    device,
+                )
+                if calibration_block is not None:
+                    raise ValueError(calibration_block)
+            except (RuntimeError, ValueError):
+                try:
+                    client.post_host_event(
+                        pi_session.session_id,
+                        pi_session.pull_token,
+                        {
+                            "phase": "sweep_failed",
+                            "error": _ROOM_SWEEP_PHONE_FAILURE,
+                            "error_code": "room_sweep_unavailable",
+                        },
+                    )
+                except (RuntimeError, OSError, ValueError):
+                    logger.debug(
+                        "relay verify failure event failed",
+                        exc_info=True,
+                    )
+                raise
             _run_async(
                 _run_session_background_audio(sess, _play_verify),
                 timeout=90.0,
@@ -3515,7 +3659,7 @@ def _handle_relay_level_match(handler: BaseHTTPRequestHandler) -> dict[str, Any]
                 ),
                 run_token=run_token,
                 setup_binding_id=setup_binding_id,
-                setup_collect_positions=True,
+                setup_collect_positions=False,
             ),
             relay_base=base,
             capture_origin=capture_origin,
@@ -4065,9 +4209,9 @@ def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any
     """POST /sync/relay-capture: capture the sync markers via the cloud relay (the
     phone runs the capture page on jasper.tech) instead of a same-origin upload.
 
-    GATED + DEFAULT-OFF, like /relay/capture. The sync session window must already
-    be open (the /sync/ Start button → handle_start), exactly as the browser flow
-    requires before playing the marker. sync_flow owns the stimulus + analysis;
+    CONFIG-GATED. The sync session window must already be open (the /sync/ Start
+    button → handle_start), exactly as the browser flow requires before playing
+    the marker. sync_flow owns the stimulus + analysis;
     this just bridges the relay transport through the shared orchestrator. The
     second real caller of the RelayCaptureKind seam — a new kind is a descriptor,
     not a new handler. ON-DEVICE: the acoustic marker capture is not exercised

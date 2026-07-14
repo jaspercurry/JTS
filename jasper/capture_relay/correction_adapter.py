@@ -127,6 +127,7 @@ def open_room_sweep_capture(
     ttl_s: int = 900,
     guided_setup: bool = True,
     setup_binding_id: str = "",
+    presentation_variant: str = "",
 ) -> RelayCapture:
     """Mint + register a `room_sweep` relay capture for one measurement position.
 
@@ -138,6 +139,7 @@ def open_room_sweep_capture(
         total_positions=total_positions,
         guided_setup=guided_setup,
         setup_binding_id=setup_binding_id,
+        presentation_variant=presentation_variant,
     )
     return open_capture(
         client,
@@ -161,9 +163,10 @@ def run_and_store(
     """Run the relay capture, write the verified WAV to `capture_path`, purge the
     relay session, and return the `CaptureResult` (WAV + phone-reported device).
     Optional run_kwargs such as ``on_setup`` pass through to ``run_capture``. The
-    caller then runs any device/calibration check on `result.device` and feeds the
-    path to ``await measurement_session.on_capture_uploaded(path)`` — the same
-    seam a same-origin ``/upload-capture`` POST uses.
+    ``on_armed`` lets the caller reject a changed device/calibration before
+    playback. The caller then checks `result.device` again after capture and feeds
+    the path to ``await measurement_session.on_capture_uploaded(path)`` — the
+    same seam a same-origin ``/upload-capture`` POST uses.
 
     Raises loudly (CaptureTimeout / CaptureAborted / CaptureFailed / RelayError)
     exactly as `run_capture` does — the caller surfaces the failure on the page

@@ -211,9 +211,9 @@ async function waitForSetupValidation(ctx, token) {
 
 async function validateSetupBeforeContinue(ctx, identity = null) {
   const calibration = setupState.calibration || {};
-  // A bound flow validates even an uncalibrated phone mic: the acknowledgement
-  // is what freezes position count + "no calibration" as one setup. Legacy
-  // room specs retain their prior optimization and skip the no-calibration POST.
+  // A bound flow validates even an uncalibrated phone mic: its acknowledgement
+  // freezes the setup. Modern unbound Room capture-only specs instead carry
+  // Pi-owned position progress and report the realized mic when they arm.
   if (
     !ctx.spec.setup_validation ||
     (!setupBindingId(ctx.spec) && calibration.mode === "none")
@@ -662,6 +662,13 @@ function renderBoundRoomReady(screenEl, ctx) {
   const positionLabel = position > 0 && total >= position
     ? `position ${position} of ${total}`
     : "this room position";
+  const trustRepeat = ctx.spec.presentation_variant === "trust_repeat";
+  const heading = trustRepeat
+    ? "Ready to repeat the main seat"
+    : `Ready for ${positionLabel}`;
+  const instruction = trustRepeat
+    ? "Keep the same microphone selected and return it to the main listening position. This extra capture checks that the result is trustworthy."
+    : "The speaker has set this position. Keep the same microphone selected and place it where the speaker shows you.";
   const start = button("Start measurement", async () => {
     start.disabled = true;
     try {
@@ -671,10 +678,10 @@ function renderBoundRoomReady(screenEl, ctx) {
     }
   });
   setScreen(screenEl, [
-    el("h1", { class: "cap-heading", text: `Ready for ${positionLabel}` }),
+    el("h1", { class: "cap-heading", text: heading }),
     el("p", {
       class: "cap-note",
-      text: "The microphone, calibration, and position count are locked to the level check. Keep the same microphone selected and place it where the speaker shows you.",
+      text: instruction,
     }),
     el("div", { class: "cap-actions" }, [start]),
   ]);
@@ -682,7 +689,10 @@ function renderBoundRoomReady(screenEl, ctx) {
     buttons: [{ action: "begin_capture", el: start }],
     levelMeters: [],
   };
-  setStatus(`Ready to measure ${positionLabel}.`, "info");
+  setStatus(
+    trustRepeat ? "Ready for the main-seat trust check." : `Ready to measure ${positionLabel}.`,
+    "info",
+  );
 }
 
 function renderPositionCount(screenEl, ctx) {
@@ -1078,8 +1088,9 @@ async function onStart(ctx) {
     }
     await client.putBlob(blob, plaintextLen, sha256);
 
-    // A completed capture-only position is active use of the same frozen
-    // setup. Refresh its idle deadline, but never its absolute privacy limit.
+    // Refresh browser-held setup only for legacy bound capture-only flows.
+    // Modern unbound Room specs no-op here; the Pi owns their position and mic
+    // identity. Never extend the bound flow's absolute privacy limit.
     if (setupCaptureOnly) refreshBoundSetup(spec);
 
     renderCaptureComplete(ctx);

@@ -90,8 +90,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var emergencyStopActive = false;
   var measurementOptions = document.getElementById('measurement-options');
   var changeRunDefaultsBtn = document.getElementById('change-run-defaults');
+  var runDefaultsSummary = document.getElementById('run-defaults-summary');
   var positionsSelect = document.getElementById('positions-select');
-  var repeatMainPosition = document.getElementById('repeat-main-position');
   var targetSelect = document.getElementById('target-select');
   var strategySelect = document.getElementById('strategy-select');
   var positionPrompt = document.getElementById('position-prompt');
@@ -166,6 +166,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // Probe-visible fetch counter (harness reads this to prove fetch-once
   // discipline: it must increment once per state change, not per poll tick).
   var envelopeFetchCount = 0;
+  var runDefaultsDirty = false;
 
   // Logical screens whose data is live-updating (capture in flight or a
   // short server-side transient) — the only screens the envelope is
@@ -182,7 +183,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     'Set up', 'Measure', 'Review', 'Apply', 'Verify', 'Done',
   ];
 
-  var SUPPORTED_ENVELOPE_SCHEMA = 7;
+  var SUPPORTED_ENVELOPE_SCHEMA = 8;
   var KNOWN_ENVELOPE_SCREENS = {
     idle: true, mic: true, level: true, sweep: true,
     review: true, apply: true, verify: true, result: true,
@@ -329,7 +330,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         ? 'Continue on the phone while the speaker coordinates each capture.'
         : 'This device will capture the microphone signal locally.';
     }
-    hideEl(localCaptureFallbackBtn, !relayMode);
+    if (localCaptureFallbackBtn) {
+      localCaptureFallbackBtn.textContent = relayMode
+        ? "Use this device's microphone"
+        : 'Use phone capture';
+    }
+    hideEl(localCaptureFallbackBtn, runTransportLocked || !relayConfigured);
     hideEl(autolevelLockBtn, true);
     hideEl(autolevelCancelBtn, true);
     hideEl(autolevelStatus, true);
@@ -347,11 +353,34 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     runTransportLocked = !!locked;
     if (changeRunDefaultsBtn) changeRunDefaultsBtn.disabled = runTransportLocked;
     if (runTransportLocked) {
-      hideEl(measurementOptions, true);
+      setMeasurementOptionsOpen(false);
       hideEl(localCaptureFallbackBtn, true);
     } else {
-      hideEl(localCaptureFallbackBtn, !relayMode);
+      hideEl(localCaptureFallbackBtn, !relayConfigured);
     }
+  }
+
+  function setMeasurementOptionsOpen(open) {
+    hideEl(measurementOptions, !open);
+    if (changeRunDefaultsBtn) {
+      changeRunDefaultsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+  }
+
+  function selectedOptionLabel(select) {
+    if (!select || select.selectedIndex < 0 || !select.options) return '';
+    var option = select.options[select.selectedIndex];
+    return option ? String(option.textContent || '').split(' — ')[0].trim() : '';
+  }
+
+  function updateRunDefaultsSummaryFromControls() {
+    var positions = Number(positionsSelect && positionsSelect.value);
+    var targetLabel = selectedOptionLabel(targetSelect).toLowerCase();
+    if (!Number.isInteger(positions) || positions <= 0 || !targetLabel) return;
+    var positionWord = positions === 1 ? 'position' : 'positions';
+    runDefaultsSummary.textContent =
+      'Measuring ' + positions + ' ' + positionWord + ' with the ' +
+      targetLabel + ' target';
   }
 
   async function populateInputDevices(selectedId) {
@@ -922,7 +951,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         // Live meter
         var pct = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
         levelBar.style.width = pct.toFixed(1) + '%';
-        levelReadout.textContent = db.toFixed(1);
+        if (levelReadout) levelReadout.textContent = db.toFixed(1);
         // Stash for the autolevel loop (which polls this).
         latestMicRmsDb = db;
       } else if (ev.data && ev.data.type === 'capture') {
@@ -1076,7 +1105,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   function renderCurrentCorrection(cc, config) {
     // `cc` is the parsed JTS room-correction descriptor. When a correction is
-    // applied JTS formats the live PEQ count + timestamp client-side (dynamic
+    // applied JTS formats the live adjustment count + timestamp client-side (dynamic
     // data, not copy). Otherwise the backend `config` descriptor owns the
     // label/message; the browser renders it rather than re-deriving per-kind
     // strings that have drifted from the backend.
@@ -1084,9 +1113,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       setCurrentCorrectionTone('applied');
       var when = formatAppliedAt(cc.applied_at_epoch);
       var count = cc.peq_count || 0;
-      var noun = count === 1 ? 'filter' : 'filters';
+      var noun = count === 1 ? 'adjustment' : 'adjustments';
       currentCorrectionLabel.textContent =
-        'Current correction: ' + count + ' PEQ ' + noun +
+        'Room correction on — ' + count + ' ' + noun +
         (when ? ' applied ' + when : '');
       currentCorrectionResetBtn.classList.remove('hidden');
       return;
@@ -1301,6 +1330,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (!Array.isArray(env.sections) || env.sections.length === 0) {
       throw new Error('room-correction sections missing');
     }
+    validateRunDefaults(env.run_defaults);
+    if (env.run_defaults.change_allowed !== (
+      env.screen === 'idle' && env.state === 'idle'
+    )) {
+      throw new Error('room-correction Change authority is inconsistent');
+    }
     var seen = {};
     env.sections.forEach(function (sectionId) {
       if (typeof sectionId !== 'string' || !sectionNodes[sectionId] || seen[sectionId]) {
@@ -1346,6 +1381,52 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       throw new Error('failed room-correction envelope offered an action');
     }
     return env;
+  }
+
+  function validateRunDefaults(block) {
+    if (!block || typeof block !== 'object' ||
+        typeof block.summary !== 'string' || !block.summary.trim() ||
+        !Number.isInteger(block.total_positions) || block.total_positions <= 0 ||
+        !block.target || typeof block.target.id !== 'string' ||
+        typeof block.target.label !== 'string' || !block.target.label.trim() ||
+        !block.strategy || typeof block.strategy.id !== 'string' ||
+        typeof block.strategy.label !== 'string' || !block.strategy.label.trim() ||
+        typeof block.repeat_main_position !== 'boolean' ||
+        (block.capture_transport !== 'relay' && block.capture_transport !== 'local') ||
+        typeof block.change_allowed !== 'boolean') {
+      throw new Error('invalid room-correction run defaults');
+    }
+    if (!selectSupportsValue(positionsSelect, block.total_positions) ||
+        !selectSupportsValue(targetSelect, block.target.id) ||
+        !selectSupportsValue(strategySelect, block.strategy.id)) {
+      throw new Error('unsupported room-correction run defaults');
+    }
+    return block;
+  }
+
+  function selectSupportsValue(select, value) {
+    if (!select || !select.options) return false;
+    var expected = String(value);
+    for (var i = 0; i < select.options.length; i++) {
+      if (String(select.options[i].value) === expected) return true;
+    }
+    return false;
+  }
+
+  function renderRunDefaults(block) {
+    if (!block || !runDefaultsSummary) return;
+    if (!block.change_allowed || !runDefaultsDirty) {
+      positionsSelect.value = String(block.total_positions);
+      targetSelect.value = String(block.target.id);
+      strategySelect.value = String(block.strategy.id);
+      if (positionsSelect.value !== String(block.total_positions) ||
+          targetSelect.value !== String(block.target.id) ||
+          strategySelect.value !== String(block.strategy.id)) {
+        throw new Error('room-correction run choice is not supported by this page');
+      }
+      runDefaultsSummary.textContent = String(block.summary);
+    }
+    setRunTransportLocked(!block.change_allowed);
   }
 
   function validatePublicFailure(block) {
@@ -1446,6 +1527,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     renderPrimaryAction(env.next_action);
     renderProgress(env.progress);
     renderSections(env.sections, env.curves || {});
+    renderRunDefaults(env.run_defaults);
     renderReadinessBlocker(env.blocker);
     if (pendingHomeownerFailure) {
       wizardVerdict.textContent = String(pendingHomeownerFailure.text);
@@ -2784,9 +2866,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   function measurementStartPayload() {
-    var totalPositions = parseInt(positionsSelect.value, 10) || 1;
-    var targetChoice = targetSelect.value || 'flat';
-    var strategyChoice = strategySelect.value || 'balanced';
+    var totalPositions = Number(positionsSelect.value);
+    var targetChoice = String(targetSelect.value || '');
+    var strategyChoice = String(strategySelect.value || '');
+    if (!Number.isInteger(totalPositions) || totalPositions <= 0 ||
+        !targetChoice || !strategyChoice) {
+      throw new Error('measurement choices are unavailable; refresh the page');
+    }
     return {
       total_positions: totalPositions,
       target_choice: targetChoice,
@@ -2794,9 +2880,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       noise_floor_db: relayMode ? null : lastNoiseFloorDb,
       calibration_id: selectedCalibrationId,
       input_device: relayMode ? null : selectedInputDevice,
-      repeat_main_position: relayMode
-        ? false
-        : !!(repeatMainPosition && repeatMainPosition.checked),
       capture_transport: relayMode ? 'relay' : 'local'
     };
   }
@@ -3217,9 +3300,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       renderRelayCapture(snapshot.relay);
       return;
     }
-    if (snapshot && snapshot.state === 'ready') {
-      setRelayStatus('Measurement is ready. Review confidence, then apply or reset.', 'ok');
-    } else if (snapshot && snapshot.state === 'failed') {
+    if (snapshot && snapshot.state === 'failed') {
       console.warn('room-correction session failed', snapshot.error || '');
       setRelayStatus(GENERIC_STEP_FAILURE, 'bad');
     }
@@ -3257,6 +3338,16 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         return;
       }
       if (s.state === 'needs_repeat_capture') {
+        var repeatRelayPending = relayMode && s.relay && (
+          s.relay.status === 'starting' ||
+          s.relay.status === 'awaiting_phone'
+        );
+        if (repeatRelayPending) {
+          pollTimer = setTimeout(pollState, 500);
+        } else if (relayMode && s.relay) {
+          envelopeRetryArmed = true;
+          refreshEnvelope();
+        }
         return;
       }
       if (
@@ -3264,7 +3355,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         s.state === 'awaiting_verify_capture' ||
         s.state === 'awaiting_repeat_capture'
       ) {
-        if (relayMode && s.state === 'awaiting_capture') {
+        if (relayMode && (
+          s.state === 'awaiting_capture' ||
+          s.state === 'awaiting_repeat_capture'
+        )) {
           pollTimer = setTimeout(pollState, 500);
           return;
         }
@@ -3497,8 +3591,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   if (localCaptureFallbackBtn) {
     localCaptureFallbackBtn.addEventListener('click', function () {
       if (runTransportLocked) return;
-      setRelayMode(false);
-      populateInputDevices();
+      setRelayMode(!relayMode);
+      if (!relayMode) populateInputDevices();
       envelopeRetryArmed = true;
       refreshEnvelope();
     });
@@ -3506,9 +3600,18 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   if (changeRunDefaultsBtn) {
     changeRunDefaultsBtn.addEventListener('click', function () {
       if (runTransportLocked) return;
-      measurementOptions.classList.toggle('hidden');
+      setMeasurementOptionsOpen(
+        measurementOptions.classList.contains('hidden')
+      );
     });
   }
+  [positionsSelect, targetSelect, strategySelect].forEach(function (select) {
+    if (!select) return;
+    select.addEventListener('change', function () {
+      runDefaultsDirty = true;
+      updateRunDefaultsSummaryFromControls();
+    });
+  });
   resetBtn.addEventListener('click', function () { resetCorrection(); });
   cancelMeasureBtn.addEventListener('click', function () { cancelMeasurement(); });
   if (tuningInterpretBtn) tuningInterpretBtn.addEventListener('click', function () { onTuningInterpret(); });

@@ -308,7 +308,7 @@ def test_endpoint_state_guard_rejects_wrong_state(monkeypatch):
     # capture owns — reject before any network call.
     fake = types.SimpleNamespace(state=SessionState.IDLE, session_id="cap_x")
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: fake)
-    with pytest.raises(ValueError, match="needs_noise_capture"):
+    with pytest.raises(ValueError, match="measurement position or trust repeat"):
         correction_setup._handle_relay_capture(None)
 
 
@@ -472,13 +472,17 @@ def test_relay_capture_reentrancy_guard():
     from jasper.web import correction_setup
 
     correction_setup._set_relay_capture(None)
-    assert correction_setup._begin_relay_capture() is True  # first claims it
-    assert correction_setup._begin_relay_capture() is False  # second refused
+    assert correction_setup._begin_relay_capture("room_sweep") is True
+    assert correction_setup._get_relay_capture() == {
+        "status": "starting",
+        "kind": "room_sweep",
+    }
+    assert correction_setup._begin_relay_capture("room_repeat") is False
     correction_setup._set_relay_capture({"tap_link": "x", "status": "awaiting_phone"})
-    assert correction_setup._begin_relay_capture() is False  # still in flight
+    assert correction_setup._begin_relay_capture("room_repeat") is False
     # A finished (complete/failed) holder does not block a new capture.
     correction_setup._set_relay_capture({"tap_link": "x", "status": "complete"})
-    assert correction_setup._begin_relay_capture() is True
+    assert correction_setup._begin_relay_capture("room_repeat") is True
     correction_setup._set_relay_capture(None)  # reset
 
 
@@ -543,6 +547,75 @@ def test_room_relay_gain_is_restored_before_measurement_window_exits(monkeypatch
         "sweep_complete",
         "restore",
         "window_exit",
+    ]
+
+
+def test_relay_repeat_sweep_uses_repeat_state_machine_and_progress(monkeypatch):
+    from jasper.correction import coordinator, playback
+    from jasper.web import correction_setup
+
+    calls = []
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    async def play_sweep(_path):
+        calls.append("play")
+
+    class Session:
+        current_position = 1
+        total_positions = 6
+
+        async def ensure_level_match_volume(self, _setter):
+            return True
+
+        async def prepare_and_play_repeat_sweep(
+            self,
+            player,
+            *,
+            runtime_probe_async,
+        ):
+            calls.append("repeat")
+            await player("sweep.wav")
+
+        async def restore_level_match_volume(self, _setter):
+            return True
+
+    class Cam:
+        async def get_runtime_status(self, *, best_effort):
+            return {"state": "Running"}
+
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+    class Client:
+        def post_host_event(self, _sid, _token, payload):
+            calls.append(
+                (
+                    payload["phase"],
+                    payload["position"],
+                    payload["total_positions"],
+                    payload["capture_kind"],
+                )
+            )
+
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(playback, "play_sweep", play_sweep)
+
+    correction_setup._run_relay_measurement_sweep(
+        Session(),
+        Cam(),
+        client=Client(),
+        pi_session=SimpleNamespace(session_id="sid", pull_token="pull"),
+        repeat=True,
+    )
+
+    assert calls == [
+        ("sweep_started", 1, 6, "repeat"),
+        "repeat",
+        "play",
+        ("sweep_complete", 1, 6, "repeat"),
     ]
 
 
@@ -712,7 +785,7 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     assert set(ambient_reads) == set(range(1, 11))
     assert all(ambient_reads[seq] >= 2 for seq in range(1, 10))
     assert ambient_reads[10] >= 1
-    assert sess.total_positions == 3
+    assert sess.total_positions == 1
     assert sess.noise_floor_db == -52.0
     if post_ramp_mismatch:
         assert sess.input_device is None

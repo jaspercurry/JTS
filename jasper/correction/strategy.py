@@ -195,6 +195,7 @@ CORRECTION_STRATEGIES: dict[str, CorrectionStrategy] = {
 
 DEFAULT_TARGET_PROFILE_ID = "flat"
 DEFAULT_CORRECTION_STRATEGY_ID = "balanced"
+HOUSEHOLD_CORRECTION_STRATEGY_IDS = ("safe", DEFAULT_CORRECTION_STRATEGY_ID)
 
 
 def resolve_target_profile(target_id: str | None) -> TargetProfile:
@@ -215,6 +216,14 @@ def target_profile_options() -> list[dict[str, Any]]:
 
 def correction_strategy_options() -> list[dict[str, Any]]:
     return [strategy.to_dict() for strategy in CORRECTION_STRATEGIES.values()]
+
+
+def household_correction_strategy_options() -> list[dict[str, Any]]:
+    """Correction strategies authorized on the ordinary household surface."""
+    return [
+        CORRECTION_STRATEGIES[strategy_id].to_dict()
+        for strategy_id in HOUSEHOLD_CORRECTION_STRATEGY_IDS
+    ]
 
 
 def _band_mask(freqs: np.ndarray, strategy: CorrectionStrategy) -> np.ndarray:

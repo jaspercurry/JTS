@@ -122,7 +122,8 @@ def test_capture_relay_ui_contract_is_wired():
     assert "return '/correction/' + path;" in js
     assert "if (relayConfigured)" in js
     assert "detectMicrophones();" in js
-    assert "repeat_main_position: relayMode" in js
+    assert "repeat_main_position:" not in js
+    assert "s.state === 'awaiting_repeat_capture'" in js
     assert "function relayPrimaryAction()" not in js
     assert "KNOWN_ACTION_ENDPOINTS" in js
     assert "env.sections" in js
@@ -140,14 +141,28 @@ def test_capture_relay_next_position_ui_hides_expired_link():
 
 def test_relay_polling_continues_while_backend_uploads_capture():
     js = _module_js()
-    relay_awaiting = "relayMode && s.state === 'awaiting_capture'"
+    relay_awaiting = "if (relayMode && ("
     relay_branch = js[js.index(relay_awaiting) : js.index("upload-capture handler")]
 
     assert relay_awaiting in relay_branch
+    assert "s.state === 'awaiting_capture'" in relay_branch
+    assert "s.state === 'awaiting_repeat_capture'" in relay_branch
     assert "pollTimer = setTimeout(pollState, 500)" in relay_branch
     assert relay_branch.index("pollTimer = setTimeout(pollState, 500)") < relay_branch.index(
         "workletNode"
     )
+
+
+def test_relay_repeat_polling_covers_the_pre_arm_phone_window():
+    js = _module_js()
+    start = js.index("if (s.state === 'needs_repeat_capture')")
+    end = js.index("s.state === 'awaiting_capture'", start)
+    branch = js[start:end]
+
+    assert "s.relay.status === 'starting'" in branch
+    assert "s.relay.status === 'awaiting_phone'" in branch
+    assert "pollTimer = setTimeout(pollState, 500)" in branch
+    assert "refreshEnvelope()" in branch
 
 
 def test_relay_capture_client_uses_registration_token(monkeypatch):
@@ -228,6 +243,7 @@ def test_relay_capture_return_url_falls_back_to_configured_hostname(monkeypatch)
 def test_room_level_match_returns_to_relay_native_room_page(monkeypatch):
     import asyncio
 
+    from jasper.capture_relay import correction_adapter
     from jasper.correction.session import SessionState
 
     lifecycle = []
@@ -263,6 +279,12 @@ def test_room_level_match_returns_to_relay_native_room_page(monkeypatch):
         "_run_relay_level_match",
         lambda *args, **kwargs: asyncio.sleep(0),
     )
+    monkeypatch.setattr(
+        correction_adapter,
+        "open_capture",
+        lambda _client, spec, **_kwargs: seen.update(spec=spec)
+        or SimpleNamespace(),
+    )
 
     payload = correction_setup._handle_relay_level_match(
         SimpleNamespace(headers={"Host": "jts3.local"})
@@ -272,6 +294,8 @@ def test_room_level_match_returns_to_relay_native_room_page(monkeypatch):
     assert seen["kind"].label == "level_ramp:room"
     assert seen["relay_base"] == "https://relay.jasper.tech"
     assert seen["return_url"] == "http://jts3.local/correction/room/"
+    seen["kind"].open(object(), "relay", "capture", "return")
+    assert seen["spec"].setup_collect_positions is False
 
     asyncio.run(seen["kind"].run_and_consume(object(), object()))
     assert lifecycle == ["suspend", "resume"]
@@ -305,12 +329,19 @@ def test_room_sweep_and_verify_return_to_relay_native_room_page(monkeypatch):
     handler = SimpleNamespace(headers={"Host": "jts3.local"})
 
     correction_setup._handle_relay_capture(handler)
+    session.state = SessionState.NEEDS_REPEAT_CAPTURE
+    correction_setup._handle_relay_capture(handler)
     session.state = SessionState.APPLIED
     correction_setup._handle_relay_verify(handler)
 
     assert seen == [
         (
             "room_sweep",
+            "https://relay.jasper.tech",
+            "http://jts3.local/correction/room/",
+        ),
+        (
+            "room_repeat",
             "https://relay.jasper.tech",
             "http://jts3.local/correction/room/",
         ),
@@ -322,14 +353,340 @@ def test_room_sweep_and_verify_return_to_relay_native_room_page(monkeypatch):
     ]
 
 
-def test_room_verify_receives_and_checks_frozen_setup(monkeypatch, tmp_path):
+def test_room_relay_repeat_consumes_repeat_capture_only(monkeypatch, tmp_path):
+    import asyncio
+
+    from jasper.capture_relay import correction_adapter
+    from jasper.correction.session import SessionState
+
+    consumed = []
+    playback = []
+    registered = {}
+
+    async def restore_level_match_volume(_setter):
+        return True
+
+    async def on_repeat_capture_uploaded(path):
+        consumed.append(("repeat", path))
+
+    async def on_capture_uploaded(_path):
+        pytest.fail("repeat WAV must not enter the distinct-position path")
+
+    session = SimpleNamespace(
+        session_id="room-session",
+        state=SessionState.NEEDS_REPEAT_CAPTURE,
+        current_position=1,
+        total_positions=6,
+        input_device={"label": "UMIK-2"},
+        mic_calibration=None,
+        noise_floor_db=None,
+        repeat_capture_path_for_position=lambda _idx: tmp_path / "repeat.wav",
+        restore_level_match_volume=restore_level_match_volume,
+        on_repeat_capture_uploaded=on_repeat_capture_uploaded,
+        on_capture_uploaded=on_capture_uploaded,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+
+    def fake_run(kind, _relay_base, *, return_url):
+        registered["kind"] = kind
+        return {"tap_link": "https://capture.jasper.tech/#redacted"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_relay_measurement_sweep",
+        lambda *_args, **kwargs: playback.append(kwargs["repeat"]),
+    )
+    opened = {}
+
+    def fake_open_room_sweep_capture(_client, **kwargs):
+        opened.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        correction_adapter,
+        "open_room_sweep_capture",
+        fake_open_room_sweep_capture,
+    )
+
+    def fake_run_and_store(_client, _pi_session, path, *, on_armed):
+        on_armed(SimpleNamespace(device={"label": "UMIK-2"}, noise_floor=None))
+        return SimpleNamespace(device={"label": "UMIK-2"}, noise_floor=None)
+
+    monkeypatch.setattr(correction_adapter, "run_and_store", fake_run_and_store)
+
+    correction_setup._handle_relay_capture(
+        SimpleNamespace(headers={"Host": "jts3.local"})
+    )
+    registered["kind"].open(object(), "relay", "capture", "return")
+    asyncio.run(registered["kind"].run_and_consume(object(), object()))
+
+    assert registered["kind"].label == "room_repeat"
+    assert opened == {
+        "position": 1,
+        "total_positions": 6,
+        "relay_base": "relay",
+        "capture_origin": "capture",
+        "return_url": "return",
+        "guided_setup": False,
+        "presentation_variant": "trust_repeat",
+    }
+    assert playback == [True]
+    assert consumed == [("repeat", tmp_path / "repeat.wav")]
+
+
+def test_room_relay_capture_refuses_changed_mic_before_playback(
+    monkeypatch, tmp_path
+):
+    import asyncio
+
+    from jasper.capture_relay import correction_adapter
+    from jasper.correction.session import SessionState
+
+    playback = []
+    restored = []
+    registered = {}
+
+    async def restore_level_match_volume(_setter):
+        restored.append(True)
+        return True
+
+    session = SimpleNamespace(
+        session_id="room-session",
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+        current_position=0,
+        total_positions=6,
+        input_device={"label": "UMIK-2"},
+        mic_calibration=None,
+        noise_floor_db=None,
+        capture_path_for_position=lambda _idx: tmp_path / "position.wav",
+        restore_level_match_volume=restore_level_match_volume,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+
+    def fake_run(kind, _relay_base, *, return_url):
+        registered["kind"] = kind
+        return {"tap_link": "https://capture.jasper.tech/#redacted"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_relay_measurement_sweep",
+        lambda *_args, **_kwargs: playback.append(True),
+    )
+
+    def fake_run_and_store(_client, _pi_session, _path, *, on_armed):
+        on_armed(SimpleNamespace(device={"label": "Phone mic"}, noise_floor=None))
+        pytest.fail("a changed microphone must stop before capture consumption")
+
+    monkeypatch.setattr(correction_adapter, "run_and_store", fake_run_and_store)
+
+    correction_setup._handle_relay_capture(
+        SimpleNamespace(headers={"Host": "jts3.local"})
+    )
+    phone_events = []
+    client = SimpleNamespace(
+        post_host_event=lambda _sid, _token, payload: phone_events.append(payload)
+    )
+    pi_session = SimpleNamespace(session_id="relay-session", pull_token="pull")
+    with pytest.raises(ValueError, match="microphone changed"):
+        asyncio.run(registered["kind"].run_and_consume(client, pi_session))
+
+    assert playback == []
+    assert restored == [True]
+    assert phone_events == [
+        {
+            "phase": "sweep_failed",
+            "error": correction_setup._ROOM_SWEEP_PHONE_FAILURE,
+            "error_code": "room_sweep_unavailable",
+        }
+    ]
+    assert "Phone mic" not in str(phone_events)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        pytest.param("needs_noise_capture", id="position"),
+        pytest.param("needs_repeat_capture", id="trust-repeat"),
+    ],
+)
+def test_room_relay_capture_refuses_changed_calibration_before_playback(
+    monkeypatch,
+    tmp_path,
+    state,
+):
+    import asyncio
+
+    from jasper.capture_relay import correction_adapter
+    from jasper.correction.session import SessionState
+
+    playback = []
+    restored = []
+    registered = {}
+
+    async def restore_level_match_volume(_setter):
+        restored.append(True)
+        return True
+
+    session = SimpleNamespace(
+        session_id="room-session",
+        state=SessionState(state),
+        current_position=1,
+        total_positions=6,
+        input_device={"label": "UMIK-2"},
+        mic_calibration=SimpleNamespace(
+            calibration_id="cal-1",
+            provider="test",
+        ),
+        noise_floor_db=None,
+        capture_path_for_position=lambda _idx: tmp_path / "position.wav",
+        repeat_capture_path_for_position=lambda _idx: tmp_path / "repeat.wav",
+        restore_level_match_volume=restore_level_match_volume,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+
+    def fake_run(kind, _relay_base, *, return_url):
+        registered["kind"] = kind
+        return {"tap_link": "https://capture.jasper.tech/#redacted"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_relay_measurement_sweep",
+        lambda *_args, **_kwargs: playback.append(True),
+    )
+
+    def fake_run_and_store(_client, _pi_session, _path, *, on_armed):
+        on_armed(SimpleNamespace(device={"label": "UMIK-2"}, noise_floor=None))
+        pytest.fail("changed calibration must stop before capture consumption")
+
+    monkeypatch.setattr(correction_adapter, "run_and_store", fake_run_and_store)
+
+    correction_setup._handle_relay_capture(
+        SimpleNamespace(headers={"Host": "jts3.local"})
+    )
+    session.mic_calibration = SimpleNamespace(
+        calibration_id="cal-2",
+        provider="test",
+    )
+    phone_events = []
+    client = SimpleNamespace(
+        post_host_event=lambda _sid, _token, payload: phone_events.append(payload)
+    )
+    pi_session = SimpleNamespace(session_id="relay-session", pull_token="pull")
+
+    with pytest.raises(ValueError, match="calibration changed"):
+        asyncio.run(registered["kind"].run_and_consume(client, pi_session))
+
+    assert playback == []
+    assert restored == [True]
+    assert phone_events[0]["error_code"] == "room_sweep_unavailable"
+    assert "cal-2" not in str(phone_events)
+
+
+def test_room_relay_verify_refuses_changed_calibration_before_playback(
+    monkeypatch,
+    tmp_path,
+):
+    import asyncio
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction.session import SessionState
+
+    playback = []
+    restored = []
+    registered = {}
+
+    async def restore_level_match_volume(_setter):
+        restored.append(True)
+        return True
+
+    session = SimpleNamespace(
+        session_id="room-session",
+        state=SessionState.APPLIED,
+        input_device={"label": "UMIK-2"},
+        mic_calibration=SimpleNamespace(
+            calibration_id="cal-1",
+            provider="test",
+        ),
+        level_match_snapshot=lambda: {"last": {"ramp": {"state": "locked"}}},
+        verify_capture_path=lambda: tmp_path / "verify.wav",
+        restore_level_match_volume=restore_level_match_volume,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+
+    def fake_run(kind, _relay_base, *, return_url):
+        registered["kind"] = kind
+        return {"tap_link": "https://capture.jasper.tech/#redacted"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda *_args, **_kwargs: playback.append(True),
+    )
+
+    def fake_run_capture(_client, _pi_session, *, on_armed):
+        on_armed(SimpleNamespace(device={"label": "UMIK-2"}))
+        pytest.fail("changed calibration must stop before verify capture")
+
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    correction_setup._handle_relay_verify(
+        SimpleNamespace(headers={"Host": "jts3.local"})
+    )
+    session.mic_calibration = SimpleNamespace(
+        calibration_id="cal-2",
+        provider="test",
+    )
+    phone_events = []
+    client = SimpleNamespace(
+        post_host_event=lambda _sid, _token, payload: phone_events.append(payload)
+    )
+    pi_session = SimpleNamespace(session_id="relay-session", pull_token="pull")
+
+    with pytest.raises(ValueError, match="calibration changed"):
+        asyncio.run(registered["kind"].run_and_consume(client, pi_session))
+
+    assert playback == []
+    assert restored == [True]
+    assert phone_events[0]["error_code"] == "room_sweep_unavailable"
+    assert "cal-2" not in str(phone_events)
+
+
+def test_room_verify_checks_level_microphone_before_playback(monkeypatch, tmp_path):
     import asyncio
 
     from jasper.capture_relay import session as relay_session
     from jasper.correction.session import SessionState
 
     binding_id = "room-session-12345"
-    digest = "a" * 64
     uploaded = []
     restored = []
 
@@ -344,10 +701,6 @@ def test_room_verify_receives_and_checks_frozen_setup(monkeypatch, tmp_path):
         state=SessionState.APPLIED,
         input_device={"label": "UMIK-2"},
         mic_calibration=None,
-        relay_setup_binding=correction_setup._RelaySetupBinding(
-            binding_id=binding_id,
-            sha256=digest,
-        ),
         level_match_snapshot=lambda: {"last": {"ramp": {"state": "locked"}}},
         verify_capture_path=lambda: tmp_path / "verify.wav",
         restore_level_match_volume=restore_level_match_volume,
@@ -373,13 +726,7 @@ def test_room_verify_receives_and_checks_frozen_setup(monkeypatch, tmp_path):
         relay_session._call_state_callback(
             on_armed,
             SimpleNamespace(
-                setup={
-                    "binding": {
-                        "schema": 1,
-                        "binding_id": binding_id,
-                        "sha256": digest,
-                    }
-                }
+                device={"label": "UMIK-2"},
             ),
         )
         return SimpleNamespace(wav=b"RIFFverify", device={"label": "UMIK-2"})
@@ -1091,7 +1438,7 @@ def test_render_page_includes_strategy_and_design_audit_controls():
     body = correction_setup._render_page("jts.local").decode()
     assert 'id="strategy-select"' in body  # picker markup stays in the page
     assert "Balanced" in body
-    assert "Assertive" in body
+    assert "Assertive" not in body
     assert 'id="design-report"' in body
     js = _module_js()  # the wiring + render moved to the module
     assert "strategy_choice: strategyChoice" in js
@@ -1132,7 +1479,9 @@ def test_render_page_includes_read_only_measurement_reports():
 
 def test_render_page_includes_noise_and_repeat_capture_flow():
     body = correction_setup._render_page("jts.local").decode()
-    assert 'id="repeat-main-position"' in body  # markup stays in the page
+    assert 'id="repeat-main-position"' not in body
+    assert 'id="repeat-main-position-disclosure"' in body
+    assert "automatically repeats the main-seat measurement once" in body
     assert 'id="repeat-position"' not in body
     js = _module_js()  # the capture/upload flow moved to the module
     assert "capturePreSweepNoise" in js
@@ -1591,7 +1940,10 @@ def test_e2e_calibration_fetch_upstream_failure_returns_502(monkeypatch):
         server.server_close()
 
 
-def test_relay_setup_applies_position_count_and_uploaded_calibration(tmp_path, monkeypatch):
+def test_relay_setup_cannot_override_position_count_and_applies_calibration(
+    tmp_path,
+    monkeypatch,
+):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
     sess = SimpleNamespace(
         current_position=0,
@@ -1612,13 +1964,13 @@ def test_relay_setup_applies_position_count_and_uploaded_calibration(tmp_path, m
         },
     )
 
-    assert sess.total_positions == 3
+    assert sess.total_positions == 5
     assert sess.mic_calibration is not None
     assert sess.mic_calibration.provider == "manual_upload"
     assert sess.mic_calibration.point_count == 3
 
 
-def test_relay_setup_does_not_reduce_total_below_current_position():
+def test_relay_setup_position_count_is_never_phone_authority():
     sess = SimpleNamespace(
         current_position=2,
         total_positions=5,
@@ -1633,7 +1985,7 @@ def test_relay_setup_does_not_reduce_total_below_current_position():
         },
     )
 
-    assert sess.total_positions == 3
+    assert sess.total_positions == 5
     assert sess.mic_calibration is None
 
 

@@ -165,13 +165,43 @@ def test_render_keeps_only_plain_local_certificate_warning():
     assert 'id="readiness-blocker-action" class="btn" href="/sound/"' not in html
 
 
+def test_render_discloses_one_server_owned_household_default_set():
+    html = _render()
+
+    assert html.count("Measuring 6 positions with the flat target") == 1
+    assert html.count('id="change-run-defaults"') == 1
+    assert 'aria-controls="measurement-options"' in html
+    assert 'aria-expanded="false"' in html
+    assert '<option value="6" selected>6 positions — recommended</option>' in html
+    assert '<option value="5" selected>' not in html
+    assert "MMM averaging" not in html
+    assert "Assertive" not in html
+    assert 'id="repeat-main-position"' not in html
+    assert html.count("automatically repeats the main-seat measurement once") == 1
+    assert html.index('id="repeat-main-position-disclosure"') < html.index(
+        'id="measurement-options" class="hidden"'
+    )
+    assert "house-curve tilt" not in html
+    assert "PEQ policy" not in html
+    assert "WebKit Bug" not in html
+    assert "Safari" not in html
+    assert "RMS:" not in html
+    assert "dBFS" not in html
+    assert "1 kHz" not in html
+    assert "software volume" not in html
+    assert "amplifier gain" not in html
+    assert "analog gain" not in html
+    assert "preference EQ" not in html
+    assert "raw room" not in html
+
+
 def test_browser_has_no_screen_visibility_or_forward_action_policy_mirror():
     js = _module_js()
     assert "SCREEN_SECTIONS" not in js
     assert "WIZARD_FORWARD_ACTION_BY_STATE" not in js
     assert "wizardProvidesForwardAction" not in js
     assert "showScreenSections" not in js
-    assert "SUPPORTED_ENVELOPE_SCHEMA = 7" in js
+    assert "SUPPORTED_ENVELOPE_SCHEMA = 8" in js
 
 
 def test_browser_failure_presentation_matches_server_catalog():

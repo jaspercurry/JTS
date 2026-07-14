@@ -26,6 +26,8 @@ from jasper.capture_relay.spec import (
     CaptureSpecError,
     CaptureStimulus,
     CaptureValidity,
+    build_crossover_sweep_spec,
+    build_level_ramp_spec,
     build_room_sweep_spec,
     ui_button,
     ui_heading,
@@ -71,6 +73,63 @@ def test_room_sweep_stimulus_played_by_pi():
     assert s.to_dict()["stimulus"]["played_by"] == "pi"
 
 
+def test_position_progress_is_omitted_when_the_spec_has_no_room_position():
+    payload = build_room_sweep_spec().to_dict()
+    assert "position" not in payload
+    assert "total_positions" not in payload
+    assert "presentation_variant" not in payload
+
+
+def test_signed_room_repeat_role_round_trips_without_owning_state():
+    spec = build_room_sweep_spec(
+        position=1,
+        total_positions=6,
+        presentation_variant="trust_repeat",
+    )
+
+    assert spec.to_dict()["presentation_variant"] == "trust_repeat"
+    assert CaptureSpec.from_dict(spec.to_dict()).to_dict() == spec.to_dict()
+
+
+@pytest.mark.parametrize("variant", ["repeat", "verification", 1])
+def test_room_sweep_builder_owns_its_closed_presentation_variants(variant):
+    with pytest.raises(CaptureSpecError, match="presentation_variant"):
+        build_room_sweep_spec(
+            position=1,
+            total_positions=6,
+            presentation_variant=variant,
+        )
+
+
+def test_non_room_specs_omit_room_placement_and_role_fields():
+    for spec in (build_crossover_sweep_spec(), build_level_ramp_spec()):
+        payload = spec.to_dict()
+        assert "position" not in payload
+        assert "total_positions" not in payload
+        assert "presentation_variant" not in payload
+
+
+def test_shared_schema_accepts_a_new_kinds_well_formed_presentation_variant():
+    spec = CaptureSpec(
+        kind="future_capture_kind",
+        duration_ms=1000,
+        pre_roll_ms=0,
+        post_roll_ms=0,
+        presentation_variant="future_variant",
+    ).validate()
+
+    assert spec.to_dict()["presentation_variant"] == "future_variant"
+
+
+@pytest.mark.parametrize("variant", [None, False, 0, [], {}])
+def test_shared_schema_rejects_malformed_falsy_presentation_variants(variant):
+    payload = build_room_sweep_spec().to_dict()
+    payload["presentation_variant"] = variant
+
+    with pytest.raises(CaptureSpecError, match="presentation_variant"):
+        CaptureSpec.from_dict(payload)
+
+
 def test_room_sweep_validity_refuses_unclean_with_fallback():
     s = build_room_sweep_spec()
     assert s.validity.clean_capture == "refuse"
@@ -89,6 +148,8 @@ def test_room_sweep_ui_is_server_driven_copy():
     assert headings and "position 2 of 5" in headings[0]["text"]
     buttons = [c for c in s.screen if c["type"] == "button"]
     assert buttons and buttons[0]["action"] == "begin_capture"
+    assert s.to_dict()["position"] == 2
+    assert s.to_dict()["total_positions"] == 5
 
 
 def test_room_sweep_calibration_models_are_registry_driven():
@@ -117,6 +178,21 @@ def test_to_dict_from_dict_round_trip_is_stable():
     s = build_room_sweep_spec(position=3, total_positions=5)
     again = CaptureSpec.from_dict(s.to_dict())
     assert again.to_dict() == s.to_dict()
+
+
+@pytest.mark.parametrize(
+    ("position", "total_positions"),
+    [(None, 6), (0, 6), (7, 6), (1, 0), (True, 6)],
+)
+def test_room_position_progress_is_an_exact_positive_pair(
+    position,
+    total_positions,
+):
+    with pytest.raises(CaptureSpecError, match="position"):
+        build_room_sweep_spec(
+            position=position,
+            total_positions=total_positions,
+        )
 
 
 def test_capture_protocol_version_is_explicit_and_strict():

@@ -35,6 +35,15 @@ def test_balanced_strategy_matches_existing_peq_defaults():
     assert design.report["predicted"]["filter_count"] == len(old)
 
 
+def test_household_strategy_options_are_one_closed_allowlist():
+    assert strategy.HOUSEHOLD_CORRECTION_STRATEGY_IDS == ("safe", "balanced")
+    assert [
+        option["strategy_id"]
+        for option in strategy.household_correction_strategy_options()
+    ] == list(strategy.HOUSEHOLD_CORRECTION_STRATEGY_IDS)
+    assert "assertive" not in strategy.HOUSEHOLD_CORRECTION_STRATEGY_IDS
+
+
 def test_design_report_labels_estimate_predicted_not_improvement():
     """The design report's before/after estimate is a MODEL prediction
     (measured + PEQ model, never re-measured). It must be exposed under
