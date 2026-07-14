@@ -67,6 +67,14 @@ and shipped a stale cache key. It now calls `resolve_build_sha_short`
 (deploy env → git → prior manifest → `unknown`) — the same value the
 manifest will record — so the cache key matches the installed build.
 
+Socket-activated wizard HTML has a related timing boundary: a request can
+start a wizard after new code is installed but before the final manifest
+replacement. `canonical_page()` therefore reads the tiny local manifest on
+each HTML render rather than caching its first value for the process lifetime.
+This is outside every JSON polling path. The deploy wrapper also fetches
+`/system/` and requires its exact `app.css?v=<deployed-sha>` token, so a 200
+from `/system/data.json` cannot hide browser-visible stale design assets.
+
 ### 2. Deploy verification covers real system health, not just the web path
 
 `scripts/deploy-to-pi.sh` kept its management-surface probe (nginx →
@@ -313,8 +321,11 @@ sourced bash helpers). Confirm on a Pi:
 
 ---
 
-Last verified: 2026-07-12 (low-memory deploy-health profile and status-schema
-contracts re-verified against `deploy/bin/jasper-deploy-health`;
+Last verified: 2026-07-14 (verified-manifest asset timing and exact
+browser-visible `/system/` asset-token gate rechecked against
+`jasper/web/_common.py` and `scripts/deploy-to-pi.sh`; low-memory deploy-health
+profile and status-schema contracts previously re-verified against
+`deploy/bin/jasper-deploy-health`;
 broken-vs-idle seam previously re-verified against
 `jasper-voice.service`'s `ConditionPathExists`, the doctor's
 `check_service_runtime_state`, and the deploy wrapper's advisory

@@ -241,13 +241,37 @@ def test_web_css_only_uses_outline_to_suppress_focus_chrome():
     )
 
 
-def test_asset_version_is_url_safe_and_failsoft(monkeypatch):
+def test_asset_version_is_url_safe_and_failsoft():
     # Fail-soft: with no readable build.txt the token falls back to a
     # valid (un-busted) value rather than raising.
-    monkeypatch.setattr(_common, "_asset_version_cache", None)
     version = _common._asset_version()
     assert version
     assert re.fullmatch(r"[\w.-]+", version), version
+
+
+def test_canonical_page_observes_manifest_replacement_in_warm_process(
+    monkeypatch, tmp_path,
+):
+    """A wizard activated mid-deploy must not keep the prior asset URL."""
+    manifest = tmp_path / "build.txt"
+    manifest.write_text("JASPER_GIT_SHA=old123\n")
+    monkeypatch.setattr(_common, "_ASSET_VERSION_PATH", str(manifest))
+
+    first = _common.canonical_page(
+        "Status", "", page_css_href="/assets/system-status/system.css",
+    ).decode()
+    assert '/assets/app.css?v=old123' in first
+    assert '/assets/system-status/system.css?v=old123' in first
+
+    replacement = tmp_path / "build.next"
+    replacement.write_text("JASPER_GIT_SHA=new456\n")
+    replacement.replace(manifest)
+
+    second = _common.canonical_page(
+        "Status", "", page_css_href="/assets/system-status/system.css",
+    ).decode()
+    assert '/assets/app.css?v=new456' in second
+    assert '/assets/system-status/system.css?v=new456' in second
 
 
 # The three-tier typographic grammar (docs/HANDOFF-management-ui.md) lives partly

@@ -60,7 +60,7 @@ export async function postAction(path, btn, confirmLines, opts = {}) {
   setTimeout(() => { btn.disabled = false; btn.textContent = original; }, 3000);
 }
 
-export async function setQuality(refs, converter) {
+export async function setQuality(refs, converter, onApplied) {
   if (refs.systemCapabilities && refs.systemCapabilities.audio_quality === false) {
     refs.aq.status.textContent = "Audio conversion is managed by the leader on this install role.";
     return;
@@ -77,7 +77,10 @@ export async function setQuality(refs, converter) {
     if (!r.ok) throw new Error(body.error || "HTTP " + r.status);
     // Reflect the new active/pressed state immediately rather than waiting
     // for the next 5 s poll.
-    if (body.audio_quality) updateAudioQuality(aq, body.audio_quality);
+    if (body.audio_quality) {
+      updateAudioQuality(aq, body.audio_quality);
+      if (onApplied) onApplied(body.audio_quality);
+    }
     aq.status.textContent = "Applied. Music renderers are restarting briefly.";
   } catch (e) {
     console.error("system: audio-quality apply failed", e);
@@ -114,7 +117,7 @@ export async function runDiagnostics(btn, out) {
   out.replaceChildren(h("span.muted", null, "Loading diagnostics snapshot…"));
   try {
     for (let attempt = 0; attempt < 12; attempt += 1) {
-      const r = await fetch("diagnostics.json", { cache: "no-store" });
+      const r = await fetch("/system/diagnostics.json", { cache: "no-store" });
       const body = await r.json();
       if (body.error) {
         out.replaceChildren(h("span.muted", null, "Error: " + body.error));

@@ -795,6 +795,24 @@ echo \"management-surface probe failed: last HTTP status \$code\" >&2; exit 1"
     fi
 fi
 
+# The HTML shell, unlike /system/data.json, carries the immutable CSS cache
+# key. A wizard activated during install can otherwise look healthy while
+# still advertising the prior build's stylesheet. Pin the browser-visible
+# surface to the exact verified build we just installed.
+echo "==> Verifying Status asset version (${SHA}${DIRTY})"
+asset_probe="curl -fsS -m 4 \
+-H $(shell_quote "Host: ${HOSTNAME_FOR_INSTALL}") \
+http://127.0.0.1/system/ | grep -Fq $(shell_quote "/assets/app.css?v=${SHA}${DIRTY}\"")"
+if ssh_remote "$asset_probe"; then
+    echo "  ✓ /system/ advertises current design assets"
+else
+    finish_airplay_health_maintenance
+    trap - EXIT
+    echo "DEPLOY VERIFICATION FAILED: /system/ is serving a stale asset version." >&2
+    echo "Expected /assets/app.css?v=${SHA}${DIRTY}" >&2
+    exit 1
+fi
+
 # Verified-install gate + broadened health surfacing. Both read the Pi
 # over ssh and so need a clean capture: under interactive sudo, `ssh -tt`
 # merges the password prompt into stdout and corrupts the manifest read

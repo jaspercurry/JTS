@@ -11,6 +11,8 @@ sparkline rendering — that's browser territory.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -23,12 +25,31 @@ import pytest
 from jasper.web import system_setup
 
 
+_NODE = shutil.which("node")
+_NAV_HARNESS = Path(__file__).resolve().parent / "js" / "system_status_navigation_test.mjs"
+_MAIN_JS = (
+    Path(__file__).resolve().parents[1]
+    / "deploy" / "assets" / "system-status" / "js" / "main.js"
+)
+
+
 def _http_get(url: str) -> tuple[int, bytes]:
     try:
         with urllib.request.urlopen(url, timeout=2) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
+
+
+def test_status_navigation_runtime_contract() -> None:
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [_NODE, str(_NAV_HARNESS), str(_MAIN_JS)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == {"ok": True}
 
 
 def _http_post(url: str) -> tuple[int, bytes]:
@@ -547,10 +568,21 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
     assert "raw_mode" not in audio_sections
     assert "p95_budget_ms" not in audio_sections
     assert "snap.airplay_health" not in views
-    assert 'activeView: "system"' in views
+    assert 'buildSystemPanel' in views
     assert 'viewLink("system", "System", "/system/")' in components
     assert 'viewLink("audio", "Audio", "/system/audio/")' in components
     assert '"attr:aria-current"' in components
+    assert "onViewClick" in components
+    assert "history.pushState" in main_js
+    assert 'window.addEventListener("popstate"' in main_js
+    assert "event.preventDefault()" in main_js
+    assert "event.metaKey" in main_js
+    assert "latestSnapshot" in main_js
+    assert "entries[view]" in main_js
+    assert 'fetch("/system/diagnostics.json"' in (
+        _MODULE_DIR / "actions.js"
+    ).read_text()
+    assert "audio_quality: quality" in main_js
 
 
 def test_system_mobile_actions_and_tables_are_intentional() -> None:

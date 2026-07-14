@@ -22,6 +22,13 @@ asset-serving fixes followed (`c7da1db`). See "Restyle-in-place migration"
 below. Setup wizard, conditional prompts, and fuller row-state hydration
 remain future phases.
 
+`/system/` and `/system/audio/` are two addressable views of one Status
+document. The segmented header keeps real links for direct navigation,
+modified clicks, and open-in-new-tab behavior, while ordinary clicks switch lazy,
+retained panels through the History API. One polling loop updates only the
+active panel from the latest cached snapshot, so changing views does not
+reload or flash the document and does not create a second sampler or poller.
+
 On 2026-06-14 the Zero-class `streambox` and satellite-only `endpoint`
 install tiers use the same management UI instead of bespoke endpoint
 frontends: nginx serves [`deploy/index.html`](../deploy/index.html),
@@ -1442,7 +1449,8 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-07-14 (`/system/` and `/system/audio/` Status navigation,
+Last verified: 2026-07-14 (`/system/` and `/system/audio/` same-document
+Status navigation (including direct-link fallback and one shared poll loop),
 the normalized audio-health rendering boundary, and shared header-tab ownership
 rechecked against `jasper/web/system_setup.py`,
 `deploy/assets/system-status/js/`, `jasper/control/audio_health.py`, and

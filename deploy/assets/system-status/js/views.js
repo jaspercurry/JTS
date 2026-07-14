@@ -15,14 +15,14 @@
 
 import { h } from "/assets/shared/js/dom.js";
 import {
-  header, livePill, titledCard, actionButton, collapsible, renderSection,
+  livePill, titledCard, actionButton, collapsible, renderSection,
 } from "./components.js";
 import {
   vitalsCards, softwareList, haBody, networkList, servicesTable, waitingNote,
 } from "./sections.js";
 import { buildDebugCard } from "./debug-card.js";
 
-export function buildPage(root, handlers) {
+export function buildSystemPanel(handlers) {
   const live = livePill();
 
   // Data sections: title built once, body re-rendered (when changed) per poll.
@@ -93,16 +93,13 @@ export function buildPage(root, handlers) {
   // own /debug state from control and self-manages). Not poll-driven.
   const debugCard = buildDebugCard();
 
-  root.replaceChildren(
-    header({ title: "Status", backHref: "/", activeView: "system" }),
-    h("main.app-main", null,
-      live.el, vitals, software.section, ha.section,
-      network.section, actions.section,
-      diag.section, debugCard, services),
+  const panel = h("main.app-main", { "attr:data-status-view": "system" },
+    live.el, vitals, software.section, ha.section,
+    network.section, actions.section,
+    diag.section, debugCard, services,
   );
-  root.setAttribute("aria-busy", "false");
 
-  return {
+  const refs = {
     staleness: live.label,
     vitals, software: software.body, ha: ha.body,
     network: network.body, svc: svcBody,
@@ -110,6 +107,7 @@ export function buildPage(root, handlers) {
     actionButtons: { restartVoice, restartAudio },
     _memo: {},
   };
+  return { panel, refs };
 }
 
 function capabilityAllows(caps, key) {

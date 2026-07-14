@@ -116,15 +116,25 @@ export function collapsible({ title, open = true, body }) {
 }
 
 // Sticky page header: back affordance + centred title plus the shared
-// System/Audio status navigation. These are links between documents, not
-// in-page tab panels, so aria-current communicates selection without a
-// misleading tablist role.
-export function header({ title = "Status", backHref = "/", activeView = "system" } = {}) {
+// System/Audio status navigation. Real links preserve direct URLs and modified
+// clicks; main.js intercepts ordinary clicks so changing
+// views is as smooth as Sound's same-document segmented control.
+export function header({
+  title = "Status", backHref = "/", activeView = "system", onViewClick,
+} = {}) {
   const viewLink = (id, label, href) => h("a.segmented__btn", {
     href,
     "attr:aria-current": activeView === id ? "page" : null,
+    onclick: (event) => onViewClick && onViewClick(id, event),
   }, label);
-  return h("header.app-header", null,
+  const links = {
+    system: viewLink("system", "System", "/system/"),
+    audio: viewLink("audio", "Audio", "/system/audio/"),
+  };
+  const announcement = h("p.sr-only", {
+    "attr:role": "status", "attr:aria-live": "polite",
+  });
+  const el = h("header.app-header", null,
     h("div.app-header__row", null,
       h("a.icon-button", { href: backHref, "attr:aria-label": "Home" },
         svg("svg.ico", { "aria-hidden": "true" },
@@ -135,12 +145,23 @@ export function header({ title = "Status", backHref = "/", activeView = "system"
     h("div.app-header__tabs", null,
       h("div", null,
         h("nav.segmented", { "attr:aria-label": "Status views" },
-          viewLink("system", "System", "/system/"),
-          viewLink("audio", "Audio", "/system/audio/"),
+          links.system,
+          links.audio,
         ),
       ),
     ),
+    announcement,
   );
+  return {
+    el,
+    setActive(view, { announce = false } = {}) {
+      Object.entries(links).forEach(([id, link]) => {
+        if (id === view) link.setAttribute("aria-current", "page");
+        else link.removeAttribute("aria-current");
+      });
+      if (announce) announcement.textContent = `${view === "audio" ? "Audio" : "System"} view selected`;
+    },
+  };
 }
 
 // Pulsing "Live · …" indicator. Returns the element plus its label node so
