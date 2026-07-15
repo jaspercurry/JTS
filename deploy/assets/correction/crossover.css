@@ -71,6 +71,10 @@
   margin: 0;
 }
 
+.candidate-provenance {
+  overflow-wrap: anywhere;
+}
+
 .capture-status[data-tone="bad"],
 #mic-support[data-tone="bad"] .form-hint {
   color: var(--status-danger);

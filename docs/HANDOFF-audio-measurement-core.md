@@ -83,8 +83,10 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   Existing fail-soft records are never read or promoted. A
   store-backed pure deterministic evaluator can now reopen the exact complete
   isolated and summed artifacts and derive an attenuation/polarity/delay-only
-  electrical candidate. No production host invokes it; candidate persistence,
-  `candidate_ready`, graph mutation/apply, verification/receipt, and Room
+  electrical candidate. The Active production service now invokes it after the
+  final summed capture and persists/reopens one exact candidate before binding
+  `candidate_ready`; Shared remains only the evidence/identity substrate and
+  owns no candidate policy. Graph mutation/apply, verification/receipt, and Room
   consumption remain blocked.
 - `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
   `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
@@ -1004,9 +1006,13 @@ can never authorize a phase decision:
    like L1's measured level trim. It never consumes `delay_ms` from a capture;
    the bounded Lane-F walk exclusively owns measured delay. The production
    wizard exposes one generic combined-capture action; the host selects the two
-   per-region polarity stages and transient reverse/delay graphs. The strict
-   candidate evaluator is not yet invoked or presented, so this is a live
-   evidence flow but not yet a complete candidate/apply UI.
+   per-region polarity stages and transient reverse/delay graphs. The Active
+   service invokes the strict evaluator after the last capture, persists and
+   reopens its exact result, and presents the candidate through the correction
+   envelope. A deterministic refusal is persisted and binds the existing
+   `measured -> blocked` lifecycle transition, so immutable refused evidence is
+   diagnosed once and the UI starts a fresh complete run instead of retrying it.
+   Candidate apply remains a later production slice.
    The recompiled baseline re-proves the
    runtime_contract tweeter guard; level stays L1's attenuation-only job and the 0 dB
    ceiling holds.
@@ -1296,10 +1302,11 @@ stale-callback refusal, and fail-closed crossover status were checked hardware-
 free. The strict write-once commissioning evidence store, exact typed reopen,
 deep child-artifact verification, generation-scoped incomplete state, and
 run-scoped complete recovery plus the store-backed pure deterministic electrical
-candidate evaluator were checked hardware-free. No hardware behavior
+candidate evaluator and Active-owned exact candidate persistence/readback were
+checked hardware-free. No hardware behavior
 revalidated. Wave 1 excitation/evidence identities
 and `null_walk.DspPredecessor` reuse remain contract-only.
-Production candidate persistence/readiness/apply, verification/receipt, and
-Room authority remain unavailable. Crossover adapter
+Production candidate apply, verification/receipt, and Room authority remain
+unavailable. Crossover adapter
 volume-lease participation and measurement-flow admission ownership rechecked
 against correction, balance, sync, and the coordinator mutex)

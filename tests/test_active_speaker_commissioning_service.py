@@ -16,7 +16,10 @@ from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
     CommissioningEvidenceStoreError,
 )
-from jasper.active_speaker.commissioning_evidence import derive_region_evidence_plan
+from jasper.active_speaker.commissioning_evidence import (
+    CompleteCommissioningEvidence,
+    derive_region_evidence_plan,
+)
 from jasper.active_speaker.commissioning_host import (
     CommissioningHostError,
     RegionCaptureOperation,
@@ -33,6 +36,7 @@ from tests.test_active_speaker_commissioning_evidence import (
     _Harness,
     _complete_isolated,
     _hash,
+    _region,
 )
 from tests.test_active_speaker_commissioning_evidence_store import (
     _materialize_isolated,
@@ -52,6 +56,8 @@ class _ServiceHarness:
 def _service_harness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    candidate_evidence: bool = False,
 ) -> _ServiceHarness:
     topology = mono_output_topology(mode="active_2_way")
     bundle = open_bundle(
@@ -70,10 +76,19 @@ def _service_harness(
     )
     assert returned_topology == topology
     evidence_store.publish_region_evidence_plan(plan)
-    isolated = _materialize_isolated(
-        evidence_store,
-        _complete_isolated(_Harness(store=run_store, plan=plan)),
-    )
+    isolated_fixture = _complete_isolated(_Harness(store=run_store, plan=plan))
+    if candidate_evidence:
+        from tests.test_active_speaker_measured_candidate import (
+            _materialize_isolated as materialize_candidate_isolated,
+        )
+
+        isolated = materialize_candidate_isolated(
+            evidence_store,
+            isolated_fixture,
+            preset=authority.preset,
+        )
+    else:
+        isolated = _materialize_isolated(evidence_store, isolated_fixture)
     evidence_store.publish_complete_isolated_driver_evidence(isolated)
     attempt = run_store.attempts(plan.authority.run)[0]
     assert run_store.transition(
@@ -100,6 +115,42 @@ def _service_harness(
         load_current_authority=lambda: authority,
     )
     return _ServiceHarness(service, evidence_store, run_store, plan, authority)
+
+
+def _complete_candidate_evidence(harness: _ServiceHarness):
+    from tests.test_active_speaker_measured_candidate import _materialize_summed
+
+    target = harness.plan.targets[0]
+    harness.service.attest_geometry(
+        expected_target_fingerprint=target.fingerprint,
+        signed_acoustic_path_difference_mm=0.0,
+    )
+    summed = _materialize_summed(
+        harness.evidence_store,
+        CompleteCommissioningEvidence(
+            plan=harness.plan,
+            regions=(
+                _region(
+                    _Harness(store=harness.run_store, plan=harness.plan),
+                    target_index=0,
+                    placement_fingerprint=_hash("isolated-placement"),
+                ),
+            ),
+        ),
+    )
+    artifact = harness.evidence_store.publish_complete_commissioning_evidence(
+        summed
+    )
+    assert harness.run_store.transition(
+        harness.plan.authority.run,
+        CommissioningTransition(
+            from_state="protected",
+            to_state="measured",
+            evidence_kind="admitted_measurement_set",
+            evidence_fingerprint=artifact.fingerprint,
+        ),
+    )
+    return artifact
 
 
 def test_geometry_is_write_once_and_status_does_not_issue_host_progress(
@@ -254,6 +305,140 @@ def test_measured_status_requires_exact_complete_evidence_readback(
         match="measured lifecycle has no durable complete evidence",
     ):
         harness.service.status()
+
+
+def test_measured_candidate_is_persisted_bound_and_projected_without_rescoring(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger=service_module.__name__)
+    harness = _service_harness(
+        tmp_path,
+        monkeypatch,
+        candidate_evidence=True,
+    )
+    summed_artifact = _complete_candidate_evidence(harness)
+
+    review = harness.service.publish_candidate()
+
+    assert harness.run_store.lifecycle_state(harness.plan.authority.run) == (
+        "candidate_ready"
+    )
+    assert review["retained_crossover_regions"] == [
+        {
+            "region_id": "woofer_tweeter",
+            "lower_role": "woofer",
+            "upper_role": "tweeter",
+            "fc_hz": 1600.0,
+            "filter_family": "LinkwitzRiley",
+            "order": 4,
+            "lower_polarity": "non-inverted",
+            "upper_polarity": "non-inverted",
+            "polarity_evidence": "normal_retained_by_reverse_null",
+        }
+    ]
+    assert review["drivers"] == [
+        {
+            "role": "woofer",
+            "attenuation_db": 0.0,
+            "delay_ms": 0.0,
+            "polarity": "non-inverted",
+        },
+        {
+            "role": "tweeter",
+            "attenuation_db": -6.0,
+            "delay_ms": 0.0375,
+            "polarity": "non-inverted",
+        },
+    ]
+    assert review["evidence"]["summed_artifact"] == summed_artifact.to_dict()
+    assert "event=correction.active_commissioning_candidate_ready" in caplog.text
+
+    with monkeypatch.context() as status_patch:
+        status_patch.setattr(
+            service_module,
+            "evaluate_measured_candidate",
+            lambda **_kwargs: pytest.fail("status must not rescore child WAVs"),
+        )
+        status_patch.setattr(
+            CommissioningEvidenceStore,
+            "reopen_complete_commissioning_evidence",
+            lambda _store, **_kwargs: pytest.fail(
+                "candidate status must not deep-reopen child WAVs"
+            ),
+        )
+        status = harness.service.status()
+
+    assert status["status"] == "candidate_ready"
+    assert status["candidate"] == review
+    transition = harness.run_store.lifecycle_transition(
+        harness.plan.authority.run
+    )
+    assert transition is not None
+    assert transition.evidence_fingerprint == review["artifact_fingerprint"]
+    assert harness.service.publish_candidate() == review
+
+
+def test_candidate_refusal_is_persisted_blocked_and_not_retried(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from jasper.active_speaker.measured_candidate import (
+        MeasuredCandidateEvaluationError,
+    )
+
+    caplog.set_level(logging.INFO, logger=service_module.__name__)
+    harness = _service_harness(
+        tmp_path,
+        monkeypatch,
+        candidate_evidence=True,
+    )
+    summed_artifact = _complete_candidate_evidence(harness)
+    calls = 0
+
+    def refuse(**_kwargs):
+        nonlocal calls
+        calls += 1
+        raise MeasuredCandidateEvaluationError(
+            "candidate_polarity_inconclusive",
+            "normal and reverse evidence did not prove one polarity",
+        )
+
+    monkeypatch.setattr(service_module, "evaluate_measured_candidate", refuse)
+
+    with pytest.raises(CommissioningServiceError) as captured:
+        harness.service.publish_candidate()
+
+    assert captured.value.code == "candidate_scoring_failed"
+    assert calls == 1
+    assert harness.run_store.lifecycle_state(harness.plan.authority.run) == "blocked"
+    transition = harness.run_store.lifecycle_transition(
+        harness.plan.authority.run
+    )
+    assert transition is not None
+    assert transition.evidence_kind == "failure_evidence"
+    assert transition.failure_code == "candidate_scoring_failed"
+    status = harness.service.status()
+    assert status["status"] == "candidate_refused"
+    assert status["candidate"] is None
+    assert status["candidate_failure"]["reason"] == (
+        "candidate_polarity_inconclusive"
+    )
+    assert status["candidate_failure"]["summed_artifact"] == (
+        summed_artifact.to_dict()
+    )
+    assert status["candidate_failure"]["artifact_fingerprint"] == (
+        transition.evidence_fingerprint
+    )
+    assert calls == 1
+    assert "event=correction.active_commissioning_candidate_refused" in caplog.text
+
+    with pytest.raises(CommissioningServiceError) as repeated:
+        harness.service.publish_candidate()
+    assert repeated.value.code == "candidate_not_measured"
+    assert calls == 1
 
 
 @pytest.mark.asyncio

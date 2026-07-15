@@ -55,6 +55,12 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div id="crossover-nudges" aria-live="polite"></div>
   </section>
 
+  <section id="crossover-review" class="info-card hidden" aria-label="Measured crossover candidate">
+    <p class="eyebrow">Review before apply</p>
+    <h2 class="section__title">Measured crossover candidate</h2>
+    <div id="crossover-review-body"></div>
+  </section>
+
   <section class="info-card" aria-live="polite">
     <div id="crossover-action" class="measurement-row__actions"></div>
     <div id="crossover-relay" class="hidden">

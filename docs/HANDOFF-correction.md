@@ -510,7 +510,15 @@
   the typed internal Active host owns production summed operation selection,
   guarded playback, persistence, and restoration. The web layer supplies only
   signed geometry, the comparison-bound recorder/calibration identity, and relay
-  WAV bytes.
+  WAV bytes. After the final summed capture, the Active service invokes the
+  store-backed evaluator, persists and reopens one exact candidate, binds the
+  durable run's `candidate_ready` transition to that artifact, and projects the
+  retained crossover design plus measured attenuation, polarity proof, delay,
+  and evidence identities for review. Status polling reopens only typed anchors
+  and the compact candidate; it does not rescore child WAVs. A deterministic
+  evaluator refusal persists one generation-scoped failure artifact, advances
+  the existing lifecycle to `blocked` with `candidate_scoring_failed`, and
+  offers a fresh complete measurement run instead of retrying the same evidence.
   `jasper.active_speaker.web_measurement`
   owns bounded browser WAV evidence plus acoustic-analysis recording.
   This page is also the ownership boundary between manual and automatic
@@ -1309,7 +1317,8 @@ GET  /crossover/status       active-speaker targets + measurement evidence
                              full_range_passive speaker, Layer A hidden})
 GET  /crossover/envelope     commissioning screen envelope (dumb frontend):
                              {schema_version, screen, active, steps,
-                             verdict_text, nudges, next_action, progress, relay}
+                             verdict_text, nudges, next_action, progress, relay,
+                             candidate_review}; schema v4
 GET  /bass                   read-only bass-management display page
 GET  /bass/status            read-only active bass-management corner/status
 GET  /balance                stereo-pair acoustic balance page
@@ -1410,6 +1419,8 @@ POST /crossover/recover-volume recover a durable unconfirmed listening volume;
 POST /crossover/region-geometry body: {expected_target_fingerprint,
                               signed_acoustic_path_difference_mm}; persist the
                               server's current region geometry attestation
+POST /crossover/candidate    resume exact candidate publication if execution
+                             stopped after measured evidence became durable
 POST /crossover/apply        atomically apply measured Layer A; restore gain lease
 POST /crossover/driver-test  start one protected per-driver audible test
 POST /crossover/driver-confirm record the protected driver-test result
@@ -2620,13 +2631,15 @@ closed owner vocabulary, transactional release acknowledgement, response-loss
 rollback, monotonic crash lease, and no source-process mutation; shared DSP-writer admission deadline/cancellation
 semantics checked against Room's terminal mutation policy; Active isolated-driver
 persisted admission, server-owned capture handoff, legacy summed pre-audio
-refusal, and the recorder-only production summed relay checked hardware-free;
+refusal, the recorder-only production summed relay, exact measured-candidate
+publication/readback, `candidate_ready` binding, and review projection checked
+hardware-free;
 Active's signed geometry and durable calibration/device binding, typed internal
 summed evidence host, exact
 graph/capture/restore runtime, durable artifacts, and deterministic measured
 progression were also checked with synthetic admitted fixtures; Active's durable bundle-backed commissioning-run start,
 startup owner-generation claim, stale-callback refusal, and fail-closed
-crossover status were also checked; candidate/verification/receipt
+crossover status were also checked; candidate apply, verification/receipt,
 and Room authority remain unavailable. Wave 2 paid tuning backend extraction checked the
 shared cross-route throttle, fresh household spend gate, exact provider
 arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP

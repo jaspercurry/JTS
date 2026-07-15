@@ -254,6 +254,16 @@ def _finite(value: Any, name: str) -> float:
     return result
 
 
+def _sha256(value: Any, name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise MeasuredCandidateError(f"{name} must be a lowercase SHA-256")
+    return value
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class MeasuredElectricalCandidate:
     """Compact attenuation, retained-polarity, and delay refinement."""
@@ -285,6 +295,21 @@ class MeasuredElectricalCandidate:
         role_attenuations_db: tuple[tuple[str, float], ...],
         role_delays_ms: tuple[tuple[str, float], ...],
     ) -> MeasuredElectricalCandidate:
+        if not isinstance(run, CommissioningRunHandle):
+            raise MeasuredCandidateError("candidate run is invalid")
+        if not isinstance(
+            isolated_evidence_artifact, ArtifactIdentity
+        ) or not isinstance(summed_evidence_artifact, ArtifactIdentity):
+            raise MeasuredCandidateError("candidate evidence identity is invalid")
+        if (
+            isolated_evidence_artifact.bundle_id != run.session_id
+            or summed_evidence_artifact.bundle_id != run.session_id
+        ):
+            raise MeasuredCandidateError("candidate evidence belongs to another run")
+        plan_fingerprint = _sha256(plan_fingerprint, "plan_fingerprint")
+        source_preset_fingerprint = _sha256(
+            source_preset_fingerprint, "source_preset_fingerprint"
+        )
         roles = required_driver_roles(source_preset.way_count)
         if (
             tuple(role for role, _ in role_attenuations_db) != roles
@@ -305,6 +330,10 @@ class MeasuredElectricalCandidate:
         ) or not any(value == 0.0 for _, value in role_delays_ms):
             raise MeasuredCandidateError("candidate delay is invalid")
         source_preset.validate()
+        if source_preset_fingerprint != region_evidence_preset_fingerprint(
+            source_preset
+        ):
+            raise MeasuredCandidateError("candidate source preset fingerprint is stale")
         self = object.__new__(cls)
         attributes: tuple[tuple[str, Any], ...] = (
             ("run", run),
@@ -341,6 +370,80 @@ class MeasuredElectricalCandidate:
 
     def to_dict(self) -> dict[str, Any]:
         return {**self._core(), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> MeasuredElectricalCandidate:
+        """Strictly reopen one persisted evaluator result without re-scoring WAVs."""
+
+        expected = {
+            "schema_version",
+            "kind",
+            "algorithm",
+            "run",
+            "plan_fingerprint",
+            "source_preset_fingerprint",
+            "isolated_evidence_artifact",
+            "summed_evidence_artifact",
+            "source_preset",
+            "role_attenuations_db",
+            "role_delays_ms",
+            "classification",
+            "source",
+            "flags",
+            "fingerprint",
+        }
+        if not isinstance(raw, Mapping) or set(raw) != expected:
+            raise MeasuredCandidateError(
+                "measured candidate has unknown or missing fields"
+            )
+        run_raw = raw["run"]
+        run_fields = {
+            "session_id",
+            "session_fingerprint",
+            "run_id",
+            "owner_id",
+            "owner_generation",
+        }
+        if not isinstance(run_raw, Mapping) or set(run_raw) != run_fields:
+            raise MeasuredCandidateError("candidate run fields are invalid")
+        preset = ActiveSpeakerPreset.from_mapping(raw["source_preset"])
+        roles = required_driver_roles(preset.way_count)
+
+        def role_values(name: str) -> tuple[tuple[str, float], ...]:
+            values = raw[name]
+            if not isinstance(values, Mapping) or set(values) != set(roles):
+                raise MeasuredCandidateError(f"candidate {name} is incomplete")
+            return tuple(
+                (role, _finite(values[role], f"{name}.{role}"))
+                for role in roles
+            )
+
+        try:
+            candidate = cls._create(
+                run=CommissioningRunHandle(
+                    **{name: run_raw[name] for name in run_fields}
+                ),
+                plan_fingerprint=str(raw["plan_fingerprint"]),
+                source_preset_fingerprint=str(raw["source_preset_fingerprint"]),
+                isolated_evidence_artifact=ArtifactIdentity.from_mapping(
+                    raw["isolated_evidence_artifact"]
+                ),
+                summed_evidence_artifact=ArtifactIdentity.from_mapping(
+                    raw["summed_evidence_artifact"]
+                ),
+                source_preset=preset,
+                role_attenuations_db=role_values("role_attenuations_db"),
+                role_delays_ms=role_values("role_delays_ms"),
+            )
+        except (TypeError, ValueError) as exc:
+            if isinstance(exc, MeasuredCandidateError):
+                raise
+            raise MeasuredCandidateError(str(exc)) from exc
+        if candidate.to_dict() != dict(raw):
+            raise MeasuredCandidateError(
+                "persisted measured candidate does not match its declared result"
+            )
+        return candidate
 
 
 def _capture_row(

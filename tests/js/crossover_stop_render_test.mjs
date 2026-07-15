@@ -16,6 +16,7 @@ function classList() {
   return {
     add(...names) { names.forEach((name) => values.add(name)); },
     remove(...names) { names.forEach((name) => values.delete(name)); },
+    contains(name) { return values.has(name); },
     toggle(name, force) {
       if (force) values.add(name); else values.delete(name);
     },
@@ -41,6 +42,8 @@ const ids = [
   "crossover-verdict",
   "crossover-steps",
   "crossover-nudges",
+  "crossover-review",
+  "crossover-review-body",
   "crossover-action",
   "crossover-relay",
   "crossover-relay-status",
@@ -72,8 +75,10 @@ const terminalEnvelope = {
   },
   alternate_actions: [],
 };
-globalThis.__getJSON = async () => terminalEnvelope;
-globalThis.__postJSON = async () => ({ relay: { status: "stopping" } });
+let nextEnvelope = terminalEnvelope;
+let postResponse = { relay: { status: "stopping" } };
+globalThis.__getJSON = async () => nextEnvelope;
+globalThis.__postJSON = async () => postResponse;
 
 const here = dirname(fileURLToPath(import.meta.url));
 let source = readFileSync(
@@ -86,10 +91,12 @@ source = source.replace(
 );
 const bootStart = source.lastIndexOf("\nrefresh().catch((error) => {");
 if (bootStart < 0) throw new Error("crossover module boot call not found");
-source = source.slice(0, bootStart).concat("\nexport { render, stopRelay };\n");
+source = source.slice(0, bootStart).concat(
+  "\nexport { render, runAction, stopRelay };\n",
+);
 const dataUrl =
   "data:text/javascript;base64," + Buffer.from(source, "utf8").toString("base64");
-const { render, stopRelay } = await import(dataUrl);
+const { render, runAction, stopRelay } = await import(dataUrl);
 
 render({
   ...terminalEnvelope,
@@ -103,4 +110,61 @@ assert.equal(actions.length, 1);
 assert.equal(actions[0].textContent, "Try again");
 assert.equal(actions[0].disabled, false, "terminal action is enabled after Stop");
 
-console.log(JSON.stringify({ ok: true, passed: 3 }));
+render({
+  ...terminalEnvelope,
+  candidate_review: {
+    retained_crossover_regions: [{
+      lower_role: "woofer",
+      upper_role: "tweeter",
+      fc_hz: 1600,
+      filter_family: "LinkwitzRiley",
+      order: 4,
+      lower_polarity: "non-inverted",
+      upper_polarity: "non-inverted",
+    }],
+    drivers: [{
+      role: "woofer",
+      attenuation_db: 0,
+      delay_ms: 0.0375,
+      polarity: "non-inverted",
+    }],
+    evidence: {
+      isolated_artifact: {fingerprint: "isolated-proof"},
+      summed_artifact: {fingerprint: "summed-proof"},
+      algorithm_id: "candidate-evaluator",
+      algorithm_version: "1",
+    },
+  },
+});
+assert.equal(elements.get("crossover-review").classList.contains("hidden"), false);
+assert.equal(elements.get("crossover-review-body").children.length, 1);
+
+nextEnvelope = {
+  ...terminalEnvelope,
+  verdict_text: "Restart the complete measurements.",
+  candidate_review: null,
+  next_action: {
+    id: "level_match",
+    label: "Restart driver and alignment measurements",
+    endpoint: "/correction/crossover/level-match",
+    body: {},
+  },
+};
+postResponse = { status: "candidate_refused" };
+await runAction(
+  {
+    endpoint: "/correction/crossover/candidate",
+    body: {},
+  },
+  element("prepare-candidate"),
+);
+assert.equal(
+  elements.get("crossover-verdict").textContent,
+  "Restart the complete measurements.",
+);
+assert.equal(
+  elements.get("crossover-action").children[0].textContent,
+  "Restart driver and alignment measurements",
+);
+
+console.log(JSON.stringify({ ok: true, passed: 7 }));

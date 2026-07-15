@@ -241,6 +241,7 @@ _POST_ROUTES = frozenset({
     "/crossover/summed-capture",
     "/crossover/level-match",
     "/crossover/region-geometry",
+    "/crossover/candidate",
     "/crossover/relay-capture",
     "/crossover/relay-cancel",
     "/crossover/apply",
@@ -4565,6 +4566,18 @@ def _handle_crossover_region_geometry(
     return correction_crossover_backend.attest_commissioning_region_geometry(raw)
 
 
+def _handle_crossover_candidate(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """Resume candidate publication after a measured-to-ready interruption."""
+
+    if _read_json_body(handler):
+        raise ValueError("measured candidate preparation accepts no browser fields")
+    if _active_relay_phase() is not None:
+        raise ValueError("finish the current microphone capture first")
+    from . import correction_crossover_backend
+
+    return correction_crossover_backend.prepare_commissioning_candidate()
+
+
 def _post_crossover_relay_host_event(
     relay_base: str,
     session_id: str,
@@ -6026,6 +6039,19 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path == "/crossover/region-geometry":
                 try:
                     self._send_json(_handle_crossover_region_geometry(self))
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/candidate":
+                try:
+                    self._send_json(_handle_crossover_candidate(self))
                 except ValueError as e:
                     self._send_json(
                         {"ok": False, "error": str(e)},

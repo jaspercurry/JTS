@@ -24,7 +24,7 @@ from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
 
-CROSSOVER_ENVELOPE_SCHEMA_VERSION = 3
+CROSSOVER_ENVELOPE_SCHEMA_VERSION = 4
 
 _STEP_IDS = ("speaker_setup", "microphone", "drivers", "alignment", "apply")
 _STEP_LABELS = {
@@ -374,7 +374,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         done.add("drivers")
     if strict_isolated_complete:
         done.add("drivers")
-    if region_commissioning.get("status") == "measured":
+    if region_commissioning.get("status") in {"measured", "candidate_ready"}:
         done.add("alignment")
     if applied_ready and not automatic_remeasure and not strict_isolated_complete:
         done.add("apply")
@@ -1025,10 +1025,57 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         screen = "review"
         verdict = (
             "Driver level, polarity, and bounded relative-delay evidence are "
-            "complete. JTS is ready to build the measured crossover candidate."
+            "complete. Candidate publication was interrupted; resume the exact "
+            "stored evidence evaluation."
+        )
+        action = {
+            "id": "prepare_measured_candidate",
+            "label": "Prepare measured candidate",
+            "endpoint": "/correction/crossover/candidate",
+            "body": {},
+        }
+        active_step = "apply"
+    elif (
+        strict_isolated_complete
+        and region_commissioning.get("status") == "candidate_ready"
+    ):
+        screen = "review"
+        verdict = (
+            "Review the measured crossover candidate below. Frequency, filter "
+            "family, and order stay as you set them; attenuation and delay come "
+            "from the fixed-axis evidence, and normal-versus-reverse evidence "
+            "retains the shown polarity."
         )
         action = None
         active_step = "apply"
+    elif (
+        strict_isolated_complete
+        and region_commissioning.get("status") == "candidate_refused"
+    ):
+        candidate_failure = _mapping(
+            region_commissioning.get("candidate_failure")
+        )
+        nudges.append({
+            "code": "measured_candidate_refused",
+            "severity": "warn",
+            "text": (
+                "The saved measurements remain available for diagnosis, but "
+                "they did not authorize an automatic crossover candidate."
+            ),
+        })
+        screen = "microphone"
+        verdict = str(
+            region_commissioning.get("detail")
+            or candidate_failure.get("detail")
+            or "Restart the complete driver and alignment measurement sequence."
+        )
+        action = {
+            "id": "level_match",
+            "label": "Restart driver and alignment measurements",
+            "endpoint": "/correction/crossover/level-match",
+            "body": {},
+        }
+        active_step = "microphone"
     elif strict_isolated_complete and region_commissioning.get("status") == "unavailable":
         screen = "alignment"
         verdict = str(
@@ -1096,6 +1143,11 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         "next_action": action,
         "alternate_actions": alternate_actions,
         "progress": _progress(active_step),
+        "candidate_review": (
+            _mapping(region_commissioning.get("candidate"))
+            if region_commissioning.get("status") == "candidate_ready"
+            else None
+        ),
     }
 
 
