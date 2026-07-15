@@ -6006,13 +6006,37 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return {"session_id": sess.session_id, "state": sess.state.value}
 
 
-def _pre_measurement_restore_target(sess: Any) -> Path | None:
-    """Prior graph to restore when reset is cancelling this measurement."""
+async def _pre_measurement_restore_target(sess: Any, cam: Any) -> Path | None:
+    """Prior graph to restore only while this measurement still owns Camilla."""
     state_value = getattr(getattr(sess, "state", None), "value", None)
     if state_value in {"idle", "applied", "verified"}:
         return None
     prior = getattr(sess, "pre_measurement_config_path", None)
-    return Path(prior) if prior else None
+    if not prior:
+        return None
+
+    current = await cam.get_config_file_path(best_effort=False)
+    if not current:
+        raise RuntimeError("CamillaDSP did not report a loaded config path")
+    measurement = getattr(sess, "measurement_config_path", None)
+    owned_path = Path(measurement) if measurement else Path(prior)
+    if Path(current) == owned_path:
+        return Path(prior)
+
+    # A legal DSP writer may publish a newer Active graph after Room Start.
+    # The shared lock makes this read stable; never use Room's saved predecessor
+    # once Camilla has moved away from Room's own measurement graph. The caller
+    # will instead strip Room from the fresh current graph, preserving new A.
+    log_event(
+        logger,
+        "correction.pre_measurement_predecessor_superseded",
+        session=getattr(sess, "session_id", None),
+        current=str(current),
+        room_owned=str(owned_path),
+        saved_predecessor=str(prior),
+        level=logging.WARNING,
+    )
+    return None
 
 
 async def _resolve_reset_target_async(sess: Any, cam: Any) -> Path:
@@ -6021,39 +6045,42 @@ async def _resolve_reset_target_async(sess: Any, cam: Any) -> Path:
     The single source of truth for "what should the speaker load when we undo
     room correction," shared by ``POST /reset`` (user-driven) and the P4
     confirmed-regression auto-revert (deterministic). If a measurement is
-    mid-flight, restore the pre-``/start`` graph; once a correction is applied
-    or verified, re-emit the current topology with room PEQs cleared (Layer B
-    removed, speaker DSP + preference EQ preserved). A re-emit failure may use
-    the topology-safe fallback only when that graph is observably managed and
-    contains no Room correction; otherwise the reversal fails loudly without
-    claiming that Layer B was removed.
+    mid-flight and Camilla still runs Room's measurement graph, restore the
+    pre-``/start`` graph. If another legal writer has since published a graph,
+    or once a correction is applied/verified, re-emit that current topology
+    with room PEQs cleared (Layer B removed, speaker DSP + preference EQ
+    preserved). A re-emit failure may retain only the observably managed,
+    no-Room graph that Camilla reports as current; otherwise reversal fails
+    loudly without claiming that Layer B was removed.
     """
-    from jasper.correction.runtime_safety import reset_config_path
-
     cfg = getattr(sess, "cfg", None)
     base_config_path = getattr(
         cfg,
         "base_config_path",
         Path("/etc/camilladsp/outputd-cutover.yml"),
     )
-    target = _pre_measurement_restore_target(sess)
+    target = await _pre_measurement_restore_target(sess, cam)
     if target is None:
         try:
             target = await _write_no_room_correction_config(sess, cam)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
-                "reset/auto-revert: no-room re-emit failed; checking "
-                "topology-safe fallback",
+                "reset/auto-revert: no-room re-emit failed; checking the "
+                "fresh current graph",
             )
-            target = reset_config_path(base_config_path)
             from jasper.correction.status import describe_current_config
 
             config_dir = Path(
                 getattr(cfg, "config_dir", None)
                 or "/var/lib/camilladsp/configs"
             )
+            try:
+                current = await cam.get_config_file_path(best_effort=False)
+            except Exception:  # noqa: BLE001
+                current = None
+            target = Path(current) if current else None
             descriptor = describe_current_config(
-                str(target),
+                str(target) if target is not None else None,
                 config_dir=config_dir,
                 base_config_path=Path(base_config_path),
             )

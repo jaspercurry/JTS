@@ -2793,7 +2793,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
     // Watch the latest mic RMS at 50 ms granularity. As soon as the
     // smoothed (last ~250 ms) RMS lands in the target range, send
-    // auto-lock. Target band is the adaptive one computed above.
+    // auto-lock. Target band is the fixed Room measurement band above.
     var watcher = setInterval(function () {
       if (lockSent) return;
       var db = latestMicRmsDb;

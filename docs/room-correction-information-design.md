@@ -336,7 +336,11 @@ baseline preparation and Apply writer boundary. A changed authority or identity
 refuses the mutation. Reset and automatic revert do not depend on new Room
 authority; they acquire the same writer boundary and resolve their restoration
 target after admission, preserving whichever Layer A a preceding legal Active
-apply actually loaded.
+apply actually loaded. The saved pre-Start predecessor is valid only while
+Camilla still reports Room's unique measurement graph; if that path has been
+superseded, reversal strips Room from the fresh current graph instead. A failed
+re-emit can retain only that observed current graph when it is managed and
+already contains no Room filters.
 
 Historical B2b evidence is forensic only: it cannot supply modern candidate or
 receipt authority. Automatic crossover readiness must come from Active's fresh,

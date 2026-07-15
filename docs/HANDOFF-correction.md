@@ -160,8 +160,11 @@
   legal DSP writer cannot substitute a different crossover during a Room run.
   Reset and automatic revert remain independently available exact restoration
   paths and do not require fresh Room authority: a mid-flight cancellation uses
-  the saved predecessor, while an applied/verified correction removes Room from
-  the current graph. They resolve that target only after acquiring the shared
+  the saved predecessor only while Camilla still runs Room's unique measurement
+  graph. If a legal Active apply has replaced it, or for an applied/verified
+  correction, reversal removes Room from the fresh current graph instead. A
+  no-room re-emit failure may retain only Camilla's observed current managed
+  no-Room graph. They resolve that target only after acquiring the shared
   DSP-writer lock, so a concurrent legal Active apply cannot be overwritten by
   a target built from stale Layer A. Measurement-baseline load, Apply, Reset,
   and automatic revert wait for a terminal result after writer admission.
