@@ -257,13 +257,13 @@ host mode, the next reconcile stops the gadget normally. The applier never
 changes saved source intent or the USB controller role; only the hardware
 installer/reconciler owns that boot decision.
 
-The runtime combo-health fallback uses the same ownership boundary. After it
-records the fallback marker, it calls the source coordinator's narrow USB
-withdrawal phase while fan-in's direct consumer still exists. The coordinator
-stops/disables the derived USB readiness mirror and recomposes to NCM-only;
-only after that succeeds does the watcher disarm direct capture. A failed
-recompose stops the composite gadget fail-closed and leaves direct capture
-armed for a later retry rather than advertising consumerless UAC2.
+Runtime capture health does not participate in this lifecycle boundary. Fan-in
+locally reopens a stale direct UAC2 handle and exports health/reopen telemetry,
+but those observations cannot change source intent, stop the readiness mirror,
+or recompose the gadget. Only this coordinator may translate canonical intent,
+effective role, and hardware availability into a host-visible UAC2 change. This
+keeps an audio-path recovery attempt from silently disabling both the USB output
+and the exported microphone.
 
 The operation is idempotent: an unrelated source toggle does not re-enumerate
 USB. The coupling owner may receive a bounded convergence request, but it
@@ -487,5 +487,6 @@ rechecked separately from follower parking; fingerprinted per-source
 completion acknowledgement, source-aware final start boundary, desired-Off
 failed-unit reset and timeout budget, declared accessory coverage,
 correction/claim restore races, and USB authorization-plus-readiness
-composition gate rechecked; the dated 2026-07-14 pre-reboot evidence is
+composition gate rechecked; runtime fan-in capture health is explicitly
+observability-only and cannot invoke the lifecycle owner; the dated 2026-07-14 pre-reboot evidence is
 retained above as history.)

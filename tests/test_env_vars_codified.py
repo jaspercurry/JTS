@@ -91,6 +91,9 @@ _UNCODIFIED = {
     "JASPER_VOLUME_DIAGNOSTICS_PATH",
     "JASPER_WAKE_CORPUS_BRIDGE_ENV",
     "JASPER_WAKE_EVENTS_DIR",
+    # Product intent has a fixed canonical path; this override only lets the
+    # AEC bridge's environment parser use a hermetic temp file in tests.
+    "JASPER_USB_MIC_INTENT_PATH",
     # -- /proc & /sys mount-point / probe-command overrides — pure test
     #    seams for the doctor / hardware probes.
     "JASPER_ASOUND_RENDER_COMMAND",

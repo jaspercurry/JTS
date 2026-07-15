@@ -77,6 +77,7 @@ def _run(
     configfs: Path | None = None,
     cpuinfo_serial: str = "10000000abcdef01",
     speaker_name_file: Path | None = None,
+    usb_mic: str = FALSE,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     configfs = configfs if configfs is not None else _configfs(tmp_path)
     udc = _udc_dir(tmp_path, present=udc_present)
@@ -93,6 +94,7 @@ def _run(
         "JASPER_USBGADGET_AUDIO_READY_CMD": audio_ready,
         "JASPER_USBGADGET_AUDIO_DATA_READY_CMD": audio_data_ready,
         "JASPER_USBGADGET_HARDWARE_ALLOWED_CMD": hardware_allowed,
+        "JASPER_USBGADGET_USB_MIC_ENABLED_CMD": usb_mic,
         "JASPER_CPUINFO_FILE": str(_cpuinfo(tmp_path, cpuinfo_serial)),
         # Keep the speaker-name source deterministic + absent by default.
         "JASPER_SPEAKER_NAME_FILE": str(
@@ -316,6 +318,19 @@ def test_up_product_string_is_speaker_name_only(tmp_path):
     assert "USB Audio" not in product
 
 
+def test_up_microphone_terminal_name_derives_from_speaker_name():
+    """The configfs fallback label follows the same canonical identity as the
+    macOS AudioStreaming label, with one explicit `` Mic`` suffix."""
+
+    text = UP.read_text(encoding="utf-8")
+    assert 'MIC_NAME="${SPEAKER_NAME} Mic"' in text
+    assert (
+        'write_if_present functions/uac2.usb0/p_it_name "${MIC_NAME}"'
+        in text
+    )
+    assert "JTS Microphone" not in text
+
+
 # ---------- uac2 attribute block is byte-identical (protection list) --------
 
 
@@ -336,6 +351,37 @@ def test_up_uac2_attribute_block_byte_identical(tmp_path):
     # tree they are ABSENT, so write_if_present is a no-op — assert the script
     # did not error and the always-written names are correct.
     assert (fn / "function_name").read_text().strip() == "JTS Capture Endpoint"
+
+
+def test_up_usb_microphone_adds_only_the_reverse_uac2_direction(tmp_path):
+    proc, cfg = _run(
+        UP,
+        tmp_path,
+        network="enabled",
+        audio_intent=TRUE,
+        audio_gate=TRUE,
+        usb_mic=TRUE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "audio=1 usb_mic=1" in proc.stderr
+    fn = _gadget_dir(cfg) / "functions" / "uac2.usb0"
+    assert (fn / "c_chmask").read_text().strip() == "3"
+    assert (fn / "p_chmask").read_text().strip() == "1"
+    assert (_gadget_dir(cfg) / "bcdDevice").read_text().strip() == "0x0210"
+
+
+def test_up_usb_microphone_never_creates_uac2_without_usb_audio_input(tmp_path):
+    proc, cfg = _run(
+        UP,
+        tmp_path,
+        network="enabled",
+        audio_intent=FALSE,
+        usb_mic=TRUE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "audio=0 usb_mic=0" in proc.stderr
+    assert not _linked(cfg, "uac2.usb0")
+    assert (_gadget_dir(cfg) / "bcdDevice").read_text().strip() == "0x0200"
 
 
 # ---------- idempotency + UDC binding ---------------------------------------

@@ -7,9 +7,10 @@
 #     laptop plugged into the Pi's USB-C port gets an IP link to the Pi so
 #     http://<hostname>/ works even with Wi-Fi off. See
 #     docs/HANDOFF-usb-gadget.md.
-#   - uac2.usb0 — the USB AUDIO input (wizard-toggled, off by default): the
-#     host sees the speaker as a USB audio output device. This is the
-#     jasper-usbsink source. Its attribute block is byte-identical to the
+#   - uac2.usb0 — USB AUDIO. The host-to-Pi direction is the wizard-toggled
+#     jasper-usbsink source. When the separate /wake USB-microphone intent is
+#     enabled, the same function also advertises a mono Pi-to-host direction.
+#     The default microphone-Off attribute block remains byte-identical to the
 #     pre-composite gadget (a low-latency contract — see
 #     docs/HANDOFF-usb-low-latency.md and the doctor's
 #     check_usbsink_low_latency_contract).
@@ -56,6 +57,7 @@ AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/opt/jasper/.venv/bin/j
 AUDIO_READY_CMD="${JASPER_USBGADGET_AUDIO_READY_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
 AUDIO_DATA_READY_CMD="${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-/opt/jasper/.venv/bin/python -m jasper.fanin.status --usbsink-direct-armed}"
 HARDWARE_ALLOWED_CMD="${JASPER_USBGADGET_HARDWARE_ALLOWED_CMD:-/opt/jasper/.venv/bin/python -m jasper.audio_hardware.usb_port_role --require-management-transport}"
+USB_MIC_ENABLED_CMD="${JASPER_USBGADGET_USB_MIC_ENABLED_CMD:-/opt/jasper/.venv/bin/python -m jasper.usb_mic --check-intent}"
 
 log() {
     echo "jasper-usbgadget-up: $*"
@@ -89,6 +91,7 @@ canonical_name="$("${SPEAKER_NAME_READER}" -m jasper.speaker_name "${SPEAKER_NAM
 if [[ -n "${canonical_name}" ]]; then
     SPEAKER_NAME="${canonical_name}"
 fi
+MIC_NAME="${SPEAKER_NAME} Mic"
 
 write_if_present() {
     local path="$1"
@@ -136,8 +139,16 @@ if ${AUDIO_ALLOWED_CMD} >/dev/null 2>&1; then
     fi
 fi
 
+# The return microphone is deliberately a refinement of the existing UAC2
+# source in this first slice. It can never create an audio function on its own:
+# USB Audio Input must already be authorized, armed, and ready above.
+WANT_USB_MIC=0
+if [[ "${WANT_AUDIO}" == "1" ]] && ${USB_MIC_ENABLED_CMD} >/dev/null 2>&1; then
+    WANT_USB_MIC=1
+fi
+
 emit compose \
-    "network=${WANT_NETWORK} audio=${WANT_AUDIO} net_intent=${net_lc:-enabled} audio_reason=${audio_reason}"
+    "network=${WANT_NETWORK} audio=${WANT_AUDIO} usb_mic=${WANT_USB_MIC} net_intent=${net_lc:-enabled} audio_reason=${audio_reason}"
 
 if [[ "${WANT_NETWORK}" == "0" && "${WANT_AUDIO}" == "0" ]]; then
     # Nothing to compose. The unit's ExecCondition (jasper-usbgadget-wanted)
@@ -179,7 +190,13 @@ cd "${NAME}"
 # the host re-enumerates on the bump.
 echo 0x1d6b > idVendor    # Linux Foundation
 echo 0x0104 > idProduct   # Multifunction Composite Gadget
-echo 0x0200 > bcdDevice   # JTS firmware revision 2.00 (composite gadget)
+if [[ "${WANT_USB_MIC}" == "1" ]]; then
+    # Stable descriptor revision for the bidirectional audio shape. macOS
+    # caches by VID:PID:bcdDevice, so On and Off intentionally differ.
+    echo 0x0210 > bcdDevice
+else
+    echo 0x0200 > bcdDevice   # JTS revision 2.00 (no host microphone)
+fi
 echo 0x0200 > bcdUSB      # USB 2.0
 
 # Device strings (English / 0x409). Serial is the Pi's CPU serial so a host
@@ -237,9 +254,9 @@ fi
 
 # ---- UAC2 audio function ---------------------------------------------------
 #
-# BYTE-IDENTICAL to the pre-composite gadget (low-latency contract, protection
-# list). JTS is unidirectional: host sends audio TO the Pi (host playback =
-# device capture in UAC2 terms). p_chmask=0 leaves the reverse direction off.
+# The host-to-Pi side is byte-identical to the pre-composite gadget
+# (low-latency contract, protection list). p_* is the Pi-to-host side: it stays
+# disabled at p_chmask=0 unless the separate USB microphone intent is On.
 if [[ "${WANT_AUDIO}" == "1" ]]; then
     mkdir -p functions/uac2.usb0
     echo 48000 > functions/uac2.usb0/c_srate
@@ -247,7 +264,18 @@ if [[ "${WANT_AUDIO}" == "1" ]]; then
     echo 3 > functions/uac2.usb0/c_chmask
     echo 1 > functions/uac2.usb0/c_volume_present
     echo 1 > functions/uac2.usb0/c_mute_present
-    echo 0 > functions/uac2.usb0/p_chmask
+    if [[ "${WANT_USB_MIC}" == "1" ]]; then
+        echo 1 > functions/uac2.usb0/p_chmask
+        write_if_present functions/uac2.usb0/p_srate 48000
+        write_if_present functions/uac2.usb0/p_ssize 2
+        write_if_present functions/uac2.usb0/p_hs_bint 1
+        # USB terminal type 0x0201 = microphone.
+        write_if_present functions/uac2.usb0/p_terminal_type 513
+        write_if_present functions/uac2.usb0/p_it_name "${MIC_NAME}"
+        write_if_present functions/uac2.usb0/p_ot_name "JTS USB Host"
+    else
+        echo 0 > functions/uac2.usb0/p_chmask
+    fi
     # Low-latency route hints, only where the running kernel exposes them.
     write_if_present functions/uac2.usb0/c_sync async
     write_if_present functions/uac2.usb0/req_number 2
@@ -257,7 +285,7 @@ if [[ "${WANT_AUDIO}" == "1" ]]; then
     echo "JTS Capture Output" > functions/uac2.usb0/c_ot_name
     echo "JTS Volume" > functions/uac2.usb0/c_fu_vol_name
     ln -s functions/uac2.usb0 configs/c.1/
-    log "uac2.usb0 linked (USB audio input enabled)"
+    log "uac2.usb0 linked (USB audio input enabled, USB microphone=${WANT_USB_MIC})"
 fi
 
 # ---- Bind to the UDC -------------------------------------------------------
@@ -273,4 +301,4 @@ fi
 echo "${UDC}" > UDC
 
 log "${NAME} bound to UDC ${UDC}"
-emit up "state=bound udc=${UDC} network=${WANT_NETWORK} audio=${WANT_AUDIO}"
+emit up "state=bound udc=${UDC} network=${WANT_NETWORK} audio=${WANT_AUDIO} usb_mic=${WANT_USB_MIC}"

@@ -83,6 +83,7 @@ from ..local_sources import (
     local_source_park_units,
 )
 from ..transit.state import read_state as read_transit_state
+from ..usb_mic import write_usb_mic_enabled
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..audio_profile_state import (
     normalize_audio_input_profile,
@@ -118,6 +119,7 @@ _DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
 _DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS = 5.0
 _diagnostics_refresh_lock = threading.Lock()
 _diagnostics_refresh_requested_at: dict[str, float] = {}
+_USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
 
 
 def _diagnostics_result_path() -> str:
@@ -346,14 +348,16 @@ def _active_speaker_grouping_block() -> dict[str, Any] | None:
 # these). poweroff/reboot = power loop; mic/mute = defeats the privacy-mic
 # promise; grouping/set = hijacks output routing; restart/voice|audio =
 # disrupt playback + the assistant; aec/firmware/update downloads and flashes
-# microphone firmware. WS1 Phase 2 added the two restart routes and made the
-# gate mandatory (control_token.ensure_token() at startup, below).
+# microphone firmware; aec/usb-mic = starts or stops live room-audio export.
+# WS1 Phase 2 added the two restart routes and made the gate mandatory
+# (control_token.ensure_token() at startup, below).
 _TOKEN_GATED_ROUTES = frozenset({
     "/system/poweroff",
     "/system/reboot",
     "/system/restart/voice",
     "/system/restart/audio",
     "/mic/mute",
+    "/aec/usb-mic",
     "/grouping/set",
     "/aec/firmware/update",
 })
@@ -545,6 +549,50 @@ def _start_xvf_firmware_update() -> None:
 
 def _aec_full_status() -> dict:
     return _aec_endpoints._aec_full_status()
+
+
+def _schedule_usb_gadget_recompose() -> None:
+    """Hand delayed, debounced apply to systemd before returning to the client.
+
+    Restarting an already-running oneshot cancels its 350 ms grace sleep and
+    begins it again, so rapid switch changes naturally debounce.  Unlike an
+    in-process Timer, the durable intent's apply job survives jasper-control
+    exiting after this request.
+    """
+
+    try:
+        result = subprocess.run(
+            ["systemctl", "restart", "--no-block", _USB_MIC_APPLY_UNIT],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_event(
+            logger,
+            "usb_mic.recompose_failed",
+            unit=_USB_MIC_APPLY_UNIT,
+            error=str(exc),
+            level=logging.ERROR,
+        )
+        return
+    if result.returncode != 0:
+        log_event(
+            logger,
+            "usb_mic.recompose_failed",
+            unit=_USB_MIC_APPLY_UNIT,
+            returncode=result.returncode,
+            detail=(result.stderr or result.stdout).strip().replace("\n", " | "),
+            level=logging.ERROR,
+        )
+        return
+    log_event(
+        logger,
+        "usb_mic.recompose_scheduled",
+        unit=_USB_MIC_APPLY_UNIT,
+        grace_ms=350,
+    )
 
 
 def _load_dial_heartbeat() -> dict[str, Any]:
@@ -2819,6 +2867,47 @@ def _make_handler(
             self._send_json(_aec_full_status())
             return
 
+        def _post_aec_usb_mic(self) -> None:
+            # Persist intent before descriptor mutation. The gadget restart is
+            # delayed very slightly so a request arriving over its own USB-NCM
+            # link can receive this response before re-enumeration drops that
+            # link for a few seconds.
+            body = self._read_json()
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                self._send_json(
+                    {"error": "enabled must be a boolean"}, status=400,
+                )
+                return
+            current = _aec_full_status()
+            usb_mic = current.get("usb_mic") or {}
+            if enabled and not bool(usb_mic.get("toggle_enabled")):
+                self._send_json(
+                    {
+                        "error": usb_mic.get("detail")
+                        or "USB microphone is not available in the current audio setup.",
+                        "usb_mic": usb_mic,
+                    },
+                    status=409,
+                )
+                return
+            try:
+                write_usb_mic_enabled(enabled)
+            except OSError as exc:
+                self._send_json(
+                    {"error": f"write usb_mic.env failed: {exc}"}, status=502,
+                )
+                return
+            log_event(
+                logger,
+                "usb_mic.set",
+                enabled=enabled,
+                client=self.address_string(),
+            )
+            _schedule_usb_gadget_recompose()
+            self._send_json(_aec_full_status())
+            return
+
         def _post_aec_threshold(self) -> None:
             # Sensitivity slider on the /wake/ page. Writes
             # JASPER_WAKE_THRESHOLD into wake_model.env (same
@@ -3136,6 +3225,7 @@ def _make_handler(
             "/aec/toggle": "_post_aec_toggle",
             "/aec/leg": "_post_aec_leg",
             "/aec/profile": "_post_aec_profile",
+            "/aec/usb-mic": "_post_aec_usb_mic",
             "/aec/threshold": "_post_aec_threshold",
             "/aec/firmware/update": "_post_aec_firmware_update",
             "/debug": "_post_debug",

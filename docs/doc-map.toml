@@ -626,19 +626,22 @@ code = [
   "jasper/audio_hardware/usb_port_role.py",
   "jasper/output_hardware.py",
   "jasper/usbsink/**",
-  "jasper/usbgadget.py",
+  "jasper/*usb*.py",
+  "jasper/cli/usb*.py",
   "jasper/fanin/status.py",
   "jasper/local_sources/**",
   "jasper/web/sources_setup.py",
   "deploy/usbsink/**",
   "deploy/bin/jasper-audio-hardware-reconcile",
   "deploy/lib/install/renderers.sh",
-  "deploy/systemd/jasper-usbsink*.service",
+  "deploy/systemd/jasper-usb*.service",
   "deploy/systemd/bluealsa*.service.d/**",
 ]
 docs = [
   "docs/HANDOFF-usb-gadget.md",
   "docs/HANDOFF-usbsink.md",
+  "docs/HANDOFF-aec.md",
+  "PRIVACY.md",
   "docs/audio-paths.md",
   "docs/HANDOFF-fan-in-daemon.md",
   "docs/HANDOFF-volume.md",
@@ -646,7 +649,7 @@ docs = [
 ]
 
 requires_docs_when = [
-  "Gadget enablement, reboot requirements, USB source state, host volume observation, preemption, or source-lane wiring changes.",
+  "Gadget enablement, reboot requirements, USB source state, USB host-microphone export/privacy, host volume observation, preemption, or source-lane wiring changes.",
   "Composite gadget composition (network vs. audio function), the `jasper-usbgadget*` scripts/unit, or the local-source registry's gadget-park/restore behavior changes — see HANDOFF-usb-gadget.md.",
 ]
 verification = [

@@ -2,17 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pin the landing page's WS1 control-token delivery for the mic-mute button.
+"""Pin control-token delivery for the landing-page assistant pause button.
 
 The static landing page (deploy/index.html) is served by nginx straight from
 disk — it gets neither canonical_page()'s `<meta name="jts-control-token">`
 injection nor the shared http.js token logic the wizards use. So POST
-/mic/mute (a token-gated route) used to go out with no X-JTS-Token and, on the
-resulting 403, the toggle snapped back silently — a privacy control failing
-with no feedback (control-plane-auth §7).
+/mic/mute (the legacy token-gated route) used to go out with no X-JTS-Token
+and, on the resulting 403, the toggle snapped back silently with no feedback
+(control-plane-auth §7).
 
 These are static-source guards (mirroring tests/test_web_design_system.py):
-the page must carry the bake-time token placeholder + meta tag, the mute POST
+the page must carry the bake-time token placeholder + meta tag, the pause POST
 must attach X-JTS-Token, the failure path must surface an error instead of a
 silent revert, install.sh must bake the token (fail-loud), and nginx must serve
 `location = /` no-store so the token-bearing HTML is never cached.
@@ -54,11 +54,11 @@ def test_landing_carries_control_token_meta_placeholder():
     ), "control-token meta tag must carry the __JTS_CONTROL_TOKEN__ bake placeholder"
 
 
-def test_mic_mute_post_attaches_control_token():
+def test_assistant_pause_post_attaches_control_token():
     html = _landing()
-    # The mute POST must read the token (meta first, localStorage fallback) and
-    # send it as X-JTS-Token, or every mute hits the gate's 403.
-    assert "X-JTS-Token" in html, "mic-mute POST must attach the X-JTS-Token header"
+    # The pause POST must read the token (meta first, localStorage fallback) and
+    # send it as X-JTS-Token, or every pause hits the gate's 403.
+    assert "X-JTS-Token" in html, "assistant-pause POST must attach X-JTS-Token"
     assert "controlToken()" in html, "landing page must resolve the token via controlToken()"
     assert "meta[name=\"jts-control-token\"]" in html or \
         "meta[name='jts-control-token']" in html, \
@@ -67,7 +67,7 @@ def test_mic_mute_post_attaches_control_token():
         "controlToken() must fall back to the per-browser localStorage value"
 
 
-def test_mic_mute_failure_is_not_silent():
+def test_assistant_pause_failure_is_not_silent():
     html = _landing()
     # The original bug: on a non-OK response the toggle reverted with no
     # message. The fix surfaces the failure (failMute) and special-cases the
@@ -76,8 +76,21 @@ def test_mic_mute_failure_is_not_silent():
     assert "403" in html, "the mute path must special-case the token-gate 403"
     # Guard against a regression back to the silent bare-revert: the literal
     # old pattern (revert with no setMicState/sub message) must not reappear in
-    # the mute POST handler.
-    assert "Mute blocked" in html, "the 403 branch must show a user-facing message"
+    # the pause POST handler.
+    assert "Pause blocked" in html, "the 403 branch must show a user-facing message"
+
+
+def test_assistant_pause_copy_does_not_claim_the_microphone_is_off():
+    html = _landing()
+    assert '<h2 class="eyebrow">Voice assistant</h2>' in html
+    assert "Resume voice assistant" in html
+    assert "Pause voice assistant" in html
+    assert "Voice assistant paused" in html
+    assert "Voice assistant active" in html
+    assert "JTS will not respond to the wake word" in html
+    assert ">Wake detection<" not in html
+    assert "Microphone muted" not in html
+    assert "Mute microphone" not in html
 
 
 def test_mic_status_handles_bonded_follower_parked_state():
@@ -89,7 +102,7 @@ def test_mic_status_handles_bonded_follower_parked_state():
     assert "reason === 'bonded_follower'" in html
     assert "data.available !== false" in html
     assert "'Parked'" in html
-    assert "Microphone parked while paired" in html
+    assert "Voice assistant parked while paired" in html
 
 
 def test_mic_status_handles_voice_reloading_state():

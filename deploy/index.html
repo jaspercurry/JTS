@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- WS1 control token, baked at install time (install.sh ->
-       control_token.ensure_token). The mic-mute button rides it on
+       control_token.ensure_token). The assistant-pause button rides it on
        POST /mic/mute, mirroring the wizards' invisible delivery
        (deploy/assets/shared/js/http.js). nginx serves `location = /`
        no-store so the token-bearing HTML is never cached. -->
@@ -563,7 +563,7 @@
 
         <section class="control-section" data-requires="voice_brain" hidden>
           <div class="control-head">
-            <h2 class="eyebrow">Microphone</h2>
+            <h2 class="eyebrow">Voice assistant</h2>
             <span class="status-val" id="mic-state">Checking</span>
           </div>
           <div class="mic-row">
@@ -571,11 +571,11 @@
               <span class="mic-dot" id="mic-dot"></span>
               <span class="mic-copy">
                 <span class="mic-title" id="mic-title">Checking</span>
-                <span class="mic-sub" id="mic-sub">Voice control status</span>
+                <span class="mic-sub" id="mic-sub">Voice assistant status</span>
               </span>
             </div>
             <button class="mic-action" id="mic-toggle" type="button" disabled
-                    aria-pressed="false">Mute</button>
+                    aria-pressed="false">Pause</button>
           </div>
         </section>
       </div>
@@ -665,8 +665,8 @@
           <a class="setting-row" href="/wake/">
             <span class="row-icon"><svg aria-hidden="true"><use href="#icon-wake"></use></svg></span>
             <span class="setting-copy">
-              <span class="setting-title">Wake detection</span>
-              <span class="setting-status">Jarvis · sensitivity</span>
+              <span class="setting-title">Voice assistant</span>
+              <span class="setting-status">Wake word · microphone</span>
             </span>
             <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
           </a>
@@ -1381,9 +1381,9 @@
       fetchState();
     })();
 
-    // Mic mute toggle. Talks to jasper-control's /mic endpoints
-    // (proxied via nginx). The button reads as the next available action:
-    // Mute when listening, Enable when muted.
+    // Voice-assistant pause toggle. The legacy /mic endpoints remain the
+    // control-plane API, but this state only governs wake detection and JTS
+    // voice capture. The independent USB microphone export is unaffected.
     (function() {
       var button = document.getElementById('mic-toggle');
       var stateEl = document.getElementById('mic-state');
@@ -1417,10 +1417,8 @@
         }
       }
 
-      // A mute POST that did not take effect must NEVER leave the UI showing
-      // "Muted": revert to the real (unchanged) state AND surface why, so a
-      // failed privacy toggle is never silent (the original bug — a tokenless
-      // 403 snapped the button back with no message).
+      // A pause POST that did not take effect must NEVER leave the UI showing
+      // "Paused": revert to the real (unchanged) state AND surface why.
       function failMute(prevMuted, message) {
         dirty = false;
         renderMic(prevMuted, available);
@@ -1443,12 +1441,12 @@
         available = !parkedByPair && !starting && isAvailable !== false;
         button.disabled = !available;
         button.textContent = parkedByPair ? 'Parked' :
-          (starting ? 'Reloading' : (muted ? 'Enable' : 'Mute'));
+          (starting ? 'Reloading' : (muted ? 'Resume' : 'Pause'));
         button.setAttribute('aria-pressed', String(!muted && available));
         button.setAttribute('aria-label',
-          parkedByPair ? 'Microphone parked while paired' :
+          parkedByPair ? 'Voice assistant parked while paired' :
           (starting ? 'Voice control reloading' :
-            (muted ? 'Enable microphone' : 'Mute microphone')));
+            (muted ? 'Resume voice assistant' : 'Pause voice assistant')));
         dot.classList.toggle('on', !muted && available);
         if (parkedByPair) {
           title.textContent = 'Paired';
@@ -1463,11 +1461,13 @@
           setMicState('Reloading');
           return;
         }
-        title.textContent = available ? (muted ? 'Muted' : 'Listening') : 'Unavailable';
+        title.textContent = available ?
+          (muted ? 'Voice assistant paused' : 'Voice assistant active') :
+          'Unavailable';
         sub.textContent = available ?
-          (muted ? 'Microphone muted' : 'Say "Jarvis" to wake') :
+          (muted ? 'JTS will not respond to the wake word' : 'Say "Jarvis" to wake') :
           'Voice control offline';
-        setMicState(available ? (muted ? 'Muted' : 'Listening') : 'Unavailable');
+        setMicState(available ? (muted ? 'Paused' : 'Active') : 'Unavailable');
       }
 
       function applyMuted(nextMuted, isAvailable, info) {
@@ -1501,7 +1501,7 @@
         dirty = true;
         ignorePollUntil = Date.now() + 1500;
         renderMic(want_muted, available);
-        setMicState(want_muted ? 'Muting' : 'Listening');
+        setMicState(want_muted ? 'Pausing' : 'Resuming');
         try {
           var headers = {'Content-Type': 'application/json'};
           var ctl = controlToken();
@@ -1516,12 +1516,12 @@
             dirty = false;
             applyMuted(!!data.muted, true);
           } else if (resp.status === 403) {
-            failMute(!want_muted, 'Mute blocked — reload to refresh access');
+            failMute(!want_muted, 'Pause blocked — reload to refresh access');
           } else {
-            failMute(!want_muted, 'Mute failed (HTTP ' + resp.status + ')');
+            failMute(!want_muted, 'Pause failed (HTTP ' + resp.status + ')');
           }
         } catch (_) {
-          failMute(!want_muted, 'Mute failed — network error');
+          failMute(!want_muted, 'Pause failed — network error');
         }
       }
 

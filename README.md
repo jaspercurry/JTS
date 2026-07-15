@@ -17,7 +17,8 @@ The pitch: a music streamer that's also a voice assistant, built
 from open hardware and open audio software, with the LLM costing
 roughly $1–3/month at light use on the cheapest provider.
 
-Privacy details: [PRIVACY.md](PRIVACY.md) explains cloud egress, local retention, and mic mute scope.
+Privacy details: [PRIVACY.md](PRIVACY.md) explains cloud egress, local retention,
+voice-assistant pause scope, and the independent USB microphone export.
 
 **Want to set one up?**
 - **Using Claude Code?** Just open this repo and say *"I want to set up
@@ -175,6 +176,10 @@ chip-AEC profile, the same bridge process bypasses WebRTC AEC3 and
 forwards the selected hardware-AEC chip beam over that carrier. It
 runs automatically only when the configured AEC mic is present with
 6-channel firmware — see § below.
+When USB Audio Input is enabled, an independent switch on `/wake/` can also
+export that same cleaned microphone to the connected Mac. It uses a dedicated
+local carrier and relay, so voice keeps its normal mic stream while the Mac
+gets a mono USB input.
 
 ---
 
@@ -309,6 +314,15 @@ runs automatically only when the configured AEC mic is present with
   helper remains bounded. See
   [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md) for the full
   design.
+- ✅ **USB microphone for the connected Mac** (`jasper-usbmic`) — an optional
+  reverse direction on that same USB audio device. With USB Audio Input and an
+  echo-cancelled mic profile active, the switch at `http://jts.local/wake/`
+  makes JTS appear as a mono Mac input; switching it off removes the input.
+  The Voice assistant Pause control does not silence this explicitly enabled
+  export; the `/wake/` switch is its sole end-user authority. Voice remains
+  available because the relay uses its own AEC-bridge carrier. Changing the
+  switch briefly reconnects USB audio and the USB management link. See
+  [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md).
 - ✅ **USB management network** — when the resolved hardware role permits
   gadget mode, the same USB-C data port carries a USB NCM network link
   (`ncm.usb0`, on by default and independent of the USB Audio Input toggle
@@ -545,7 +559,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | First-time contributors | Quick start, PR flow, testing, doc layout |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | All contributors | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Security reporters / maintainers | Supported versions, vulnerability reporting path, current LAN-appliance security model |
-| [PRIVACY.md](PRIVACY.md) | Operators / OSS reviewers | What leaves the device, what stays local, retention defaults, and mic mute scope |
+| [PRIVACY.md](PRIVACY.md) | Operators / OSS reviewers | What leaves the device, what stays local, retention defaults, voice-assistant pause scope, and USB microphone export scope |
 | [CHANGELOG.md](CHANGELOG.md) | Maintainers / release followers | Keep-a-Changelog release notes; release tags are maintainer-cut (`v0.1.0` marks OSS launch) |
 | [LICENSE](LICENSE) | Anyone redistributing | Apache 2.0 |
 | [NOTICE](NOTICE) | Anyone redistributing | Project notice plus pointer to third-party attribution inventory |

@@ -875,12 +875,11 @@ impl StateServer {
                 buf.push(',');
                 push_kv_bool(&mut buf, "present", d.present.load(Ordering::Relaxed));
                 buf.push(',');
-                // Coarse capture health for the Pi-side combo runtime-fallback
-                // watcher (jasper-fanin-combo-health): "capturing" (present +
-                // flowing), "idle" (no host / attached-but-silent / (re)opening —
-                // NEVER a failure), or "broken" (the flowing→dead zombie signature
-                // — a real runtime capture break). Instantaneous view; the watcher
-                // acts on the durable `reopens`/`card_gen_reopens` churn below. See
+                // Coarse capture-health observability: "capturing" (present +
+                // flowing), "idle" (no host / attached-but-silent / (re)opening),
+                // or "broken" (the flowing→dead zombie signature). This and the
+                // reopen counters below expose fan-in's local recovery; they do not
+                // authorize a USB lifecycle or composition change. See
                 // crate::mixer::direct_health.
                 push_kv_str(
                     &mut buf,

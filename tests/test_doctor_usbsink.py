@@ -18,7 +18,6 @@ import pytest
 from jasper import audio_runtime_plan
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.cli import doctor
-from jasper.fanin import combo_health as _ch
 from jasper.fanin import coupling_auto as _ca
 from jasper.fanin import coupling_reconcile as _cr
 
@@ -633,12 +632,28 @@ def test_usbsink_name_warns_when_stock_string_remains(monkeypatch, tmp_path):
     # Override present but never actually patched.
     _write_override(
         tmp_path,
-        b"\x7fELF" + b"Playback Inactive\x00rest",
-        marker=f"{_KVER}\tKitchen\tdeadbeef",
+        b"\x7fELF" + b"Playback Inactive\x00Capture Inactive\x00rest",
+        marker=f"3\t{_KVER}\tKitchen\tKitchen Mic\tdeadbeef",
     )
     r = doctor.check_usbsink_name(modules_root=str(tmp_path))
     assert r.status == "warn"
     assert "stock string" in r.detail
+
+
+def test_usbsink_name_warns_when_only_active_capture_string_remains(
+    monkeypatch, tmp_path,
+):
+    _name_env(monkeypatch, active=True)
+    _write_override(
+        tmp_path,
+        b"\x7fELF Kitchen\x00Kitchen Mic\x00Capture Active\x00rest",
+        marker=f"3\t{_KVER}\tKitchen\tKitchen Mic\tdeadbeef",
+    )
+
+    result = doctor.check_usbsink_name(modules_root=str(tmp_path))
+
+    assert result.status == "warn"
+    assert "stock string" in result.detail
 
 
 def test_usbsink_name_ok_when_patched_and_marker_matches(monkeypatch, tmp_path):
@@ -646,7 +661,7 @@ def test_usbsink_name_ok_when_patched_and_marker_matches(monkeypatch, tmp_path):
     _write_override(
         tmp_path,
         b"\x7fELF Kitchen\x00 patched body, no stock token",
-        marker=f"{_KVER}\tKitchen\tdeadbeef",
+        marker=f"3\t{_KVER}\tKitchen\tKitchen Mic\tdeadbeef",
     )
     r = doctor.check_usbsink_name(modules_root=str(tmp_path))
     assert r.status == "ok"
@@ -659,7 +674,7 @@ def test_usbsink_name_warns_when_marker_name_stale(monkeypatch, tmp_path):
     _write_override(
         tmp_path,
         b"\x7fELF Kitchen\x00 patched body",
-        marker=f"{_KVER}\tKitchen\tdeadbeef",
+        marker=f"3\t{_KVER}\tKitchen\tKitchen Mic\tdeadbeef",
     )
     r = doctor.check_usbsink_name(modules_root=str(tmp_path))
     assert r.status == "warn"
@@ -676,6 +691,20 @@ def test_usbsink_name_warns_when_marker_missing(monkeypatch, tmp_path):
     r = doctor.check_usbsink_name(modules_root=str(tmp_path))
     assert r.status == "warn"
     assert "stale" in r.detail.lower()
+
+
+def test_usbsink_name_warns_for_playback_only_patch_schema(monkeypatch, tmp_path):
+    _name_env(monkeypatch, active=True, speaker="Kitchen")
+    _write_override(
+        tmp_path,
+        b"\x7fELF Kitchen\x00 patched body",
+        marker=f"{_KVER}\tKitchen\tdeadbeef",
+    )
+
+    result = doctor.check_usbsink_name(modules_root=str(tmp_path))
+
+    assert result.status == "warn"
+    assert "stale" in result.detail.lower()
 
 
 # ----------------------------------------------------------------------
@@ -1036,21 +1065,105 @@ def test_composition_udc_dir_read_error_treated_as_no_udc(monkeypatch, tmp_path)
 
 
 # ----------------------------------------------------------------------
-# check_usb_combo_fallback (defect 2026-07-10)
+# check_usb_mic_export
 # ----------------------------------------------------------------------
 
 
-def _setup_combo(monkeypatch, tmp_path, *, failed=False, marker=None,
-                 gadget=True, intent=True, parked=False, armed=False, pending=0):
-    monkeypatch.setattr(doctor.usbsink, "_systemd_is_failed", lambda unit: failed)
-    monkeypatch.setattr(_ch, "read_fallback_marker", lambda *a, **k: marker)
-    # Pin the tick-state read deterministic (default clean) so the armed-OK path
-    # doesn't read a stray /var/lib/jasper file; pending>0 exercises the
-    # in-progress-break warn (defect 2026-07-11).
+def _usb_mic_gadget(tmp_path: Path, *, p_chmask: str, bcd_device: str) -> Path:
+    gadget = tmp_path / "gadget"
+    function = gadget / "functions" / "uac2.usb0"
+    function.mkdir(parents=True)
+    (function / "p_chmask").write_text(p_chmask + "\n")
+    (gadget / "bcdDevice").write_text(bcd_device + "\n")
+    return gadget
+
+
+def test_usb_mic_doctor_accepts_clean_off_descriptor(monkeypatch, tmp_path):
+    gadget = _usb_mic_gadget(tmp_path, p_chmask="0", bcd_device="0x0200")
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
     monkeypatch.setattr(
-        _ch, "read_tick_state",
-        lambda *a, **k: _ch.TickState(consecutive_broken=pending, sample=None),
+        doctor.usbsink,
+        "read_usb_mic_intent",
+        lambda: SimpleNamespace(valid=True, enabled=False, detail=""),
     )
+
+    result = doctor.usbsink.check_usb_mic_export()
+
+    assert result.status == "ok"
+    assert "disabled" in result.detail
+
+
+def test_usb_mic_doctor_rejects_stale_on_descriptor_revision(
+    monkeypatch,
+    tmp_path,
+):
+    gadget = _usb_mic_gadget(tmp_path, p_chmask="1", bcd_device="0x0200")
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "read_usb_mic_intent",
+        lambda: SimpleNamespace(valid=True, enabled=True, detail=""),
+    )
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "_audio_composition_wanted",
+        lambda: (True, "ready"),
+    )
+
+    result = doctor.usbsink.check_usb_mic_export()
+
+    assert result.status == "fail"
+    assert "0x0210" in result.detail
+
+
+def test_usb_mic_doctor_warns_when_live_relay_audio_is_stalled(
+    monkeypatch,
+    tmp_path,
+):
+    gadget = _usb_mic_gadget(tmp_path, p_chmask="1", bcd_device="0x0210")
+    relay = tmp_path / "relay.json"
+    relay.write_text(
+        '{"updated_epoch_sec": 100, "audio_stalled": true, '
+        '"source_stalled": true, "periods_dropped": 12, '
+        '"drop_rate_periods_per_sec": 8}'
+    )
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
+    monkeypatch.setattr(doctor.usbsink, "RELAY_STATUS_PATH", str(relay))
+    monkeypatch.setattr(doctor.usbsink.time, "time", lambda: 100.5)
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "read_usb_mic_intent",
+        lambda: SimpleNamespace(valid=True, enabled=True, detail=""),
+    )
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "_audio_composition_wanted",
+        lambda: (True, "ready"),
+    )
+    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda _unit: True)
+    result = doctor.usbsink.check_usb_mic_export()
+
+    assert result.status == "warn"
+    assert "stopped before" in result.detail
+    assert "drop_rate=8" in result.detail
+
+
+# ----------------------------------------------------------------------
+# check_usb_combo_consistency
+# ----------------------------------------------------------------------
+
+
+def _setup_combo(
+    monkeypatch,
+    tmp_path,
+    *,
+    failed=False,
+    gadget=True,
+    intent=True,
+    parked=False,
+    armed=False,
+):
+    monkeypatch.setattr(doctor.usbsink, "_systemd_is_failed", lambda unit: failed)
     monkeypatch.setattr(_ca, "read_usb_gadget_available", lambda *a, **k: gadget)
     monkeypatch.setattr(
         doctor.usbsink,
@@ -1069,24 +1182,14 @@ def _setup_combo(monkeypatch, tmp_path, *, failed=False, marker=None,
     monkeypatch.setattr(_cr, "FANIN_ENV_PATH", str(fanin_env))
 
 
-def test_combo_fallback_failed_unit_is_fail(monkeypatch, tmp_path):
+def test_combo_consistency_failed_unit_is_fail(monkeypatch, tmp_path):
     _setup_combo(monkeypatch, tmp_path, failed=True)
-    r = doctor.usbsink.check_usb_combo_fallback()
+    r = doctor.usbsink.check_usb_combo_consistency()
     assert r.status == "fail"
     assert "failed state" in r.detail
 
 
-def test_combo_fallback_marker_present_is_warn(monkeypatch, tmp_path):
-    marker = _ch.FallbackMarker(reason="direct capture broke", at_epoch=1.0)
-    _setup_combo(monkeypatch, tmp_path, marker=marker)
-    r = doctor.usbsink.check_usb_combo_fallback()
-    assert r.status == "warn"
-    assert "USB audio unavailable" in r.detail
-    assert "no aloop solo fallback" in r.detail
-    assert "direct capture broke" in r.detail
-
-
-def test_combo_fallback_solo_intent_on_but_not_armed_is_warn(
+def test_combo_consistency_solo_intent_on_but_not_armed_is_warn(
     monkeypatch,
     tmp_path,
 ):
@@ -1097,14 +1200,13 @@ def test_combo_fallback_solo_intent_on_but_not_armed_is_warn(
         intent=True,
         parked=False,
         armed=False,
-        marker=None,
     )
-    r = doctor.usbsink.check_usb_combo_fallback()
+    r = doctor.usbsink.check_usb_combo_consistency()
     assert r.status == "warn"
     assert "NOT armed" in r.detail
 
 
-def test_combo_fallback_follower_intent_on_disarmed_is_ok(monkeypatch, tmp_path):
+def test_combo_consistency_follower_intent_on_disarmed_is_ok(monkeypatch, tmp_path):
     """Desired-On is intentionally disarmed while follower-role parked."""
 
     _setup_combo(
@@ -1113,52 +1215,40 @@ def test_combo_fallback_follower_intent_on_disarmed_is_ok(monkeypatch, tmp_path)
         intent=True,
         parked=True,
         armed=False,
-        marker=None,
     )
-    result = doctor.usbsink.check_usb_combo_fallback()
+    result = doctor.usbsink.check_usb_combo_consistency()
     assert result.status == "ok"
     assert "parked_follower" in result.detail
 
 
-def test_combo_fallback_invalid_intent_is_fail(monkeypatch, tmp_path):
+def test_combo_consistency_invalid_intent_is_fail(monkeypatch, tmp_path):
     _setup_combo(monkeypatch, tmp_path, intent=True, armed=False)
 
     def invalid(_source):
         raise RuntimeError("bad USB intent")
 
     monkeypatch.setattr(doctor.usbsink, "source_intent_enabled", invalid)
-    result = doctor.usbsink.check_usb_combo_fallback()
+    result = doctor.usbsink.check_usb_combo_consistency()
     assert result.status == "fail"
     assert "bad USB intent" in result.detail
 
 
-def test_combo_fallback_armed_coherent_is_ok(monkeypatch, tmp_path):
+def test_combo_consistency_armed_coherent_is_ok(monkeypatch, tmp_path):
     _setup_combo(monkeypatch, tmp_path, intent=True, armed=True)
-    r = doctor.usbsink.check_usb_combo_fallback()
+    r = doctor.usbsink.check_usb_combo_consistency()
     assert r.status == "ok"
     assert "combo armed" in r.detail
 
 
-def test_combo_fallback_armed_with_pending_break_is_warn(monkeypatch, tmp_path):
-    # Defect 2026-07-11 observability: an in-progress genuine break (consecutive
-    # broken count > 0) is surfaced as a warn BEFORE it disarms, so the repeated
-    # broken-tick WARNs no longer go unnoticed until an unexplained disarm.
-    _setup_combo(monkeypatch, tmp_path, intent=True, armed=True, pending=1)
-    r = doctor.usbsink.check_usb_combo_fallback()
-    assert r.status == "warn"
-    assert "consecutive broken tick" in r.detail
-    assert "in progress" in r.detail
-
-
-def test_combo_fallback_disarmed_off_is_ok(monkeypatch, tmp_path):
+def test_combo_consistency_disarmed_off_is_ok(monkeypatch, tmp_path):
     _setup_combo(monkeypatch, tmp_path, intent=False, armed=False)
-    r = doctor.usbsink.check_usb_combo_fallback()
+    r = doctor.usbsink.check_usb_combo_consistency()
     assert r.status == "ok"
     assert "disarmed" in r.detail
 
 
-def test_combo_fallback_no_gadget_skips(monkeypatch, tmp_path):
+def test_combo_consistency_no_gadget_skips(monkeypatch, tmp_path):
     _setup_combo(monkeypatch, tmp_path, gadget=False)
-    r = doctor.usbsink.check_usb_combo_fallback()
+    r = doctor.usbsink.check_usb_combo_consistency()
     assert r.status == "ok"
     assert "not applicable" in r.detail

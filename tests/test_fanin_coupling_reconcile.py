@@ -311,8 +311,8 @@ def test_cli_main_hydrates_env_files_before_reconciling(monkeypatch):
 
 def test_cli_main_configures_info_logging(monkeypatch, capsys):
     """main() must install an INFO-capable root handler: the #1233 camilla
-    pause/resume evidence, auto_resolved, and the --health recovered transition
-    are INFO-level ``event=`` lines, and without basicConfig the root logger
+    pause/resume evidence and auto_resolved transition are INFO-level ``event=``
+    lines, and without basicConfig the root logger
     falls back to Python's lastResort handler (WARNING+), silently dropping
     them from the oneshot units' journals (observed on jts.local build
     41886ab8, 2026-07-11)."""
@@ -472,12 +472,9 @@ def test_cli_requires_a_choice_or_auto(monkeypatch):
 
 
 # ------------------------------------------------------------ entry flock
-# #1233 follow-up: jasper-fanin-coupling-auto.service (--auto) and
-# jasper-fanin-combo-health.service (--health) are independent oneshots with no
-# systemd ordering, and install.sh / the operator CLI run the same verbs
-# directly. One shared advisory flock serializes every entry pass so their
-# ordered daemon transitions (camilla stop -> fan-in -> camilla start) can
-# never interleave.
+# #1233 follow-up: install.sh, the boot oneshot, and the operator CLI can invoke
+# the same transition directly. One advisory flock serializes every entry pass
+# so their ordered daemon transitions cannot interleave.
 
 
 def test_entry_lock_acquires_and_stamps_pid(tmp_path):
@@ -563,11 +560,7 @@ def test_cli_proceeds_unserialized_when_lock_unavailable(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("argv", [["--auto"], ["loopback"]])
 def test_cli_verbs_run_under_entry_lock(monkeypatch, tmp_path, argv):
-    """Apply verbs hold the coupling flock for the pass, then release it.
-
-    Health owns source -> coupling locking inside run_health_check; its ordering
-    and release contract are pinned in test_fanin_combo_health_watcher.py.
-    """
+    """Apply verbs hold the coupling flock for the pass, then release it."""
     import fcntl
 
     from jasper.fanin import coupling_reconcile as cr
@@ -652,54 +645,6 @@ def test_cli_auto_aborts_loudly_on_entry_lock_contention(
     err = capsys.readouterr().err
     assert str(lock_path) in err and "another reconcile pass" in err
     assert "entry_lock_contended" in caplog.text
-
-
-def test_cli_health_stands_down_on_entry_lock_contention(
-    monkeypatch, tmp_path, capsys, caplog
-):
-    """The periodic `--health` WATCHER that loses the lock race must NOT fail its
-    unit — a reconcile in flight is exactly when it has nothing to observe. It
-    stands down at WARNING with exit 0 (so a collision with a deploy's `--auto`
-    arm can't spuriously trip check_service_runtime_state), and does not run the
-    watcher body."""
-    import logging
-
-    from jasper.fanin import coupling_reconcile as cr
-
-    lock_path = tmp_path / "entry.lock"
-    monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(lock_path))
-    monkeypatch.setattr(cr, "HEALTH_ENTRY_LOCK_TIMEOUT_SECONDS", 0.0)
-    monkeypatch.setattr(cr, "ENTRY_LOCK_POLL_SECONDS", 0.05)
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
-    from contextlib import nullcontext
-
-    from jasper import source_intent
-
-    # The production wrapper acquires source before probing coupling. Keep that
-    # first phase local and assert the watcher body never runs after contention.
-    monkeypatch.setattr(
-        source_intent,
-        "source_reconcile_lock",
-        lambda **_kwargs: nullcontext(),
-    )
-    monkeypatch.setattr(
-        cr,
-        "_run_health_check_locked",
-        lambda *a, **k: pytest.fail("watcher ran despite lock contention"),
-    )
-
-    held = cr._acquire_entry_lock(lock_path, timeout_seconds=0.5)
-    assert held.outcome == "acquired"
-    try:
-        with caplog.at_level(logging.WARNING, logger="jasper.fanin.coupling_reconcile"):
-            rc = cr.main(["--health"])
-    finally:
-        held.fh.close()
-
-    assert rc == 0  # stood down, unit stays healthy
-    err = capsys.readouterr().err
-    assert "skipped this health-watcher tick" in err
-    assert "entry_lock_contended_health_skip" in caplog.text
 
 
 # --- shm_ring coupling (Ring A + Ring B, P2) ---------------------------------
@@ -2322,7 +2267,6 @@ def test_reconcile_auto_removed_coupling_fails_safe_ignoring_operator_marker(
             outputd_env_path=outputd_env,
             gadget_present=False,
             usb_intent_enabled=False,
-            fallback_active=False,
             restart_fanin=rf,
             restart_outputd=ro,
             reconcile_camilla=rc,

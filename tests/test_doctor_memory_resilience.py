@@ -488,6 +488,7 @@ _PID_MAP = {
     "jasper-snapserver": "1014",
     "ssh": "1015",
     "jasper-usbsink-volume": "1016",
+    "jasper-usbmic": "1017",
 }
 
 _EXPECTED_CONFIG = {
@@ -506,6 +507,7 @@ _EXPECTED_CONFIG = {
     "jasper-snapserver": "-300",
     "ssh": "-250",
     "jasper-usbsink-volume": "100",
+    "jasper-usbmic": "-300",
 }
 
 
@@ -571,8 +573,8 @@ def test_oom_score_adj_skips_units_not_installed_on_streambox():
     assert r.status == "ok", r.detail
     for unit in absent:
         assert unit not in r.detail
-    # The remaining 11 installed daemons are still verified.
-    assert "11 critical daemons protected" in r.detail
+    # The remaining 12 installed daemons are still verified.
+    assert "12 critical daemons protected" in r.detail
 
 
 def test_oom_score_adj_warns_on_present_drift_with_others_absent():
@@ -615,6 +617,7 @@ _LIVE_OK = {
     "1013": "-300", "1014": "-300",
     "1015": "-250",   # ssh recovery path, still killable
     "1016": "100",
+    "1017": "-300",
 }
 
 
@@ -631,7 +634,7 @@ def test_oom_score_adj_all_match():
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
-    assert "15 critical daemons protected" in r.detail
+    assert "16 critical daemons protected" in r.detail
 
 
 def test_oom_score_adj_warns_if_sshd_drifts():

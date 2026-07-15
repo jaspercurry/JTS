@@ -266,6 +266,7 @@ wifi-lockout-risk change you could only happy-path test:
 | jasper-voice | `jasper-voice` | `audio`, `jasper-secrets`, `jasper-intsecrets` | **3b-1 + 4a/4b (LANDED)** | clean: no caps/RT/udev/polkit; config via env injection; 4a/4b groups grant only the secret compartments it must read/write |
 | jasper-mux | `jasper-mux` | `jasper-intsecrets` | **3b-1 + 4b (LANDED)** | broker client (librespot recovery); shared broad file is `speaker_volume.json`; Spotify token refresh writes the 4b compartment |
 | jasper-input | `jasper-input` | `input` | **3b-1 (LANDED)** | trivial: `/dev/input/event*`, posts to control over TCP, no files |
+| jasper-usbmic | `jasper-usbmic` | `audio` | **USB host mic (LANDED 2026-07-15)** | optional localhost-UDP-to-UAC2 relay; reads only group-shared USB-mic intent, writes only its private runtime status, and deliberately has no `input`/secret membership |
 | jasper-accessory-reconcile | root (oneshot) | `jasper` primary group | **accessory reconciler (LANDED 2026-06-26)** | reads BlueZ paired-device state, writes `/var/lib/jasper/accessory-mics.env`, and owns adapter unit enable/disable; `Group=jasper` gives access to the group-owned state dir while `CapabilityBoundingSet=` stays empty; kept as a narrow root oneshot rather than granting systemctl privilege to `jasper-input` or a wizard |
 | jasper-wiim-remote-mic | `jasper-input` | `bluetooth` | **accessory adapter (LANDED 2026-06-26)** | BlueZ D-Bus GATT client for WiiM Remote 2 voice reports; sends decoded PCM to localhost UDP; no filesystem writes |
 | jasper-control | `jasper-control` | `systemd-journal`, `jasper-intsecrets` | **3b-2 + 4b (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), fresh HA/Spotify reads via `jasper-intsecrets`, group-readable non-secret config it reads off disk, and `systemd-journal` for journal-based /state cards |
@@ -1067,7 +1068,10 @@ the goal is closing *known* risk — that is already done by the phases above.
 Either way it is the **last** WS1 phase and **must follow** the doctor
 permissions check.
 
-Last verified: 2026-07-14 (shairport supervisor polkit path rechecked as
+Last verified: 2026-07-15 (`jasper-usbmic` dedicated service identity rechecked
+as primary group `jasper` plus supplementary `audio`, with no inherited
+`input` or secret-group authority; prior 2026-07-14 shairport supervisor
+polkit path rechecked as
 `reset-failed` + inactive-capable `restart`, with final unit ExecConditions
 preserving concurrent Off/role parking; source-intent fixed-helper boundary
 and its exact-shape 793-second broker exception rechecked against

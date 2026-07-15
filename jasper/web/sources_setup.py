@@ -58,12 +58,12 @@ from ..bluetooth.availability import (
     probe_bluetooth_availability,
 )
 from ..audio_hardware.usb_port_role import gadget_unavailable_detail
-from ..fanin.combo_health import (
+from ..fanin.status import (
     DIRECT_HEALTH_CAPTURING,
     DIRECT_HEALTH_IDLE,
     extract_direct_sample,
+    read_fanin_status,
 )
-from ..fanin.status import read_fanin_status
 from ..install_profile import install_profile_allows_local_sources, read_install_profile
 from ..local_sources import local_source_lifecycle
 from ..log_event import log_event

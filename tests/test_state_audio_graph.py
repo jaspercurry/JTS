@@ -209,7 +209,7 @@ def test_coupling_state_fail_soft_on_read_error(monkeypatch):
         "coherent": True,
         "live_transport": None,
         "choice": "auto",
-        "combo": {"state": "disarmed", "fallback": None},
+        "combo": {"state": "disarmed"},
     }
 
 
@@ -255,7 +255,7 @@ def test_coupling_state_choice_defaults_to_auto(monkeypatch, tmp_path):
     assert block["choice"] == "auto"
 
 
-# ---- combo runtime-fallback state (defect 2026-07-10) ----------------------
+# ---- combo resolved state --------------------------------------------------
 
 
 def _patch_coupling_reads(monkeypatch, tmp_path, *, armed=False):
@@ -281,30 +281,12 @@ def _patch_coupling_reads(monkeypatch, tmp_path, *, armed=False):
 
 
 def test_combo_state_armed(monkeypatch, tmp_path):
-    from jasper.fanin import combo_health as ch
-
     _patch_coupling_reads(monkeypatch, tmp_path, armed=True)
-    monkeypatch.setattr(ch, "read_fallback_marker", lambda *a, **k: None)
     block = state_aggregate._coupling_state(fanin_status=None)
-    assert block["combo"] == {"state": "armed", "fallback": None}
+    assert block["combo"] == {"state": "armed"}
 
 
 def test_combo_state_disarmed(monkeypatch, tmp_path):
-    from jasper.fanin import combo_health as ch
-
     _patch_coupling_reads(monkeypatch, tmp_path, armed=False)
-    monkeypatch.setattr(ch, "read_fallback_marker", lambda *a, **k: None)
     block = state_aggregate._coupling_state(fanin_status=None)
-    assert block["combo"] == {"state": "disarmed", "fallback": None}
-
-
-def test_combo_state_fallback_reports_reason(monkeypatch, tmp_path):
-    from jasper.fanin import combo_health as ch
-
-    _patch_coupling_reads(monkeypatch, tmp_path, armed=True)  # armed env, but...
-    marker = ch.FallbackMarker(reason="capture broke x2", at_epoch=42.0)
-    monkeypatch.setattr(ch, "read_fallback_marker", lambda *a, **k: marker)
-    block = state_aggregate._coupling_state(fanin_status=None)
-    # The marker wins over the armed env — the box is on the fallback path.
-    assert block["combo"]["state"] == "fallback"
-    assert block["combo"]["fallback"] == {"reason": "capture broke x2", "at_epoch": 42.0}
+    assert block["combo"] == {"state": "disarmed"}

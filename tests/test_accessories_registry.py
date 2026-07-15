@@ -35,6 +35,7 @@ from jasper.accessories.registry import (
     lookup_by_name,
 )
 from jasper.audio_io import parse_udp_device
+from jasper.usb_mic import USB_HOST_MIC_UDP_PORT
 
 
 def test_vk01_in_registry():
@@ -185,7 +186,9 @@ def test_wiim_remote_2_name_re_ssot_registry_matches_adapter():
 
 def test_adapter_mic_sources_do_not_reuse_reserved_voice_udp_ports():
     """Adapter mics must not collide with AEC/wake/output-reference UDP ports."""
-    reserved_ports = {9876, 9877, 9878, 9880, 9887, 9888, 9891}
+    reserved_ports = {
+        9876, 9877, 9878, 9880, 9887, 9888, 9891, USB_HOST_MIC_UDP_PORT,
+    }
     for profile in KNOWN_PROFILES:
         if profile.mic.status != "adapter":
             continue

@@ -55,7 +55,7 @@ conversation-history env file enables capture), JTS stores text-only turns in
 (`JASPER_CONVERSATION_HISTORY_DB`): the perceived user command transcript, the
 assistant transcript or research report, provider/session metadata, and optional
 feature metadata such as a research job id. It never stores speech audio in this
-database, and capture is skipped while mic mute is active. Capture is
+database, and capture is skipped while the voice assistant is paused. Capture is
 default-off; retained rows stay on the speaker, are pruned by the configured
 conversation-history retention window and row cap, and can be cleared from
 `/chat/`.
@@ -68,17 +68,26 @@ Content-bearing tool payload previews for Gmail, Calendar, and Home Assistant
 are redacted at INFO, and Home Assistant's natural-language tool argument is
 also redacted.
 
-## Mic Mute Scope
+## Voice Assistant Pause and USB Microphone Scope
 
-The persisted household mic mute flag lives at `/var/lib/jasper/mic_mute.env`.
-When it is on, the normal wake/audio legs do not feed a voice turn, wake-event
-telemetry records the muted state instead of treating it like an ordinary
-listening event, the wake-corpus recorder refuses to start and stops if mute is
-enabled mid-recording, and `jasper-wake-enroll` refuses or stops the same way.
+The dashboard's **Voice assistant** Pause control persists its legacy internal
+flag at `/var/lib/jasper/mic_mute.env`. When paused, the normal wake/audio legs
+do not feed a voice turn, wake-event telemetry records the paused state instead
+of treating it like an ordinary listening event, the wake-corpus recorder
+refuses to start and stops if pause is enabled mid-recording, and
+`jasper-wake-enroll` refuses or stops the same way.
 
-Mic mute does not cover every operator-initiated measurement path. Room
-correction and active-speaker sweep flows are explicit setup/calibration
-actions that use the browser or measurement mic after the operator starts them.
+Pause is not a hardware-wide microphone mute. If the household has explicitly
+enabled **Use JTS as a Mac microphone** on `/wake/`, that independent switch is
+the sole end-user authority for the USB export and audio continues while the
+voice assistant is paused. The USB microphone preference is off by default;
+when it is on, live room audio leaves the Pi only across the physically
+connected USB cable and is consumed by whichever Mac app opens that input.
+
+Voice-assistant pause also does not cover every operator-initiated measurement
+path. Room correction and active-speaker sweep flows are explicit
+setup/calibration actions that use the browser or measurement mic after the
+operator starts them.
 
 ## Trust Boundary
 

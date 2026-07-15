@@ -18,9 +18,11 @@ AudioStreaming interface alt-setting strings::
 
     STR_AS_OUT_ALT0 = "Playback Inactive"   (17 chars)
     STR_AS_OUT_ALT1 = "Playback Active"     (15 chars)
+    STR_AS_IN_ALT0  = "Capture Inactive"    (16 chars)
+    STR_AS_IN_ALT1  = "Capture Active"      (14 chars)
 
 macOS displays this interface string as the device name in its audio
-output list, in preference to the (configfs-settable) ``iProduct``
+output/input lists, in preference to the (configfs-settable) ``iProduct``
 string. As of Raspberry Pi OS Trixie's 6.12 kernel these strings are
 NOT exposed through configfs (every *other* gadget string is —
 ``function_name``, ``c_it_name``, clock names, etc. — but not these),
@@ -36,9 +38,9 @@ survives the string moving between kernel builds. If a future kernel
 reports it as missing, and the caller leaves the stock module in place
 — USB audio keeps working, only the cosmetic name reverts to default.
 
-The replacement is bounded by the shorter slot (15 chars) so both alt
-settings can carry the *same* name and the label never flickers
-between idle ("Playback Inactive") and streaming ("Playback Active").
+Playback tracks the canonical Speaker Name. Capture derives its label from the
+same name by appending ``" Mic"``. Each direction's idle/streaming pair carries
+one stable label so macOS never flickers between names when a stream opens.
 """
 
 from __future__ import annotations
@@ -54,11 +56,16 @@ import sys
 # ("...Inactive" vs "...Active"), so the two searches are independent.
 _PRIMARY = b"Playback Inactive\x00"   # alt0 — the idle label macOS shows
 _SECONDARY = b"Playback Active\x00"    # alt1 — streaming label
-_TARGETS = (_PRIMARY, _SECONDARY)
+_CAPTURE_PRIMARY = b"Capture Inactive\x00"
+_CAPTURE_SECONDARY = b"Capture Active\x00"
+_PLAYBACK_TARGETS = (_PRIMARY, _SECONDARY)
+_CAPTURE_TARGETS = (_CAPTURE_PRIMARY, _CAPTURE_SECONDARY)
+_TARGETS = _PLAYBACK_TARGETS + _CAPTURE_TARGETS
 
-# Bounded by the shorter slot ("Playback Active" = 15 chars), leaving
-# room for the terminating NUL, so the same name fits both alt strings.
-MAX_NAME_BYTES = 15
+# Bounded by the shortest slot ("Capture Active" = 14 chars), leaving room for
+# the terminating NUL.
+MAX_NAME_BYTES = 14
+MIC_SUFFIX = " Mic"
 
 DEFAULT_NAME = "JTS"
 
@@ -84,54 +91,85 @@ def sanitize_name(name: str) -> str:
     return cleaned or DEFAULT_NAME
 
 
+def microphone_name(name: str) -> str:
+    """Return ``<canonical speaker name> Mic`` within the USB slot limit.
+
+    Preserve the suffix when a long Speaker Name must be shortened: the host
+    should always make the input/output distinction visible. The canonical
+    reader already trims the saved name; this repeats the defensive character
+    and whitespace policy because the patcher can also be invoked directly.
+    """
+
+    base = sanitize_name(name)
+    base_limit = MAX_NAME_BYTES - len(MIC_SUFFIX)
+    base = base[:base_limit].rstrip()
+    if not base:  # pragma: no cover - DEFAULT_NAME always fits defensively
+        base = DEFAULT_NAME[:base_limit].rstrip()
+    return f"{base}{MIC_SUFFIX}"
+
+
 class PatchResult:
     """Outcome of a patch attempt.
 
     ``blob`` is the (possibly unchanged) module bytes. ``replaced`` and
     ``missing`` list the human-readable string names so the caller can
-    log precisely which slots took. ``ok`` is True iff the primary
-    ("Playback Inactive", the label macOS actually displays) was
-    replaced.
+    log precisely which slots took. ``ok`` is True only when all four
+    playback/capture alt-setting strings were replaced exactly once. A
+    partial patch must never be published as a current schema-3 override.
     """
 
-    def __init__(self, blob: bytes, name: str, replaced, missing, ambiguous):
+    def __init__(
+        self, blob: bytes, name: str, mic_name: str,
+        replaced, missing, ambiguous,
+    ):
         self.blob = blob
         self.name = name
+        self.mic_name = mic_name
         self.replaced = replaced
         self.missing = missing
         self.ambiguous = ambiguous
 
     @property
     def ok(self) -> bool:
-        return _PRIMARY.rstrip(b"\x00").decode() in self.replaced
+        return (
+            len(self.replaced) == len(_TARGETS)
+            and not self.missing
+            and not self.ambiguous
+        )
 
 
 def patch_module_bytes(blob: bytes, name: str) -> PatchResult:
-    """Return a copy of ``blob`` with the AS strings set to ``name``.
+    """Return a copy with output set to ``name`` and input to ``name + ' Mic'``.
 
     Each token is overwritten only if it appears *exactly once* — a
     zero or multiple match is reported (in ``missing``/``ambiguous``)
     and that slot is left untouched, never guessed.
     """
     safe = sanitize_name(name)
-    name_bytes = safe.encode("ascii")
+    mic_safe = microphone_name(name)
     out = bytearray(blob)
     replaced, missing, ambiguous = [], [], []
 
     for token in _TARGETS:
+        replacement = mic_safe if token in _CAPTURE_TARGETS else safe
+        name_bytes = replacement.encode("ascii")
         label = token.rstrip(b"\x00").decode()
-        first = out.find(token)
+        # Locate tokens in the immutable stock blob. A valid replacement can
+        # itself equal another stock label (for example Speaker Name
+        # "Capture Active"); searching the progressively mutated output would
+        # then manufacture a false ambiguity.
+        first = blob.find(token)
         if first == -1:
             missing.append(label)
             continue
-        if out.find(token, first + 1) != -1:
+        if blob.find(token, first + 1) != -1:
             # More than one occurrence — refuse to guess which is the
             # interface string. Leave it; the doctor/log will flag it.
             ambiguous.append(label)
             continue
         slot = len(token)  # chars + the trailing NUL we may consume
-        # name_bytes <= MAX_NAME_BYTES (15) and the smallest slot is
-        # len("Playback Active\0") == 16, so a NUL terminator always fits.
+        # Both derived labels are bounded to the shortest 14-character token,
+        # so a terminating NUL always fits in every individual slot.
         padded = name_bytes + b"\x00" * (slot - len(name_bytes))
         out[first : first + slot] = padded
         replaced.append(label)
@@ -145,7 +183,9 @@ def patch_module_bytes(blob: bytes, name: str) -> PatchResult:
         raise AssertionError(
             f"patch changed module size {len(blob)} -> {len(out)}"
         )
-    return PatchResult(bytes(out), safe, replaced, missing, ambiguous)
+    return PatchResult(
+        bytes(out), safe, mic_safe, replaced, missing, ambiguous,
+    )
 
 
 def _main(argv) -> int:
@@ -153,10 +193,11 @@ def _main(argv) -> int:
 
     Input is a *decompressed* module (the bash wrapper handles
     xz/zstd/gzip decompression so this stays pure-stdlib). Writes the
-    patched module to ``<out.ko>`` only when the primary string was
-    replaced. Prints a single machine-parseable summary line to stdout.
+    patched module to ``<out.ko>`` only when all four playback/capture
+    strings were replaced. Prints a single machine-parseable summary line
+    to stdout.
 
-    Exit codes: 0 = primary replaced (success); 3 = primary not found
+    Exit codes: 0 = complete patch (success); 3 = incomplete patch
     (leave stock in place); 2 = usage/IO error.
     """
     if len(argv) != 4:
@@ -176,6 +217,7 @@ def _main(argv) -> int:
     # name is visibly distinct from the requested one.
     summary = (
         f"applied_name={res.name!r} "
+        f"applied_mic_name={res.mic_name!r} "
         f"replaced={','.join(res.replaced) or '-'} "
         f"missing={','.join(res.missing) or '-'} "
         f"ambiguous={','.join(res.ambiguous) or '-'}"
@@ -183,8 +225,9 @@ def _main(argv) -> int:
     print(summary)
 
     if not res.ok:
-        # Primary string absent (or ambiguous) — do not write an
-        # override; caller keeps the stock module + default name.
+        # Any string absent or ambiguous means the schema-3 transform is
+        # incomplete. Do not write a partial override; the caller keeps the
+        # stock module and default cosmetic labels.
         return 3
     try:
         with open(out_path, "wb") as fh:

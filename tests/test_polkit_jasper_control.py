@@ -113,6 +113,14 @@ def test_rule_grants_manage_units():
     )
 
 
+def test_usb_mic_apply_is_restartable_by_control_for_debounce():
+    """The non-root control daemon must be able to restart the apply oneshot."""
+
+    unit = "jasper-usbmic-apply.service"
+    assert unit in MANAGED_UNITS
+    assert unit in _units_in_rule_array(_rule_text(), "MANAGED_UNITS")
+
+
 def test_rule_does_not_grant_manage_unit_files():
     """manage-unit-files (enable/disable) is DELIBERATELY not granted: it can't
     be unit-scoped (systemd passes NULL details) and `systemctl restart`

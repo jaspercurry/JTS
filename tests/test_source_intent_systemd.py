@@ -411,21 +411,18 @@ def test_grouping_role_owner_handoffs_have_no_systemd_dependency_cycle() -> None
 
 
 def test_root_fanin_owners_do_not_inherit_group_writable_fanin_env() -> None:
-    for name in (
-        "jasper-fanin-coupling-auto.service",
-        "jasper-fanin-combo-health.service",
-    ):
-        unit = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
-        assert "EnvironmentFile=-/var/lib/jasper/fanin.env" not in unit, name
-        assert "EnvironmentFile=-/etc/jasper/jasper.env" in unit, name
-        assert (
-            "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:"
-            "/sbin:/bin"
-        ) in unit, name
-        assert (
-            "UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT "
-            "GLIBC_TUNABLES PYTHONPATH PYTHONHOME"
-        ) in unit, name
+    name = "jasper-fanin-coupling-auto.service"
+    unit = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
+    assert "EnvironmentFile=-/var/lib/jasper/fanin.env" not in unit
+    assert "EnvironmentFile=-/etc/jasper/jasper.env" in unit
+    assert (
+        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:"
+        "/sbin:/bin"
+    ) in unit
+    assert (
+        "UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT "
+        "GLIBC_TUNABLES PYTHONPATH PYTHONHOME"
+    ) in unit
 
 
 def test_root_grouping_owner_parses_intent_instead_of_importing_it() -> None:

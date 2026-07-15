@@ -523,36 +523,13 @@ def test_install_sh_enables_fanin_and_retires_topology_switch():
     assert "/usr/local/sbin/jasper-audio-topology fanin" not in renderers_lib
 
 
-def test_install_sh_starts_combo_health_timer_now():
-    """The USB-combo runtime-fallback watcher must go LIVE on deploy, not sit
-    dormant until the next reboot.
-
-    resolve_fanin_coupling_default() enables jasper-fanin-combo-health.timer
-    (the #1199 capture-break self-heal). A bare `systemctl enable` only arms the
-    timer for the NEXT boot — it stays ActiveState=inactive / NextElapse=infinity
-    until then, so a freshly-deployed full-profile box never runs the fallback
-    watcher until it reboots (observed on jts.local 2026-07-10). The `--now`
-    starts the periodic tick on this deploy, matching the sibling timers the
-    unit's own comment says it mirrors (jasper-wifi-recover.timer /
-    jasper-identity-reconcile.timer are both `enable --now`). Pin the `--now` so
-    a future edit can't silently regress it back to dormant-until-reboot.
-    """
+def test_install_sh_does_not_enable_combo_health_watcher():
+    """Capture telemetry must never become a second USB lifecycle owner."""
     install_sh = installer_text()
-    enable_lines = re.findall(
+    assert not re.search(
         r"systemctl enable[^\n]*jasper-fanin-combo-health\.timer",
         install_sh,
     )
-    assert enable_lines, (
-        "install.sh (resolve_fanin_coupling_default) must enable "
-        "jasper-fanin-combo-health.timer"
-    )
-    for line in enable_lines:
-        assert "--now" in line, (
-            "jasper-fanin-combo-health.timer must be enabled with `--now` so the "
-            "USB-combo fallback watcher goes live on deploy instead of staying "
-            "dormant until reboot (mirrors jasper-wifi-recover.timer / "
-            f"jasper-identity-reconcile.timer). Got: {line!r}"
-        )
 
 
 def test_install_sh_restarts_camilla_after_fanin():

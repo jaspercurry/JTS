@@ -306,6 +306,36 @@ def test_post_profile_proxies_aec_profile(tmp_path, monkeypatch):
     assert b'"profile":"xvf_chip_aec"' in cap["body"]
 
 
+def test_post_usb_mic_proxies_boolean_to_control(tmp_path, monkeypatch):
+    _make_request.state_path = str(tmp_path / "wake_model.env")
+    captured = {}
+
+    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *_a: True)
+
+    def fake_proxy_post(path, *, control_base, timeout, body=b"", headers=None):
+        captured["path"] = path
+        captured["body"] = json.loads(body.decode())
+        captured["headers"] = headers
+        return 200, b'{"usb_mic":{"enabled":true}}'
+
+    monkeypatch.setattr(wake_setup, "proxy_post", fake_proxy_post)
+    h, cap = _make_request(
+        "POST",
+        "/usb-mic",
+        body=b'{"enabled":true}',
+        headers={"Content-Type": "application/json"},
+    )
+    h.do_POST()
+
+    assert captured == {
+        "path": "/aec/usb-mic",
+        "body": {"enabled": True},
+        "headers": None,
+    }
+    assert cap["status"] == 200
+    assert b'"enabled":true' in cap["body"]
+
+
 def test_get_unknown_path_404(tmp_path):
     _make_request.state_path = str(tmp_path / "wake_model.env")
     h, cap = _make_request("GET", "/nope")

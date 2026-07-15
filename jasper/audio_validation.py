@@ -50,7 +50,7 @@ from .audio_runtime_plan import (
 )
 from .control import client as control
 from .env_load import parse_env_file
-from .fanin.combo_health import DIRECT_HEALTH_CAPTURING, DIRECT_HEALTH_IDLE
+from .fanin.status import DIRECT_HEALTH_CAPTURING, DIRECT_HEALTH_IDLE
 from .log_event import log_event
 
 
