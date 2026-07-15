@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import shutil
 import subprocess
@@ -1696,10 +1697,19 @@ def test_backend_status_includes_active_speaker_commission_state(monkeypatch):
         "commission_status_payload",
         lambda: {"ramp": {"pending": None}},
     )
+    monkeypatch.setattr(
+        backend,
+        "commissioning_region_status",
+        lambda: {"status": "collecting", "next_capture": {"evidence_kind": "server_selected"}},
+    )
 
     payload = backend.status_payload()
 
     assert payload["commission"] == {"ramp": {"pending": None}}
+    assert payload["region_commissioning"] == {
+        "status": "collecting",
+        "next_capture": {"evidence_kind": "server_selected"},
+    }
 
 
 def _commissioning_comparison(
@@ -2868,7 +2878,65 @@ def test_crossover_envelope_walks_level_drivers_apply_room():
     env = crossover_envelope.build_crossover_envelope(status)
     assert env["screen"] == "done"
     assert env["next_action"]["href"] == "/correction/room/"
-    assert env["progress"] == {"position": 4, "total": 4}
+    assert env["progress"] == {"position": 5, "total": 5}
+
+
+def test_crossover_envelope_projects_active_owned_alignment_actions():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["commissioning_run"] = {
+        "status": "current",
+        "isolated_evidence": {"status": "complete"},
+    }
+    status["region_commissioning"] = {
+        "status": "needs_geometry",
+        "next_geometry": {
+            "target_fingerprint": "f" * 64,
+            "lower_role": "woofer",
+            "upper_role": "tweeter",
+            "fc_hz": 2_100.0,
+        },
+    }
+
+    geometry = crossover_envelope.build_crossover_envelope(status)
+
+    assert geometry["progress"] == {"position": 4, "total": 5}
+    assert geometry["next_action"] == {
+        "id": "attest_region_geometry",
+        "label": "Confirm signed geometry",
+        "endpoint": "/correction/crossover/region-geometry",
+        "body": {"expected_target_fingerprint": "f" * 64},
+        "fields": [
+            {
+                "name": "signed_acoustic_path_difference_mm",
+                "label": "woofer path minus tweeter path (mm)",
+                "type": "number",
+                "step": "0.1",
+                "required": True,
+            }
+        ],
+    }
+
+    status["region_commissioning"] = {
+        "status": "collecting",
+        "next_capture": {"evidence_kind": "server_selected"},
+    }
+    capture = crossover_envelope.build_crossover_envelope(status)
+    assert capture["progress"] == {"position": 4, "total": 5}
+    assert capture["next_action"] == {
+        "id": "measure_region_alignment",
+        "label": "Measure next server-selected combined response",
+        "endpoint": "/correction/crossover/relay-capture",
+        "body": {"kind": "summed"},
+    }
+    assert "exact graph, polarity, delay coordinate" in capture["verdict_text"]
+
+    status["region_commissioning"] = {"status": "measured"}
+    measured = crossover_envelope.build_crossover_envelope(status)
+    assert measured["screen"] == "review"
+    assert measured["next_action"] is None
 
 
 def test_driver_capture_geometry_must_match_server_owned_next_step():
@@ -6865,7 +6933,7 @@ def test_legacy_raw_summed_routes_refuse_before_body_or_side_effects(
     assert payload["audio_emitted"] is False
 
 
-def test_summed_relay_refuses_after_one_bounded_decode_before_side_effects(
+def test_summed_relay_rejects_browser_owned_policy_before_side_effects(
     monkeypatch,
 ):
     from jasper import output_topology
@@ -6924,10 +6992,170 @@ def test_summed_relay_refuses_after_one_bounded_decode_before_side_effects(
     assert reader.calls == 1
     assert len(sent) == 1
     payload, status = sent[0]
-    assert status == 409
-    assert payload["status"] == "refused"
-    assert payload["reason"] == "active_summed_persisted_admission_unavailable"
-    assert payload["audio_emitted"] is False
+    assert status == 400
+    assert payload == {
+        "ok": False,
+        "error": (
+            "summed commissioning accepts no browser region, polarity, or delay fields"
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_summed_relay_is_recorder_only_for_the_server_owned_host(
+    monkeypatch,
+    tmp_path,
+):
+    from contextlib import asynccontextmanager
+
+    from jasper.active_speaker.commissioning_capture_producer import RawCaptureResult
+    from jasper.audio_measurement.playback import PlaybackResult
+    from jasper.capture_relay import correction_adapter
+    from jasper.capture_relay.session import CaptureResult
+    from jasper.correction import coordinator
+    from jasper.web import correction_setup
+
+    calibration = SimpleNamespace(calibration_id="umik-2-calibration")
+    lease = SimpleNamespace(
+        unresolved_volume_safety=None,
+        mic_calibration=None,
+        input_device=None,
+    )
+    server_status = {
+        "status": "collecting",
+        "run_id": "run-1",
+        "owner_generation": 3,
+        "plan_fingerprint": "a" * 64,
+        "next_capture": {"evidence_kind": "server_selected"},
+    }
+    monkeypatch.setattr(backend, "level_lease", lambda: lease)
+    monkeypatch.setattr(backend, "commissioning_region_status", lambda: server_status)
+    monkeypatch.setattr(
+        backend,
+        "commissioning_recorder_binding",
+        lambda: (
+            calibration,
+            hashlib.sha256(b"umik-2").hexdigest(),
+        ),
+    )
+    monkeypatch.setattr(
+        correction_setup, "_require_relay_base", lambda: "https://relay.test"
+    )
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(
+        correction_setup, "_relay_device_calibration_block", lambda *_args: None
+    )
+
+    @asynccontextmanager
+    async def measurement_window():
+        yield
+
+    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
+
+    registered = {}
+
+    def run_relay(kind, relay_base, *, return_url):
+        registered.update(
+            {"kind": kind, "relay_base": relay_base, "return_url": return_url}
+        )
+        return {"tap_link": "https://capture.test", "status": "awaiting_phone"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", run_relay)
+    response = correction_setup._handle_crossover_relay_capture(
+        _json_handler({"kind": "summed"})
+    )
+
+    assert response["relay"]["status"] == "awaiting_phone"
+    assert registered["kind"].label == "crossover_sweep:summed"
+    assert registered["relay_base"] == "https://relay.test"
+    assert registered["return_url"] == "http://jts.local/correction/crossover/"
+
+    opened = {}
+
+    def open_capture(_client, spec, **kwargs):
+        opened.update({"spec": spec, **kwargs})
+        return "registered"
+
+    monkeypatch.setattr(correction_adapter, "open_capture", open_capture)
+    assert (
+        registered["kind"].open(
+            object(),
+            "https://relay.test",
+            "https://capture.test",
+            "http://jts.local/correction/crossover/",
+        )
+        == "registered"
+    )
+    spec = opened["spec"]
+    assert spec.kind == "crossover_sweep"
+    assert spec.acknowledgement is not None
+    assert spec.acknowledgement.id == "summed_reference_axis_v1"
+    assert "server-selected" in spec.stimulus.label
+
+    relay_result = CaptureResult(
+        wav=b"real-recorder-wav",
+        device={"label": "UMIK-2"},
+        noise_floor={"dbfs": -72.0},
+        setup={"source": "relay"},
+    )
+    transport_metadata = {}
+
+    async def relay_transport(
+        _client,
+        pi_session,
+        *,
+        play_sequence,
+        validate_playback,
+        prepare_armed,
+        validate_capture,
+        **_kwargs,
+    ):
+        prepare_armed(
+            SimpleNamespace(capture_page={"page": "fixed-axis"}),
+            {
+                "policy_id": pi_session.spec.acknowledgement.id,
+                "binding_id": pi_session.spec.acknowledgement.binding_id,
+            },
+        )
+        playback = PlaybackResult(tmp_path / "summed.wav", "measurement", 0)
+        validate_playback(playback)
+        validate_capture(relay_result)
+        assert callable(play_sequence)
+        return relay_result, playback
+
+    monkeypatch.setattr(flow, "run_crossover_relay_transport", relay_transport)
+
+    async def capture_next(raw_transport, *, camilla_factory):
+        assert callable(camilla_factory)
+        raw = await raw_transport(lambda: pytest.fail("host owns playback"))
+        assert isinstance(raw, RawCaptureResult)
+        assert raw.wav_bytes == b"real-recorder-wav"
+        transport_metadata.update(raw.metadata)
+        return {
+            "speaker_group_id": "mono",
+            "region_id": "woofer-tweeter",
+            "evidence_kind": "normal",
+            "capture_fingerprint": "b" * 64,
+        }
+
+    monkeypatch.setattr(
+        backend, "capture_next_commissioning_region", capture_next
+    )
+    pi_session = SimpleNamespace(
+        session_id="relay-session",
+        pull_token="pull-token",
+        spec=spec,
+    )
+
+    await registered["kind"].run_and_consume(object(), pi_session)
+
+    assert transport_metadata["device"] == {"label": "UMIK-2"}
+    assert transport_metadata["fixed_axis_acknowledgement"]["policy_id"] == (
+        "summed_reference_axis_v1"
+    )
+    assert transport_metadata["fixed_axis_acknowledgement"][
+        "acknowledgement_binding"
+    ] == spec.acknowledgement.binding_id
 
 
 def test_crossover_relay_route_is_registered():
@@ -6935,6 +7163,34 @@ def test_crossover_relay_route_is_registered():
 
     assert "/crossover/relay-capture" in correction_setup._POST_ROUTES
     assert "/crossover/relay-cancel" in correction_setup._POST_ROUTES
+    assert "/crossover/region-geometry" in correction_setup._POST_ROUTES
+
+
+def test_region_geometry_route_accepts_only_the_server_target_and_signed_value(
+    monkeypatch,
+):
+    from jasper.web import correction_setup
+
+    seen = []
+    monkeypatch.setattr(correction_setup, "_active_relay_phase", lambda: None)
+    monkeypatch.setattr(
+        backend,
+        "attest_commissioning_region_geometry",
+        lambda raw: seen.append(raw) or {"status": "accepted"},
+    )
+    raw = {
+        "expected_target_fingerprint": "a" * 64,
+        "signed_acoustic_path_difference_mm": -7.5,
+    }
+    assert correction_setup._handle_crossover_region_geometry(
+        _json_handler(raw)
+    ) == {"status": "accepted"}
+    assert seen == [raw]
+
+    with pytest.raises(ValueError, match="unsupported fields"):
+        correction_setup._handle_crossover_region_geometry(
+            _json_handler({**raw, "polarity": "reverse"})
+        )
 
 
 @pytest.mark.parametrize(

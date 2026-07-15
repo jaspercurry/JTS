@@ -51,7 +51,7 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the production isolated-driver evidence producer, durable Active run and pure region-evidence boundaries, and the Shared manifest, playback, admission, and guarded-playback implementation, 2026-07-15)
+## Current state (verified against the production isolated and summed relay producers, durable Active run and region-evidence host, and the Shared manifest, playback, admission, and guarded-playback implementation, 2026-07-15)
 
 ### Wave 1 contract-only foundation (2026-07-13)
 
@@ -122,8 +122,9 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   rollback result bound to the same
   operation, mutation, and observed applied graph. The transition value remains
   pure, while Wave 3 now persists one exact current-run identity and provides
-  bounded attempt/journal mutation APIs. No production measurement adapter uses
-  those APIs yet, and the eligibility receipt remains inert.
+  bounded attempt/journal mutation APIs. Production isolated and summed
+  adapters now use that run/store authority; the eligibility receipt remains
+  inert.
   The breaking admitted-capture shape and its post-apply/receipt containers are
   all schema version 2; schema version 1 is intentionally rejected because no
   production receipt issuer or persisted receipt exists.
@@ -289,8 +290,10 @@ Active's isolated-driver
 production path has adopted these APIs. It holds the bounded Shared writer lock
 across transient load, fresh generation/playback proofs, exact playback, and
 restoration, and threads the verified playback-role handoff through the
-server-owned capture call. Direct/browser summed capture remains intentionally
-refused before graph load. The typed internal `CommissioningEvidenceHost` and
+server-owned capture call. Legacy direct/browser summed routes remain
+intentionally refused before graph load; the recorder-only production relay
+now passes real WAV bytes and explicit fixed-axis acknowledgement into the typed
+host without accepting browser DSP policy. The `CommissioningEvidenceHost` and
 `SummedCaptureProducer` now own the server-derived region schedule, exact
 adjacent-output isolation, fresh generation/playback admission, bounded raw-WAV
 ingress, analysis/quality persistence, exact restoration, and lifecycle
@@ -309,8 +312,12 @@ Protection proof accepts canonical stereo pipeline steps only when every covered
 output shares the target driver role; isolated-driver admission remains
 singleton-only, and mixed-role groups fail closed. A zero-delay coordinate
 reuses the freshly proved zero-relative graph rather than applying it twice.
-Real capture transport and attested geometry remain
-Wave 4; candidate, receipt, and Room-gate authority are unchanged.
+Correction-web now persists signed per-region geometry and supplies the real
+relay transport. It reopens calibration and recorder identity from the durable
+comparison set; status does not duplicate the host schedule. Production entry
+is currently limited to a two-way preset on the registry-declared DAC8x
+commissioning profile. Candidate,
+receipt, and Room-gate authority are unchanged.
 
 ### Wave 3 Active run identity (2026-07-14)
 
@@ -366,9 +373,10 @@ lifecycle transition. The separate typed internal host and producer now retain
 the run handle, reserve bounded attempts, build and freshly confirm each exact
 adjacent-pair graph under the writer lock, admit generation and playback,
 persist/reopen strict values only after exact restoration, and consume the
-bounded schedule and evaluator. Direct/browser summed ingress remains pre-audio
-refused; a real raw capture transport and attested geometry remain Wave 4, and
-candidate/receipt/Room authority remains unavailable.
+bounded schedule and evaluator. Legacy direct/browser summed ingress remains
+pre-audio refused; the production `kind=summed` relay supplies recorder bytes
+and generation-specific signed geometry to that host. Candidate/receipt/Room
+authority remains unavailable.
 The shipped 350 Hz lower crossover exceeds the shared 25-point exhaustive-walk
 budget at the allowed 100 µs maximum step. Shared now represents it with a
 deterministic schedule of 15 symmetric coarse coordinates plus at most two
@@ -645,8 +653,10 @@ create a second retention system.
   (`record_driver_acoustic_capture`) and
   persist the real acoustic verdict block into measurement state (the 2026-06-19
   audit inspected a pre-wiring snapshot — the wiring landed 2026-06-18).
-  `kind=summed` now performs only its bounded discriminator parse and refuses
-  before relay session, level/graph mutation, playback, or analysis. **L1
+  `kind=summed` now rejects every browser field except its discriminator, then
+  joins the recorder WAV to the Active-owned host; the host alone selects the
+  normal/reverse/delay operation and guarded graph. Legacy direct summed routes
+  still refuse before graph load. **L1
   then closed the level-match loop (2026-06-20):** each per-driver capture also
   records an **overlap-band level** at the crossover Fc, and
   `baseline_profile._measured_level_trims` chains the driver-to-driver overlap
@@ -978,10 +988,10 @@ can never authorize a phase decision:
    / `captureMicWavBase64` just record a window while the tone plays), so a
    per-driver IR arrival delta is capture jitter, not acoustic time-of-flight — and
    the canonical method agrees IR "[is] not [a] substitute for phase-aware
-   summation". The delay *value* therefore comes from the timing-locked
-   reverse-polarity null **walk** (the deferred follow-up); the proposal surfaces a
-   delay *status* (`aligned` when the in-phase sum is flat, `needs_alignment` when a
-   deep null remains) so the maintainer knows whether to run it.
+   summation". The strict production path now obtains the delay *value* from the
+   playback-clock-locked reverse-polarity null **walk** owned by the internal
+   host. The older fail-soft proposal continues to surface only a delay status
+   and cannot authorize that value.
 5. **Preview, then apply through the existing measured path.**
    `GET /active-speaker/crossover-alignment` previews the proposal + the surfaced
    per-driver/summed FR curves (the maintainer tweaks Fc/slope by hand — this
@@ -989,12 +999,11 @@ can never authorize a phase decision:
    automatic baseline composition may fold an admitted, complete normal/reverse
    pair's polarity decision into per-driver `corrections` (`inverted`) exactly
    like L1's measured level trim. It never consumes `delay_ms` from a capture;
-   the bounded Lane-F walk exclusively owns measured delay. The relay transport
-   preserves candidate polarity/Fc/delay metadata, but the current wizard
-   envelope does not yet expose the two per-region actions or load a transient
-   reverse-polarity graph. The playback boundary refuses reverse/delay
-   candidates before audio rather than persist unchanged playback under a false
-   label, so this is not yet a live end-to-end pair-capture UI.
+   the bounded Lane-F walk exclusively owns measured delay. The production
+   wizard exposes one generic combined-capture action; the host selects the two
+   per-region polarity stages and transient reverse/delay graphs. The strict
+   candidate evaluator is not yet invoked or presented, so this is a live
+   evidence flow but not yet a complete candidate/apply UI.
    The recompiled baseline re-proves the
    runtime_contract tweeter guard; level stays L1's attenuation-only job and the 0 dB
    ceiling holds.
@@ -1272,8 +1281,9 @@ re-admission with explicit pre-audio/possibly-started cancellation and failure
 outcomes carrying the persisted artifact; one authority per fresh session with
 unique attempt ids; closed guarded-playback terminal events; and
 no-bundle-migration/no-backfill boundaries plus Active isolated-driver adoption,
-server-owned capture handoff, and summed pre-audio refusal checked
-hardware-free. Strict Active group-by-region normal/reverse/delay evidence
+server-owned capture handoff, legacy summed pre-audio refusal, and the
+recorder-only production summed relay checked hardware-free. Strict Active
+group-by-region normal/reverse/delay evidence
 values, typed run/attempt and geometry authority, the bounded low-frequency
 coarse-plus-refinement schedule and schedule-aware final evaluator,
 complete-plan replay guards, and receipt

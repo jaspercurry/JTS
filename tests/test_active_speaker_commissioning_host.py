@@ -928,7 +928,9 @@ def test_host_progresses_only_exact_operations_to_durable_measured(
     assert harness.run_store.lifecycle_state(harness.evidence.plan.authority.run) == (
         "measured"
     )
-    assert harness.host.status()["complete"] is True
+    host_status = harness.host.status()
+    assert host_status["complete"] is True
+    assert host_status["hardware_capture_status"] == "hardware_validation_required"
     assert [item.evidence_kind for item in observed[:6]] == [
         "normal",
         "normal",

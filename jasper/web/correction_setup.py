@@ -240,6 +240,7 @@ _POST_ROUTES = frozenset({
     "/crossover/summed-capture-sweep",
     "/crossover/summed-capture",
     "/crossover/level-match",
+    "/crossover/region-geometry",
     "/crossover/relay-capture",
     "/crossover/relay-cancel",
     "/crossover/apply",
@@ -4546,14 +4547,277 @@ def _assert_crossover_driver_action(
         )
 
 
+def _handle_crossover_region_geometry(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """Persist the explicit signed geometry for the server's current region."""
+
+    raw = _read_json_body(handler)
+    if set(raw) != {
+        "expected_target_fingerprint",
+        "signed_acoustic_path_difference_mm",
+    }:
+        raise ValueError("region geometry contains unsupported fields")
+    if _active_relay_phase() is not None:
+        raise ValueError("finish the current microphone capture first")
+    from . import correction_crossover_backend
+
+    return correction_crossover_backend.attest_commissioning_region_geometry(raw)
+
+
+def _post_crossover_relay_host_event(
+    relay_base: str,
+    session_id: str,
+    pull_token: str,
+    payload: dict[str, Any],
+) -> Any:
+    from jasper.capture_relay.client import RelayClient
+    from jasper.capture_relay.health import relay_registration_token_from_env
+
+    client = RelayClient(
+        relay_base,
+        timeout=_RELAY_REGISTER_TIMEOUT_S,
+        registration_token=relay_registration_token_from_env(),
+    )
+    return client.post_host_event(session_id, pull_token, payload)
+
+
+def _handle_crossover_summed_commissioning_relay(
+    handler: BaseHTTPRequestHandler,
+    raw: dict[str, Any],
+) -> dict[str, Any]:
+    """Register one recorder-only relay for the Active-owned summed host."""
+
+    if set(raw) != {"kind"}:
+        raise ValueError(
+            "summed commissioning accepts no browser region, polarity, or delay fields"
+        )
+    from jasper.capture_relay import correction_adapter
+    from jasper.capture_relay.spec import build_crossover_sweep_spec
+    from jasper.capture_relay.session import CaptureStopped
+    from jasper.audio_measurement.playback import PlaybackResult
+    from jasper.active_speaker.commissioning_capture_producer import RawCaptureResult
+    from jasper.active_speaker.test_signal_plan import (
+        CROSSOVER_AMBIENT_DURATION_S,
+        CROSSOVER_CAPTURE_HARD_TIMEOUT_S,
+        CROSSOVER_CAPTURE_MAX_WAV_BYTES,
+        SUMMED_SWEEP_DURATION_S,
+    )
+    from . import correction_crossover_backend, correction_crossover_flow
+
+    lease = correction_crossover_backend.level_lease()
+    if lease.unresolved_volume_safety is not None:
+        return _crossover_volume_safety_refusal()
+    calibration, expected_device_sha256 = (
+        correction_crossover_backend.commissioning_recorder_binding()
+    )
+    relay_base = _require_relay_base()
+    blocking = _crossover_blocking_phase()
+    if blocking is not None:
+        raise ValueError(
+            f"another measurement is in progress ({blocking}) — finish it "
+            "before measuring the combined crossover"
+        )
+    expected = correction_crossover_backend.commissioning_region_status()
+    next_capture = expected.get("next_capture")
+    if expected.get("status") != "collecting" or not isinstance(
+        next_capture, Mapping
+    ):
+        raise ValueError(
+            str(
+                expected.get("detail")
+                or "the active commissioning run has no combined capture ready"
+            )
+        )
+    expected_context = {
+        "run_id": expected.get("run_id"),
+        "owner_generation": expected.get("owner_generation"),
+        "plan_fingerprint": expected.get("plan_fingerprint"),
+    }
+    driver_label = "next server-selected crossover capture"
+    acknowledgement_binding = secrets.token_urlsafe(24)
+
+    def _open(
+        client: RelayClient,
+        base: str,
+        capture_origin: str,
+        return_url: str,
+    ) -> RelayCapture:
+        return correction_adapter.open_capture(
+            client,
+            build_crossover_sweep_spec(
+                driver_label=driver_label,
+                driver_role="summed",
+                driver_capture_geometry="reference_axis",
+                acknowledgement_binding=acknowledgement_binding,
+                stimulus_duration_ms=int(round(SUMMED_SWEEP_DURATION_S * 1000)),
+                ambient_duration_ms=int(
+                    round(CROSSOVER_AMBIENT_DURATION_S * 1000)
+                ),
+                hard_timeout_ms=int(round(CROSSOVER_CAPTURE_HARD_TIMEOUT_S * 1000)),
+                max_upload_bytes=CROSSOVER_CAPTURE_MAX_WAV_BYTES,
+            ),
+            relay_base=base,
+            capture_origin=capture_origin,
+            return_url=return_url,
+        )
+
+    stop_event = threading.Event()
+    stop_lock = threading.Lock()
+
+    def _request_stop() -> None:
+        with stop_lock:
+            stop_event.set()
+
+    async def _run_and_consume(client: Any, pi_session: Any) -> None:
+        import asyncio
+
+        acknowledgement_metadata: dict[str, Any] = {}
+
+        def _validate_current_context() -> None:
+            current = correction_crossover_backend.commissioning_region_status()
+            current_context = {
+                "run_id": current.get("run_id"),
+                "owner_generation": current.get("owner_generation"),
+                "plan_fingerprint": current.get("plan_fingerprint"),
+            }
+            if current.get("status") != "collecting" or current_context != expected_context:
+                raise ValueError(
+                    "the commissioning run or plan changed; create a new capture link"
+                )
+            current_calibration, current_device_sha256 = (
+                correction_crossover_backend.commissioning_recorder_binding()
+            )
+            if (
+                getattr(current_calibration, "calibration_id", None)
+                != getattr(calibration, "calibration_id", None)
+                or current_device_sha256 != expected_device_sha256
+            ):
+                raise ValueError(
+                    "the commissioning microphone binding changed; create a new capture link"
+                )
+
+        def _validate_capture(result: Any) -> None:
+            block = _relay_device_calibration_block(calibration, result.device)
+            if block is not None:
+                raise ValueError(block)
+            actual_device = _sanitize_input_device(result.device) or {}
+            actual_device_key = _relay_device_key(actual_device)
+            if (
+                not actual_device_key
+                or hashlib.sha256(actual_device_key.encode("utf-8")).hexdigest()
+                != expected_device_sha256
+            ):
+                raise ValueError(
+                    "the microphone differs from the fixed-axis comparison set; "
+                    "select the same microphone or restart driver measurement"
+                )
+
+        def _prepare_armed(state: Any, acknowledgement: Any) -> None:
+            _validate_current_context()
+            required = pi_session.spec.acknowledgement
+            assert required is not None
+            acknowledgement_metadata.clear()
+            acknowledgement_metadata.update(
+                {
+                    "policy_id": required.id,
+                    "acknowledgement_binding": required.binding_id,
+                    "relay_session_id": pi_session.session_id,
+                    "capture_page": state.capture_page,
+                    "acknowledgement": acknowledgement,
+                }
+            )
+
+        async def _raw_transport(play_once: Any) -> RawCaptureResult:
+            async def _play_sequence(on_sweep_ready: Callable[[], None]) -> Any:
+                await asyncio.sleep(CROSSOVER_AMBIENT_DURATION_S)
+                await asyncio.to_thread(on_sweep_ready)
+                return await play_once()
+
+            def _validate_playback(result: Any) -> None:
+                if not isinstance(result, PlaybackResult):
+                    raise RuntimeError("admitted summed playback did not complete")
+
+            try:
+                result, _playback = (
+                    await correction_crossover_flow.run_crossover_relay_transport(
+                        client,
+                        pi_session,
+                        run_async=_run_async,
+                        play_sequence=_play_sequence,
+                        validate_playback=_validate_playback,
+                        prepare_armed=_prepare_armed,
+                        validate_capture=_validate_capture,
+                        post_host_event=lambda session_id, pull_token, payload: (
+                            _post_crossover_relay_host_event(
+                                relay_base,
+                                session_id,
+                                pull_token,
+                                payload,
+                            )
+                        ),
+                        begin_finishing=lambda: _begin_relay_finishing(
+                            "crossover_sweep:summed"
+                        ),
+                        begin_commit=lambda: _begin_relay_commit(
+                            "crossover_sweep:summed"
+                        ),
+                        ambient_duration_s=CROSSOVER_AMBIENT_DURATION_S,
+                        stop_event=stop_event,
+                    )
+                )
+            except CaptureStopped as exc:
+                raise asyncio.CancelledError from exc
+            metadata = {
+                "relay_session_id": pi_session.session_id,
+                "device": result.device,
+                "noise_floor": result.noise_floor,
+                "setup": result.setup,
+                "fixed_axis_acknowledgement": acknowledgement_metadata,
+            }
+            return RawCaptureResult(result.wav, metadata)
+
+        from jasper.correction import coordinator
+
+        async with coordinator.measurement_window():
+            recorded = await correction_crossover_backend.capture_next_commissioning_region(
+                _raw_transport,
+                camilla_factory=_camilla,
+            )
+        log_event(
+            logger,
+            "correction.crossover_region_capture_recorded",
+            run_id=expected_context["run_id"],
+            plan_fingerprint=expected_context["plan_fingerprint"],
+            group=recorded.get("speaker_group_id"),
+            region=recorded.get("region_id"),
+            evidence_kind=recorded.get("evidence_kind"),
+            capture_fingerprint=recorded.get("capture_fingerprint"),
+        )
+
+    kind = RelayCaptureKind(
+        label="crossover_sweep:summed",
+        open=_open,
+        run_and_consume=_run_and_consume,
+        request_stop=_request_stop,
+    )
+    return {
+        "relay": _run_relay_capture(
+            kind,
+            relay_base,
+            return_url=_request_local_return_url(handler, "/correction/crossover/"),
+        )
+    }
+
+
 def _handle_crossover_relay_capture(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
     """POST /crossover/relay-capture: capture one active-crossover driver sweep.
 
-    Legacy summed requests are refused after their bounded discriminator decode,
-    before the cloud relay (the phone runs the capture page on jasper.tech),
-    level authority, or any audio path is touched.
+    Driver requests retain the production isolated-driver path. Summed requests
+    enter the strict Active-owned host, which chooses region, polarity, delay,
+    graph, attempt, and ordinal; the browser supplies recorder bytes only.
 
     The third
     real caller of the RelayCaptureKind seam — a new kind is a descriptor, not a
@@ -4570,17 +4834,15 @@ def _handle_crossover_relay_capture(
     run-and-consume (the phone can arm minutes later — a sweep played over
     another measurement silently corrupts both captures)."""
     # The discriminator is the only browser input trusted far enough to select
-    # an ingress. Summed capture has no production transport in this wave, so
-    # refuse it immediately after the shared bounded JSON decode. In particular,
-    # do not inspect relay state, claim a session, acquire a level lease, or load
-    # graph/evidence authority on this legacy surface.
+    # an ingress. The summed branch rejects every former browser-owned DSP field
+    # and delegates exact operation selection to the typed internal host.
     raw = _read_json_body(handler)
 
     from . import correction_crossover_flow
 
     kind_id = correction_crossover_flow.relay_kind_from_raw(raw)
     if kind_id == "summed":
-        return _summed_capture_unavailable(ingress="relay")
+        return _handle_crossover_summed_commissioning_relay(handler, raw)
 
     from jasper.capture_relay import correction_adapter
     from jasper.capture_relay.spec import build_crossover_sweep_spec
@@ -4766,17 +5028,12 @@ def _handle_crossover_relay_capture(
         )
 
     def _post_host_event(session_id: str, pull_token: str, payload: dict[str, Any]):
-        # Bind the relay client fresh per post so the closure needs no client
-        # capture; the orchestrator's client is the register client, reused here.
-        from jasper.capture_relay.client import RelayClient
-        from jasper.capture_relay.health import relay_registration_token_from_env
-
-        client = RelayClient(
+        return _post_crossover_relay_host_event(
             relay_base,
-            timeout=_RELAY_REGISTER_TIMEOUT_S,
-            registration_token=relay_registration_token_from_env(),
+            session_id,
+            pull_token,
+            payload,
         )
-        return client.post_host_event(session_id, pull_token, payload)
 
     def _validate_capture(result: Any) -> None:
         block = _relay_device_calibration_block(calibration, result.device)
@@ -5743,9 +6000,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
 
             if path == "/crossover/relay-capture":
-                # The relay handler performs one bounded JSON decode to select
-                # driver vs summed. Summed returns a refusal before any relay,
-                # level, graph, playback, or analysis authority is consulted.
+                # One bounded discriminator selects the existing isolated path
+                # or the strict internal summed host. Neither accepts browser
+                # graph, region, polarity, delay, or admission authority.
                 try:
                     payload = _handle_crossover_relay_capture(self)
                     self._send_json(
@@ -5756,6 +6013,19 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             else HTTPStatus.OK
                         ),
                     )
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/region-geometry":
+                try:
+                    self._send_json(_handle_crossover_region_geometry(self))
                 except ValueError as e:
                     self._send_json(
                         {"ok": False, "error": str(e)},

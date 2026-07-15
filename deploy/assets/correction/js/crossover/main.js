@@ -86,14 +86,57 @@ function renderActions(primary, alternates = []) {
       }));
       return;
     }
+    const fields = Array.isArray(action.fields) ? action.fields : [];
+    if (!fields.length) {
+      const button = el('button', {
+        class: className,
+        type: 'button',
+        disabled: busy || action.enabled === false,
+        text: action.label || 'Continue',
+      });
+      button.addEventListener('click', () => runAction(action, button));
+      els.action.append(button);
+      return;
+    }
+    const form = el('form', {class: 'action-form'});
+    const inputs = [];
+    fields.forEach((field, fieldIndex) => {
+      const inputId = `crossover-action-${index}-${fieldIndex}`;
+      const inputAttrs = {
+        id: inputId,
+        type: field.type || 'text',
+        name: field.name || '',
+        step: field.step || 'any',
+      };
+      if (field.required) inputAttrs.required = '';
+      const input = el('input', inputAttrs);
+      inputs.push({field, input});
+      form.append(el('div', {class: 'field'}, [
+        el('label', {
+          for: inputId,
+          text: field.label || field.name || 'Value',
+        }),
+        input,
+      ]));
+    });
     const button = el('button', {
       class: className,
-      type: 'button',
+      type: 'submit',
       disabled: busy || action.enabled === false,
       text: action.label || 'Continue',
     });
-    button.addEventListener('click', () => runAction(action, button));
-    els.action.append(button);
+    form.append(button);
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      const body = {...(action.body || {})};
+      inputs.forEach(({field, input}) => {
+        body[field.name] = field.type === 'number'
+          ? Number(input.value) : input.value;
+      });
+      runAction({...action, body}, button);
+    });
+    els.action.append(form);
   });
 }
 

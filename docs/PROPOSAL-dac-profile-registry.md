@@ -108,6 +108,7 @@ class DacProfile:
     requires_same_usb_bus: bool = False
     supports_active_outputd_lane: bool = False
     active_outputd_lane_channels: int | None = None
+    supports_active_crossover_commissioning: bool = False
     mixer_controls: tuple[MixerControl, ...] = ()
     headphone_pinned_100: bool = False
     validation_profile: str | None = None
@@ -252,7 +253,8 @@ Specific follow-up from review:
   observed and graph-ready, while still warning on bad physical topology or
   partial hardware states.
 
-Last verified: 2026-07-14 (`connection`/`dtoverlay` role contract rechecked;
+Last verified: 2026-07-15 (DAC8x-only active-crossover commissioning launch
+capability rechecked; `connection`/`dtoverlay` role contract rechecked;
 prior 2026-06-11 registered single-device classification, registry
 consumers, and remaining bash drift guards rechecked against the dual-Apple
 active-output architecture).

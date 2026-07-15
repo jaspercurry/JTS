@@ -7,7 +7,8 @@
 ``/sound/`` owns topology, driver protection, output identity, and the safe
 starting profile.  This envelope owns the distinct microphone journey:
 
-    mic/calibration + per-driver level -> driver sweeps -> atomic apply
+    mic/calibration + per-driver level -> driver sweeps -> combined alignment
+    -> atomic apply
 
 It reads the already-composed crossover status payload and returns one primary
 action plus any explicit alternatives. It performs no I/O and mutates no
@@ -25,11 +26,12 @@ logger = logging.getLogger(__name__)
 
 CROSSOVER_ENVELOPE_SCHEMA_VERSION = 3
 
-_STEP_IDS = ("speaker_setup", "microphone", "drivers", "apply")
+_STEP_IDS = ("speaker_setup", "microphone", "drivers", "alignment", "apply")
 _STEP_LABELS = {
     "speaker_setup": "Protected speaker setup",
     "microphone": "Microphone and level",
     "drivers": "Measure each driver",
+    "alignment": "Align the crossover",
     "apply": "Apply speaker profile",
 }
 
@@ -320,6 +322,10 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     automatic_candidate_fingerprint = str(
         automatic_candidate.get("candidate_fingerprint") or ""
     )
+    commissioning_run = _mapping(status.get("commissioning_run"))
+    isolated_evidence = _mapping(commissioning_run.get("isolated_evidence"))
+    strict_isolated_complete = isolated_evidence.get("status") == "complete"
+    region_commissioning = _mapping(status.get("region_commissioning"))
     legacy_reapply = _legacy_applied_profile_needs_reapply(status)
     active_comparison_set_id = str(
         active_comparison_set.get("comparison_set_id") or ""
@@ -363,6 +369,10 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         and automatic_measurements.ready
     ):
         done.add("drivers")
+    if strict_isolated_complete:
+        done.add("drivers")
+    if region_commissioning.get("status") == "measured":
+        done.add("alignment")
     if applied_ready and not automatic_remeasure:
         done.add("apply")
     if automatic_applied and not automatic_remeasure:
@@ -706,9 +716,11 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         active_step = "microphone" if (
             level_running or _relay_kind(status).startswith("level_ramp:")
         ) else (
-            "drivers"
+            "alignment"
+            if _relay_kind(status) == "crossover_sweep:summed"
+            else "drivers"
         )
-    elif not level_ready and missing_drivers:
+    elif not strict_isolated_complete and not level_ready and missing_drivers:
         level = _mapping(status.get("level_match"))
         next_target = _mapping(level.get("next_target"))
         if not next_target and missing_drivers:
@@ -738,7 +750,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "body": {},
         }
         active_step = "microphone"
-    elif missing_drivers:
+    elif not strict_isolated_complete and missing_drivers:
         from .capture_geometry import driver_placement_instruction
         from .crossover_eligibility import repeat_progress, render_repeat_progress
 
@@ -798,7 +810,11 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 },
             }
             active_step = "drivers"
-    elif missing_reference_axis_drivers and not completed_near_field:
+    elif (
+        not strict_isolated_complete
+        and missing_reference_axis_drivers
+        and not completed_near_field
+    ):
         screen = "microphone"
         verdict = (
             "The near-field acoustics are saved, but their exact repeat ledger "
@@ -813,7 +829,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "body": {},
         }
         active_step = "microphone"
-    elif missing_reference_axis_drivers:
+    elif not strict_isolated_complete and missing_reference_axis_drivers:
         from .capture_geometry import reference_axis_driver_placement_instruction
         from .crossover_eligibility import repeat_progress, render_repeat_progress
 
@@ -909,7 +925,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 },
             }
             active_step = "drivers"
-    elif not automatic_measurements.ready:
+    elif not strict_isolated_complete and not automatic_measurements.ready:
         screen = "microphone"
         verdict = (
             "The current driver acoustics or their exact repeat ledger are not "
@@ -923,6 +939,90 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "body": {},
         }
         active_step = "microphone"
+    elif commissioning_run.get("status") == "current" and not strict_isolated_complete:
+        screen = "microphone"
+        verdict = (
+            "The fixed-axis driver captures did not complete the strict "
+            "commissioning set. Keep the microphone fixed and restart the "
+            "driver level check before combined alignment."
+        )
+        action = {
+            "id": "level_match",
+            "label": "Restart driver measurements",
+            "endpoint": "/correction/crossover/level-match",
+            "body": {},
+        }
+        active_step = "microphone"
+    elif strict_isolated_complete and region_commissioning.get("status") == "needs_geometry":
+        geometry_target = _mapping(region_commissioning.get("next_geometry"))
+        lower_role = str(geometry_target.get("lower_role") or "lower driver")
+        upper_role = str(geometry_target.get("upper_role") or "upper driver")
+        fc_hz = geometry_target.get("fc_hz")
+        fc_text = (
+            f" at {float(fc_hz):g} Hz"
+            if isinstance(fc_hz, (int, float))
+            else ""
+        )
+        screen = "alignment_geometry"
+        verdict = (
+            f"Confirm the signed acoustic-path estimate for the {lower_role} "
+            f"and {upper_role}{fc_text}. Enter {lower_role} path minus "
+            f"{upper_role} path in millimetres; enter 0 only when you are "
+            "explicitly attesting equal path length."
+        )
+        action = {
+            "id": "attest_region_geometry",
+            "label": "Confirm signed geometry",
+            "endpoint": "/correction/crossover/region-geometry",
+            "body": {
+                "expected_target_fingerprint": str(
+                    geometry_target.get("target_fingerprint") or ""
+                ),
+            },
+            "fields": [
+                {
+                    "name": "signed_acoustic_path_difference_mm",
+                    "label": (
+                        f"{lower_role} path minus {upper_role} path (mm)"
+                    ),
+                    "type": "number",
+                    "step": "0.1",
+                    "required": True,
+                }
+            ],
+        }
+        active_step = "alignment"
+    elif strict_isolated_complete and region_commissioning.get("status") == "collecting":
+        stage_text = "next server-selected combined response"
+        screen = "alignment"
+        verdict = (
+            f"Keep the microphone fixed. Measure the {stage_text} "
+            "capture. JTS chooses the exact graph, polarity, delay coordinate, "
+            "attempt, and repeat."
+        )
+        action = {
+            "id": "measure_region_alignment",
+            "label": f"Measure {stage_text}",
+            "endpoint": "/correction/crossover/relay-capture",
+            "body": {"kind": "summed"},
+        }
+        active_step = "alignment"
+    elif strict_isolated_complete and region_commissioning.get("status") == "measured":
+        screen = "review"
+        verdict = (
+            "Driver level, polarity, and bounded relative-delay evidence are "
+            "complete. JTS is ready to build the measured crossover candidate."
+        )
+        action = None
+        active_step = "apply"
+    elif strict_isolated_complete and region_commissioning.get("status") == "unavailable":
+        screen = "alignment"
+        verdict = str(
+            region_commissioning.get("detail")
+            or "Combined crossover commissioning authority is unavailable."
+        )
+        action = None
+        active_step = "alignment"
     elif automatic_candidate_ready:
         screen = "apply"
         replacing_manual = applied_ready and applied_owner == "manual"

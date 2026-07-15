@@ -95,16 +95,31 @@
 > operation, or durably enters `blocked_live_state_unknown` and requires an
 > exact-restore transition before collection can resume.
 > Internal host status reports whether a capture transport is configured,
-> `hardware_capture_status=wave4_hardware_required`, the current live-mutation
+> `hardware_capture_status=hardware_validation_required`, the current live-mutation
 > state, and whether exact recovery is required; it does not imply hardware
 > readiness from synthetic evidence.
 > Incomplete prior owner generations are abandoned; a run-scoped complete
 > artifact written before its lifecycle transition is recoverable on restart.
-> The raw/browser summed endpoint remains pre-audio refused: it cannot choose a
-> region, graph, delay, attempt, or admission. Real geometry attestation and
-> authoritative microphone captures remain Wave 4 inputs, so this hardware-free
-> path is proven with synthetic admitted fixtures and does not make a candidate,
-> receipt, or Room eligibility decision.
+> **Production region-capture boundary (2026-07-15; hardware-free).** The
+> Crossover page now accepts one explicit signed path-difference attestation per
+> region and offers one generic next combined-capture action. The production
+> relay accepts only `kind=summed`; the browser cannot supply region, polarity,
+> delay, graph, attempt, ordinal, or admission. It contributes a real recorder
+> WAV, the authenticated `summed_reference_axis_v1` acknowledgement, and
+> non-authoritative diagnostics. The existing `CommissioningEvidenceHost`
+> remains the sole sequencer and runs normal, reverse, and bounded-delay graphs
+> through its existing writer/readback/restore transaction. Status never reserves
+> attempts or live mutations and reports `server_selected` instead of
+> reconstructing that schedule.
+> Calibration and recorder identity reopen from the durable comparison set;
+> completed isolated evidence may cross owner generations only for the same
+> exact program, while geometry and live attempts remain generation-specific.
+> Production entry is launch-gated to a two-way preset on a DAC profile that
+> declares `supports_active_crossover_commissioning`; only the base DAC8x
+> profile declares it today. Three-way and other DAC paths fail before capture.
+> Legacy raw/direct summed routes remain refused. This slice still makes no
+> candidate, apply, receipt, or Room eligibility decision, and no live hardware
+> was used.
 >
 > **Wave 3 relay Stop boundary (2026-07-14; hardware-free).** The Crossover
 > page exposes one Stop action for active relay level and sweep work through
@@ -792,10 +807,11 @@ complete isolated and summed evidence and derive an
 attenuation/polarity/delay-only electrical candidate. The production host does
 not invoke it, so no candidate is persisted and `candidate_ready`, graph mutation/apply,
 verification/receipt, and Room authority remain unavailable.
-The direct browser/raw combined-capture route remains permanently pre-audio
-refused with `active_summed_persisted_admission_unavailable`. Real Wave 4
-geometry and capture inputs must still enter through the typed internal host;
-they do not reopen browser authority. Historical B2b captures remain
+Legacy direct browser/raw combined-capture routes remain permanently pre-audio
+refused with `active_summed_persisted_admission_unavailable`. The production
+relay's recorder-only `kind=summed` branch now supplies real WAVs and explicit
+signed/fixed-axis geometry to the typed internal host without granting the
+browser scheduling or DSP authority. Historical B2b captures remain
 permanently non-admitted, and current projections still expose no candidate,
 apply, verification, receipt, or Room authority until the later Wave 3 gates
 are satisfied.
@@ -1125,10 +1141,12 @@ persists the lifecycle's exact current-run identity in
 created only with a fresh bundle-backed comparison set; owner generation is
 claimed at correction-web startup, and stale run/attempt callbacks cannot
 commit. The store can persist bounded target-attempt reservations and a
-hash-chained transition journal. The internal evidence host uses both, but
-correction-web does not manufacture the Wave 4 geometry/capture inputs needed
-to construct it. The ordinary hardware-free web surface therefore remains
-`unconfigured` unless a trusted server composition supplies those exact inputs.
+hash-chained transition journal. The internal evidence host uses both.
+Correction-web now supplies a thin production composition: it persists signed
+per-region geometry, reopens the comparison-bound calibration and recorder
+hash, and passes relay WAV bytes to the host. It does not choose an operation or
+reconstruct progress; the host alone advances `protected` to `measured` after
+exact evidence.
 
 Current Active bundles remain forensic and fail-soft, and no production code
 issues or persists an eligibility receipt. Room's current
@@ -1492,9 +1510,9 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   baffle-step/splice consumer.
 - Crossover frequency, family, and slope remain operator-owned rather than
   measured automatically.
-- The automatic success path requires a pre-apply combined listening check,
-  but not reverse-polarity/delay/off-axis evidence or post-apply acoustic
-  verification.
+- The strict automatic success path requires fixed-axis normal/reverse evidence,
+  the bounded playback-clock-locked delay walk, and post-apply fixed-axis
+  combined verification. Off-axis/directivity optimization remains deferred.
 - ~~Existing alignment analysis is not fully reachable through persisted
   paired summed evidence.~~ Closed for the polarity/margin proposal (Slice 2):
   `measurement.py` now retains both in-phase and reverse-polarity summed
@@ -1507,12 +1525,11 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   tweeter-axis reference placement may contribute a null. Automatic baseline
   composition additionally requires affirmative per-band alignment SNR, an
   uncapped null, and an exact match to the applied preset plus corrections; it
-  never consumes a capture-carried delay. The relay preserves the candidate metadata,
-  but the wizard does not yet expose the per-region normal/reverse loop or load
-  a transient reverse-polarity graph; the playback boundary refuses those
-  candidates before audio so it cannot mislabel the unchanged applied graph.
-  The bounded measured delay *walk* (a value, not just a status) and post-apply
-  verification remain separate, not-yet-built pieces of Slice 2.
+  never consumes a capture-carried delay. The production wizard now exposes one
+  server-selected combined-capture action; the internal host—not browser
+  metadata—runs the per-region normal/reverse loop, transient reverse graph, and
+  bounded measured delay *walk*. Candidate persistence/review and post-apply
+  verification remain later slices.
 - The shared delay-walk substrate includes a pure candidate graph-content
   proof (`jasper.audio_measurement.delay_graph`). Active-crossover and bass
   hosts share one typed lane proof while retaining their own authoritative
@@ -1611,8 +1628,10 @@ Last verified: 2026-07-15 (Wave 2 reconstruction, measured-candidate input,
 preparation-only safety, level-run correlation contracts and terminal-result
 liveness, permanent historical refusal, the reachable isolated-driver
 Shared-admission/playback adapter and bounded writer transaction,
-direct summed-endpoint pre-audio refusal, the typed internal summed evidence
-host, strict write-once evidence store, exact graph/capture/restore transaction,
+legacy direct summed-endpoint pre-audio refusal, the recorder-only production
+summed relay, signed geometry persistence, durable calibration/device binding,
+the typed internal summed evidence host, strict write-once evidence store,
+exact graph/capture/restore transaction,
 deterministic coarse-then-refinement progression, restart recovery, and durable bundle-backed commissioning-run identity,
 startup owner-generation claim, fail-closed crossover status, strict pure
 group-by-region and isolated-driver evidence sets with typed run/attempt,

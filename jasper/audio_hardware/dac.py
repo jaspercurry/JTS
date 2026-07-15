@@ -151,6 +151,7 @@ class DacProfile:
     requires_same_usb_bus: bool = False
     supports_active_outputd_lane: bool = False
     active_outputd_lane_channels: int | None = None
+    supports_active_crossover_commissioning: bool = False
     dac_channel_map: tuple[ChannelMapEntry, ...] | None = None
     mixer_controls: tuple[MixerControl, ...] = ()
     headphone_pinned_100: bool = False
@@ -259,6 +260,13 @@ class DacProfile:
                 f"{self.id}: active_outputd_lane_channels requires "
                 "supports_active_outputd_lane"
             )
+        if self.supports_active_crossover_commissioning and not (
+            self.is_coherent_single() and self.supports_active_outputd_lane
+        ):
+            raise ValueError(
+                f"{self.id}: active crossover commissioning requires one "
+                "coherent active-output device"
+            )
         if self.dac_channel_map is not None:
             # The channel map routes the active lane; it only means something
             # for a DAC that has one. Validate it is a clean permutation of the
@@ -366,6 +374,7 @@ HIFIBERRY_DAC8X = DacProfile(
     # no permutation needed). Width is DATA, not a per-DAC code branch.
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=8,
+    supports_active_crossover_commissioning=True,
     validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
     chip_aec_qualification="approved",
     chip_aec_detail="HiFiBerry DAC8x is a measured JTS3 known-good chip-AEC profile",

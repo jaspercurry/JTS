@@ -153,6 +153,11 @@ The foundation is partly built:
   hardware artifact as operator-OK even though the raw artifact remains
   partial. Unknown or new DAC paths still need the explicit acoustic
   drift/delay gate before chip-AEC should be recommended.
+- The pure-data DAC registry now distinguishes broad active-output transport
+  support from automatic crossover-commissioning launch support. Only the base
+  DAC8x declares `supports_active_crossover_commissioning`; the owning Active
+  service also requires a two-way preset. This is product-scope authority, not
+  a substitute for live hardware-validation evidence.
 - `/wake-corpus/` has the first additive reuse hook: new session and
   clip metadata write an `audio_context` snapshot with production
   profile classification, mic firmware/channel identity, selected leg
@@ -666,7 +671,9 @@ against clear metrics.
 
 ---
 
-Last verified: 2026-07-14 (output hardware `usb_data_role` boundary rechecked;
+Last verified: 2026-07-15 (DAC8x-only automatic crossover-commissioning
+capability and its two-way product gate checked hardware-free; output hardware
+`usb_data_role` boundary rechecked;
 prior 2026-06-26 `/aec` applied-runtime status contract rechecked
 against `jasper/audio_profile_state.py`, `jasper/control/aec_endpoints.py`,
 and `tests/test_control_aec_state.py`. Prior pass 2026-06-25: chip-AEC gate

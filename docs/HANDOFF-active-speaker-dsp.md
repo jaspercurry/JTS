@@ -179,9 +179,12 @@
 > authority marker remain historical. Legacy browser/direct combined capture is
 > refused before graph load with
 > `active_summed_persisted_admission_unavailable`; its legacy evidence cannot be
-> promoted. A typed internal host now owns group-level delay/protection authority
-> for synthetic-admitted raw-WAV evidence, while real capture transport and
-> attested geometry remain Wave 4. The
+> promoted. The production relay's `kind=summed` branch is different: it accepts
+> no browser DSP fields, persists an explicit signed per-region geometry
+> attestation, validates the comparison-set calibration and recorder hash, and
+> supplies the real WAV to the typed internal host. That host alone owns the
+> normal/reverse/delay operation, transient graph, admission, attempt, ordinal,
+> commit, and exact restore. The
 > `crossover_sweep` capture spec's stimulus length derives from the protected
 > per-driver signal plan (12 s woofer/subwoofer, 8 s midrange, 4 s tweeter;
 > one sweep definition; the deconv
@@ -200,8 +203,11 @@
 > protected speaker setup → mic/calibration + one automatic near-field level per
 > driver → each driver's stationary near-field repeat sequence → keep the mic
 > fixed on the tweeter reference axis while each driver gets a separate safe
-> level and a target of three gated repeats → apply matched attenuation trims →
-> Room. One bounded fourth attempt may replace a rejected capture, but automatic
+> level and a target of three gated repeats → attest signed path geometry → run
+> server-selected normal/reverse/bounded-delay combined captures → evidence
+> complete. Candidate review/apply/verification remain later slices. One bounded
+> fourth attempt may
+> replace a rejected capture, but automatic
 > apply still requires three accepted repeats for both geometries. The lower
 > kernel can retain a two-accepted reduced-confidence aggregate for diagnosis;
 > it is not apply-eligible. The
@@ -763,8 +769,9 @@
 > evaluator now consumes exact complete isolated and summed evidence and
 > derives an attenuation/polarity/delay-only electrical candidate. The
 > production host does not invoke it; candidate persistence, `candidate_ready`, graph
-> mutation/apply, verification/receipt, Room consumption, and hardware capture
-> composition remain unavailable.
+> mutation/apply, verification/receipt, and Room consumption remain unavailable.
+> Real summed capture transport is now composed through the correction relay, but
+> live JTS3 playback and acoustic capture remain unvalidated.
 
 ## Current Operational Truth
 
@@ -987,8 +994,9 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    owner-generation claim, fail-closed status projection, cross-process issuance
    CAS, and a typed internal host that can reserve exact region attempts and
    advance synthetic-admitted evidence to `measured` after exact restoration.
-   Legacy browser summed ingress remains refused; a real raw capture transport
-   and attested geometry remain Wave 4.
+   Legacy direct/browser summed ingress remains refused. The production relay
+   now supplies real recorder WAVs plus generation-specific signed geometry to
+   that host without accepting browser operation policy.
    The live playback window, browser mic timing, and actual speaker acoustics
    still need on-device validation. Per-driver isolation is the CamillaDSP
    **mute mask**, not a channel-targeted WAV — so
@@ -1075,6 +1083,11 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   *through the active outputd lane* at Stage 4 (a staged active config, not the
   base cutover.yml jts3 has been running). A DAC that required native-width opens
   would declare that per-profile rather than forcing universal padding.
+  Production automatic crossover commissioning is a narrower capability:
+  `DacProfile.supports_active_crossover_commissioning` is true only for the base
+  DAC8x today, and the production service additionally requires a two-way preset.
+  DAC8x Studio, Apple, composite, and three-way paths fail before capture rather
+  than inheriting launch authority from the broader active-output lane.
   **2b landed (masked commissioning emitter wired):**
   `stage_protected_startup_config` now stages the production graph via
   `emit_active_speaker_commissioning_config(..., audible_outputs=frozenset())` —
@@ -1698,13 +1711,11 @@ Delay alignment is measured, not guessed.
 > it also requires the current preset and pre-alignment corrections (gain,
 > polarity, and delay) to equal the protected profile's immutable recomposition
 > snapshot, so a same-Fc family/order/trim/polarity/delay edit invalidates the
-> pair. It never reads a record-supplied delay. The summed relay preserves the
-> candidate polarity/Fc/delay metadata end to end, but the current wizard
-> envelope still exposes only one combined capture and does not yet load a
-> transient reverse-polarity graph. The playback boundary therefore refuses
-> reverse/delay candidates before audio, so unchanged playback cannot be
-> persisted under a candidate label. This is transport substrate, not a claim
-> that the normal/reverse UI loop is complete. `summed_reference_axis_v1`
+> pair. It never reads a record-supplied delay. The current wizard exposes one
+> generic server-selected combined-capture action; the existing internal host
+> runs the normal/reverse sequence, transient reverse graph, and bounded delay
+> walk without accepting candidate metadata from the browser.
+> `summed_reference_axis_v1`
 > standardizes the fallback placement at approximately 1 m on the tweeter axis,
 > level with the tweeter or horn-mouth center, with an explicit promise not to
 > move the microphone or speaker between normal/reverse captures.
@@ -2139,8 +2150,10 @@ Key external prior-art families named by the reports:
 Last verified: 2026-07-15 (Wave 1 target-bound research, visible confirmed
 driver-safety profile, excitation admission, nine-state lifecycle, exact
 eligibility receipt, reachable isolated-driver persisted admission under one
-bounded writer transaction, direct summed-endpoint pre-audio refusal, the typed
-summed graph/apply/capture/restore runtime with exact graph/path/listening-volume
+bounded writer transaction, legacy direct summed-endpoint pre-audio refusal,
+the recorder-only production summed relay, signed geometry persistence, durable
+calibration/device binding, and the typed summed graph/apply/capture/restore
+runtime with exact graph/path/listening-volume
 readback, exact adjacent-group binding, group-scoped transforms, safe-volume-
 before-graph ordering, a transient graph ceiling no louder than the admitted
 measurement volume, full-envelope 20 ms delay headroom, fresh transformed-

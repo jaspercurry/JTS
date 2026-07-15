@@ -24,18 +24,21 @@
   explicit device, timeout, and cache; they do not choose an excitation or prove
   current admission. No browser/Active flow changed, and no hardware behavior
   was revalidated.
-- 🧱 **Wave 3 isolated-driver admission reachable; raw summed browser ingress closed.**
+- 🧱 **Production isolated and summed Active evidence ingress reachable; legacy raw summed routes closed.**
   The correction relay's driver leg now receives a unique, persisted
   playback-role handoff from Active's Shared-admission adapter and passes it to
   capture persistence as an explicit server-owned argument. One bounded DSP
   writer lock covers transient graph load, fresh graph/volume proof, exact WAV
   playback, and restoration; cancellation cannot release the boundary before
   restore finishes. Historical bundles without the authority marker are never
-  upgraded. The summed relay/capture route currently refuses before graph load
-  with `active_summed_persisted_admission_unavailable`; browser payloads cannot
-  select a region, graph, delay, attempt, or admission. Active's typed internal
-  summed host now owns the deterministic operation/store/runtime join, but real
-  geometry and capture inputs remain Wave 4 work. Each transient live mutation
+  upgraded. Legacy direct summed routes still refuse before graph load with
+  `active_summed_persisted_admission_unavailable`. The production relay accepts
+  only `kind=summed`, then passes the real recorder WAV and authenticated
+  fixed-axis acknowledgement to Active's typed host; browser payloads cannot
+  select a region, polarity, graph, delay, attempt, ordinal, or admission. The
+  Crossover page persists explicit signed geometry per plan region. Calibration
+  and recorder identity reopen from the durable comparison set, so service
+  restart does not weaken the binding. Each transient live mutation
   has a durable exact predecessor pointer and terminal restore marker. A
   crash-released execution mutex spans runtime through canonical commit; restart
   restores a pending predecessor before new work or leaves the run durably
@@ -501,10 +504,11 @@
   `deploy/assets/correction/js/main.js` intact. `/correction/crossover/`
   is a correction-native active-crossover microphone surface: correction
   web modules own HTTPS/browser routing, while
-  `jasper.active_speaker.web_commissioning` owns safe admitted driver playback
-  and the current fail-closed summed web gate; the typed internal Active host
-  owns summed playback orchestration for synthetic-admitted evidence, while a
-  real capture transport and attested geometry remain Wave 4 work.
+  `jasper.active_speaker.web_commissioning` owns safe admitted driver playback;
+  the typed internal Active host owns production summed operation selection,
+  guarded playback, persistence, and restoration. The web layer supplies only
+  signed geometry, the comparison-bound recorder/calibration identity, and relay
+  WAV bytes.
   `jasper.active_speaker.web_measurement`
   owns bounded browser WAV evidence plus acoustic-analysis recording.
   This page is also the ownership boundary between manual and automatic
@@ -1401,6 +1405,9 @@ POST /crossover/level-match  guided mic/calibration + server-selected per-driver
                              near-field or fixed-reference-axis automatic level
 POST /crossover/recover-volume recover a durable unconfirmed listening volume;
                               exact prior level first, then confirmed −60 dB
+POST /crossover/region-geometry body: {expected_target_fingerprint,
+                              signed_acoustic_path_difference_mm}; persist the
+                              server's current region geometry attestation
 POST /crossover/apply        atomically apply measured Layer A; restore gain lease
 POST /crossover/driver-test  start one protected per-driver audible test
 POST /crossover/driver-confirm record the protected driver-test result
@@ -1411,18 +1418,18 @@ POST /crossover/summed-capture-sweep legacy direct summed route; always 409
                              before body/backend/volume/graph/audio
 POST /crossover/summed-capture legacy direct raw-WAV route; always 409 before
                              body/backend/volume/graph/audio
-POST /crossover/relay-capture body: {kind: driver|summed, speaker_group_id,
-                             role?, capture_geometry?}; phone-mic relay transport for one
-                             crossover sweep and the only production driver
-                             evidence ingress (`record_driver_capture` analysis;
-                             driver geometry must equal the server envelope's
-                             next action at POST and armed time;
-                             refuses while room/balance/sync
-                             is active — server-computed at POST and
-                             re-checked when the phone arms). `kind=summed`
-                             performs one bounded discriminator parse, then
-                             refuses before session/level/graph/playback/analysis. ON-DEVICE:
-                             not exercised hardware-free — H2.
+POST /crossover/relay-capture driver body: {kind: driver, speaker_group_id,
+                             role, capture_geometry}; summed body exactly
+                             {kind: summed}. Phone-mic relay transport for one
+                             crossover sweep. Driver geometry must equal the
+                             server envelope's next action at POST and armed
+                             time. Summed capture accepts recorder bytes and
+                             fixed-axis acknowledgement only; Active owns its
+                             region, graph, polarity, delay, attempt, ordinal,
+                             and admission. Both refuse while another
+                             measurement is active and re-check mutable
+                             authority when the phone arms. ON-DEVICE: summed
+                             playback/capture not exercised hardware-free — H2.
 POST /crossover/relay-cancel cooperatively stop the active crossover level/sweep
                              relay; reports `stopping` until exact cleanup drains
                              and refuses Stop during `finishing`/`committing`
@@ -2610,8 +2617,10 @@ isolation rechecked against mux's
 closed owner vocabulary, transactional release acknowledgement, response-loss
 rollback, monotonic crash lease, and no source-process mutation; shared DSP-writer admission deadline/cancellation
 semantics checked against Room's terminal mutation policy; Active isolated-driver
-persisted admission, server-owned capture handoff, and summed pre-audio refusal
-checked hardware-free; Active's typed internal summed evidence host, exact
+persisted admission, server-owned capture handoff, legacy summed pre-audio
+refusal, and the recorder-only production summed relay checked hardware-free;
+Active's signed geometry and durable calibration/device binding, typed internal
+summed evidence host, exact
 graph/capture/restore runtime, durable artifacts, and deterministic measured
 progression were also checked with synthetic admitted fixtures; Active's durable bundle-backed commissioning-run start,
 startup owner-generation claim, stale-callback refusal, and fail-closed

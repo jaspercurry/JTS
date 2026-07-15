@@ -109,8 +109,10 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     )
     assert "hifiberry.*dac8x(?!.*studio)" in HIFIBERRY_DAC8X.supported_card_matches
     assert HIFIBERRY_DAC8X.validation_profile == "hifiberry_dac8x_outputd_stability"
+    assert HIFIBERRY_DAC8X.supports_active_crossover_commissioning is True
     assert HIFIBERRY_DAC8X.dtoverlay == "hifiberry-dac8x"
     assert HIFIBERRY_DAC8X_STUDIO.id == "hifiberry_dac8x_studio"
+    assert HIFIBERRY_DAC8X_STUDIO.supports_active_crossover_commissioning is False
     assert HIFIBERRY_DAC8X_STUDIO.label == "HiFiBerry DAC8x Studio"
     assert HIFIBERRY_DAC8X_STUDIO.physical_output_count == 8
     assert HIFIBERRY_DAC8X_STUDIO.clock_domain_contract == "single_device"
@@ -250,6 +252,25 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             outputd_sink="alsa",
             supported_card_matches=("bad",),
             supports_active_outputd_lane=True,
+        )
+
+    with pytest.raises(
+        ValueError, match="commissioning requires one coherent active-output device"
+    ):
+        DacProfile(
+            id="bad_composite_commissioning",
+            label="Bad composite commissioning",
+            kind="composite",
+            physical_output_count=4,
+            coherent_clock_domain=False,
+            clock_domain_label="Two clocks",
+            clock_domain_contract="measured_sync_required",
+            outputd_sink="dual_apple",
+            supported_card_matches=("usb",),
+            child_profile_ids=(APPLE_USB_C_DONGLE_ID, APPLE_USB_C_DONGLE_ID),
+            supports_active_outputd_lane=True,
+            active_outputd_lane_channels=4,
+            supports_active_crossover_commissioning=True,
         )
 
 

@@ -380,7 +380,7 @@ class RegionCaptureOperation:
         }
 
 
-def _program_key(plan: RegionEvidencePlan) -> tuple[Any, ...]:
+def commissioning_program_key(plan: RegionEvidencePlan) -> tuple[Any, ...]:
     """Stable program identity across owner-generation restart claims."""
 
     authority = plan.authority
@@ -1162,7 +1162,9 @@ class CommissioningEvidenceHost:
             if self._missing(exc):
                 return None
             raise
-        if _program_key(complete.plan) != _program_key(self.plan):
+        if commissioning_program_key(complete.plan) != commissioning_program_key(
+            self.plan
+        ):
             raise CommissioningHostError(
                 "complete_evidence_stale",
                 "durable complete evidence does not equal the current program",
@@ -1977,7 +1979,7 @@ class CommissioningEvidenceHost:
             if self._raw_capture_transport is None:
                 raise CommissioningHostError(
                     "raw_capture_transport_unavailable",
-                    "real summed capture transport is not composed in Wave 3",
+                    "real summed capture transport is not configured",
                 )
             request, snapshot = self._runtime_request(operation)
             baseline_fingerprint = NormalizedActiveRawIdentity(
@@ -2138,7 +2140,7 @@ class CommissioningEvidenceHost:
                 "capture_transport_configured": (
                     self._raw_capture_transport is not None
                 ),
-                "hardware_capture_status": "wave4_hardware_required",
+                "hardware_capture_status": "hardware_validation_required",
                 "live_mutation_status": (
                     live_mutation.status if live_mutation is not None else None
                 ),
