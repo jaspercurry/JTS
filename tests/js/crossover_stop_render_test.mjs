@@ -78,8 +78,12 @@ const terminalEnvelope = {
 let nextEnvelope = terminalEnvelope;
 let postResponse = { relay: { status: "stopping" } };
 let postError = null;
+// Lets a test hold a postJSON call pending so it can inspect render() state
+// while that request is still in flight, then release it explicitly.
+let postGate = null;
 globalThis.__getJSON = async () => nextEnvelope;
 globalThis.__postJSON = async () => {
+  if (postGate) await postGate;
   if (postError) throw postError;
   return postResponse;
 };
@@ -113,6 +117,56 @@ const actions = elements.get("crossover-action").children;
 assert.equal(actions.length, 1);
 assert.equal(actions[0].textContent, "Try again");
 assert.equal(actions[0].disabled, false, "terminal action is enabled after Stop");
+
+// --- busy (unrelated in-flight actions) must not latch Stop disabled -------
+// Only stopRelay()'s own in-flight cancel request may disable the Stop
+// control; a slow, unrelated action re-rendering mid-flight must not.
+let releasePostGate = null;
+postGate = new Promise((resolve) => { releasePostGate = resolve; });
+postError = null;
+postResponse = { status: "ok" };
+
+const stoppableEnvelope = {
+  ...terminalEnvelope,
+  relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=cap2" },
+  next_action: null,
+};
+render(stoppableEnvelope);
+assert.equal(
+  elements.get("crossover-relay-stop").disabled,
+  false,
+  "Stop starts enabled while the relay is stoppable",
+);
+
+const actionPromise = runAction(
+  { endpoint: "/correction/crossover/level-match", body: {} },
+  element("level-match-button"),
+);
+// A poll re-render arrives while the unrelated action's POST is still in
+// flight (busy === true). Stop must stay clickable.
+render(stoppableEnvelope);
+assert.equal(
+  elements.get("crossover-relay-stop").disabled,
+  false,
+  "an unrelated in-flight action must not disable Stop",
+);
+releasePostGate();
+await actionPromise;
+postGate = null;
+
+// stopRelay's OWN cancel request in flight must disable Stop.
+postGate = new Promise((resolve) => { releasePostGate = resolve; });
+postResponse = { relay: { status: "stopping" } };
+render(stoppableEnvelope);
+const stopPromise = stopRelay();
+assert.equal(
+  elements.get("crossover-relay-stop").disabled,
+  true,
+  "Stop disables itself only while its own cancel request is in flight",
+);
+releasePostGate();
+await stopPromise;
+postGate = null;
 
 render({
   ...terminalEnvelope,
@@ -233,4 +287,4 @@ assert.equal(
   "Candidate apply needs durable finalization.",
 );
 
-console.log(JSON.stringify({ ok: true, passed: 13 }));
+console.log(JSON.stringify({ ok: true, passed: 16 }));

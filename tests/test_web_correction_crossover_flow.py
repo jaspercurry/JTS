@@ -1931,7 +1931,7 @@ def test_fast_terminal_stop_reenables_the_authoritative_next_action():
     )
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert result == {"ok": True, "passed": 13}
+    assert result == {"ok": True, "passed": 16}
 
 
 # --- passive-gating: Layer A hidden for a full-range passive speaker ----------
