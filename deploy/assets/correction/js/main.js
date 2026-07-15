@@ -2722,12 +2722,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   // Keep the local-browser UMIK path on the same Room-owned acoustic
-  // window as the relay path. The 2026-07-15 JTS3 smoke showed that a
-  // -17.15 dBFS continuous-tone lock could still let the following ESS
-  // clip. Noise is measured and reported for the downstream SNR gates,
-  // but it must not raise this bounded level target.
-  var ROOM_LEVEL_WINDOW_LOW_DBFS = -23;
-  var ROOM_LEVEL_WINDOW_HIGH_DBFS = -15;
+  // window as the relay path. The 2026-07-15 JTS3 smoke showed that even
+  // Room's initial 3 dB reserve could let the following ESS clip: its RMS
+  // rose 3.24 dB above the locked tone and its peak reached full scale.
+  // Noise is measured and reported for the downstream SNR gates, but it
+  // must not raise this bounded level target.
+  var ROOM_LEVEL_WINDOW_LOW_DBFS = -26;
+  var ROOM_LEVEL_WINDOW_HIGH_DBFS = -18;
 
   function computeTargetBand(_noiseFloorDb) {
     return {

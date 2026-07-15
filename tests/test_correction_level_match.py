@@ -740,7 +740,7 @@ async def test_session_run_level_match_stores_geometry_lock(tmp_path):
 
 @pytest.mark.asyncio
 async def test_room_session_uses_sweep_headroom_window(tmp_path):
-    """Room keeps 3 dB beyond the shared tone window for the full-band ESS."""
+    """Room keeps 6 dB beyond the shared tone window for the full-band ESS."""
     sess = _make_session(tmp_path)
     chain = FakeChain(gain_db=10.0, start_vol=-30.0)
     clock = Clock()
@@ -761,7 +761,7 @@ async def test_room_session_uses_sweep_headroom_window(tmp_path):
     assert outcome.ramp.state is RampState.LOCKED
     assert outcome.ramp.locked_main_volume_db is not None
     locked_mic_dbfs = outcome.ramp.locked_main_volume_db + chain.gain_db
-    assert locked_mic_dbfs == pytest.approx(-19.0)
+    assert locked_mic_dbfs == pytest.approx(-22.0)
     assert ROOM_LEVEL_WINDOW_LOW_DBFS <= locked_mic_dbfs
     assert locked_mic_dbfs <= ROOM_LEVEL_WINDOW_HIGH_DBFS
     assert outcome.ramp.restored is True
@@ -830,7 +830,7 @@ async def test_stop_after_locked_waits_for_terminal_ack_then_restores(tmp_path):
 async def test_room_session_accepts_stable_bounded_low_level(tmp_path):
     """A quiet external amp can proceed only with explicit degraded evidence."""
     sess = _make_session(tmp_path)
-    chain = FakeChain(gain_db=-10.0, start_vol=-30.0, nf=-60.0)
+    chain = FakeChain(gain_db=-13.0, start_vol=-30.0, nf=-60.0)
     clock = Clock()
 
     outcome = await sess.run_level_match(

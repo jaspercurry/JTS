@@ -544,10 +544,12 @@ create a second retention system.
   Room alone allows the listening-position ramp +15 dB of travel up to the
   unchanged 0 dB hard ceiling because its stimulus is already −12 dBFS;
   crossover/near-field keeps the shared +12/−3 cap. Room's owning session also
-  shifts the shared −20 to −12 dBFS tone window down 3 dB for full-band ESS
-  headroom. This is deliberately not a shared-kernel or Active policy change:
-  the 2026-07-15 JTS3 UMIK-2 smoke reached −17.15 dBFS on the level tone but
-  clipped the subsequent sweep, which the existing quality gate rejected.
+  shifts the shared −20 to −12 dBFS tone window down 6 dB for full-band ESS
+  headroom. This is deliberately not a shared-kernel or Active policy change.
+  Two 2026-07-15 JTS3 UMIK-2 runs reached full scale after locking in the shared
+  window and then in Room's initial 3 dB-lower window; the latter sweep was
+  −15.86 dBFS RMS with 0.1856% clipped samples and 25.49 dB estimated SNR. The
+  existing quality gate rejected both clipped inputs.
   Ramp snapshots retain compact admission counts plus maximum observed RMS,
   peak, trust threshold, and trust deficit for an exact zero-trusted-sample
   diagnosis.

@@ -1971,8 +1971,8 @@ def test_render_page_redraws_chart_on_resize():
 def test_render_page_autolevel_target_band_clamps():
     """The preferred local UMIK path reserves the same ESS headroom as relay."""
     body = _module_js()  # behaviour relocated to the static ES module
-    assert "ROOM_LEVEL_WINDOW_LOW_DBFS = -23" in body
-    assert "ROOM_LEVEL_WINDOW_HIGH_DBFS = -15" in body
+    assert "ROOM_LEVEL_WINDOW_LOW_DBFS = -26" in body
+    assert "ROOM_LEVEL_WINDOW_HIGH_DBFS = -18" in body
     target = body.split("function computeTargetBand", 1)[1].split(
         "async function startAutolevel", 1
     )[0]

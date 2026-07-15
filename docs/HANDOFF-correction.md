@@ -263,12 +263,14 @@
   preferred-window shortfall. Room's listening-position owner allows a
   +15 dB rise up to the unchanged 0 dB hard ceiling because its measurement
   stimulus is already −12 dBFS; crossover/near-field keeps the shared +12/−3
-  cap. Both relay and local-browser Room capture target the same-width −23 to
-  −15 dBFS microphone window,
-  3 dB below the shared continuous-tone window. That Room-owned reserve was
-  pinned after the 2026-07-15 JTS3 UMIK-2 smoke: a −17.15 dBFS level-tone lock
-  still let the following full-band ESS clip, while the capture gate correctly
-  refused analysis. Active near-field commissioning keeps the shared window.
+  cap. Both relay and local-browser Room capture target the same-width −26 to
+  −18 dBFS microphone window, 6 dB below the shared continuous-tone window.
+  That Room-owned reserve was pinned after two 2026-07-15 JTS3 UMIK-2 runs: a
+  −17.15 dBFS level-tone lock let the following full-band ESS clip, and the
+  initial 3 dB-lower Room window still produced a −15.86 dBFS RMS sweep with
+  0.1856% clipped samples. Its 25.49 dB estimated SNR left room for the extra
+  attenuation, while the capture gate correctly refused both clipped inputs.
+  Active near-field commissioning keeps the shared window.
   The owning flow surfaces the shortfall and
   downstream sweep-quality gates still decide whether the evidence is usable.
   The
