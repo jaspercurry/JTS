@@ -1669,16 +1669,13 @@ def test_summed_capture_no_crossover_region_emits_exactly_one_rejected_event(cap
 
 def test_reserved_crossover_events_are_never_emitted():
     # Spec-pinned (docs/active-crossover-information-design.md "Structured
-    # events"): correction.crossover_proposal_ready / _verification_passed /
-    # _verification_failed / _level_locked / _level_failed are documented as
-    # future work and MUST NOT have a call site yet. A static grep over the
-    # source tree is the guard: no jasper/ file may pass one of these literal
-    # strings to log_event.
+    # events"): correction.crossover_proposal_ready / _level_locked /
+    # _level_failed are documented as future work and MUST NOT have a call site
+    # yet. Verification pass/fail now ship from the Active-owned verification
+    # service and have their own once-only transition tests.
     root = Path(__file__).resolve().parents[1] / "jasper"
     assert set(RESERVED_CROSSOVER_EVENTS) == {
         "correction.crossover_proposal_ready",
-        "correction.crossover_verification_passed",
-        "correction.crossover_verification_failed",
         "correction.crossover_level_locked",
         "correction.crossover_level_failed",
     }

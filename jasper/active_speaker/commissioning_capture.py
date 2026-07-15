@@ -84,9 +84,6 @@ RESERVED_CROSSOVER_EVENTS = (
     # Slice 3 (measured candidate selection) produces the proposal this fires
     # for; Slice 1 wires only the lifecycle events themselves.
     "correction.crossover_proposal_ready",
-    # Phase 2 post-apply acoustic verification; not built in Phase 1.
-    "correction.crossover_verification_passed",
-    "correction.crossover_verification_failed",
     # Level locking already ships under correction.crossover_driver_level_*
     # names in jasper/web/correction_crossover_backend.py. Renaming a shipped
     # event onto this namespace is a deliberate future migration, not
