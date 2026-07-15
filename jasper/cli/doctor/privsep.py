@@ -237,7 +237,7 @@ _SPEC_BY_UNIT: dict[str, DaemonReadSpec] = {s.unit: s for s in MANIFEST}
 # either in MANIFEST or here, so a genuinely new non-root daemon can't be
 # added without a conscious scope decision.
 OUT_OF_SCOPE_NONROOT_UNITS: frozenset[str] = frozenset(
-    {"jasper-dac-init", "jasper-headphone-monitor"}
+    {"jasper-dac-init", "jasper-headphone-monitor", "jasper-usbsink"}
 )
 
 

@@ -115,7 +115,8 @@ def test_disarm_camilla_failure_still_restarts_fanin_and_outputd(tmp_path):
     # fails, the disarm still restarts fan-in + outputd (never leave them stranded
     # on the ring).
     fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
     )
     outputd_env = _write(
         tmp_path / "outputd.env",
@@ -142,7 +143,8 @@ def test_old_fifo_literal_failsafe_to_loopback(tmp_path):
     # A removed/unknown literal (the old "fifo", or the deleted transport_pipe)
     # persisted in fanin.env fails safe to a loopback disarm.
     fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
     )
     outputd_env = _write(
         tmp_path / "outputd.env",
@@ -246,7 +248,10 @@ def test_arm_preserves_coexisting_keys_and_custom_outputd_ring_path(
     assert "# operator note" in fanin_body
     assert "JASPER_CAMILLA_CHUNKSIZE=256" in outputd_body
     # The shm_ring arm preserves the operator's custom Ring B path.
-    assert read_value(outputd_body, OUTPUTD_RING_PATH_ENV_VAR) == "/run/custom/content.ring"
+    assert (
+        read_value(outputd_body, OUTPUTD_RING_PATH_ENV_VAR)
+        == "/run/custom/content.ring"
+    )
 
 
 def test_env_write_failure_aborts_before_daemon_ops(tmp_path, monkeypatch):
@@ -335,8 +340,10 @@ def test_cli_main_configures_info_logging(monkeypatch, capsys):
         assert root.getEffectiveLevel() <= logging.INFO
         # The exact line that was silently dropped pre-fix now reaches a handler.
         log_event(
-            cr.logger, "fanin.coupling_reconcile",
-            result="camilla_paused_for_fanin_restart", reason="test",
+            cr.logger,
+            "fanin.coupling_reconcile",
+            result="camilla_paused_for_fanin_restart",
+            reason="test",
         )
     finally:
         for h in root.handlers[:]:
@@ -378,7 +385,9 @@ def test_marker_only_change_does_not_bounce_daemons(tmp_path):
     disarm bounce — the coupling did not move, so it stays on the confirm path."""
     from jasper.fanin.coupling_auto import COUPLING_CHOICE_ENV_VAR
 
-    fanin_env = _write(tmp_path / "fanin.env", "JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
+    fanin_env = _write(
+        tmp_path / "fanin.env", "JASPER_FANIN_CAMILLA_COUPLING=loopback\n"
+    )
     outputd_env = _write(tmp_path / "outputd.env", "")
     calls, ro, rf, rc = _recorder()
     result = _reconcile(
@@ -400,6 +409,28 @@ def test_marker_only_change_does_not_bounce_daemons(tmp_path):
     assert result.changed is True
 
 
+def test_production_confirm_uses_nonforcing_camilla_fast_path(monkeypatch):
+    """Unchanged source passes may verify DSP drift, never force a reload."""
+
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.sound import runtime
+
+    observed = []
+
+    async def fake_reconcile_current_dsp(**kwargs):
+        observed.append(kwargs)
+        return {"status": "unchanged"}
+
+    monkeypatch.setattr(runtime, "reconcile_current_dsp", fake_reconcile_current_dsp)
+
+    assert cr._reconcile_camilla(
+        COUPLING_LOOPBACK,
+        reason="source steady state",
+        force=False,
+    ) == (True, "unchanged")
+    assert observed == [{"force": False, "coupling": COUPLING_LOOPBACK}]
+
+
 def test_cli_auto_dispatches_to_reconcile_auto(monkeypatch, capsys):
     from jasper.fanin import coupling_reconcile as cr
 
@@ -409,8 +440,12 @@ def test_cli_auto_dispatches_to_reconcile_auto(monkeypatch, capsys):
     def fake_auto(*a, **k):
         seen.update(k)
         return cr.AutoResult(
-            ok=True, owned=True, coupling="shm_ring", gadget_present=True,
-            usb_combo_changed=True, reason="all ring gates passed",
+            ok=True,
+            owned=True,
+            coupling="shm_ring",
+            gadget_present=True,
+            usb_combo_changed=True,
+            reason="all ring gates passed",
         )
 
     monkeypatch.setattr(cr, "reconcile_auto", fake_auto)
@@ -510,8 +545,12 @@ def test_cli_proceeds_unserialized_when_lock_unavailable(monkeypatch, tmp_path):
     def fake_auto(*a, **k):
         ran["auto"] += 1
         return cr.AutoResult(
-            ok=True, owned=True, coupling="loopback", gadget_present=False,
-            usb_combo_changed=False, reason="",
+            ok=True,
+            owned=True,
+            coupling="loopback",
+            gadget_present=False,
+            usb_combo_changed=False,
+            reason="",
         )
 
     monkeypatch.setattr(cr, "reconcile_auto", fake_auto)
@@ -522,10 +561,13 @@ def test_cli_proceeds_unserialized_when_lock_unavailable(monkeypatch, tmp_path):
     assert ran["auto"] == 1
 
 
-@pytest.mark.parametrize("argv", [["--auto"], ["--health"], ["loopback"]])
+@pytest.mark.parametrize("argv", [["--auto"], ["loopback"]])
 def test_cli_verbs_run_under_entry_lock(monkeypatch, tmp_path, argv):
-    """Every entry verb (--auto / --health / explicit) must HOLD the shared
-    flock for the whole pass, and release it after."""
+    """Apply verbs hold the coupling flock for the pass, then release it.
+
+    Health owns source -> coupling locking inside run_health_check; its ordering
+    and release contract are pinned in test_fanin_combo_health_watcher.py.
+    """
     import fcntl
 
     from jasper.fanin import coupling_reconcile as cr
@@ -548,22 +590,24 @@ def test_cli_verbs_run_under_entry_lock(monkeypatch, tmp_path, argv):
     def fake_auto(*a, **k):
         probe_lock()
         return cr.AutoResult(
-            ok=True, owned=True, coupling="loopback", gadget_present=False,
-            usb_combo_changed=False, reason="",
+            ok=True,
+            owned=True,
+            coupling="loopback",
+            gadget_present=False,
+            usb_combo_changed=False,
+            reason="",
         )
-
-    def fake_health(*a, **k):
-        probe_lock()
-        return cr.HealthResult(ok=True, watched=False)
 
     def fake_reconcile(*a, **k):
         probe_lock()
         return cr.CouplingResult(
-            ok=True, desired="loopback", changed=False, direction="confirm",
+            ok=True,
+            desired="loopback",
+            changed=False,
+            direction="confirm",
         )
 
     monkeypatch.setattr(cr, "reconcile_auto", fake_auto)
-    monkeypatch.setattr(cr, "run_health_check", fake_health)
     monkeypatch.setattr(cr, "reconcile_coupling", fake_reconcile)
 
     rc = cr.main(argv)
@@ -591,16 +635,15 @@ def test_cli_auto_aborts_loudly_on_entry_lock_contention(
     monkeypatch.setattr(cr, "ENTRY_LOCK_POLL_SECONDS", 0.05)
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
     monkeypatch.setattr(
-        cr, "reconcile_auto",
+        cr,
+        "reconcile_auto",
         lambda *a, **k: pytest.fail("verb ran despite lock contention"),
     )
 
     held = cr._acquire_entry_lock(lock_path, timeout_seconds=0.5)
     assert held.outcome == "acquired"
     try:
-        with caplog.at_level(
-            logging.ERROR, logger="jasper.fanin.coupling_reconcile"
-        ):
+        with caplog.at_level(logging.ERROR, logger="jasper.fanin.coupling_reconcile"):
             rc = cr.main(["--auto"])
     finally:
         held.fh.close()
@@ -625,20 +668,30 @@ def test_cli_health_stands_down_on_entry_lock_contention(
 
     lock_path = tmp_path / "entry.lock"
     monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(lock_path))
-    monkeypatch.setattr(cr, "ENTRY_LOCK_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(cr, "HEALTH_ENTRY_LOCK_TIMEOUT_SECONDS", 0.0)
     monkeypatch.setattr(cr, "ENTRY_LOCK_POLL_SECONDS", 0.05)
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    from contextlib import nullcontext
+
+    from jasper import source_intent
+
+    # The production wrapper acquires source before probing coupling. Keep that
+    # first phase local and assert the watcher body never runs after contention.
     monkeypatch.setattr(
-        cr, "run_health_check",
+        source_intent,
+        "source_reconcile_lock",
+        lambda **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        cr,
+        "_run_health_check_locked",
         lambda *a, **k: pytest.fail("watcher ran despite lock contention"),
     )
 
     held = cr._acquire_entry_lock(lock_path, timeout_seconds=0.5)
     assert held.outcome == "acquired"
     try:
-        with caplog.at_level(
-            logging.WARNING, logger="jasper.fanin.coupling_reconcile"
-        ):
+        with caplog.at_level(logging.WARNING, logger="jasper.fanin.coupling_reconcile"):
             rc = cr.main(["--health"])
     finally:
         held.fh.close()
@@ -894,9 +947,7 @@ def test_arm_shm_ring_succeeds_when_geometry_matches(tmp_path, monkeypatch):
     monkeypatch.setattr(ra, "RING_CONF_D", str(conf))
 
     fanin_env = _write(tmp_path / "fanin.env", "")
-    outputd_env = _write(
-        tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
-    )
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
     calls, ro, rf, rc = _recorder()
 
     result = _reconcile(
@@ -1012,9 +1063,7 @@ def test_arm_shm_ring_migrates_stale_ring_slots_then_arms(tmp_path, monkeypatch)
     assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
 
 
-def test_arm_shm_ring_overrides_stale_base_ring_slots_then_arms(
-    tmp_path, monkeypatch
-):
+def test_arm_shm_ring_overrides_stale_base_ring_slots_then_arms(tmp_path, monkeypatch):
     # Regression for the real systemd env chain: jasper-fanin.service loads
     # /etc/jasper/jasper.env first and fanin.env last. A stale base-env =8 is
     # still live when fanin.env has no slot override, so migration must write an
@@ -1225,7 +1274,9 @@ def test_confirm_shm_ring_migrates_old_eight_slot_ring_file_to_default_two_slot(
     _write_ring(program, 8)  # old Ring A default from the already-armed box
     _write_ring(content, 2)  # Ring B was already minimal
 
-    fanin_env = _write(tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n")
+    fanin_env = _write(
+        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n"
+    )
     outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
     calls: list[str] = []
 
@@ -1239,7 +1290,9 @@ def test_confirm_shm_ring_migrates_old_eight_slot_ring_file_to_default_two_slot(
 
     def reconcile_camilla(coupling: str) -> tuple[bool, str]:
         assert coupling == COUPLING_SHM_RING
-        assert not program.exists(), "stale Ring A must be deleted before Camilla reload"
+        assert not program.exists(), (
+            "stale Ring A must be deleted before Camilla reload"
+        )
         assert content.exists(), "coherent Ring B must be preserved"
         from jasper.sound.camilla_yaml import emit_flat_ring_config
 
@@ -1429,7 +1482,9 @@ def test_confirm_shm_ring_self_heals_stale_on_disk_period(tmp_path, monkeypatch)
     )
     # conf.d pins period_frames=128, n_slots=2.
     monkeypatch.setattr(
-        ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2, period_frames=128))
+        ra,
+        "RING_CONF_D",
+        str(_ring_conf(tmp_path, capture_n_slots=2, period_frames=128)),
     )
     program = tmp_path / "program.ring"
     content = tmp_path / "content.ring"
@@ -1469,7 +1524,9 @@ def test_confirm_shm_ring_self_heals_stale_on_disk_period(tmp_path, monkeypatch)
     assert result.ok is True, result.detail
     # Escalated to the full arm spine and the stale-period Ring A was deleted.
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
-    assert not program.exists(), "stale-period Ring A must be deleted on CONFIRM self-heal"
+    assert not program.exists(), (
+        "stale-period Ring A must be deleted on CONFIRM self-heal"
+    )
     assert content.exists(), "coherent Ring B must be left untouched"
 
 
@@ -1518,9 +1575,7 @@ def test_arm_shm_ring_topology_unreadable_is_failsafe_not_blocking(
     def _boom(*a, **k):
         raise OutputTopologyError("corrupt topology")
 
-    monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict", _boom
-    )
+    monkeypatch.setattr("jasper.output_topology.load_output_topology_strict", _boom)
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
     calls, ro, rf, rc = _recorder()
@@ -1553,7 +1608,8 @@ def test_arm_shm_ring_topology_unreadable_is_failsafe_not_blocking(
 
 
 def test_ring_topology_ready_eligible_for_real_shipped_default_topology(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     # The positive end-to-end path: a genuine on-disk shipped-default Apple-dongle
     # topology (empty speaker_groups, outputs state="unused" — what
@@ -1583,10 +1639,18 @@ def test_ring_topology_ready_eligible_for_real_shipped_default_topology(
                     "physical_output_count": 2,
                     "card_id": "A",
                     "outputs": [
-                        {"index": 0, "human_label": "Left", "terminal_label": "1",
-                         "state": "unused"},
-                        {"index": 1, "human_label": "Right", "terminal_label": "2",
-                         "state": "unused"},
+                        {
+                            "index": 0,
+                            "human_label": "Left",
+                            "terminal_label": "1",
+                            "state": "unused",
+                        },
+                        {
+                            "index": 1,
+                            "human_label": "Right",
+                            "terminal_label": "2",
+                            "state": "unused",
+                        },
                     ],
                 },
                 "speaker_groups": [],
@@ -1605,7 +1669,8 @@ def test_ring_topology_ready_eligible_for_real_shipped_default_topology(
 
 
 def test_ring_topology_ready_refuses_real_stale_subwoofer_with_reset_hint(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     # The negative end-to-end path over a REAL topology (not a mocked predicate):
     # a plain Apple-dongle box whose SAVED topology still declares a subwoofer role
@@ -1641,9 +1706,7 @@ def test_ring_topology_ready_refuses_real_stale_subwoofer_with_reset_hint(
                         "label": "Subwoofer",
                         "kind": "subwoofer",
                         "mode": "subwoofer",
-                        "channels": [
-                            {"role": "subwoofer", "physical_output_index": 0}
-                        ],
+                        "channels": [{"role": "subwoofer", "physical_output_index": 0}],
                     }
                 ],
                 "routing": {"subwoofer_group_ids": ["sub"]},
@@ -1660,9 +1723,7 @@ def test_ring_topology_ready_refuses_real_stale_subwoofer_with_reset_hint(
 def test_disarm_shm_ring_clears_ring_bridge_keys(tmp_path, _ring_assets_present):
     # Pre-arm to shm_ring, then disarm to loopback.
     fanin_env = _write(tmp_path / "fanin.env", "")
-    outputd_env = _write(
-        tmp_path / "outputd.env", "JASPER_OUTPUTD_SINK=dual_apple\n"
-    )
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_SINK=dual_apple\n")
     calls, ro, rf, rc = _recorder()
     _reconcile(
         COUPLING_SHM_RING,
@@ -1673,7 +1734,10 @@ def test_disarm_shm_ring_clears_ring_bridge_keys(tmp_path, _ring_assets_present)
         reconcile_camilla=rc,
         active_leader_check=lambda: False,
     )
-    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) == "shm_ring"
+    assert (
+        read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
+        == "shm_ring"
+    )
 
     calls.clear()
     result = _reconcile(
@@ -1752,7 +1816,8 @@ def test_disarm_without_live_shm_ring_bridge_does_not_kick_hardware_reconcile(tm
     # fan-in resolves shm_ring but outputd is direct (no CONTENT_BRIDGE=shm_ring):
     # disarming to loopback moves the coupling, but leaves no live ring bridge.
     fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
     )
     outputd_env = _write(tmp_path / "outputd.env", "")
     calls, ro, rf, rc = _recorder()
@@ -1812,10 +1877,12 @@ def test_blocked_shm_ring_force_disarm_kicks_audio_hardware_reconcile(tmp_path):
     disarm, so its recovery `_disarm` gets the same gated kick — after the
     ordered camilla -> fanin -> outputd recovery ops."""
     fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
     )
     outputd_env = _write(
-        tmp_path / "outputd.env", f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n",
+        tmp_path / "outputd.env",
+        f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n",
     )
     calls, ro, rf, rc = _recorder()
 
@@ -1881,9 +1948,7 @@ def test_shm_ring_cli_choices_accept_ring(tmp_path, monkeypatch, _ring_assets_pr
         captured["coupling"] = coupling
         from jasper.fanin.coupling_reconcile import CouplingResult
 
-        return CouplingResult(
-            ok=True, desired=coupling, changed=True, direction="arm"
-        )
+        return CouplingResult(ok=True, desired=coupling, changed=True, direction="arm")
 
     monkeypatch.setattr(cr, "reconcile_coupling", fake_reconcile)
     rc = cr.main(["shm_ring", "--no-apply"])
@@ -1931,7 +1996,9 @@ def test_arm_shm_ring_refused_for_active_follower(tmp_path, monkeypatch):
         error = None
         role = "follower"
 
-    monkeypatch.setattr(arp, "route_mode_from_grouping_config", lambda cfg: "active_follower")
+    monkeypatch.setattr(
+        arp, "route_mode_from_grouping_config", lambda cfg: "active_follower"
+    )
     monkeypatch.setattr(
         "jasper.multiroom.config.load_config", lambda *a, **k: _Cfg(), raising=False
     )
@@ -1976,7 +2043,10 @@ def test_ring_armed_box_that_becomes_grouped_recovers_to_loopback(
         active_leader_check=lambda: False,
     )
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) == "shm_ring"
+    assert (
+        read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
+        == "shm_ring"
+    )
 
     # 2) Now bonded: the next shm_ring reconcile is refused and recovers.
     calls.clear()
@@ -2040,8 +2110,13 @@ def _coordinated(coupling, calls_ops, **kw):
 
     _calls, do_restart, do_stop, do_start = calls_ops
     return _restart_fanin_coordinated(
-        do_restart, do_stop, do_start,
-        coupling=coupling, reason="t", phase="test", **kw,
+        do_restart,
+        do_stop,
+        do_start,
+        coupling=coupling,
+        reason="t",
+        phase="test",
+        **kw,
     )
 
 
@@ -2115,7 +2190,8 @@ def test_coordinated_resume_failure_is_surfaced():
 
 
 def test_coordinated_fanin_restart_helper_reads_persisted_coupling(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """coordinated_fanin_restart — the public entry point for out-of-module
     deliberate restarts (buffer_reconcile's adaptive-buffer path) — reads the
@@ -2131,13 +2207,16 @@ def test_coordinated_fanin_restart_helper_reads_persisted_coupling(
         return {"ok": True}
 
     monkeypatch.setattr(
-        "jasper.control.restart_broker.manage_units", fake_manage,
+        "jasper.control.restart_broker.manage_units",
+        fake_manage,
     )
 
     env = tmp_path / "fanin.env"
     _write(env, f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n")
     ok, detail = coordinated_fanin_restart(
-        "t", phase="adaptive_buffer", env_path=env,
+        "t",
+        phase="adaptive_buffer",
+        env_path=env,
     )
     assert ok is True and detail == ""
     assert calls == [
@@ -2149,14 +2228,17 @@ def test_coordinated_fanin_restart_helper_reads_persisted_coupling(
     calls.clear()
     _write(env, f"{COUPLING_ENV_VAR}={COUPLING_LOOPBACK}\n")
     ok, _detail = coordinated_fanin_restart(
-        "t", phase="adaptive_buffer", env_path=env,
+        "t",
+        phase="adaptive_buffer",
+        env_path=env,
     )
     assert ok is True
     assert calls == [("jasper-fanin.service", "restart", "t")]
 
 
 def test_coordinated_fanin_restart_helper_ok_is_fanin_restarted(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """The helper's ok is 'fan-in restarted' — the contract a caller's SF-1
     rollback keys off. A camilla-RESUME failure after a successful fan-in
@@ -2168,27 +2250,31 @@ def test_coordinated_fanin_restart_helper_ok_is_fanin_restarted(
     env = tmp_path / "fanin.env"
     _write(env, f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n")
 
-    def manage_start_fails(*units, verb="restart", reason="", no_block=True,
-                           timeout=5.0):
+    def manage_start_fails(
+        *units, verb="restart", reason="", no_block=True, timeout=5.0
+    ):
         if verb == "start":
             return {"ok": False, "error": "start refused"}
         return {"ok": True}
 
     monkeypatch.setattr(
-        "jasper.control.restart_broker.manage_units", manage_start_fails,
+        "jasper.control.restart_broker.manage_units",
+        manage_start_fails,
     )
     ok, detail = coordinated_fanin_restart("t", phase="test", env_path=env)
     assert ok is True
     assert "camilla resume failed" in detail
 
-    def manage_stop_fails(*units, verb="restart", reason="", no_block=True,
-                          timeout=5.0):
+    def manage_stop_fails(
+        *units, verb="restart", reason="", no_block=True, timeout=5.0
+    ):
         if verb == "stop":
             return {"ok": False, "error": "stop refused"}
         return {"ok": True}
 
     monkeypatch.setattr(
-        "jasper.control.restart_broker.manage_units", manage_stop_fails,
+        "jasper.control.restart_broker.manage_units",
+        manage_stop_fails,
     )
     ok, detail = coordinated_fanin_restart("t", phase="test", env_path=env)
     assert ok is False
@@ -2224,8 +2310,7 @@ def test_reconcile_auto_removed_coupling_fails_safe_ignoring_operator_marker(
 
     fanin_env = _write(
         tmp_path / "fanin.env",
-        f"{COUPLING_ENV_VAR}=transport_pipe\n"
-        "JASPER_FANIN_COUPLING_CHOICE=operator\n",
+        f"{COUPLING_ENV_VAR}=transport_pipe\nJASPER_FANIN_COUPLING_CHOICE=operator\n",
     )
     outputd_env = _write(tmp_path / "outputd.env", "")
     calls, ro, rf, rc = _recorder()
@@ -2235,7 +2320,6 @@ def test_reconcile_auto_removed_coupling_fails_safe_ignoring_operator_marker(
             reason="t",
             env_path=fanin_env,
             outputd_env_path=outputd_env,
-            usbsink_env_path=tmp_path / "usbsink.env",
             gadget_present=False,
             usb_intent_enabled=False,
             fallback_active=False,
@@ -2267,5 +2351,7 @@ def test_outputd_actions_unset_legacy_local_content_pipe(tmp_path):
             for a in actions
             if a.action == "unset" and a.key == _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV
         ]
-        assert sweeps, f"{coupling} branch must unset {_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV}"
+        assert sweeps, (
+            f"{coupling} branch must unset {_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV}"
+        )
     assert _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV == "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"

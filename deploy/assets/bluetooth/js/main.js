@@ -25,7 +25,15 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 import { escapeHtml, cssIdSafe } from "/assets/shared/js/escape.js";
 import { toggleScanRequest } from "./scan.js";
 
-let state = { powered: false, discoverable: false, discovering: false };
+let state = {
+  desired: false,
+  effective: "off",
+  available: true,
+  parked: false,
+  powered: false,
+  discoverable: false,
+  discovering: false,
+};
 let devices = new Map(); // path → device
 let evtSrc = null;
 let pairStreams = new Map(); // mac → EventSource
@@ -33,42 +41,100 @@ let stateTimer = null;
 let scanIntentUntil = 0;  // ms; client-side window where we treat
                            // the button as scanning even before the
                            // server polling catches up
+let powerIntentUnknown = false;
+// Every mutating route can legitimately wait on a bounded systemd/BlueZ
+// transition. Suppress background GETs and overlapping writes for the whole
+// window so one slow household action cannot amplify into more backend work.
+let mutationInFlight = false;
+let stateFetchPromise = null;
 
 // -------- adapter state + toggles --------
 
-async function fetchState() {
+async function fetchState(force = false) {
+  if (mutationInFlight && !force) return;
+  if (stateFetchPromise !== null) return stateFetchPromise;
+  stateFetchPromise = (async () => {
+    try {
+      const r = await fetch('state', { cache: 'no-store' });
+      const payload = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        state = {
+          ...state,
+          available: false,
+          effective: 'unavailable',
+          powered: false,
+          discoverable: false,
+          discovering: false,
+          error: payload.error || `Bluetooth state request failed (${r.status})`,
+        };
+        renderToggles();
+        return;
+      }
+      state = payload;
+      powerIntentUnknown = false;
+      renderToggles();
+    } catch (e) {
+      state = {
+        ...state,
+        available: false,
+        effective: 'unavailable',
+        powered: false,
+        discoverable: false,
+        discovering: false,
+      };
+      renderToggles();
+    }
+  })();
   try {
-    const r = await fetch('state', { cache: 'no-store' });
-    state = await r.json();
-    renderToggles();
-  } catch (e) {
-    document.getElementById('bt-hint').textContent =
-      'Bluetooth daemon unreachable.';
+    return await stateFetchPromise;
+  } finally {
+    stateFetchPromise = null;
   }
 }
 
 function renderToggles() {
+  const unavailable = state.available === false || state.effective === 'unavailable';
+  const parked = !!state.parked || state.effective === 'parked';
   const power = document.getElementById('sw-power');
-  power.checked = !!state.powered;
-  power.disabled = false;
+  if (!powerIntentUnknown) power.checked = !!state.desired;
+  // Missing hardware blocks On, never the safer persisted Off repair.
+  power.disabled = mutationInFlight || powerIntentUnknown || parked
+    || (unavailable && !state.desired);
   const sd = document.getElementById('sw-disc');
   sd.checked = !!state.discoverable;
-  sd.disabled = !state.powered;
-  let hint = state.powered ? `On — adapter ${state.adapter || 'hci0'}` : 'Off';
-  if (state.discovering) hint += ' · scanning…';
+  // Activation needs a ready radio; an already-active pairing window must
+  // remain switchable Off as cleanup even when availability later degrades.
+  sd.disabled = mutationInFlight || parked || (!state.discoverable
+    && (unavailable || !state.desired || !state.powered));
+  let hint;
+  if (parked) {
+    hint = 'Managed by this speaker’s stereo pair.';
+  } else if (unavailable) {
+    hint = state.unavailableReason || state.error || 'Bluetooth state unavailable.';
+  } else if (state.effective === 'degraded') {
+    hint = state.degradedReason || (state.desired
+      ? 'Set to on, but the Bluetooth radio is not ready.'
+      : 'Set to off, but the Bluetooth radio is still active.');
+  } else {
+    hint = state.powered ? `On — adapter ${state.adapter || 'hci0'}` : 'Off';
+  }
+  if (!unavailable && !parked && state.discovering) hint += ' · scanning…';
   document.getElementById('bt-hint').textContent = hint;
 
-  const btn = document.getElementById('scan-btn');
-  btn.disabled = !state.powered;
   // Treat the button as "scanning" if the server reports Discovering
   // OR we just clicked Scan in the last ~3 s — bridges the gap
   // between optimistic click and the polling cycle confirming it.
   const intent = Date.now() < scanIntentUntil;
-  const scanning = state.discovering || intent;
+  const scanning = !parked && (state.discovering || intent);
+  const btn = document.getElementById('scan-btn');
+  // As with pairing mode, degraded availability blocks Start but not Stop.
+  btn.disabled = mutationInFlight || parked || (!scanning
+    && (unavailable || !state.desired || !state.powered));
   btn.classList.toggle("scanning", scanning);
   btn.innerHTML = scanning
     ? '<span class="spinner spinner--button"></span>Scanning'
     : "Scan";
+  renderDevices();
 
   // While scanning, poll faster so the button reverts promptly when
   // the auto-stop fires server-side.
@@ -78,6 +144,32 @@ function renderToggles() {
 function schedulePoll(ms) {
   if (stateTimer !== null) clearInterval(stateTimer);
   stateTimer = setInterval(fetchState, ms);
+}
+
+function beginMutation() {
+  if (mutationInFlight) return false;
+  mutationInFlight = true;
+  renderToggles();
+  return true;
+}
+
+async function finishMutation() {
+  try {
+    if (stateFetchPromise !== null) {
+      try {
+        await stateFetchPromise;
+      } catch (_) {
+        // fetchState already owns rendering failure policy.
+      }
+    }
+    // Keep ownership through the fresh read. Device SSE events can redraw
+    // action buttons during this await; mutationInFlight must therefore stay
+    // true until the authoritative snapshot has landed.
+    await fetchState(true);
+  } finally {
+    mutationInFlight = false;
+    renderToggles();
+  }
 }
 
 // HID profile fragments — 0x1124 (BR/EDR HID) and 0x1812 (BLE HOGP).
@@ -99,8 +191,9 @@ function pairedHidNames() {
 }
 
 async function togglePower() {
+  if (mutationInFlight) return;
   const input = document.getElementById('sw-power');
-  const previous = !!state.powered;
+  const previous = !!state.desired;
   const target = !!input.checked;
   function restoreToggle() {
     input.checked = previous;
@@ -127,6 +220,15 @@ async function togglePower() {
       }
     }
   }
+  // The confirmation yields to other controls. Acquire mutation ownership only
+  // after it resolves; if another action won meanwhile, restore this optimistic
+  // flip and leave the shared intent-known state untouched.
+  if (!beginMutation()) {
+    restoreToggle();
+    return;
+  }
+  powerIntentUnknown = true;
+  renderToggles();
   try {
     const r = await fetch('power', {
       method: 'POST', headers: jsonHeaders(),
@@ -134,29 +236,45 @@ async function togglePower() {
     });
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
-      restoreToggle();
-      jtsAlert('Bluetooth toggle failed: ' + (data.error || data.message || r.status));
+      if (data.state && typeof data.state === 'object') {
+        state = data.state;
+        powerIntentUnknown = false;
+        renderToggles();
+      } else {
+        restoreToggle();
+      }
+      await jtsAlert('Bluetooth toggle failed: ' + (data.error || data.message || r.status));
     }
   } catch (e) {
-    restoreToggle();
-    jtsAlert('Network error talking to the Bluetooth backend.');
+    // The POST may have durably landed even when its response was lost. Keep
+    // the optimistic position disabled/unknown until an authoritative GET
+    // resolves it; never invent a rollback from transport ambiguity.
+    powerIntentUnknown = true;
+    renderToggles();
+    await jtsAlert('Network error talking to the Bluetooth backend.');
   } finally {
-    setTimeout(fetchState, 300);
+    await finishMutation();
   }
 }
 
 async function toggleDisc() {
   const input = document.getElementById('sw-disc');
-  if (!state.powered) {
-    input.checked = false;
-    return;
-  }
   const previous = !!state.discoverable;
   const target = !!input.checked;
   function restoreToggle() {
     input.checked = previous;
   }
   if (target === previous) return;
+  if (target && (
+    state.available === false || state.parked || !state.desired || !state.powered
+  )) {
+    restoreToggle();
+    return;
+  }
+  if (!beginMutation()) {
+    restoreToggle();
+    return;
+  }
   try {
     const r = await fetch('discoverable', {
       method: 'POST', headers: jsonHeaders(),
@@ -171,19 +289,24 @@ async function toggleDisc() {
     restoreToggle();
     jtsAlert('Network error talking to the Bluetooth backend.');
   } finally {
-    setTimeout(fetchState, 300);
+    await finishMutation();
   }
 }
 
 async function toggleScan() {
-  return toggleScanRequest({
-    discovering: !!state.discovering,
-    setIntentUntil(value) { scanIntentUntil = value; },
-    render: renderToggles,
-    postScan(action) { return postJSON('scan', {action}); },
-    refreshState: fetchState,
-    showAlert: jtsAlert,
-  });
+  if (!beginMutation()) return;
+  try {
+    return await toggleScanRequest({
+      discovering: !!state.discovering || Date.now() < scanIntentUntil,
+      setIntentUntil(value) { scanIntentUntil = value; },
+      render: renderToggles,
+      postScan(action) { return postJSON('scan', {action}); },
+      refreshState() {},
+      showAlert: jtsAlert,
+    });
+  } finally {
+    await finishMutation();
+  }
 }
 
 // -------- live device list --------
@@ -233,6 +356,11 @@ function renderDevices() {
 
 function deviceRow(d) {
   const isPaired = !!d.paired;
+  const mutationDisabled = mutationInFlight ? ' disabled' : '';
+  const radioActionDisabled = (
+    mutationInFlight || state.available === false || state.parked
+    || !state.desired || !state.powered
+  ) ? ' disabled' : '';
   const canRemoveUnpaired = !isPaired && (
     !!d.connected || !!d.trusted || !!d.servicesResolved
   );
@@ -262,13 +390,13 @@ function deviceRow(d) {
   let actions = '';
   if (isPaired) {
     actions = d.connected
-      ? `<button class="btn btn--default" data-action="disconnect" data-mac="${escapeHtml(d.address)}">Disconnect</button>`
-      : `<button class="btn btn--primary" data-action="connect" data-mac="${escapeHtml(d.address)}">Connect</button>`;
-    actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}">Forget</button>`;
+      ? `<button class="btn btn--default" data-action="disconnect" data-mac="${escapeHtml(d.address)}"${mutationDisabled}>Disconnect</button>`
+      : `<button class="btn btn--primary" data-action="connect" data-mac="${escapeHtml(d.address)}"${radioActionDisabled}>Connect</button>`;
+    actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${mutationDisabled}>Forget</button>`;
   } else {
-    actions = `<button class="btn btn--primary" data-action="pair" data-mac="${escapeHtml(d.address)}">Pair</button>`;
+    actions = `<button class="btn btn--primary" data-action="pair" data-mac="${escapeHtml(d.address)}"${radioActionDisabled}>Pair</button>`;
     if (canRemoveUnpaired) {
-      actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}">Remove</button>`;
+      actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${mutationDisabled}>Remove</button>`;
     }
   }
   // Metrics. Render each label only when bluez actually has a value
@@ -333,28 +461,49 @@ async function startPair(mac) {
   if (pairStreams.has(mac)) return; // already pairing this device
   const slot = document.getElementById(`pair-${cssIdSafe(mac)}`);
   if (!slot) return;
+  if (!beginMutation()) return;
   slot.innerHTML = `<div class="pair-card" id="pc-${cssIdSafe(mac)}">
     <div class="stage active" id="ps-${cssIdSafe(mac)}-init">
       <span class="spinner"></span> Starting pair…
     </div>
   </div>`;
 
-  await fetch('pair', {
-    method: 'POST', headers: jsonHeaders(),
-    body: JSON.stringify({mac}),
-  });
+  try {
+    const response = await fetch('pair', {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({mac}),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || data.message || `Pair request failed (${response.status})`);
+    }
+  } catch (error) {
+    slot.innerHTML = '';
+    await jtsAlert(error.message || 'Pair request failed.');
+    await finishMutation();
+    return;
+  }
 
-  const es = new EventSource(`pair/${encodeURIComponent(mac)}/stream`);
+  let es;
+  try {
+    es = new EventSource(`pair/${encodeURIComponent(mac)}/stream`);
+  } catch (error) {
+    slot.innerHTML = '';
+    await finishMutation();
+    await jtsAlert('Could not open the pairing progress stream.');
+    return;
+  }
   pairStreams.set(mac, es);
   const card = document.getElementById(`pc-${cssIdSafe(mac)}`);
 
-  es.onmessage = ev => {
+  es.onmessage = async ev => {
     let data;
     try { data = JSON.parse(ev.data); } catch (e) { return; }
     renderPairStage(mac, data, card);
     if (data.stage === 'ready' || data.stage === 'error') {
       es.close();
       pairStreams.delete(mac);
+      await finishMutation();
       // Hide card after a short delay so user can read the final state.
       setTimeout(() => {
         const slot = document.getElementById(`pair-${cssIdSafe(mac)}`);
@@ -362,9 +511,10 @@ async function startPair(mac) {
       }, data.stage === 'error' ? 8000 : 4000);
     }
   };
-  es.onerror = () => {
+  es.onerror = async () => {
     es.close();
     pairStreams.delete(mac);
+    await finishMutation();
   };
 }
 
@@ -427,21 +577,44 @@ function renderPairStage(mac, data, card) {
 // -------- connect / disconnect / forget --------
 
 async function connectDevice(mac, connect) {
+  if (!beginMutation()) return;
   const path = connect ? 'connect' : 'disconnect';
-  await fetch(path, {
-    method: 'POST', headers: jsonHeaders(),
-    body: JSON.stringify({mac}),
-  });
+  try {
+    const response = await fetch(path, {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({mac}),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      await jtsAlert(`${connect ? 'Connect' : 'Disconnect'} failed: `
+        + (data.error || data.message || response.status));
+    }
+  } catch (error) {
+    await jtsAlert(`${connect ? 'Connect' : 'Disconnect'} failed: `
+      + (error && error.message ? error.message : 'network error'));
+  } finally {
+    await finishMutation();
+  }
 }
 
 async function forget(mac, label) {
   if (!await jtsConfirm(`Remove "${label}" from JTS? You'll need to pair it again to use it.`, {danger: true})) return;
-  const r = await fetch('forget', {
-    method: 'POST', headers: jsonHeaders(),
-    body: JSON.stringify({mac}),
-  });
-  const data = await r.json();
-  if (data.error) jtsAlert('Forget failed: ' + data.error);
+  if (!beginMutation()) return;
+  try {
+    const r = await fetch('forget', {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({mac}),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || data.error) {
+      await jtsAlert('Forget failed: ' + (data.error || data.message || r.status));
+    }
+  } catch (error) {
+    await jtsAlert('Forget failed: '
+      + (error && error.message ? error.message : 'network error'));
+  } finally {
+    await finishMutation();
+  }
 }
 
 document.addEventListener('click', function(e) {
@@ -472,5 +645,6 @@ function iconSlug(s) { return String(s || 'device').replace(/[^a-zA-Z0-9_-]/g, '
 document.getElementById('sw-power').addEventListener('change', togglePower);
 document.getElementById('sw-disc').addEventListener('change', toggleDisc);
 fetchState();
+renderDevices();
 startDeviceStream();
 schedulePoll(5000);

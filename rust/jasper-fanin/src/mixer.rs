@@ -55,11 +55,9 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S16LE};
-// The ONE shared per-lane RMS level helper + silence-floor sentinel (same crate
-// jasper-usbsink-audio consumes for solo mode). Importing them here — rather
-// than a local copy — makes the combo lane's level identical to the solo
-// bridge's by construction, which the parity mux's -60 dBFS combo-liveness gate
-// relies on. Pure, no ALSA.
+// The ONE shared per-lane RMS level helper + silence-floor sentinel. Importing
+// them from the pure crate keeps the USB DIRECT activity gate independent of
+// the ALSA owner and avoids a local metric copy.
 use jasper_resampler::{rms_dbfs_i16, RMS_DBFS_FLOOR};
 
 use crate::config::{Config, Coupling, RING_SLOT_FRAMES};
@@ -131,11 +129,9 @@ const CATCHUP_MAX_DRAIN_PERIODS: i64 = 64;
 /// producer. Count-based (not time-based) so the hot loop never reads a clock.
 const CATCHUP_LOG_EVERY: u64 = 64;
 
-/// USB DIRECT capture open envelope (C1) — the bridge's PROVEN params, NOT
-/// fanin's aloop-tuned `configure_pcm`. S32_LE 2ch 48k, period 256, buffer
-/// ~768 (near). These MUST match `jasper-usbsink-audio`'s
-/// `open_capture`/`configure_pcm` so the direct lane inherits the exact
-/// negotiation the bridge validated on the UAC2 gadget.
+/// USB DIRECT capture open envelope (C1) — the parameters proven on the UAC2
+/// gadget before the retired bridge was removed, NOT fan-in's aloop-tuned
+/// `configure_pcm`: S32_LE 2ch 48k, period 256, buffer ~768 (near).
 ///
 /// `DIRECT_PERIOD_FRAMES` is the DEFAULT gadget open period; the actual open
 /// period is overridable via `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` (lever 2 —
@@ -284,9 +280,10 @@ fn zombie_handle_suspected(frames_flowed: bool, zero_avail_streak: u64, threshol
 /// Coarse per-direct-lane capture health for the STATUS `direct.health` field
 /// (defect 2026-07-10 — combo runtime-fallback watcher). The Pi-side
 /// `jasper-fanin-combo-health` watcher polls this to decide whether fan-in's
-/// direct capture of `hw:UAC2Gadget` has BROKEN at runtime (and combo should fall
-/// back to the aloop bridge) vs is merely IDLE (no host, or an attached host not
-/// streaming — which must NEVER trip the fallback).
+/// direct capture of `hw:UAC2Gadget` has BROKEN at runtime (the direct lane must
+/// be disarmed and UAC2 withdrawn, leaving USB visibly unavailable) vs is merely
+/// IDLE (no host, or an attached host not streaming — which must NEVER trip the
+/// fallback). The deleted ALoop USB path is not a recovery rung.
 ///
 /// It is a PURE classification over the direct lane's EXISTING atomics — no new
 /// hot-path state — so the "reuse fan-in's detection state" contract holds:
@@ -906,14 +903,12 @@ pub struct Input {
     pub xrun_count: Arc<AtomicU64>,
     pub frames_read: Arc<AtomicU64>,
     /// Per-lane content level: the most recent period's RMS in dBFS, ×100 and
-    /// rounded into an `i32` (matching the solo bridge's `rms_dbfs_x100`
-    /// scaling in jasper-usbsink-audio). Overwritten EVERY period from exactly
+    /// rounded into an `i32`. Overwritten EVERY period from exactly
     /// the samples this lane contributed to the sum; silence / gadget-absent
     /// renders the `RMS_DBFS_FLOOR` (-120 dBFS). STATUS surfaces it as the
     /// lane's `rms_dbfs`; mux's combo-liveness gate reads the USB DIRECT lane's
     /// value to reject a host streaming digital silence (a muted Zoom / an idle
-    /// tab), giving combo boxes parity with the solo bridge's -60 dBFS
-    /// `playing` gate.
+    /// tab).
     pub rms_dbfs_x100: Arc<AtomicI32>,
     /// Cumulative frames DISCARDED by the bounded catch-up resync on this
     /// lane (see `drain_input_excess`). Non-zero only on a free-running
@@ -941,7 +936,7 @@ pub struct Input {
     /// when set — WITHOUT touching this lane's capture, `frames_read`, or
     /// `rms_dbfs_x100` telemetry, which are accounted BEFORE the gate. This is
     /// mux's latest-source-wins arbitration primitive for the USB lane — the
-    /// only USB-silencing mechanism now that the standby bridge emits nothing.
+    /// sole USB-silencing mechanism in the one-pipeline design.
     /// NOT persisted: a fan-in restart comes up unmuted and mux reasserts.
     /// Default `false` (contribute).
     muted: Arc<AtomicBool>,
@@ -2269,8 +2264,7 @@ fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool 
 /// the sum this period iff it is selected AND not muted.
 ///
 /// The mute is mux's latest-source-wins arbitration primitive for the USB
-/// lane — the only USB-silencing mechanism (the standby jasper-usbsink bridge
-/// emits nothing, so fan-in must silence the USB lane itself). It is
+/// lane — the only USB-silencing mechanism. It is
 /// applied at the SUM ONLY: the caller stores this lane's `rms_dbfs_x100` and
 /// bumps `frames_read` BEFORE consulting this gate, so a muted lane still
 /// reports its true captured level and liveness to STATUS. mux depends on that
@@ -2690,8 +2684,8 @@ fn open_direct_input(
             DirectCapture::Present(pcm)
         }
         Err(e) => {
-            // Gadget absent at startup (unplugged host, or the usbsink bridge
-            // is holding hw:UAC2Gadget in a misconfig). Start Absent; the lane
+            // Gadget absent at startup (source not yet advertised, unplugged
+            // host, or another process holds hw:UAC2Gadget). Start Absent; the lane
             // renders silence and retries on its own cadence (C3). Not fatal.
             warn!(
                 "event=fanin.usb_direct.absent device={} errno={} detail={:#} (startup; will retry ~every {}s)",
@@ -2739,12 +2733,12 @@ fn open_direct_input(
     }
 }
 
-/// Open the USB DIRECT capture PCM with the usbsink BRIDGE's proven envelope
+/// Open the USB DIRECT capture PCM with the hardware-validated gadget envelope
 /// (C1) — deliberately NOT fanin's aloop-tuned `configure_pcm` (which sets an
 /// exact buffer). S32_LE 2ch 48k, `set_period_size(open_period, Nearest)`,
 /// `set_buffer_size_near(resolve_direct_buffer_frames(open_period))`; then the
-/// bridge-parity post-negotiation bails. `open_period` is 256 by default
-/// (byte-identical to today) or the `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`
+/// validated post-negotiation checks. `open_period` is 256 by default
+/// (the on-device-proven value) or the `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`
 /// override (lever 2 H1 knob). Non-blocking (the direct lane rides the resampler
 /// read slot like the aloop lane) and `start()`ed so reads return data / EAGAIN.
 /// Returns `(open PCM, negotiated buffer frames)` — the second element is the

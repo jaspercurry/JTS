@@ -7,7 +7,9 @@ and the wizard-toggled **USB audio input** source (`uac2.usb0`, owned
 operationally by [HANDOFF-usbsink.md](HANDOFF-usbsink.md)). This doc is the
 single source of truth for gadget composition and the USB network; the
 audio-source design (volume model, fan-in wiring, low-latency route) stays
-in HANDOFF-usbsink.md and HANDOFF-usb-low-latency.md.
+in HANDOFF-usbsink.md and HANDOFF-usb-low-latency.md. Persisted USB Audio
+Input intent and its ordered lifecycle transition are owned by
+[HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
 
 ## Mission
 
@@ -56,7 +58,7 @@ jasper-usbgadget.service            (NEW — the composite gadget owner)
 jasper-usbnet-dhcp.service          (NEW — device-activated dnsmasq on usb0)
   BindsTo=sys-subsystem-net-devices-usb0.device
 
-jasper-usbsink.service              (USB-audio intent + gadget lifecycle; standby-only since 2026-07-10 — fan-in DIRECT-captures the audio, this daemon opens no PCM)
+jasper-usbsink.service              (derived USB-audio Type=oneshot/RemainAfterExit readiness marker; no resident process — fan-in DIRECT-captures audio)
   Requires=/PartOf=jasper-usbgadget.service   (repointed from the deleted init unit)
 ```
 
@@ -72,59 +74,60 @@ audio being enabled or on multiroom follower status).
 Computed once per `jasper-usbgadget-up` run and logged as a structured
 `event=usb_gadget.compose network=<0|1> audio=<0|1> ...` line:
 
-| `JASPER_USB_NETWORK` | audio intent (`jasper-usbsink.service` enabled) + local-source-allowed | functions composed |
+| `JASPER_USB_NETWORK` | USB audio authorized and lifecycle-ready | functions composed |
 |---|---|---|
 | enabled (default) | yes | `ncm.usb0` + `uac2.usb0` |
 | enabled | no / parked follower | `ncm.usb0` only |
 | disabled | yes | `uac2.usb0` only (legacy, audio-only shape) |
 | disabled | no | none — the unit's `ExecCondition` already skipped the whole unit |
 
-The audio gate lives **inside** `jasper-usbgadget-up`, not on the unit
-itself — `jasper-usbgadget.service` has no
-`jasper-local-source-allowed` `ExecCondition`, because the network function
-must keep serving even when this speaker is a parked multiroom follower.
-`jasper-usbsink.service` keeps its own `ExecCondition` unchanged: it never
-starts the audio daemon while parked, it only stops recomposing the gadget.
+The audio gate lives **inside** both `jasper-usbgadget-wanted` and
+`jasper-usbgadget-up`, not on the unit itself —
+`jasper-usbgadget.service` has no whole-unit `jasper-local-source-allowed`
+`ExecCondition`, because the network function must keep serving even when USB
+Audio is Off or this speaker is a parked multiroom follower. Both scripts call
+the same source-aware `jasper-local-source-allowed --source usbsink` check and
+then require `jasper-usbsink.service` to be enabled as the derived lifecycle
+readiness mirror **and** fan-in STATUS to report that the direct USB lane is
+armed. Canonical Off or follower parking always wins over stale enablement;
+desired-On with a disabled mirror or unarmed data plane produces NCM-only
+composition instead of advertising UAC2 without its consumer. The mirrors are
+never treated as household intent. At boot the gadget orders after and wants
+`jasper-fanin.service`, so a previously converged USB-On box can prove the lane
+before composition; if it cannot, the coordinator later performs the normal
+arm-then-recompose transition.
+`jasper-usbsink.service` carries that same source-aware ExecCondition, so the
+process-free audio readiness marker also skips while Off or parked.
 
 ### Toggling audio from `/sources/`
 
-Enable is a **three-step** order (`jasper.web.sources_setup._apply`, pinned by
-`tests/test_sources_setup_usbsink.py`): (1) `enable` the bridge — record
-household intent, but do **not** start it yet, or it would race a card that
-does not exist; (2) restart `jasper-usbgadget.service` so it recomposes and
-adds `uac2.usb0` (the gadget reads the now-enabled intent at recompose time and
-the `UAC2Gadget` card appears); (3) `start` the bridge — its
-`ExecStartPre=jasper-usbsink-wait-card` finds the card immediately. The order
-matters: composing first would fail because is-enabled would still be false at
-recompose time, and starting first would 30 s-timeout on the wait-card.
+`/sources/` writes household intent; the shared source coordinator derives
+unit enablement and performs the load-bearing stop/recompose/start order. It
+recomposes only when the observed UAC2 card disagrees with the target, so an
+unrelated toggle does not re-enumerate this gadget. The complete transition and
+verification contract is canonical in
+[HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
 
-Disable: `disable --now jasper-usbsink.service`, then restart
-`jasper-usbgadget.service` (recomposes **without** `uac2.usb0` — the network
-function is untouched). A brief host-visible re-enumeration ("Playback
-Inactive" flicker, momentary network blip) is expected on either transition and
-is a hardware-checklist item (#5) — see below.
+From this descriptor owner's perspective, an actual transition adds or removes
+`uac2.usb0` while leaving the network function wanted. A brief host-visible
+re-enumeration ("Playback Inactive" flicker, momentary network blip) is expected
+when a recompose is necessary and remains hardware-checklist item #5.
 
 ### Multiroom follower parking
 
-Parking a bonded follower stops the audio daemon and units per the existing
-local-source registry, and **restarts** (not stops) the gadget-owning unit
-so it recomposes to drop `uac2.usb0` — the host stops seeing a USB audio
+Parking a bonded follower makes grouping land the role and synchronously hand
+it to the canonical source coordinator. That owner stops the audio units,
+disarms fan-in, and **restarts** (not stops) the gadget-owning unit so it
+recomposes to drop `uac2.usb0` — the host stops seeing a USB audio
 device from a follower, while the USB management network keeps working (it
 must, since the household may need to reach the follower's management UI
-directly). The park order is **stop-audio then recompose** so the recompose
-reads "audio parked" and drops `uac2.usb0`.
-
-Restoring a follower is the deliberate **mirror image**: **recompose the
-gadget first** (it re-adds `uac2.usb0` iff USB audio is enabled, and the
-`UAC2Gadget` card reappears), **then** restore the audio unit (its
-`wait-card` ExecStartPre finds the card immediately). The reverse order (start
-the bridge before the recompose) made `wait-card` poll a card that only exists
-after the recompose that would come next — a guaranteed 30 s stall + failed
-`jasper-grouping-reconcile` transient on every un-park. Both orders are pinned
-in `jasper.multiroom.reconcile.plan` by
-`tests/test_multiroom_reconcile.py::test_plan_follower_parks_usbsink_bridge_and_recomposes_gadget`
-(park) and
-`::test_plan_restore_recomposes_gadget_before_restarting_bridge` (restore).
+directly). Restoring recomposes the audio function only when persisted intent
+wants it. Grouping owns the role transition; source-lifecycle owns the
+desired/effective semantics and ordered restore. Grouping owns no source-unit,
+accessory, or USB-coupling sequence; it waits for the source pass to finish.
+See
+[HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md) and
+[HANDOFF-multiroom.md](HANDOFF-multiroom.md).
 
 ### Edge cases the truth table preserves
 
@@ -135,7 +138,8 @@ in `jasper.multiroom.reconcile.plan` by
 - **Kill switch flipped at runtime**: an operator restarts
   `jasper-usbgadget.service`; recompose honors the new value immediately.
 - **`systemctl stop jasper-usbgadget`** (operator-initiated): `PartOf=`
-  propagation stops the audio daemon too; both kernel modules unload; the
+  propagation stops the audio readiness marker and volume observer too; both
+  kernel modules unload; the
   host sees nothing. Starting again restores per the truth table. No
   wedged intermediate states — the down path stays best-effort but loud
   (logs every step, never silently leaves a half-torn-down descriptor).
@@ -170,14 +174,22 @@ partial (unbound) one is torn down and rebuilt.
   descriptors by VID:PID:bcdDevice re-reads the new (composite) function
   set rather than a stale cached one. **Hardware-verify**: confirm hosts
   actually re-enumerate on the bump (checklist #1).
-- **Testability**: the ConfigFS root, UDC class dir, CPU-serial file, and
-  the audio-intent/gate probe commands are all env-overridable
+- **Testability**: the ConfigFS root, UDC class dir, CPU-serial file, canonical
+  audio-permission probe, derived-lifecycle-readiness probe, and live fan-in
+  data-readiness probe are env-overridable test seams
   (`JASPER_CONFIGFS_ROOT`, `JASPER_UDC_CLASS_DIR`, `JASPER_CPUINFO_FILE`,
-  `JASPER_USBGADGET_AUDIO_INTENT_CMD`, `JASPER_USBGADGET_AUDIO_GATE_CMD`),
+  `JASPER_USBGADGET_AUDIO_ALLOWED_CMD`,
+  `JASPER_USBGADGET_AUDIO_READY_CMD`,
+  `JASPER_USBGADGET_AUDIO_DATA_READY_CMD`, and
+  `JASPER_SPEAKER_NAME_READER`),
   so `tests/test_usbgadget_script.py` drives the scripts hermetically
-  against a temp dir, mirroring `tests/test_wifi_guardian_script.py`. The
-  defaults are the real production paths — overriding them never changes
-  runtime behavior on an actual Pi.
+  against a temp dir, mirroring `tests/test_wifi_guardian_script.py`. These are
+  not production configuration: `jasper-usbgadget.service` strips every seam,
+  Python/loader override, and speaker-name path before the root scripts run.
+  The root scripts never source the management-writable speaker-name file:
+  they pass its fixed path to `jasper.speaker_name`, which owns env quoting and
+  the canonical 32-character printable-name policy before the result reaches
+  ConfigFS, a module marker, or a journal field.
 
 ## Network design
 
@@ -328,10 +340,10 @@ not interface existence — reflects the cable.
 | No UDC (fresh install pre-reboot) | ~50 KB (dwc2 module only) | The dtoverlay is set but the OTG controller isn't peripheral yet, so the gadget's `ExecCondition` skips and nothing binds. `jasper-doctor`'s dtoverlay check tells the operator to reboot. |
 | Network composed (bound), no host plugged in | ~1 MB | `libcomposite` + `usb_f_ncm`/`u_ether` kernel modules loaded, `ncm.usb0` composed and bound, `usb0` **exists** (carrier down), and the `MemoryMax=16M`-bounded `jasper-usbnet-dhcp` instance **is resident** (device-activated on `usb0`, which is present from bind). Typically far below the cap for a one-pool DHCP server. |
 | Network composed, host plugged in, audio off | ~1 MB | Same residents as above; `usb0` now has carrier and the DHCP server hands out a lease. No new persistent cost over the no-host row. |
-| Network + audio both on | ~1 MB (network) + the existing usbsink audio-daemon cost | See [HANDOFF-usbsink.md](HANDOFF-usbsink.md) "RAM budget" for the audio side — unchanged by this work. |
+| Network + audio both on | ~1 MB (network) + the bounded volume observer | The process-free readiness marker adds no resident process; fan-in is already part of the core audio graph. See [HANDOFF-usbsink.md](HANDOFF-usbsink.md) "RAM budget". |
 
 This replaces the historical "~50 KB always, 0 when the audio bridge is
-off" framing in HANDOFF-usbsink.md's RAM table with a composite-aware one:
+off" framing with a composite-aware one:
 the network function's baseline cost (kernel modules **plus the resident
 dnsmasq instance**) is now paid whenever `JASPER_USB_NETWORK` isn't explicitly
 disabled and a UDC is present, which is the new default on a booted speaker.
@@ -353,25 +365,26 @@ On upgrade, `install.sh` disables and stops `jasper-usbsink-init.service`
 `jasper-usbgadget.service`. `jasper-usbsink.service`'s ordering directives
 (`Requires=`/`After=`/`PartOf=`) are repointed from the deleted init unit
 to `jasper-usbgadget.service`; `jasper-usbsink-volume.service` is repointed
-the same way but keeps tracking the **audio daemon's** lifecycle
+the same way but keeps tracking the **audio readiness marker's** lifecycle
 (`PartOf=jasper-usbsink.service`), not the gadget's, since the gadget now
 outlives the audio function. `jasper-usbgadget.service` is the first
 gadget unit `install.sh` enables — deliberate, since it's the one carrying
 the always-on network. The migration is idempotent and safe under
 `install.sh --dry-run`.
 
-**Restore-if-enabled after the migration.** The init-unit stop above runs
+**Restore from canonical intent after the migration.** The init-unit stop above runs
 while the *pre-upgrade* graph is still in memory, where `jasper-usbsink` has
 `PartOf=jasper-usbsink-init.service` — so stopping the init unit propagates a
 stop to a running (possibly playing) audio bridge. `enable --now
 jasper-usbgadget.service` is only a *start*, and `PartOf=` never propagates a
-start, so without a fix an enabled USB-audio bridge would be left stopped until
-the next reboot. `enable_usbgadget` (`deploy/lib/install/systemd-units.sh`)
-therefore does a restore-if-enabled: `systemctl is-enabled --quiet
-jasper-usbsink.service && systemctl start jasper-usbsink.service`. This runs
-**unconditionally** (deliberately not gated on `SKIP_RESTART`) because the
-migration's stop is itself unconditional — honoring `SKIP_RESTART` here would
-leave the bridge down until reboot, the worse outcome. Pinned by
+start. `enable_usbgadget` (`deploy/lib/install/systemd-units.sh`) therefore
+establishes one safe deployment baseline without interpreting intent: disable
+and stop the derived USB-audio unit, keep/bring up NCM, and recompose an active
+gadget only when old unit state or a present UAC2 card proves stale audio could
+still be advertised. The later `reapply_source_intent` call is the single
+canonical replay point; for On it performs fan-in DIRECT arm → UAC2 recompose →
+readiness-marker start, while invalid intent fails closed. An already-converged
+NCM-only deploy does not bounce the management link. Pinned by
 `tests/test_install_usbgadget_migration.py`; hardware-checklist item #10.
 
 ## Guard acceptance
@@ -385,9 +398,10 @@ contrast case. See `tests/test_http_security.py`.
 ## Observability
 
 - `jasper-doctor` (`jasper/cli/doctor/usbsink.py`) checks that gadget
-  composition matches intent (network enabled ⇒ `ncm.usb0` present;
-  audio intent ⇒ `uac2.usb0` present + daemon active; kill-switch + no
-  audio ⇒ nothing loaded), that `usb0` exists with `10.12.194.1` when NCM
+  composition matches the same gates as the scripts (network enabled ⇒
+  `ncm.usb0` present; authorized audio + derived unit enabled + live fan-in
+  DIRECT consumer ⇒ `uac2.usb0`; kill-switch + no ready audio ⇒ nothing
+  loaded), that `usb0` exists with `10.12.194.1` when NCM
   is composed, that the `jts-usb` NetworkManager profile is active on
   `usb0`, that `jasper-usbnet-dhcp`'s unit state is coherent with `usb0`'s
   presence, and a loopback HTTP probe of
@@ -464,10 +478,10 @@ writing. Each item names the specific claim above it verifies.
    failure" check and the "dnsmasq resident whenever composed" RAM row need
    to be softened back to a host-attach model.
 10. **Live-upgrade over an enabled USB-audio session.** Deploy a new build
-    while USB audio is enabled and a host is playing; confirm audio resumes
-    after the deploy (the migration stops the old init unit, which under
-    the pre-upgrade graph propagates a stop to `jasper-usbsink` —
-    `enable_usbgadget`'s restore-if-enabled must bring the bridge back).
+    while USB audio is enabled and a host is playing; confirm the installer
+    first establishes the network-only baseline without losing management,
+    then the canonical source replay rearms fan-in, recomposes UAC2, and restores
+    the readiness marker so audio resumes.
 
 ## Cable caveats
 
@@ -504,7 +518,14 @@ writing. Each item names the specific claim above it verifies.
 
 ---
 
-Last verified: 2026-07-10 (light touch: corrected the two audio-data-plane
-mentions — `jasper-usbsink.service` is standby-only since 2026-07-10, fan-in
-DIRECT-captures the gadget audio. Gadget-composition / ncm-network content
+Last verified: 2026-07-14 (`jasper-usbsink.service` rechecked as the process-free
+readiness marker; USB audio composition requires canonical
+source-aware authorization, derived lifecycle readiness, and a live fan-in
+DIRECT consumer, with canonical Off dominance and NCM preservation pinned;
+the canonical speaker-name reader and install-baseline/source-replay boundary
+were rechecked against the root scripts and installer; intent/transition
+ownership rechecked against `jasper.source_intent`; this doc retains gadget composition and links to
+HANDOFF-source-lifecycle.md for ordering/idempotence. Prior 2026-07-10 light
+touch: corrected the two audio-data-plane mentions for the then-standby helper;
+fan-in DIRECT-captures the gadget audio. Gadget-composition / ncm-network content
 unchanged and not re-verified this pass.)

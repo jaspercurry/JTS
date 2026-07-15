@@ -328,9 +328,12 @@ def _parked_as_bonded_follower() -> bool:
     NOT-parked: a broken read must never silently mask a real failure on
     a solo speaker."""
     try:
-        from ...multiroom.config import is_bonded_follower, load_config
+        from ...multiroom.config import load_config
+        from ...multiroom.effective_role import (
+            effective_local_sources_park_reason,
+        )
 
-        return is_bonded_follower(load_config())
+        return effective_local_sources_park_reason(load_config()) is not None
     except Exception:  # noqa: BLE001 — fail-open
         return False
 

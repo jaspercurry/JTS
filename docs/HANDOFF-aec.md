@@ -2065,11 +2065,11 @@ renderers / internal producers
     ├─ librespot          → librespot_substream  → hw:Loopback,0,0
     ├─ shairport-sync     → shairport_substream  → hw:Loopback,0,1
     ├─ bluealsa-aplay     → bluealsa_substream   → hw:Loopback,0,2
-    ├─ jasper-usbsink     → usbsink_substream    → hw:Loopback,0,3
+    ├─ USB UAC2 gadget    → fan-in DIRECT capture of hw:UAC2Gadget
     └─ correction/probes  → correction_substream → hw:Loopback,0,4
                                               │
                                               ▼
-                         hw:Loopback,1,0..4 → jasper-fanin
+                  loopback private lanes + USB DIRECT → jasper-fanin
                                               │ sums private lanes
                                               ▼
                                       hw:Loopback,0,7

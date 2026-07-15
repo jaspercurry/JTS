@@ -12,7 +12,7 @@
 #      failure — the doctor's dtoverlay check tells the user to reboot.
 #
 #   2. No function is wanted: network is kill-switched (JASPER_USB_NETWORK=
-#      disabled) AND audio is not enabled/allowed. This restores the historic
+#      disabled) AND audio is not authorized and ready. This restores the historic
 #      zero-RAM contract — libcomposite never loads, the gadget never exists.
 #
 # A skip (exit 1) is systemd's documented "condition not met" outcome for
@@ -22,10 +22,12 @@
 # The probes mirror jasper-usbgadget-up so the two never disagree. All are
 # env-overridable (defaults are the real paths/commands) for hermetic tests.
 set -uo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 UDC_CLASS_DIR="${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
-AUDIO_INTENT_CMD="${JASPER_USBGADGET_AUDIO_INTENT_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
-AUDIO_GATE_CMD="${JASPER_USBGADGET_AUDIO_GATE_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed}"
+AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}"
+AUDIO_READY_CMD="${JASPER_USBGADGET_AUDIO_READY_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
+AUDIO_DATA_READY_CMD="${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-/opt/jasper/.venv/bin/python -m jasper.fanin.status --usbsink-direct-armed}"
 
 emit() {
     if [[ -n "${2:-}" ]]; then
@@ -49,11 +51,22 @@ net_lc="$(printf '%s' "${net_raw}" | tr '[:upper:]' '[:lower:]')"
 want_network=1
 [[ "${net_lc}" == "disabled" ]] && want_network=0
 
-# Audio wanted when the /sources intent unit is enabled AND local sources are
-# allowed (a bonded follower is parked → not wanted).
+# Audio wanted only when the canonical source guard accepts BOTH current
+# household USB intent and role, the coordinator-derived lifecycle mirror is
+# enabled, AND live fan-in reports the direct USB lane armed. Canonical Off
+# dominates; derived enablement/readiness are never preference. Requiring all
+# three prevents boot from advertising UAC2 before its consumer exists.
 want_audio=0
-if ${AUDIO_INTENT_CMD} >/dev/null 2>&1 && ${AUDIO_GATE_CMD} >/dev/null 2>&1; then
-    want_audio=1
+audio_reason="intent_disabled_or_parked"
+if ${AUDIO_ALLOWED_CMD} >/dev/null 2>&1; then
+    audio_reason="derived_unit_disabled"
+    if ${AUDIO_READY_CMD} >/dev/null 2>&1; then
+        audio_reason="direct_lane_unarmed"
+        if ${AUDIO_DATA_READY_CMD} >/dev/null 2>&1; then
+            want_audio=1
+            audio_reason="enabled_direct_ready"
+        fi
+    fi
 fi
 
 if [[ "${want_network}" == "0" && "${want_audio}" == "0" ]]; then
@@ -61,5 +74,5 @@ if [[ "${want_network}" == "0" && "${want_audio}" == "0" ]]; then
     exit 1
 fi
 
-emit wanted "network=${want_network} audio=${want_audio}"
+emit wanted "network=${want_network} audio=${want_audio} audio_reason=${audio_reason}"
 exit 0

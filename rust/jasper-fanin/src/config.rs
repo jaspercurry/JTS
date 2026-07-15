@@ -313,13 +313,14 @@ pub struct Config {
     pub usb_direct_enabled: bool,
 
     /// The ALSA capture device the USB DIRECT lane opens when `usb_direct_enabled`.
-    /// Default `hw:UAC2Gadget` (the UAC2 gadget card the usbsink bridge captures
-    /// today). Unused when direct is off. Env: `JASPER_FANIN_USB_DIRECT_DEVICE`.
+    /// Default `hw:UAC2Gadget` (the UAC2 gadget card fan-in owns while the USB
+    /// source is armed). Unused when direct is off. Env:
+    /// `JASPER_FANIN_USB_DIRECT_DEVICE`.
     pub usb_direct_device: String,
 
     /// The gadget capture OPEN period (frames) the USB DIRECT lane negotiates
     /// (lever 2 — the H1 "hw-pointer/period granularity" test knob). Default 256
-    /// (byte-identical to today's bridge-proven envelope); fail-loud range
+    /// (the hardware-validated direct-capture envelope); fail-loud range
     /// 32..=1024. Shrinking it (e.g. 64) is the H1 experiment: if the gadget's
     /// readable `avail` advances in period-sized steps, a smaller open period
     /// exposes ready frames sooner. The capture BUFFER stays DEEP regardless
@@ -332,13 +333,13 @@ pub struct Config {
     /// DEFAULT-OFF combo-mode host-slaved USB clock (`JASPER_FANIN_HOST_CLOCK`).
     /// When `true` AND `usb_direct_enabled`, a dedicated `fanin-host-clock`
     /// thread steers the gadget's `Capture Pitch 1000000` ctl so the host tracks
-    /// the DAC clock (the shared [`jasper_host_clock`] ladder, same servo the
-    /// usbsink bridge runs in solo mode). Fail-safe: only the exact literal
+    /// the DAC clock through the shared [`jasper_host_clock`] ladder. Fail-safe:
+    /// only the exact literal
     /// `enabled` (case-insensitive) arms it; any other non-empty value warns
     /// once (`event=fanin.host_clock_config_ignored`) and stays OFF. Meaningful
     /// ONLY with `usb_direct_enabled`: fan-in must own the gadget capture to own
     /// the pitch ctl. `enabled` + direct-off resolves to a fully-inert warn (no
-    /// ctl writes ever) — in aloop mode the usbsink bridge owns the clock. Env:
+    /// ctl writes ever). Env:
     /// `JASPER_FANIN_HOST_CLOCK` (`enabled` to arm).
     pub host_clock_enabled: bool,
 
@@ -349,12 +350,6 @@ pub struct Config {
     /// probe inside the ±1000 ppm validity window. Env:
     /// `JASPER_FANIN_HOST_CLOCK_PROBE_PPM`. Unused when host-clock is off.
     pub host_clock_probe_ppm: u32,
-
-    /// The host-clock probe's step-phase duration in seconds. Default 6;
-    /// fail-fast range 5..=10. A fixed 4 s neutral baseline runs first, so the
-    /// whole probe is `4 + this` seconds. Env:
-    /// `JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS`. Unused when host-clock is off.
-    pub host_clock_probe_secs: u64,
 }
 
 impl Config {
@@ -374,7 +369,7 @@ impl Config {
     /// combo-mode host-slaved USB clock. True only when the host-clock DLL is
     /// armed AND USB direct capture is on, because fan-in must own the gadget
     /// capture to own the pitch ctl (`enabled` + direct-off is a fully-inert
-    /// warn — the usbsink bridge owns the clock in aloop mode). This is the
+    /// warn because no process owns direct gadget clock control). This is the
     /// SINGLE source of truth for that coupling: `main` derives the servo-spawn
     /// gate (`host_clock_enabled_effective`) from it, and the mixer gates the
     /// host-compliance PRIME-AT-FLOOR on it — the prime skips the cushion
@@ -789,9 +784,7 @@ impl Config {
             }
             Err(_) => false,
         };
-        // Probe knobs — identical ranges/defaults to usbsink's so the two
-        // daemons share one servo contract. Fail-fast on out-of-range (the
-        // daemon's `validate_audio_config` idiom): a probe below the ~163 ppm
+        // Probe command. Fail-fast on out-of-range: a probe below the ~163 ppm
         // Windows deadband would falsely fail every session.
         let host_clock_probe_ppm = env_u32("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", 300)?;
         if !(200..=800).contains(&host_clock_probe_ppm) {
@@ -803,14 +796,6 @@ impl Config {
                 host_clock_probe_ppm,
             );
         }
-        let host_clock_probe_secs = u64::from(env_u32("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", 6)?);
-        if !(5..=10).contains(&host_clock_probe_secs) {
-            anyhow::bail!(
-                "JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS={} out of range 5..=10",
-                host_clock_probe_secs,
-            );
-        }
-
         let tts_program_duck_db =
             env_f32_fallback("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", "JASPER_DUCK_DB", -25.0)?;
         if tts_program_duck_db > 0.0 {
@@ -890,7 +875,6 @@ impl Config {
             usb_direct_period_frames,
             host_clock_enabled,
             host_clock_probe_ppm,
-            host_clock_probe_secs,
         })
     }
 }
@@ -1536,15 +1520,11 @@ mod tests {
             &[
                 ("JASPER_FANIN_HOST_CLOCK", None),
                 ("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", None),
-                ("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", None),
             ],
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
                 assert!(!cfg.host_clock_enabled, "host-clock defaults OFF");
-                // Identical defaults to usbsink's so the two servos share a
-                // contract.
                 assert_eq!(cfg.host_clock_probe_ppm, 300);
-                assert_eq!(cfg.host_clock_probe_secs, 6);
             },
         );
     }
@@ -1567,31 +1547,6 @@ mod tests {
             with_env(&[("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", Some(ok))], || {
                 assert!(Config::from_env().is_ok(), "{ok} must be accepted");
             });
-        }
-    }
-
-    #[test]
-    fn host_clock_probe_secs_range_fails_fast() {
-        for bad in ["3", "4", "11", "20"] {
-            with_env(
-                &[("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", Some(bad))],
-                || {
-                    let err = Config::from_env().expect_err("out-of-range probe secs must error");
-                    let msg = format!("{:#}", err);
-                    assert!(
-                        msg.contains("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS"),
-                        "expected probe-secs range error, got: {msg}"
-                    );
-                },
-            );
-        }
-        for ok in ["5", "6", "10"] {
-            with_env(
-                &[("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", Some(ok))],
-                || {
-                    assert!(Config::from_env().is_ok(), "{ok} must be accepted");
-                },
-            );
         }
     }
 

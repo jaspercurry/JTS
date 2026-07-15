@@ -23,7 +23,6 @@ EXPECTED = {
     "jasper-outputd",
     "jasper-snapclient",
     "jasper-snapserver",
-    "jasper-usbsink",
     "librespot",
     "shairport-sync",
 }

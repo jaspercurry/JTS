@@ -5,10 +5,10 @@
 """Pair tap-side (ingress) and mic-side (egress) impulse detections.
 
 Both detection sequences are on ``CLOCK_MONOTONIC`` **of the same host** (the
-Rust tap runs in the usbsink process on the Pi; this harness's mic reader
-also runs on the Pi), which is the only reason subtracting one timeline from
-the other is valid — do not compare these to a timestamp captured on the
-playback host.
+Rust tap runs in the fan-in process on the Pi; this harness's mic reader also
+runs on the Pi), which is the only reason subtracting one timeline from the
+other is valid — do not compare these to a timestamp captured on the playback
+host.
 
 Pairing is nearest-match-within-a-window, not index-alignment: real playback
 has variable click-to-click timing (the promotion preset is intentionally

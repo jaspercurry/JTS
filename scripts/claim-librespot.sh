@@ -46,6 +46,11 @@ SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=no)
 TUNNEL_SOCK="/tmp/jts-claim-librespot-$$.sock"
 CLAIM_LOG="/tmp/jts-claim-librespot-$$.log"
 CLAIM_PID_FILE="/tmp/jts-claim-librespot-$$.pid"
+# This maintenance flow temporarily stops the renderer, but the entry snapshot
+# is never restore authority. librespot.service's source-aware ExecCondition
+# re-reads canonical Spotify intent + role on every final start/restart, so an
+# Off or follower park landing during the long OAuth wait remains parked.
+RESTORE_COMPLETED=0
 
 ssh_pi() { ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "$@"; }
 
@@ -57,8 +62,12 @@ cleanup() {
     else
         ssh_pi "sudo pkill -f 'librespot --enable-oauth' 2>/dev/null; sudo rm -f ${CLAIM_PID_FILE} ${CLAIM_LOG}" 2>/dev/null
     fi
-    # Always make sure the real librespot service is back up.
-    ssh_pi 'sudo systemctl start librespot 2>/dev/null' >/dev/null 2>&1 || true
+    # Ask systemd to restore according to CURRENT policy after an early exit.
+    # The unit's source-aware ExecCondition is the final authority; a clean
+    # skip is correct for household Off, invalid intent, or follower parking.
+    if [[ "${RESTORE_COMPLETED}" != "1" ]]; then
+        ssh_pi 'sudo systemctl start librespot 2>/dev/null' >/dev/null 2>&1 || true
+    fi
     # Tear down the local SSH tunnel.
     if [[ -S "$TUNNEL_SOCK" ]]; then
         ssh -S "$TUNNEL_SOCK" -O exit "${PI_USER}@${PI_HOST}" 2>/dev/null || true
@@ -144,15 +153,24 @@ if [[ $SAVED -eq 0 ]]; then
 fi
 
 echo "==> ✓ Credentials saved at ${SYSTEM_CACHE}/credentials.json"
-echo "==> Stopping OAuth-mode librespot, restarting the real service"
+echo "==> Stopping OAuth-mode librespot"
 ssh_pi "sudo pkill -F ${CLAIM_PID_FILE} 2>/dev/null; sudo rm -f ${CLAIM_PID_FILE} ${CLAIM_LOG}"
+echo "==> Re-applying current Spotify source intent and speaker role"
+# Restart (rather than start) so a source that was concurrently enabled during
+# OAuth reloads the new credential cache. The unit's ExecCondition re-reads
+# current canonical intent + role immediately before ExecStart; Off/parked is a
+# successful skipped restart, never a resurrection.
 ssh_pi 'sudo systemctl restart librespot'
+RESTORE_COMPLETED=1
 sleep 1
 
 if ssh_pi 'sudo systemctl is-active librespot' >/dev/null; then
     echo
     echo "==> Done. librespot is logged in as your Spotify account."
     echo "    Try: 'Hey Jarvis, play Release Radar'"
+elif ! ssh_pi 'sudo /opt/jasper/.venv/bin/jasper-local-source-allowed --source spotify' >/dev/null 2>&1; then
+    echo
+    echo "==> Done. Credentials saved; current Spotify source intent/role keeps it stopped."
 else
     echo "WARNING: librespot is not active. Check:"
     echo "    ssh ${PI_USER}@${PI_HOST} 'sudo journalctl -u librespot -n 30'"

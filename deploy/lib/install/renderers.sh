@@ -156,9 +156,10 @@ install_renderers() {
     #   - __AIRPLAY_NAME__ from /var/lib/jasper/speaker_name.env
     #   - __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__ from the active CamillaDSP
     #     samplerate/chunksize/target_level.
-    # shairport-sync.service's ExecStartPre re-renders on every restart, so
-    # toggling the mode (via /airplay/ web UI or jasper-airplay-mode CLI) is
-    # just an env-file write + systemctl restart shairport-sync.
+    # shairport-sync.service's ExecStartPre re-renders on every active-only
+    # try-restart, so toggling the mode (via /airplay/ web UI or
+    # jasper-airplay-mode CLI) is an env-file write + try-restart. A household
+    # Off source stays stopped.
     install -m 0644 \
         "${REPO_DIR}/deploy/shairport-sync.conf.template" \
         /etc/shairport-sync.conf.template

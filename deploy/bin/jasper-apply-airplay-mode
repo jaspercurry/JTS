@@ -24,7 +24,7 @@
 #      the current mode).
 #   2. install.sh (so a fresh install lands with the conf rendered).
 #   3. jasper-airplay-mode CLI and the /airplay/ web UI, after they
-#      update the env file and before they restart shairport.
+#      update the env file and before they try-restart shairport if active.
 #
 # Env input:
 #   JASPER_AIRPLAY_FREE_RUNNING — "yes" / "no". Default: "no".

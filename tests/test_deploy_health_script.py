@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import os
 import shutil
 import socket
 import tempfile
@@ -49,13 +50,44 @@ def test_profile_constants_match_canonical_install_profile_owner() -> None:
         assert marker_profile == normalize_install_profile(token)
 
 
-def test_airplay_intent_constants_match_canonical_source_intent_owner() -> None:
+def test_source_intent_constants_match_canonical_owner_and_fixed_contract() -> None:
     from jasper import source_intent
 
     assert health.SOURCE_INTENT_FILE == Path(source_intent.SOURCE_INTENT_ENV)
     assert health.AIRPLAY_INTENT_KEY == source_intent.intent_env_key(
         "shairport-sync.service"
     )
+    assert health.SPOTIFY_INTENT_KEY == source_intent.intent_env_key(
+        "librespot.service"
+    )
+    # Bluetooth has no systemd intent unit, so the source-level key is the
+    # fixed compatibility contract shared with the lifecycle coordinator.
+    assert health.BLUETOOTH_INTENT_KEY == "JASPER_BLUETOOTH_SOURCE_INTENT"
+    assert health.USBSINK_INTENT_KEY == source_intent.intent_env_key(
+        "jasper-usbsink.service"
+    )
+    assert health.SOURCE_INTENT_KEYS == {
+        "airplay": health.AIRPLAY_INTENT_KEY,
+        "spotify": health.SPOTIFY_INTENT_KEY,
+        "bluetooth": health.BLUETOOTH_INTENT_KEY,
+        "usbsink": health.USBSINK_INTENT_KEY,
+    }
+    assert health.SOURCE_INTENT_DEFAULTS == {
+        "airplay": True,
+        "spotify": True,
+        "bluetooth": True,
+        "usbsink": False,
+    }
+    assert health.SOURCE_REQUIRED_UNITS == {
+        "airplay": ("shairport-sync.service", "nqptp.service"),
+        "spotify": ("librespot.service",),
+        "bluetooth": (
+            "bluealsa.service",
+            "bluealsa-aplay.service",
+            "bt-agent.service",
+        ),
+        "usbsink": ("jasper-usbsink.service",),
+    }
     assert health.MAX_SOURCE_INTENT_BYTES == source_intent._MAX_INTENT_BYTES
 
 
@@ -189,15 +221,32 @@ esac
     return log
 
 
+def _set_inactive_units(
+    monkeypatch: pytest.MonkeyPatch,
+    *units: str,
+) -> None:
+    monkeypatch.setenv("FAKE_INACTIVE_UNITS", ",".join(sorted(set(units))))
+
+
 def _fanin_status(
     *,
     output_xruns: Any = 0,
     input_xruns: tuple[Any, ...] = (0,),
     progress_age_ms: Any = 100,
+    usb_direct: bool = False,
+    usb_present: Any = True,
+    usb_health: Any = "idle",
 ) -> dict[str, Any]:
+    inputs = [{"xrun_count": value} for value in input_xruns]
+    if usb_direct:
+        inputs[0].update({
+            "label": "usbsink",
+            "source": "direct",
+            "direct": {"present": usb_present, "health": usb_health},
+        })
     return {
         "output": {"xrun_count": output_xruns},
-        "inputs": [{"xrun_count": value} for value in input_xruns],
+        "inputs": inputs,
         "watchdog": {"last_progress_age_ms": progress_age_ms},
     }
 
@@ -229,8 +278,12 @@ def _run_main(
     *,
     profile: str | None = "full",
     source_intent: str | None = None,
+    grouping: str | None = None,
+    radio_issues: list[str] | None = None,
     fanin_payloads: list[Any] | None = None,
     outputd_payload: Any | None = None,
+    usb_runtime_matches_intent: bool = True,
+    usb_card_present: bool | None = None,
 ) -> int:
     marker = short_socket_dir / "install_profile"
     if profile is not None:
@@ -240,13 +293,50 @@ def _run_main(
     if source_intent is not None:
         source_intent_file.write_text(source_intent, encoding="utf-8")
     monkeypatch.setattr(health, "SOURCE_INTENT_FILE", source_intent_file)
+    grouping_file = short_socket_dir / "grouping.env"
+    if grouping is not None:
+        grouping_file.write_text(grouping, encoding="utf-8")
+    monkeypatch.setattr(health, "GROUPING_ENV_FILE", grouping_file)
+    monkeypatch.setattr(
+        health,
+        "_bluetooth_radio_issues",
+        lambda _desired: [] if radio_issues is None else radio_issues,
+    )
     monkeypatch.setattr(health.time, "sleep", lambda _seconds: None)
+
+    try:
+        desired_usb = health._source_expectations(source_intent_file)["usbsink"]
+    except RuntimeError:
+        desired_usb = False
+    if grouping and "JASPER_GROUPING_ROLE=follower" in grouping:
+        desired_usb = False
+    inactive = {
+        unit for unit in os.environ.get("FAKE_INACTIVE_UNITS", "").split(",")
+        if unit
+    }
+    if usb_runtime_matches_intent:
+        if desired_usb:
+            inactive.discard("jasper-usbsink.service")
+        else:
+            inactive.add("jasper-usbsink.service")
+        monkeypatch.setenv("FAKE_INACTIVE_UNITS", ",".join(sorted(inactive)))
+
+    card = short_socket_dir / "UAC2Gadget"
+    card_should_exist = (
+        desired_usb if usb_card_present is None else usb_card_present
+    )
+    if card_should_exist:
+        card.mkdir(exist_ok=True)
+    monkeypatch.setattr(health, "UAC2_CARD_PATH", card)
 
     fanin_path = short_socket_dir / "fanin.sock"
     outputd_path = short_socket_dir / "outputd.sock"
     monkeypatch.setattr(health, "FANIN_SOCKET", str(fanin_path))
     monkeypatch.setattr(health, "OUTPUTD_SOCKET", str(outputd_path))
-    fanin_payloads = fanin_payloads or [_fanin_status(), _fanin_status()]
+    fanin_payloads = fanin_payloads or [
+        _fanin_status(usb_direct=desired_usb),
+        _fanin_status(usb_direct=desired_usb),
+    ]
     outputd_payload = _outputd_status() if outputd_payload is None else outputd_payload
 
     with (
@@ -280,32 +370,262 @@ def test_read_install_profile_uses_canonical_fallbacks_and_legacy_aliases(
     assert health._read_install_profile(marker) == expected
 
 
-def test_airplay_intent_reader_matches_last_wins_quoted_env_format(
+def test_source_intent_reader_uses_each_fixed_source_default_when_absent(
+    tmp_path: Path,
+) -> None:
+    assert health._source_expectations(tmp_path / "missing.env") == {
+        "airplay": True,
+        "spotify": True,
+        "bluetooth": True,
+        "usbsink": False,
+    }
+
+
+def test_source_intent_reader_matches_last_wins_quoted_env_format(
     tmp_path: Path,
 ) -> None:
     intent = tmp_path / "source_intent.env"
     intent.write_text(
         "# household source choices\n"
         f"{health.AIRPLAY_INTENT_KEY}=disabled\n"
-        "UNRELATED=value\n"
+        f"{health.SPOTIFY_INTENT_KEY}='disabled'\n"
+        f"{health.BLUETOOTH_INTENT_KEY}=disabled\n"
+        f"{health.USBSINK_INTENT_KEY}=enabled\n"
+        "UNRELATED=malformed-but-not-ours\n"
         f"  {health.AIRPLAY_INTENT_KEY} = 'enabled'  \n",
         encoding="utf-8",
     )
 
-    assert health._airplay_expected_active(intent) is True
+    assert health._source_expectations(intent) == {
+        "airplay": True,
+        "spotify": False,
+        "bluetooth": False,
+        "usbsink": True,
+    }
 
 
-def test_airplay_intent_reader_rejects_oversized_or_invalid_utf8(
+def test_source_intent_reader_enforces_byte_cap_and_strict_utf8(
     tmp_path: Path,
 ) -> None:
     intent = tmp_path / "source_intent.env"
-    intent.write_text("x" * (health.MAX_SOURCE_INTENT_BYTES + 1), encoding="utf-8")
+    # The cap is bytes, not decoded characters. This payload contains fewer
+    # than MAX characters but exceeds MAX UTF-8 bytes.
+    intent.write_bytes(
+        "é".encode("utf-8") * (health.MAX_SOURCE_INTENT_BYTES // 2 + 1)
+    )
     with pytest.raises(RuntimeError, match="exceeds.*byte cap"):
-        health._airplay_expected_active(intent)
+        health._source_expectations(intent)
 
     intent.write_bytes(b"\xff")
     with pytest.raises(RuntimeError, match="cannot decode.*UTF-8"):
-        health._airplay_expected_active(intent)
+        health._source_expectations(intent)
+
+
+def test_source_intent_reader_refuses_symlink_and_fifo_without_blocking(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "sensitive.env"
+    target.write_text(f"{health.AIRPLAY_INTENT_KEY}=enabled\n", encoding="utf-8")
+    intent = tmp_path / "source_intent.env"
+    intent.symlink_to(target)
+    with pytest.raises(RuntimeError, match="cannot read"):
+        health._source_expectations(intent)
+    assert target.read_text(encoding="utf-8").endswith("=enabled\n")
+
+    intent.unlink()
+    os.mkfifo(intent)
+    with pytest.raises(RuntimeError, match="not a regular file"):
+        health._source_expectations(intent)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        health.AIRPLAY_INTENT_KEY,
+        health.SPOTIFY_INTENT_KEY,
+        health.BLUETOOTH_INTENT_KEY,
+        health.USBSINK_INTENT_KEY,
+    ],
+)
+def test_source_intent_reader_rejects_malformed_recognized_values(
+    tmp_path: Path,
+    key: str,
+) -> None:
+    intent = tmp_path / "source_intent.env"
+    intent.write_text(f"{key}=maybe\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="expected enabled or disabled"):
+        health._source_expectations(intent)
+
+
+def test_source_intent_reader_rejects_unknown_owned_key(tmp_path: Path) -> None:
+    intent = tmp_path / "source_intent.env"
+    intent.write_text(
+        "JASPER_SOURCE_INTENT_FUTURE_SOURCE=enabled\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="unrecognized source intent key"):
+        health._source_expectations(intent)
+
+
+def test_usb_source_health_matches_card_and_direct_lane(tmp_path: Path) -> None:
+    card = tmp_path / "UAC2Gadget"
+    card.mkdir()
+    healthy = _fanin_status(usb_direct=True, usb_present=True, usb_health="idle")
+
+    assert health._usb_source_issues(True, healthy, card_path=card) == []
+    assert health._usb_source_issues(False, _fanin_status(), card_path=tmp_path / "missing") == []
+
+
+def test_usb_source_health_rejects_unconsumed_or_stale_advertisement(
+    tmp_path: Path,
+) -> None:
+    card = tmp_path / "UAC2Gadget"
+    card.mkdir()
+
+    assert health._usb_source_issues(True, _fanin_status(), card_path=card) == [
+        "fan-in direct USB lane is absent",
+    ]
+    issues = health._usb_source_issues(
+        True,
+        _fanin_status(usb_direct=True, usb_present=False, usb_health="broken"),
+        card_path=card,
+    )
+    assert issues == [
+        "fan-in direct USB device is not present",
+        "fan-in direct USB health is 'broken'",
+    ]
+    assert health._usb_source_issues(
+        False,
+        _fanin_status(usb_direct=True),
+        card_path=card,
+    ) == [
+        "UAC2 card is still advertised",
+        "fan-in direct USB lane is still armed",
+    ]
+
+
+def _write_rfkill(
+    root: Path,
+    *,
+    kind: str = "bluetooth",
+    soft: str = "0",
+    hard: str = "0",
+    index: int = 0,
+) -> None:
+    entry = root / f"rfkill{index}"
+    entry.mkdir()
+    (entry / "type").write_text(kind, encoding="utf-8")
+    (entry / "soft").write_text(soft, encoding="utf-8")
+    (entry / "hard").write_text(hard, encoding="utf-8")
+
+
+def test_bluetooth_radio_validation_covers_on_and_off_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_rfkill(tmp_path, soft="1", hard="0")
+    monkeypatch.setattr(health, "RFKILL_CLASS_PATH", tmp_path)
+    monkeypatch.setattr(health, "_bluez_powered", lambda: False)
+
+    on_issues = health._bluetooth_radio_issues(True)
+    assert "Bluetooth radio is soft blocked" in on_issues
+    assert "BlueZ Powered is not yes" in on_issues
+
+    monkeypatch.setattr(health, "_bluez_powered", lambda: True)
+    off_issues = health._bluetooth_radio_issues(False)
+    assert "BlueZ Powered is still yes" in off_issues
+
+    (tmp_path / "rfkill0" / "soft").write_text("0", encoding="utf-8")
+    monkeypatch.setattr(health, "_bluez_powered", lambda: False)
+    off_issues = health._bluetooth_radio_issues(False)
+    assert "Bluetooth radio is not soft blocked" in off_issues
+
+
+def test_bluetooth_rfkill_fields_and_bluez_probe_are_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_rfkill(tmp_path, soft="0" * (health.MAX_RFKILL_FIELD_BYTES + 1))
+    with pytest.raises(RuntimeError, match="exceeds.*bytes"):
+        health._bluetooth_rfkill_state(tmp_path)
+
+    seen: dict[str, object] = {}
+
+    def timeout_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["timeout"] = kwargs["timeout"]
+        raise health.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(health.subprocess, "run", timeout_run)
+    assert health._bluez_powered() is None
+    assert seen == {"argv": ["bluetoothctl", "show"], "timeout": 3}
+
+
+def test_bluetooth_off_requires_every_rfkill_radio_soft_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_rfkill(tmp_path, soft="1", index=0)
+    _write_rfkill(tmp_path, soft="0", index=1)
+    monkeypatch.setattr(health, "RFKILL_CLASS_PATH", tmp_path)
+    monkeypatch.setattr(health, "_bluez_powered", lambda: False)
+
+    assert "Bluetooth radio is not soft blocked" in (
+        health._bluetooth_radio_issues(False)
+    )
+    assert "Bluetooth radio is soft blocked" in (
+        health._bluetooth_radio_issues(True)
+    )
+
+
+def test_bonded_follower_requires_config_and_runtime_agreement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    grouping = tmp_path / "grouping.env"
+    grouping.write_text(
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=follower\n"
+        "JASPER_GROUPING_BOND_ID=pair-1\n"
+        "JASPER_GROUPING_LEADER_ADDR=jts.local\n",
+        encoding="utf-8",
+    )
+    states = {
+        "jasper-snapclient.service": "active",
+        "jasper-snapserver.service": "inactive",
+    }
+    monkeypatch.setattr(
+        health, "_systemctl_is_active", lambda unit: states[unit],
+    )
+
+    assert health._bonded_follower_active(grouping) is True
+    states["jasper-snapclient.service"] = "inactive"
+    assert health._bonded_follower_active(grouping) is False
+
+
+def test_grouping_reader_refuses_symlink_and_fifo_without_blocking(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target.env"
+    target.write_text(
+        "JASPER_GROUPING=on\nJASPER_GROUPING_ROLE=follower\n",
+        encoding="utf-8",
+    )
+    grouping = tmp_path / "grouping.env"
+    grouping.symlink_to(target)
+    assert health._read_bounded_env(
+        grouping,
+        health.MAX_GROUPING_ENV_BYTES,
+    ) == {}
+
+    grouping.unlink()
+    os.mkfifo(grouping)
+    assert health._read_bounded_env(
+        grouping,
+        health.MAX_GROUPING_ENV_BYTES,
+    ) == {}
 
 
 def test_status_json_reads_split_object_from_real_unix_socket(
@@ -372,9 +692,11 @@ def test_streambox_profiles_skip_parked_brain_and_input_units(
     capsys: pytest.CaptureFixture[str],
     profile: str,
 ) -> None:
-    monkeypatch.setenv(
-        "FAKE_INACTIVE_UNITS",
-        "jasper-input.service,jasper-voice.service,jasper-aec-bridge.service",
+    _set_inactive_units(
+        monkeypatch,
+        "jasper-input.service",
+        "jasper-voice.service",
+        "jasper-aec-bridge.service",
     )
 
     assert _run_main(monkeypatch, short_socket_dir, profile=profile) == 0
@@ -388,7 +710,71 @@ def test_streambox_profiles_skip_parked_brain_and_input_units(
     assert "deploy health passed: 0 failure(s), 0 warning(s)" in output
 
 
+def test_bonded_follower_expects_local_sources_and_mux_parked(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parked_units = {
+        "jasper-snapserver.service",
+        "jasper-mux.service",
+        "shairport-sync.service",
+        "nqptp.service",
+        "librespot.service",
+        "bluealsa.service",
+        "bluealsa-aplay.service",
+        "bt-agent.service",
+    }
+    _set_inactive_units(monkeypatch, *parked_units)
+    grouping = (
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=follower\n"
+        "JASPER_GROUPING_BOND_ID=pair-1\n"
+        "JASPER_GROUPING_LEADER_ADDR=jts.local\n"
+    )
+
+    assert _run_main(monkeypatch, short_socket_dir, grouping=grouping) == 0
+
+    output = capsys.readouterr().out
+    queried = stub_systemctl.read_text(encoding="utf-8").splitlines()
+    assert "parked (bonded follower)" in output
+    assert "inactive (parked on bonded follower)" in output
+    assert "Bluetooth radio" not in output
+    # jasper-mux is absent from the core-required loop; its configured
+    # inactivity is therefore healthy and it is never queried.
+    assert "jasper-mux.service" not in queried
+    assert "deploy health passed" in output
+
+
+def test_main_fails_when_bluetooth_radio_disagrees_with_intent(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        _run_main(
+            monkeypatch,
+            short_socket_dir,
+            radio_issues=["Bluetooth radio is soft blocked"],
+        )
+        == 1
+    )
+
+    output = capsys.readouterr().out
+    assert "FAIL Bluetooth radio" in output
+    assert "Bluetooth radio is soft blocked" in output
+
+
 @pytest.mark.parametrize("profile", ["full", "streambox"])
+@pytest.mark.parametrize(
+    ("source", "key", "units"),
+    [
+        (source, health.SOURCE_INTENT_KEYS[source], units)
+        for source, units in health.SOURCE_REQUIRED_UNITS.items()
+    ],
+)
 @pytest.mark.parametrize(
     ("intent", "expected_detail"),
     [
@@ -396,18 +782,23 @@ def test_streambox_profiles_skip_parked_brain_and_input_units(
         ("disabled", "inactive (disabled by persisted source intent)"),
     ],
 )
-def test_main_honors_airplay_source_intent_for_both_profiles(
+def test_main_honors_fixed_source_intents_for_both_profiles(
     monkeypatch: pytest.MonkeyPatch,
     short_socket_dir: Path,
     stub_systemctl: Path,
     capsys: pytest.CaptureFixture[str],
     profile: str,
+    source: str,
+    key: str,
+    units: tuple[str, ...],
     intent: str,
     expected_detail: str,
 ) -> None:
+    inactive: set[str] = set()
     if intent == "disabled":
-        monkeypatch.setenv("FAKE_INACTIVE_UNITS", "shairport-sync.service")
-    text = f"{health.AIRPLAY_INTENT_KEY}={intent}\n"
+        inactive.update(units)
+    _set_inactive_units(monkeypatch, *inactive)
+    text = f"{key}={intent}\n"
 
     assert (
         _run_main(
@@ -421,36 +812,107 @@ def test_main_honors_airplay_source_intent_for_both_profiles(
 
     output = capsys.readouterr().out
     queried = stub_systemctl.read_text(encoding="utf-8").splitlines()
-    assert "shairport-sync.service" in queried
+    for unit in units:
+        assert unit in queried
     assert expected_detail in output
+    if source == "bluetooth" and intent == "disabled":
+        assert "bt-agent.service" in queried
+        assert "0 warning(s)" in output
 
 
-def test_main_fails_when_airplay_runs_despite_disabled_source_intent(
+@pytest.mark.parametrize(
+    ("key", "units"),
+    [
+        (health.AIRPLAY_INTENT_KEY, ("shairport-sync.service",)),
+        (health.SPOTIFY_INTENT_KEY, ("librespot.service",)),
+        (
+            health.BLUETOOTH_INTENT_KEY,
+            (
+                "bluealsa.service",
+                "bluealsa-aplay.service",
+                "bt-agent.service",
+            ),
+        ),
+        (health.USBSINK_INTENT_KEY, ("jasper-usbsink.service",)),
+    ],
+)
+def test_main_fails_when_source_runs_despite_disabled_intent(
     monkeypatch: pytest.MonkeyPatch,
     short_socket_dir: Path,
     stub_systemctl: Path,
     capsys: pytest.CaptureFixture[str],
+    key: str,
+    units: tuple[str, ...],
 ) -> None:
-    text = f"{health.AIRPLAY_INTENT_KEY}=disabled\n"
+    # Leave the first unit active while making any siblings inactive. One unit
+    # drifting on is enough to fail the source contract.
+    _set_inactive_units(monkeypatch, *units[1:])
+    text = f"{key}=disabled\n"
 
-    assert _run_main(monkeypatch, short_socket_dir, source_intent=text) == 1
+    assert _run_main(
+        monkeypatch,
+        short_socket_dir,
+        source_intent=text,
+        usb_runtime_matches_intent=key != health.USBSINK_INTENT_KEY,
+    ) == 1
 
     output = capsys.readouterr().out
-    assert (
-        "shairport-sync.service"
-        in stub_systemctl.read_text(encoding="utf-8").splitlines()
-    )
-    assert "FAIL shairport-sync.service" in output
+    assert units[0] in stub_systemctl.read_text(encoding="utf-8").splitlines()
+    assert f"FAIL {units[0]}" in output
     assert "active; expected inactive from persisted source intent" in output
 
 
-def test_main_fails_closed_on_malformed_airplay_source_intent(
+@pytest.mark.parametrize(
+    ("key", "inactive_unit"),
+    [
+        (health.AIRPLAY_INTENT_KEY, "shairport-sync.service"),
+        (health.SPOTIFY_INTENT_KEY, "librespot.service"),
+        (health.BLUETOOTH_INTENT_KEY, "bluealsa.service"),
+        (health.USBSINK_INTENT_KEY, "jasper-usbsink.service"),
+    ],
+)
+def test_main_fails_when_enabled_source_unit_is_inactive(
     monkeypatch: pytest.MonkeyPatch,
     short_socket_dir: Path,
     stub_systemctl: Path,
     capsys: pytest.CaptureFixture[str],
+    key: str,
+    inactive_unit: str,
 ) -> None:
-    text = f"{health.AIRPLAY_INTENT_KEY}=maybe\n"
+    _set_inactive_units(monkeypatch, inactive_unit)
+
+    assert (
+        _run_main(
+            monkeypatch,
+            short_socket_dir,
+            source_intent=f"{key}=enabled\n",
+            usb_runtime_matches_intent=key != health.USBSINK_INTENT_KEY,
+        )
+        == 1
+    )
+
+    output = capsys.readouterr().out
+    assert f"FAIL {inactive_unit}" in output
+    assert "inactive; expected active from persisted source intent" in output
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        health.AIRPLAY_INTENT_KEY,
+        health.SPOTIFY_INTENT_KEY,
+        health.BLUETOOTH_INTENT_KEY,
+        health.USBSINK_INTENT_KEY,
+    ],
+)
+def test_main_fails_closed_on_malformed_recognized_source_intent(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+    key: str,
+) -> None:
+    text = f"{key}=maybe\n"
 
     assert _run_main(monkeypatch, short_socket_dir, source_intent=text) == 1
 
@@ -459,7 +921,11 @@ def test_main_fails_closed_on_malformed_airplay_source_intent(
     assert "FAIL source intent" in output
     assert "expected enabled or disabled" in output
     assert "disabled by persisted source intent" not in output
-    assert "shairport-sync.service" not in queried
+    assert not set(queried).intersection(
+        unit
+        for units in health.SOURCE_REQUIRED_UNITS.values()
+        for unit in units
+    )
 
 
 def test_invalid_profile_fails_closed_before_runtime_probes(
@@ -486,7 +952,7 @@ def test_inactive_required_unit_fails_main(
     stub_systemctl: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("FAKE_INACTIVE_UNITS", "jasper-control.service")
+    _set_inactive_units(monkeypatch, "jasper-control.service")
 
     assert _run_main(monkeypatch, short_socket_dir) == 1
 
@@ -495,19 +961,19 @@ def test_inactive_required_unit_fails_main(
     assert "deploy health failed: 1 failure(s), 0 warning(s)" in output
 
 
-def test_inactive_optional_unit_warns_without_failing(
+def test_inactive_bluetooth_agent_fails_when_bluetooth_is_desired_on(
     monkeypatch: pytest.MonkeyPatch,
     short_socket_dir: Path,
     stub_systemctl: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("FAKE_INACTIVE_UNITS", "bt-agent.service")
+    _set_inactive_units(monkeypatch, "bt-agent.service")
 
-    assert _run_main(monkeypatch, short_socket_dir) == 0
+    assert _run_main(monkeypatch, short_socket_dir) == 1
 
     output = capsys.readouterr().out
-    assert "WARN bt-agent.service" in output
-    assert "deploy health passed: 0 failure(s), 1 warning(s)" in output
+    assert "FAIL bt-agent.service" in output
+    assert "deploy health failed: 1 failure(s), 0 warning(s)" in output
 
 
 @pytest.mark.parametrize(

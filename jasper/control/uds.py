@@ -52,17 +52,30 @@ async def _mux_socket_command(
     manual-vs-auto source policy and uses fan-in only as the low-level
     audio gate.
     """
-    reader, writer = await asyncio.open_unix_connection(socket_path)
-    try:
-        writer.write((cmd + "\n").encode("ascii"))
-        await writer.drain()
-        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
-    finally:
+    if not cmd or "\n" in cmd or "\r" in cmd:
+        raise ValueError("jasper-mux command must be one non-empty line")
+    if timeout <= 0:
+        raise ValueError("jasper-mux command timeout must be positive")
+
+    async def exchange() -> bytes:
+        reader, writer = await asyncio.open_unix_connection(socket_path)
         try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            pass
+            writer.write((cmd + "\n").encode("ascii"))
+            await writer.drain()
+            return await reader.readline()
+        finally:
+            # ``close()`` initiates transport teardown without another await.
+            # Awaiting ``wait_closed()`` here would let a broken transport
+            # suppress cancellation and outlive the caller's total deadline.
+            try:
+                writer.close()
+            except (OSError, RuntimeError):
+                pass
+
+    # One deadline covers connect, send, response, and close. In particular,
+    # correction's lease-renewal deadline cannot be defeated by a wedged UDS
+    # connect or writer drain while mux's safety lease continues to age.
+    line = await asyncio.wait_for(exchange(), timeout=timeout)
     if not line:
         raise RuntimeError("jasper-mux returned no response")
     payload = json.loads(line.decode("utf-8"))

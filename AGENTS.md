@@ -673,15 +673,14 @@ This is the **only** supported deploy path. It does, in order:
    mid-install abort leaves the prior good manifest rather than a SHA the
    box isn't cleanly running — the direction-guard reads an honest value.
    Also migrates units to socket activation, conditionally enables AEC on
-   6-ch firmware. Rust daemon binaries are sha256-compared on install: the
-   core audio graph (jasper-fanin, DSP state, jasper-camilla,
+   6-ch firmware. The core audio graph (jasper-fanin, DSP state, jasper-camilla,
    jasper-outputd) is bounced by the systemd step on every deploy
    regardless — expect a brief local-audio interruption. Camilla is
    restarted only after `jasper-sound reconcile-current-dsp` so it does not
    reopen a stale DSP statefile against freshly-created fan-in ring files.
-   `jasper-usbsink.service` is try-restarted only when the installed
-   `jasper-usbsink-audio` binary content actually changed, so USB-in cannot
-   keep serving a stale daemon (the 2026-07-02 404-endpoints class).
+   USB ingress has no separate bridge binary: fan-in owns the DIRECT lane, and
+   install removes the retired `jasper-usbsink-audio` image/cache while keeping
+   `jasper-usbsink.service` as a process-free readiness marker.
    Crate sources are staged into the build caches content-based
    (`stage_rust_crate`: `--checksum`, no mtime preservation) so cargo's
    mtime freshness check can't declare a changed crate "Fresh" and
@@ -689,8 +688,7 @@ This is the **only** supported deploy path. It does, in order:
    incidents); a `RUST_BUILD_CACHE_FORMAT` bump purges each cache's
    `target/` once, so the first deploy after a bump does one slow full
    Rust rebuild.
-   `SKIP_RESTART=1` is forwarded into install.sh and skips that conditional
-   restart. See "Runtime Python lives in /opt/jasper" below and
+   See "Runtime Python lives in /opt/jasper" below and
    [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md).
 5. `systemctl restart jasper-control` + `systemctl start
    jasper-aec-reconcile` — picks up Python control code and lets the
@@ -989,7 +987,8 @@ daemon's own surface:
   `--onevent` hook `/usr/local/bin/jasper-librespot-event`)
 - shairport-sync → MPRIS PlaybackStatus over busctl
 - bluez-alsa → `bluealsa-cli list-pcms`
-- jasper-usbsink → `/run/jasper-usbsink/state.json`
+- jasper-usbsink → fan-in `STATUS` (identity-bound `usbsink` DIRECT lane) for
+  activity/level/mute, plus `/sys/class/udc/*/state` for host connection
 
 `jasper-mux.service` owns renderer source policy. In auto mode it does
 latest-source-wins preemption: when a new source transitions to playing
@@ -1884,7 +1883,11 @@ Two ways to authenticate librespot:
    port to your laptop, runs `librespot --enable-oauth`, opens the
    Spotify auth page in your browser, writes credentials to the same
    `--system-cache` path. Same end state as the phone tap, just no
-   phone involved.
+   phone involved. The claim can wait five minutes for a human. Its cleanup
+   does not replay an entry-time service snapshot: the final librespot
+   start/restart passes the source-aware systemd gate, which re-reads current
+   Spotify household intent and grouping role. Turning Spotify Off or parking
+   the speaker as a follower during OAuth therefore wins and remains stopped.
 
 Either path is one-time per librespot identity. After that, voice
 cold-starts work indefinitely until the cache is cleared.
@@ -2542,11 +2545,14 @@ provides external power so the Pi stays alive even with a host
 attached). JTS exposes itself to the host as a UAC2 audio output
 device; **jasper-fanin DIRECT-captures `hw:UAC2Gadget` itself** into its
 usbsink input lane, so USB audio joins the existing CamillaDSP chain with
-one fewer hop. The `jasper-usbsink` daemon is **standby-only** — it opens no
-PCM; it exists to carry the household's USB-audio INTENT (its enabled/disabled
-state) and drive the gadget lifecycle. (The old aloop "solo" path — a separate
-usbsink bridge capturing the gadget → `usbsink_substream` → fan-in — was
-removed 2026-07-10; the combo direct-capture path is the sole USB pipeline.)
+one fewer hop. `jasper-usbsink.service` is a hardened **Type=oneshot,
+RemainAfterExit** readiness/lifecycle marker: it has no resident process and
+opens no PCM. Its active state proves the composed UAC2 function and bounded
+ALSA-card gate passed; it is not data-plane liveness. Canonical intent lives in
+`/var/lib/jasper/source_intent.env`, and the root source coordinator owns the
+gadget lifecycle. (The old aloop "solo" path — a separate usbsink bridge
+capturing the gadget → `usbsink_substream` → fan-in — was removed 2026-07-10;
+the direct-capture path is the sole USB pipeline.)
 
 Off by default. Toggle at `http://jts.local/sources/`. **Requires a
 one-time install + reboot** for the `dtoverlay=dwc2,dr_mode=peripheral`
@@ -2571,19 +2577,15 @@ summary:
 
 **RAM contract**: see HANDOFF-usb-gadget.md "RAM contract" for the
 gadget's own baseline (paid whenever the network function isn't
-kill-switched) plus HANDOFF-usbsink.md §2 for the audio daemon's
-marginal cost on top of that baseline.
+kill-switched). The readiness marker has no resident-process RAM cost; fan-in
+already owns the shared source mixer.
 
 The on/off enforcement is in three places:
-1. install.sh adds the dtoverlay but does NOT enable the audio
-   function or load libcomposite at boot on its own
-2. `jasper-usbgadget.service` (not `jasper-usbsink-init.service`,
-   which is deleted) modprobes libcomposite in `ExecStartPre` and
-   rmmods it in `ExecStopPost`; it composes `uac2.usb0` only when the
-   `/sources/` toggle is on
-3. `jasper-doctor` warns on gadget-composition drift (RAM/state
-   mismatch between kill-switch/toggle intent and what's actually
-   loaded)
+1. install.sh adds the dtoverlay but does NOT opt USB audio in
+2. the source coordinator resolves canonical intent + effective role, arms
+   fan-in DIRECT before asking `jasper-usbgadget.service` to advertise UAC2,
+   and withdraws UAC2 before disarming DIRECT
+3. `jasper-doctor` warns on intent/runtime/composition drift
 
 **Volume model**: Mac slider drives JTS canonical `listening_level`
 just like the dial. The host's slider is observed via ALSA mixer
@@ -2596,8 +2598,8 @@ behavior. See HANDOFF-usbsink.md §3.2 for the rationale.
 **Source arbitration**: Auto mode is latest-source-wins via
 `jasper-mux`. When another source starts while USB is playing in auto
 mode, mux **MUTEs the fan-in usbsink lane** at its mix stage (the only
-USB-silencing primitive — fan-in owns the capture; the standby daemon emits
-nothing). In manual source-selection mode, fanin's selected-input gate is the
+USB-silencing primitive because fan-in owns the sole capture). In manual
+source-selection mode, fanin's selected-input gate is the
 arbiter instead; mux releases any USB mute so choosing a source does not turn
 other sources on/off. When auto mode resumes and all other sources go idle, mux
 UNMUTEs the lane so a fresh host transition (pause-then-play on Mac) can re-take
@@ -2615,10 +2617,13 @@ grep dwc2,dr_mode=peripheral /boot/firmware/config.txt
 curl -s http://jts.local:8780/state | jq '.renderers.usbsink'
 # Expect: {combo, playing, preempted, muted, host_connected, rms_dbfs, updated_at}
 # combo=true is the sole shape today; playing/rms_dbfs are read live off
-# fan-in's DIRECT lane (the standby bridge's own counters are frozen).
+# fan-in's DIRECT lane; host_connected is read from kernel UDC sysfs.
 
-# Direct daemon state file:
-cat /run/jasper-usbsink/state.json | jq
+# Read the live ingress owner directly:
+sudo -u jasper-control /opt/jasper/.venv/bin/python - <<'PY'
+from jasper.fanin.status import read_fanin_status, fanin_usbsink_input
+print(fanin_usbsink_input(read_fanin_status()))
+PY
 
 # Test from the host side:
 # 1. Plug computer into 8086 splitter's data leg
@@ -2637,24 +2642,10 @@ cat /run/jasper-usbsink/state.json | jq
   `usbsink state` check will flag this. `sudo rmmod u_audio
   libcomposite` or reboot to recover.
 
-**No `/etc/jasper/usbsink.env` is required** — defaults work. To
-override capture/playback device or HTTP ports, set
-`JASPER_USBSINK_*` in `/etc/jasper/jasper.env`.
-
-**The ALSA card has two names**, and we need both:
-- `JASPER_USBSINK_CAPTURE_DEVICE` (default `UAC2_Gadget`) — what
-  sounddevice/PortAudio substring-matches against
-  `sd.query_devices()`. PortAudio formats the gadget as
-  `"UAC2_Gadget: PCM (hw:N,0)"` — note the **underscore**.
-- `JASPER_USBSINK_MIXER_CARD` (default `UAC2Gadget`) — the kernel
-  "short" name used by `amixer -c <name>` and
-  `/proc/asound/<name>/`. **No underscore.**
-
-They look like the same card, but the u_audio kernel driver
-registers itself with the underscore form (PortAudio sees that)
-while the ConfigFS gadget descriptor sets the short name without
-the underscore (the kernel uses that everywhere else). Don't set
-them to the same value — the tools will both break.
+**No usbsink env file is part of the runtime contract.** The only ordinary
+hardware override is `JASPER_USBSINK_MIXER_CARD` (default `UAC2Gadget`) in
+`/etc/jasper/jasper.env`, used by the host-volume observer. Fan-in owns the
+capture device and its `JASPER_FANIN_USB_DIRECT_*` geometry.
 
 **Escape hatch**: `JASPER_USBSINK_PREEMPT=disabled` in
 `/etc/jasper/jasper.env` (case-insensitive, exact literal `disabled`)

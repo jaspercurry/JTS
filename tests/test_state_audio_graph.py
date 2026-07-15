@@ -60,7 +60,7 @@ def test_route_latency_state_uses_constant_work_legacy_pointer_fallback(
     ]
 
 
-def test_audio_graph_state_aggregates_route_artifact_bridge_fanin_and_outputd(
+def test_audio_graph_state_aggregates_route_artifact_fanin_and_outputd(
     monkeypatch,
 ):
     plan = audio_runtime_plan.build_audio_runtime_plan(
@@ -92,12 +92,6 @@ def test_audio_graph_state_aggregates_route_artifact_bridge_fanin_and_outputd(
     )
 
     graph = state_aggregate._audio_graph_state(
-        usbsink_raw={
-            "implementation": "rust",
-            "period_frames": 256,
-            "ring": {"fill_periods": 1, "capacity_periods": 3},
-            "counters": {"playback_xruns": 0, "underflow_periods": 0},
-        },
         fanin_status={
             "inputs": [
                 {"label": "spotify", "xrun_count": 2},
@@ -130,18 +124,7 @@ def test_audio_graph_state_aggregates_route_artifact_bridge_fanin_and_outputd(
     assert graph["route"]["claim_status"] == "warn"
     assert graph["route"]["route_config_hash"] == plan.route_config_hash
     assert graph["artifact"] == artifact
-    # host_clock is absent from the usbsink_raw shape — the standby-only bridge no
-    # longer emits a host_clock block (the solo host clock was removed with the
-    # aloop path), so the aggregator surfaces rust_bridge.host_clock as None. The
-    # LIVE combo host clock is fanin.host_clock, covered by
-    # tests/test_fanin_host_clock_contract.py.
-    assert graph["rust_bridge"] == {
-        "implementation": "rust",
-        "period_frames": 256,
-        "ring": {"fill_periods": 1, "capacity_periods": 3},
-        "counters": {"playback_xruns": 0, "underflow_periods": 0},
-        "host_clock": None,
-    }
+    assert "rust_bridge" not in graph
     assert graph["fanin"]["resampler"]["locked"] is True
     assert graph["fanin"]["resampler"]["target_fill_frames"] == 2048
     assert graph["outputd"]["dac_delay_ms"] == 10.333

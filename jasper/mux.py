@@ -21,9 +21,10 @@ Renderer support:
             We iterate household accounts and issue
             PUT /me/player/pause to any account that has the configured
             speaker device in its list. Tier 2 (added 2026-05-22) is
-            `systemctl restart librespot.service` if Tier 1 fails
+            `systemctl try-restart librespot.service` if Tier 1 fails
             — guarantees librespot releases its private fan-in lane
-            so the new winner is heard alone. Tier 2 is still useful
+            when it is still active, without resurrecting a concurrently
+            disabled or role-parked source. Tier 2 is still useful
             after the 2026-05-26 fan-in cutover: renderers no longer
             share one ALSA device, so an un-pauseable librespot would
             keep streaming into its own lane and be summed alongside
@@ -48,9 +49,8 @@ Renderer support:
             degrade to phone-side pause.
   USB sink (jasper-usbsink):
     detect: fan-in DIRECT-captures the gadget, so USB liveness comes
-            from the fan-in DIRECT-lane counter advancing (the standby
-            bridge's /run/jasper-usbsink/state.json publishes frozen
-            idle values). See _usbsink_playing.
+            from fan-in DIRECT-lane telemetry.
+            See _usbsink_playing.
     pause:  MUTE the fan-in usbsink lane at its mix stage. When all
             other sources go idle, we release the preempt (unmute) so
             user-host transitions (pause then play on Mac) can re-take
@@ -79,17 +79,15 @@ from .audio_runtime_plan import (
     decide_source_low_latency_route,
     low_latency_feature_flags,
 )
+from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
     USBSINK_PLAYING_RMS_DBFS,
     airplay_playing,
     bluetooth_playing,
-    read_usbsink_state,
     spotify_playing,
-    usbsink_bridge_in_standby,
     usbsink_direct_frames_read,
     usbsink_direct_rms_dbfs,
-    usbsink_playing,
 )
 from .spotify_oauth import default_spotify_redirect_uri
 
@@ -111,11 +109,19 @@ MUX_MODE_STATE_PATH = os.environ.get(
 )
 # The fan-in input-lane label for the USB source. USB preempt is a MUTE/UNMUTE
 # of THIS lane over the fan-in control socket — the only USB-silencing primitive
-# now that fan-in DIRECT-captures the gadget and the jasper-usbsink bridge is a
-# standby-only daemon that owns no audio path. Derived from the same
+# now that fan-in DIRECT-captures the gadget as its sole live ingress owner.
+# Derived from the same
 # source→label map fan-in SELECT uses, so the two never drift.
 USBSINK_FANIN_LABEL = SOURCE_TO_FANIN_LABEL[Source.USBSINK]
 FANIN_TEST_LABELS = frozenset({"correction"})
+FANIN_TEST_OWNERS = frozenset({
+    "active-speaker-commissioning",
+    "correction-measurement",
+})
+# A diagnostic owner must renew before this monotonic deadline. This is long
+# enough for the 35 s commissioning tone; correction renews every 20 s. A web
+# worker crash therefore self-recovers instead of pinning household music off.
+FANIN_TEST_LEASE_SEC = 60.0
 SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
 SHAIRPORT_MPRIS_PATH = "/org/mpris/MediaPlayer2"
 MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
@@ -123,7 +129,7 @@ MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 
 def _spotify_preempt_restart_disabled() -> bool:
     """Env-var escape hatch for the Spotify-preempt Tier 2 escalation
-    (the systemctl restart librespot fallback added 2026-05-22).
+    (the active-only systemctl try-restart fallback added 2026-05-22).
 
     Set JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled to revert preempt
     to "Web API only, mix-on-failure" behaviour — useful if the
@@ -141,8 +147,8 @@ def _usbsink_preempt_disabled() -> bool:
     Set JASPER_USBSINK_PREEMPT=disabled in /etc/jasper/jasper.env to
     short-circuit `_usbsink_set_preempt` — mux stops MUTE/UNMUTE-ing the
     fan-in usbsink lane when another source wins (the only USB-silencing
-    primitive; jasper-fanin DIRECT-captures the gadget and the jasper-usbsink
-    bridge is a standby-only daemon with no audio of its own to silence).
+    primitive; jasper-fanin DIRECT-captures the gadget as its sole live ingress
+    owner).
     USB then behaves like an unsupported source (audio briefly mixes when a
     new source starts). Operator escape hatch for cases where the lane mute
     is causing unexpected disruption, without requiring a redeploy or daemon
@@ -157,9 +163,8 @@ def _usbsink_preempt_disabled() -> bool:
 
 
 # Combo-mode USB liveness debounce (mux ticks at POLL_INTERVAL_SEC = 1 Hz).
-# On a combo box (JASPER_FANIN_USB_DIRECT) the usbsink bridge is in standby, so
-# its RMS-gated `playing` flag is frozen. The best liveness signal is fan-in's
-# DIRECT-lane host-input counter, read via usbsink_direct_frames_read().
+# The liveness signal is fan-in's DIRECT-lane host-input counter, read via
+# usbsink_direct_frames_read().
 USBSINK_COMBO_STOP_TICKS = 2
 
 
@@ -275,8 +280,7 @@ class Mux:
         # re-take the speaker via a fresh inactive→active transition).
         self._usbsink_preempted = False
         # USB liveness (see step_combo_liveness). fan-in DIRECT-captures the USB
-        # gadget and the standby bridge's `playing` flag is frozen, so
-        # `_usbsink_playing` measures liveness off fan-in's DIRECT lane.
+        # gadget, so `_usbsink_playing` measures liveness off that DIRECT lane.
         self._usbsink_combo = ComboLiveness()
         self._volume_coordinator = volume_coordinator
         self._last_handoff: dict[str, Any] | None = None
@@ -287,6 +291,8 @@ class Mux:
         # temporarily own the fan-in gate without changing the household's
         # persisted manual-vs-auto source selection.
         self._test_fanin_label: str | None = None
+        self._test_fanin_owner: str | None = None
+        self._test_fanin_expires_at: float | None = None
         low_latency_flags = low_latency_feature_flags()
         # Adaptive fan-in OUTPUT-buffer (default-OFF): shrink fan-in's near-FULL
         # output buffer when USB is the sole exclusive winner, and restore the
@@ -342,16 +348,12 @@ class Mux:
     async def _usbsink_playing(self) -> bool:
         """"Is USB playing" for the source arbiter, off fan-in's DIRECT lane.
 
-        fan-in DIRECT-captures the gadget and the standby bridge opens no PCM
-        (publishing frozen idle values), so liveness comes from the fan-in
-        DIRECT-lane counter advancing across ticks. When the bridge state is
-        absent (USB Audio Input off / daemon not running) there is no combo box
-        to measure, so fall back to the bridge's own (false) ``playing`` flag.
+        fan-in DIRECT-captures the gadget as its sole live ingress owner, so
+        liveness comes from the DIRECT-lane counter advancing across
+        ticks. A missing/non-direct fan-in snapshot advances the debounce with
+        an unknown counter; do not issue a second STATUS probe on the 1 Hz mux
+        hot path.
         """
-        state = read_usbsink_state()
-        if not usbsink_bridge_in_standby(state):
-            return await usbsink_playing()
-
         fanin = await self._fanin_status_best_effort()
         frames = usbsink_direct_frames_read(fanin)
         rms_dbfs = usbsink_direct_rms_dbfs(fanin)
@@ -409,6 +411,23 @@ class Mux:
 
         self._state.playing = current
         self._winner_age_ticks += 1
+
+        if (
+            self._test_fanin_label is not None
+            and self._test_fanin_owner is not None
+            and self._test_fanin_expires_at is not None
+            and time.monotonic() >= self._test_fanin_expires_at
+        ):
+            expired_owner = self._test_fanin_owner
+            payload = await self.release_test_fanin_label(
+                expired_owner, reason="lease_expired",
+            )
+            if "error" in payload:
+                logger.warning(
+                    "expired test fan-in gate restore failed owner=%s: %s",
+                    expired_owner,
+                    payload["error"],
+                )
 
         if self._test_fanin_label is not None:
             await self._reassert_test_fanin_label()
@@ -664,6 +683,9 @@ class Mux:
         wizard remains the on/off surface.
         """
         async with self._transition_lock:
+            gate_error = self._test_gate_error("source selection")
+            if gate_error is not None:
+                return gate_error
             previous = self._winner or self._manual_source or Source.IDLE
             self._pending_auto_target = None
             selected = await self._transition_to_source_locked(
@@ -700,11 +722,17 @@ class Mux:
 
     async def auto_select(self) -> dict[str, Any]:
         """Return to latest-source-wins behavior."""
+        gate_error = self._test_gate_error("automatic selection")
+        if gate_error is not None:
+            return gate_error
         current = await self._probe_sources()
         active_sources = self._active_sources(current)
         if active_sources:
             new_winner = active_sources[-1]
             async with self._transition_lock:
+                gate_error = self._test_gate_error("automatic selection")
+                if gate_error is not None:
+                    return gate_error
                 previous = self._winner or self._manual_source or Source.IDLE
                 selected = await self._transition_to_source_locked(
                     previous, new_winner, reason="auto_select",
@@ -741,6 +769,9 @@ class Mux:
                     )
         else:
             async with self._transition_lock:
+                gate_error = self._test_gate_error("automatic selection")
+                if gate_error is not None:
+                    return gate_error
                 self._winner = None
                 self._manual_source = None
                 self._pending_auto_target = None
@@ -761,7 +792,19 @@ class Mux:
         log_event(logger, "source.auto_select")
         return self._status_payload(current)
 
-    async def select_test_fanin_label(self, label: str) -> dict[str, Any]:
+    def _test_gate_error(self, action: str) -> dict[str, str] | None:
+        if self._test_fanin_owner is None:
+            return None
+        return {
+            "error": (
+                f"{action} is unavailable while test gate is owned by "
+                f"{self._test_fanin_owner!r}"
+            ),
+        }
+
+    async def select_test_fanin_label(
+        self, label: str, owner: str,
+    ) -> dict[str, Any]:
         """Temporarily route a non-music diagnostic lane through fan-in.
 
         This is intentionally not persisted and does not change the household
@@ -771,31 +814,105 @@ class Mux:
         """
 
         label = str(label or "").strip()
+        owner = str(owner or "").strip()
         if label not in FANIN_TEST_LABELS:
             return {"error": f"not a selectable test fan-in label {label!r}"}
+        if owner not in FANIN_TEST_OWNERS:
+            return {"error": f"not a recognized test fan-in owner {owner!r}"}
         async with self._transition_lock:
+            if self._test_fanin_owner not in {None, owner}:
+                return {
+                    "error": (
+                        "test fan-in gate is owned by "
+                        f"{self._test_fanin_owner!r}"
+                    ),
+                }
+            already_owned = self._test_fanin_owner == owner
+            # Claim BEFORE low-level SELECT: its command may land even if the
+            # response is lost. The owner-scoped release/lease can then recover
+            # without risking another feature's gate.
             self._test_fanin_label = label
-            await self._fanin_select_label(label)
-        log_event(logger, "source.test_select", label=label)
+            self._test_fanin_owner = owner
+            self._test_fanin_expires_at = time.monotonic() + FANIN_TEST_LEASE_SEC
+            try:
+                await self._fanin_select_label(label)
+            except (OSError, asyncio.TimeoutError, RuntimeError, ValueError) as exc:
+                if not already_owned:
+                    try:
+                        await self._restore_normal_fanin_gate()
+                    except (
+                        OSError,
+                        asyncio.TimeoutError,
+                        RuntimeError,
+                        ValueError,
+                    ) as rollback_exc:
+                        log_event(
+                            logger,
+                            "source.test_select_rollback_failed",
+                            label=label,
+                            owner=owner,
+                            reason=str(rollback_exc),
+                            level=logging.ERROR,
+                        )
+                    else:
+                        self._test_fanin_label = None
+                        self._test_fanin_owner = None
+                        self._test_fanin_expires_at = None
+                return {"error": f"could not select the test source gate: {exc}"}
+        log_event(logger, "source.test_select", label=label, owner=owner)
         return self._status_payload(self._state.playing)
 
-    async def release_test_fanin_label(self) -> dict[str, Any]:
+    async def _restore_normal_fanin_gate(self) -> None:
+        """Strictly restore the current household source gate."""
+
+        if self._manual_source is not None:
+            await self._fanin_select(self._manual_source)
+        elif self._winner is not None and self._state.playing.get(
+            self._winner, False,
+        ):
+            await self._fanin_select(self._winner)
+        else:
+            await self._fanin_none()
+
+    async def release_test_fanin_label(
+        self, owner: str, *, reason: str = "requested",
+    ) -> dict[str, Any]:
+        owner = str(owner or "").strip()
+        if owner not in FANIN_TEST_OWNERS:
+            return {"error": f"not a recognized test fan-in owner {owner!r}"}
         async with self._transition_lock:
+            if self._test_fanin_owner not in {None, owner}:
+                return {
+                    "error": (
+                        "test fan-in gate is owned by "
+                        f"{self._test_fanin_owner!r}"
+                    ),
+                }
             released = self._test_fanin_label
+            try:
+                await self._restore_normal_fanin_gate()
+            except (OSError, asyncio.TimeoutError, RuntimeError, ValueError) as exc:
+                # Fail closed: retain owner + label so the caller can retry and
+                # the per-tick diagnostic reassertion keeps music excluded.
+                log_event(
+                    logger,
+                    "source.test_release_failed",
+                    label=released,
+                    owner=owner,
+                    reason=str(exc),
+                    level=logging.ERROR,
+                )
+                return {"error": f"could not restore the source gate: {exc}"}
             self._test_fanin_label = None
-            if self._manual_source is not None:
-                await self._fanin_select_best_effort(
-                    self._manual_source, reason="test_release_manual",
-                )
-            elif self._winner is not None and self._state.playing.get(
-                self._winner, False,
-            ):
-                await self._fanin_select_best_effort(
-                    self._winner, reason="test_release_auto",
-                )
-            else:
-                await self._fanin_none_best_effort(reason="test_release_idle")
-        log_event(logger, "source.test_release", label=released)
+            self._test_fanin_owner = None
+            self._test_fanin_expires_at = None
+        log_event(
+            logger,
+            "source.test_release",
+            label=released,
+            owner=owner,
+            reason=reason,
+        )
         return self._status_payload(self._state.playing)
 
     def _status_payload(
@@ -813,6 +930,12 @@ class Mux:
                 self._manual_source.value if self._manual_source else None
             ),
             "test_source": self._test_fanin_label,
+            "test_owner": self._test_fanin_owner,
+            "test_lease_remaining_sec": (
+                max(0.0, self._test_fanin_expires_at - time.monotonic())
+                if self._test_fanin_expires_at is not None
+                else None
+            ),
             "active_source": active,
             "winner": self._winner.value if self._winner else None,
             "last_handoff": self._last_handoff,
@@ -821,8 +944,8 @@ class Mux:
                 for source in MUSIC_SOURCES
             },
             "usbsink": {
-                # fan-in DIRECT-captures the gadget on every box now (the aloop
-                # solo path was removed); the bridge is always a standby daemon.
+                # fan-in DIRECT-captures the gadget on every box now; the aloop
+                # bridge path and its resident helper were removed.
                 "combo": True,
             },
             # Review should-fix #1: surface the adaptive output-buffer mode so an
@@ -1076,13 +1199,15 @@ class Mux:
         return await self._fanin_select_label(label)
 
     async def _fanin_select_label(self, label: str) -> dict[str, Any]:
-        return await _fanin_command(f"SELECT {label}")
+        return await fanin_command(
+            f"SELECT {label}", socket_path=FANIN_CONTROL_SOCKET,
+        )
 
     async def _fanin_auto(self) -> dict[str, Any]:
-        return await _fanin_command("AUTO")
+        return await fanin_command("AUTO", socket_path=FANIN_CONTROL_SOCKET)
 
     async def _fanin_none(self) -> dict[str, Any]:
-        return await _fanin_command("NONE")
+        return await fanin_command("NONE", socket_path=FANIN_CONTROL_SOCKET)
 
     async def _fanin_lane_mute(
         self, label: str, muted: bool,
@@ -1094,7 +1219,9 @@ class Mux:
         selection and to volume. Today's only caller is the combo-box USB
         preempt; the command is lane-general (mirrors SELECT)."""
         verb = "MUTE" if muted else "UNMUTE"
-        return await _fanin_command(f"{verb} {label}")
+        return await fanin_command(
+            f"{verb} {label}", socket_path=FANIN_CONTROL_SOCKET,
+        )
 
     async def _fanin_select_best_effort(
         self, source: Source, *, reason: str,
@@ -1174,10 +1301,21 @@ class Mux:
             elif command == "AUTO":
                 payload = await self.auto_select()
             elif command.startswith("TEST_SELECT "):
-                label = command.split(" ", 1)[1].strip()
-                payload = await self.select_test_fanin_label(label)
-            elif command == "TEST_RELEASE":
-                payload = await self.release_test_fanin_label()
+                parts = command.split()
+                if len(parts) != 3:
+                    payload = {
+                        "error": "TEST_SELECT requires a label and owner",
+                    }
+                else:
+                    payload = await self.select_test_fanin_label(
+                        parts[1], parts[2],
+                    )
+            elif command.startswith("TEST_RELEASE"):
+                parts = command.split()
+                if len(parts) != 2:
+                    payload = {"error": "TEST_RELEASE requires an owner"}
+                else:
+                    payload = await self.release_test_fanin_label(parts[1])
             elif command.startswith("SELECT "):
                 source_name = command.split(" ", 1)[1].strip()
                 try:
@@ -1227,8 +1365,8 @@ class Mux:
             # it just keeps streaming and mixes with the new winner.
             # The user's contract ("we cannot have both played at the
             # same time") requires us to force a release. systemctl
-            # restart kills librespot's FD on its fan-in lane; the
-            # new winner is then heard alone for the ~2-3 s before
+            # try-restart kills librespot's FD only while the source remains
+            # active; the new winner is then heard alone for the ~2-3 s before
             # systemd brings librespot back as an idle Connect device.
             if _spotify_preempt_restart_disabled():
                 logger.warning(
@@ -1239,8 +1377,8 @@ class Mux:
                 return
             logger.warning(
                 "spotify pause: Web API failed; escalating to "
-                "`systemctl restart librespot.service` to force "
-                "release of the fan-in spotify lane",
+                "`systemctl try-restart librespot.service` to force "
+                "release of the fan-in spotify lane if still active",
             )
             await self._spotify_force_restart_librespot()
         elif source == Source.AIRPLAY:
@@ -1311,17 +1449,15 @@ class Mux:
     # ------------------------------------------------------------------
     # USB sink preempt protocol — MUTE/UNMUTE the fan-in usbsink lane.
     # fan-in DIRECT-captures the gadget, so the lane's mix-stage mute is
-    # the only USB-silencing primitive (the jasper-usbsink bridge is a
-    # standby-only daemon that owns no audio path).
+    # the only USB-silencing primitive.
     # ------------------------------------------------------------------
 
     async def _usbsink_set_preempt(self, silenced: bool, *, reason: str) -> None:
         """Silence/un-silence the USB source when it loses/regains the speaker.
 
-        jasper-fanin DIRECT-captures the gadget and the jasper-usbsink bridge is
-        a standby-only daemon (opens no PCM, emits nothing), so USB is silenced by
-        ``MUTE``/``UNMUTE`` of the fan-in usbsink lane at its mix stage — the real,
-        independent silencing primitive. The lane keeps reporting its pre-mute
+        jasper-fanin DIRECT-captures the gadget as its sole live ingress owner,
+        so USB is silenced by ``MUTE``/``UNMUTE`` of the fan-in usbsink lane at
+        its mix stage. The lane keeps reporting its pre-mute
         frames/level, so mux still sees a muted-but-streaming host as "playing"
         (no mute→release→mute flap). See ``_usbsink_set_preempt_fanin``.
 
@@ -1532,8 +1668,8 @@ class Mux:
         return False
 
     async def _spotify_force_restart_librespot(self) -> bool:
-        """Tier 2 escalation: restart librespot.service to force it
-        to drop its FD on the Spotify fan-in lane.
+        """Tier 2 escalation: try-restart librespot.service to force an
+        active instance to drop its FD on the Spotify fan-in lane.
 
         Effects observed at the audio layer: librespot exits and closes
         its private `librespot_substream` writer; fanin then reads
@@ -1547,15 +1683,16 @@ class Mux:
         state inside librespot's current session (track position, queue)
         is lost — the next Spotify Connect cast picks up fresh.
 
-        We use `systemctl restart` rather than `kill -TERM` so the
+        We use `systemctl try-restart` rather than `restart` or `kill -TERM` so the
         same `Restart=always` policy that handles every other
-        librespot exit also handles this one — no special-case
-        recovery path.
+        active librespot exit also handles this one, while a concurrent
+        household Off or follower park wins the race and stays stopped.
 
-        Returns True on a successful restart. Logged but not retried on
-        failure (the only thing that would happen on retry is more log
-        spam — the failure mode is "restart unavailable" which doesn't
-        self-heal).
+        Returns True when the active-only mutation succeeds, including
+        systemd's intentional no-op for an already-inactive unit. Logged but
+        not retried on failure (the only thing that would happen on retry is
+        more log spam — the failure mode is "try-restart unavailable" which
+        doesn't self-heal).
 
         WS1 Phase 3: routed through jasper-control's restart broker
         (off-thread, since the broker client is blocking) so jasper-mux
@@ -1565,18 +1702,18 @@ class Mux:
         """
         resp = await asyncio.to_thread(
             restart_broker.manage_units,
-            "librespot.service", verb="restart",
+            "librespot.service", verb="try-restart",
             reason="spotify Tier-2 recovery", no_block=False, timeout=8.0,
         )
         if not resp.get("ok"):
             logger.warning(
-                "spotify force-restart: librespot restart failed: %s",
+                "spotify force-restart: librespot try-restart failed: %s",
                 resp.get("error") or f"rc={resp.get('rc')}",
             )
             return False
         logger.info(
-            "spotify force-restart: librespot.service restarted "
-            "(Tier 2 escalation succeeded)",
+            "spotify force-restart: librespot.service try-restart completed "
+            "(active-only Tier 2 escalation succeeded)",
         )
         return True
 
@@ -1597,34 +1734,6 @@ async def _busctl(*args: str) -> Optional[str]:
     if proc.returncode != 0:
         return None
     return stdout.decode("utf-8", "replace")
-
-
-async def _fanin_command(cmd: str) -> dict[str, Any]:
-    """Send one line to jasper-fanin's control socket.
-
-    Fan-in owns the hot-path audio gate; mux owns policy. Keeping the
-    IPC here as a one-command UDS call mirrors jasper-control's voice
-    socket helper without importing any Rust-specific detail.
-    """
-    reader, writer = await asyncio.open_unix_connection(FANIN_CONTROL_SOCKET)
-    try:
-        writer.write((cmd + "\n").encode("ascii"))
-        await writer.drain()
-        line = await asyncio.wait_for(reader.readline(), timeout=2.0)
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            pass
-    if not line:
-        raise RuntimeError("jasper-fanin returned no response")
-    payload = json.loads(line.decode("utf-8"))
-    if isinstance(payload, dict) and "error" in payload:
-        raise RuntimeError(str(payload["error"]))
-    if not isinstance(payload, dict):
-        raise RuntimeError("jasper-fanin returned non-object JSON")
-    return payload
 
 
 def _fmt_db(value: float | None) -> str:

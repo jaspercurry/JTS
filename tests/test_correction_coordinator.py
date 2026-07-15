@@ -2,88 +2,78 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""measurement_window() coordinator: pause/resume contract.
-
-We can't run real systemctl or talk to a real voice_daemon UDS in a
-unit test, so we patch _systemctl and _voice_uds_command. The
-contract being verified:
-
-  1. With both skips, enter/exit is a no-op (smoke test for the
-     plumbing).
-  2. systemctl stop is called for each renderer on enter, start on
-     exit.
-  3. MEASURE_PAUSE is sent on enter, RESUME on exit.
-  4. An exception inside the with-block still triggers RESUME and
-     systemctl start (finally clause).
-  5. An active voice session at precondition-check time raises
-     MeasurementWindowError before anything is paused.
-"""
+"""Owner-scoped fan-in isolation and voice pause/resume contract."""
 from __future__ import annotations
 
 import asyncio
+import time
+from unittest.mock import AsyncMock
 
 import pytest
 
+import jasper.mux as mux_module
 from jasper.correction import coordinator
 from jasper.correction.coordinator import (
     MeasurementWindowError,
     measurement_window,
 )
 
+REAL_ACQUIRE_MEASUREMENT_GATE = coordinator._acquire_measurement_gate
+REAL_RELEASE_MEASUREMENT_GATE = coordinator._release_measurement_gate
+
+
+@pytest.fixture(autouse=True)
+def _stub_measurement_gate(monkeypatch):
+    async def acquire_gate() -> None:
+        return None
+
+    async def release_gate(**_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        coordinator,
+        "_acquire_measurement_gate",
+        acquire_gate,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_release_measurement_gate",
+        release_gate,
+    )
+
 
 @pytest.mark.asyncio
 async def test_skip_both_is_noop(monkeypatch):
-    """With skip_voice_pause + skip_renderer_pause, no IO touches
-    the real system. Enter and exit cleanly."""
-    systemctl_calls: list[tuple[str, str]] = []
+    """With voice and music isolation skipped, enter/exit does no I/O."""
     uds_calls: list[str] = []
-
-    async def fake_systemctl(action, svc):
-        systemctl_calls.append((action, svc))
 
     async def fake_uds(path, cmd, **kw):
         uds_calls.append(cmd)
         return {"result": "ok"}
 
-    monkeypatch.setattr(coordinator, "_systemctl", fake_systemctl)
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
 
     async with measurement_window(
-        skip_voice_pause=True, skip_renderer_pause=True,
+        skip_voice_pause=True, skip_music_isolation=True,
     ):
         pass
 
-    assert systemctl_calls == []
     assert uds_calls == []
 
 
 @pytest.mark.asyncio
-async def test_pause_and_resume_renderers(monkeypatch):
-    systemctl_calls: list[tuple[str, str]] = []
+async def test_pause_and_resume_voice(monkeypatch):
     uds_calls: list[str] = []
-
-    async def fake_systemctl(action, svc):
-        systemctl_calls.append((action, svc))
 
     async def fake_uds(path, cmd, **kw):
         uds_calls.append(cmd)
         return {"result": "ok"}
 
-    monkeypatch.setattr(coordinator, "_systemctl", fake_systemctl)
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
 
-    async with measurement_window(
-        renderers_to_pause=("librespot.service", "shairport-sync.service"),
-    ):
+    async with measurement_window():
         pass
 
-    # Stop on enter, start on exit. Order matters: stops happen
-    # sequentially, starts in parallel (gather).
-    assert ("stop", "librespot.service") in systemctl_calls
-    assert ("stop", "shairport-sync.service") in systemctl_calls
-    assert ("start", "librespot.service") in systemctl_calls
-    assert ("start", "shairport-sync.service") in systemctl_calls
-    # MEASURE_PAUSE first (after STATUS check), MEASURE_RESUME last.
     assert "STATUS" in uds_calls
     assert "MEASURE_PAUSE" in uds_calls
     assert "MEASURE_RESUME" in uds_calls
@@ -106,7 +96,7 @@ async def test_long_window_renews_voice_measurement_lease(monkeypatch):
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
     monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.01)
 
-    async with measurement_window(skip_renderer_pause=True):
+    async with measurement_window(skip_music_isolation=True):
         await asyncio.sleep(0.035)
 
     assert uds_calls.count("MEASURE_PAUSE") >= 2
@@ -115,9 +105,8 @@ async def test_long_window_renews_voice_measurement_lease(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_lease_refresh_failure_retries_and_still_restores(monkeypatch):
-    """A malformed/empty renewal cannot strand voice or renderers paused."""
+    """A malformed/empty renewal cannot strand voice paused."""
     uds_calls: list[str] = []
-    systemctl_calls: list[tuple[str, str]] = []
     pause_calls = 0
 
     async def fake_uds(path, cmd, **kw):
@@ -131,130 +120,302 @@ async def test_lease_refresh_failure_retries_and_still_restores(monkeypatch):
                 raise RuntimeError("empty response")
         return {"result": "ok"}
 
-    async def fake_systemctl(action, service):
-        systemctl_calls.append((action, service))
-
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
-    monkeypatch.setattr(coordinator, "_systemctl", fake_systemctl)
     monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.01)
     monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_RETRY_SEC", 0.005)
 
-    async with measurement_window(renderers_to_pause=("renderer.service",)):
+    async with measurement_window(skip_music_isolation=True):
         await asyncio.sleep(0.03)
 
     assert pause_calls >= 3
     assert "MEASURE_RESUME" in uds_calls
-    assert ("start", "renderer.service") in systemctl_calls
 
 
-def test_default_renderer_pause_list_covers_music_sources():
-    """Correction sweeps need the fan-in music chain silent. Keep this
-    list in sync when a playback source gets added."""
-    assert coordinator.DEFAULT_RENDERERS_TO_PAUSE == (
-        "librespot.service",
-        "shairport-sync.service",
-        "bluealsa-aplay.service",
-        "jasper-usbsink.service",
+@pytest.mark.asyncio
+async def test_measurement_gate_uses_mux_owned_diagnostic_selection(monkeypatch):
+    command = AsyncMock(return_value={
+        "active_source": "correction",
+        "test_source": "correction",
+        "test_owner": "correction-measurement",
+    })
+    monkeypatch.setattr(coordinator, "_mux_socket_command", command)
+
+    await REAL_ACQUIRE_MEASUREMENT_GATE()
+
+    command.assert_awaited_once_with(
+        "TEST_SELECT correction correction-measurement",
+        timeout=3.0,
     )
+
+
+@pytest.mark.asyncio
+async def test_measurement_gate_refuses_unconfirmed_selection(monkeypatch):
+    async def wrong_gate(*_args, **_kwargs):
+        return {"active_source": "airplay", "test_source": None}
+
+    monkeypatch.setattr(coordinator, "_mux_socket_command", wrong_gate)
+
+    with pytest.raises(MeasurementWindowError, match="did not confirm"):
+        await REAL_ACQUIRE_MEASUREMENT_GATE()
+
+
+@pytest.mark.asyncio
+async def test_measurement_gate_release_retries_until_explicitly_clear(monkeypatch):
+    replies = iter([
+        {
+            "active_source": "correction",
+            "test_source": "correction",
+            "test_owner": "correction-measurement",
+        },
+        {"active_source": "idle", "test_source": None, "test_owner": None},
+    ])
+    calls: list[str] = []
+
+    async def command(value, **_kwargs):
+        calls.append(value)
+        return next(replies)
+
+    monkeypatch.setattr(coordinator, "_mux_socket_command", command)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_RETRY_SEC", 0)
+
+    await REAL_RELEASE_MEASUREMENT_GATE()
+
+    assert calls == [
+        "TEST_RELEASE correction-measurement",
+        "TEST_RELEASE correction-measurement",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_indeterminate_acquire_cleanup_never_releases_other_owner(monkeypatch):
+    calls: list[str] = []
+
+    async def command(value, **_kwargs):
+        calls.append(value)
+        if value == "STATUS":
+            return {
+                "active_source": "correction",
+                "test_source": "correction",
+                "test_owner": "active-speaker-commissioning",
+            }
+        raise RuntimeError("owned by active-speaker-commissioning")
+
+    monkeypatch.setattr(coordinator, "_mux_socket_command", command)
+
+    await REAL_RELEASE_MEASUREMENT_GATE(allow_other_owner=True)
+
+    assert calls == ["TEST_RELEASE correction-measurement", "STATUS"]
+
+
+@pytest.mark.asyncio
+async def test_indeterminate_acquire_always_runs_owner_scoped_cleanup(monkeypatch):
+    cleanup_modes: list[bool] = []
+
+    async def acquire() -> None:
+        raise MeasurementWindowError("response lost")
+
+    async def release(*, allow_other_owner: bool) -> None:
+        cleanup_modes.append(allow_other_owner)
+
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+
+    with pytest.raises(MeasurementWindowError, match="response lost"):
+        async with measurement_window(
+            skip_voice_pause=True,
+        ):
+            pytest.fail("an indeterminate acquire must not open the window")
+
+    assert cleanup_modes == [True]
+
+
+@pytest.mark.asyncio
+async def test_long_window_renews_mux_gate_even_without_voice_pause(monkeypatch):
+    gate_calls: list[str] = []
+
+    async def acquire() -> None:
+        gate_calls.append("acquire")
+
+    async def release(**_kwargs) -> None:
+        gate_calls.append("release")
+
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_REFRESH_SEC", 0.01)
+
+    async with measurement_window(
+        skip_voice_pause=True,
+    ):
+        await asyncio.sleep(0.035)
+
+    assert gate_calls.count("acquire") >= 2
+    assert gate_calls[-1] == "release"
+
+
+def test_mux_gate_refresh_deadline_precedes_mux_lease_expiry():
+    assert 0 < coordinator.MEASUREMENT_GATE_REFRESH_SEC
+    assert (
+        coordinator.MEASUREMENT_GATE_REFRESH_SEC
+        < coordinator.MEASUREMENT_GATE_ABORT_SEC
+        < mux_module.FANIN_TEST_LEASE_SEC
+    )
+
+
+@pytest.mark.asyncio
+async def test_sustained_mux_renewal_failure_aborts_before_lease_expiry(monkeypatch):
+    acquire_calls = 0
+    released: list[bool] = []
+
+    async def acquire() -> None:
+        nonlocal acquire_calls
+        acquire_calls += 1
+        if acquire_calls > 1:
+            raise MeasurementWindowError("mux unavailable")
+
+    async def release(**_kwargs) -> None:
+        released.append(True)
+
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_REFRESH_SEC", 0.005)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_RETRY_SEC", 0.005)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_ABORT_SEC", 0.02)
+
+    started = time.monotonic()
+    with pytest.raises(MeasurementWindowError, match="could not be renewed"):
+        async with measurement_window(skip_voice_pause=True):
+            await asyncio.sleep(1.0)
+
+    assert time.monotonic() - started < 0.5
+    assert acquire_calls >= 2
+    assert released == [True]
+
+
+@pytest.mark.asyncio
+async def test_measurement_gate_wraps_body_without_source_process_churn(monkeypatch):
+    """The one mux gate is the complete music-isolation boundary."""
+
+    events: list[str] = []
+
+    async def acquire() -> None:
+        events.append("gate-acquire")
+
+    async def release(**_kwargs) -> None:
+        events.append("gate-release")
+
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+
+    async with measurement_window(skip_voice_pause=True):
+        events.append("body")
+
+    assert events == [
+        "gate-acquire",
+        "body",
+        "gate-release",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gate_release_failure_surfaces(monkeypatch):
+    async def release(**_kwargs) -> None:
+        raise MeasurementWindowError("gate stuck")
+
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+
+    with pytest.raises(MeasurementWindowError, match="gate stuck"):
+        async with measurement_window(skip_voice_pause=True):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_measurement_releases_mux_gate_after_body_exception(monkeypatch):
+    restored: list[bool] = []
+
+    async def acquire() -> None:
+        return None
+
+    async def release(**_kwargs) -> None:
+        restored.append(True)
+
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async with measurement_window(
+            skip_voice_pause=True,
+        ):
+            raise RuntimeError("boom")
+
+    assert restored == [True]
 
 
 @pytest.mark.asyncio
 async def test_resume_runs_even_on_exception(monkeypatch):
     """The whole point of the finally clause: a crash inside the
     measurement should not leave the speaker silent."""
-    systemctl_calls: list[tuple[str, str]] = []
     uds_calls: list[str] = []
-
-    async def fake_systemctl(action, svc):
-        systemctl_calls.append((action, svc))
 
     async def fake_uds(path, cmd, **kw):
         uds_calls.append(cmd)
         return {"result": "ok"}
 
-    monkeypatch.setattr(coordinator, "_systemctl", fake_systemctl)
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
 
     with pytest.raises(RuntimeError, match="boom"):
-        async with measurement_window(
-            renderers_to_pause=("librespot.service",),
-        ):
+        async with measurement_window():
             raise RuntimeError("boom")
 
-    # RESUME and renderer-restart still fired.
     assert "MEASURE_RESUME" in uds_calls
-    assert ("start", "librespot.service") in systemctl_calls
 
 
 @pytest.mark.asyncio
 async def test_active_voice_session_blocks_window(monkeypatch):
     """Refuse to start a measurement if a voice session is active —
     yanking it would orphan the user's turn."""
-    systemctl_calls: list[tuple[str, str]] = []
-
-    async def fake_systemctl(action, svc):
-        systemctl_calls.append((action, svc))
-
     async def fake_uds(path, cmd, **kw):
         if cmd == "STATUS":
             return {"state": "SESSION", "spend_allowed": True}
         return {"result": "ok"}
 
-    monkeypatch.setattr(coordinator, "_systemctl", fake_systemctl)
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
 
     with pytest.raises(MeasurementWindowError, match="Voice session"):
         async with measurement_window():
             pass
 
-    # Nothing was paused — the precondition fails before any IO.
-    assert systemctl_calls == []
-
-
 @pytest.mark.asyncio
 async def test_voice_daemon_unreachable_is_tolerated(monkeypatch):
     """If voice_daemon is not running, that means there's no session
-    to interrupt and no WakeLoop to pause. The window opens
-    successfully (renderers still get paused)."""
-    systemctl_calls: list[tuple[str, str]] = []
-
-    async def fake_systemctl(action, svc):
-        systemctl_calls.append((action, svc))
+    to interrupt and no WakeLoop to pause. The mux-isolated window opens."""
 
     async def fake_uds(path, cmd, **kw):
         raise FileNotFoundError("no voice daemon")
 
-    monkeypatch.setattr(coordinator, "_systemctl", fake_systemctl)
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
 
-    async with measurement_window(
-        renderers_to_pause=("librespot.service",),
-    ):
+    async with measurement_window():
         pass
-
-    # Renderers were paused/restored; voice was skipped.
-    assert ("stop", "librespot.service") in systemctl_calls
-    assert ("start", "librespot.service") in systemctl_calls
 
 
 @pytest.mark.asyncio
 async def test_concurrent_measurement_window_is_rejected(monkeypatch):
     """Only one window may be open. A second concurrent window would let
-    whichever exits first send MEASURE_RESUME + restart renderers while the
+    whichever exits first send MEASURE_RESUME + release the mux gate while the
     other is still measuring, corrupting its capture. The second entry fails
     fast; the flag is released when the first closes."""
     monkeypatch.setattr(coordinator, "_window_active", False)  # clean slate
 
-    async with measurement_window(skip_voice_pause=True, skip_renderer_pause=True):
+    async with measurement_window(skip_voice_pause=True, skip_music_isolation=True):
         with pytest.raises(MeasurementWindowError, match="already in progress"):
             async with measurement_window(
-                skip_voice_pause=True, skip_renderer_pause=True,
+                skip_voice_pause=True, skip_music_isolation=True,
             ):
                 pass
 
     # Flag released after the outer window closed — a later window opens fine.
     assert coordinator._window_active is False
-    async with measurement_window(skip_voice_pause=True, skip_renderer_pause=True):
+    async with measurement_window(skip_voice_pause=True, skip_music_isolation=True):
         pass
 
 
@@ -271,62 +432,51 @@ async def test_window_flag_released_when_precondition_fails(monkeypatch):
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
 
     with pytest.raises(MeasurementWindowError, match="Voice session"):
-        async with measurement_window(skip_renderer_pause=True):
+        async with measurement_window(skip_music_isolation=True):
             pass
     assert coordinator._window_active is False
 
 
 @pytest.mark.asyncio
-async def test_window_flag_released_even_if_renderer_restart_raises(monkeypatch):
-    """A restore step raising in the finally (e.g. systemctl missing) must
-    still release the mutex — otherwise one failed restart wedges every
-    future measurement with 'already in progress' until process restart."""
+async def test_window_flag_released_even_if_gate_release_raises(monkeypatch):
+    """A failed gate release must not wedge the in-process mutex."""
     monkeypatch.setattr(coordinator, "_window_active", False)
 
-    async def fake_systemctl(action, svc):
-        if action == "start":
-            raise FileNotFoundError("systemctl missing")
+    async def release(**_kwargs):
+        raise MeasurementWindowError("gate stuck")
 
-    monkeypatch.setattr(coordinator, "_systemctl", fake_systemctl)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
 
-    with pytest.raises(FileNotFoundError):
-        async with measurement_window(
-            skip_voice_pause=True, renderers_to_pause=("librespot.service",),
-        ):
+    with pytest.raises(MeasurementWindowError, match="gate stuck"):
+        async with measurement_window(skip_voice_pause=True):
             pass
     assert coordinator._window_active is False
 
 
 @pytest.mark.asyncio
 async def test_window_b_blocked_while_window_a_restore_in_flight(monkeypatch):
-    """The mutex must stay held across window A's restore I/O, released only
-    once the renderer restart completes. Clearing it earlier would let a
-    queued window B `systemctl stop` the renderers A is mid-`systemctl start`
-    of — the corruption the mutex exists to prevent."""
+    """The mutex stays held until window A's mux-gate release completes."""
     monkeypatch.setattr(coordinator, "_window_active", False)
     entered_restore = asyncio.Event()
     release = asyncio.Event()
 
-    async def slow_systemctl(action, svc):
-        if action == "start":
-            entered_restore.set()
-            await release.wait()  # hold window A inside its restore
+    async def slow_gate_release(**_kwargs):
+        entered_restore.set()
+        await release.wait()
 
-    monkeypatch.setattr(coordinator, "_systemctl", slow_systemctl)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", slow_gate_release)
 
     async def window_a():
-        async with measurement_window(
-            skip_voice_pause=True, renderers_to_pause=("librespot.service",),
-        ):
+        async with measurement_window(skip_voice_pause=True):
             pass
 
     task_a = asyncio.create_task(window_a())
-    await entered_restore.wait()  # A is now mid-restore (systemctl start pending)
+    await entered_restore.wait()
 
     # B must be refused while A's restore is still in flight.
     with pytest.raises(MeasurementWindowError, match="already in progress"):
         async with measurement_window(
-            skip_voice_pause=True, skip_renderer_pause=True,
+            skip_voice_pause=True, skip_music_isolation=True,
         ):
             pass
 

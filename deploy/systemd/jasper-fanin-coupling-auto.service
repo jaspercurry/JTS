@@ -5,8 +5,10 @@
 #   - ring coupling (shm_ring) on a solo, ring-eligible box, else loopback; and
 #   - the USB low-latency combo on a gadget box, else combo-off.
 # ...UNLESS the operator recorded an explicit choice
-# (JASPER_FANIN_COUPLING_CHOICE=operator in fanin.env), in which case it is a
-# COMPLETE no-op so a deliberate revert sticks across reboots/deploys.
+# (JASPER_FANIN_COUPLING_CHOICE=operator in fanin.env), in which case the exact
+# coupling is frozen so a deliberate transport revert sticks. USB combo/direct
+# authorization still converges from canonical USB intent and runtime fallback;
+# the marker cannot preserve capture after household Off.
 #
 # A no-op on an already-resolved box (the confirm path bounces no daemon), so
 # the steady-state boot cost is one short reconcile with zero audio churn.
@@ -19,6 +21,10 @@
 [Unit]
 Description=Resolve the default fan-in coupling + USB combo (P3/P4 default-flip)
 Documentation=file:/opt/jasper/docs/HANDOFF-audio-graph-consolidation.md
+# This oneshot has no automatic Restart= loop. Every source transaction asks it
+# to converge, so deliberate rapid toggles must not hit systemd's default
+# successful-start rate limit.
+StartLimitIntervalSec=0
 # Run AFTER the audio graph is up so an arm transition (which bounces
 # fan-in/outputd and reloads CamillaDSP) lands on live daemons. Wants (not
 # Requires) so a degraded box still runs the pass and resolves loopback.
@@ -41,11 +47,12 @@ Type=oneshot
 # CamillaDSP cleanly stopped, which OnFailure=jasper-camilla-recover does
 # NOT catch (clean stop != failed) — so the timeout must outlast the pass.
 TimeoutStartSec=120
-# Same env chain the coupling reconciler CLI hydrates internally
-# (load_env_files); listed here too so the unit environment carries the
-# operator marker + combo state for logging context.
+# The CLI hydrates the trusted base and reconciler-owned fanin env internally.
+# Do not inject the group-writable fanin.env into this root Python process:
+# values such as PYTHONPATH/LD_PRELOAD must never cross the privilege boundary.
 EnvironmentFile=-/etc/jasper/jasper.env
-EnvironmentFile=-/var/lib/jasper/fanin.env
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PYTHONPATH PYTHONHOME
 ExecStart=/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason systemd
 StandardOutput=journal
 StandardError=journal

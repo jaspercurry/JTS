@@ -213,6 +213,8 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-snapclient.service"
             "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
             "${SYSTEMD_DIR}/jasper-grouping-reconcile-trailing.service"
+            "${SYSTEMD_DIR}/jasper-source-intent-reconcile.service"
+            "${SYSTEMD_DIR}/jasper-fanin-coupling-auto.service"
             "${SYSTEMD_DIR}/jasper-web.service"
             "${SYSTEMD_DIR}/jasper-web.socket"
             "${SYSTEMD_DIR}/jasper-bluetooth-web.service"
@@ -368,23 +370,58 @@ enable_usbgadget() {
     # always-on USB management network. `enable --now` arms it at boot and
     # composes it right now (its ExecCondition skips cleanly pre-reboot when no
     # UDC exists yet, so this never fails on a fresh install before the
-    # dtoverlay reboot). The audio bridge (jasper-usbsink) stays wizard-toggled
-    # and off by default. jasper-usbnet-dhcp is device-activated via its
+    # dtoverlay reboot). jasper-usbnet-dhcp is device-activated via its
     # [Install] WantedBy=sys-subsystem-net-devices-usb0.device, so `enable`
     # wires the pull without starting it until usb0 appears.
     #
-    # `enable --now` on the composite gadget is only a START, and PartOf=
-    # propagation restarts/stops but NEVER starts a dependent. On an upgrade,
-    # migrate_usbsink_init_to_usbgadget already ran `disable --now
-    # jasper-usbsink-init.service` while the OLD in-memory graph still had
-    # jasper-usbsink PartOf=jasper-usbsink-init, so that stop propagated and
-    # left an enabled (possibly playing) USB-audio bridge STOPPED. Bring it back
-    # if the household intent is on — a restore-if-enabled, the same idiom the
-    # reconciler uses. This runs UNCONDITIONALLY, deliberately NOT gated on
-    # SKIP_RESTART: the migration's stop is itself unconditional, so honoring
-    # SKIP_RESTART here would leave the bridge down until reboot — the worse
-    # outcome. `start` (not restart) so a bridge already brought up by the
-    # gadget's Requires= is a no-op rather than a needless bounce.
+    # Install owns only a safe deployment baseline: derived USB audio Off and a
+    # network-only gadget. It MUST NOT interpret canonical On or start the
+    # source here. The later reapply_source_intent pass is the single owner of
+    # the ordered On transition (arm fan-in direct capture, then advertise UAC2,
+    # then start the process-free readiness marker). Advertising UAC2 from here first
+    # creates a host-visible source with no live data plane.
+    #
+    # This baseline is also the upgrade/backcompat fence. Old releases may
+    # arrive with jasper-usbsink enabled/active and a bound UAC2 descriptor.
+    # Disable+stop the derived unit before touching the gadget. Recompose an
+    # already-active gadget only when prior derived audio or the UAC2 card proves
+    # stale audio may be present; a converged NCM-only gadget must not flap on
+    # every deploy (the deploy itself may be using that management link).
+    local audio_was_enabled=0
+    local audio_was_active=0
+    local uac2_was_present=0
+    local uac2_present_after_enable=0
+    local audio_enabled_now=0
+    local audio_active_now=0
+    local gadget_was_active=0
+    local park_rc=0
+    systemctl is-enabled --quiet jasper-usbsink.service 2>/dev/null && \
+        audio_was_enabled=1
+    systemctl is-active --quiet jasper-usbsink.service 2>/dev/null && \
+        audio_was_active=1
+    [[ -d "${JASPER_UAC2_CARD_PATH:-/proc/asound/UAC2Gadget}" ]] && \
+        uac2_was_present=1
+    systemctl is-active --quiet jasper-usbgadget.service 2>/dev/null && \
+        gadget_was_active=1
+    systemctl disable --now jasper-usbsink.service >/dev/null 2>&1 || park_rc=$?
+
+    # A systemctl command can return non-zero after partially succeeding, so
+    # observed state is authoritative. Fail closed if either half remains: the
+    # gadget readiness gate reads enablement, while an active stale lifecycle
+    # marker proves the old derived state did not park cleanly.
+    systemctl is-enabled --quiet jasper-usbsink.service 2>/dev/null && \
+        audio_enabled_now=1
+    systemctl is-active --quiet jasper-usbsink.service 2>/dev/null && \
+        audio_active_now=1
+    if [[ "${audio_enabled_now}" == "1" || "${audio_active_now}" == "1" ]]; then
+        echo "  ERROR: could not park USB Audio Input before composition; refusing to compose the USB gadget" >&2
+        return 1
+    fi
+    if [[ "${park_rc}" != "0" ]]; then
+        echo "  WARN: USB Audio Input park command returned ${park_rc}, but observed derived state is Off"
+    fi
+    echo "  event=install.usb_gadget_baseline audio=off next=source_intent_reapply"
+
     # NOTE the failure branch below only fires on a REAL failure (modprobe
     # failure, gadget-up exit >=255, masked unit): the ExecCondition
     # (jasper-usbgadget-wanted) skip is a condition-not-met outcome, which
@@ -394,9 +431,17 @@ enable_usbgadget() {
     systemctl enable --now jasper-usbgadget.service >/dev/null 2>&1 || \
         echo "  WARN: jasper-usbgadget failed to enable/compose — check 'systemctl status jasper-usbgadget' and 'journalctl -u jasper-usbgadget' (pre-reboot no-UDC is a clean skip, not this error)"
     systemctl enable jasper-usbnet-dhcp.service >/dev/null 2>&1 || true
-    if systemctl is-enabled --quiet jasper-usbsink.service 2>/dev/null; then
-        systemctl start jasper-usbsink.service >/dev/null 2>&1 || \
-            echo "  WARN: USB Audio Input is enabled but jasper-usbsink did not restart after the gadget migration; run 'systemctl start jasper-usbsink' or check 'journalctl -u jasper-usbsink'"
+    [[ -d "${JASPER_UAC2_CARD_PATH:-/proc/asound/UAC2Gadget}" ]] && \
+        uac2_present_after_enable=1
+    if [[ "${uac2_was_present}" == "1" || \
+          "${uac2_present_after_enable}" == "1" || \
+          ( "${gadget_was_active}" == "1" && ( \
+            "${audio_was_enabled}" == "1" || \
+            "${audio_was_active}" == "1" ) ) ]]; then
+        systemctl restart jasper-usbgadget.service >/dev/null 2>&1 || {
+            echo "  ERROR: jasper-usbgadget did not recompose to the network-only install baseline; refusing to continue with possibly stale UAC2 advertised. Check 'journalctl -u jasper-usbgadget'" >&2
+            return 1
+        }
     fi
 }
 
@@ -416,6 +461,9 @@ install_grouping_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-trailing" \
         /usr/local/sbin/jasper-grouping-reconcile-trailing
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-kick" \
+        /usr/local/sbin/jasper-grouping-reconcile-kick
 
     for distro_unit in snapserver.service snapclient.service; do
         if systemctl list-unit-files "${distro_unit}" 2>/dev/null \
@@ -460,6 +508,10 @@ install_renderer_source_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/bluealsa.service.d/jts-restart.conf" \
         "${SYSTEMD_DIR}/bluealsa.service.d/jts-restart.conf"
+    install -d -m 0755 "${SYSTEMD_DIR}/bluetooth.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/bluetooth.service.d/jts-timeout.conf" \
+        "${SYSTEMD_DIR}/bluetooth.service.d/jts-timeout.conf"
 }
 
 install_audio_output_recovery_unit_files() {
@@ -602,19 +654,13 @@ park_streambox_brain_units() {
     # Converting from a full speaker to streambox must park local brain
     # surfaces while keeping renderer/DSP/source surfaces alive.
     #
-    # jasper-fanin-coupling-auto.service is in this list (not just the brain units):
-    # the shared audio-graph rows install its unit file on BOTH profiles, but only
-    # the FULL install enables + runs the P3/P4 default-flip pass
-    # (resolve_fanin_coupling_default). A full box has it ENABLED; a full→streambox
-    # conversion must disable it here, or it would run every boot on the streambox —
-    # arming the ring on zero-class hardware the P4 campaign never validated (its
-    # hardware targets were full boxes). A fresh streambox never enables it, so this
-    # is a no-op there.
+    # Fan-in coupling is audio-data-plane ownership, not a voice-brain feature.
+    # Both full and streambox profiles run the same renderer/fan-in graph and USB
+    # Audio Input needs its direct lane on either profile, so coupling and its
+    # bounded health timer deliberately remain outside this parking list.
     for brain_unit in \
         jasper-voice.service jasper-aec-bridge.service jasper-aec-init.service \
         jasper-aec-reconcile.service jasper-input.service \
-        jasper-fanin-coupling-auto.service \
-        jasper-fanin-combo-health.timer \
         jasper-dial-web.socket jasper-dial-web.service \
         camillagui.socket camillagui.service camillagui-proxy.service; do
         systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
@@ -636,26 +682,55 @@ enable_streambox_web_sockets() {
 }
 
 reapply_source_intent() {
-    # Re-apply the household's persisted /sources enable/disable choice AFTER the
-    # unconditional `systemctl enable` + `restart` of shairport-sync/librespot
-    # above. Those lines re-enable AND leave running any source a household turned
-    # OFF via /sources/, while /var/lib/jasper/source_intent.env still records the
-    # disable — so without this a deploy silently undoes the household's choice.
-    # install.sh runs as root, so it invokes the reconciler DIRECTLY (mirrors
-    # resolve_fanin_coupling_default running jasper-fanin-coupling-reconcile
-    # here); --stop-disabled makes it also `systemctl stop` an intent=disabled
-    # unit (the enable/disable-only wizard/systemd path never stops — the broker
-    # handles that at runtime). The reconciler is the single authority for the
-    # source-unit allowlist. A first install (no source_intent.env) is a clean
-    # no-op; a failed apply WARNs and the boot reconcile re-tries — never fatal.
-    /opt/jasper/.venv/bin/jasper-source-intent-reconcile --stop-disabled --reason install || \
-        echo "  WARN: source enable/disable intent reconcile failed. Check logs with: journalctl -u jasper-source-intent-reconcile -e"
+    # Re-converge the complete local-source lifecycle after active-only renderer
+    # refreshes. Install never enables or starts an Off source as a temporary
+    # baseline: the coordinator is the only writer of source enablement and the
+    # only path that starts a desired-on source, including Bluetooth RF-kill.
+    # install.sh runs as root and invokes the same reconciler directly. Keep a
+    # process-level bound beyond the unit's 783-second contract so a
+    # manual/stale lock holder or child regression cannot pin deploy forever.
+    # The reconciler is the single authority for the source allowlist and
+    # runtime ordering. A failed apply WARNs; boot or the next toggle retries.
+    # A short-lived pre-merge build used JASPER_SOURCE_INTENT_BLUETOOTH. That
+    # name lives inside an older release's strict owned namespace, so leaving it
+    # behind would make a rollback reject the whole intent file. Migrate it to
+    # the deliberately rollback-ignorable key before either reconciler reads.
+    if [[ -e "${STATE_DIR}/source_intent.env" || -L "${STATE_DIR}/source_intent.env" ]]; then
+        /opt/jasper/.venv/bin/python - "${STATE_DIR}/source_intent.env" <<'PY'
+import sys
+
+from jasper.atomic_io import locked_transform_env_file
+
+path = sys.argv[1]
+legacy_key = "JASPER_SOURCE_INTENT_BLUETOOTH"
+canonical_key = "JASPER_BLUETOOTH_SOURCE_INTENT"
+
+def migrate(state: dict[str, str]) -> dict[str, str]:
+    legacy_value = state.pop(legacy_key, None)
+    if legacy_value is not None and canonical_key not in state:
+        state[canonical_key] = legacy_value
+    return state
+
+locked_transform_env_file(
+    path,
+    migrate,
+    mode=0o660,
+    group_from_parent=True,
+    lock_mode=0o660,
+    max_bytes=64 * 1024,
+    lock_timeout_sec=2.0,
+)
+PY
+    fi
+    /usr/bin/timeout --foreground --kill-after=5s 793s \
+        /opt/jasper/.venv/bin/jasper-source-intent-reconcile --reason install || \
+        echo "  WARN: source intent reconcile failed. Check logs with: journalctl -u jasper-source-intent-reconcile -e"
 }
 
 start_streambox_runtime_units() {
     systemctl enable jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service jasper-audio-hardware-reconcile.service \
-        jasper-control.service
+        jasper-control.service jasper-source-intent-reconcile.service
     park_audio_clients_for_core_graph_restart
     reset_failed_core_graph_restart_targets
     /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
@@ -671,23 +746,27 @@ start_streambox_runtime_units() {
     # against the 2-slot ring before the reconcile gets a chance to heal it.
     systemctl try-restart jasper-camilla.service 2>/dev/null || true
 
-    systemctl enable nqptp.service shairport-sync.service \
-        librespot.service bt-agent.service jasper-mux.service
     # Always-on USB management network (composite gadget + device-activated
     # DHCP). Skips cleanly pre-reboot when no UDC exists.
     enable_usbgadget
-    systemctl restart bluealsa-aplay.service 2>/dev/null || true
-    systemctl restart nqptp.service shairport-sync.service \
-        librespot.service bt-agent.service jasper-mux.service \
+    # Mux is core arbitration infrastructure, not a user-selectable source.
+    # Keep it available (role guard still parks followers); its ~1 Hz idle loop
+    # is cheaper and safer than coupling output policy to aggregate source state.
+    systemctl enable --now jasper-mux.service
+    systemctl enable jasper-fanin-coupling-auto.service
+    systemctl enable --now jasper-fanin-combo-health.timer
+    systemctl try-restart bluealsa-aplay.service nqptp.service \
+        shairport-sync.service librespot.service bt-agent.service \
         2>/dev/null || true
     reapply_source_intent
-    # Bounce Rust data-plane daemons OUTSIDE the core-graph restart set
-    # when (and only when) this install replaced their binary content.
-    restart_services_for_changed_rust_daemons
     for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-system-web; do
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
     reconcile_grouping_state
+    # Run the owner now, not only at next boot. Its install-profile gate keeps
+    # streambox ring coupling on loopback while the independent USB decision
+    # can still arm DIRECT capture from canonical source intent.
+    resolve_fanin_coupling_default
     systemctl enable jasper-wifi-guardian.service
     systemctl enable --now jasper-wifi-recover.timer
     systemctl enable jasper-bootloop-guard.service
@@ -875,8 +954,8 @@ install_systemd_units() {
     # jasper-usbgadget: composite ConfigFS gadget owner. It carries the
     # always-on USB management network (ncm) AND the wizard-toggled USB audio
     # function (uac2). jasper-usbsink is the disabled-by-default /sources audio
-    # intent unit; the Rust daemon is standby-only (jasper-fanin DIRECT-captures
-    # the gadget) and orders After= the gadget owner. jasper-usbnet-dhcp is the scoped,
+    # lifecycle/readiness marker; jasper-fanin DIRECT-captures the gadget and
+    # the marker orders After= the gadget owner. jasper-usbnet-dhcp is the scoped,
     # device-activated dnsmasq for the USB network. The dtoverlay must be set +
     # Pi rebooted first (handled by set_usb_gadget_mode above). See
     # docs/HANDOFF-usb-gadget.md.
@@ -927,6 +1006,9 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-trailing" \
         /usr/local/sbin/jasper-grouping-reconcile-trailing
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-kick" \
+        /usr/local/sbin/jasper-grouping-reconcile-kick
 
     # If the snapcast apt packages ARE present (the grouping opt-in
     # installed them), neutralise their DISTRO units: Trixie's snapserver
@@ -1048,6 +1130,10 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/bluealsa.service.d/jts-restart.conf" \
         "${SYSTEMD_DIR}/bluealsa.service.d/jts-restart.conf"
+    install -d -m 0755 "${SYSTEMD_DIR}/bluetooth.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/bluetooth.service.d/jts-timeout.conf" \
+        "${SYSTEMD_DIR}/bluetooth.service.d/jts-timeout.conf"
 
     # sshd OOM-protection drop-in: Debian's openssh-server package
     # ships ssh.service WITHOUT an OOMScoreAdjust= directive. JTS
@@ -1139,6 +1225,7 @@ install_systemd_units() {
     systemctl enable jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service \
         jasper-audio-hardware-reconcile.service \
+        jasper-source-intent-reconcile.service \
         jasper-accessory-reconcile.service \
         jasper-voice.service \
         jasper-control.service \
@@ -1175,16 +1262,14 @@ install_systemd_units() {
     # chunk-256 statefile against freshly-created 2-slot ring files.
     systemctl try-restart jasper-camilla.service 2>/dev/null || true
 
-    systemctl enable nqptp.service shairport-sync.service \
-        librespot.service bt-agent.service jasper-mux.service
-    systemctl restart bluealsa-aplay.service 2>/dev/null || true
-    systemctl restart nqptp.service shairport-sync.service \
-        librespot.service bt-agent.service jasper-mux.service \
+    # Mux is core arbitration infrastructure, not a selectable source. Start it
+    # on a fresh install as well as enabling boot; its role ExecCondition skips
+    # a bonded follower safely.
+    systemctl enable --now jasper-mux.service
+    systemctl try-restart bluealsa-aplay.service nqptp.service \
+        shairport-sync.service librespot.service bt-agent.service \
         2>/dev/null || true
     reapply_source_intent
-    # Bounce Rust data-plane daemons OUTSIDE the core-graph restart set
-    # when (and only when) this install replaced their binary content.
-    restart_services_for_changed_rust_daemons
     # The wizard services are socket-activated now. Any currently-
     # running instance is on the old code; stop it so the next incoming
     # request brings up the new code via the .socket. Idempotent: if the

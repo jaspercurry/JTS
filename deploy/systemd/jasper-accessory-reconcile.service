@@ -1,7 +1,12 @@
 [Unit]
 Description=Jasper accessory profile reconciler
+# This oneshot has no automatic Restart= loop. Source transactions deliberately
+# start it more than once to drain an older snapshot and queue a fresh pass, so
+# the manager's default start-rate limit would reject healthy rapid toggles.
+StartLimitIntervalSec=0
+# Source intent owns whether BlueZ may run. Ordering is passive: neither this
+# oneshot nor an optional adapter may pull bluetooth.service up through Wants=.
 After=bluetooth.service
-Wants=bluetooth.service
 Before=jasper-voice.service
 
 [Service]

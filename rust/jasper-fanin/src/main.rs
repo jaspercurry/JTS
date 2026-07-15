@@ -193,8 +193,8 @@ fn main() -> Result<()> {
     // `fanin-host-clock` thread steers the gadget's Capture Pitch ctl toward the
     // DAC clock (the shared jasper_host_clock ladder). The direct-off gate is
     // resolved HERE so a `enabled`+direct-off box logs one noop line and never
-    // opens the ctl (in aloop mode the usbsink bridge owns the clock — the
-    // "daemon that owns the capture owns the pitch ctl" invariant).
+    // opens the ctl (the process that owns direct gadget capture also owns its
+    // pitch control).
     //
     // The STATUS fragment Arc is created regardless (initialized to the
     // disabled block) so /state carries a definite host_clock from boot; the
@@ -205,8 +205,8 @@ fn main() -> Result<()> {
     // never disagree about whether the revalidating DLL is live).
     let host_clock_enabled_effective = config.host_clock_servo_armed();
     if config.host_clock_enabled && !host_clock_enabled_effective {
-        // enabled + direct-off: inert, one warn, zero ctl writes. In aloop mode
-        // the usbsink bridge owns the gadget capture and its clock.
+        // enabled + direct-off: inert, one warn, zero ctl writes. No process
+        // owns direct gadget capture or its clock in this state.
         warn!("event=fanin.host_clock.noop reason=usb_direct_off");
     }
     // The setpoint is the resampler's HELD target (target + warmup cushion),
@@ -231,7 +231,6 @@ fn main() -> Result<()> {
     let host_clock_config = crate::host_clock::build_config(
         host_clock_enabled_effective,
         config.host_clock_probe_ppm,
-        config.host_clock_probe_secs,
         host_clock_setpoint,
     );
     let host_clock_fragment = Arc::new(std::sync::Mutex::new(crate::host_clock::initial_fragment(
@@ -251,8 +250,10 @@ fn main() -> Result<()> {
             let hc_fragment = Arc::clone(&host_clock_fragment);
             let hc_shutdown = Arc::clone(&shutdown);
             info!(
-                "event=fanin.host_clock.armed probe_ppm={} probe_secs={} setpoint_frames={}",
-                config.host_clock_probe_ppm, config.host_clock_probe_secs, host_clock_setpoint,
+                "event=fanin.host_clock.armed probe_ppm={} correction_probe_secs={} setpoint_frames={}",
+                config.host_clock_probe_ppm,
+                jasper_host_clock::CORRECTION_PROBE_STEP_SECS,
+                host_clock_setpoint,
             );
             Some(
                 std::thread::Builder::new()
@@ -279,7 +280,6 @@ fn main() -> Result<()> {
             let disabled = crate::host_clock::build_config(
                 false,
                 config.host_clock_probe_ppm,
-                config.host_clock_probe_secs,
                 host_clock_setpoint,
             );
             *host_clock_fragment

@@ -17,7 +17,7 @@
 //!     contribution to the sum WITHOUT gating its capture telemetry
 //!     (`frames_read` / `rms_dbfs`). mux's latest-source-wins arbitration
 //!     primitive for the USB lane — the only USB-silencing mechanism now that
-//!     the standby jasper-usbsink bridge owns no audio path of its own to mute.
+//!     fan-in owns the sole USB audio path and its mix-mute.
 //!
 //! Other input is rejected with `{"error": "unknown command"}`.
 //!
@@ -1463,7 +1463,7 @@ mod tests {
             // STATUS always carries. `crate::host_clock::initial_fragment` on a
             // disabled config renders exactly this.
             host_clock_fragment: Arc::new(Mutex::new(crate::host_clock::initial_fragment(
-                crate::host_clock::build_config(false, 300, 6, 2048),
+                crate::host_clock::build_config(false, 300, 2048),
             ))),
         }
     }
@@ -1543,7 +1543,7 @@ mod tests {
         // by swapping the fragment for an armed-config render.
         let mut server = make_test_server();
         server.host_clock_fragment = Arc::new(Mutex::new(crate::host_clock::initial_fragment(
-            crate::host_clock::build_config(true, 300, 6, 2048),
+            crate::host_clock::build_config(true, 300, 2048),
         )));
         let j = server.snapshot_json();
         let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");

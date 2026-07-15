@@ -406,6 +406,44 @@ def test_manage_units_falls_back_to_direct_systemctl_when_root(tmp_path, monkeyp
     ]
 
 
+def test_root_fallback_uses_same_narrow_timeout_exception(tmp_path, monkeypatch):
+    """The transition-only direct path cannot bypass the broker's ceiling."""
+    monkeypatch.setattr(
+        restart_broker, "DEFAULT_SOCKET_PATH", str(tmp_path / "absent.sock"),
+    )
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    seen: list[float] = []
+
+    def fake_run(_argv, **kwargs):
+        seen.append(kwargs["timeout"])
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    restart_broker.manage_units(
+        "jasper-grouping-reconcile.service",
+        verb="restart",
+        no_block=False,
+        timeout=9999,
+    )
+    restart_broker.manage_units(
+        "jasper-source-intent-reconcile.service",
+        verb="start",
+        no_block=False,
+        timeout=9999,
+    )
+    restart_broker.manage_units(
+        "jasper-source-intent-reconcile.service",
+        verb="start",
+        no_block=True,
+        timeout=9999,
+    )
+    assert seen == [
+        restart_broker._EXEC_TIMEOUT_CEILING_SEC,
+        restart_broker._SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC,
+        restart_broker._EXEC_TIMEOUT_CEILING_SEC,
+    ]
+
+
 def test_manage_units_no_fallback_when_non_root(tmp_path, monkeypatch):
     """Broker unreachable + non-root -> error dict, never a direct systemctl.
     This is the post-user-drop behaviour: the broker is the only path."""
@@ -456,10 +494,62 @@ def test_manage_units_prefers_broker_over_fallback(broker, monkeypatch):
     ("not-a-number", restart_broker._DEFAULT_EXEC_TIMEOUT_SEC),  # junk -> default
     (0.1, 1.0),                                           # clamped up to the floor
     (12.0, 12.0),                                         # in-range passthrough
-    (9999, restart_broker._EXEC_TIMEOUT_CEILING_SEC),    # clamped to hard ceiling
+    (370.0, restart_broker._EXEC_TIMEOUT_CEILING_SEC),
+    (9999, restart_broker._EXEC_TIMEOUT_CEILING_SEC),
 ])
-def test_clamp_exec_timeout(raw, expected):
-    assert restart_broker._clamp_exec_timeout(raw) == expected
+def test_clamp_exec_timeout_keeps_normal_actions_under_global_ceiling(raw, expected):
+    assert restart_broker._clamp_exec_timeout(
+        raw,
+        verb="restart",
+        units=["jasper-grouping-reconcile.service"],
+        no_block=False,
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    ("verb", "units", "no_block", "expected"),
+    [
+        (
+            "start",
+            ["jasper-source-intent-reconcile.service"],
+            False,
+            restart_broker._SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC,
+        ),
+        (
+            "start",
+            ["jasper-source-intent-reconcile.service"],
+            True,
+            restart_broker._EXEC_TIMEOUT_CEILING_SEC,
+        ),
+        (
+            "restart",
+            ["jasper-source-intent-reconcile.service"],
+            False,
+            restart_broker._EXEC_TIMEOUT_CEILING_SEC,
+        ),
+        (
+            "start",
+            [
+                "jasper-source-intent-reconcile.service",
+                "jasper-grouping-reconcile.service",
+            ],
+            False,
+            restart_broker._EXEC_TIMEOUT_CEILING_SEC,
+        ),
+    ],
+)
+def test_extended_timeout_requires_exact_blocking_source_intent_start(
+    verb,
+    units,
+    no_block,
+    expected,
+):
+    assert restart_broker._clamp_exec_timeout(
+        9999,
+        verb=verb,
+        units=units,
+        no_block=no_block,
+    ) == expected
 
 
 @requires_peercred
@@ -485,10 +575,34 @@ def test_broker_bounds_systemctl_to_client_exec_timeout(tmp_path, monkeypatch):
         assert resp["ok"] is True
         assert seen["timeout"] == 7.0  # client's timeout became the exec bound
 
-        # An over-ceiling request is clamped, not honoured verbatim.
+        # A normal over-ceiling request is clamped to the 120-second global
+        # bound, not the source-intent exception.
         restart_broker.request_restart(
             "jasper-voice.service", verb="restart", no_block=False,
             timeout=9999, socket_path=sock_path,
+        )
+        assert seen["timeout"] == restart_broker._EXEC_TIMEOUT_CEILING_SEC
+
+        # The parsed broker request grants the extended bound only to the exact
+        # blocking
+        # source-intent start shape.
+        restart_broker.request_restart(
+            "jasper-source-intent-reconcile.service",
+            verb="start",
+            no_block=False,
+            timeout=9999,
+            socket_path=sock_path,
+        )
+        assert seen["timeout"] == (
+            restart_broker._SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC
+        )
+
+        restart_broker.request_restart(
+            "jasper-source-intent-reconcile.service",
+            verb="start",
+            no_block=True,
+            timeout=9999,
+            socket_path=sock_path,
         )
         assert seen["timeout"] == restart_broker._EXEC_TIMEOUT_CEILING_SEC
     finally:

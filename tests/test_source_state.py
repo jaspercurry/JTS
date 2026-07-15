@@ -233,16 +233,33 @@ async def test_airplay_playing_metadata_call_failure_treated_as_phantom():
 
 
 # ----------------------------------------------------------------------
-# usbsink state — JSON state file shared by mux and diagnostics
+# usbsink state — fan-in DIRECT is the sole live USB ingress owner
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_usbsink_playing_reads_published_playing(tmp_path):
-    path = tmp_path / "state.json"
-    path.write_text(json.dumps({"playing": True}))
+async def test_usbsink_playing_reads_fanin_direct_activity(monkeypatch):
+    monkeypatch.setattr(
+        source_state,
+        "read_fanin_status",
+        lambda: {
+            "inputs": [{
+                "label": "usbsink",
+                "source": "direct",
+                "rms_dbfs": -12.0,
+                "direct": {"health": "capturing"},
+            }],
+        },
+    )
 
-    assert await source_state.usbsink_playing(str(path)) is True
+    assert await source_state.usbsink_playing() is True
+
+
+@pytest.mark.asyncio
+async def test_usbsink_playing_fails_soft_when_fanin_is_unavailable(monkeypatch):
+    monkeypatch.setattr(source_state, "read_fanin_status", lambda: None)
+
+    assert await source_state.usbsink_playing() is False
 
 
 # ----------------------------------------------------------------------

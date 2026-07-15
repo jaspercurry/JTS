@@ -12,12 +12,8 @@ USBSINK_PLAYING_RMS_DBFS` is applied to fan-in's DIRECT-capture lane's reported
 (`usbsink_direct_audible` / `step_combo_liveness`) and the `/state` renderer
 level.
 
-The Rust `jasper-usbsink-audio` daemon is standby-only (see main.rs) and opens
-no PCM, so it never computes a `playing` value of its own to drift from. It
-used to carry a `PLAYING_RMS_DBFS` anchor constant purely so this test could
-pin the two languages equal; that constant and the cross-language pin were
-deleted 2026-07-11 once there was no Rust-side gate left to guard against
-drifting. `jasper.mux` imports `USBSINK_PLAYING_RMS_DBFS` from
+The retired Rust bridge no longer exists, so there is no second implementation
+to drift from. `jasper.mux` imports `USBSINK_PLAYING_RMS_DBFS` from
 `jasper.source_state` rather than declaring its own value, so the remaining
 single-source-of-truth risk is Python-internal: a future edit could give
 `jasper.mux` a local literal instead of importing the shared constant. This

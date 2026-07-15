@@ -569,8 +569,8 @@ Open `http://jts.local/sources/` on any device on the LAN. Find the
 - `jasper-usbgadget.service` restarts and recomposes the ConfigFS
   descriptor to add the `uac2.usb0` audio function (the always-on
   `ncm.usb0` network function was already there)
-- `jasper-usbsink.service` opens the gadget capture endpoint and
-  starts the audio bridge
+- `jasper-fanin.service` opens the gadget capture endpoint; the process-free
+  `jasper-usbsink.service` readiness marker becomes active (exited)
 
 Verify on the Pi:
 
@@ -626,7 +626,7 @@ ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep -i usbsink
 | Toggle greyed out, "needs dtoverlay + reboot" note | Phase 2's `install.sh` ran before the source had `set_usb_gadget_mode`, OR you've edited `/boot/firmware/config.txt` since | Re-run `bash scripts/deploy-to-pi.sh` from the laptop, reboot |
 | Host doesn't see the speaker in its audio device picker | Splitter not wired (forgot the USB-A cable to host), or `jasper-usbgadget` didn't recompose with the audio function | `journalctl -u jasper-usbgadget` for ConfigFS errors |
 | Mac says "Playback Inactive" instead of the Speaker Name | Name patch didn't apply (kernel renamed the string, or override stale). Cosmetic — audio still plays | `journalctl -u jasper-usbgadget \| grep event=usbsink_name`; `sudo systemctl restart jasper-usbgadget`; check `jasper-doctor` `usbsink name` |
-| Volume slider on Mac doesn't move JTS | `amixer -c UAC2Gadget controls` should show `PCM Capture Volume`; if missing, gadget descriptor wasn't built with `c_volume_present=1` | `journalctl -u jasper-usbsink \| grep volume_bridge` |
+| Volume slider on Mac doesn't move JTS | `amixer -c UAC2Gadget controls` should show `PCM Capture Volume`; if missing, gadget descriptor wasn't built with `c_volume_present=1` | `journalctl -u jasper-usbsink-volume \| grep volume_bridge` |
 | Toggle off but `lsmod \| grep libcomposite` shows it loaded | RAM-drift from a previous bad stop — jasper-doctor will warn | `sudo rmmod u_audio libcomposite` or reboot |
 
 ### Disable later

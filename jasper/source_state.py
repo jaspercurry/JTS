@@ -19,7 +19,6 @@ when daemons change.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 import os
@@ -28,7 +27,11 @@ from typing import Any
 
 from . import bluealsa_probe
 from . import librespot_state
-from .fanin.status import FANIN_INPUT_SOURCE_DIRECT, USBSINK_INPUT_LABEL
+from .fanin.status import (
+    FANIN_INPUT_SOURCE_DIRECT,
+    fanin_usbsink_input,
+    read_fanin_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,17 +44,12 @@ logger = logging.getLogger(__name__)
 # so a search-fail is the phantom signal.
 _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 
-# Default path the Rust jasper-usbsink-audio daemon publishes its state to.
-# Spelled here rather than imported so jasper-mux doesn't pull the usbsink
-# package into its import graph just to know where the state file is.
-USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
-
 # The RMS level (dBFS) at or below which the USB lane is treated as NOT playing —
 # so a host streaming digital silence (a muted Zoom, an idle tab) does not seize
 # the speaker. Applied against fan-in's reported per-lane rms_dbfs for the
 # DIRECT-capture lane (the live USB path). This is the single definition of the
-# gate: the Rust jasper-usbsink-audio daemon is standby-only and never computes
-# a `playing` value of its own, so its former `PLAYING_RMS_DBFS` anchor constant
+# gate: fan-in is the sole live USB ingress owner. The retired
+# jasper-usbsink-audio daemon's former `PLAYING_RMS_DBFS` anchor constant
 # (and the cross-language drift guard that pinned it to this value) were deleted
 # 2026-07-11. tests/test_usbsink_playing_rms_contract.py now pins that
 # `jasper.mux` imports this constant rather than re-declaring its own copy.
@@ -168,55 +166,16 @@ async def airplay_playing() -> bool:
     return await _airplay_has_metadata_title()
 
 
-async def usbsink_playing(state_path: str = USBSINK_STATE_PATH) -> bool:
-    """jasper-usbsink publishes RMS-based playing state to
-    /run/jasper-usbsink/state.json (atomic writes, hysteresis-debounced).
-    Reading is cheap — the file is well under 1 KB. Missing file (the
-    feature is disabled or the daemon hasn't started yet) and
-    malformed JSON both resolve to False, matching the fail-soft
-    convention of the other probes."""
-    data = read_usbsink_state(state_path)
-    if data is None:
-        return False
-    return bool(data.get("playing", False))
+async def usbsink_playing() -> bool:
+    """USB activity from the sole live ingress owner: fan-in DIRECT.
 
-
-def read_usbsink_state(state_path: str = USBSINK_STATE_PATH) -> dict[str, Any] | None:
-    """Read jasper-usbsink's small JSON state file, fail-soft."""
-    try:
-        with open(state_path) as f:
-            data = json.load(f)
-    except (FileNotFoundError, OSError, json.JSONDecodeError) as e:
-        logger.debug("usbsink_playing probe failed: %s", e)
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def usbsink_bridge_in_standby(state: dict[str, Any] | None) -> bool:
-    """True when the jasper-usbsink daemon has published a state.json.
-
-    The daemon is standby-only now: fan-in DIRECT-captures the gadget and the
-    bridge opens no PCM, so its published ``playing`` / ``rms_dbfs`` are frozen
-    idle defaults that describe nothing (it always publishes ``standby: true``).
-    A missing/malformed state (``None``) reads as not-standby — the "USB Audio
-    Input off / daemon not running" fallback for callers.
+    Read fan-in's bounded STATUS probe off the event loop, then require both
+    current direct-capture health and audible pre-mute level. Missing/old
+    snapshots fail soft to ``False``.
     """
-    return bool(isinstance(state, dict) and state.get("standby"))
 
-
-def _fanin_usbsink_input(
-    fanin_status: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """The fan-in STATUS ``inputs[]`` entry for the usbsink lane, or None."""
-    if not isinstance(fanin_status, dict):
-        return None
-    inputs = fanin_status.get("inputs")
-    if not isinstance(inputs, list):
-        return None
-    for entry in inputs:
-        if isinstance(entry, dict) and entry.get("label") == USBSINK_INPUT_LABEL:
-            return entry
-    return None
+    status = await asyncio.to_thread(read_fanin_status)
+    return usbsink_direct_playing(status) is True
 
 
 def _nonnegative_int_counter(value: Any) -> int | None:
@@ -232,8 +191,7 @@ def usbsink_direct_frames_read(
     """Cumulative liveness counter on fan-in's USB DIRECT lane, else None.
 
     Returns a counter only when the usbsink lane is in direct mode
-    (``source == "direct"``), meaning fan-in owns the live gadget capture and
-    the standby bridge's RMS-gated ``playing`` flag is not meaningful.
+    (``source == "direct"``), meaning fan-in owns the live gadget capture.
 
     Prefer ``resampler.input_frames``: direct capture accounts host input there
     on builds where the lane-level ``frames_read`` can remain frozen at 0.
@@ -241,7 +199,7 @@ def usbsink_direct_frames_read(
     A single snapshot is not enough; the value becomes a liveness signal only as
     a delta across mux ticks.
     """
-    lane = _fanin_usbsink_input(fanin_status)
+    lane = fanin_usbsink_input(fanin_status)
     if not (
         isinstance(lane, dict)
         and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
@@ -272,11 +230,11 @@ def usbsink_direct_rms_dbfs(
 
     Mirrors :func:`usbsink_direct_frames_read`: a value is returned only when the
     usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
-    live gadget capture and the standby bridge's own ``rms_dbfs`` is meaningless.
+    live gadget capture and reports its pre-mute level directly.
     ``None`` when there is no direct lane, the STATUS is missing / malformed, or
     the lane carries no numeric ``rms_dbfs`` (an older fan-in build predating the
     per-lane level)."""
-    lane = _fanin_usbsink_input(fanin_status)
+    lane = fanin_usbsink_input(fanin_status)
     if not (
         isinstance(lane, dict)
         and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
@@ -304,6 +262,31 @@ def usbsink_direct_audible(
     return rms > threshold_dbfs
 
 
+def usbsink_direct_playing(
+    fanin_status: dict[str, Any] | None,
+) -> bool | None:
+    """Current USB activity from fan-in's DIRECT lane, or ``None`` if absent.
+
+    ``direct.health`` proves capture is flowing now; ``rms_dbfs`` rejects a
+    host that is merely streaming digital silence. Older direct snapshots that
+    predate the health field fall back to the same RMS gate.
+    """
+
+    lane = fanin_usbsink_input(fanin_status)
+    if not (
+        isinstance(lane, dict)
+        and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
+    ):
+        return None
+    audible = usbsink_direct_audible(fanin_status)
+    if audible is None:
+        return False
+    direct = lane.get("direct")
+    if not isinstance(direct, dict) or "health" not in direct:
+        return audible
+    return direct.get("health") == "capturing" and audible
+
+
 def usbsink_direct_muted(
     fanin_status: dict[str, Any] | None,
 ) -> bool | None:
@@ -311,14 +294,13 @@ def usbsink_direct_muted(
 
     Mirrors :func:`usbsink_direct_rms_dbfs`: a value is returned only when the
     usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
-    live gadget capture — the fan-in lane MIX-mute is how mux silences USB (the
-    only USB-silencing primitive now that the aloop bridge is standby-only).
+    live gadget capture — the fan-in lane MIX-mute is how mux silences USB.
     ``None`` when there is no direct lane, the STATUS is missing /
     malformed, or the lane predates the per-lane ``muted`` flag (older fan-in
     build). This is the mute STATE, separate from the ``rms_dbfs`` /
     ``frames_read`` telemetry the lane keeps reporting PRE-mute (so mux still
     sees a muted-but-streaming host as active)."""
-    lane = _fanin_usbsink_input(fanin_status)
+    lane = fanin_usbsink_input(fanin_status)
     if not (
         isinstance(lane, dict)
         and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT

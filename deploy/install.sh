@@ -394,7 +394,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
      libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
      libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
-     libswresample-dev xxd bluez-alsa-utils avahi-daemon avahi-utils.
+     libswresample-dev xxd bluez-alsa-utils rfkill avahi-daemon avahi-utils.
 
 3. Downloaded or built inputs
    - CamillaDSP: ${CAMILLA_URL}
@@ -414,9 +414,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jasper-outputd daemon from rust/jasper-outputd with
      cargo build --release --locked; Zero-class RAM uses the installer
      low-memory Cargo release overrides.
-   - jasper-usbsink-audio daemon from rust/jasper-usbsink-audio with
-     cargo build --release --locked; this keeps the production USB
-     low-latency route out of Python's callback tail.
+   - Retire the obsolete jasper-usbsink-audio binary and Cargo cache; fan-in
+     owns the sole USB DIRECT data plane and systemd keeps only a readiness marker.
    - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
      (needs libasound2-dev), installed to the arch ALSA plugin dir,
      sha256-compared like the Rust daemons. Audio-graph consolidation
@@ -458,28 +457,27 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      jasper-outputd, jasper-audio-hardware-reconcile, jasper-mux,
      renderer services, nginx, Avahi, identity reconciliation, and the
      multi-room grouping reconciler.
-   - Try-restart jasper-usbsink.service only when the installed
-     jasper-usbsink-audio binary content changed (sha256-compared at
-     install), so USB-in never keeps serving a stale daemon; fanin and
-     outputd are already covered by the core-graph restarts above.
-     SKIP_RESTART=1 skips this conditional restart.
+   - Install jasper-usbsink.service as a process-free readiness marker. Fan-in
+     owns the USB data plane and is covered by the core-graph restart above;
+     the obsolete standalone binary and build cache are removed.
    - Enable the always-on composite USB gadget (jasper-usbgadget.service):
      USB management network (usb0 10.12.194.1/24, no forwarding) so
      http://<hostname>/ works over USB even with Wi-Fi off, plus the
-     wizard-toggled USB audio function. NM keyfile owns usb0 and the
+     wizard-toggled USB audio function. Install first parks derived USB audio
+     and establishes an NCM-only baseline; the source-intent coordinator later
+     restores canonical On in direct-lane-before-advertising order. NM keyfile owns usb0 and the
      device-activated jasper-usbnet-dhcp.service (dnsmasq-base) serves DHCP.
-     Retire the old jasper-usbsink-init.service; if USB audio was enabled,
-     restart jasper-usbsink after the migration (the init-unit stop
-     propagated to it). Kill switch: JASPER_USB_NETWORK=disabled.
+     Retire the old jasper-usbsink-init.service. Kill switch:
+     JASPER_USB_NETWORK=disabled.
    - Enable socket-activated streambox-safe web surfaces:
      /spotify/, /sources/, /sound/, /speaker/, /wifi/, /rooms/,
      /bluetooth/, /system/, and HTTPS /correction/.
    - Install the streambox nginx route set with the shared JTS landing
      page and capability-gated cards.
-   - Reuse the existing grouping reconciler parking contract: when this
-     box is bonded as a follower it stops local source renderers without
-     disabling the household's /sources/ intent, and restores them after
-     unpairing.
+   - Preserve household /sources/ intent across pairing: grouping lands the
+     role, then synchronously hands off to the canonical source coordinator,
+     which parks local renderers on a follower and restores allowed sources
+     after unpairing.
    - Seed WiFi guardian recovery, memory/cgroup tuning, journald
      persistence, Avahi identity, correction TLS, and jasper-doctor.
 
@@ -543,7 +541,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
      libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
      libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
-     libswresample-dev xxd bluez-alsa-utils avahi-daemon
+     libswresample-dev xxd bluez-alsa-utils rfkill avahi-daemon
      avahi-utils.
 
 2. Downloaded or built inputs
@@ -573,9 +571,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jasper-outputd daemon from rust/jasper-outputd with
      cargo build --release --locked; enabled as the mainline final-output
      owner.
-   - jasper-usbsink-audio daemon from rust/jasper-usbsink-audio with
-     cargo build --release --locked; enabled by the USB Audio Input
-     source unit when the source is toggled on.
+   - Retire the obsolete jasper-usbsink-audio binary and Cargo cache; fan-in
+     owns the sole USB DIRECT data plane and systemd keeps only a readiness marker.
    - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
      (needs libasound2-dev), installed to the arch ALSA plugin dir,
      sha256-compared like the Rust daemons. Audio-graph consolidation
@@ -666,18 +663,16 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      jasper-outputd, audio-hardware reconciliation, DAC init,
      headphone monitor, nginx, Avahi, CamillaGUI socket, the WiFi
      guardian, and the boot-loop guard.
-   - Try-restart jasper-usbsink.service only when the installed
-     jasper-usbsink-audio binary content changed (sha256-compared at
-     install), so USB-in never keeps serving a stale daemon; fanin and
-     outputd are already covered by the core-graph restarts above.
-     SKIP_RESTART=1 skips this conditional restart.
+   - Reconcile the USB Audio Input readiness marker from canonical source
+     intent after fan-in and the composite gadget are installed.
    - Enable the always-on composite USB gadget (jasper-usbgadget.service):
      it carries a USB management network (ncm.usb0, 10.12.194.1/24, no
      forwarding) so http://<hostname>/ works over USB even with Wi-Fi off,
-     plus the wizard-toggled USB audio function. Retire the old
-     jasper-usbsink-init.service on upgrade; if USB audio was enabled,
-     restart jasper-usbsink after the migration (the init-unit stop
-     propagated to it). Install the NM keyfile owning usb0 and the scoped,
+     plus the wizard-toggled USB audio function. Install first parks derived
+     USB audio and establishes an NCM-only baseline; the source-intent
+     coordinator later restores canonical On in direct-lane-before-advertising
+     order. Retire the old jasper-usbsink-init.service on upgrade. Install the
+     NM keyfile owning usb0 and the scoped,
      device-activated jasper-usbnet-dhcp.service (dnsmasq-base — no global
      dnsmasq service). USB audio stays off by default. Skips cleanly
      pre-reboot when no UDC exists yet. Kill switch:
@@ -750,8 +745,7 @@ require_build_user() {
     cat >&2 <<EOF
 ERROR: required build user '${BUILD_USER}' does not exist on this host.
 
-install.sh builds the Rust audio daemons (jasper-fanin, jasper-outputd,
-jasper-usbsink-audio)
+install.sh builds the Rust audio daemons (jasper-fanin and jasper-outputd)
 as the appliance-standard '${BUILD_USER}' user. Custom appliance
 users are not supported (PI_USER only covers the deploy/onboarding
 transport). Create the user, then re-run the install:
@@ -813,7 +807,7 @@ _install_renderer_native_deps() {
         libgcrypt20-dev uuid-dev libmbedtls-dev libglib2.0-dev \
         libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
         xxd \
-        bluez-alsa-utils avahi-daemon avahi-utils
+        bluez-alsa-utils rfkill avahi-daemon avahi-utils
 }
 
 install_deps() {
@@ -1739,16 +1733,20 @@ resolve_fanin_coupling_default() {
     #   - USB combo (JASPER_FANIN_USB_DIRECT + _HOST_CLOCK + _RESAMPLER_CUSHION_DECAY):
     #     enabled on a gadget box (dtoverlay=dwc2,dr_mode=peripheral present), else
     #     cleared.
-    # It is a COMPLETE no-op when the operator recorded an explicit choice
-    # (JASPER_FANIN_COUPLING_CHOICE=operator in fanin.env) — a deliberate revert
-    # sticks across deploys — and a zero-churn confirm on an already-resolved box.
+    # An explicit operator choice
+    # (JASPER_FANIN_COUPLING_CHOICE=operator in fanin.env) freezes only the
+    # fan-in/Camilla coupling — a deliberate transport revert sticks across
+    # deploys. USB direct-capture still follows canonical source intent and its
+    # runtime-fallback marker. An already-resolved box remains a zero-churn confirm.
     # Mirrors reconcile_aec_state / reconcile_grouping_state: reconciler is the
     # single env writer; daemons read the resolved env. The reconciler CLI hydrates
     # its own env (load_env_files) so the camilla re-emit keeps the tuned chunksize.
     systemctl enable jasper-fanin-coupling-auto.service
     # Runtime-fallback watcher (defect 2026-07-10): the periodic timer that disarms
-    # the USB combo to the aloop bridge when fan-in's direct capture breaks at
-    # runtime (>= 2 consecutive broken ticks). Enable + start (`--now`) the TIMER
+    # fan-in's USB direct lane and withdraws UAC2 when direct capture breaks at
+    # runtime (>= 2 consecutive broken ticks). USB then stays visibly unavailable
+    # until a boot/deploy/toggle retry; there is no deleted ALoop fallback. Enable
+    # + start (`--now`) the TIMER
     # so the periodic tick goes live on THIS deploy instead of sitting inactive
     # (ActiveState=inactive, NextElapse=infinity) until the next reboot — a bare
     # `enable` only arms it for the next boot. The boot/deploy --auto pass above
@@ -2413,7 +2411,7 @@ main() {
         migrate_secrets_phase4b  # WS1 Phase 4b: streambox Spotify creds/cache path
         build_install_jasper_fanin
         build_install_jasper_outputd
-        build_install_jasper_usbsink_audio
+        retire_jasper_usbsink_audio
         install_jts_ring_platform  # P1: jts_ring ioplug + conf.d + shm dir (INERT; nothing arms)
         install_streambox_systemd_units
         retire_audio_topology_switch
@@ -2459,7 +2457,7 @@ main() {
     ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
-    build_install_jasper_usbsink_audio  # Rust USB data-plane bridge
+    retire_jasper_usbsink_audio   # fan-in owns USB DIRECT; remove retired helper/cache
     install_jts_ring_platform     # P1: jts_ring ioplug + conf.d + shm dir (INERT; nothing arms)
     install_systemd_units
     retire_audio_topology_switch # Remove stale dmix/fanin state; fanin is canonical

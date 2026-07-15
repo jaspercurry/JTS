@@ -1,7 +1,7 @@
 # Periodic tick for the USB-combo runtime-fallback watcher
 # (jasper-fanin-combo-health.service). See docs/HANDOFF-usbsink.md.
 [Unit]
-Description=Periodically check whether the USB combo needs to fall back to the aloop bridge
+Description=Periodically check whether the USB combo must be withdrawn and disarmed
 Documentation=file:/opt/jasper/docs/HANDOFF-usbsink.md
 
 # ~3-minute cadence, not seconds (mirrors jasper-wifi-recover). fan-in already

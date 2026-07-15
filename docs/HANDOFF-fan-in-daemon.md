@@ -127,8 +127,9 @@ addressed but had two unanticipated consequences:
    loopback; `-EBUSY` was the kernel's enforcement of "latest source wins"
    even when `jasper-mux`'s explicit pause path failed. After the dmix,
    nothing prevents two renderers from mixing audibly. PR #216 added a
-   Tier 2 escalation (`systemctl restart librespot`) to compensate, but
-   it's a workaround for a property the topology used to provide for free.
+   Tier 2 escalation (`systemctl try-restart librespot`) to compensate. Its
+   active-only mutation preserves a concurrent household Off or follower park,
+   but it's a workaround for a property the topology used to provide for free.
 
 The structural insight that wasn't obvious at the time: **snd-aloop has 8
 substream pairs, each with independent rate state, format state, and
@@ -620,8 +621,9 @@ still owns the actual env-file write, daemon restart, and
 rollback-on-restart-failure ladder; the plan owns the policy so the doctor,
 operator explain CLI, and writer cannot drift. As of the P3/P4 default-flip the
 reconciler also has an `--auto` mode (`jasper.fanin.coupling_auto`) that resolves
-the SHIPPED default coupling (`shm_ring` on a ring-eligible box, else loopback)
-and the USB combo flags on deploy + boot, unless the operator-choice marker
+the SHIPPED default coupling (`shm_ring` on a validated full-profile,
+ring-eligible box; loopback on streambox or any failed gate) and the independent
+USB combo flags on deploy + boot, unless the operator-choice marker
 `JASPER_FANIN_COUPLING_CHOICE=operator` freezes the box — see
 [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
 
@@ -842,9 +844,13 @@ pcm.librespot_substream {
 
 pcm.shairport_substream  → hw:Loopback,0,1  (same pinned plug shape)
 pcm.bluealsa_substream   → hw:Loopback,0,2  (same pinned plug shape)
-pcm.usbsink_substream    → hw:Loopback,0,3  (same pinned plug shape)
 pcm.correction_substream → hw:Loopback,0,4  (same pinned plug shape)
 ```
+
+USB Audio Input has no playback alias or resident bridge: fan-in directly
+captures `hw:UAC2Gadget` when the source coordinator arms that lane. Its
+positionally reserved `hw:Loopback,1,3` input is only the silent fallback while
+USB DIRECT is off.
 
 The `plug:` wrapper is what handles each renderer's native rate/format
 conversion to 48 kHz S16_LE — same role the old `jasper_renderer_in`
@@ -885,7 +891,9 @@ Each renderer's `--device` / `output_device` flag shifts from
 | librespot | `--device jasper_renderer_in` | `--device librespot_substream` |
 | shairport-sync | `output_device = "jasper_renderer_in"` | `output_device = "shairport_substream"` |
 | bluealsa-aplay | `--pcm=jasper_renderer_in` | `--pcm=bluealsa_substream` |
-| jasper-usbsink | `JASPER_USBSINK_PLAYBACK_DEVICE=jasper_renderer_in` | `JASPER_USBSINK_PLAYBACK_DEVICE=usbsink_substream` |
+
+USB no longer has a renderer device: `jasper-usbsink.service` is a process-free
+readiness marker and fan-in owns the direct gadget capture.
 
 `jasper-doctor`'s `check_renderer_device_resolvable` (the codified post-PR-#223
 check) verifies each renderer can open its new device as its runtime
@@ -965,8 +973,8 @@ maintainability. Rust wins on all three.
   or auto/null. Mux owns "current primary", renderer probing,
   source-specific preemption APIs, and user source selection. Current
   examples: AirPlay loses via shairport-sync MPRIS `Stop`, Spotify via
-  Web API pause or librespot restart fallback, and USB sink via its
-  local silence endpoint.
+  Web API pause or active-only librespot try-restart fallback, and USB via
+  fan-in's lane-level MUTE/UNMUTE command.
 - **Not PipeWire.** Per the AGENTS.md "architecture is fixed; swap the
   engine, not the topology" rule (scoped to AEC but spirit applies to
   the bus): this is the smallest viable shape, not a bus rewrite.
@@ -988,7 +996,7 @@ Current deploy behavior:
 - `deploy/alsa/asoundrc.jasper` is the fan-in asoundrc.
 - renderer units point directly at their private lanes
   (`librespot_substream`, `shairport_substream`,
-  `bluealsa_substream`, `usbsink_substream`).
+  `bluealsa_substream`); USB is direct-captured from `hw:UAC2Gadget`.
 - `install.sh` enables `jasper-fanin.service` directly.
 - `install.sh` archives/removes stale
   `/var/lib/jasper/audio_topology.env` and removes any installed
@@ -1174,7 +1182,11 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-07-12 (rechecked the fan-in source/module layout, checked-in
+Last verified: 2026-07-14 (automatic coupling profile gate rechecked: streambox
+stays loopback while the independent USB DIRECT decision still runs;
+librespot Tier-2 recovery final mutation rechecked
+as active-only `try-restart`, including concurrent Off/role parking;
+rechecked the fan-in source/module layout, checked-in
 Cargo lock and provenance posture, current xrun JSONL schema, single-writer
 append/crash-tail behavior, and the existing `usb_low_latency_48k` ownership
 and 4096/1024 fan-in buffer contract. Prior jts.local tuning found 512/1024

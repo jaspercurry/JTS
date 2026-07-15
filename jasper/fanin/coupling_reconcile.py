@@ -64,6 +64,7 @@ from __future__ import annotations
 import fcntl
 import logging
 from collections.abc import Callable
+from contextlib import ExitStack
 import json
 import os
 import socket
@@ -101,15 +102,11 @@ logger = logging.getLogger(__name__)
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 JASPER_ENV_PATH = "/etc/jasper/jasper.env"
 OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
-# usbsink.env carries the P3 combo's bridge-standby half; the reconciler is its
-# single writer for that key (jasper-usbsink.service loads it after jasper.env).
-USBSINK_ENV_PATH = "/var/lib/jasper/usbsink.env"
 # Runtime-fallback watcher state (defect 2026-07-10). Re-exported from the pure
 # policy module (its SSOT) so the reconciler's --health verb and the CLI share the
 # exact paths without a second literal.
 FANIN_UNIT = "jasper-fanin.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
-USBSINK_UNIT = "jasper-usbsink.service"
 CAMILLA_UNIT = "jasper-camilla.service"
 # Root oneshot that re-detects output hardware and re-emits the route floor
 # actions (incl. the outputd content-buffer floor) into outputd.env. The disarm
@@ -137,6 +134,10 @@ _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
 ENTRY_LOCK_PATH = "/run/jasper-fanin-coupling.lock"
 ENTRY_LOCK_TIMEOUT_SECONDS = 10.0
 ENTRY_LOCK_POLL_SECONDS = 0.2
+# Health holds the higher-level source lifecycle lock before probing coupling.
+# Never wait behind a coupling pass while monopolizing source intent; the timer
+# can safely stand down immediately and retry on its next tick.
+HEALTH_ENTRY_LOCK_TIMEOUT_SECONDS = 0.0
 
 # A daemon op (fan-in restart or camilla reconcile) returns (ok, detail).
 DaemonOp = Callable[[], tuple[bool, str]]
@@ -205,7 +206,11 @@ def _restart_unit(
     except ImportError as e:  # pragma: no cover - control pkg always present in prod
         return False, f"restart_broker unavailable: {e}"
     resp = restart_broker.manage_units(
-        unit, verb=verb, reason=reason, no_block=False, timeout=timeout,
+        unit,
+        verb=verb,
+        reason=reason,
+        no_block=False,
+        timeout=timeout,
     )
     if resp.get("ok"):
         return True, ""
@@ -260,31 +265,20 @@ def _start_audio_hardware_reconcile(reason: str) -> tuple[bool, str]:
     )
 
 
-def _restart_usbsink(reason: str) -> tuple[bool, str]:
-    """Restart jasper-usbsink through the broker after a standby-env write.
-
-    The standby-only daemon does not read ``JASPER_USBSINK_AUDIO_STANDBY`` (or
-    anything else in usbsink.env) at runtime — it always runs the same standby
-    loop and hardcodes ``"standby":true`` into ``state.json`` regardless (see
-    rust/jasper-usbsink-audio/src/main.rs), and it never opens
-    ``hw:UAC2Gadget``. So this restart has no verified functional effect
-    anymore; it is env-file / unit-state hygiene left over from the one-time
-    migration off an old solo ``=0`` (callers gate it on ``standby_changed`` —
-    see :func:`coupling_auto.usbsink_standby_actions`), so a live daemon's env
-    file doesn't sit out of sync with what was just written. Possibly droppable
-    now that the daemon has nothing STANDBY-conditional left to pick up — kept
-    as-is this round; a follow-up could remove it. Returns (ok, detail).
-    """
-    return _restart_unit(USBSINK_UNIT, reason=reason, timeout=8.0)
-
-
-def _reconcile_camilla(coupling: str, *, reason: str) -> tuple[bool, str]:
+def _reconcile_camilla(
+    coupling: str,
+    *,
+    reason: str,
+    force: bool = True,
+) -> tuple[bool, str]:
     """Re-emit + load the CamillaDSP config for ``coupling``. (ok, detail).
 
-    Forces a full reconcile (``force=True``) so the capture flips even on a flat
-    profile (the coupling IS the change), and passes ``coupling`` explicitly so
-    the emit does not depend on this process's stale ``os.environ`` (the env file
-    was just rewritten under us). reconcile_current_dsp validates with
+    ARM/DISARM callers force a full reconcile because the coupling is the
+    change.  A topology-confirm caller passes ``force=False`` so unchanged
+    source reconciles take the runtime's YAML-equality fast path while still
+    repairing a genuinely drifted loaded config.  ``coupling`` is explicit so
+    the emit does not depend on this process's stale ``os.environ`` (the env
+    file was just rewritten under us). reconcile_current_dsp validates with
     ``camilladsp --check`` before loading and fail-closes on an invalid config,
     so a failure here leaves the previously-loaded config running.
     """
@@ -293,7 +287,7 @@ def _reconcile_camilla(coupling: str, *, reason: str) -> tuple[bool, str]:
     from jasper.sound.runtime import reconcile_current_dsp
 
     try:
-        payload = asyncio.run(reconcile_current_dsp(force=True, coupling=coupling))
+        payload = asyncio.run(reconcile_current_dsp(force=force, coupling=coupling))
     except Exception as e:  # noqa: BLE001 - report, never raise out of the reconcile
         return False, f"camilla reconcile raised: {e}"
     status = payload.get("status")
@@ -391,8 +385,12 @@ def _restart_fanin_coordinated(
         # snd-aloop decouples fan-in from camilla — a plain restart is safe.
         fan_ok, fan_detail = do_restart()
         return _CoordinatedFaninRestart(
-            ok=fan_ok, fanin_restarted=fan_ok, coordinated=False,
-            camilla_stopped=False, camilla_started=False, detail=fan_detail,
+            ok=fan_ok,
+            fanin_restarted=fan_ok,
+            coordinated=False,
+            camilla_stopped=False,
+            camilla_started=False,
+            detail=fan_detail,
         )
 
     stop_ok, stop_detail = do_stop_camilla()
@@ -401,14 +399,22 @@ def _restart_fanin_coordinated(
         # fan-in (that is what SIGKILLs it). Ensure camilla is running and abort.
         start_ok, start_detail = do_start_camilla()
         log_event(
-            logger, "fanin.coupling_reconcile", result="camilla_pause_failed",
-            reason=reason, phase=phase, coupling=coupling,
-            detail=stop_detail or None, camilla_started=start_ok,
+            logger,
+            "fanin.coupling_reconcile",
+            result="camilla_pause_failed",
+            reason=reason,
+            phase=phase,
+            coupling=coupling,
+            detail=stop_detail or None,
+            camilla_started=start_ok,
             level=logging.WARNING,
         )
         return _CoordinatedFaninRestart(
-            ok=False, fanin_restarted=False, coordinated=True,
-            camilla_stopped=False, camilla_started=start_ok,
+            ok=False,
+            fanin_restarted=False,
+            coordinated=True,
+            camilla_stopped=False,
+            camilla_started=start_ok,
             detail=(
                 f"camilla pause failed ({stop_detail}); aborted fan-in restart to "
                 "avoid an RTTIME-SIGKILL of a running CamillaDSP"
@@ -417,30 +423,45 @@ def _restart_fanin_coordinated(
         )
 
     log_event(
-        logger, "fanin.coupling_reconcile", result="camilla_paused_for_fanin_restart",
-        reason=reason, phase=phase, coupling=coupling,
+        logger,
+        "fanin.coupling_reconcile",
+        result="camilla_paused_for_fanin_restart",
+        reason=reason,
+        phase=phase,
+        coupling=coupling,
     )
     fan_ok, fan_detail = do_restart()
     # ALWAYS resume camilla, even if the fan-in restart failed -- never leave the DSP
     # stopped forever (OnFailure/recover is the backstop if this resume also fails).
     start_ok, start_detail = do_start_camilla()
     log_event(
-        logger, "fanin.coupling_reconcile",
-        result="camilla_resumed_after_fanin_restart" if start_ok
+        logger,
+        "fanin.coupling_reconcile",
+        result="camilla_resumed_after_fanin_restart"
+        if start_ok
         else "camilla_resume_failed",
-        reason=reason, phase=phase, coupling=coupling,
-        fanin_restarted=fan_ok, detail=start_detail or None,
+        reason=reason,
+        phase=phase,
+        coupling=coupling,
+        fanin_restarted=fan_ok,
+        detail=start_detail or None,
         level=logging.INFO if start_ok else logging.WARNING,
     )
     detail = "; ".join(
-        d for d in (
+        d
+        for d in (
             "" if fan_ok else f"fan-in restart failed ({fan_detail})",
             "" if start_ok else f"camilla resume failed ({start_detail})",
-        ) if d
+        )
+        if d
     )
     return _CoordinatedFaninRestart(
-        ok=fan_ok and start_ok, fanin_restarted=fan_ok, coordinated=True,
-        camilla_stopped=True, camilla_started=start_ok, detail=detail,
+        ok=fan_ok and start_ok,
+        fanin_restarted=fan_ok,
+        coordinated=True,
+        camilla_stopped=True,
+        camilla_started=start_ok,
+        detail=detail,
     )
 
 
@@ -473,14 +494,21 @@ def coordinated_fanin_restart(
         lambda: _restart_fanin(reason=reason),
         lambda: _stop_camilla(reason=reason),
         lambda: _start_camilla(reason=reason),
-        coupling=coupling, reason=reason, phase=phase,
+        coupling=coupling,
+        reason=reason,
+        phase=phase,
     )
     log_event(
-        logger, "fanin.coupling_reconcile",
-        result="coordinated_fanin_restarted" if coord.fanin_restarted
+        logger,
+        "fanin.coupling_reconcile",
+        result="coordinated_fanin_restarted"
+        if coord.fanin_restarted
         else "coordinated_fanin_restart_failed",
-        reason=reason, phase=phase, coupling=coupling,
-        camilla_coordinated=coord.coordinated, detail=coord.detail or None,
+        reason=reason,
+        phase=phase,
+        coupling=coupling,
+        camilla_coordinated=coord.coordinated,
+        detail=coord.detail or None,
         level=logging.INFO if coord.fanin_restarted else logging.WARNING,
     )
     return coord.fanin_restarted, coord.detail
@@ -545,6 +573,11 @@ def reconcile_coupling(
         if reconcile_camilla is not None:
             return reconcile_camilla(coupling)
         return _reconcile_camilla(coupling, reason=reason)
+
+    def do_confirm_reconcile(coupling: str) -> tuple[bool, str]:
+        if reconcile_camilla is not None:
+            return reconcile_camilla(coupling)
+        return _reconcile_camilla(coupling, reason=reason, force=False)
 
     fanin_snapshot = _read_snapshot(env_path)
     outputd_snapshot = _read_snapshot(outputd_env_path)
@@ -621,11 +654,19 @@ def reconcile_coupling(
             _restore_snapshot(fanin_snapshot)
             _restore_snapshot(outputd_snapshot)
             log_event(
-                logger, "fanin.coupling_reconcile", result="write_failed",
-                desired=desired, reason=reason, error=e, level=logging.ERROR,
+                logger,
+                "fanin.coupling_reconcile",
+                result="write_failed",
+                desired=desired,
+                reason=reason,
+                error=e,
+                level=logging.ERROR,
             )
             return CouplingResult(
-                ok=False, desired=desired, changed=False, direction="error",
+                ok=False,
+                desired=desired,
+                changed=False,
+                direction="error",
                 detail=str(e),
             )
 
@@ -633,13 +674,19 @@ def reconcile_coupling(
 
     if not apply:
         log_event(
-            logger, "fanin.coupling_reconcile", result="written",
-            desired=desired, changed=changed, reason=reason,
+            logger,
+            "fanin.coupling_reconcile",
+            result="written",
+            desired=desired,
+            changed=changed,
+            reason=reason,
         )
         # Any non-loopback coupling (shm_ring) is an ARM direction; only loopback
         # is a disarm.
         return CouplingResult(
-            ok=True, desired=desired, changed=changed,
+            ok=True,
+            desired=desired,
+            changed=changed,
             direction="disarm" if desired == COUPLING_LOOPBACK else "arm",
         )
 
@@ -658,12 +705,18 @@ def reconcile_coupling(
         # coherent box skips this and keeps the lightweight camilla-only confirm
         # below (no daemon bounce on every reconcile tick).
         if desired == COUPLING_SHM_RING:
-            heal_needed, heal_detail = _ring_confirm_needs_self_heal(fanin_snapshot.text)
+            heal_needed, heal_detail = _ring_confirm_needs_self_heal(
+                fanin_snapshot.text
+            )
             if heal_needed:
                 log_event(
-                    logger, "fanin.coupling_reconcile",
-                    result="confirm_ring_self_heal", desired=desired, reason=reason,
-                    detail=heal_detail, level=logging.WARNING,
+                    logger,
+                    "fanin.coupling_reconcile",
+                    result="confirm_ring_self_heal",
+                    desired=desired,
+                    reason=reason,
+                    detail=heal_detail,
+                    level=logging.WARNING,
                 )
                 return _arm_ring(
                     do_restart,
@@ -677,15 +730,21 @@ def reconcile_coupling(
 
         # Env already at desired AND coherent: re-confirm camilla only (self-heal a
         # drifted loaded config) — no fan-in bounce on a no-op tick.
-        ok, detail = do_reconcile(desired)
+        ok, detail = do_confirm_reconcile(desired)
         log_event(
-            logger, "fanin.coupling_reconcile",
+            logger,
+            "fanin.coupling_reconcile",
             result="confirmed" if ok else "confirm_failed",
-            desired=desired, reason=reason, detail=detail or None,
+            desired=desired,
+            reason=reason,
+            detail=detail or None,
             level=logging.INFO if ok else logging.WARNING,
         )
         return CouplingResult(
-            ok=ok, desired=desired, changed=changed, direction="confirm",
+            ok=ok,
+            desired=desired,
+            changed=changed,
+            direction="confirm",
             reconciled_camilla=ok,
             detail="" if ok else detail,
         )
@@ -722,17 +781,16 @@ def reconcile_coupling(
 class AutoResult:
     """Outcome of a ``--auto`` default-resolution pass (P3/P4 default-flip).
 
-    ``owned`` is False when an operator choice froze the box — the pass made ZERO
-    changes (and ``coupling`` then reports the box's ACTUAL persisted coupling, not a
-    hardcoded loopback). Otherwise ``coupling`` is the resolved default,
-    ``combo_armed`` is whether the USB combo resolved on, ``usb_combo_changed`` /
-    ``usbsink_standby_changed`` record whether the fan-in combo keys / the
-    usbsink.env standby key moved, ``coupling_result`` is the delegated
+    ``owned`` reports coupling ownership: False means an operator choice froze
+    the transport mode, while USB combo state still follows canonical source
+    intent. ``coupling`` then reports the box's ACTUAL persisted coupling, not a
+    hardcoded loopback. Otherwise ``coupling`` is the resolved default,
+    ``combo_armed`` is whether the USB combo resolved on, ``usb_combo_changed``
+    records whether the fan-in combo keys moved, ``coupling_result`` is the delegated
     :class:`CouplingResult`, ``restarted_fanin_for_combo`` is True when a combo-only
-    change forced an extra fan-in restart (the coupling reconcile did not bounce it),
-    and ``restarted_usbsink`` is True when the standby change forced a usbsink
-    restart. ``ok`` reflects the delegated coupling reconcile plus the combo restarts
-    (or True when the pass was a clean operator no-op).
+    change forced an extra fan-in restart (the coupling reconcile did not bounce it).
+    ``ok`` reflects the delegated coupling reconcile plus the combo restart while
+    preserving an operator-frozen coupling.
     """
 
     ok: bool
@@ -743,14 +801,12 @@ class AutoResult:
     reason: str
     combo_armed: bool = False
     usb_intent_enabled: bool = False
-    usbsink_standby_changed: bool = False
     # True when the runtime-fallback marker forced the combo OFF on an otherwise
     # combo-eligible box (defect 2026-07-10). See ``fallback_active`` on
     # :func:`reconcile_auto`.
     fallback_active: bool = False
     coupling_result: "CouplingResult | None" = None
     restarted_fanin_for_combo: bool = False
-    restarted_usbsink: bool = False
     detail: str = ""
 
 
@@ -759,14 +815,12 @@ def reconcile_auto(
     reason: str = "auto",
     env_path: str | Path = FANIN_ENV_PATH,
     outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
-    usbsink_env_path: str | Path = USBSINK_ENV_PATH,
     apply: bool = True,
     gadget_present: bool | None = None,
     usb_intent_enabled: bool | None = None,
     fallback_active: bool | None = None,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
-    restart_usbsink: "DaemonOp | None" = None,
     stop_camilla: "DaemonOp | None" = None,
     start_camilla: "DaemonOp | None" = None,
     reconcile_camilla=None,
@@ -779,10 +833,10 @@ def reconcile_auto(
     Runs on deploy (install.sh) and boot (the reconciler's ``--auto`` CLI). Steps:
 
     1. Read the operator-choice marker from fanin.env. If it names an explicit
-       operator choice (``JASPER_FANIN_COUPLING_CHOICE=operator``), make ZERO
-       changes — the operator's revert (loopback + direct + combo-off) sticks. Log
-       ``result=auto_skipped_operator_choice`` and return ``owned=False`` with the
-       box's ACTUAL persisted coupling (not a hardcoded loopback).
+       operator choice (``JASPER_FANIN_COUPLING_CHOICE=operator``), preserve that
+       exact coupling and return ``owned=False``. USB combo state remains owned
+       here and still follows canonical USB intent/runtime fallback; an operator
+       transport choice cannot authorize a household-Off capture lane.
     2. Otherwise the pass OWNS the box. First self-heal a shear-prone stale
        ``JASPER_FANIN_RING_SLOTS`` (the same migration a manual arm runs) so the
        auto slot gate sees the corrected value — a stale ``=8`` old-default line
@@ -793,25 +847,24 @@ def reconcile_auto(
        ROUTE-support gate (grouped boxes resolve loopback — defect-F3) and a
        fail-CLOSED topology gate (unreadable topology → loopback — defect-F4).
        Resolve the USB combo from gadget presence AND the household's USB-audio
-       intent (``jasper-usbsink.service`` enabled — defect-B2).
-    3. Write BOTH combo halves (reconciler = single writer of each): the three
-       fan-in keys into fanin.env (explicit ``enabled`` on a combo box, explicit
-       ``disabled`` off it — never unset, defeats jasper.env precedence, defect-F5)
-       and the ``JASPER_USBSINK_AUDIO_STANDBY`` key into usbsink.env (always ``1`` —
-       the jasper-usbsink daemon is standby-only now, so it never captures the
-       gadget regardless; see :func:`coupling_auto.usbsink_standby_actions`).
-       Idempotent — a second pass with the same inputs writes nothing.
+       intent plus current local-source role permission (defect-B2).
+    3. Write the three fan-in keys into fanin.env (explicit ``enabled`` on a combo
+       box, explicit ``disabled`` off it — never unset, defeating jasper.env
+       precedence). Idempotent — a second pass with the same inputs writes nothing.
     4. Delegate the coupling flip + ordered daemon transition to
        :func:`reconcile_coupling` (``mark_operator_choice=False`` so the marker
-       stays absent — auto-owned). A usbsink restart is issued only when the standby
-       key actually changes (a one-time migration off an old solo ``=0``); it no
-       longer guards a gadget-capture race, because the standby-only bridge never
-       opens ``hw:UAC2Gadget`` — fan-in's DIRECT capture is the sole gadget owner. A
-       combo-only change that took the no-bounce confirm path also issues one extra
+       stays absent — auto-owned). A combo-only change that took the no-bounce
+       confirm path issues one extra
        fan-in restart — and on a live ``shm_ring`` coupling that restart is
        CamillaDSP-coordinated (:func:`_restart_fanin_coordinated`): camilla is
        paused before, resumed after, so the fan-in restart can't RTTIME-SIGKILL it.
        On loopback the plain restart is kept (snd-aloop decouples the two).
+
+    If canonical USB intent is malformed or unreadable, the pass narrows itself
+    to the safety action: preserve the current valid coupling, resolve effective
+    USB intent False, run the same explicit-off combo write + ordered fan-in
+    restart, emit ``result=auto_usb_intent_fail_closed``, and return ``ok=False``.
+    A removed coupling still takes its independent loopback fail-safe.
 
     NO-OP on an ineligible / fanin-less box: jts3 (roleful) / jts5 (composite)
     resolve loopback with the combo off (no gadget intent) and converge with zero
@@ -819,28 +872,52 @@ def reconcile_auto(
     ``gadget_present`` / ``usb_intent_enabled`` / ``restart_*`` / ``stop_camilla`` /
     ``start_camilla`` / ``reconcile_camilla`` / ``kick_hardware_reconcile`` /
     ``active_leader_check`` are injectable for tests; ``gadget_present=None`` reads
-    the live boot config and ``usb_intent_enabled=None`` reads the live unit state.
+    the live boot config and ``usb_intent_enabled=None`` reads canonical source
+    intent plus current local-source role permission.
     """
     from jasper.fanin.combo_health import fallback_active as read_fallback_active
     from jasper.fanin.coupling_auto import (
+        AutoCouplingDecision,
         default_ring_gates,
         is_operator_choice,
         read_boot_config_gadget_present,
         read_marker,
         resolve_auto_decision,
-        usbsink_intent_enabled as read_usbsink_intent,
+        usb_combo_actions,
+        usbsink_effectively_enabled as read_usbsink_intent,
     )
 
     fanin_snapshot = _read_snapshot(env_path)
     outputd_snapshot = _read_snapshot(outputd_env_path)
-    usbsink_snapshot = _read_snapshot(usbsink_env_path)
     marker = read_marker(fanin_snapshot.text)
     gadget = (
         read_boot_config_gadget_present() if gadget_present is None else gadget_present
     )
-    usb_intent = (
-        read_usbsink_intent() if usb_intent_enabled is None else usb_intent_enabled
-    )
+    usb_intent_failure = ""
+    if usb_intent_enabled is None:
+        try:
+            usb_intent = read_usbsink_intent()
+        except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+            # The source coordinator has already failed the malformed USB source
+            # closed, but a previously armed fan-in process can still retain its
+            # DIRECT lane until this owner writes + applies the explicit-off combo
+            # plan. Treat the unreadable preference as effective False, complete
+            # the ordinary ordered disarm below, and only then return failure.
+            # Derived/unit state must never authorize capture when canonical
+            # intent cannot be proved valid.
+            usb_intent = False
+            usb_intent_failure = f"USB source intent invalid or unreadable: {exc}"[:500]
+            log_event(
+                logger,
+                "fanin.coupling_reconcile",
+                result="auto_usb_intent_invalid",
+                reason=reason,
+                usb_intent_enabled=False,
+                detail=usb_intent_failure,
+                level=logging.ERROR,
+            )
+    else:
+        usb_intent = usb_intent_enabled
     # Runtime-fallback flap guard (defect 2026-07-10). None → read the live marker.
     # The ``--auto`` CLI clears the marker BEFORE calling us (clear-and-retry on
     # boot/deploy/toggle), so an --auto pass normally sees no marker; the periodic
@@ -859,88 +936,125 @@ def reconcile_auto(
     # exactly this reason. The doctor's ``check_fanin_coupling_value`` surfaces the
     # same condition until this pass runs.
     persisted_raw = read_value(fanin_snapshot.text, COUPLING_ENV_VAR)
-    if coupling_value_removed(persisted_raw):
+    persisted_coupling_removed = coupling_value_removed(persisted_raw)
+    if persisted_coupling_removed:
         log_event(
-            logger, "fanin.coupling_reconcile", result="removed_coupling_failsafe",
-            reason=reason, persisted=persisted_raw, coupling=COUPLING_LOOPBACK,
+            logger,
+            "fanin.coupling_reconcile",
+            result="removed_coupling_failsafe",
+            reason=reason,
+            persisted=persisted_raw,
+            coupling=COUPLING_LOOPBACK,
             detail=(
                 "persisted JASPER_FANIN_CAMILLA_COUPLING names a removed/unknown "
                 "transport (e.g. the deleted transport_pipe); failing safe to loopback"
             ),
             level=logging.WARNING,
         )
-        result = reconcile_coupling(
-            COUPLING_LOOPBACK,
-            reason=f"{reason}:removed_coupling_failsafe",
-            env_path=env_path,
-            outputd_env_path=outputd_env_path,
-            apply=apply,
-            mark_operator_choice=False,
-            restart_fanin=restart_fanin,
-            restart_outputd=restart_outputd,
-            reconcile_camilla=reconcile_camilla,
-            kick_hardware_reconcile=kick_hardware_reconcile,
-            active_leader_check=active_leader_check,
-        )
-        return AutoResult(
-            ok=result.ok, owned=True, coupling=COUPLING_LOOPBACK,
-            gadget_present=gadget, usb_intent_enabled=usb_intent,
-            usb_combo_changed=False,
-            reason="persisted coupling was removed — failed safe to loopback",
-            coupling_result=result, detail=result.detail,
-        )
+        if not usb_intent_failure:
+            result = reconcile_coupling(
+                COUPLING_LOOPBACK,
+                reason=f"{reason}:removed_coupling_failsafe",
+                env_path=env_path,
+                outputd_env_path=outputd_env_path,
+                apply=apply,
+                mark_operator_choice=False,
+                restart_fanin=restart_fanin,
+                restart_outputd=restart_outputd,
+                reconcile_camilla=reconcile_camilla,
+                kick_hardware_reconcile=kick_hardware_reconcile,
+                active_leader_check=active_leader_check,
+            )
+            return AutoResult(
+                ok=result.ok,
+                owned=True,
+                coupling=COUPLING_LOOPBACK,
+                gadget_present=gadget,
+                usb_intent_enabled=usb_intent,
+                usb_combo_changed=False,
+                reason="persisted coupling was removed — failed safe to loopback",
+                coupling_result=result,
+                detail=result.detail,
+            )
+        # Two fail-safe conditions coincide. Continue through the shared combo
+        # path so its explicit-off keys and ordered fan-in restart land too; the
+        # decision below also forces the removed coupling to loopback.
 
-    # Operator-frozen short-circuit — before any gate work — so
-    # an operator revert is a true zero-touch no-op. Report the box's ACTUAL
-    # persisted coupling (defect-Nit8), not a hardcoded loopback: an operator who
-    # froze the box at shm_ring must see shm_ring on /state / the CLI.
-    if is_operator_choice(marker):
-        current = resolve_coupling(read_value(fanin_snapshot.text, COUPLING_ENV_VAR))
-        reason_detail = "operator choice in force — auto pass is a no-op"
-        log_event(
-            logger, "fanin.coupling_reconcile", result="auto_skipped_operator_choice",
-            reason=reason, coupling_marker="operator", coupling=current,
-            detail=reason_detail,
+    forced_usb_safety_decision = bool(usb_intent_failure)
+    if forced_usb_safety_decision:
+        # A USB-local parse/read failure must not make an unrelated coupling
+        # decision. Preserve the current valid coupling (or force a removed one
+        # to loopback) while using the same explicit-off actions and transition
+        # path as an ordinary combo disarm. An operator marker freezes the
+        # coupling choice, not an unsafe USB capture lane.
+        safe_coupling = (
+            COUPLING_LOOPBACK
+            if persisted_coupling_removed
+            else resolve_coupling(persisted_raw)
         )
-        return AutoResult(
-            ok=True, owned=False, coupling=current,
-            gadget_present=gadget, usb_intent_enabled=usb_intent,
-            usb_combo_changed=False, reason=reason_detail,
+        decision = AutoCouplingDecision(
+            owned=not is_operator_choice(marker),
+            coupling=safe_coupling,
+            usb_combo_actions=usb_combo_actions(armed=False),
+            combo_armed=False,
+            gadget_present=gadget,
+            usb_intent_enabled=False,
+            fallback_active=False,
+            reason=(
+                "USB source intent invalid — combo failed closed; "
+                + (
+                    "removed coupling also failed safe to loopback"
+                    if persisted_coupling_removed
+                    else (
+                        "operator coupling preserved"
+                        if is_operator_choice(marker)
+                        else "current coupling preserved"
+                    )
+                )
+            ),
         )
+    elif is_operator_choice(marker):
+        current = resolve_coupling(persisted_raw)
+        decision = resolve_auto_decision(
+            marker_raw=marker,
+            gadget_present=gadget,
+            usb_intent_enabled=usb_intent,
+            ring_gates=(),
+            fallback_active=fallback,
+            current_coupling=current,
+        )
+    else:
+        # Self-heal a shear-prone stale JASPER_FANIN_RING_SLOTS BEFORE the gates
+        # read it, exactly as a manual arm does inside _arm_ring — otherwise a
+        # stale `=8` old-default line fails the slot gate and DISARMS a box a
+        # manual arm would migrate+keep (defect-F6). The forced malformed-USB
+        # safety branch above deliberately skips this unrelated coupling
+        # migration when an operator choice is frozen.
+        fanin_snapshot = _migrate_stale_fanin_ring_slots(fanin_snapshot, reason)
 
-    # Self-heal a shear-prone stale JASPER_FANIN_RING_SLOTS BEFORE the gates read it,
-    # exactly as a manual arm does inside _arm_ring — otherwise a stale `=8`
-    # old-default line fails the slot gate and DISARMS a box a manual arm would
-    # migrate and keep armed (defect-F6). No-op on a coherent/absent value or an
-    # unreadable conf.d.
-    # Runs regardless of ``apply`` (it is an env write, and ``reconcile_coupling``
-    # itself writes env under ``--no-apply``) so the resolved decision is consistent
-    # between a staging preview and a real apply.
-    fanin_snapshot = _migrate_stale_fanin_ring_slots(fanin_snapshot, reason)
+        # Route shape for the ring ROUTE-support gate (defect-F3). Computed once
+        # here and reused; reconcile_coupling recomputes its own from the same
+        # active_leader_check so both agree.
+        route_mode = _route_mode_for_reconcile(active_leader_check)
 
-    # Route shape for the ring ROUTE-support gate (defect-F3). Computed once here and
-    # reused; reconcile_coupling recomputes its own from the same active_leader_check
-    # so both agree.
-    route_mode = _route_mode_for_reconcile(active_leader_check)
-
-    # The full ordered ring preflight set: assets + fail-closed topology (from
-    # default_ring_gates), then route-support, then the two geometry gates that need
-    # the outputd/fanin env text (bound here as closures).
-    ring_gates = default_ring_gates() + (
-        ("ring_route", lambda: ring_route_ready(route_mode)),
-        ("ring_geometry", lambda: ring_geometry_ready(outputd_snapshot.text)),
-        (
-            "ring_slot_geometry",
-            lambda: ring_slot_geometry_ready(fanin_snapshot.text),
-        ),
-    )
-    decision = resolve_auto_decision(
-        marker_raw=marker,
-        gadget_present=gadget,
-        usb_intent_enabled=usb_intent,
-        ring_gates=ring_gates,
-        fallback_active=fallback,
-    )
+        # The full ordered ring preflight set: assets + fail-closed topology
+        # (from default_ring_gates), then route-support, then the two geometry
+        # gates that need the outputd/fanin env text (bound here as closures).
+        ring_gates = default_ring_gates() + (
+            ("ring_route", lambda: ring_route_ready(route_mode)),
+            ("ring_geometry", lambda: ring_geometry_ready(outputd_snapshot.text)),
+            (
+                "ring_slot_geometry",
+                lambda: ring_slot_geometry_ready(fanin_snapshot.text),
+            ),
+        )
+        decision = resolve_auto_decision(
+            marker_raw=marker,
+            gadget_present=gadget,
+            usb_intent_enabled=usb_intent,
+            ring_gates=ring_gates,
+            fallback_active=fallback,
+        )
 
     # Step 3a — fan-in combo keys (reconciler = single writer). Write only on change.
     fanin_after_combo, combo_changed = _apply_actions(
@@ -951,15 +1065,25 @@ def reconcile_auto(
             _write_env_text(fanin_snapshot.path, fanin_after_combo)
         except OSError as e:
             log_event(
-                logger, "fanin.coupling_reconcile", result="auto_usb_combo_write_failed",
-                reason=reason, gadget_present=gadget, error=e, level=logging.ERROR,
+                logger,
+                "fanin.coupling_reconcile",
+                result="auto_usb_combo_write_failed",
+                reason=reason,
+                gadget_present=gadget,
+                error=e,
+                level=logging.ERROR,
             )
             return AutoResult(
-                ok=False, owned=True, coupling=decision.coupling,
-                gadget_present=gadget, usb_intent_enabled=usb_intent,
+                ok=False,
+                owned=decision.owned,
+                coupling=decision.coupling,
+                gadget_present=gadget,
+                usb_intent_enabled=usb_intent,
                 combo_armed=decision.combo_armed,
-                fallback_active=decision.fallback_active, usb_combo_changed=False,
-                reason=decision.reason, detail=str(e),
+                fallback_active=decision.fallback_active,
+                usb_combo_changed=False,
+                reason=decision.reason,
+                detail="; ".join(part for part in (usb_intent_failure, str(e)) if part),
             )
         # Keep the live env coherent for the coupling reconcile's own re-read.
         for a in decision.usb_combo_actions:
@@ -968,85 +1092,54 @@ def reconcile_auto(
             else:
                 os.environ.pop(a.key, None)
         log_event(
-            logger, "fanin.coupling_reconcile", result="auto_usb_combo_written",
-            reason=reason, gadget_present=gadget, usb_intent_enabled=usb_intent,
+            logger,
+            "fanin.coupling_reconcile",
+            result="auto_usb_combo_written",
+            reason=reason,
+            gadget_present=gadget,
+            usb_intent_enabled=usb_intent,
             combo_armed=decision.combo_armed,
             keys=",".join(a.key for a in decision.usb_combo_actions),
         )
 
-    # Step 3b — usbsink standby key (reconciler = single writer of this key in
-    # usbsink.env). Always written =1: the jasper-usbsink daemon is standby-only
-    # (its aloop capture path was deleted), so it never holds hw:UAC2Gadget and
-    # fan-in's DIRECT capture is the sole gadget owner. The explicit write holds the
-    # single-writer line and keeps the state/doctor "standby" narration coherent.
-    usbsink_after, standby_changed = _apply_actions(
-        usbsink_snapshot.text, decision.usbsink_standby_actions
-    )
-    if standby_changed:
-        try:
-            _write_env_text(usbsink_snapshot.path, usbsink_after)
-        except OSError as e:
-            log_event(
-                logger, "fanin.coupling_reconcile",
-                result="auto_usbsink_standby_write_failed",
-                reason=reason, gadget_present=gadget, error=e, level=logging.ERROR,
-            )
-            return AutoResult(
-                ok=False, owned=True, coupling=decision.coupling,
-                gadget_present=gadget, usb_intent_enabled=usb_intent,
-                combo_armed=decision.combo_armed,
-                fallback_active=decision.fallback_active,
-                usb_combo_changed=combo_changed,
-                usbsink_standby_changed=False, reason=decision.reason, detail=str(e),
-            )
-        log_event(
-            logger, "fanin.coupling_reconcile", result="auto_usbsink_standby_written",
-            reason=reason, combo_armed=decision.combo_armed,
-            keys=",".join(a.key for a in decision.usbsink_standby_actions),
-        )
-
     log_event(
-        logger, "fanin.coupling_reconcile", result="auto_resolved",
-        reason=reason, coupling=decision.coupling, gadget_present=gadget,
-        usb_intent_enabled=usb_intent, combo_armed=decision.combo_armed,
+        logger,
+        "fanin.coupling_reconcile",
+        result="auto_resolved",
+        reason=reason,
+        coupling=decision.coupling,
+        gadget_present=gadget,
+        usb_intent_enabled=usb_intent,
+        combo_armed=decision.combo_armed,
         combo_fallback=decision.fallback_active,
-        usb_combo_changed=combo_changed, usbsink_standby_changed=standby_changed,
+        usb_combo_changed=combo_changed,
         detail=decision.reason,
     )
 
-    do_restart_usbsink = restart_usbsink or (lambda: _restart_usbsink(reason=reason))
-    restarted_usbsink = False
-
-    # Step 4a — on ARM, if the standby key actually changed (one-time migration off
-    # an old solo =0), restart usbsink so it re-reads the file. No EBUSY race to
-    # guard: the standby-only bridge never opens hw:UAC2Gadget.
-    if apply and standby_changed and decision.combo_armed:
-        us_ok, us_detail = do_restart_usbsink()
-        restarted_usbsink = us_ok
-        log_event(
-            logger, "fanin.coupling_reconcile",
-            result="auto_usbsink_standby_restarted" if us_ok
-            else "auto_usbsink_standby_restart_failed",
-            reason=reason, phase="arm_before_fanin", detail=us_detail or None,
-            level=logging.INFO if us_ok else logging.WARNING,
-        )
-
-    # Step 4b — delegate the coupling flip. The reconciler re-reads fanin.env fresh
+    # Step 4 — delegate the coupling flip. The reconciler re-reads fanin.env fresh
     # (it snapshots inside), so the combo keys we just wrote persist untouched (it
     # owns only the coupling line + ring slots).
-    coupling_result = reconcile_coupling(
-        decision.coupling,
-        reason=reason,
-        env_path=env_path,
-        outputd_env_path=outputd_env_path,
-        apply=apply,
-        mark_operator_choice=False,
-        restart_fanin=restart_fanin,
-        restart_outputd=restart_outputd,
-        reconcile_camilla=reconcile_camilla,
-        kick_hardware_reconcile=kick_hardware_reconcile,
-        active_leader_check=active_leader_check,
-    )
+    if decision.owned:
+        coupling_result = reconcile_coupling(
+            decision.coupling,
+            reason=reason,
+            env_path=env_path,
+            outputd_env_path=outputd_env_path,
+            apply=apply,
+            mark_operator_choice=False,
+            restart_fanin=restart_fanin,
+            restart_outputd=restart_outputd,
+            reconcile_camilla=reconcile_camilla,
+            kick_hardware_reconcile=kick_hardware_reconcile,
+            active_leader_check=active_leader_check,
+        )
+    else:
+        coupling_result = CouplingResult(
+            ok=True,
+            desired=decision.coupling,
+            changed=False,
+            direction="confirm",
+        )
 
     # If the fan-in combo changed but the coupling reconcile did NOT restart fan-in
     # (a combo-only change on an already-at-desired-coupling box takes the no-bounce
@@ -1063,59 +1156,74 @@ def reconcile_auto(
         do_start_camilla = start_camilla or (lambda: _start_camilla(reason=reason))
         active_coupling = read_persisted_coupling(env_path)
         coord = _restart_fanin_coordinated(
-            do_restart, do_stop_camilla, do_start_camilla,
-            coupling=active_coupling, reason=reason, phase="auto_usb_combo",
+            do_restart,
+            do_stop_camilla,
+            do_start_camilla,
+            coupling=active_coupling,
+            reason=reason,
+            phase="auto_usb_combo",
         )
         restarted_for_combo = coord.fanin_restarted
         log_event(
-            logger, "fanin.coupling_reconcile",
-            result="auto_usb_combo_fanin_restarted" if coord.ok
+            logger,
+            "fanin.coupling_reconcile",
+            result="auto_usb_combo_fanin_restarted"
+            if coord.ok
             else "auto_usb_combo_fanin_restart_failed",
-            reason=reason, coupling=active_coupling,
-            camilla_coordinated=coord.coordinated, detail=coord.detail or None,
+            reason=reason,
+            coupling=active_coupling,
+            camilla_coordinated=coord.coordinated,
+            detail=coord.detail or None,
             level=logging.INFO if coord.ok else logging.WARNING,
         )
         if not coord.ok:
             return AutoResult(
-                ok=False, owned=True, coupling=decision.coupling,
-                gadget_present=gadget, usb_intent_enabled=usb_intent,
+                ok=False,
+                owned=decision.owned,
+                coupling=decision.coupling,
+                gadget_present=gadget,
+                usb_intent_enabled=usb_intent,
                 combo_armed=decision.combo_armed,
                 fallback_active=decision.fallback_active,
                 usb_combo_changed=combo_changed,
-                usbsink_standby_changed=standby_changed, reason=decision.reason,
+                reason=decision.reason,
                 coupling_result=coupling_result,
                 restarted_fanin_for_combo=restarted_for_combo,
-                restarted_usbsink=restarted_usbsink, detail=coord.detail,
+                detail="; ".join(
+                    part for part in (usb_intent_failure, coord.detail) if part
+                ),
             )
 
-    # Step 4c — on DISARM, if the standby key changed, restart usbsink so it re-reads
-    # the file. The standby-only bridge opens no gadget capture, so a disarm leaves
-    # USB audio UNAVAILABLE (no solo fallback) rather than re-opening hw:UAC2Gadget.
-    if apply and standby_changed and not decision.combo_armed:
-        us_ok, us_detail = do_restart_usbsink()
-        restarted_usbsink = us_ok
+    ok = coupling_result.ok and not usb_intent_failure
+    detail = "; ".join(
+        part for part in (usb_intent_failure, coupling_result.detail) if part
+    )
+    if usb_intent_failure:
         log_event(
-            logger, "fanin.coupling_reconcile",
-            result="auto_usbsink_standby_restarted" if us_ok
-            else "auto_usbsink_standby_restart_failed",
-            reason=reason, phase="disarm_after_fanin", detail=us_detail or None,
-            level=logging.INFO if us_ok else logging.WARNING,
+            logger,
+            "fanin.coupling_reconcile",
+            result="auto_usb_intent_fail_closed",
+            reason=reason,
+            usb_intent_enabled=False,
+            combo_armed=decision.combo_armed,
+            usb_combo_changed=combo_changed,
+            restarted_fanin=(coupling_result.restarted_fanin or restarted_for_combo),
+            detail=detail,
+            level=logging.ERROR,
         )
-
-    # ``ok`` folds in the standby restart: a migration that changed the standby key
-    # but could not restart usbsink leaves the daemon serving a stale env file, so
-    # surface it as a failure (the unit exits non-zero; the doctor/operator sees it)
-    # rather than a silently-inconsistent state. (The bridge is standby-only either
-    # way, so this is a state-file hygiene concern, not an audio-path race.)
-    ok = coupling_result.ok and (restarted_usbsink or not standby_changed or not apply)
     return AutoResult(
-        ok=ok, owned=True, coupling=decision.coupling,
-        gadget_present=gadget, usb_intent_enabled=usb_intent,
-        combo_armed=decision.combo_armed, fallback_active=decision.fallback_active,
+        ok=ok,
+        owned=decision.owned,
+        coupling=decision.coupling,
+        gadget_present=gadget,
+        usb_intent_enabled=usb_intent,
+        combo_armed=decision.combo_armed,
+        fallback_active=decision.fallback_active,
         usb_combo_changed=combo_changed,
-        usbsink_standby_changed=standby_changed, reason=decision.reason,
-        coupling_result=coupling_result, restarted_fanin_for_combo=restarted_for_combo,
-        restarted_usbsink=restarted_usbsink, detail=coupling_result.detail,
+        reason=decision.reason,
+        coupling_result=coupling_result,
+        restarted_fanin_for_combo=restarted_for_combo,
+        detail=detail,
     )
 
 
@@ -1149,9 +1257,127 @@ def run_health_check(
     marker_path: str = COMBO_HEALTH_FALLBACK_MARKER_PATH,
     read_fanin_status: "Callable[[], tuple[dict[str, object] | None, str]] | None" = None,
     run_reconcile: "Callable[[], AutoResult] | None" = None,
+    withdraw_usb_audio: "Callable[[], tuple[bool, str]] | None" = None,
+    source_intent_env_path: str | None = None,
+    source_lock_timeout_seconds: float | None = None,
+    entry_lock_path: str | Path | None = None,
+    entry_lock_timeout_seconds: float | None = None,
 ) -> HealthResult:
-    """RUNTIME-FALLBACK watcher tick (defect 2026-07-10). Journal-quiet on a
-    healthy tick; only real transitions log.
+    """Run one health tick under the global ``source -> coupling`` lock order.
+
+    Normal source reconciliation holds the source lifecycle lock while it starts
+    the coupling reconciler.  The fallback path must therefore take that same
+    lock *before* the coupling entry lock, then keep both held across UAC2
+    withdrawal and the ordered fan-in disarm.  This prevents a reverse-order
+    deadlock while leaving :mod:`jasper.source_intent` the sole lifecycle owner.
+
+    Lock contention is a quiet watcher stand-down: another reconcile already in
+    flight is exactly when this periodic observation has nothing safe to change.
+    """
+    from jasper.source_intent import (
+        SOURCE_INTENT_ENV,
+        SOURCE_RECONCILE_LOCK_TIMEOUT_SECONDS,
+        source_reconcile_lock,
+    )
+
+    source_path = source_intent_env_path or SOURCE_INTENT_ENV
+    source_timeout = (
+        SOURCE_RECONCILE_LOCK_TIMEOUT_SECONDS
+        if source_lock_timeout_seconds is None
+        else source_lock_timeout_seconds
+    )
+    coupling_path = ENTRY_LOCK_PATH if entry_lock_path is None else entry_lock_path
+    coupling_timeout = (
+        HEALTH_ENTRY_LOCK_TIMEOUT_SECONDS
+        if entry_lock_timeout_seconds is None
+        else entry_lock_timeout_seconds
+    )
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(source_reconcile_lock(
+                env_path=source_path,
+                timeout_sec=source_timeout,
+            ))
+        except TimeoutError as exc:
+            return _health_lock_stand_down(
+                reason=reason,
+                result="source_lock_contended_health_skip",
+                lock_path=f"{source_path}.reconcile.lock",
+                timeout_seconds=source_timeout,
+                detail=str(exc),
+            )
+
+        lock = _acquire_entry_lock(
+            coupling_path,
+            timeout_seconds=coupling_timeout,
+            poll_seconds=ENTRY_LOCK_POLL_SECONDS,
+        )
+        if lock.outcome == "contended":
+            return _health_lock_stand_down(
+                reason=reason,
+                result="entry_lock_contended_health_skip",
+                lock_path=str(coupling_path),
+                timeout_seconds=coupling_timeout,
+                detail=lock.detail,
+            )
+        try:
+            return _run_health_check_locked(
+                reason=reason,
+                apply=apply,
+                tick_state_path=tick_state_path,
+                marker_path=marker_path,
+                read_fanin_status=read_fanin_status,
+                run_reconcile=run_reconcile,
+                withdraw_usb_audio=withdraw_usb_audio,
+            )
+        finally:
+            if lock.fh is not None:
+                lock.fh.close()
+
+
+def _health_lock_stand_down(
+    *,
+    reason: str,
+    result: str,
+    lock_path: str,
+    timeout_seconds: float,
+    detail: str = "",
+) -> HealthResult:
+    """Report a bounded health-lock collision without failing the timer unit."""
+
+    log_event(
+        logger,
+        "fanin.coupling_reconcile",
+        result=result,
+        reason=reason,
+        lock_path=lock_path,
+        timeout_seconds=timeout_seconds,
+        detail=detail or None,
+        level=logging.WARNING,
+    )
+    print(
+        "fan-in coupling health: another reconcile pass holds "
+        f"{lock_path} ({detail or 'unknown holder'}); skipped this "
+        f"health-watcher tick after {timeout_seconds:g}s without touching "
+        "state or daemons.",
+        file=sys.stderr,
+    )
+    return HealthResult(ok=True, watched=False, detail=detail)
+
+
+def _run_health_check_locked(
+    *,
+    reason: str = "health",
+    apply: bool = True,
+    tick_state_path: str = COMBO_HEALTH_TICK_STATE_PATH,
+    marker_path: str = COMBO_HEALTH_FALLBACK_MARKER_PATH,
+    read_fanin_status: "Callable[[], tuple[dict[str, object] | None, str]] | None" = None,
+    run_reconcile: "Callable[[], AutoResult] | None" = None,
+    withdraw_usb_audio: "Callable[[], tuple[bool, str]] | None" = None,
+) -> HealthResult:
+    """RUNTIME-FALLBACK watcher body. Caller holds source then coupling locks.
+
+    Journal-quiet on a healthy tick; only real transitions log.
 
     Fired every ~3 min by ``jasper-fanin-combo-health.timer`` (mirrors
     ``jasper-wifi-recover`` — a timer + oneshot, no resident daemon). Steps:
@@ -1166,15 +1392,17 @@ def run_health_check(
        idle/no-host lane (whose counters still churn on routine gadget
        re-enumeration) can never trip either (defect 2026-07-11).
     3. On brokenness SUSTAINED across ``FALLBACK_CONSECUTIVE_TICKS`` (~6 min): write
-       the fallback marker (timestamp + reason) and delegate to
-       :func:`reconcile_auto`, which — reading the marker we just wrote — forces the
-       combo OFF the same way it arms it (env writes + restarts). Since the aloop
-       solo path was deleted there is NO capture to fall back to, so this leaves USB
-       audio UNAVAILABLE (fan-in's DIRECT lane disarmed, the bridge in standby) —
-       the doctor + ``/state`` surface it LOUDLY. The marker then blocks the periodic
+       the fallback marker, ask the source-lifecycle owner to withdraw UAC2 while
+       its direct consumer still exists, then delegate to :func:`reconcile_auto`,
+       which — reading the marker we just wrote — forces the combo OFF the same way
+       it arms it (env writes + restarts). Since the ALoop solo path was deleted
+       there is NO capture to fall back to, so this leaves USB audio UNAVAILABLE
+       (fan-in's DIRECT lane disarmed and UAC2 withdrawn) — the doctor + ``/state``
+       surface it LOUDLY. The marker then blocks the periodic
        pass from re-arming until the next ``--auto`` clear-event (boot/deploy/toggle).
 
-    Injectables (``read_fanin_status`` / ``run_reconcile`` / paths) keep this
+    Injectables (``read_fanin_status`` / ``withdraw_usb_audio`` /
+    ``run_reconcile`` / paths) keep this
     hardware-free testable; the defaults read the live fan-in socket and run the
     real :func:`reconcile_auto`.
     """
@@ -1206,23 +1434,34 @@ def run_health_check(
 
     if decision.transition == "first_broken":
         log_event(
-            logger, "fanin.combo_health", result="broken_tick",
-            reason=reason, health=sample.health, present=sample.present,
-            reopens=sample.reopens, card_gen_reopens=sample.card_gen_reopens,
+            logger,
+            "fanin.combo_health",
+            result="broken_tick",
+            reason=reason,
+            health=sample.health,
+            present=sample.present,
+            reopens=sample.reopens,
+            card_gen_reopens=sample.card_gen_reopens,
             frames_read=sample.frames_read,
             consecutive_broken=decision.next_state.consecutive_broken,
             level=logging.WARNING,
         )
     elif decision.transition == "recovered":
         log_event(
-            logger, "fanin.combo_health", result="recovered",
-            reason=reason, health=sample.health, present=sample.present,
+            logger,
+            "fanin.combo_health",
+            result="recovered",
+            reason=reason,
+            health=sample.health,
+            present=sample.present,
             level=logging.INFO,
         )
 
     if not decision.disarm:
         return HealthResult(
-            ok=True, watched=True, broken=decision.broken,
+            ok=True,
+            watched=True,
+            broken=decision.broken,
             transition=decision.transition,
             consecutive_broken=decision.next_state.consecutive_broken,
         )
@@ -1235,13 +1474,45 @@ def run_health_check(
         f"card_gen_reopens={sample.card_gen_reopens})"
     )
     log_event(
-        logger, "fanin.combo_health", result="fallback_disarm",
-        reason=reason, health=sample.health, reopens=sample.reopens,
+        logger,
+        "fanin.combo_health",
+        result="fallback_disarm",
+        reason=reason,
+        health=sample.health,
+        reopens=sample.reopens,
         card_gen_reopens=sample.card_gen_reopens,
         consecutive_broken=decision.next_state.consecutive_broken,
-        detail=fallback_reason, level=logging.WARNING,
+        detail=fallback_reason,
+        level=logging.WARNING,
     )
     write_fallback_marker(fallback_reason, marker_path)
+    if apply:
+        if withdraw_usb_audio is None:
+            from jasper.source_intent import withdraw_usbsink_audio_for_fallback
+
+            withdraw_usb_audio = withdraw_usbsink_audio_for_fallback
+        withdrawn, withdraw_detail = withdraw_usb_audio()
+        if not withdrawn:
+            log_event(
+                logger,
+                "fanin.combo_health",
+                result="fallback_uac2_withdraw_failed",
+                reason=reason,
+                detail=withdraw_detail or None,
+                level=logging.ERROR,
+            )
+            return HealthResult(
+                ok=False,
+                watched=True,
+                broken=True,
+                disarmed=False,
+                transition=decision.transition,
+                consecutive_broken=decision.next_state.consecutive_broken,
+                detail=(
+                    f"{fallback_reason}; UAC2 withdrawal failed"
+                    + (f": {withdraw_detail}" if withdraw_detail else "")
+                ),
+            )
     # reconcile_auto reads the marker fresh (fallback_active=None) → forces combo
     # off + runs the ordered disarm restarts. Reset the tick accounting after so a
     # post-disarm residual can't immediately re-fire.
@@ -1249,17 +1520,26 @@ def run_health_check(
     auto = reconciler()
     write_tick_state(_combo_health_empty_tick(), tick_state_path)
     log_event(
-        logger, "fanin.combo_health",
+        logger,
+        "fanin.combo_health",
         result="fallback_disarmed" if auto.ok else "fallback_disarm_failed",
-        reason=reason, coupling=auto.coupling, combo_armed=auto.combo_armed,
-        usb_combo_changed=auto.usb_combo_changed, ok=auto.ok,
-        detail=auto.detail or None, level=logging.INFO if auto.ok else logging.WARNING,
+        reason=reason,
+        coupling=auto.coupling,
+        combo_armed=auto.combo_armed,
+        usb_combo_changed=auto.usb_combo_changed,
+        ok=auto.ok,
+        detail=auto.detail or None,
+        level=logging.INFO if auto.ok else logging.WARNING,
     )
     return HealthResult(
-        ok=auto.ok, watched=True, broken=True, disarmed=True,
+        ok=auto.ok,
+        watched=True,
+        broken=True,
+        disarmed=True,
         transition=decision.transition,
         consecutive_broken=decision.next_state.consecutive_broken,
-        auto_result=auto, detail=fallback_reason,
+        auto_result=auto,
+        detail=fallback_reason,
     )
 
 
@@ -1341,7 +1621,8 @@ def _block_unsupported_coupling(
     # outputd on a stale content source that fan-in's loopback coupling no longer
     # feeds.
     outputd_new_text, outputd_changed = _apply_actions(
-        outputd_snapshot.text, _outputd_actions(COUPLING_LOOPBACK, outputd_snapshot.text)
+        outputd_snapshot.text,
+        _outputd_actions(COUPLING_LOOPBACK, outputd_snapshot.text),
     )
     # A previously-armed shm_ring box must be recovered, even
     # if its outputd keys happen to already be clear.
@@ -1633,7 +1914,9 @@ def resolve_effective_fanin_ring_slots(fanin_text: str) -> FaninRingSlotsResolut
         raw = fanin_raw
         source = FANIN_ENV_PATH
     else:
-        jasper_raw = read_value(_read_snapshot(JASPER_ENV_PATH).text, RING_SLOTS_ENV_VAR)
+        jasper_raw = read_value(
+            _read_snapshot(JASPER_ENV_PATH).text, RING_SLOTS_ENV_VAR
+        )
         if jasper_raw is not None:
             raw = jasper_raw
             source = JASPER_ENV_PATH
@@ -1756,17 +2039,27 @@ def _migrate_stale_fanin_ring_slots(
         _write_env_text(current.path, new_text)
     except OSError as e:
         log_event(
-            logger, "fanin.coupling_reconcile", result="stale_ring_slots_override_failed",
-            reason=reason, key=RING_SLOTS_ENV_VAR, value=resolution.raw,
-            source=resolution.source, error=e,
+            logger,
+            "fanin.coupling_reconcile",
+            result="stale_ring_slots_override_failed",
+            reason=reason,
+            key=RING_SLOTS_ENV_VAR,
+            value=resolution.raw,
+            source=resolution.source,
+            error=e,
             level=logging.WARNING,
         )
         return current
     os.environ[RING_SLOTS_ENV_VAR] = str(conf_a)
     log_event(
-        logger, "fanin.coupling_reconcile", result="stale_ring_slots_overridden",
-        reason=reason, key=RING_SLOTS_ENV_VAR, stale_value=resolution.raw,
-        stale_source=resolution.source, conf_n_slots=conf_a,
+        logger,
+        "fanin.coupling_reconcile",
+        result="stale_ring_slots_overridden",
+        reason=reason,
+        key=RING_SLOTS_ENV_VAR,
+        stale_value=resolution.raw,
+        stale_source=resolution.source,
+        conf_n_slots=conf_a,
     )
     return _EnvSnapshot(current.path, new_text, True)
 
@@ -1809,9 +2102,7 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
     # unreadable. The stale-file guard's job is to clear a file that will NOT
     # attach, so compare on-disk against the value the ioplug attaches with.
     try:
-        fanin_slots = resolve_ring_slots(
-            read_value(fanin_text, RING_SLOTS_ENV_VAR)
-        )
+        fanin_slots = resolve_ring_slots(read_value(fanin_text, RING_SLOTS_ENV_VAR))
     except ValueError:
         fanin_slots = None
     expected_a = ring_conf_n_slots(RING_A_CONF_PCM)
@@ -1841,18 +2132,29 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
             os.unlink(path)
         except OSError as e:
             log_event(
-                logger, "fanin.coupling_reconcile", result="stale_ring_unlink_failed",
-                reason=reason, path=path, on_disk_n_slots=header.n_slots,
+                logger,
+                "fanin.coupling_reconcile",
+                result="stale_ring_unlink_failed",
+                reason=reason,
+                path=path,
+                on_disk_n_slots=header.n_slots,
                 on_disk_period_frames=header.period_frames,
-                expected_n_slots=expected, expected_period_frames=expected_period,
-                error=e, level=logging.WARNING,
+                expected_n_slots=expected,
+                expected_period_frames=expected_period,
+                error=e,
+                level=logging.WARNING,
             )
             continue
         log_event(
-            logger, "fanin.coupling_reconcile", result="stale_ring_deleted",
-            reason=reason, path=path, on_disk_n_slots=header.n_slots,
+            logger,
+            "fanin.coupling_reconcile",
+            result="stale_ring_deleted",
+            reason=reason,
+            path=path,
+            on_disk_n_slots=header.n_slots,
             on_disk_period_frames=header.period_frames,
-            expected_n_slots=expected, expected_period_frames=expected_period,
+            expected_n_slots=expected,
+            expected_period_frames=expected_period,
         )
 
 
@@ -1922,7 +2224,10 @@ def _ring_confirm_needs_self_heal(fanin_text: str) -> tuple[bool, str]:
     # so the CONFIRM path escalates on exactly the files the arm would then remove.)
     expected_b = ring_conf_n_slots(RING_B_CONF_PCM)
     expected_period = ring_conf_period_frames()
-    for path, expected in ((RING_A_PROGRAM_FILE, conf_a), (RING_B_CONTENT_FILE, expected_b)):
+    for path, expected in (
+        (RING_A_PROGRAM_FILE, conf_a),
+        (RING_B_CONTENT_FILE, expected_b),
+    ):
         if expected is None:
             continue
         header = read_ring_header(path)
@@ -1982,13 +2287,22 @@ def _arm_ring(
             reason,
         )
         log_event(
-            logger, "fanin.coupling_reconcile", result="arm_ring_assets_missing",
-            desired=desired, reason=reason, detail=assets_detail,
-            recovered=recovered, level=logging.WARNING,
+            logger,
+            "fanin.coupling_reconcile",
+            result="arm_ring_assets_missing",
+            desired=desired,
+            reason=reason,
+            detail=assets_detail,
+            recovered=recovered,
+            level=logging.WARNING,
         )
         return CouplingResult(
-            ok=False, desired=desired, changed=False, direction="arm",
-            detail=assets_detail, recovered=recovered,
+            ok=False,
+            desired=desired,
+            changed=False,
+            direction="arm",
+            detail=assets_detail,
+            recovered=recovered,
         )
 
     # Topology-eligibility preflight: the ring is a full-range stereo single-sink
@@ -1998,17 +2312,30 @@ def _arm_ring(
     topo_ok, topo_detail = ring_topology_ready()
     if not topo_ok:
         recovered = _recover_to_loopback(
-            do_restart, do_restart_outputd, do_reconcile,
-            fanin_snapshot.path, outputd_snapshot.path, reason,
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            fanin_snapshot.path,
+            outputd_snapshot.path,
+            reason,
         )
         log_event(
-            logger, "fanin.coupling_reconcile", result="arm_ring_topology_ineligible",
-            desired=desired, reason=reason, detail=topo_detail,
-            recovered=recovered, level=logging.WARNING,
+            logger,
+            "fanin.coupling_reconcile",
+            result="arm_ring_topology_ineligible",
+            desired=desired,
+            reason=reason,
+            detail=topo_detail,
+            recovered=recovered,
+            level=logging.WARNING,
         )
         return CouplingResult(
-            ok=False, desired=desired, changed=False, direction="arm",
-            detail=topo_detail, recovered=recovered,
+            ok=False,
+            desired=desired,
+            changed=False,
+            direction="arm",
+            detail=topo_detail,
+            recovered=recovered,
         )
 
     # Period-geometry preflight: the conf.d ring period MUST equal outputd's
@@ -2019,17 +2346,30 @@ def _arm_ring(
     geom_ok, geom_detail = ring_geometry_ready(outputd_snapshot.text)
     if not geom_ok:
         recovered = _recover_to_loopback(
-            do_restart, do_restart_outputd, do_reconcile,
-            fanin_snapshot.path, outputd_snapshot.path, reason,
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            fanin_snapshot.path,
+            outputd_snapshot.path,
+            reason,
         )
         log_event(
-            logger, "fanin.coupling_reconcile", result="arm_ring_geometry_mismatch",
-            desired=desired, reason=reason, detail=geom_detail,
-            recovered=recovered, level=logging.WARNING,
+            logger,
+            "fanin.coupling_reconcile",
+            result="arm_ring_geometry_mismatch",
+            desired=desired,
+            reason=reason,
+            detail=geom_detail,
+            recovered=recovered,
+            level=logging.WARNING,
         )
         return CouplingResult(
-            ok=False, desired=desired, changed=False, direction="arm",
-            detail=geom_detail, recovered=recovered,
+            ok=False,
+            desired=desired,
+            changed=False,
+            direction="arm",
+            detail=geom_detail,
+            recovered=recovered,
         )
 
     # Migrate a stale, shear-prone JASPER_FANIN_RING_SLOTS FIRST (defect A
@@ -2051,17 +2391,30 @@ def _arm_ring(
     slot_ok, slot_detail = ring_slot_geometry_ready(fanin_snapshot.text)
     if not slot_ok:
         recovered = _recover_to_loopback(
-            do_restart, do_restart_outputd, do_reconcile,
-            fanin_snapshot.path, outputd_snapshot.path, reason,
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            fanin_snapshot.path,
+            outputd_snapshot.path,
+            reason,
         )
         log_event(
-            logger, "fanin.coupling_reconcile", result="arm_ring_slot_mismatch",
-            desired=desired, reason=reason, detail=slot_detail,
-            recovered=recovered, level=logging.WARNING,
+            logger,
+            "fanin.coupling_reconcile",
+            result="arm_ring_slot_mismatch",
+            desired=desired,
+            reason=reason,
+            detail=slot_detail,
+            recovered=recovered,
+            level=logging.WARNING,
         )
         return CouplingResult(
-            ok=False, desired=desired, changed=False, direction="arm",
-            detail=slot_detail, recovered=recovered,
+            ok=False,
+            desired=desired,
+            changed=False,
+            direction="arm",
+            detail=slot_detail,
+            recovered=recovered,
         )
 
     # Stale-ring-file guard (defect A): a ring file left over from a PRIOR geometry
@@ -2074,59 +2427,110 @@ def _arm_ring(
     out_ok, out_detail = do_restart_outputd()
     if not out_ok:
         recovered = _recover_to_loopback(
-            do_restart, do_restart_outputd, do_reconcile,
-            fanin_snapshot.path, outputd_snapshot.path, reason,
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            fanin_snapshot.path,
+            outputd_snapshot.path,
+            reason,
         )
         log_event(
-            logger, "fanin.coupling_reconcile", result="arm_ring_outputd_failed",
-            desired=desired, reason=reason, detail=out_detail or None,
-            recovered=recovered, level=logging.WARNING,
+            logger,
+            "fanin.coupling_reconcile",
+            result="arm_ring_outputd_failed",
+            desired=desired,
+            reason=reason,
+            detail=out_detail or None,
+            recovered=recovered,
+            level=logging.WARNING,
         )
         return CouplingResult(
-            ok=False, desired=desired, changed=False, direction="arm",
-            restarted_outputd=False, detail=out_detail, recovered=recovered,
+            ok=False,
+            desired=desired,
+            changed=False,
+            direction="arm",
+            restarted_outputd=False,
+            detail=out_detail,
+            recovered=recovered,
         )
 
     fan_ok, fan_detail = do_restart()
     if not fan_ok:
         recovered = _recover_to_loopback(
-            do_restart, do_restart_outputd, do_reconcile,
-            fanin_snapshot.path, outputd_snapshot.path, reason,
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            fanin_snapshot.path,
+            outputd_snapshot.path,
+            reason,
         )
         log_event(
-            logger, "fanin.coupling_reconcile", result="arm_ring_fanin_failed",
-            desired=desired, reason=reason, detail=fan_detail or None,
-            recovered=recovered, level=logging.WARNING,
+            logger,
+            "fanin.coupling_reconcile",
+            result="arm_ring_fanin_failed",
+            desired=desired,
+            reason=reason,
+            detail=fan_detail or None,
+            recovered=recovered,
+            level=logging.WARNING,
         )
         return CouplingResult(
-            ok=False, desired=desired, changed=False, direction="arm",
-            restarted_outputd=True, detail=fan_detail, recovered=recovered,
+            ok=False,
+            desired=desired,
+            changed=False,
+            direction="arm",
+            restarted_outputd=True,
+            detail=fan_detail,
+            recovered=recovered,
         )
 
     cam_ok, cam_detail = do_reconcile(COUPLING_SHM_RING)
     if not cam_ok:
         recovered = _recover_to_loopback(
-            do_restart, do_restart_outputd, do_reconcile,
-            fanin_snapshot.path, outputd_snapshot.path, reason,
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            fanin_snapshot.path,
+            outputd_snapshot.path,
+            reason,
         )
         log_event(
-            logger, "fanin.coupling_reconcile", result="arm_ring_camilla_failed",
-            desired=desired, reason=reason, detail=cam_detail or None,
-            recovered=recovered, level=logging.WARNING,
+            logger,
+            "fanin.coupling_reconcile",
+            result="arm_ring_camilla_failed",
+            desired=desired,
+            reason=reason,
+            detail=cam_detail or None,
+            recovered=recovered,
+            level=logging.WARNING,
         )
         return CouplingResult(
-            ok=False, desired=desired, changed=False, direction="arm",
-            restarted_fanin=True, restarted_outputd=True,
-            detail=cam_detail, recovered=recovered,
+            ok=False,
+            desired=desired,
+            changed=False,
+            direction="arm",
+            restarted_fanin=True,
+            restarted_outputd=True,
+            detail=cam_detail,
+            recovered=recovered,
         )
 
     log_event(
-        logger, "fanin.coupling_reconcile", result="armed_ring",
-        desired=desired, reason=reason, detail=cam_detail or None,
+        logger,
+        "fanin.coupling_reconcile",
+        result="armed_ring",
+        desired=desired,
+        reason=reason,
+        detail=cam_detail or None,
     )
     return CouplingResult(
-        ok=True, desired=desired, changed=True, direction="arm",
-        restarted_fanin=True, restarted_outputd=True, reconciled_camilla=True,
+        ok=True,
+        desired=desired,
+        changed=True,
+        direction="arm",
+        restarted_fanin=True,
+        restarted_outputd=True,
+        reconciled_camilla=True,
     )
 
 
@@ -2230,28 +2634,45 @@ def _disarm(
     if kick_hardware_reconcile is not None:
         kick_ok, kick_fail = kick_hardware_reconcile()
         log_event(
-            logger, "fanin.coupling_reconcile",
+            logger,
+            "fanin.coupling_reconcile",
             result="disarm_floor_reemit" if kick_ok else "disarm_floor_reemit_failed",
-            desired=desired, reason=reason, detail=kick_fail or None,
+            desired=desired,
+            reason=reason,
+            detail=kick_fail or None,
             level=logging.INFO if kick_ok else logging.WARNING,
         )
         if not kick_ok:
             kick_detail = f"audio-hardware reconcile kick failed ({kick_fail})"
     ok = cam_ok and fan_ok and out_ok
-    detail = "; ".join(d for d in (cam_detail if not cam_ok else "",
-                                   fan_detail if not fan_ok else "",
-                                   out_detail if not out_ok else "",
-                                   kick_detail) if d)
+    detail = "; ".join(
+        d
+        for d in (
+            cam_detail if not cam_ok else "",
+            fan_detail if not fan_ok else "",
+            out_detail if not out_ok else "",
+            kick_detail,
+        )
+        if d
+    )
     log_event(
-        logger, "fanin.coupling_reconcile",
+        logger,
+        "fanin.coupling_reconcile",
         result="disarmed" if ok else "disarm_partial",
-        desired=desired, reason=reason, detail=detail or None,
+        desired=desired,
+        reason=reason,
+        detail=detail or None,
         level=logging.INFO if ok else logging.WARNING,
     )
     return CouplingResult(
-        ok=ok, desired=desired, changed=True, direction="disarm",
-        restarted_fanin=fan_ok, restarted_outputd=out_ok,
-        reconciled_camilla=cam_ok, detail=detail,
+        ok=ok,
+        desired=desired,
+        changed=True,
+        direction="disarm",
+        restarted_fanin=fan_ok,
+        restarted_outputd=out_ok,
+        reconciled_camilla=cam_ok,
+        detail=detail,
     )
 
 
@@ -2477,8 +2898,7 @@ def _acquire_entry_lock(
     timeout_seconds: float = ENTRY_LOCK_TIMEOUT_SECONDS,
     poll_seconds: float = ENTRY_LOCK_POLL_SECONDS,
 ) -> EntryLock:
-    """Serialize the reconcile entry verbs (``--auto`` / ``--health`` / explicit)
-    behind one advisory flock.
+    """Serialize the reconcile entry verbs behind one advisory flock.
 
     WHY (#1233 adversarial review): ``jasper-fanin-coupling-auto.service``
     (``--auto``) and ``jasper-fanin-combo-health.service`` (``--health``) are
@@ -2494,13 +2914,12 @@ def _acquire_entry_lock(
 
     Bounded wait, never open-ended: contention past ``timeout_seconds`` returns
     ``contended`` and the caller reacts before any env write or daemon op (no
-    partial state to unwind). Loudness is verb-specific
-    (:func:`_handle_entry_lock_contention`): ``--auto`` / explicit abort with
-    exit 1 (oneshot parks ``failed`` → doctor-visible); the periodic ``--health``
-    watcher stands down with exit 0 (a reconcile in flight is when it has nothing
-    to observe). The wait absorbs the common fast holder (a healthy ``--health``
-    tick, a confirm-path ``--auto``); a genuinely long transition in flight is
-    the case that SHOULD abort/skip rather than stack.
+    partial state to unwind). ``--auto`` / explicit abort through
+    :func:`_handle_entry_lock_contention`; the periodic ``--health`` watcher
+    acquires source first and stands down through :func:`run_health_check`. The
+    wait absorbs the common fast holder (a healthy ``--health`` tick, a
+    confirm-path ``--auto``); a genuinely long transition in flight is the case
+    that SHOULD abort/skip rather than stack.
 
     Fail-open on an unopenable lock file (missing /run on a dev host, a
     non-root probe): a broken lock path must not brick reconciles — proceed
@@ -2517,8 +2936,12 @@ def _acquire_entry_lock(
             raise
     except OSError as e:
         log_event(
-            logger, "fanin.coupling_reconcile", result="entry_lock_unavailable",
-            lock_path=str(p), error=e, level=logging.WARNING,
+            logger,
+            "fanin.coupling_reconcile",
+            result="entry_lock_unavailable",
+            lock_path=str(p),
+            error=e,
+            level=logging.WARNING,
         )
         return EntryLock(outcome="unavailable", detail=str(e))
     deadline = time.monotonic() + max(timeout_seconds, 0.0)
@@ -2562,7 +2985,9 @@ def main(argv: "list[str] | None" = None) -> int:
     consecutive ticks.
 
     Every verb runs under the shared entry flock (:func:`_acquire_entry_lock`)
-    so two passes can never interleave their ordered daemon transitions.
+    so two passes can never interleave their ordered daemon transitions. Health
+    additionally takes the source-lifecycle lock first; :func:`run_health_check`
+    owns that nested order.
     """
     import argparse
 
@@ -2600,8 +3025,9 @@ def main(argv: "list[str] | None" = None) -> int:
         help=(
             "DEFAULT-RESOLUTION pass (P3/P4): when NO operator choice is recorded, "
             "resolve shm_ring on a ring-eligible box (else loopback) and arm the USB "
-            "combo on a gadget box. A no-op when the operator marker is set. Clears "
-            "the runtime-fallback marker first (clear-and-retry on boot/deploy/toggle)."
+            "combo on a gadget box. An operator marker preserves the coupling choice "
+            "while USB still follows source intent. Clears the runtime-fallback "
+            "marker first (clear-and-retry on boot/deploy/toggle)."
         ),
     )
     parser.add_argument(
@@ -2617,7 +3043,8 @@ def main(argv: "list[str] | None" = None) -> int:
     )
     parser.add_argument("--reason", default="cli")
     parser.add_argument(
-        "--no-apply", action="store_true",
+        "--no-apply",
+        action="store_true",
         help="write the env only; skip the daemon transition (staging).",
     )
     args = parser.parse_args(argv)
@@ -2628,6 +3055,12 @@ def main(argv: "list[str] | None" = None) -> int:
         )
     if not any(_modes):
         parser.error("give an explicit coupling choice, --auto, or --health")
+
+    # Health may withdraw UAC2 through the source-lifecycle owner. Normal source
+    # reconciliation already nests source -> coupling, so the health wrapper must
+    # acquire both in that same order. Never pre-acquire coupling here.
+    if args.health:
+        return _run_entry_verb(args)
 
     # Serialize the WHOLE pass against the sibling entry verbs (the two oneshot
     # units + install.sh / operator CLI runs) — see _acquire_entry_lock. On
@@ -2648,39 +3081,34 @@ def main(argv: "list[str] | None" = None) -> int:
 
 
 def _handle_entry_lock_contention(args, *, detail: str = "") -> int:
-    """Report entry-lock contention, choosing loudness by verb.
+    """Abort an apply verb that could not acquire the coupling entry lock.
 
-    ``--auto`` / an explicit coupling wanted to APPLY a change and could not, so
-    they abort LOUDLY — ERROR + exit 1, which parks the oneshot ``failed`` and
-    surfaces through ``check_service_runtime_state`` in the doctor. The periodic
-    ``--health`` watcher is different: a reconcile already in flight is exactly
-    when it has nothing to observe, so it STANDS DOWN — WARNING + exit 0. Failing
-    its unit on every collision with a deploy's ``--auto`` arm would be a false
-    doctor positive (install.sh runs ``--auto`` while the health timer ticks
-    every ~3 min). A real ``--health`` DISARM failure still exits 1: that path
-    acquires the lock and does work, so it never reaches here.
+    ``--auto`` / an explicit coupling wanted to apply a change and could not, so
+    they abort loudly. Health contention is handled inside
+    :func:`run_health_check`, which must acquire the source lock first.
     """
-    health = bool(args.health)
     log_event(
-        logger, "fanin.coupling_reconcile",
-        result="entry_lock_contended_health_skip" if health
-        else "entry_lock_contended",
-        reason=args.reason, lock_path=ENTRY_LOCK_PATH,
+        logger,
+        "fanin.coupling_reconcile",
+        result="entry_lock_contended",
+        reason=args.reason,
+        lock_path=ENTRY_LOCK_PATH,
         timeout_seconds=ENTRY_LOCK_TIMEOUT_SECONDS,
-        detail=detail or None, level=logging.WARNING if health else logging.ERROR,
+        detail=detail or None,
+        level=logging.ERROR,
     )
     print(
         "fan-in coupling reconcile: another reconcile pass holds "
         f"{ENTRY_LOCK_PATH} ({detail or 'unknown holder'}); "
-        + ("skipped this health-watcher tick" if health else "aborted")
-        + f" after {ENTRY_LOCK_TIMEOUT_SECONDS:g}s without touching env or daemons.",
+        f"aborted after {ENTRY_LOCK_TIMEOUT_SECONDS:g}s without touching env "
+        "or daemons.",
         file=sys.stderr,
     )
-    return 0 if health else 1
+    return 1
 
 
 def _run_entry_verb(args) -> int:
-    """Body of :func:`main` after arg validation — runs UNDER the entry lock."""
+    """Body after validation; health acquires its ordered locks internally."""
     # Hydrate os.environ from the wizard-owned env files (same set the daemons
     # load) BEFORE reconciling, so the camilla reconcile this triggers emits with
     # the persisted JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} etc. — not their
@@ -2720,24 +3148,21 @@ def _run_entry_verb(args) -> int:
         prior = read_fallback_marker()
         if clear_fallback_marker() and prior is not None:
             log_event(
-                logger, "fanin.combo_health", result="fallback_marker_cleared",
-                reason=args.reason, prior_reason=prior.reason or None,
+                logger,
+                "fanin.combo_health",
+                result="fallback_marker_cleared",
+                reason=args.reason,
+                prior_reason=prior.reason or None,
             )
         auto = reconcile_auto(reason=args.reason, apply=not args.no_apply)
         print(
             f"coupling auto: owned={auto.owned} coupling={auto.coupling} "
             f"gadget={auto.gadget_present} usb_intent={auto.usb_intent_enabled} "
             f"combo_armed={auto.combo_armed} "
-            f"usb_combo_changed={auto.usb_combo_changed} "
-            f"usbsink_standby_changed={auto.usbsink_standby_changed} ok={auto.ok}"
+            f"usb_combo_changed={auto.usb_combo_changed} ok={auto.ok}"
             + (
                 f" fanin_restarted_for_combo={auto.restarted_fanin_for_combo}"
                 if auto.usb_combo_changed
-                else ""
-            )
-            + (
-                f" usbsink_restarted={auto.restarted_usbsink}"
-                if auto.usbsink_standby_changed
                 else ""
             )
             + (f" reason={auto.reason}" if auto.reason else "")
@@ -2748,7 +3173,9 @@ def _run_entry_verb(args) -> int:
     # Explicit operator choice: mark_operator_choice=True freezes the box to this
     # pick across future --auto passes (the revert lever).
     result = reconcile_coupling(
-        args.coupling, reason=args.reason, apply=not args.no_apply,
+        args.coupling,
+        reason=args.reason,
+        apply=not args.no_apply,
         mark_operator_choice=True,
     )
     print(

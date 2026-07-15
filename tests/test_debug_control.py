@@ -91,31 +91,6 @@ def test_set_debug_voice_writes_restarts_and_arms(dc):
     assert dc.scheduled[0][0] == pytest.approx(TTL)
 
 
-def test_set_debug_usbsink_active_restarts_daemon(dc):
-    dc.active_units.add("jasper-usbsink.service")
-    st = debug_control.set_debug("usbsink", True, now=NOW)
-    env = _env(dc.path)
-    assert env["JASPER_DEBUG_USBSINK"] == "1"
-    assert "usbsink" in st.active
-    assert dc.active_checks == ["jasper-usbsink.service"]
-    assert dc.restarts == ["jasper-usbsink.service"]
-
-
-def test_set_debug_usbsink_inactive_defers_without_starting_unit(dc, caplog):
-    caplog.set_level(logging.INFO, logger="jasper.control.debug_control")
-    st = debug_control.set_debug("usbsink", True, now=NOW)
-    env = _env(dc.path)
-    assert env["JASPER_DEBUG_USBSINK"] == "1"
-    assert "usbsink" in st.active
-    assert dc.active_checks == ["jasper-usbsink.service"]
-    assert dc.restarts == []
-    assert any(
-        "event=debug.apply_deferred" in record.getMessage()
-        and "subsystem=usbsink" in record.getMessage()
-        for record in caplog.records
-    )
-
-
 def test_set_debug_control_is_inprocess_no_restart(dc):
     logging.getLogger("jasper").setLevel(logging.INFO)
     debug_control.set_debug("control", True, now=NOW)
@@ -148,8 +123,6 @@ def test_snapshot_reflects_active_then_expired(dc):
     aec = next(s for s in snap["subsystems"] if s["id"] == "aec")
     assert aec["enabled"] is True
     assert aec["apply_policy"] == "restart"
-    usbsink = next(s for s in snap["subsystems"] if s["id"] == "usbsink")
-    assert usbsink["apply_policy"] == "restart_if_active"
     assert snap["any_active"] is True
     assert snap["remaining_sec"] == pytest.approx(TTL, abs=1)
     # past expiry → reads as off even though the flag is still on disk

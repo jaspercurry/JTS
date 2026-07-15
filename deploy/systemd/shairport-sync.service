@@ -3,13 +3,14 @@ Description=Shairport Sync AirPlay 2 audio receiver (JTS)
 After=sound.target jasper-fanin.service jasper-outputd.service avahi-daemon.service nqptp.service network-online.target
 Requires=avahi-daemon.service nqptp.service
 Wants=network-online.target jasper-fanin.service jasper-outputd.service
-# Always-on renderer: the AirPlay endpoint MUST be advertised on the
-# LAN whenever the speaker is up. A clean exit (status=0) — whether
+# While AirPlay is household-On and role-authorized, its endpoint should remain
+# advertised. A clean exit (status=0) — whether
 # from a SIGTERM during a shell session, an admin `systemctl stop`
 # that wasn't followed by a `start`, or a clean shutdown path inside
 # shairport itself — would, with Restart=on-failure, leave the device
 # silently invisible to AirPlay clients until the next reboot.
-# Restart=always covers crash AND clean-exit paths. The start-limit guard
+# Restart=always covers crash AND clean-exit paths; the ExecCondition below
+# prevents it from overriding household Off or follower parking. The start-limit guard
 # is intentionally generous so transient OOM/update pressure does not park
 # AirPlay permanently, while genuine config breakage still stops looping.
 StartLimitIntervalSec=600
@@ -20,6 +21,12 @@ StartLimitBurst=20
 # docs/HANDOFF-resilience.md "Stage 2 — audio-protection subset".
 Slice=jts-audio.slice
 Type=simple
+# The source coordinator waits synchronously for this job. The 30 s service
+# ceiling covers the root ExecStartPre renderer on slower Zero-class hardware.
+# The source coordinator's client bound additionally covers this unit's cold
+# Requires=/After=nqptp transaction plus a one-second subprocess margin.
+TimeoutStartSec=30s
+TimeoutStopSec=5s
 # Render /etc/shairport-sync.conf from the template every time the
 # service starts, picking up the current value of
 # /var/lib/jasper/airplay_mode.env. The leading `+` lets the
@@ -27,7 +34,8 @@ Type=simple
 # back to the unprivileged shairport-sync user. The renderer is
 # idempotent and fast (sed substitution), so running it on every
 # start has negligible cost.
-ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
+ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source airplay
 ExecStartPre=+/usr/local/sbin/jasper-apply-airplay-mode
 ExecStart=/usr/local/bin/shairport-sync
 User=shairport-sync

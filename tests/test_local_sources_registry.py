@@ -6,10 +6,7 @@ from jasper.local_sources import (
     local_source_lifecycle,
     local_source_audio_refresh_units,
     local_source_lifecycles,
-    local_source_park_restart_units,
     local_source_park_units,
-    local_source_restore_restart_units,
-    local_source_restore_units,
 )
 from jasper.music_sources import MUSIC_SOURCE_SPECS, Source
 
@@ -22,6 +19,19 @@ def test_every_declared_music_source_has_lifecycle():
         assert local_source_lifecycle(spec.id).source == spec.id
 
 
+def test_shipped_source_intent_defaults_are_declared_once():
+    defaults = {
+        lifecycle.source: lifecycle.default_enabled
+        for lifecycle in local_source_lifecycles()
+    }
+    assert defaults == {
+        Source.AIRPLAY: True,
+        Source.SPOTIFY: True,
+        Source.BLUETOOTH: True,
+        Source.USBSINK: False,
+    }
+
+
 def test_usb_runtime_includes_composite_gadget_owner():
     lifecycle = local_source_lifecycle(Source.USBSINK)
     assert "jasper-usbgadget.service" in lifecycle.runtime_units
@@ -32,40 +42,24 @@ def test_usb_runtime_includes_composite_gadget_owner():
     }
 
 
-def test_source_health_units_exclude_ancillary_pairing_agent():
+def test_bluetooth_health_matches_its_required_on_contract():
     bluetooth = local_source_lifecycle(Source.BLUETOOTH)
 
     assert set(bluetooth.health_units) <= set(bluetooth.runtime_units)
     assert "bluealsa-aplay.service" in bluetooth.health_units
     assert "bluealsa.service" in bluetooth.health_units
-    assert "bt-agent.service" not in bluetooth.health_units
+    assert "bt-agent.service" in bluetooth.health_units
 
 
-def test_usb_parking_stops_audio_bridge_not_the_composite_gadget():
-    """USB Audio Input's audio bridge and the composite gadget are separate
-    resources. Parking a follower must STOP the audio bridge units but NOT stop
+def test_usb_parking_stops_audio_lifecycle_not_the_composite_gadget():
+    """USB Audio Input's lifecycle marker and composite gadget are separate
+    resources. Parking a follower must STOP the audio lifecycle units but NOT stop
     the gadget owner — stopping it would drop the always-on USB management
-    network. The gadget is recomposed (park_restart) instead."""
+    network. The source coordinator recomposes the gadget instead."""
     units = local_source_park_units()
     assert "jasper-usbsink.service" in units
     assert "jasper-usbsink-volume.service" in units
     # The gadget must NOT be in the stop-park set — it stays up for the network.
-    assert "jasper-usbgadget.service" not in units
-
-
-def test_usb_park_restart_recomposes_the_gadget():
-    """Parking recomposes the composite gadget so the host-visible audio
-    function drops while the always-on USB network persists."""
-    assert local_source_park_restart_units() == ("jasper-usbgadget.service",)
-    assert local_source_restore_restart_units() == ("jasper-usbgadget.service",)
-
-
-def test_usb_restore_uses_intent_unit_not_gadget_unit():
-    """Unparking should preserve /sources intent: start the USB bridge only
-    if it is enabled, letting Requires= bring the gadget up. The gadget is
-    recomposed via restore_restart, never a plain start (it is always-on)."""
-    units = local_source_restore_units()
-    assert "jasper-usbsink.service" in units
     assert "jasper-usbgadget.service" not in units
 
 
@@ -79,8 +73,6 @@ def test_audio_refresh_units_stay_at_renderer_boundary():
 
 
 def test_shared_source_infrastructure_parks_with_sources():
-    """Mux is shared source infrastructure, not one source's daemon, but it
-    still parks and restores with the local-source runtime profile."""
+    """Mux is shared source infrastructure, not one source's daemon."""
     assert "jasper-mux.service" in local_source_park_units()
-    assert "jasper-mux.service" in local_source_restore_units()
     assert "jasper-mux.service" not in local_source_audio_refresh_units()

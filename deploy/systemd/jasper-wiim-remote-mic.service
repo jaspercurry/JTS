@@ -1,13 +1,17 @@
 [Unit]
 Description=Jasper WiiM Remote 2 microphone adapter (BLE GATT → UDP PCM)
+# The source-intent and accessory reconcilers enable/start this unit only when
+# Bluetooth is allowed and the paired profile is active. Keep passive ordering;
+# this optional service must never pull bluetooth.service up through Wants=.
 After=bluetooth.service
-Wants=bluetooth.service
 ConditionPathExists=/opt/jasper/.venv/bin/jasper-wiim-remote-mic
 StartLimitIntervalSec=5min
 StartLimitBurst=20
 
 [Service]
 Type=simple
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
+ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source bluetooth
 ExecStart=/opt/jasper/.venv/bin/jasper-wiim-remote-mic
 Restart=on-failure
 RestartSec=2

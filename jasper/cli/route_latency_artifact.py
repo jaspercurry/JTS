@@ -46,7 +46,6 @@ from jasper.audio_validation import (
 # click/capture harness can never drift. Do not re-declare them here.
 from jasper.route_latency.status_socket import (
     FANIN_STATUS_SOCKET,
-    USBSINK_STATE_PATH,
     read_status_socket,
 )
 
@@ -61,6 +60,12 @@ class RouteLatencyMetrics:
     duration_seconds: float
     source: str
     provenance: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _RouteLiveState:
+    issues: tuple[str, ...] = ()
+    negotiated_buffer_frames: int | None = None
 
 
 def nearest_rank_percentile(samples: Iterable[float], percentile: float) -> float | None:
@@ -223,6 +228,7 @@ def build_route_latency_artifact_from_metrics(
     impulse_spacing_jittered: bool,
     route_health_ok: bool,
     route_health_issues: tuple[str, ...] = (),
+    fanin_direct_negotiated_buffer_frames: int | None = None,
     measurement_provenance: Mapping[str, Any] | None = None,
 ) -> ValidationArtifact:
     """Bind measured route metrics to the live runtime plan identity."""
@@ -256,9 +262,12 @@ def build_route_latency_artifact_from_metrics(
         dac_id=dac_id,
         route_config_hash=str(identity["route_config_hash"]),
         camilla_config_hash=str(identity.get("camilla_config_hash") or ""),
+        fanin_direct_config=_mapping(identity.get("fanin_direct_config")),
+        fanin_direct_negotiated_buffer_frames=(
+            fanin_direct_negotiated_buffer_frames
+        ),
         fanin_resampler_config=_mapping(identity.get("fanin_resampler_config")),
         outputd_config=_mapping(identity.get("outputd_config")),
-        rust_bridge_config=_mapping(identity.get("rust_bridge_config")),
         uac2_gadget_attrs=_mapping(identity.get("uac2_gadget_attrs")),
         p95_ms=metrics.p95_ms,
         p99_ms=metrics.p99_ms,
@@ -275,34 +284,48 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _route_live_state_issues_for_current_route() -> tuple[str, ...]:
+def _route_live_state_for_current_route() -> _RouteLiveState:
     plan = build_audio_runtime_plan_from_system()
+    identity = plan.route_latency_identity()
     issues: list[str] = []
-    usbsink_state: dict[str, Any] | None = None
     fanin_status: dict[str, Any] | None = None
-    try:
-        parsed = json.loads(Path(USBSINK_STATE_PATH).read_text(encoding="utf-8"))
-        if isinstance(parsed, dict):
-            usbsink_state = parsed
-        else:
-            issues.append("live_usbsink_state_malformed")
-    except (OSError, json.JSONDecodeError) as e:
-        issues.append(f"live_usbsink_state_unreadable:{type(e).__name__}")
     try:
         fanin_status = read_status_socket(FANIN_STATUS_SOCKET)
     except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as e:
         issues.append(f"live_fanin_status_unreadable:{type(e).__name__}")
-    return tuple(
+    issues = list(
         dict.fromkeys(
-            (
-                *issues,
-                *route_live_state_issues(
-                    plan.route_latency_identity(),
-                    usbsink_state=usbsink_state,
-                    fanin_status=fanin_status,
-                ),
-            )
+            (*issues, *route_live_state_issues(identity, fanin_status=fanin_status))
         )
+    )
+    negotiated_buffer_frames: int | None = None
+    direct_expected = _mapping(identity.get("fanin_direct_config"))
+    lane = str(direct_expected.get("lane") or "usbsink")
+    if isinstance(fanin_status, Mapping):
+        inputs = fanin_status.get("inputs")
+        if isinstance(inputs, list):
+            lane_status = next(
+                (
+                    item
+                    for item in inputs
+                    if isinstance(item, Mapping) and item.get("label") == lane
+                ),
+                None,
+            )
+            if isinstance(lane_status, Mapping):
+                direct = lane_status.get("direct")
+                if isinstance(direct, Mapping):
+                    raw_buffer = direct.get("buffer_frames")
+                    if raw_buffer is not None and not isinstance(raw_buffer, bool):
+                        try:
+                            parsed_buffer = int(raw_buffer)
+                        except (TypeError, ValueError):
+                            parsed_buffer = 0
+                        if parsed_buffer > 0:
+                            negotiated_buffer_frames = parsed_buffer
+    return _RouteLiveState(
+        issues=tuple(issues),
+        negotiated_buffer_frames=negotiated_buffer_frames,
     )
 
 
@@ -458,16 +481,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         metrics = _metrics_from_args(args)
-        route_health_issues = (
-            _route_live_state_issues_for_current_route()
+        live_state = (
+            _route_live_state_for_current_route()
             if args.route_health_ok
-            else ()
+            else _RouteLiveState()
         )
         artifact = build_route_latency_artifact_from_metrics(
             metrics,
             impulse_spacing_jittered=args.impulse_spacing_jittered,
             route_health_ok=args.route_health_ok,
-            route_health_issues=route_health_issues,
+            route_health_issues=live_state.issues,
+            fanin_direct_negotiated_buffer_frames=(
+                live_state.negotiated_buffer_frames
+            ),
             measurement_provenance=_measurement_provenance_from_args(args),
         )
     except (OSError, ValueError, json.JSONDecodeError) as e:

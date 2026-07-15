@@ -102,15 +102,42 @@ full doctor stack under memory pressure. The probe reads the canonical
 - A missing, unreadable, or empty marker retains the backwards-compatible
   `full` assumption. Legacy `endpoint` / `satellite` markers normalize to
   `streambox`; any other token fails closed before probing services.
-- Both profiles require the control, fan-in, outputd, CamillaDSP, mux,
-  Bluetooth-audio, nginx, and core web-socket surfaces. AirPlay is required
-  when `/var/lib/jasper/source_intent.env` has no override or says `enabled`;
-  an intentional `disabled` instead requires the unit to be `inactive` after
-  install's source-intent reconcile stops it (an unexpectedly active unit still
-  fails). An unreadable, oversized, or malformed AirPlay intent fails closed
-  instead of guessing. `jasper-input` remains required on `full` only. A
-  `streambox` intentionally parks voice and AEC, so the probe neither requires
-  nor emits optional-unit warnings for those two services there.
+- Both profiles require the control, fan-in, outputd, CamillaDSP, mux, nginx,
+  and core web-socket surfaces. AirPlay (`shairport-sync` + `nqptp`), Spotify
+  Connect (`librespot`), and Bluetooth audio (`bluealsa` + `bluealsa-aplay`)
+  follow the fixed source expectations in `/var/lib/jasper/source_intent.env`.
+  The parser covers all four canonical sources, so a missing file/key retains
+  that source's shipped default (USB Off; the other three On).
+  `enabled` requires each source-owned unit active and
+  `disabled` requires it inactive. Bluetooth additionally proves RF-kill and
+  BlueZ `Powered` match intent. USB On additionally requires the UAC2 card and
+  a present, healthy (`idle` or `capturing`) fan-in direct lane; USB Off requires
+  both absent. A confirmed bonded follower uses parked
+  source/mux expectations without rewriting intent (drift in either direction
+  fails). The
+  Bluetooth pairing agent remains advisory when Bluetooth is enabled and is
+  not warned about when Bluetooth is intentionally disabled. The reader is
+  stdlib-only, reads at most 64 KiB + 1 byte, decodes strict UTF-8, uses the
+  final assignment for each recognized key, and fails closed on an unreadable,
+  oversized, invalid-UTF-8, malformed recognized value, or unknown key in the
+  owned `JASPER_SOURCE_INTENT_*` namespace instead of guessing; unrelated env
+  keys are ignored. `jasper-input` remains required on `full`
+  only. A `streambox` intentionally parks voice and AEC, so the probe neither
+  requires nor emits optional-unit warnings for those two services there.
+  The deploy probe owns this low-memory certification policy; the canonical
+  source keys, defaults, runtime convergence, and desired/effective semantics
+  live in [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
+- USB gadget installation deliberately establishes one safe baseline before
+  source replay: `jasper-usbsink.service` disabled/stopped and the gadget
+  network-only. It does not interpret USB intent or advertise UAC2 before its
+  data plane exists. A converged NCM-only gadget is left bound so a deploy over
+  USB does not flap its management link; an upgrade arriving with prior derived
+  USB enablement, activity, or a visible UAC2 card is recomposed once to remove
+  stale audio. The later shared source coordinator is the sole owner of replay:
+  for canonical On it enables the mirror, arms fan-in direct capture, then
+  recomposes UAC2 and starts the process-free readiness marker; Off stays NCM-only. A
+  failed park or stale-UAC2 cleanup fails closed rather than leaving a
+  host-visible source without a consumer.
 - Fan-in is sampled twice around a one-second interval and must show no xrun
   increase and recent watchdog progress. Outputd must report its ALSA backend,
   zero xruns / empty periods / EAGAINs, and recent progress. All counter and
@@ -324,8 +351,10 @@ sourced bash helpers). Confirm on a Pi:
 Last verified: 2026-07-14 (verified-manifest asset timing and exact
 browser-visible `/system/` asset-token gate rechecked against
 `jasper/web/_common.py` and `scripts/deploy-to-pi.sh`; low-memory deploy-health
-profile and status-schema contracts previously re-verified against
-`deploy/bin/jasper-deploy-health`;
+source-intent contract re-verified for AirPlay, Spotify Connect, Bluetooth,
+USB Audio Input, and bonded-follower parking against
+`deploy/bin/jasper-deploy-health`; profile and status-schema contracts were
+previously re-verified 2026-07-12;
 broken-vs-idle seam previously re-verified against
 `jasper-voice.service`'s `ConditionPathExists`, the doctor's
 `check_service_runtime_state`, and the deploy wrapper's advisory

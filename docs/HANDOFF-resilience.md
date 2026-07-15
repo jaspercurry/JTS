@@ -139,7 +139,7 @@ that generically.
 |---|---|---|---|
 | 1 | `sdnotify` heartbeat thread with progress sentinel | Logic deadlock; blocked event loop; slow loop. `bump()` is called from each successful frame; the heartbeat thread only pats systemd if `now - last_progress < 5 s`, so a wedged loop stops patting even though the heartbeat thread itself keeps running. | ✅ — `jasper/watchdog.py`, wired into bridge `_aec_loop` and voice `WakeLoop.run` |
 | 2 | systemd `Type=notify` + `WatchdogSec=30s` + `Restart=on-watchdog` + `TimeoutStopSec=5s` + `StartLimitBurst=20` | Process exit, hang, fatal ALSA error. If the Tier 1 heartbeat stops patting, this fires at 30 s and brings the daemon back with a fresh process in ~2 s. | ✅ — `deploy/systemd/jasper-aec-bridge.service`, `deploy/systemd/jasper-voice.service` |
-| 3 | Sidecar protocol-level liveness probe in `jasper-control` + conditional `systemctl restart`, gated on no active session and rate-limited | Third-party daemons that wedge at the protocol layer while still passing systemd's liveness check. shairport-sync AP2 today; pattern generalizes to other long-lived third-party renderers if they demonstrate the same failure class. | ✅ — `jasper/control/shairport_supervisor.py`, started from `server.py:main` via `start_supervisor()` |
+| 3 | Sidecar protocol-level liveness probe in `jasper-control` + conditional `systemctl restart`, gated on no active session, canonical source authorization, and rate-limited | Third-party daemons that wedge at the protocol layer while still passing systemd's liveness check. shairport-sync AP2 today; pattern generalizes to other long-lived third-party renderers if they demonstrate the same failure class. | ✅ — `jasper/control/shairport_supervisor.py`, started from `server.py:main` via `start_supervisor()` |
 | 4 | Kernel-state recovery script (`rmmod && modprobe snd_aloop`, after stopping all consumers; rate-limited via state file) | snd-aloop kernel-side wedges, dsnoop wedges. | ❌ — not currently wired. The original motivation (bridge↔voice snd-aloop) is gone; the music-chain Loopback hasn't shown this failure mode in production. Deferred. |
 | 5 | BCM2712 hardware watchdog (`/dev/watchdog0`) patted by systemd PID 1 via `RuntimeWatchdogSec=1m` (with persistent journald for post-mortem forensics) | Kernel panic, PID 1 hang, total userspace wedge (CPU peg, swap thrash, I/O hung). | ✅ — wired by Raspberry Pi OS Trixie's `/usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf` (`RuntimeWatchdogSec=1m`, `RebootWatchdogSec=2m`). JTS contributes the other half: PR #160 (2026-05-20) overrode the paired RPi OS default of `Storage=volatile` so logs survive the reset and the cause is debuggable. |
 
@@ -226,7 +226,11 @@ Design constraints the supervisor satisfies:
   only on failing probes, so the healthy path stays
   subprocess-free; re-enabling resumes supervision on the next
   tick. Errors reading enablement fail toward supervising, never
-  toward silently parking Tier 3.
+  toward silently parking Tier 3. The final recovery mutation is
+  `systemctl --no-block restart`, which can revive a fully dead desired-On
+  receiver. A concurrent Off or follower park still wins because both AirPlay
+  units recheck canonical intent and effective role in their root
+  `ExecCondition` at the final start boundary.
 - **Rate limit prevents storms.** One supervisor-driven restart per
   10 minutes. If the wedge persists past that, the underlying issue
   is upstream and our restart isn't the right hammer.
@@ -522,7 +526,7 @@ JTS ladder, descending priority:
 | `jasper-camilla` | -900 | Silence is the worst possible UX |
 | `jasper-fanin` | -800 | Renderer audio convergence point |
 | `jasper-aec-bridge` | -700 | Real-time mic processing |
-| `jasper-control`, `jasper-usbsink` | -600 | Recovery surface plus the optional USB-audio intent/liveness owner |
+| `jasper-control` | -600 | Recovery surface |
 | `jasper-voice`, `jasper-camilla-crossover` | -500 | Voice's large blast radius plus the reconciler-gated active-speaker crossover |
 | `nginx` | -450 | Management front door; package-owned, recoverable, protected below control/voice/audio |
 | `jasper-mux`, `jasper-input`, `jasper-wiim-remote-mic`, `jasper-snapclient`, `jasper-snapserver` | -300 | Restartable control/accessory and managed grouping daemons; mux outage is user-visible because fan-in starts safe/closed; WiiM falls back to the normal mic; Snapcast is reconciler-recoverable |
@@ -710,7 +714,7 @@ verification is whether `/sys/fs/cgroup/cgroup.controllers` includes
 
 ```
 jts-audio.slice          ← jasper-outputd, jasper-fanin, jasper-camilla,
-                            jasper-camilla-crossover, jasper-usbsink
+                            jasper-camilla-crossover
                          ← shairport-sync, librespot, bluealsa-aplay
                          ← bonded grouping: jasper-snapclient /
                             jasper-snapserver managed units
@@ -769,7 +773,7 @@ sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E "cgroup memory|audio path"
 
 The audio-protection subset doesn't enforce `MemoryHigh=`/`MemoryMax=`
 on non-audio daemons. The unit files that already have those
-directives (mux, input, usbsink, system-web, bluetooth-web,
+directives (mux, input, system-web, bluetooth-web,
 librespot, and `jasper-voice` — which carries `MemoryHigh=384M`
 since commit be2909e93) **do now enforce** as a side-effect of memory
 cgroup being on — those values become live the moment the controller
@@ -810,8 +814,8 @@ across the K3s / Docker / Home Assistant Supervised communities; no
 known stability regressions on JTS-relevant workloads.
 
 **Once on, the `MemoryHigh=` / `MemoryMax=` directives that already
-exist in 7 unit files** (`jasper-mux.service`, `jasper-input.service`,
-`jasper-wiim-remote-mic.service`, `jasper-usbsink.service`,
+exist in 6 unit files** (`jasper-mux.service`, `jasper-input.service`,
+`jasper-wiim-remote-mic.service`,
 `jasper-system-web.service`,
 `jasper-bluetooth-web.service`, `librespot.service`) **start
 enforcing**. Today they're silent no-ops — systemd accepts them,
@@ -1379,7 +1383,10 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-07-12 (supervisor loop/thread ownership rechecked against
+Last verified: 2026-07-14 (shairport Tier-3 final mutation rechecked as
+inactive-capable `restart`, with concurrent Off/role-park safety owned by the
+source guard at the final systemd start boundary;
+supervisor loop/thread ownership rechecked against
 all three adapters and `supervisor_runtime`; jts-audio.slice membership and the complete
 OOMScoreAdjust ladder rechecked against every current unit/drop-in; Wi-Fi
 wizard action/exception events and their

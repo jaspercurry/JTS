@@ -449,6 +449,7 @@ def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
 @pytest.mark.asyncio
 async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeypatch):
     from jasper.capture_relay.session import CaptureStopped
+    from jasper.correction import coordinator
 
     host_events = []
     purged = []
@@ -474,6 +475,23 @@ async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeyp
         session_id="cap-stop",
         pull_token="pull",
         spec=SimpleNamespace(capture_protocol_version=2, kind="level_ramp"),
+    )
+
+    async def acquire_measurement_gate():
+        return None
+
+    async def release_measurement_gate(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        coordinator,
+        "_acquire_measurement_gate",
+        acquire_measurement_gate,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_release_measurement_gate",
+        release_measurement_gate,
     )
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
 

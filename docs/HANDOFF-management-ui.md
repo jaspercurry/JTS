@@ -46,8 +46,9 @@ under the same runtime unit names. That keeps the browser experience DRY
 while ensuring streamboxes never bind voice/Google/wake/transit/weather
 wizard ports or source assistant-only env files.
 A box bonded as a multiroom follower behaves like the old "endpoint" at
-runtime — the grouping reconciler parks its renderer/source/voice stack — but
-that is a runtime role, not a separate install tier or frontend; it still
+runtime — grouping lands its role/data plane, the source coordinator parks its
+renderer/source stack, and grouping derives the voice park flag — but that is
+a runtime role, not a separate install tier or frontend; it still
 serves the shared landing page gated by its (full or streambox) capabilities.
 The Zero-2-W streambox bring-up runbook is
 [`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md); this doc owns the
@@ -418,6 +419,15 @@ Top control card: **Volume slider** (0-100%, drag/keyboard), **Mic toggle**
 (checked = listening), and a lightweight **Source selector** (Auto, AirPlay,
 Bluetooth, Spotify, USB). The selector posts to `jasper-control`'s
 `/source/*` routes and is distinct from the `/sources/` on/off wizard.
+The lifecycle switches on `/sources/` represent persisted **desired** state,
+not a best-effort process probe; their status copy separately renders
+effective `on`, `off`, `degraded`, `parked`, or `unavailable`. The Bluetooth
+Power switch on `/bluetooth/` writes that same desired state, while pairing
+mode and Scan remain gated by effective adapter power. Adapter read failures
+preserve the last truthful desired state while disabling controls; a bonded
+follower renders parked and the server rejects Bluetooth mutations with 409.
+The presentation rule is recorded here; the state and convergence contract is canonical in
+[HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
 
 Below it the rows are grouped into labelled sections (each heading an
 `.eyebrow` `group-title`). `deploy/index.html` is the source of truth for the
@@ -470,9 +480,12 @@ once, so polling does not reset controls, disclosure state, or text selection.
   recovered blip and reports time since the transition;
 - compact AirPlay, Spotify, Bluetooth, and USB Audio source cards derived
   from the canonical music-source registry; cached service state distinguishes
-  Ready, Not running, and a failed source-critical service without treating
-  ancillary helpers as renderers or starting another systemd probe cadence,
-  and source-specific timing appears only where the source has a real contract;
+  Ready, Not running, Off, and a failed source-critical service without
+  treating ancillary helpers as renderers or starting another systemd probe
+  cadence. Canonical source intent owns the Off state: expected inactive units
+  are quiet, while an Off source with active resources is an explicit drift
+  issue. Source-specific timing appears only where the source has a real
+  contract;
 - collapsed technical details for raw fan-in/Camilla/outputd context; and
 - Audio conversion (Medium/Best ALSA rate-converter preference).
 
@@ -684,6 +697,12 @@ Two valid presentations:
 Lean A for simplicity in the first redesign: one Bluetooth row under Sources,
 with device type labels inside `/bluetooth/`. Revisit if paired controllers
 and audio devices become hard to distinguish in one list.
+
+Current implementation keeps the source switch on both `/sources/` and the
+device-focused `/bluetooth/` page, backed by one persisted intent. Do not let
+either page infer the switch from BlueZ `Powered`; temporary adapter failure is
+shown as desired-On/effective-degraded. See
+[HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
 
 ### 4.4 The Now Playing question, resolved
 
@@ -1449,8 +1468,12 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-07-14 (`/system/` and `/system/audio/` same-document
-Status navigation (including direct-link fallback and one shared poll loop),
+Last verified: 2026-07-14 (source-switch desired/effective/parked/unavailable
+presentation and follower mutation guard rechecked against `sources_setup.py`,
+`bluetooth_setup.py`, and their static ES modules; lifecycle behavior linked
+to HANDOFF-source-lifecycle.md. Also
+`/system/` and `/system/audio/` same-document Status navigation (including
+direct-link fallback and one shared poll loop),
 the normalized audio-health rendering boundary, and shared header-tab ownership
 rechecked against `jasper/web/system_setup.py`,
 `deploy/assets/system-status/js/`, `jasper/control/audio_health.py`, and

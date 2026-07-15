@@ -4,20 +4,19 @@
 
 """Combo-mode USB liveness primitives.
 
-On a USB combo box (``JASPER_FANIN_USB_DIRECT=enabled``) jasper-fanin
-DIRECT-captures the gadget and the jasper-usbsink bridge runs in standby. The
-bridge's ``playing`` / ``rms_dbfs`` fields are frozen idle values; mux has to
-infer liveness from fan-in's direct-lane counters.
+On a USB combo box (``JASPER_FANIN_USB_DIRECT=enabled``) jasper-fanin is the
+sole live ingress owner and DIRECT-captures the gadget. Mux infers temporal
+liveness from fan-in's direct-lane telemetry.
 """
 from __future__ import annotations
 
 from jasper.mux import ComboLiveness, USBSINK_COMBO_STOP_TICKS, step_combo_liveness
 from jasper.source_state import (
     USBSINK_PLAYING_RMS_DBFS,
-    usbsink_bridge_in_standby,
     usbsink_direct_audible,
     usbsink_direct_frames_read,
     usbsink_direct_muted,
+    usbsink_direct_playing,
     usbsink_direct_rms_dbfs,
 )
 
@@ -38,18 +37,45 @@ def _fanin_status(
     }
 
 
-def test_standby_flag_true_is_combo():
-    assert usbsink_bridge_in_standby({"standby": True, "playing": False}) is True
+def test_direct_playing_requires_capturing_health_and_audible_level():
+    assert (
+        usbsink_direct_playing(
+            _fanin_status(
+                "direct",
+                rms_dbfs=-12.0,
+                direct={"health": "capturing"},
+            ),
+        )
+        is True
+    )
+    assert (
+        usbsink_direct_playing(
+            _fanin_status(
+                "direct",
+                rms_dbfs=-90.0,
+                direct={"health": "capturing"},
+            ),
+        )
+        is False
+    )
+    assert (
+        usbsink_direct_playing(
+            _fanin_status(
+                "direct",
+                rms_dbfs=-12.0,
+                direct={"health": "waiting"},
+            ),
+        )
+        is False
+    )
 
 
-def test_no_standby_flag_is_solo():
-    assert usbsink_bridge_in_standby({"playing": True}) is False
-    assert usbsink_bridge_in_standby({"standby": False, "playing": True}) is False
-
-
-def test_standby_missing_or_bad_state_is_solo():
-    assert usbsink_bridge_in_standby(None) is False
-    assert usbsink_bridge_in_standby(["nope"]) is False  # type: ignore[arg-type]
+def test_direct_playing_older_snapshot_falls_back_to_audibility():
+    assert usbsink_direct_playing(_fanin_status("direct", rms_dbfs=-12.0)) is True
+    assert usbsink_direct_playing(_fanin_status("direct", rms_dbfs=-90.0)) is False
+    assert usbsink_direct_playing(_fanin_status("direct")) is False
+    assert usbsink_direct_playing(_fanin_status("lane", rms_dbfs=-12.0)) is None
+    assert usbsink_direct_playing(None) is None
 
 
 def test_direct_liveness_prefers_resampler_input_frames():

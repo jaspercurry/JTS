@@ -4,9 +4,10 @@
 
 """Pure policy for the USB-combo runtime-fallback watcher (defect 2026-07-10).
 
-WHY THIS EXISTS — the P3 USB combo (fan-in DIRECT-captures ``hw:UAC2Gadget``, the
-usbsink bridge in standby) is only (re)resolved on a CONFIG change: boot, deploy,
-or a ``/sources/`` toggle (all three run ``jasper-fanin-coupling-reconcile
+WHY THIS EXISTS — the P3 USB path (fan-in DIRECT-captures ``hw:UAC2Gadget`` as
+the sole USB ingress; ``jasper-usbsink.service`` is only a process-free readiness
+marker) is only (re)resolved on a CONFIG change: boot, deploy, or a ``/sources/``
+toggle (all three run ``jasper-fanin-coupling-reconcile
 --auto``). Nothing re-resolves it on a LIVE capture failure. So if fan-in's direct
 capture of the gadget breaks at runtime (the gadget rebuilt underneath a live
 stream — the flowing→dead zombie handle), USB audio goes silent with no fallback

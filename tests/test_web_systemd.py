@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
 import time
 from http.server import BaseHTTPRequestHandler
 
@@ -174,6 +175,45 @@ def test_install_request_idle_bump_patches_log_request() -> None:
     h.log_request(200, 12)
     assert tracker._last_request > t0
     assert bumps_before == 1  # original was called
+
+
+def test_long_inflight_request_cannot_trigger_idle_exit() -> None:
+    """A legal slow POST remains active beyond the ordinary idle threshold."""
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _H:
+        def parse_request(self) -> bool:
+            return True
+
+        def handle_one_request(self) -> None:
+            assert self.parse_request()
+            entered.set()
+            assert release.wait(timeout=2)
+
+        def log_request(self, code="-", size="-") -> None:
+            pass
+
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
+    _systemd.install_request_idle_bump(_H, tracker)
+    handler = _H()
+    worker = threading.Thread(target=handler.handle_one_request)
+    worker.start()
+    assert entered.wait(timeout=1)
+    with tracker._lock:
+        tracker._last_request = time.monotonic() - 10
+    expired, _idle, active = tracker._idle_status()
+    assert active == 1
+    assert expired is False
+
+    release.set()
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+    with tracker._lock:
+        tracker._last_request = time.monotonic() - 10
+    expired, _idle, active = tracker._idle_status()
+    assert active == 0
+    assert expired is True
 
 
 def test_notify_with_no_socket_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:

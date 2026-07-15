@@ -20,12 +20,116 @@ from typing import Optional
 from ...config import Config
 from ...mux_mode_persistence import DEFAULT_PATH as _MUX_MODE_DEFAULT_PATH
 from ...music_sources import MUSIC_SOURCES, Source
+from ...source_intent import (
+    read_bluetooth_rfkill_state,
+    source_intent_enabled,
+)
 from ._registry import doctor_check
 from ._shared import CheckResult, _parked_as_bonded_follower, _run
 
 # ----------------------------------------------------------------------
 # Per-renderer health: each daemon's own surface (HTTP / DBus / system).
 # ----------------------------------------------------------------------
+
+
+def _intentional_source_off(
+    source: Source,
+    label: str,
+    *,
+    units: tuple[str, ...],
+    check_bluetooth_radio: bool = False,
+) -> CheckResult | None:
+    """Return a healthy Off only after proving derived runtime is also Off."""
+    try:
+        enabled = source_intent_enabled(source)
+    except RuntimeError as exc:
+        return CheckResult(
+            label,
+            "fail",
+            f"source intent is invalid or unreadable: {exc}",
+        )
+    if not enabled:
+        drift: list[str] = []
+        for unit in units:
+            state = _run(["systemctl", "is-active", unit]).stdout.strip()
+            if state == "active":
+                drift.append(f"{unit} is still active")
+        if check_bluetooth_radio:
+            try:
+                rfkill = read_bluetooth_rfkill_state()
+            except RuntimeError as exc:
+                return CheckResult(
+                    label,
+                    "fail",
+                    f"Bluetooth is intentionally off but RF-kill state "
+                    f"cannot be verified: {exc}",
+                )
+            if rfkill.present and not rfkill.fully_soft_blocked:
+                drift.append("Bluetooth radio is not RF-killed")
+            powered = _run(["bluetoothctl", "show"])
+            if any(
+                line.strip().lower() == "powered: yes"
+                for line in powered.stdout.splitlines()
+            ):
+                drift.append("BlueZ still reports Powered: yes")
+        if drift:
+            return CheckResult(
+                label,
+                "fail",
+                "source intent is off but derived state drifted: "
+                + "; ".join(drift),
+            )
+        return CheckResult(
+            label,
+            "ok",
+            "intentionally off in Music sources (/sources/)",
+        )
+    return None
+
+
+def _desired_bluetooth_radio_failure(label: str) -> CheckResult | None:
+    """Return a failure unless desired-On reached RF-kill and BlueZ."""
+    try:
+        rfkill = read_bluetooth_rfkill_state()
+    except RuntimeError as exc:
+        return CheckResult(
+            label,
+            "fail",
+            f"source intent is on but RF-kill state cannot be verified: {exc}",
+        )
+
+    drift: list[str] = []
+    if not rfkill.present:
+        drift.append("Bluetooth RF-kill radio is not present")
+    if rfkill.soft_blocked:
+        drift.append("Bluetooth radio is soft blocked")
+    if rfkill.hard_blocked:
+        drift.append("Bluetooth radio is hard blocked")
+    try:
+        powered = _run(["bluetoothctl", "show"])
+    except (OSError, subprocess.SubprocessError) as exc:
+        drift.append(f"BlueZ Powered state cannot be read: {exc}")
+    else:
+        powered_value: str | None = None
+        for raw in powered.stdout.splitlines():
+            key, separator, value = raw.strip().partition(":")
+            if separator and key == "Powered":
+                powered_value = value.strip().lower()
+                break
+        if powered.returncode != 0 or powered_value is None:
+            drift.append("BlueZ Powered state is unavailable")
+        elif powered_value != "yes":
+            drift.append(f"BlueZ reports Powered: {powered_value}")
+
+    if not drift:
+        return None
+    return CheckResult(
+        label,
+        "fail",
+        "source intent is on but the Bluetooth radio is not ready: "
+        + "; ".join(drift),
+    )
+
 
 @doctor_check(order=9, group="renderers", label="librespot.service", needs_cfg=True)
 def check_librespot_running(cfg: Config) -> CheckResult:
@@ -41,6 +145,13 @@ def check_librespot_running(cfg: Config) -> CheckResult:
             "parked (bonded follower) — the dumb-follower profile stops "
             "this unit while paired; it restores on unbond",
         )
+    intentional_off = _intentional_source_off(
+        Source.SPOTIFY,
+        "librespot.service",
+        units=("librespot.service",),
+    )
+    if intentional_off is not None:
+        return intentional_off
     bin_path = "/usr/bin/librespot"
     if not os.path.isfile(bin_path):
         return CheckResult(
@@ -75,6 +186,13 @@ def check_shairport_sync_ap2() -> CheckResult:
             "parked (bonded follower) — the dumb-follower profile stops "
             "this unit while paired; it restores on unbond",
         )
+    intentional_off = _intentional_source_off(
+        Source.AIRPLAY,
+        "shairport-sync AP2",
+        units=("shairport-sync.service", "nqptp.service"),
+    )
+    if intentional_off is not None:
+        return intentional_off
     if shutil.which("shairport-sync") is None:
         return CheckResult(
             "shairport-sync AP2", "fail",
@@ -108,6 +226,13 @@ def check_nqptp_running() -> CheckResult:
             "parked (bonded follower) — the dumb-follower profile stops "
             "this unit while paired; it restores on unbond",
         )
+    intentional_off = _intentional_source_off(
+        Source.AIRPLAY,
+        "nqptp.service",
+        units=("shairport-sync.service", "nqptp.service"),
+    )
+    if intentional_off is not None:
+        return intentional_off
     p = _run(["systemctl", "is-active", "nqptp.service"])
     state = p.stdout.strip()
     if state == "active":
@@ -154,6 +279,17 @@ def check_bluealsa() -> CheckResult:
             "parked (bonded follower) — the dumb-follower profile stops "
             "this unit while paired; it restores on unbond",
         )
+    intentional_off = _intentional_source_off(
+        Source.BLUETOOTH,
+        "bluealsa",
+        units=("bluealsa.service", "bluealsa-aplay.service", "bt-agent.service"),
+        check_bluetooth_radio=True,
+    )
+    if intentional_off is not None:
+        return intentional_off
+    radio_failure = _desired_bluetooth_radio_failure("bluealsa")
+    if radio_failure is not None:
+        return radio_failure
     p1 = _run(["systemctl", "is-active", "bluealsa.service"])
     p2 = _run(["systemctl", "is-active", "bluealsa-aplay.service"])
     s1 = p1.stdout.strip()
@@ -175,6 +311,13 @@ def check_bluetooth_pairing_policy() -> CheckResult:
             "parked (bonded follower) — the dumb-follower profile stops "
             "this while paired; the pair leader owns playback + the mic",
         )
+    intentional_off = _intentional_source_off(
+        Source.BLUETOOTH,
+        "Bluetooth pairing policy",
+        units=("bt-agent.service",),
+    )
+    if intentional_off is not None:
+        return intentional_off
     expected_exec = "/opt/jasper/.venv/bin/jasper-bluetooth-agent"
     try:
         p = _run([
@@ -334,6 +477,13 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
             "this while paired; the pair leader owns playback + the mic",
         )
     label = "Spotify Connect device"
+    intentional_off = _intentional_source_off(
+        Source.SPOTIFY,
+        label,
+        units=("librespot.service",),
+    )
+    if intentional_off is not None:
+        return intentional_off
     if not cfg.spotify_enabled:
         return CheckResult(label, "ok", "not configured (skipped)")
 

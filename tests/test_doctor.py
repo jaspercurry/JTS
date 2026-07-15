@@ -3917,7 +3917,7 @@ def test_route_latency_evidence_fails_missing_claim_artifact(monkeypatch, tmp_pa
     monkeypatch.setattr(
         doctor.audio,
         "_route_live_state_issues_for_doctor",
-        lambda observed_plan: (),
+        lambda observed_plan, **_kwargs: (),
     )
     monkeypatch.setenv("JASPER_AUDIO_VALIDATION_DIR", str(tmp_path))
 
@@ -3947,9 +3947,10 @@ def test_route_latency_evidence_warns_when_p99_not_certified(
         dac_id=APPLE_USB_C_DONGLE_DEVICE_ID,
         route_config_hash=plan.route_config_hash,
         camilla_config_hash=str(identity["camilla_config_hash"]),
+        fanin_direct_config=identity["fanin_direct_config"],
+        fanin_direct_negotiated_buffer_frames=768,
         fanin_resampler_config=identity["fanin_resampler_config"],
         outputd_config=identity["outputd_config"],
-        rust_bridge_config=identity["rust_bridge_config"],
         uac2_gadget_attrs=identity["uac2_gadget_attrs"],
         p95_ms=38.0,
         p99_ms=None,
@@ -3965,7 +3966,7 @@ def test_route_latency_evidence_warns_when_p99_not_certified(
     monkeypatch.setattr(
         doctor.audio,
         "_route_live_state_issues_for_doctor",
-        lambda observed_plan: (),
+        lambda observed_plan, **_kwargs: (),
     )
     monkeypatch.setenv("JASPER_AUDIO_VALIDATION_DIR", str(tmp_path))
 
@@ -3995,9 +3996,10 @@ def test_route_latency_evidence_passes_certified_promotion_artifact(
         dac_id=APPLE_USB_C_DONGLE_DEVICE_ID,
         route_config_hash=plan.route_config_hash,
         camilla_config_hash=str(identity["camilla_config_hash"]),
+        fanin_direct_config=identity["fanin_direct_config"],
+        fanin_direct_negotiated_buffer_frames=768,
         fanin_resampler_config=identity["fanin_resampler_config"],
         outputd_config=identity["outputd_config"],
-        rust_bridge_config=identity["rust_bridge_config"],
         uac2_gadget_attrs=identity["uac2_gadget_attrs"],
         p95_ms=38.0,
         p99_ms=41.0,
@@ -4014,7 +4016,7 @@ def test_route_latency_evidence_passes_certified_promotion_artifact(
     monkeypatch.setattr(
         doctor.audio,
         "_route_live_state_issues_for_doctor",
-        lambda observed_plan: (),
+        lambda observed_plan, **_kwargs: (),
     )
     monkeypatch.setenv("JASPER_AUDIO_VALIDATION_DIR", str(tmp_path))
 
@@ -4044,9 +4046,10 @@ def test_route_latency_evidence_passes_certified_artifact_while_lane_idle(
         dac_id=APPLE_USB_C_DONGLE_DEVICE_ID,
         route_config_hash=plan.route_config_hash,
         camilla_config_hash=str(identity["camilla_config_hash"]),
+        fanin_direct_config=identity["fanin_direct_config"],
+        fanin_direct_negotiated_buffer_frames=768,
         fanin_resampler_config=identity["fanin_resampler_config"],
         outputd_config=identity["outputd_config"],
-        rust_bridge_config=identity["rust_bridge_config"],
         uac2_gadget_attrs=identity["uac2_gadget_attrs"],
         p95_ms=38.0,
         p99_ms=41.0,
@@ -4056,26 +4059,7 @@ def test_route_latency_evidence_passes_certified_artifact_while_lane_idle(
     )
     artifact_dir = tmp_path / "artifacts"
     audio_validation.write_artifact(artifact, directory=artifact_dir)
-    bridge = identity["rust_bridge_config"]
-    state_path = tmp_path / "usbsink-state.json"
-    state_path.write_text(
-        json.dumps(
-            {
-                "implementation": bridge["implementation"],
-                "period_frames": bridge["period_frames"],
-                "ring": {"capacity_periods": bridge["ring_periods"]},
-            }
-        ),
-        encoding="utf-8",
-    )
-    real_path = Path
-    monkeypatch.setattr(
-        doctor.audio,
-        "Path",
-        lambda value: state_path
-        if value == "/run/jasper-usbsink/state.json"
-        else real_path(value),
-    )
+    direct = identity["fanin_direct_config"]
     resampler = identity["fanin_resampler_config"]
     expected_target = (
         resampler["target_frames"] + resampler["warmup_cushion_frames"]
@@ -4088,7 +4072,12 @@ def test_route_latency_evidence_passes_certified_artifact_while_lane_idle(
                 {
                     "label": "usbsink",
                     "source": "direct",
-                    "direct": {"health": "idle"},
+                    "direct": {
+                        "device": direct["device"],
+                        "health": "idle",
+                        "period_frames": direct["period_frames"],
+                        "buffer_frames": direct["min_buffer_frames"],
+                    },
                     "resampler": {
                         "locked": False,
                         "target_fill_frames": expected_target,
@@ -4111,6 +4100,57 @@ def test_route_latency_evidence_passes_certified_artifact_while_lane_idle(
     assert "live_fanin_resampler_unlocked" not in r.detail
 
 
+def test_route_latency_live_state_rejects_changed_negotiated_direct_buffer(
+    monkeypatch,
+):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            )
+        },
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_mode="solo",
+    )
+    direct = plan.route_latency_identity()["fanin_direct_config"]
+    resampler = plan.route_latency_identity()["fanin_resampler_config"]
+    monkeypatch.setattr(
+        doctor.audio,
+        "_read_status_socket",
+        lambda _path: {
+            "inputs": [
+                {
+                    "label": "usbsink",
+                    "source": "direct",
+                    "direct": {
+                        "device": direct["device"],
+                        "health": "capturing",
+                        "period_frames": direct["period_frames"],
+                        "buffer_frames": 1024,
+                    },
+                    "resampler": {
+                        "locked": True,
+                        "target_fill_frames": (
+                            resampler["target_frames"]
+                            + resampler["warmup_cushion_frames"]
+                        ),
+                    },
+                }
+            ]
+        },
+    )
+
+    issues = doctor.audio._route_live_state_issues_for_doctor(
+        plan,
+        negotiated_buffer_frames=768,
+    )
+
+    assert (
+        "live_fanin_direct_mismatch:usbsink:negotiated_buffer_frames"
+        in issues
+    )
+
+
 def test_route_latency_evidence_fails_live_state_mismatch(
     monkeypatch,
     tmp_path,
@@ -4131,9 +4171,10 @@ def test_route_latency_evidence_fails_live_state_mismatch(
         dac_id=APPLE_USB_C_DONGLE_DEVICE_ID,
         route_config_hash=plan.route_config_hash,
         camilla_config_hash=str(identity["camilla_config_hash"]),
+        fanin_direct_config=identity["fanin_direct_config"],
+        fanin_direct_negotiated_buffer_frames=768,
         fanin_resampler_config=identity["fanin_resampler_config"],
         outputd_config=identity["outputd_config"],
-        rust_bridge_config=identity["rust_bridge_config"],
         uac2_gadget_attrs=identity["uac2_gadget_attrs"],
         p95_ms=38.0,
         p99_ms=41.0,
@@ -4150,7 +4191,9 @@ def test_route_latency_evidence_fails_live_state_mismatch(
     monkeypatch.setattr(
         doctor.audio,
         "_route_live_state_issues_for_doctor",
-        lambda observed_plan: ("live_fanin_resampler_unlocked:usbsink",),
+        lambda observed_plan, **_kwargs: (
+            "live_fanin_resampler_unlocked:usbsink",
+        ),
     )
     monkeypatch.setenv("JASPER_AUDIO_VALIDATION_DIR", str(tmp_path))
 
@@ -6682,6 +6725,144 @@ def test_renderer_checks_probe_normally_when_solo(monkeypatch):
     monkeypatch.setattr(rdoc.os.path, "isfile", lambda p: False)
     r = rdoc.check_librespot_running(None)
     assert r.status == "fail"  # binary missing probes through, no skip
+
+
+def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
+    """Intentional Off is desired state, not a dead-renderer incident."""
+    from jasper.cli.doctor import renderers as rdoc
+    from jasper.source_intent import BluetoothRfkillState
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda source: False)
+    monkeypatch.setattr(
+        rdoc,
+        "_run",
+        lambda cmd: SimpleNamespace(
+            returncode=3,
+            stdout="Powered: no\n" if cmd[:2] == ["bluetoothctl", "show"] else "inactive\n",
+            stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        rdoc,
+        "read_bluetooth_rfkill_state",
+        lambda: BluetoothRfkillState(True, True, False),
+    )
+
+    checks = (
+        lambda: rdoc.check_librespot_running(None),
+        rdoc.check_shairport_sync_ap2,
+        rdoc.check_bluealsa,
+        rdoc.check_bluetooth_pairing_policy,
+    )
+    for check in checks:
+        result = check()
+        assert result.status == "ok", result
+        assert "intentionally off" in result.detail
+
+
+def test_renderer_check_fails_when_household_off_runtime_is_active(monkeypatch):
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda source: False)
+    monkeypatch.setattr(
+        rdoc,
+        "_run",
+        lambda cmd: SimpleNamespace(returncode=0, stdout="active\n", stderr=""),
+    )
+    result = rdoc.check_librespot_running(None)
+
+    assert result.status == "fail"
+    assert "intent is off" in result.detail
+    assert "librespot.service is still active" in result.detail
+
+
+def test_renderer_check_fails_loud_on_invalid_source_intent(monkeypatch):
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+
+    def invalid(_source):
+        raise RuntimeError("bad source intent")
+
+    monkeypatch.setattr(rdoc, "source_intent_enabled", invalid)
+    result = rdoc.check_bluealsa()
+
+    assert result.status == "fail"
+    assert "bad source intent" in result.detail
+
+
+def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
+    monkeypatch,
+):
+    from jasper.cli.doctor import renderers as rdoc
+    from jasper.source_intent import BluetoothRfkillState
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(
+        rdoc,
+        "read_bluetooth_rfkill_state",
+        lambda: BluetoothRfkillState(True, True, False),
+    )
+    monkeypatch.setattr(
+        rdoc,
+        "_run",
+        lambda cmd: SimpleNamespace(
+            returncode=0,
+            stdout="Powered: no\n",
+            stderr="",
+        ),
+    )
+
+    result = rdoc.check_bluealsa()
+
+    assert result.status == "fail"
+    assert "source intent is on" in result.detail
+    assert "soft blocked" in result.detail
+    assert "Powered: no" in result.detail
+
+
+def test_bluealsa_desired_on_proves_radio_and_units(monkeypatch):
+    from jasper.cli.doctor import renderers as rdoc
+    from jasper.source_intent import BluetoothRfkillState
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(
+        rdoc,
+        "read_bluetooth_rfkill_state",
+        lambda: BluetoothRfkillState(True, False, False),
+    )
+
+    def run(cmd):
+        stdout = "Powered: yes\n" if cmd[0] == "bluetoothctl" else "active\n"
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(rdoc, "_run", run)
+
+    result = rdoc.check_bluealsa()
+
+    assert result.status == "ok"
+    assert "daemon + aplay active" in result.detail
+
+
+def test_bluealsa_desired_on_fails_when_rfkill_is_unreadable(monkeypatch):
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
+    def unreadable_rfkill():
+        raise RuntimeError("rfkill unavailable")
+
+    monkeypatch.setattr(rdoc, "read_bluetooth_rfkill_state", unreadable_rfkill)
+
+    result = rdoc.check_bluealsa()
+
+    assert result.status == "fail"
+    assert "cannot be verified" in result.detail
+    assert "rfkill unavailable" in result.detail
 
 
 def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):

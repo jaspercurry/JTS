@@ -41,11 +41,17 @@ def _fake_auto(ok=True):
     )
 
 
-def _run(tmp_path, status, *, reconcile=None):
-    calls = {"reconcile": 0}
+def _run(tmp_path, status, *, reconcile=None, withdraw=None):
+    calls = {"reconcile": 0, "withdraw": 0, "order": []}
+
+    def _withdraw():
+        calls["withdraw"] += 1
+        calls["order"].append("withdraw")
+        return (withdraw or (lambda: (True, "")))()
 
     def _reconcile():
         calls["reconcile"] += 1
+        calls["order"].append("reconcile")
         return (reconcile or _fake_auto)()
 
     res = cr.run_health_check(
@@ -54,6 +60,8 @@ def _run(tmp_path, status, *, reconcile=None):
         marker_path=str(tmp_path / "fallback.json"),
         read_fanin_status=lambda: (status, ""),
         run_reconcile=_reconcile,
+        withdraw_usb_audio=_withdraw,
+        source_intent_env_path=str(tmp_path / "source_intent.env"),
     )
     return res, calls
 
@@ -90,6 +98,8 @@ def test_sustained_broken_disarms_and_writes_marker(tmp_path):
     assert res2.disarmed is True
     assert res2.ok is True
     assert calls2["reconcile"] == 1
+    assert calls2["withdraw"] == 1
+    assert calls2["order"] == ["withdraw", "reconcile"]
     marker = ch.read_fallback_marker(str(tmp_path / "fallback.json"))
     assert marker is not None
     assert "consecutive" in marker.reason
@@ -135,6 +145,22 @@ def test_disarm_failure_surfaces_not_ok(tmp_path):
     assert res.ok is False
 
 
+def test_uac2_withdraw_failure_keeps_direct_consumer_armed_for_retry(tmp_path):
+    _run(tmp_path, _status(health="broken"))
+    res, calls = _run(
+        tmp_path,
+        _status(health="broken"),
+        withdraw=lambda: (False, "gadget restart failed"),
+    )
+
+    assert res.ok is False
+    assert res.disarmed is False
+    assert calls["withdraw"] == 1
+    assert calls["reconcile"] == 0
+    assert "UAC2 withdrawal failed" in res.detail
+    assert ch.fallback_active(str(tmp_path / "fallback.json")) is True
+
+
 def test_read_error_is_silent_noop(tmp_path):
     # fan-in socket down -> None status -> not watched, silent, no marker.
     res = cr.run_health_check(
@@ -143,9 +169,142 @@ def test_read_error_is_silent_noop(tmp_path):
         marker_path=str(tmp_path / "fallback.json"),
         read_fanin_status=lambda: (None, "connection refused"),
         run_reconcile=lambda: _fake_auto(),
+        source_intent_env_path=str(tmp_path / "source_intent.env"),
     )
     assert res.watched is False
     assert res.ok is True
+
+
+def test_health_body_timeout_is_not_misreported_as_source_lock_contention(tmp_path):
+    def _timed_out_status_read():
+        raise TimeoutError("fan-in status deadline")
+
+    with pytest.raises(TimeoutError, match="fan-in status deadline"):
+        cr.run_health_check(
+            reason="t",
+            tick_state_path=str(tmp_path / "tick.json"),
+            marker_path=str(tmp_path / "fallback.json"),
+            read_fanin_status=_timed_out_status_read,
+            source_intent_env_path=str(tmp_path / "source_intent.env"),
+        )
+
+
+def test_health_lock_order_is_source_then_coupling_and_reverse_on_release(
+    tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+
+    from jasper import source_intent
+
+    events = []
+
+    @contextmanager
+    def _source_lock(**_kwargs):
+        events.append("source_acquired")
+        try:
+            yield
+        finally:
+            events.append("source_released")
+
+    class _CouplingLockHandle:
+        def close(self):
+            events.append("coupling_released")
+
+    def _coupling_lock(*_args, **_kwargs):
+        assert events == ["source_acquired"]
+        events.append("coupling_acquired")
+        return cr.EntryLock(outcome="acquired", fh=_CouplingLockHandle())
+
+    monkeypatch.setattr(source_intent, "source_reconcile_lock", _source_lock)
+    monkeypatch.setattr(cr, "_acquire_entry_lock", _coupling_lock)
+
+    result = cr.run_health_check(
+        tick_state_path=str(tmp_path / "tick.json"),
+        marker_path=str(tmp_path / "fallback.json"),
+        source_intent_env_path=str(tmp_path / "source_intent.env"),
+        read_fanin_status=lambda: (None, "not running"),
+    )
+
+    assert result.ok is True
+    assert events == [
+        "source_acquired",
+        "coupling_acquired",
+        "coupling_released",
+        "source_released",
+    ]
+
+
+def test_concurrent_source_reconcile_and_health_cannot_deadlock(tmp_path, monkeypatch):
+    """A source pass holding source must still acquire coupling while health waits.
+
+    This recreates the former deadlock shape without timing sleeps.  If health
+    took coupling first, the source-side acquisition below would contend and the
+    two passes could make no progress.
+    """
+    from contextlib import contextmanager
+    import threading
+
+    from jasper import source_intent
+
+    source_path = str(tmp_path / "source_intent.env")
+    coupling_path = tmp_path / "entry.lock"
+    real_source_lock = source_intent.source_reconcile_lock
+    source_held = threading.Event()
+    health_attempted_source = threading.Event()
+    let_source_take_coupling = threading.Event()
+    outcomes = []
+
+    @contextmanager
+    def _observed_health_source_lock(**kwargs):
+        health_attempted_source.set()
+        with real_source_lock(**kwargs):
+            yield
+
+    monkeypatch.setattr(
+        source_intent,
+        "source_reconcile_lock",
+        _observed_health_source_lock,
+    )
+
+    def _source_pass():
+        with real_source_lock(env_path=source_path, timeout_sec=1.0):
+            source_held.set()
+            assert let_source_take_coupling.wait(1.0)
+            lock = cr._acquire_entry_lock(
+                coupling_path,
+                timeout_seconds=0.5,
+                poll_seconds=0.01,
+            )
+            outcomes.append(("source", lock.outcome))
+            if lock.fh is not None:
+                lock.fh.close()
+
+    def _health_pass():
+        result = cr.run_health_check(
+            tick_state_path=str(tmp_path / "tick.json"),
+            marker_path=str(tmp_path / "fallback.json"),
+            source_intent_env_path=source_path,
+            source_lock_timeout_seconds=1.0,
+            entry_lock_path=coupling_path,
+            entry_lock_timeout_seconds=0.5,
+            read_fanin_status=lambda: (None, "not running"),
+        )
+        outcomes.append(("health", result.ok))
+
+    source_thread = threading.Thread(target=_source_pass)
+    health_thread = threading.Thread(target=_health_pass)
+    source_thread.start()
+    assert source_held.wait(1.0)
+    health_thread.start()
+    assert health_attempted_source.wait(1.0)
+    let_source_take_coupling.set()
+    source_thread.join(2.0)
+    health_thread.join(2.0)
+
+    assert not source_thread.is_alive()
+    assert not health_thread.is_alive()
+    assert ("source", "acquired") in outcomes
+    assert ("health", True) in outcomes
 
 
 # ---- CLI: --auto clears the marker (clear-and-retry); --health mutual excl ---
@@ -236,6 +395,7 @@ def test_cli_health_recovered_transition_reaches_configured_handler(
             marker_path=str(tmp_path / "fallback.json"),
             read_fanin_status=lambda: (_status(health="capturing"), ""),
             run_reconcile=lambda: _fake_auto(),
+            source_intent_env_path=str(tmp_path / "source_intent.env"),
         )
 
     monkeypatch.setattr(cr, "run_health_check", _wired)

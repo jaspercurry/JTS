@@ -35,18 +35,42 @@ tier.** There are exactly two install profiles — `full` and `streambox`. The
 former third tier (`endpoint` / `satellite`) was removed; those tokens are
 still accepted and map to `streambox` so a field box auto-migrates on its
 next deploy. A box that just plays a bonded channel — the old "endpoint" — is
-now any full/streambox box acting as a multiroom **follower**: the grouping
-reconciler parks its local source resource groups (bridge daemons plus any
-advertise-side resources such as the USB Audio Input gadget, via
-`jasper/local_sources/registry.py`) and each parked local-source unit also
-has the `jasper-local-source-allowed` `ExecCondition` start gate, so boot and
-manual starts skip while the role is a valid bonded follower. On a full
+now any full/streambox box acting as a multiroom **follower**: after grouping's
+own role/data-plane work lands, the canonical source coordinator parks every
+declared source without rewriting household on/off intent;
+the complete desired-versus-effective and restore contract is owned by
+[HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md). Each parked
+local-source unit also has the `jasper-local-source-allowed` `ExecCondition`
+start gate, so boot and manual starts skip while the role is a valid bonded
+follower. After applying a role, grouping hands off once to the source
+coordinator; it drains an already-running source pass, then synchronously runs
+a fresh pass so success means the role's sources are converged. The source
+owner delegates Bluetooth accessories and USB coupling in its own order, while
+grouping acquires no source-unit or USB-routing knowledge. On a full
 speaker, the reconciler parks its voice/AEC brain via the derived park flag;
 the landing page suppresses Source/Sound and
 relabels Volume for followers. Every member, either role, uses
 the single `snapclient -> FIFO -> outputd` member lane; there is no longer a
 direct-ALSA endpoint variant. The Zero 2 W lab runbook lives in
 [`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md).
+
+Requested and landed roles are deliberately separate. The wizard-owned
+`grouping.env` keeps a requested follower bond when a ring/precheck safety gate
+refuses it; the reconciler falls back to solo and preserves the block reason.
+Its root-owned `/var/lib/jasper-grouping/effective-role.json` carries a
+fingerprinted effective local-source permission plus the Linux boot ID that
+produced it. The dedicated persistent `StateDirectory` preserves a prior
+follower deny across interrupted transitions and reboot, while boot freshness
+invalidates old grants. A requested follower is denied before role mutation and
+is granted solo-source permission only after the solo DSP restore and unit plan
+positively land; prior-boot, stale, malformed, or missing grants park fail-safe. A landed follower changing
+to solo/leader is also deny-first: the guard reports
+`role_transition_in_progress`, grouping publishes the new request's deny before
+teardown, and the matching same-boot grant appears only after every landed-role
+predicate succeeds immediately before the source-owner handoff. A failed
+transition leaves the deny in place for the next reconcile. The detailed source
+guard/UI contract lives in
+[HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md#role-parking).
 
 **Increment 5 PR-1 (the bonded MUSIC dataplane) is BUILT (2026-06-11).**
 A bond now moves audio end-to-end: the leader's CamillaDSP bakes the shared
@@ -286,9 +310,18 @@ Increment 6 (per-follower calibration). What exists:
   `jasper-aec-reconcile.service` with `--no-block` because AEC is the sole
   owner of `jasper-voice` / `jasper-aec-bridge` and may start a `Type=notify`
   daemon. Same-owner applies that need ordering (outputd lane env, shairport
-  offset, snap units) remain blocking. `jasper-grouping-reconcile.service`
-  carries `TimeoutStartSec=60`, so a future accidental blocking child fails
-  visibly instead of leaving grouping/voice startup in `activating` limbo.
+  offset, snap units) remain blocking. The role handoff probes the source
+  coordinator after grouping applies its role; if an older activation is
+  running, a bounded blocking `start` joins it without interruption, then a
+  second blocking `start` runs the guaranteed-fresh role pass.
+  `jasper-grouping-reconcile.service` therefore carries the conservative finite
+  `TimeoutStartSec=2526`: its two-unit Snapcast plan, one-time provisioning
+  (apt update + install), six bounded post-plan service/hardware actions, up to
+  two 788-second source starts, manager probes, and a terminal margin. It never
+  uses `restart` on the source owner, so ordered source/USB work remains atomic.
+  Direct/install invocations also bound every adjacent
+  `systemctl` call: five seconds for manager requests and 60 seconds for
+  blocking local jobs.
   **Root incident:** 2026-06-24
   jts.local (bonded follower) took six `/grouping/set` POSTs from the leader in
   44 s — each restarting `jasper-outputd` — and rebooted on outputd
@@ -1628,8 +1661,17 @@ rearchitecture.
 | jasper-camilla / jasper-fanin | run | run (camilla bakes the pipe) | run (inv-B fallback lane only) | grouping reconciler (config swap) |
 | jasper-snapserver | stopped | runs | stopped | grouping reconciler (plan) |
 | jasper-snapclient | stopped | runs | runs | grouping reconciler (plan) |
-| Local source resource groups (`jasper/local_sources/registry.py`: AirPlay+nqptp, Spotify, Bluetooth audio/agent, USB bridge+gadget, shared mux arbiter) | per /sources/ wizard | per /sources/ wizard | **parked** (stop resource groups; restore intent units on exit) | grouping reconciler (plan; STOP never disable — /sources/ owns enable/disable) |
+| Local source resource groups (`jasper/local_sources/registry.py`) | per persisted source intent | per persisted source intent | **parked** (resource groups stopped; USB audio recomposed away) | [source lifecycle](HANDOFF-source-lifecycle.md) is the single lifecycle owner; grouping supplies the completed role and waits for convergence |
 | jasper-voice + jasper-aec-bridge (+aec-init) | per provider/mic gates | per provider/mic gates | **parked** (disable --now) | **jasper-aec-reconcile only** — grouping derives `JASPER_GROUPING_VOICE_PARK=1` into grouping-voice.env and kicks it; bond-validity logic is never re-derived in shell |
+
+Grouping instead invokes only `jasper-source-intent-reconcile.service` after
+this table's role plan lands and waits for its terminal result. That coordinator
+then invokes the existing accessory and USB-coupling owners where required; it
+alone knows their source ordering. An already-activating source pass is joined
+before the guaranteed-fresh pass runs, preventing role snapshot coalescing.
+AirPlay's grouping latency file is refreshed with
+`try-restart`, so an intentional household Off is never turned back on by a
+bond transition.
 
 Interface contract while a follower (every surface tells the same
 story; "parked-by-role" is surfaced state, NEVER a silent failure):
@@ -2216,6 +2258,9 @@ parking is correctness, not just UX. STOP, never disable — /sources/
 keeps systemd enable/disable as the household's intent; solo/leader/
 invalid plans carry NEW "restore" intents (start-only-if-enabled, applied
 at the I/O layer) so unbond puts sources back exactly per the wizard.
+The current cross-source contract now lives in
+[HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md); this paragraph is
+the historical record of why grouping gained the park operation.
 _apply treats absent units as clean no-ops (the endpoint install tier's
 dependency: stop/restore against never-installed units must not flip
 rc). ShairportSupervisor gains a parked_by_role gate (no WARN buildup
@@ -2775,7 +2820,10 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-07-12 (`/sync/apply` bounded session ownership, rooms
+Last verified: 2026-07-14 (active/dumb follower transition deny and local-source role ownership rechecked against
+`jasper.multiroom.reconcile`, `jasper.local_sources`, and
+`jasper.source_intent`; lifecycle detail linked to
+HANDOFF-source-lifecycle.md. Prior 2026-07-12 `/sync/apply` bounded session ownership, rooms
 package-shared public boundary, IPv4-only SSRF predicate, and shared peer GET
 transport rechecked). Prior 2026-07-11:
 SS2 KNOWN GAP note on TTS-rides-synced-stream
@@ -2804,9 +2852,10 @@ active-speaker `pair_balance_trim` graph; active-endpoint and wireless-sub TTS r
 exceptions rechecked against
 `jasper.multiroom.tts_route.expected_grouping_tts_route`,
 `jasper.multiroom.reconcile`, and `jasper.cli.doctor.grouping`;
-local-source follower parking rechecked against `jasper/local_sources/registry.py`
-and `jasper.multiroom.reconcile`; grouping→AEC cross-owner no-block kick and
-grouping oneshot timeout rechecked against `jasper.multiroom.reconcile` and
+local-source follower parking rechecked against `jasper.source_intent` and
+`jasper.multiroom.reconcile`; grouping→AEC no-block kick plus the bounded,
+synchronous canonical-source handoff and grouping timeout rechecked against
+`jasper.multiroom.reconcile`, `jasper.source_intent`, and
 `deploy/systemd/jasper-grouping-reconcile.service`; wireless-sub 2.1 path from
 2026-06-23 unchanged; snapclient journal rate limit rechecked against
 `deploy/systemd/jasper-snapclient.service`)

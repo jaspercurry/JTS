@@ -101,8 +101,8 @@ def test_renderer_units_use_private_lanes():
     assert "audio_topology.env" not in bluealsa
     assert "jasper_renderer_in" not in bluealsa
 
-    # USB is NOT a loopback-writing renderer anymore: the standby-only usbsink
-    # daemon opens no playback (fan-in DIRECT-captures the gadget). Pin the deletion.
+    # USB is NOT a loopback-writing renderer: the usbsink unit is a process-free
+    # readiness marker and fan-in DIRECT-captures the gadget. Pin the deletion.
     usbsink = (REPO / "deploy" / "systemd" / "jasper-usbsink.service").read_text()
     assert "usbsink_substream" not in usbsink
     assert "JASPER_USBSINK_PLAYBACK_DEVICE" not in usbsink

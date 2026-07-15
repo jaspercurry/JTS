@@ -16,7 +16,6 @@ INFO logging)::
     JASPER_DEBUG_VOICE=1            # one per subsystem id (see SUBSYSTEMS)
     JASPER_DEBUG_AEC=1
     JASPER_DEBUG_CONTROL=1
-    JASPER_DEBUG_USBSINK=1
     JASPER_DEBUG_EXPIRES_AT=1717000000   # unix epoch; shared auto-expiry
 
 **Design invariant — additive only.** This module can only *raise*
@@ -97,10 +96,6 @@ SUBSYSTEMS: dict[str, Subsystem] = {
     "control": Subsystem(
         "control", "jasper-control.service", "Control", ("jasper",),
         apply_policy="in_process",
-    ),
-    "usbsink": Subsystem(
-        "usbsink", "jasper-usbsink.service", "USB input", ("jasper",),
-        apply_policy="restart_if_active",
     ),
 }
 

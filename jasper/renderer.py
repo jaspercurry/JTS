@@ -9,7 +9,7 @@ Consults each renderer daemon directly for its playback state:
   librespot     → /run/librespot/state.json (--onevent hook)
   shairport-sync → org.mpris.MediaPlayer2.ShairportSync DBus
   bluez-alsa    → bluealsa-cli list-pcms (subprocess)
-  jasper-usbsink → /run/jasper-usbsink/state.json
+  USB input       → jasper-fanin DIRECT lane STATUS
 
 `RendererClient.active_renderers()` returns a dict with one boolean
 per renderer (`spotactive`, `aplactive`, `btactive`,
@@ -61,11 +61,11 @@ class RendererClient:
     # ------------------------------------------------------------------
 
     async def active_renderers(self) -> dict[str, bool]:
-        """Returns a dict keyed by renderer name. `usbsinkactive`
-        is the playing state from /run/jasper-usbsink/state.json —
-        False whenever the feature is disabled or the daemon hasn't
-        produced a state file yet (e.g. during the brief boot window
-        before jasper-usbsink starts publishing)."""
+        """Return raw renderer activity keyed by the stable public names.
+
+        ``usbsinkactive`` comes from fan-in's DIRECT lane, the sole USB audio
+        owner.
+        """
         spot, ap, bt, usb = await asyncio.gather(
             spotify_playing(self._librespot_state_path),
             airplay_playing(),

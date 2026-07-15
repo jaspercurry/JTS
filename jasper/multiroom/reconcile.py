@@ -4,8 +4,7 @@
 
 """Multiroom grouping reconciler — pure plan + thin systemctl entrypoint.
 
-The reconciler is the single writer of the snapcast unit state and the
-applier of role-derived local-source parking. It reads the wizard-owned
+The reconciler is the single writer of the snapcast unit state. It reads the wizard-owned
 GroupingConfig (see jasper.multiroom.config) and decides which units should
 be running:
 
@@ -14,9 +13,10 @@ be running:
                                   broken bond; the doctor surfaces the error).
   - ON, valid, role=leader     => snapserver + snapclient (the leader hosts
                                   the stream AND plays its own channel).
-  - ON, valid, role=follower   => snapclient only (consumes the leader's
-                                  stream) and local source resource groups
-                                  are parked via jasper.local_sources.
+  - ON, valid, role=follower   => snapclient only (consumes the leader's stream).
+
+After its role/data-plane work lands, it hands the role to the canonical source
+coordinator. Grouping never starts or stops source resources itself.
 
 Mirrors the jasper-aec-reconcile / jasper-wifi-guardian shape: the
 decision is a PURE, total function (`plan`) that is unit-tested with
@@ -31,6 +31,7 @@ logic can be tested without spawning snapcast.
 There is no resident process here: jasper-grouping-reconcile.service is
 Type=oneshot. It runs, applies the plan, and exits.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,24 +42,30 @@ import stat
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .. import atomic_io
 from .. import tts_routing as _tts_routing
 from ..log_event import log_event
-from ..local_sources import (
-    local_source_park_restart_units,
-    local_source_park_units,
-    local_source_restore_restart_units,
-    local_source_restore_units,
+from ..source_intent import (
+    RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
+from ..source_intent import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
 from .config import (
     GroupingConfig,
     bond_has_subwoofer,
     is_active_leader,
     load_config,
     local_sources_parked,
+)
+from .effective_role import (
+    FOLLOWER_STATUS_FILE,
+    grouping_request_fingerprint,
+    normalise_boot_id,
+    read_current_boot_id,
+    read_effective_role_status,
 )
 from .tts_route import VOICE_PARK_ENV, expected_grouping_tts_route
 
@@ -78,6 +85,44 @@ SNAPCLIENT_UNIT = "jasper-snapclient.service"
 # on bond/unbond (a bonded leader folds in the Snapcast round-trip buffer
 # — see airplay_grouping_env + main()).
 SHAIRPORT_UNIT = "shairport-sync.service"
+# Role changes are an input to the canonical source owner. Grouping never
+# learns source units, optional accessory adapter names, or fan-in USB
+# mechanics; after its own plan lands, it asks the source coordinator to read
+# the new role and converge every source in its domain order.
+# Short manager requests (probes and reset-failed) should
+# return promptly.  Blocking starts/restarts may wait for a normal service job,
+# but remain finite when this module is run directly during install or repair,
+# outside the grouping oneshot's outer systemd timeout.
+_SYSTEMCTL_CONTROL_TIMEOUT_SEC = 5.0
+_SYSTEMCTL_BLOCKING_TIMEOUT_SEC = 60.0
+# A role handoff never restarts the source owner: it may be between ordered USB
+# fan-in/gadget steps. If an older
+# activation is already running, a blocking ``systemctl start`` is only a
+# barrier (it joins and waits; it does not interrupt), bounded just beyond the
+# target unit's own TimeoutStartSec.  A fresh activation is then queued.
+_SOURCE_RECONCILE_START_TIMEOUT_SEC = SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 5.0
+_MAX_SOURCE_RECONCILE_STARTS = 2  # drain prior pass, then run fresh role pass
+# The finite outer boundary covers the two-unit Snapcast plan, the one-time
+# Snapcast apt opt-in, and the
+# active-endpoint branch's bounded post-plan unit/hardware actions. These are
+# intentionally conservative *sequential* ceilings, not typical latency (a
+# steady-state pass normally performs no blocking work).
+_MAX_PLAN_UNIT_INTENTS = 2  # snapserver + snapclient; sources have one owner
+_SNAPCAST_PROVISION_BUDGET_SEC = 420.0  # apt update 120 + install 300
+_MAX_POST_PLAN_BLOCKING_ACTIONS = 6
+_BASE_RECONCILE_BUDGET_SEC = (
+    _MAX_PLAN_UNIT_INTENTS * _SYSTEMCTL_BLOCKING_TIMEOUT_SEC
+    + _SNAPCAST_PROVISION_BUDGET_SEC
+    + _MAX_POST_PLAN_BLOCKING_ACTIONS * _SYSTEMCTL_BLOCKING_TIMEOUT_SEC
+)
+_OWNER_CONTROL_CALLS_PER_HANDOFF = 2  # reset-failed + ActiveState probe
+_RECONCILE_TIMEOUT_MARGIN_SEC = 40.0
+_RECONCILE_SYSTEMD_TIMEOUT_SEC = (
+    _BASE_RECONCILE_BUDGET_SEC
+    + _MAX_SOURCE_RECONCILE_STARTS * _SOURCE_RECONCILE_START_TIMEOUT_SEC
+    + _OWNER_CONTROL_CALLS_PER_HANDOFF * _SYSTEMCTL_CONTROL_TIMEOUT_SEC
+    + _RECONCILE_TIMEOUT_MARGIN_SEC
+)
 
 # ---------- Snapcast wiring constants ----------
 
@@ -91,8 +136,8 @@ SNAPFIFO = "/run/jasper-snapserver/snapfifo"
 
 # Reconciler-owned runtime env file holding the DERIVED snapcast args
 # (the argv after argv[0], space-joined). The snapserver/snapclient
-# units pick it up via a third `EnvironmentFile=` layered AFTER
-# grouping.env, so the derived args override the bare wizard intent.
+# units pick it up through their only generated `EnvironmentFile=`. The root
+# services never import management-writable grouping.env directly.
 #
 # Deliberately NOT a unit RuntimeDirectory: a unit's RuntimeDirectory is
 # reaped the moment that unit stops, which would erase the args a sibling
@@ -162,10 +207,12 @@ MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
 #   snapclient (writer)  --player alsa --soundcard <PLAYBACK>  -> hw:Loopback,0,6
 #   CamillaDSP (reader)  capture device              <CAPTURE>  <- hw:Loopback,1,6
 GROUPING_LOOPBACK_PLAYBACK = os.environ.get(
-    "JASPER_GROUPING_LOOPBACK_PLAYBACK", "hw:Loopback,0,6",
+    "JASPER_GROUPING_LOOPBACK_PLAYBACK",
+    "hw:Loopback,0,6",
 )
 GROUPING_LOOPBACK_CAPTURE = os.environ.get(
-    "JASPER_GROUPING_LOOPBACK_CAPTURE", "hw:Loopback,1,6",
+    "JASPER_GROUPING_LOOPBACK_CAPTURE",
+    "hw:Loopback,1,6",
 )
 # snapclient decodes to the snapserver-pinned 48 kHz / S16 / stereo, so the
 # follower's CamillaDSP captures the loopback as S16_LE (the S0-sync bench
@@ -177,7 +224,6 @@ GROUPING_LOOPBACK_CAPTURE_FORMAT = "S16_LE"
 # because jasper-control is not restarted on a bond). Persistent (a bond
 # survives reboots). Rewritten on every reconcile so a stale file can never
 # claim an active-follower mode that is no longer current. mode 0644, no secret.
-FOLLOWER_STATUS_FILE = "/var/lib/jasper/grouping-follower-status.json"
 # Reconciler-owned PERSISTENT env file the jasper-outputd unit layers
 # after jasper.env (EnvironmentFile=-). Persistent (NOT /run) so a
 # bonded speaker boots with the lane already configured — no extra
@@ -295,23 +341,18 @@ SNAP_STREAM_ID = "jts"
 
 # ---------- Plan types ----------
 
+
 @dataclass(frozen=True)
 class UnitIntent:
     """A desired terminal state for one systemd unit.
 
-    `desired` is one of {"start", "stop", "restore", "recompose"}; `reason`
-    is a short human-readable explanation for the log line. "restore" means
-    start ONLY if the unit is systemd-enabled — the shape that puts a
-    parked source resource back exactly per the /sources/ wizard's intent
-    (a wizard-disabled source must stay off after an unbond). "recompose"
-    is ``systemctl try-restart`` — restart ONLY if the unit is currently
-    active — the shape a composite unit needs when park/restore should tear
-    down only PART of what it owns (the USB gadget recomposes to drop/add its
-    audio function while keeping the always-on USB network, and a
-    kill-switched gadget is left untouched, never resurrected).
+    `desired` is one of {"start", "stop"}; `reason` is a short human-readable
+    explanation for the log line. Source lifecycle verbs deliberately do not
+    exist here; ``jasper.source_intent`` owns them.
     """
+
     unit: str
-    desired: str  # "start" | "stop" | "restore" | "recompose"
+    desired: str  # "start" | "stop"
     reason: str
 
 
@@ -322,11 +363,13 @@ class ReconcilePlan:
     `intents` is ordered stops-before-starts so a role flip tears the
     old shape down before bringing the new one up.
     """
+
     intents: tuple[UnitIntent, ...]
     summary: str
 
 
 # ---------- The pure decision function ----------
+
 
 def plan(cfg: GroupingConfig) -> ReconcilePlan:
     """Decide the desired snapcast unit state from a GroupingConfig.
@@ -341,33 +384,12 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
       - enabled, valid, leader    => start snapserver + start snapclient.
       - enabled, valid, follower  => stop snapserver + start snapclient.
     """
-    restore_renderers = tuple(
-        # Recompose (try-restart) composite units BEFORE the restore starts, so
-        # a just-un-parked source rebuilds the part that was torn down on park
-        # first — the USB gadget adds its audio function back (iff USB audio is
-        # enabled) and the UAC2Gadget card appears, THEN the restore's
-        # `start jasper-usbsink` finds the card its ExecStartPre=wait-card polls
-        # for. The reverse order (restore start first) makes wait-card poll a
-        # card that only exists after the recompose that would come next — a
-        # guaranteed 30 s stall + failed-unit transient on every un-park (review
-        # core-2). A kill-switched gadget stays down (try-restart is a no-op on
-        # an inactive unit). This is the deliberate mirror-image of the PARK
-        # order below (stop-audio THEN recompose): park recomposes last so the
-        # gadget reads "audio parked" and drops uac2; restore recomposes first
-        # so uac2 is composed before the bridge waits on its card.
-        UnitIntent(u, "recompose", "not a bonded follower — recompose gadget")
-        for u in local_source_restore_restart_units()
-    ) + tuple(
-        UnitIntent(u, "restore", "not a bonded follower — sources per wizard")
-        for u in local_source_restore_units()
-    )
-
     if not cfg.enabled:
         return ReconcilePlan(
             intents=(
                 UnitIntent(SNAPSERVER_UNIT, "stop", "grouping off"),
                 UnitIntent(SNAPCLIENT_UNIT, "stop", "grouping off"),
-            ) + restore_renderers,
+            ),
             summary="grouping off (solo)",
         )
 
@@ -378,10 +400,8 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
             intents=(
                 UnitIntent(SNAPSERVER_UNIT, "stop", "config invalid"),
                 UnitIntent(SNAPCLIENT_UNIT, "stop", "config invalid"),
-            ) + restore_renderers,
-            summary=(
-                f"grouping enabled but INVALID: {cfg.error} — not starting"
             ),
+            summary=(f"grouping enabled but INVALID: {cfg.error} — not starting"),
         )
 
     if cfg.role == "leader":
@@ -389,29 +409,13 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
             intents=(
                 UnitIntent(SNAPSERVER_UNIT, "start", "leader hosts stream"),
                 UnitIntent(SNAPCLIENT_UNIT, "start", "leader plays its channel"),
-            ) + restore_renderers,
+            ),
             summary=f"grouping leader (bond {cfg.bond_id}, channel {cfg.channel})",
         )
 
-    # role-policy says local sources are parked (today: valid bonded
-    # follower). The dumb-follower profile stops whole source resource
-    # groups, including advertise-side units such as the USB gadget init.
-    parked = tuple(
-        UnitIntent(u, "stop", "parked (bonded follower)")
-        for u in local_source_park_units()
-    )
-    # Composite units are recomposed (try-restart), not stopped: the USB
-    # gadget drops its audio function (bridge already stopped above) but keeps
-    # the always-on USB network. Ordered after the audio stops so the
-    # recompose reads "audio parked" and after the network stays up.
-    park_recompose = tuple(
-        UnitIntent(u, "recompose", "parked (bonded follower) — drop gadget audio")
-        for u in local_source_park_restart_units()
-    )
     return ReconcilePlan(
         intents=(
             UnitIntent(SNAPSERVER_UNIT, "stop", "follower runs no server"),
-        ) + parked + park_recompose + (
             UnitIntent(SNAPCLIENT_UNIT, "start", "follower consumes stream"),
         ),
         summary=(
@@ -422,6 +426,7 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
 
 
 # ---------- Pure argv builders ----------
+
 
 def snapserver_argv(cfg: GroupingConfig) -> list[str]:
     """Build the snapserver command line from a GroupingConfig.
@@ -520,7 +525,9 @@ def snapclient_argv(
 
 
 def _assemble_args(
-    cfg: GroupingConfig, *, active_endpoint: bool = False,
+    cfg: GroupingConfig,
+    *,
+    active_endpoint: bool = False,
 ) -> dict[str, str]:
     """Derive the {key: value} the units read, from a GroupingConfig.
 
@@ -581,7 +588,9 @@ def _join_args(argv: list[str]) -> str:
 
 
 def outputd_grouping_env(
-    cfg: GroupingConfig, *, active_endpoint: bool = False,
+    cfg: GroupingConfig,
+    *,
+    active_endpoint: bool = False,
 ) -> dict[str, str]:
     """The outputd round-trip lane env derived from a GroupingConfig. PURE.
 
@@ -663,11 +672,7 @@ def outputd_grouping_env(
         # matched crossover, not two independent numbers.
         main_highpass_hz = (
             str(cfg.crossover_hz)
-            if (
-                cfg.mains_highpass_enabled
-                and sub_present
-                and cfg.channel != "sub"
-            )
+            if (cfg.mains_highpass_enabled and sub_present and cfg.channel != "sub")
             else ""
         )
         env = {
@@ -707,7 +712,9 @@ def outputd_grouping_env(
 
 
 def voice_grouping_env(
-    cfg: GroupingConfig, *, active_endpoint: bool = False,
+    cfg: GroupingConfig,
+    *,
+    active_endpoint: bool = False,
 ) -> dict[str, str]:
     """jasper-voice's grouping-derived env. PURE.
 
@@ -788,6 +795,7 @@ def desired_snapfifo_path(cfg: GroupingConfig) -> str:
 # calls. Keep that boundary crisp.
 # ============================================================
 
+
 def _active_speaker_box_state() -> bool | None:
     """Tri-state ACTIVE (multi-driver) classification from saved topology.
 
@@ -844,10 +852,11 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
             ["systemctl", query, unit],
             capture_output=True,
             text=True,
+            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
         )
     except FileNotFoundError:
         return None
-    except OSError as e:
+    except (OSError, subprocess.SubprocessError) as e:
         log_event(
             logger,
             "multiroom.reconcile.unit_state_probe_failed",
@@ -865,9 +874,17 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
     }
     false_states = {
         "is-enabled": {
-            "alias", "static", "indirect", "disabled", "generated",
-            "transient", "linked", "linked-runtime", "masked",
-            "masked-runtime", "not-found",
+            "alias",
+            "static",
+            "indirect",
+            "disabled",
+            "generated",
+            "transient",
+            "linked",
+            "linked-runtime",
+            "masked",
+            "masked-runtime",
+            "not-found",
         },
         "is-active": {"inactive", "failed"},
     }
@@ -886,17 +903,6 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
         level=logging.WARNING,
     )
     return None
-
-
-def _unit_is_enabled(unit: str) -> bool:
-    """``systemctl is-enabled`` truth for the restore intent.
-
-    Only an explicit enabled state is true. Disabled, masked, absent, or
-    unknown reads as not-enabled — restore then skips, which is the safe
-    direction on every shape: a wizard-disabled source stays off, and a
-    never-installed unit is silently not started.
-    """
-    return _systemctl_unit_state("is-enabled", unit) is True
 
 
 def _unit_is_active(unit: str) -> bool:
@@ -1047,13 +1053,8 @@ def _unit_absent_stderr(stderr: str) -> bool:
 def _apply(plan_: ReconcilePlan) -> int:
     """Apply a plan via systemctl. Returns a process exit code.
 
-    Intent kinds: `start` / `stop` map to systemctl verbs; `restore`
-    is start-only-if-enabled (the un-park shape — /sources/ keeps
-    enable/disable as the household's intent, so a parked source resource
-    comes back exactly per the wizard); `recompose` is ``try-restart``
-    (restart ONLY if currently active) — the shape a composite unit needs
-    to rebuild the part that park tore down without resurrecting a
-    kill-switched unit. A failure on one intent is logged and surfaced in
+    Intent kinds `start` / `stop` map directly to systemctl verbs. A failure
+    on one intent is logged and surfaced in
     the exit code but does not abort the rest of the plan — a half-applied
     bond is worse than a best-effort one. Units that do not exist on this
     install tier are clean no-ops.
@@ -1061,28 +1062,13 @@ def _apply(plan_: ReconcilePlan) -> int:
     rc = 0
     for it in plan_.intents:
         verb = it.desired
-        if verb == "restore":
-            if not _unit_is_enabled(it.unit):
-                log_event(
-                    logger,
-                    "multiroom.reconcile.unit",
-                    unit=it.unit,
-                    desired="restore",
-                    result="skipped_not_enabled",
-                    reason=it.reason,
-                )
-                continue
-            verb = "start"
-        elif verb == "recompose":
-            # try-restart: recompose only a currently-active unit (a
-            # kill-switched/parked gadget stays down — never resurrected).
-            verb = "try-restart"
         try:
             subprocess.run(
                 ["systemctl", verb, it.unit],
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=_SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
             )
             log_event(
                 logger,
@@ -1122,11 +1108,24 @@ def _apply(plan_: ReconcilePlan) -> int:
                 level=logging.ERROR,
             )
             rc = 1
+        except (OSError, subprocess.SubprocessError) as e:
+            log_event(
+                logger,
+                "multiroom.reconcile.unit_failed",
+                unit=it.unit,
+                desired=it.desired,
+                error=e,
+                stderr=(getattr(e, "stderr", "") or "").strip(),
+                level=logging.ERROR,
+            )
+            rc = 1
     return rc
 
 
 def _write_outputd_env(
-    keys: dict[str, str], *, path: str = OUTPUTD_GROUPING_ENV_FILE,
+    keys: dict[str, str],
+    *,
+    path: str = OUTPUTD_GROUPING_ENV_FILE,
 ) -> tuple[bool, bool]:
     """Write the outputd round-trip lane env iff it changed.
 
@@ -1227,9 +1226,12 @@ def _reset_failed_unit(unit: str) -> None:
     try:
         subprocess.run(
             ["systemctl", "reset-failed", unit],
-            check=False, capture_output=True, text=True,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
         )
-    except (FileNotFoundError, OSError) as e:
+    except (OSError, subprocess.SubprocessError) as e:
         log_event(
             logger,
             "multiroom.reconcile.reset_failed_error",
@@ -1239,7 +1241,12 @@ def _reset_failed_unit(unit: str) -> None:
         )
 
 
-def _restart_unit(unit: str, *, no_block: bool = False) -> bool:
+def _restart_unit(
+    unit: str,
+    *,
+    no_block: bool = False,
+    active_only: bool = False,
+) -> bool:
     """Restart a unit so it re-reads its grouping env. Fail-soft (a
     failure is logged + reflected in the exit code by the caller; the
     doctor's drift checks surface a lane left unwired).
@@ -1258,13 +1265,21 @@ def _restart_unit(unit: str, *, no_block: bool = False) -> bool:
     cmd = ["systemctl"]
     if no_block:
         cmd.append("--no-block")
-    cmd.extend(("restart", unit))
+    verb = "try-restart" if active_only else "restart"
+    cmd.extend((verb, unit))
     try:
         subprocess.run(
             cmd,
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=(
+                _SYSTEMCTL_CONTROL_TIMEOUT_SEC
+                if no_block
+                else _SYSTEMCTL_BLOCKING_TIMEOUT_SEC
+            ),
         )
-    except (OSError, subprocess.CalledProcessError) as e:
+    except (OSError, subprocess.SubprocessError) as e:
         stderr = getattr(e, "stderr", "") or ""
         log_event(
             logger,
@@ -1281,6 +1296,134 @@ def _restart_unit(unit: str, *, no_block: bool = False) -> bool:
         unit=unit,
         reason="grouping_env_changed",
         no_block=no_block,
+        active_only=active_only,
+    )
+    return True
+
+
+def _source_reconciler_activation_busy() -> bool | None:
+    """Return whether the source owner has an activation that can absorb a start.
+
+    ``systemctl is-active`` does not give the distinction we need for every
+    oneshot state, so read ``ActiveState`` directly.  Unknown/probe failure is
+    returned as ``None`` and handled in the safe direction by the caller.
+    """
+
+    try:
+        proc = subprocess.run(
+            [
+                "systemctl",
+                "show",
+                SOURCE_INTENT_RECONCILE_UNIT,
+                "--property=ActiveState",
+                "--value",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_event(
+            logger,
+            "multiroom.reconcile.owner_state_probe_failed",
+            unit=SOURCE_INTENT_RECONCILE_UNIT,
+            error=exc,
+            level=logging.WARNING,
+        )
+        return None
+    state = (proc.stdout or "").strip().lower()
+    if proc.returncode == 0 and state in {
+        "active",
+        "activating",
+        "reloading",
+        "deactivating",
+    }:
+        return True
+    if proc.returncode == 0 and state in {"inactive", "failed"}:
+        return False
+    log_event(
+        logger,
+        "multiroom.reconcile.owner_state_probe_failed",
+        unit=SOURCE_INTENT_RECONCILE_UNIT,
+        returncode=proc.returncode,
+        state=state or None,
+        stderr=(proc.stderr or "").strip() or None,
+        level=logging.WARNING,
+    )
+    return None
+
+
+def _converge_sources_after_role() -> bool:
+    """Run a fresh source pass after grouping's role plan and await it.
+
+    A bare no-block start can join an activation that read the previous role.
+    Probe after the role apply: if an activation is already busy (or its state
+    cannot be trusted), synchronously join it as a bounded barrier, then start a
+    new pass. If it is inactive, any activation racing the final start began
+    after the probe and therefore already sees the new role. ``start`` is used
+    throughout—never ``restart``—so an ordered source transition is not
+    interrupted. The final call is blocking: grouping reports success only
+    after source park/restore reaches its terminal result.
+    """
+
+    unit = SOURCE_INTENT_RECONCILE_UNIT
+    _reset_failed_unit(unit)
+    busy = _source_reconciler_activation_busy()
+    if busy is not False:
+        barrier_cmd = ["systemctl", "start", unit]
+        try:
+            subprocess.run(
+                barrier_cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=_SOURCE_RECONCILE_START_TIMEOUT_SEC,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            stderr = getattr(exc, "stderr", "") or ""
+            log_event(
+                logger,
+                "multiroom.reconcile.owner_barrier_failed",
+                unit=unit,
+                error=exc,
+                stderr=stderr.strip(),
+                level=logging.ERROR,
+            )
+            return False
+        log_event(
+            logger,
+            "multiroom.reconcile.owner_prior_activation_drained",
+            unit=unit,
+            state_was_unknown=busy is None,
+        )
+
+    cmd = ["systemctl", "start", unit]
+    try:
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_SOURCE_RECONCILE_START_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        stderr = getattr(exc, "stderr", "") or ""
+        log_event(
+            logger,
+            "multiroom.reconcile.source_converge_failed",
+            unit=unit,
+            error=exc,
+            stderr=stderr.strip(),
+            level=logging.ERROR,
+        )
+        return False
+    log_event(
+        logger,
+        "multiroom.reconcile.source_converged",
+        unit=unit,
+        reason="grouping_role_applied",
+        waited_for_prior_activation=busy is not False,
     )
     return True
 
@@ -1300,7 +1443,10 @@ def _ensure_unit_active(unit: str, *, reason: str) -> bool:
     try:
         subprocess.run(
             ["systemctl", "start", unit],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
         )
     except FileNotFoundError:
         log_event(
@@ -1312,16 +1458,6 @@ def _ensure_unit_active(unit: str, *, reason: str) -> bool:
             level=logging.ERROR,
         )
         return False
-    except OSError as e:
-        log_event(
-            logger,
-            "multiroom.reconcile.unit_start_failed",
-            unit=unit,
-            reason=reason,
-            error=e,
-            level=logging.ERROR,
-        )
-        return False
     except subprocess.CalledProcessError as e:
         log_event(
             logger,
@@ -1330,6 +1466,16 @@ def _ensure_unit_active(unit: str, *, reason: str) -> bool:
             reason=reason,
             rc=e.returncode,
             stderr=(e.stderr or "").strip(),
+            level=logging.ERROR,
+        )
+        return False
+    except (OSError, subprocess.SubprocessError) as e:
+        log_event(
+            logger,
+            "multiroom.reconcile.unit_start_failed",
+            unit=unit,
+            reason=reason,
+            error=e,
             level=logging.ERROR,
         )
         return False
@@ -1358,6 +1504,7 @@ def _run_audio_hardware_reconcile(*, reason: str) -> bool:
             check=True,
             capture_output=True,
             text=True,
+            timeout=_SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
         )
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         stderr = getattr(e, "stderr", "") or ""
@@ -1388,9 +1535,12 @@ def _systemctl_crossover_unit(*verb: str, action: str) -> bool:
     try:
         subprocess.run(
             ["systemctl", *verb, CROSSOVER_UNIT],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
         )
-    except (OSError, subprocess.CalledProcessError) as e:
+    except (OSError, subprocess.SubprocessError) as e:
         stderr = getattr(e, "stderr", "") or ""
         log_event(
             logger,
@@ -1427,29 +1577,67 @@ def _disable_crossover_unit() -> bool:
 
 
 def _write_follower_status(
-    *, active_follower: bool, blocked_reason: str,
+    *,
+    active_follower: bool,
+    blocked_reason: str,
     active_leader: bool = False,
+    requested_cfg: GroupingConfig | None = None,
+    local_sources_allowed: bool | None = None,
     path: str = FOLLOWER_STATUS_FILE,
-) -> None:
-    """Write the active-endpoint status for /state + the dashboard.
+    boot_id_reader: Callable[[], str] | None = None,
+) -> bool:
+    """Publish the effective-role authorization fact and UI status.
 
-    Fail-soft (a lost status write must not crash the reconcile path; /state
-    falls back to "no endpoint block"). Rewritten every reconcile so the
-    surface is always fresh truth. ``active_follower`` = this box runs its local
+    I/O failures are contained and returned as ``False``. Safety-sensitive
+    callers must abort before granting local sources; status-only refresh paths
+    may continue with the previous fail-safe fact. Rewritten every reconcile so
+    the surface is fresh truth. ``active_follower`` = this box runs its local
     Layer-A crossover on the bonded stream as a FOLLOWER; ``active_leader`` = it
     runs that crossover (camilla#2) as the bond LEADER (and also bakes the wire
     on camilla#1); ``blocked_reason`` (non-empty) = an active-endpoint transition
     was REFUSED and either fell back to solo active or preserved the existing
     graph because ownership could not be changed safely (invariant 5
-    fail-closed)."""
-    body = json.dumps(
-        {
-            "active_follower": active_follower,
-            "active_leader": active_leader,
-            "blocked_reason": blocked_reason,
-        },
-        sort_keys=True,
-    ) + "\n"
+    fail-closed). Every payload carries the current Linux boot ID. An attempted
+    grant without a valid boot ID is rewritten as a deny and returns ``False``;
+    persistent grants must never survive into a later boot as fresh truth.
+    """
+    read_boot_id = boot_id_reader or read_current_boot_id
+    try:
+        boot_id = normalise_boot_id(read_boot_id())
+    except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+        boot_id = ""
+        log_event(
+            logger,
+            "multiroom.reconcile.boot_id_failed",
+            error=exc,
+            level=logging.ERROR,
+        )
+    grant_fresh = not (local_sources_allowed is True and not boot_id)
+    if not grant_fresh:
+        # A persistent grant without a current boot identity could be trusted
+        # after reboot. Publish an explicit deny instead and make the caller's
+        # attempted grant fail so grouping retries rather than reporting a
+        # source-unpark transition that did not become authoritative.
+        local_sources_allowed = False
+        log_event(
+            logger,
+            "multiroom.reconcile.source_grant_blocked",
+            reason="boot_id_unavailable",
+            level=logging.ERROR,
+        )
+    payload: dict[str, object] = {
+        "active_follower": active_follower,
+        "active_leader": active_leader,
+        "blocked_reason": blocked_reason,
+        "boot_id": boot_id,
+    }
+    if requested_cfg is not None:
+        payload["requested_fingerprint"] = grouping_request_fingerprint(
+            requested_cfg,
+        )
+    if local_sources_allowed is not None:
+        payload["local_sources_allowed"] = local_sources_allowed
+    body = json.dumps(payload, sort_keys=True) + "\n"
     try:
         atomic_io.atomic_write_text(path, body, mode=0o644)
     except OSError as e:
@@ -1460,6 +1648,8 @@ def _write_follower_status(
             error=e,
             level=logging.WARNING,
         )
+        return False
+    return grant_fresh
 
 
 def _restart_outputd() -> bool:
@@ -1561,6 +1751,12 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     cfg = load_config()
+    requested_cfg = cfg
+    prior_role_status = read_effective_role_status(FOLLOWER_STATUS_FILE)
+    transitioning_from_parked_role = (
+        not local_sources_parked(requested_cfg)
+        and prior_role_status.get("local_sources_allowed") is False
+    )
     decision = plan(cfg)
     active = cfg.enabled and cfg.error is None
     active_leader = active and cfg.role == "leader"
@@ -1599,6 +1795,7 @@ def main(argv: list[str] | None = None) -> int:
     rc = 0
     endpoint_block_reason = ""
     active_leader_arm_blocked = False
+    refused_follower_fallback = False
 
     if active_box_state is None:
         endpoint_block_reason = "active_speaker_topology_unknown"
@@ -1613,6 +1810,10 @@ def main(argv: list[str] | None = None) -> int:
             active_follower=False,
             active_leader=False,
             blocked_reason=endpoint_block_reason,
+            requested_cfg=requested_cfg,
+            local_sources_allowed=(
+                not local_sources_parked(cfg) and not transitioning_from_parked_role
+            ),
             path=FOLLOWER_STATUS_FILE,
         )
         return 1
@@ -1647,6 +1848,7 @@ def main(argv: list[str] | None = None) -> int:
                 level=logging.WARNING,
             )
             cfg = replace(cfg, enabled=False)
+            refused_follower_fallback = local_sources_parked(requested_cfg)
             decision = plan(cfg)
             active = False
             active_leader = False
@@ -1680,7 +1882,9 @@ def main(argv: list[str] | None = None) -> int:
             rc = 1
         elif prov["state"] == "installed":
             log_event(
-                logger, "multiroom.reconcile.snapcast_provisioned", result="installed",
+                logger,
+                "multiroom.reconcile.snapcast_provisioned",
+                result="installed",
             )
 
     # Active-ENDPOINT readiness GATE (fail-safe to SOLO). Build + re-prove the
@@ -1704,7 +1908,9 @@ def main(argv: list[str] | None = None) -> int:
                 precheck_active_follower_sync(cfg)
         except RuntimeError as e:
             endpoint_block_reason = getattr(
-                e, "reason", "active_endpoint_precheck_error",
+                e,
+                "reason",
+                "active_endpoint_precheck_error",
             )
             # Distinct event per role (the follower name is documented in
             # HANDOFF-distributed-active.md); both literals stay greppable.
@@ -1726,6 +1932,7 @@ def main(argv: list[str] | None = None) -> int:
             # step-6 stream-binding pin — so a refused bond never partially
             # behaves like a leader/endpoint.
             cfg = replace(cfg, enabled=False)
+            refused_follower_fallback = local_sources_parked(requested_cfg)
             decision = plan(cfg)
             active = False
             active_leader = False
@@ -1755,27 +1962,32 @@ def main(argv: list[str] | None = None) -> int:
             active_follower=False,
             active_leader=False,
             blocked_reason=reason,
+            requested_cfg=requested_cfg,
+            local_sources_allowed=(
+                not local_sources_parked(cfg) and not transitioning_from_parked_role
+            ),
             path=FOLLOWER_STATUS_FILE,
         )
         return 1
 
     if box_is_active and not active_leader and not active_follower:
         prior_crossover_enabled = _systemctl_unit_state(
-            "is-enabled", CROSSOVER_UNIT,
+            "is-enabled",
+            CROSSOVER_UNIT,
         )
         prior_crossover_active = _systemctl_unit_state(
-            "is-active", CROSSOVER_UNIT,
+            "is-active",
+            CROSSOVER_UNIT,
         )
         if prior_crossover_enabled is None or prior_crossover_active is None:
             return block_active_restore("crossover_ownership_state_unknown")
-        prior_crossover_owned = (
-            prior_crossover_enabled or prior_crossover_active
-        )
+        prior_crossover_owned = prior_crossover_enabled or prior_crossover_active
         if prior_crossover_owned:
             if not _disable_crossover_unit():
                 return block_active_restore("crossover_teardown_failed")
             crossover_active_after = _systemctl_unit_state(
-                "is-active", CROSSOVER_UNIT,
+                "is-active",
+                CROSSOVER_UNIT,
             )
             if crossover_active_after is not False:
                 return block_active_restore(
@@ -1785,12 +1997,29 @@ def main(argv: list[str] | None = None) -> int:
     # Endpoint status for /state + the dashboard (fresh truth every reconcile):
     # active-follower / active-leader mode, or the fail-closed block reason if
     # the bond was refused and we fell back to solo active.
-    _write_follower_status(
+    status_block_reason = endpoint_block_reason
+    if transitioning_from_parked_role and not status_block_reason:
+        status_block_reason = "role_transition_in_progress"
+    role_status_ok = _write_follower_status(
         active_follower=active_follower,
         active_leader=active_speaker_leader,
-        blocked_reason=endpoint_block_reason,
+        blocked_reason=status_block_reason,
+        requested_cfg=requested_cfg,
+        local_sources_allowed=(
+            not local_sources_parked(cfg)
+            and not refused_follower_fallback
+            and not transitioning_from_parked_role
+        ),
         path=FOLLOWER_STATUS_FILE,
     )
+    if not role_status_ok:
+        log_event(
+            logger,
+            "multiroom.reconcile.effective_role_publish_failed",
+            action="preserve_runtime_graph",
+            level=logging.ERROR,
+        )
+        return 1
 
     # 1. Derived files + FIFO — before any unit work.
     derived = _assemble_args(cfg, active_endpoint=active_endpoint)
@@ -1809,7 +2038,8 @@ def main(argv: list[str] | None = None) -> int:
     # production path.
     outputd_env = outputd_grouping_env(cfg, active_endpoint=active_endpoint)
     env_changed, env_ok = _write_outputd_env(
-        outputd_env, path=OUTPUTD_GROUPING_ENV_FILE,
+        outputd_env,
+        path=OUTPUTD_GROUPING_ENV_FILE,
     )
     log_event(
         logger,
@@ -1826,8 +2056,10 @@ def main(argv: list[str] | None = None) -> int:
     # active ENDPOINT (follower or active leader) uses the snd-aloop round-trip
     # loopback instead (a fixed snd-aloop subdevice — always present, no mkfifo
     # equivalent), so skip it.
-    if active and not active_endpoint and not _ensure_member_fifo(
-        path=MEMBER_CONTENT_FIFO
+    if (
+        active
+        and not active_endpoint
+        and not _ensure_member_fifo(path=MEMBER_CONTENT_FIFO)
     ):
         rc = 1
 
@@ -1837,6 +2069,7 @@ def main(argv: list[str] | None = None) -> int:
     #    intact — NEVER a passive graph, which would be full-range to a tweeter);
     #    a passive box uses the leader-stash restore. All branches are a no-op on
     #    the common solo reconcile.
+    solo_restore_ok = True
     if active_leader or active_follower:
         pass
     elif box_is_active and prior_crossover_owned:
@@ -1863,6 +2096,7 @@ def main(argv: list[str] | None = None) -> int:
                 error=e,
                 level=logging.ERROR,
             )
+            solo_restore_ok = False
             rc = 1
     elif box_is_active:
         try:
@@ -1884,6 +2118,7 @@ def main(argv: list[str] | None = None) -> int:
                 error=e,
                 level=logging.ERROR,
             )
+            solo_restore_ok = False
             rc = 1
     else:
         try:
@@ -1905,6 +2140,7 @@ def main(argv: list[str] | None = None) -> int:
                 error=e,
                 level=logging.ERROR,
             )
+            solo_restore_ok = False
             rc = 1
 
     # 3. outputd picks up the lane env only at unit start. For an active leader,
@@ -1916,8 +2152,11 @@ def main(argv: list[str] | None = None) -> int:
     # still use the solo baseline, re-opening the passive lane that camilla#2
     # needs.
     defer_outputd_restart = active_speaker_leader
-    if env_changed and env_ok and not defer_outputd_restart and not _restart_outputd():
-        rc = 1
+    outputd_restart_ok = True
+    if env_changed and env_ok and not defer_outputd_restart:
+        outputd_restart_ok = _restart_outputd()
+        if not outputd_restart_ok:
+            rc = 1
 
     # 3b. Voice's grouping-derived env (PR-2 TTS socket flip + the PR-B
     # park flag): written + kick-on-change only — a voice restart costs
@@ -1929,7 +2168,8 @@ def main(argv: list[str] | None = None) -> int:
     # writers of one unit's state was the jts3 boot-loop class).
     voice_env = voice_grouping_env(cfg, active_endpoint=active_endpoint)
     voice_changed, voice_ok = _write_outputd_env(
-        voice_env, path=VOICE_GROUPING_ENV_FILE,
+        voice_env,
+        path=VOICE_GROUPING_ENV_FILE,
     )
     log_event(
         logger,
@@ -1942,10 +2182,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not voice_ok:
         rc = 1
+    voice_refresh_ok = True
     if (
         voice_changed
         and voice_ok
-        and not _restart_unit(AEC_RECONCILE_UNIT, no_block=True)
+        and not (
+            voice_refresh_ok := _restart_unit(
+                AEC_RECONCILE_UNIT,
+                no_block=True,
+            )
+        )
     ):
         rc = 1
 
@@ -1958,7 +2204,8 @@ def main(argv: list[str] | None = None) -> int:
     # reads this file), so the restart in step 4b is what applies it.
     airplay_env = airplay_grouping_env(cfg)
     airplay_changed, airplay_ok = _write_outputd_env(
-        airplay_env, path=AIRPLAY_GROUPING_ENV_FILE,
+        airplay_env,
+        path=AIRPLAY_GROUPING_ENV_FILE,
     )
     log_event(
         logger,
@@ -1972,7 +2219,8 @@ def main(argv: list[str] | None = None) -> int:
         rc = 1
 
     # 4. The unit plan (stops before starts).
-    rc = max(rc, _apply(decision))
+    apply_rc = _apply(decision)
+    rc = max(rc, apply_rc)
 
     # 4b. Re-derive shairport's backend latency offset on a bond/unbond
     # that changed it. shairport's ExecStartPre runs
@@ -1986,8 +2234,13 @@ def main(argv: list[str] | None = None) -> int:
     # restart, only on a real offset change — never on the steady-state
     # solo reconcile.
     is_bonded_follower = local_sources_parked(cfg)
+    airplay_refresh_ok = True
     if airplay_changed and airplay_ok and not is_bonded_follower:
-        if not _restart_unit(SHAIRPORT_UNIT):
+        # AirPlay may be household-Off.  A plain restart ignores unit
+        # enablement and would resurrect it after a leader bond/unbond; refresh
+        # only a receiver that is already active.
+        airplay_refresh_ok = _restart_unit(SHAIRPORT_UNIT, active_only=True)
+        if not airplay_refresh_ok:
             rc = 1
 
     # 5. Bonded apply LAST (snapserver is up → the pipe has its reader; snapclient
@@ -2056,9 +2309,7 @@ def main(argv: list[str] | None = None) -> int:
             bake_ok = False
             if not _disable_crossover_unit():
                 rc = 1
-            elif not _ensure_unit_active(
-                CAMILLA_UNIT, reason="active-leader-bake"
-            ):
+            elif not _ensure_unit_active(CAMILLA_UNIT, reason="active-leader-bake"):
                 rc = 1
             else:
                 active_leader_action = "active_leader_bake_apply"
@@ -2169,8 +2420,7 @@ def main(argv: list[str] | None = None) -> int:
                                     logger,
                                     "multiroom.reconcile.camilla",
                                     result=(
-                                        "active_leader_solo_restored_after_"
-                                        "pcm_busy"
+                                        "active_leader_solo_restored_after_pcm_busy"
                                     ),
                                     path=restored,
                                 )
@@ -2193,6 +2443,11 @@ def main(argv: list[str] | None = None) -> int:
                             active_follower=False,
                             active_leader=False,
                             blocked_reason=endpoint_block_reason,
+                            requested_cfg=requested_cfg,
+                            local_sources_allowed=(
+                                not local_sources_parked(cfg)
+                                and not transitioning_from_parked_role
+                            ),
                             path=FOLLOWER_STATUS_FILE,
                         )
                         rc = 1
@@ -2258,6 +2513,81 @@ def main(argv: list[str] | None = None) -> int:
                 level=logging.ERROR,
             )
             rc = 1
+
+    # A requested follower may have been refused and safely resolved to solo.
+    # Publish that effective permission only after every load-bearing solo
+    # transition has succeeded. Until this point the earlier status explicitly
+    # denies local sources, so a concurrent systemd start cannot enter while the
+    # old follower graph is still live. Any failed restore/file/unit step keeps
+    # the fail-safe deny in place for the next reconcile to repair.
+    source_grant_pending = refused_follower_fallback or transitioning_from_parked_role
+    if source_grant_pending:
+        transition_landed = all(
+            (
+                wrote,
+                env_ok,
+                solo_restore_ok,
+                outputd_restart_ok,
+                voice_ok,
+                voice_refresh_ok,
+                airplay_ok,
+                airplay_refresh_ok,
+                apply_rc == 0,
+            )
+        )
+        # A refused follower intentionally returns nonzero for the rejected
+        # bond even after its safe solo fallback landed. An ordinary
+        # follower->solo/leader transition has no such expected error: every
+        # later role-specific step must also have succeeded before sources can
+        # be granted.
+        if transitioning_from_parked_role and not refused_follower_fallback:
+            transition_landed = transition_landed and rc == 0
+        if transition_landed:
+            grant_published = _write_follower_status(
+                active_follower=False,
+                active_leader=(
+                    active_speaker_leader if transitioning_from_parked_role else False
+                ),
+                blocked_reason=(
+                    endpoint_block_reason if refused_follower_fallback else ""
+                ),
+                requested_cfg=requested_cfg,
+                local_sources_allowed=True,
+                path=FOLLOWER_STATUS_FILE,
+            )
+            if not grant_published:
+                rc = 1
+                log_event(
+                    logger,
+                    (
+                        "multiroom.reconcile.fallback_source_grant_failed"
+                        if refused_follower_fallback
+                        else "multiroom.reconcile.role_transition_grant_failed"
+                    ),
+                    reason=endpoint_block_reason,
+                    action="sources_remain_parked",
+                    level=logging.ERROR,
+                )
+        else:
+            log_event(
+                logger,
+                (
+                    "multiroom.reconcile.fallback_sources_parked"
+                    if refused_follower_fallback
+                    else "multiroom.reconcile.role_transition_sources_parked"
+                ),
+                reason=endpoint_block_reason,
+                action="retry_reconcile",
+                level=logging.ERROR,
+            )
+
+    # 7. Hand the completed role to the one source owner. It reads grouping
+    # permission fresh and performs follower park or solo/leader restore for
+    # all sources, including USB's arm -> advertise -> start sequence. Draining
+    # an older activation before queueing a fresh one prevents coalescing a pass
+    # that observed the prior role; ``start`` never interrupts ordered work.
+    if not _converge_sources_after_role():
+        rc = 1
 
     log_event(logger, "multiroom.reconcile.done", rc=rc)
     return rc

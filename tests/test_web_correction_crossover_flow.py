@@ -4782,10 +4782,15 @@ def _run_coro(coro):
 
 
 def _fake_relay_transport(monkeypatch, *, wav=b"phone-wav-bytes"):
-    """Fake ONLY the relay transport boundary: run_capture arms then returns a
-    CaptureResult-shaped object; purge is recorded. The play/record path stays
-    real."""
+    """Fake the relay and host-service boundaries around the real play path.
+
+    ``run_capture`` arms then returns a CaptureResult-shaped object; purge is
+    recorded. Renderer probes/stops are isolated because this suite runs on
+    development hosts without systemd. The correction play/record path stays
+    real.
+    """
     from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator
 
     purged = {}
 
@@ -4816,6 +4821,23 @@ def _fake_relay_transport(monkeypatch, *, wav=b"phone-wav-bytes"):
     monkeypatch.setattr(relay_session, "CaptureActivityProbe", AlwaysActive)
     monkeypatch.setattr(
         relay_session, "purge", lambda c, s: purged.setdefault("done", True)
+    )
+
+    async def acquire_measurement_gate():
+        purged.setdefault("gate", []).append("acquire")
+
+    async def release_measurement_gate(**_kwargs):
+        purged.setdefault("gate", []).append("release")
+
+    monkeypatch.setattr(
+        coordinator,
+        "_acquire_measurement_gate",
+        acquire_measurement_gate,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_release_measurement_gate",
+        release_measurement_gate,
     )
     return purged
 
@@ -5141,6 +5163,7 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
     assert {"f1", "f2", "n_samples", "amplitude_dbfs"} <= set(meta)
     assert meta["amplitude_dbfs"] == -12.0
     assert purged["done"] is True
+    assert purged["gate"] == ["acquire", "release"]
     assert host_events == ["sweep_started", "sweep_complete"]
 
 
@@ -5702,6 +5725,7 @@ async def test_host_stop_drains_crossover_restore_before_returning(monkeypatch):
     from jasper.capture_relay import session as relay_session
     from jasper.web import correction_crossover_backend as be
 
+    _fake_relay_transport(monkeypatch)
     stop_event = threading.Event()
     play_started = threading.Event()
     restore_started = threading.Event()
@@ -5925,7 +5949,10 @@ async def test_finishing_gate_refusal_withholds_phone_release_and_evidence(monke
         await run_and_consume(object(), _relay_pi_session("driver"))
 
     assert host_events == ["sweep_started", "sweep_cancelled"]
-    assert purged == {"done": True}
+    assert purged == {
+        "gate": ["acquire", "release"],
+        "done": True,
+    }
     assert record_calls == []
 
 
@@ -5936,6 +5963,7 @@ async def test_host_stop_after_capture_prevents_late_evidence_write(monkeypatch)
     from jasper.capture_relay import session as relay_session
     from jasper.web import correction_crossover_backend as be
 
+    _fake_relay_transport(monkeypatch)
     stop_event = threading.Event()
     record_calls = []
 

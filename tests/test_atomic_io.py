@@ -19,7 +19,7 @@ import os
 
 import pytest
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import advisory_file_lock, atomic_write_text
 
 
 def test_write_read_round_trip(tmp_path):
@@ -66,6 +66,97 @@ def test_group_from_parent_chown_failure_cleans_up_temp(tmp_path, monkeypatch):
 
     assert not path.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_shared_lock_does_not_chmod_an_already_correct_root_owned_mode(
+    tmp_path, monkeypatch
+):
+    """A group writer must not need owner privilege to open a healed lock."""
+
+    lock_path = tmp_path / "shared.lock"
+    lock_path.touch(mode=0o660)
+    os.chmod(lock_path, 0o660)
+
+    def unexpected_chmod(*_args, **_kwargs):
+        raise AssertionError("an already-correct shared lock must not be chmodded")
+
+    monkeypatch.setattr(os, "fchmod", unexpected_chmod)
+    with advisory_file_lock(
+        lock_path,
+        mode=0o660,
+        group_from_parent=True,
+    ):
+        pass
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="requires O_NOFOLLOW")
+def test_shared_lock_refuses_symlink_without_mutating_target(tmp_path):
+    target = tmp_path / "target"
+    target.write_text("sentinel", encoding="utf-8")
+    os.chmod(target, 0o600)
+    lock_path = tmp_path / "shared.lock"
+    lock_path.symlink_to(target)
+
+    with pytest.raises(OSError):
+        with advisory_file_lock(
+            lock_path,
+            mode=0o660,
+            group_from_parent=True,
+        ):
+            pass
+
+    assert target.read_text(encoding="utf-8") == "sentinel"
+    assert (os.stat(target).st_mode & 0o777) == 0o600
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="requires O_NOFOLLOW")
+@pytest.mark.parametrize("operation", ["update", "transform"])
+def test_locked_env_writer_refuses_symlinked_data_without_disclosing_target(
+    tmp_path, operation,
+):
+    from jasper.atomic_io import locked_transform_env_file, locked_update_env_file
+
+    target = tmp_path / "root-secret.env"
+    target.write_text("API_SECRET=sentinel\n", encoding="utf-8")
+    os.chmod(target, 0o600)
+    path = tmp_path / "source_intent.env"
+    path.symlink_to(target)
+
+    with pytest.raises(OSError):
+        if operation == "update":
+            locked_update_env_file(path, {"SAFE": "enabled"})
+        else:
+            locked_transform_env_file(
+                path,
+                lambda state: {**state, "SAFE": "enabled"},
+            )
+
+    assert path.is_symlink()
+    assert target.read_text(encoding="utf-8") == "API_SECRET=sentinel\n"
+    assert (os.stat(target).st_mode & 0o777) == 0o600
+
+
+def test_locked_env_writer_rejects_fifo_without_blocking(tmp_path):
+    from jasper.atomic_io import locked_update_env_file
+
+    path = tmp_path / "source_intent.env"
+    os.mkfifo(path)
+
+    with pytest.raises(OSError, match="not a regular file"):
+        locked_update_env_file(path, {"SAFE": "disabled"})
+
+
+def test_locked_env_writer_byte_cap_rejects_without_replacing_file(tmp_path):
+    from jasper.atomic_io import locked_update_env_file
+
+    path = tmp_path / "source_intent.env"
+    original = b"A=" + b"x" * 64
+    path.write_bytes(original)
+
+    with pytest.raises(OSError, match="exceeds the 32-byte cap"):
+        locked_update_env_file(path, {"SAFE": "disabled"}, max_bytes=32)
+
+    assert path.read_bytes() == original
 
 
 def test_default_mode_is_0644(tmp_path):

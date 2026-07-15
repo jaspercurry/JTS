@@ -29,7 +29,7 @@ LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
 # no-op (no such group on CI) — the file MODE is what we assert, and chmod runs
 # for real.
 _STUBS = r"""
-getent() { return 0; }
+getent() { printf 'jasper:x:%s:\n' "$(id -g)"; }
 chgrp() { :; }
 """
 
@@ -77,6 +77,12 @@ def test_heal_makes_shared_dbs_group_writable(tmp_path):
     # blocks /grouping/set and /rooms bonding (the 2026-06-23 sub bring-up).
     grouping = _mk(tmp_path / "grouping.env", 0o644)
     grouping_lock = _mk(tmp_path / ".grouping.env.lock", 0o644)
+    source_intent = _mk(tmp_path / "source_intent.env", 0o644)
+    source_update_lock = _mk(tmp_path / ".source_intent.env.lock", 0o644)
+    source_request_lock = _mk(tmp_path / "source_intent.env.request.lock", 0o644)
+    source_reconcile_lock = _mk(
+        tmp_path / "source_intent.env.reconcile.lock", 0o644,
+    )
 
     _run_heal(tmp_path)
 
@@ -88,6 +94,10 @@ def test_heal_makes_shared_dbs_group_writable(tmp_path):
     assert _mode(topology) == 0o640
     assert _mode(grouping) == 0o660
     assert _mode(grouping_lock) == 0o660  # the lock /grouping/set opens a+
+    assert _mode(source_intent) == 0o660
+    assert _mode(source_update_lock) == 0o660
+    assert _mode(source_request_lock) == 0o660
+    assert _mode(source_reconcile_lock) == 0o660
     # The wake-events dir needs group rwx so a non-owner can create WAL files.
     assert _mode(tmp_path / "wake-events") & 0o070 == 0o070
 
@@ -109,3 +119,49 @@ def test_heal_is_noop_on_fresh_install(tmp_path):
     """No shared files yet → the heal does nothing and does not fail."""
     _run_heal(tmp_path)  # empty dir; must not raise
     assert list(tmp_path.iterdir()) == []
+
+
+def test_heal_refuses_all_source_intent_symlinks_without_mutating_target(tmp_path):
+    target = _mk(tmp_path / "sensitive-target", 0o600)
+    names = (
+        "source_intent.env",
+        ".source_intent.env.lock",
+        "source_intent.env.request.lock",
+        "source_intent.env.reconcile.lock",
+    )
+    for name in names:
+        case_dir = tmp_path / name.replace(".", "_")
+        case_dir.mkdir()
+        (case_dir / name).symlink_to(target)
+        script = (
+            "set -euo pipefail\n"
+            + _STUBS
+            + _extract("heal_shared_state_modes")
+            + f'\nSTATE_DIR="{case_dir}"\nheal_shared_state_modes\n'
+        )
+        proc = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True,
+        )
+        assert proc.returncode != 0, name
+        assert "refusing unsafe shared-state path" in proc.stderr
+        assert target.read_text(encoding="utf-8") == "x"
+        assert _mode(target) == 0o600
+
+
+def test_heal_refuses_source_intent_fifo_without_blocking(tmp_path):
+    import os
+
+    os.mkfifo(tmp_path / "source_intent.env")
+    script = (
+        "set -euo pipefail\n"
+        + _STUBS
+        + _extract("heal_shared_state_modes")
+        + f'\nSTATE_DIR="{tmp_path}"\nheal_shared_state_modes\n'
+    )
+
+    proc = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=3,
+    )
+
+    assert proc.returncode != 0
+    assert "unexpected shared-state file type" in proc.stderr

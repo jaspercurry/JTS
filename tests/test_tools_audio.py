@@ -194,9 +194,13 @@ def _arm_follower(monkeypatch, **client_kw):
     """Patch this speaker into an active bonded follower with the control
     client faked. Returns the fake client (inspect .seen)."""
     import jasper.multiroom.config as mcfg
+    import jasper.multiroom.effective_role as effective_role
     import jasper.tools.audio as audio_mod
 
     monkeypatch.setattr(mcfg, "load_config", lambda *a, **k: _follower_cfg())
+    monkeypatch.setattr(
+        effective_role, "read_effective_role_status", lambda: {},
+    )
     fake = _FakeControlClient(**client_kw)
     monkeypatch.setattr(audio_mod, "_control_client", fake)
     return fake
@@ -291,3 +295,32 @@ async def test_leader_and_solo_keep_the_local_coordinator(monkeypatch):
     result = await _tools(coord)["set_volume"](30)
     assert result == {"ok": True, "percent": 30}
     assert ("set", 30) in coord.calls
+
+
+async def test_refused_follower_landed_solo_uses_local_coordinator(monkeypatch):
+    import jasper.multiroom.config as mcfg
+    import jasper.multiroom.effective_role as effective_role
+    import jasper.tools.audio as audio_mod
+
+    cfg = _follower_cfg()
+    boot_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(mcfg, "load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr(effective_role, "read_current_boot_id", lambda: boot_id)
+    monkeypatch.setattr(
+        effective_role,
+        "read_effective_role_status",
+        lambda: {
+            "requested_fingerprint": effective_role.grouping_request_fingerprint(cfg),
+            "local_sources_allowed": True,
+            "boot_id": boot_id,
+        },
+    )
+    client = _FakeControlClient()
+    monkeypatch.setattr(audio_mod, "_control_client", client)
+    coord = FakeCoordinator(level=10)
+
+    result = await _tools(coord)["set_volume"](30)
+
+    assert result == {"ok": True, "percent": 30}
+    assert coord.calls == [("set", 30)]
+    assert client.seen == []

@@ -22,6 +22,7 @@ config edit that drops it. Mirrors tests/test_fanin_systemd.py.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -33,6 +34,12 @@ GROUPING_TRAILING_SERVICE_PATH = (
 )
 GROUPING_TRAILING_HELPER_PATH = (
     REPO / "deploy" / "bin" / "jasper-grouping-reconcile-trailing"
+)
+GROUPING_KICK_HELPER_PATH = (
+    REPO / "deploy" / "bin" / "jasper-grouping-reconcile-kick"
+)
+GROUPING_RECONCILE_SERVICE_PATH = (
+    REPO / "deploy" / "systemd" / "jasper-grouping-reconcile.service"
 )
 
 
@@ -82,6 +89,7 @@ def test_install_installs_grouping_reconcile_trailing_helper():
     units_sh = (REPO / "deploy/lib/install/systemd-units.sh").read_text()
     assert units_sh.count("jasper-grouping-reconcile-trailing.service") >= 2
     assert units_sh.count("jasper-grouping-reconcile-trailing\"") >= 2
+    assert units_sh.count("jasper-grouping-reconcile-kick\"") >= 2
 
 
 def test_grouping_reconcile_trailing_helper_uses_decimal_delay(tmp_path):
@@ -95,25 +103,58 @@ def test_grouping_reconcile_trailing_helper_uses_decimal_delay(tmp_path):
     sleep = bin_dir / "sleep"
     sleep.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" > {sleep_log}\n")
     sleep.chmod(0o755)
-    systemctl = bin_dir / "systemctl"
-    systemctl.write_text(
-        f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {systemctl_log}\n",
-    )
-    systemctl.chmod(0o755)
+    kick = bin_dir / "jasper-grouping-reconcile-kick"
+    kick.write_text(f"#!/bin/sh\nprintf '%s\\n' kick > {systemctl_log}\n")
+    kick.chmod(0o755)
 
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "JASPER_GROUPING_TRAILING_DELAY_FILE": str(delay_file),
+        "JASPER_GROUPING_KICK_HELPER": str(kick),
     }
 
     subprocess.run([str(GROUPING_TRAILING_HELPER_PATH)], env=env, check=True)
 
     assert sleep_log.read_text() == "8\n"
-    assert (
-        systemctl_log.read_text()
-        == "--no-block restart jasper-grouping-reconcile.service\n"
+    assert systemctl_log.read_text() == "kick\n"
+
+
+def test_grouping_reconcile_kick_joins_then_queues_fresh_pass(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    systemctl_log = tmp_path / "systemctl.log"
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {systemctl_log}\n",
     )
+    systemctl.chmod(0o755)
+    timeout = bin_dir / "timeout"
+    timeout.write_text("#!/bin/sh\nshift\nexec \"$@\"\n")
+    timeout.chmod(0o755)
+
+    subprocess.run(
+        [str(GROUPING_KICK_HELPER_PATH)],
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        check=True,
+    )
+
+    assert systemctl_log.read_text().splitlines() == [
+        "reset-failed jasper-grouping-reconcile.service",
+        "start jasper-grouping-reconcile.service",
+        "--no-block start jasper-grouping-reconcile.service",
+    ]
+
+
+def test_grouping_kick_drain_outlasts_legal_reconcile_activation():
+    helper = GROUPING_KICK_HELPER_PATH.read_text()
+    unit = GROUPING_RECONCILE_SERVICE_PATH.read_text()
+    drain_match = re.search(r'^drain_timeout="(\d+)s"$', helper, re.MULTILINE)
+    unit_timeout = _value_for(unit, "TimeoutStartSec")
+
+    assert drain_match is not None
+    assert unit_timeout is not None
+    assert int(drain_match.group(1)) > int(unit_timeout.rstrip("s"))
 
 
 def test_readwritepaths_pins_control_write_contracts():

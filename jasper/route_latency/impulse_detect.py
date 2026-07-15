@@ -6,7 +6,7 @@
 
 Both ends of a route-latency measurement need to find "where did the click
 land" in a stream of S16 samples: the Rust ingress tap
-(``rust/jasper-usbsink-audio``, out of this module's scope but built to the
+(``rust/jasper-fanin/src/impulse_tap.rs``, out of this module's scope but built to the
 same peak/hysteresis/refractory design) and this package's egress (mic)
 detector. Keeping the Python detection logic in exactly one place — rather
 than reimplementing it per caller — means a threshold/hysteresis/refractory

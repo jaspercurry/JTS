@@ -9,15 +9,20 @@
 [Unit]
 Description=NQPTP -- Not Quite PTP
 After=network.target
-# nqptp is a hard Requires= of shairport-sync (AirPlay 2 timing). If
-# it dies cleanly, shairport stays up but every new session fails to
-# negotiate the PTP clock. Match shairport's always-on stance: keep
-# nqptp running across crashes AND clean exits.
+# nqptp is a hard Requires= of shairport-sync (AirPlay 2 timing). While AirPlay
+# is household-On and role-authorized, keep the timing companion running across
+# crashes and clean exits. Its matching ExecCondition prevents Restart=always
+# from overriding household Off or follower parking.
 StartLimitIntervalSec=600
 StartLimitBurst=20
 
 [Service]
-ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
+# Type=simple has no readiness wait; finite ceilings keep coordinator jobs
+# bounded and are paired with slightly longer client waits.
+TimeoutStartSec=2s
+TimeoutStopSec=5s
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
+ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source airplay
 ExecStart=/usr/local/bin/nqptp
 Restart=always
 RestartSec=5

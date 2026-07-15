@@ -5,9 +5,8 @@
 """Pin the audited panic-freedom of the Rust audio daemons' runtime paths.
 
 A 2026-06 audit manually verified that every ``.unwrap()`` / ``.expect(``
-/ ``panic!`` in ``rust/jasper-fanin``, ``rust/jasper-outputd``,
-``rust/jasper-usbsink-audio``, and the
-shared ``rust/jasper-tts-protocol`` crate lives either in ``#[cfg(test)]``
+/ ``panic!`` in ``rust/jasper-fanin``, ``rust/jasper-outputd``, and the shared
+``rust/jasper-tts-protocol`` crate lives either in ``#[cfg(test)]``
 code or at one of a handful of documented invariant sites. The two
 daemons are the speaker's always-on audio path on a production Pi, and
 ``jasper-tts-protocol`` is a library compiled *into both* of them (the
@@ -43,7 +42,6 @@ REPO = Path(__file__).resolve().parents[1]
 RUNTIME_CRATES = (
     "jasper-fanin",
     "jasper-outputd",
-    "jasper-usbsink-audio",
     "jasper-tts-protocol",
 )
 
