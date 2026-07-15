@@ -1021,7 +1021,9 @@ can never authorize a phase decision:
    envelope. A deterministic refusal is persisted and binds the existing
    `measured -> blocked` lifecycle transition, so immutable refused evidence is
    diagnosed once and the UI starts a fresh complete run instead of retrying it.
-   Candidate apply remains a later production slice.
+   Candidate apply now reuses the baseline compiler and bounded
+   writer/readback/restore path; three admitted post-apply fixed-axis captures
+   must then pass before Active issues the Room-eligibility receipt.
    The recompiled baseline re-proves the
    runtime_contract tweeter guard; level stays L1's attenuation-only job and the 0 dB
    ceiling holds.

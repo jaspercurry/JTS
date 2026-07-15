@@ -805,7 +805,7 @@ The later Wave 3 control-plane integration now starts and exposes a durable
 set, claims its process owner at correction-web startup, and classifies a
 different active comparison as stale. The isolated-driver browser route now
 owns exact per-driver attempts and the first `protected` transition; summed
-   collection now uses that same host through a recorder-only relay. The typed internal
+collection now uses that same host through a recorder-only relay. The typed internal
 evidence host now reserves deterministic region attempts, persists and reopens
 exact admitted normal/reverse/delay sets, evaluates the bounded measured delay
 schedule, and advances the exact run from `unconfigured` through `protected`
@@ -830,9 +830,9 @@ relay's recorder-only `kind=summed` branch now supplies real WAVs and explicit
 signed/fixed-axis geometry to the typed internal host without granting the
 browser scheduling or DSP authority. Historical B2b captures remain
 permanently non-admitted. Current projections expose only the exact measured
-   candidate review and the apply/recovery states described below. Automatic Room
-   authority remains unavailable until the retained graph passes three admitted
-   post-apply fixed-axis captures and Active persists the exact receipt. That gate
+candidate review and the apply/recovery states described below. Automatic Room
+authority remains unavailable until the retained graph passes three admitted
+post-apply fixed-axis captures and Active persists the exact receipt. That gate
 is separate from the operator-owned, explicitly applied manual-profile Room path
 described below.
 

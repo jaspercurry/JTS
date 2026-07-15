@@ -2318,8 +2318,8 @@ These items can only be verified on real hardware. Deploy with
       profile. As a regression check with an already-corrected active graph,
       verify reset keeps the active speaker baseline and only clears room PEQs;
       a solo manual-applied profile may enter Room, grouped active is explicitly
-      unsupported in v1, and automatic entry remains fail-closed pending modern
-      receipt authority.
+      unsupported in v1, and automatic entry must earn Active's verified receipt;
+      without that exact receipt Room remains fail-closed.
 - [ ] AEC bridge interaction (if enabled): routing resumes after measurement
       without permanent drift; allow the adaptive filter its normal convergence
       window described in [HANDOFF-aec.md](HANDOFF-aec.md).
