@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Mapping, NoReturn, Sequence
 
@@ -43,7 +43,10 @@ from .commissioning_evidence_store import (
 from .commissioning_receipt import REFERENCE_AXIS_GEOMETRY_ID
 from .commissioning_run import CommissioningRunHandle
 from .crossover_alignment import PHASE_AWARE, POLARITY_KEEP, propose_crossover_alignment
-from .crossover_contract import verified_driver_excitation
+from .crossover_contract import (
+    DRIVER_EXCITATION_MATCH_TOLERANCE_DB,
+    verified_driver_excitation,
+)
 from .driver_acoustics import DRIVER_ACOUSTIC_KIND, SUMMED_ACOUSTIC_KIND
 from .level_trim import LevelTrimError, attenuation_from_group_deltas
 from .profile import ActiveSpeakerPreset, required_driver_roles
@@ -260,13 +263,14 @@ class MeasuredElectricalCandidate:
     source_preset_fingerprint: str
     isolated_evidence_artifact: ArtifactIdentity
     summed_evidence_artifact: ArtifactIdentity
-    candidate_preset: ActiveSpeakerPreset
+    source_preset: ActiveSpeakerPreset
     role_attenuations_db: tuple[tuple[str, float], ...]
+    role_delays_ms: tuple[tuple[str, float], ...]
     fingerprint: str = field(init=False)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         del args, kwargs
-        raise TypeError("use evaluate_measured_candidate or from_mapping")
+        raise TypeError("use evaluate_measured_candidate")
 
     @classmethod
     def _create(
@@ -277,12 +281,16 @@ class MeasuredElectricalCandidate:
         source_preset_fingerprint: str,
         isolated_evidence_artifact: ArtifactIdentity,
         summed_evidence_artifact: ArtifactIdentity,
-        candidate_preset: ActiveSpeakerPreset,
+        source_preset: ActiveSpeakerPreset,
         role_attenuations_db: tuple[tuple[str, float], ...],
+        role_delays_ms: tuple[tuple[str, float], ...],
     ) -> MeasuredElectricalCandidate:
-        roles = required_driver_roles(candidate_preset.way_count)
-        if tuple(role for role, _ in role_attenuations_db) != roles:
-            raise MeasuredCandidateError("candidate attenuations are incomplete")
+        roles = required_driver_roles(source_preset.way_count)
+        if (
+            tuple(role for role, _ in role_attenuations_db) != roles
+            or tuple(role for role, _ in role_delays_ms) != roles
+        ):
+            raise MeasuredCandidateError("candidate role values are incomplete")
         for _, value in role_attenuations_db:
             if (
                 not math.isfinite(value)
@@ -291,7 +299,12 @@ class MeasuredElectricalCandidate:
                 or not math.isclose(value, round(value, 1), abs_tol=1e-9)
             ):
                 raise MeasuredCandidateError("candidate attenuation is invalid")
-        candidate_preset.validate()
+        if any(
+            not math.isfinite(value) or not 0.0 <= value <= 20.0
+            for _, value in role_delays_ms
+        ) or not any(value == 0.0 for _, value in role_delays_ms):
+            raise MeasuredCandidateError("candidate delay is invalid")
+        source_preset.validate()
         self = object.__new__(cls)
         attributes: tuple[tuple[str, Any], ...] = (
             ("run", run),
@@ -299,8 +312,9 @@ class MeasuredElectricalCandidate:
             ("source_preset_fingerprint", source_preset_fingerprint),
             ("isolated_evidence_artifact", isolated_evidence_artifact),
             ("summed_evidence_artifact", summed_evidence_artifact),
-            ("candidate_preset", candidate_preset),
+            ("source_preset", source_preset),
             ("role_attenuations_db", role_attenuations_db),
+            ("role_delays_ms", role_delays_ms),
         )
         for name, attribute in attributes:
             object.__setattr__(self, name, attribute)
@@ -317,8 +331,9 @@ class MeasuredElectricalCandidate:
             "source_preset_fingerprint": self.source_preset_fingerprint,
             "isolated_evidence_artifact": self.isolated_evidence_artifact.to_dict(),
             "summed_evidence_artifact": self.summed_evidence_artifact.to_dict(),
-            "candidate_preset": self.candidate_preset.to_dict(),
+            "source_preset": self.source_preset.to_dict(),
             "role_attenuations_db": dict(self.role_attenuations_db),
+            "role_delays_ms": dict(self.role_delays_ms),
             "classification": "electrical_preset_refinement",
             "source": "reviewed_preset",
             "flags": _CANDIDATE_FLAGS,
@@ -326,36 +341,6 @@ class MeasuredElectricalCandidate:
 
     def to_dict(self) -> dict[str, Any]:
         return {**self._core(), "fingerprint": self.fingerprint}
-
-    @classmethod
-    def from_mapping(cls, raw: Any) -> MeasuredElectricalCandidate:
-        if not isinstance(raw, Mapping):
-            raise MeasuredCandidateError("measured candidate is malformed")
-        try:
-            run = CommissioningRunHandle(**dict(raw["run"]))
-            preset = ActiveSpeakerPreset.from_mapping(dict(raw["candidate_preset"]))
-            isolated = ArtifactIdentity.from_mapping(raw["isolated_evidence_artifact"])
-            summed = ArtifactIdentity.from_mapping(raw["summed_evidence_artifact"])
-            trims = raw["role_attenuations_db"]
-            if not isinstance(trims, Mapping):
-                raise TypeError("role_attenuations_db must be an object")
-            result = cls._create(
-                run=run,
-                plan_fingerprint=raw["plan_fingerprint"],
-                source_preset_fingerprint=raw["source_preset_fingerprint"],
-                isolated_evidence_artifact=isolated,
-                summed_evidence_artifact=summed,
-                candidate_preset=preset,
-                role_attenuations_db=tuple(
-                    (role, float(trims[role]))
-                    for role in required_driver_roles(preset.way_count)
-                ),
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise MeasuredCandidateError(str(exc)) from exc
-        if dict(raw) != result.to_dict():
-            raise MeasuredCandidateError("candidate content is non-canonical or stale")
-        return result
 
 
 def _capture_row(
@@ -464,9 +449,17 @@ def _capture_row(
         )
     if isolated:
         excitation = verified_driver_excitation(analysis.get("excitation"))
+        admitted_effective = capture.generation_admission.request.effective_peak_dbfs
         overlaps = acoustic.get("overlap_levels")
         if (
             excitation is None
+            or excitation.get("role") != capture.role
+            or not math.isclose(
+                float(excitation["effective_peak_dbfs"]),
+                admitted_effective,
+                rel_tol=0.0,
+                abs_tol=DRIVER_EXCITATION_MATCH_TOLERANCE_DB,
+            )
             or acoustic.get("kind") != DRIVER_ACOUSTIC_KIND
             or acoustic.get("present") is not True
             or snr.get("decision_class") != "magnitude"
@@ -474,7 +467,7 @@ def _capture_row(
             or not overlaps
         ):
             _refuse("isolated_capture_unsafe", "isolated evidence is unusable")
-        return acoustic, str(calibration_fp), float(excitation["effective_peak_dbfs"])
+        return acoustic, str(calibration_fp), admitted_effective
     if (
         acoustic.get("kind") != SUMMED_ACOUSTIC_KIND
         or any(
@@ -625,12 +618,12 @@ def _stationary(
     return _spread(depths, "stationary_repeat_spread"), calibration
 
 
-def _candidate_regions(
+def _candidate_delays(
     store: CommissioningEvidenceStore,
     preset: ActiveSpeakerPreset,
     evidence: CompleteCommissioningEvidence,
     calibration_fp: str,
-) -> ActiveSpeakerPreset:
+) -> tuple[tuple[str, float], ...]:
     by_id: dict[str, list[tuple[str | None, float | None]]] = {}
     preset_regions = {region.id: region for region in preset.crossover_regions}
     for item in evidence.regions:
@@ -688,6 +681,11 @@ def _candidate_regions(
             selection = select_scheduled_delay(walk.spec, walk.schedule, rows)
         except NullWalkError as exc:
             _refuse("delay_selection_refused", str(exc))
+        if selection.get("status") != "selected":
+            _refuse(
+                "delay_selection_refused",
+                str(selection.get("reason") or "delay selection was refused"),
+            )
         if (
             _finite(selection.get("selected_null_depth_db"), "selected null")
             < source.null_depth_threshold_db
@@ -703,8 +701,15 @@ def _candidate_regions(
                 None if target_role is None else _finite(delay, "selected delay"),
             )
         )
-    regions = []
-    for source in preset.crossover_regions:
+
+    roles = required_driver_roles(preset.way_count)
+    regions_by_pair = {
+        (region.lower_driver, region.upper_driver): region
+        for region in preset.crossover_regions
+    }
+    relative_by_pair: dict[tuple[str, str], float] = {}
+    for lower_role, upper_role in zip(roles, roles[1:]):
+        source = regions_by_pair[(lower_role, upper_role)]
         choices = set(by_id.get(source.id, []))
         if len(choices) != 1:
             _refuse(
@@ -712,24 +717,34 @@ def _candidate_regions(
             )
         target_role, delay_us = choices.pop()
         if target_role is None:
-            if delay_us not in {None, 0, 0.0}:
-                _refuse(
-                    "delay_selection_invalid", "zero delay must omit target and value"
-                )
-            regions.append(replace(source, delay_target_driver=None, delay_ms=None))
+            relative_by_pair[(lower_role, upper_role)] = 0.0
         elif (
-            target_role in {source.lower_driver, source.upper_driver}
+            target_role in {lower_role, upper_role}
             and delay_us is not None
             and delay_us > 0.0
         ):
-            regions.append(
-                replace(
-                    source, delay_target_driver=target_role, delay_ms=delay_us / 1000.0
-                )
+            relative_by_pair[(lower_role, upper_role)] = (
+                delay_us if target_role == upper_role else -delay_us
             )
         else:
             _refuse("delay_selection_invalid", "selected delay is outside the region")
-    return replace(preset, crossover_regions=tuple(regions))
+
+    absolute_us = {roles[0]: 0.0}
+    for lower_role, upper_role in zip(roles, roles[1:]):
+        absolute_us[upper_role] = (
+            absolute_us[lower_role]
+            + relative_by_pair[(lower_role, upper_role)]
+        )
+    offset = min(absolute_us.values())
+    delays = tuple(
+        (role, round((absolute_us[role] - offset) / 1000.0, 6)) for role in roles
+    )
+    if any(delay_ms > 20.0 for _, delay_ms in delays):
+        _refuse(
+            "candidate_delay_out_of_range",
+            "composed driver delay exceeds the 20 ms DSP bound",
+        )
+    return delays
 
 
 def evaluate_measured_candidate(
@@ -782,13 +797,14 @@ def evaluate_measured_candidate(
         )
     levels, calibration = _isolated_levels(store, isolated)
     attenuations = _attenuations(reviewed_preset, isolated, levels)
-    candidate_preset = _candidate_regions(store, reviewed_preset, summed, calibration)
+    delays = _candidate_delays(store, reviewed_preset, summed, calibration)
     return MeasuredElectricalCandidate._create(
         run=run,
         plan_fingerprint=isolated.plan.fingerprint,
         source_preset_fingerprint=source_fingerprint,
         isolated_evidence_artifact=isolated_evidence_artifact,
         summed_evidence_artifact=summed_evidence_artifact,
-        candidate_preset=candidate_preset,
+        source_preset=reviewed_preset,
         role_attenuations_db=attenuations,
+        role_delays_ms=delays,
     )

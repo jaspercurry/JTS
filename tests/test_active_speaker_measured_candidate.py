@@ -166,15 +166,22 @@ def _publish_capture(
     fc_hz: float = 1_000.0,
     duplicate_fc: bool = False,
     quality_mismatch: bool = False,
+    excitation_mismatch: str | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     item = _materialize_base(store, capture, prefix=prefix)
     issuance = item.capture.capture_id.removeprefix("capture-")
     operation = item.capture.fingerprint
     if isolated:
+        admitted_effective = (
+            item.generation_admission.request.effective_peak_dbfs
+        )
+        ledger_effective = admitted_effective + (
+            1.0 if excitation_mismatch == "level" else 0.0
+        )
         overlaps = [
             {
                 "fc_hz": region.fc_hz,
-                "level_db": level_db - 30.0,
+                "level_db": level_db + admitted_effective,
                 "bins": 100,
                 "usable": True,
                 "snr_verdict": "ok",
@@ -203,10 +210,12 @@ def _publish_capture(
             "excitation": {
                 "schema_version": 1,
                 "scope": "sweep_plus_role_varying_commission_gain",
-                "sweep_peak_dbfs": -20.0,
-                "commissioning_gain_db": -10.0,
-                "effective_peak_dbfs": -30.0,
-                "role": item.role,
+                "sweep_peak_dbfs": ledger_effective,
+                "commissioning_gain_db": 0.0,
+                "effective_peak_dbfs": ledger_effective,
+                "role": (
+                    "wrong-role" if excitation_mismatch == "role" else item.role
+                ),
             },
         }
         analysis_kind = ISOLATED_ANALYSIS_KIND
@@ -288,6 +297,7 @@ def _materialize_isolated(
     out_of_range: bool = False,
     duplicate_fc: bool = False,
     quality_mismatch: bool = False,
+    excitation_mismatch: str | None = None,
 ) -> CompleteIsolatedDriverEvidence:
     role_levels = {"woofer": 0.0, "mid": 3.0, "tweeter": 70.0 if out_of_range else 6.0}
     drivers = []
@@ -302,6 +312,11 @@ def _materialize_isolated(
                 duplicate_fc=(duplicate_fc and driver.role == "woofer" and index == 0),
                 quality_mismatch=(
                     quality_mismatch and driver.role == "woofer" and index == 0
+                ),
+                excitation_mismatch=(
+                    excitation_mismatch
+                    if driver.role == "woofer" and index == 0
+                    else None
                 ),
             )[0]
             for index, capture in enumerate(driver.captures)
@@ -321,6 +336,7 @@ def _materialize_summed(
     complete: CompleteCommissioningEvidence,
     *,
     stationary_spread: float = 0.0,
+    delay_spread: float = 0.0,
 ) -> CompleteCommissioningEvidence:
     regions = []
     for region in complete.regions:
@@ -366,7 +382,13 @@ def _materialize_summed(
                         f"delay/{point_index}/{index}"
                     ),
                     isolated=False,
-                    depth_db=depth,
+                    depth_db=depth + (
+                        delay_spread
+                        if index == 2
+                        and point.relative_delay_us
+                        not in region.delay_walk.schedule.coarse_delays_us
+                        else 0.0
+                    ),
                     expect_null=True,
                     fc_hz=fc,
                 )
@@ -416,6 +438,8 @@ def _authority(
     out_of_range: bool = False,
     duplicate_fc: bool = False,
     quality_mismatch: bool = False,
+    excitation_mismatch: str | None = None,
+    delay_spread: float = 0.0,
 ) -> tuple[
     CommissioningEvidenceStore,
     CommissioningRunHandle,
@@ -432,6 +456,7 @@ def _authority(
         out_of_range=out_of_range,
         duplicate_fc=duplicate_fc,
         quality_mismatch=quality_mismatch,
+        excitation_mismatch=excitation_mismatch,
     )
     summed = _materialize_summed(
         store,
@@ -443,6 +468,7 @@ def _authority(
             ),
         ),
         stationary_spread=stationary_spread,
+        delay_spread=delay_spread,
     )
     return (
         store,
@@ -484,11 +510,16 @@ def test_real_store_complete_evidence_authorizes_deterministic_candidate(
         "mid": -3.0,
         "tweeter": -6.0,
     }
-    assert MeasuredElectricalCandidate.from_mapping(first.to_dict()) == first
-    tampered = first.to_dict()
-    tampered["flags"] = {"score_available": True, "acoustic_target_claimed": False}
-    with pytest.raises(ValueError, match="non-canonical"):
-        MeasuredElectricalCandidate.from_mapping(tampered)
+    assert first.source_preset == _preset()
+    delays = dict(first.role_delays_ms)
+    assert delays == {
+        "woofer": 0.0,
+        "mid": 0.0375,
+        "tweeter": 0.075,
+    }
+    assert delays["mid"] - delays["woofer"] == pytest.approx(0.0375)
+    assert delays["tweeter"] - delays["mid"] == pytest.approx(0.0375)
+    assert first.to_dict() == second.to_dict()
 
 
 def test_exact_current_owner_generation_is_required(tmp_path: Path) -> None:
@@ -505,6 +536,16 @@ def test_quality_operation_and_issuance_must_match_analysis(tmp_path: Path) -> N
     assert caught.value.code == "capture_quality_refused"
 
 
+@pytest.mark.parametrize("mismatch", ["level", "role"])
+def test_isolated_excitation_must_match_the_admitted_request(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    with pytest.raises(MeasuredCandidateEvaluationError) as caught:
+        _evaluate(_authority(tmp_path, excitation_mismatch=mismatch))
+    assert caught.value.code == "isolated_capture_unsafe"
+
+
 def test_overlap_level_must_match_the_reviewed_crossover_within_one_hz() -> None:
     with pytest.raises(MeasuredCandidateEvaluationError) as caught:
         _level({1_000.0: -3.0}, 1_010.0)
@@ -516,11 +557,12 @@ def test_overlap_level_must_match_the_reviewed_crossover_within_one_hz() -> None
     [
         ({"isolated_spread": 2.0}, "isolated_repeat_spread"),
         ({"stationary_spread": 2.0}, "stationary_repeat_spread"),
+        ({"delay_spread": 2.0}, "delay_selection_refused"),
         ({"out_of_range": True}, "candidate_attenuation_out_of_range"),
         ({"duplicate_fc": True}, "isolated_overlap_duplicate"),
     ],
 )
-def test_unsafe_level_evidence_is_refused(
+def test_unsafe_candidate_evidence_is_refused(
     tmp_path: Path,
     kwargs: dict[str, Any],
     code: str,
