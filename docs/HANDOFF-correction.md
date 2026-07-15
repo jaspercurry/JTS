@@ -70,17 +70,14 @@
   run/lifecycle summary without process owner id or evidence payloads. `current`
   additionally requires the comparison's complete schema/fingerprint and exact
   current topology/protected-profile binding. A failure to start the durable
-  run revokes the just-published comparison/repeat authority. Production
-  currently leaves the web-created run `unconfigured`; no browser route
-  reserves its region-scoped attempts or commits lifecycle transitions. The
-  typed internal host can progress an exact trusted composition to `measured`
-  only while the program's normalized applied baseline and microphone
-  calibration remain exact; normal, reverse, and delay graph identities cannot
-  be reused.
-
-  Candidate/apply/verification, receipt issuance, and Room
-  consumption remain unavailable. No sound, live graph mutation, or hardware
-  was exercised.
+  run revokes the just-published comparison/repeat authority. The original
+  Wave 3 slice stopped at an `unconfigured` web-created run and an internal
+  synthetic host. That boundary is now superseded by the production isolated
+  and summed relay, exact candidate publication/review, and reviewed
+  apply/readback/restore integration described in the current Active→Room
+  status below. Post-apply verification, receipt issuance, and Room consumption
+  remain unavailable. No sound, live graph mutation, or hardware was exercised
+  while wiring those software paths.
 - ✅ **Room R1 — envelope v9 owns whole-page visibility, truthful entry
   failures, and disclosed run defaults (hardware-free;
   real-device browser pass pending).** `jasper.correction.envelope` now emits
