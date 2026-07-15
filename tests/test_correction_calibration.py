@@ -284,37 +284,31 @@ def test_minidsp_requests_carry_a_non_default_user_agent():
 
 def test_minidsp_umik2_candidates_try_scripts_endpoints_first():
     """The 2026-07-15 bug: every /images/umik... candidate 404s for UMIK-2.
-    Verified live against a real UMIK-2 (serial 8108494) that the actual
-    endpoints are the per-orientation PHP scripts, and that each script
-    only accepts its own suffix (umik.php <-> "<serial>.txt", umik90.php
-    <-> "<serial>_90deg.txt"). Scripts endpoints must be probed first, with
-    the legacy /images/ family kept only as a trailing fallback.
+    Verified live against a real UMIK-2 that the actual endpoints are the
+    per-orientation PHP scripts, and that each script only accepts its own
+    suffix (umik.php <-> "<serial>.txt", umik90.php <-> "<serial>_90deg.txt").
+    Scripts endpoints must be probed first, with one legacy /images/ dir kept
+    only as a trailing fallback.
     """
     urls = calibration._minidsp_candidate_urls(
-        "umik-2", "810-8494", orientation="unknown",
+        "umik-2", "810-1234", orientation="unknown",
     )
-    assert urls[0] == "https://www.minidsp.com/scripts/umik2cal/umik.php/8108494.txt"
-    assert urls[1] == (
-        "https://www.minidsp.com/scripts/umik2cal/umik90.php/8108494_90deg.txt"
-    )
-    # No cross-pairing: umik.php never gets the _90deg suffix and vice versa.
-    assert not any(
-        u.endswith("umik.php/8108494_90deg.txt")
-        or u.endswith("umik90.php/8108494.txt")
-        for u in urls
-    )
-    # Legacy family survives as a trailing fallback (site-drift insurance).
-    assert "https://www.minidsp.com/images/umik/8108494.txt" in urls[2:]
+    assert urls == [
+        "https://www.minidsp.com/scripts/umik2cal/umik.php/8101234.txt",
+        "https://www.minidsp.com/scripts/umik2cal/umik90.php/8101234_90deg.txt",
+        "https://www.minidsp.com/images/umik/8101234.txt",
+        "https://www.minidsp.com/images/umik/8101234_90deg.txt",
+    ]
 
 
 def test_minidsp_umik2_candidates_respect_orientation_priority():
     urls = calibration._minidsp_candidate_urls(
-        "umik-2", "810-8494", orientation="90deg",
+        "umik-2", "810-1234", orientation="90deg",
     )
     assert urls[0] == (
-        "https://www.minidsp.com/scripts/umik2cal/umik90.php/8108494_90deg.txt"
+        "https://www.minidsp.com/scripts/umik2cal/umik90.php/8101234_90deg.txt"
     )
-    assert urls[1] == "https://www.minidsp.com/scripts/umik2cal/umik.php/8108494.txt"
+    assert urls[1] == "https://www.minidsp.com/scripts/umik2cal/umik.php/8101234.txt"
 
 
 def test_minidsp_umik2_fetch_uses_scripts_endpoint():
@@ -322,18 +316,47 @@ def test_minidsp_umik2_fetch_uses_scripts_endpoint():
 
     def fake_open(req, timeout):
         seen.append(req.full_url)
-        if req.full_url == "https://www.minidsp.com/scripts/umik2cal/umik.php/8108494.txt":
+        if req.full_url == "https://www.minidsp.com/scripts/umik2cal/umik.php/8101234.txt":
             return b"20 -1\n100 0\n1000 1\n"
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
     text, source = calibration.fetch_minidsp_calibration_text(
         vendor_model="umik-2",
-        serial="810-8494",
+        serial="810-1234",
         opener=fake_open,
     )
     assert "1000 1" in text
-    assert source == "https://www.minidsp.com/scripts/umik2cal/umik.php/8108494.txt"
+    assert source == "https://www.minidsp.com/scripts/umik2cal/umik.php/8101234.txt"
     assert seen[0] == source  # scripts endpoint tried first, no wasted round-trip
+
+
+def test_minidsp_umik2_fetch_rejects_http_200_error_page():
+    """The scripts endpoints return HTTP 200 with an HTML "Unable to locate
+    calibration data" page for an unknown serial (verified live 2026-07-15),
+    never a 404. _looks_like_calibration must reject that body so the fetch
+    falls through the remaining candidates; with the legacy fallbacks
+    404ing, the outcome is CalibrationNotFoundError, not a stored HTML page.
+    """
+    seen: list[str] = []
+    error_page = (
+        b'<p style="color:red;">Unable to locate calibration data. Please '
+        b'contact <a href="https://minidsp.desk.com">miniDSP support</a>.</p>'
+    )
+
+    def fake_open(req, timeout):
+        seen.append(req.full_url)
+        if "/scripts/umik2cal/" in req.full_url:
+            return error_page
+        raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
+
+    with pytest.raises(calibration.CalibrationNotFoundError):
+        calibration.fetch_minidsp_calibration_text(
+            vendor_model="umik-2",
+            serial="810-1234",
+            opener=fake_open,
+        )
+    # Every candidate was tried — the 200 error page was not accepted.
+    assert len(seen) == 4
 
 
 def test_fetch_vendor_calibration_stores_known_mic_record(tmp_path: Path):

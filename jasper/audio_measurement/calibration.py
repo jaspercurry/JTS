@@ -595,10 +595,11 @@ def _minidsp_candidate_urls(
     # locate calibration data" page rather than a 404, so getting the
     # pairing right avoids a wasted round-trip; _looks_like_calibration
     # still guards against ever accepting that error page.
-    # Verified live 2026-07-15 against a real UMIK-2 (serial 8108494):
-    # both script URLs return 200 with real cal data, while every
-    # /images/umik... family URL below now 404s. The legacy family is
-    # kept as a trailing fallback only in case the site reverts.
+    # Verified live 2026-07-15 against a real UMIK-2: both script URLs
+    # return 200 with real cal data, while the whole legacy
+    # /images/umik... family is dead (404 for every serial). One legacy
+    # dir is retained below as minimal drift insurance in case the site
+    # ever reverts to static files.
     scripts = [
         ("https://www.minidsp.com/scripts/umik2cal/umik.php/", f"{digits}.txt"),
         (
@@ -613,14 +614,9 @@ def _minidsp_candidate_urls(
         if orientation == "90deg"
         else [f"{digits}.txt", f"{digits}_90deg.txt"]
     )
-    legacy_dirs = [
-        "https://www.minidsp.com/images/umik/",
-        "https://www.minidsp.com/images/umik/Umik-2/",
-        "https://www.minidsp.com/images/umik/UMIK-2/",
-        "https://www.minidsp.com/images/umik-2/",
-    ]
     return [base + suffix for base, suffix in scripts] + [
-        base + suffix for base in legacy_dirs for suffix in legacy_suffixes
+        "https://www.minidsp.com/images/umik/" + suffix
+        for suffix in legacy_suffixes
     ]
 
 
