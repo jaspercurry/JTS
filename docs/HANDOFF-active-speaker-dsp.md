@@ -205,7 +205,7 @@
 > fixed on the tweeter reference axis while each driver gets a separate safe
 > level and a target of three gated repeats → attest signed path geometry → run
 > server-selected normal/reverse/bounded-delay combined captures → evidence
-> complete. Candidate review/apply/verification remain later slices. One bounded
+> complete. Candidate apply/verification remain later slices. One bounded
 > fourth attempt may
 > replace a rejected capture, but automatic
 > apply still requires three accepted repeats for both geometries. The lower
@@ -768,7 +768,16 @@
 > repeatability, plateau, and tie policy. A store-backed pure deterministic
 > evaluator now consumes exact complete isolated and summed evidence and
 > derives an attenuation/polarity/delay-only electrical candidate. The
-> production host does not invoke it; candidate persistence, `candidate_ready`, graph
+> production Active service now invokes it after the final summed capture,
+> persists and strictly reopens one generation-scoped candidate, binds the exact
+> run's `candidate_ready` transition to that artifact, and exposes a compact
+> review of retained Fc/family/order, measured attenuation and delay, retained
+> polarity proof, and source evidence identities. A POST-only recovery route
+> resumes the same deterministic publication after an interruption. A
+> deterministic evaluator refusal is persisted as exact failure evidence,
+> transitions the run through the existing `candidate_scoring_failed` blocked
+> path, and requires a fresh complete measurement sequence rather than a futile
+> retry of immutable evidence. Graph
 > mutation/apply, verification/receipt, and Room consumption remain unavailable.
 > Real summed capture transport is now composed through the correction relay, but
 > live JTS3 playback and acoustic capture remain unvalidated.
@@ -2166,10 +2175,11 @@ authority, the bounded low-frequency coarse-plus-refinement schedule,
 schedule-aware final evaluator,
 complete-plan replay guards, production fixed-axis relay population of the
 strict three-repeat-per-driver aggregate, the store-backed pure deterministic electrical
-candidate evaluator, receipt schema-v2 one-shot roles, and the
+candidate evaluator, exact candidate persistence/readback and `candidate_ready`
+review projection, receipt schema-v2 one-shot roles, and the
 durable bundle-backed commissioning-run store/start/status boundary and service owner-
-generation claim; no production candidate persistence/readiness/apply or live
-verification/receipt producer, and
+generation claim; no production candidate apply or live verification/receipt
+producer, and
 temporary passive-only Room
 admission checked contract-only; no hardware behavior revalidated. Frozen applied-preset startup anchor, durable
 crossover-volume intent, confirmed recovery,

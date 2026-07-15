@@ -31,6 +31,7 @@ from jasper.active_speaker.measured_candidate import (
     ISOLATED_ANALYZER_ID,
     ISOLATED_ANALYZER_VERSION,
     ISOLATED_QUALITY_KIND,
+    MeasuredCandidateError,
     MeasuredCandidateEvaluationError,
     MeasuredCandidateInputContract,
     MeasuredCandidateReadiness,
@@ -167,6 +168,7 @@ def _publish_capture(
     duplicate_fc: bool = False,
     quality_mismatch: bool = False,
     excitation_mismatch: str | None = None,
+    preset: Any | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     item = _materialize_base(store, capture, prefix=prefix)
     issuance = item.capture.capture_id.removeprefix("capture-")
@@ -188,7 +190,7 @@ def _publish_capture(
                 "above_validity_floor": True,
                 "near_validity_floor": False,
             }
-            for region in _preset().crossover_regions
+            for region in (preset or _preset()).crossover_regions
         ]
         if duplicate_fc:
             overlaps.append(dict(overlaps[0]))
@@ -298,6 +300,7 @@ def _materialize_isolated(
     duplicate_fc: bool = False,
     quality_mismatch: bool = False,
     excitation_mismatch: str | None = None,
+    preset: Any | None = None,
 ) -> CompleteIsolatedDriverEvidence:
     role_levels = {"woofer": 0.0, "mid": 3.0, "tweeter": 70.0 if out_of_range else 6.0}
     drivers = []
@@ -318,6 +321,7 @@ def _materialize_isolated(
                     if driver.role == "woofer" and index == 0
                     else None
                 ),
+                preset=preset,
             )[0]
             for index, capture in enumerate(driver.captures)
         )
@@ -520,6 +524,20 @@ def test_real_store_complete_evidence_authorizes_deterministic_candidate(
     assert delays["mid"] - delays["woofer"] == pytest.approx(0.0375)
     assert delays["tweeter"] - delays["mid"] == pytest.approx(0.0375)
     assert first.to_dict() == second.to_dict()
+
+
+def test_persisted_candidate_strictly_reopens_without_evidence_rescoring(
+    tmp_path: Path,
+) -> None:
+    candidate = _evaluate(_authority(tmp_path))
+
+    assert MeasuredElectricalCandidate.from_mapping(candidate.to_dict()) == candidate
+
+    changed = candidate.to_dict()
+    changed["role_delays_ms"] = dict(changed["role_delays_ms"])
+    changed["role_delays_ms"]["tweeter"] = 0.1
+    with pytest.raises(MeasuredCandidateError, match="declared result"):
+        MeasuredElectricalCandidate.from_mapping(changed)
 
 
 def test_exact_current_owner_generation_is_required(tmp_path: Path) -> None:

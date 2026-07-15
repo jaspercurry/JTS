@@ -1929,7 +1929,7 @@ def test_fast_terminal_stop_reenables_the_authoritative_next_action():
     )
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert result == {"ok": True, "passed": 3}
+    assert result == {"ok": True, "passed": 7}
 
 
 # --- passive-gating: Layer A hidden for a full-range passive speaker ----------
@@ -2527,7 +2527,7 @@ def test_crossover_envelope_passive_speaker_is_gated():
     }
     assert env["nudges"] == []
     assert "crossover" in env["verdict_text"].lower()
-    assert env["schema_version"] == 3
+    assert env["schema_version"] == 4
 
 
 def test_crossover_envelope_requires_protected_setup_first():
@@ -2945,10 +2945,52 @@ def test_crossover_envelope_projects_active_owned_alignment_actions():
     status["region_commissioning"] = {"status": "measured"}
     measured = crossover_envelope.build_crossover_envelope(status)
     assert measured["screen"] == "review"
-    assert measured["next_action"] is None
+    assert measured["next_action"] == {
+        "id": "prepare_measured_candidate",
+        "label": "Prepare measured candidate",
+        "endpoint": "/correction/crossover/candidate",
+        "body": {},
+    }
     assert next(
         step for step in measured["steps"] if step["id"] == "apply"
     )["status"] == "active"
+
+    review = {
+        "fingerprint": "candidate-1",
+        "retained_crossover_regions": [{"fc_hz": 2_100.0}],
+        "drivers": [{"role": "woofer"}, {"role": "tweeter"}],
+    }
+    status["region_commissioning"] = {
+        "status": "candidate_ready",
+        "candidate": review,
+    }
+    ready = crossover_envelope.build_crossover_envelope(status)
+    assert ready["screen"] == "review"
+    assert ready["next_action"] is None
+    assert ready["candidate_review"] == review
+    assert "Frequency, filter family, and order stay" in ready["verdict_text"]
+
+    status["region_commissioning"] = {
+        "status": "candidate_refused",
+        "detail": "Exact evidence could not authorize a candidate.",
+        "candidate_failure": {
+            "reason": "candidate_polarity_inconclusive",
+            "detail": "normal and reverse evidence did not prove one polarity",
+        },
+    }
+    refused = crossover_envelope.build_crossover_envelope(status)
+    assert refused["screen"] == "microphone"
+    assert refused["candidate_review"] is None
+    assert refused["next_action"] == {
+        "id": "level_match",
+        "label": "Restart driver and alignment measurements",
+        "endpoint": "/correction/crossover/level-match",
+        "body": {},
+    }
+    assert any(
+        nudge["code"] == "measured_candidate_refused"
+        for nudge in refused["nudges"]
+    )
 
 
 def test_strict_alignment_precedes_prior_automatic_applied_profile():
@@ -2996,7 +3038,8 @@ def test_strict_alignment_precedes_prior_automatic_applied_profile():
             "alignment",
             "measure_region_alignment",
         ),
-        ({"status": "measured"}, "review", None),
+        ({"status": "measured"}, "review", "prepare_measured_candidate"),
+        ({"status": "candidate_ready", "candidate": {}}, "review", None),
     )
 
     for region_status, expected_screen, expected_action in cases:
@@ -4905,7 +4948,7 @@ def test_durable_level_run_keeps_waiting_without_volatile_relay_state():
 
     assert env["screen"] == "waiting"
     assert env["next_action"] is None
-    assert env["schema_version"] == 3
+    assert env["schema_version"] == 4
 
 
 def test_phone_timeout_keeps_exact_run_waiting_and_explains_correlation():
@@ -7236,6 +7279,7 @@ def test_crossover_relay_route_is_registered():
     assert "/crossover/relay-capture" in correction_setup._POST_ROUTES
     assert "/crossover/relay-cancel" in correction_setup._POST_ROUTES
     assert "/crossover/region-geometry" in correction_setup._POST_ROUTES
+    assert "/crossover/candidate" in correction_setup._POST_ROUTES
 
 
 def test_region_geometry_route_accepts_only_the_server_target_and_signed_value(
@@ -7263,6 +7307,163 @@ def test_region_geometry_route_accepts_only_the_server_target_and_signed_value(
         correction_setup._handle_crossover_region_geometry(
             _json_handler({**raw, "polarity": "reverse"})
         )
+
+
+def test_candidate_recovery_route_accepts_no_browser_policy(monkeypatch):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(correction_setup, "_active_relay_phase", lambda: None)
+    monkeypatch.setattr(
+        backend,
+        "prepare_commissioning_candidate",
+        lambda: {"status": "candidate_ready"},
+    )
+
+    assert correction_setup._handle_crossover_candidate(
+        _json_handler({})
+    ) == {"status": "candidate_ready"}
+    with pytest.raises(ValueError, match="accepts no browser fields"):
+        correction_setup._handle_crossover_candidate(
+            _json_handler({"delay_ms": 1.0})
+        )
+
+
+def test_candidate_recovery_returns_persisted_refusal_as_current_state(
+    monkeypatch,
+):
+    from jasper.active_speaker.commissioning_service import (
+        CommissioningServiceError,
+    )
+    from jasper.web import correction_setup
+
+    refused = {
+        "status": "candidate_refused",
+        "candidate_failure": {
+            "reason": "candidate_polarity_inconclusive"
+        },
+    }
+
+    class Service:
+        def publish_candidate(self):
+            raise CommissioningServiceError(
+                "candidate_scoring_failed",
+                "exact measured evidence could not authorize a candidate",
+            )
+
+        def status(self):
+            return refused
+
+    monkeypatch.setattr(backend, "_commissioning_capture_service", Service)
+    monkeypatch.setattr(correction_setup, "_active_relay_phase", lambda: None)
+
+    assert correction_setup._handle_crossover_candidate(
+        _json_handler({})
+    ) == refused
+
+
+@pytest.mark.asyncio
+async def test_final_region_capture_immediately_publishes_the_candidate(
+    monkeypatch,
+):
+    statuses = iter(
+        (
+            {"status": "collecting"},
+            {"status": "measured"},
+            {"status": "candidate_ready"},
+        )
+    )
+    calls = []
+
+    class Service:
+        def status(self):
+            return next(statuses)
+
+        async def capture_next(self, _port, **kwargs):
+            calls.append(("capture", kwargs))
+            return SimpleNamespace(
+                fingerprint="a" * 64,
+                evidence_kind="delay_null",
+                speaker_group_id="mono",
+                region_id="woofer_tweeter",
+            )
+
+        def publish_candidate(self):
+            calls.append(("candidate",))
+            return {"fingerprint": "b" * 64}
+
+    monkeypatch.setattr(backend, "_commissioning_capture_service", Service)
+    monkeypatch.setattr(
+        backend,
+        "_LEVEL_LEASE",
+        SimpleNamespace(assert_volume_safety_resolved=lambda: None),
+    )
+
+    result = await backend.capture_next_commissioning_region(
+        object(),
+        camilla_factory=lambda: object(),
+    )
+
+    assert [call[0] for call in calls] == ["capture", "candidate"]
+    assert result["next"] == {"status": "candidate_ready"}
+
+
+@pytest.mark.asyncio
+async def test_final_region_capture_returns_persisted_candidate_refusal(
+    monkeypatch,
+):
+    from jasper.active_speaker.commissioning_service import (
+        CommissioningServiceError,
+    )
+
+    statuses = iter(
+        (
+            {"status": "collecting"},
+            {"status": "measured"},
+            {
+                "status": "candidate_refused",
+                "candidate_failure": {
+                    "reason": "candidate_polarity_inconclusive"
+                },
+            },
+        )
+    )
+
+    class Service:
+        def status(self):
+            return next(statuses)
+
+        async def capture_next(self, _port, **_kwargs):
+            return SimpleNamespace(
+                fingerprint="a" * 64,
+                evidence_kind="delay_null",
+                speaker_group_id="mono",
+                region_id="woofer_tweeter",
+            )
+
+        def publish_candidate(self):
+            raise CommissioningServiceError(
+                "candidate_scoring_failed",
+                "exact measured evidence could not authorize a candidate",
+            )
+
+    monkeypatch.setattr(backend, "_commissioning_capture_service", Service)
+    monkeypatch.setattr(
+        backend,
+        "_LEVEL_LEASE",
+        SimpleNamespace(assert_volume_safety_resolved=lambda: None),
+    )
+
+    result = await backend.capture_next_commissioning_region(
+        object(),
+        camilla_factory=lambda: object(),
+    )
+
+    assert result["next"] == {
+        "status": "candidate_refused",
+        "candidate_failure": {
+            "reason": "candidate_polarity_inconclusive"
+        },
+    }
 
 
 @pytest.mark.parametrize(

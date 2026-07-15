@@ -8,6 +8,8 @@ const els = {
   verdict: document.getElementById('crossover-verdict'),
   steps: document.getElementById('crossover-steps'),
   nudges: document.getElementById('crossover-nudges'),
+  review: document.getElementById('crossover-review'),
+  reviewBody: document.getElementById('crossover-review-body'),
   action: document.getElementById('crossover-action'),
   relay: document.getElementById('crossover-relay'),
   relayStatus: document.getElementById('crossover-relay-status'),
@@ -70,6 +72,61 @@ function renderNudges(nudges) {
     }),
   );
   els.nudges.replaceChildren(...rows);
+}
+
+function renderCandidateReview(review) {
+  const regions = review && Array.isArray(review.retained_crossover_regions)
+    ? review.retained_crossover_regions : [];
+  const drivers = review && Array.isArray(review.drivers) ? review.drivers : [];
+  const visible = Boolean(review && regions.length && drivers.length);
+  els.review.classList.toggle('hidden', !visible);
+  if (!visible) {
+    els.reviewBody.replaceChildren();
+    return;
+  }
+
+  const rows = [];
+  regions.forEach((region) => {
+    const polarity = `${region.lower_role}: ${region.lower_polarity}; ` +
+      `${region.upper_role}: ${region.upper_polarity}`;
+    rows.push(el('div', {class: 'measurement-row'}, [
+      el('div', {}, [
+        el('p', {
+          class: 'measurement-row__title',
+          text: `${region.lower_role} / ${region.upper_role}`,
+        }),
+        el('p', {
+          class: 'measurement-row__meta',
+          text: `${Number(region.fc_hz).toLocaleString()} Hz · ` +
+            `${region.filter_family} order ${region.order} · ${polarity}`,
+        }),
+      ]),
+    ]));
+  });
+  drivers.forEach((driver) => {
+    rows.push(el('div', {class: 'measurement-row'}, [
+      el('div', {}, [
+        el('p', {class: 'measurement-row__title', text: driver.role}),
+        el('p', {
+          class: 'measurement-row__meta',
+          text: `${Number(driver.attenuation_db).toFixed(1)} dB attenuation · ` +
+            `${Number(driver.delay_ms).toFixed(3)} ms delay · ${driver.polarity}`,
+        }),
+      ]),
+    ]));
+  });
+  const evidence = review.evidence || {};
+  const isolated = evidence.isolated_artifact || {};
+  const summed = evidence.summed_artifact || {};
+  rows.push(el('p', {
+    class: 'measurement-row__meta candidate-provenance',
+    text: `Evidence ${isolated.fingerprint || 'unavailable'} (drivers), ` +
+      `${summed.fingerprint || 'unavailable'} (combined); ` +
+      `${evidence.algorithm_id || 'unknown'} v${evidence.algorithm_version || '?'}.`,
+  }));
+  els.reviewBody.replaceChildren(
+    el('div', {class: 'measurement-list'}, rows),
+  );
 }
 
 function renderActions(primary, alternates = []) {
@@ -183,6 +240,7 @@ function render(env) {
   els.verdict.textContent = env.verdict_text || '';
   renderSteps(env.steps);
   renderNudges(env.nudges);
+  renderCandidateReview(env.candidate_review);
   renderRelay(env.relay);
   const relayActive = env.relay && RELAY_IN_FLIGHT.has(env.relay.status);
   renderActions(

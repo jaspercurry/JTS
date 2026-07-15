@@ -807,17 +807,27 @@ exact admitted normal/reverse/delay sets, evaluates the bounded measured delay
 schedule, and advances the exact run from `unconfigured` through `protected`
 to `measured`. A store-backed pure deterministic evaluator can now reopen exact
 complete isolated and summed evidence and derive an
-attenuation/polarity/delay-only electrical candidate. The production host does
-not invoke it, so no candidate is persisted and `candidate_ready`, graph mutation/apply,
+attenuation/polarity/delay-only electrical candidate. The production Active
+service now invokes it after the final summed capture, persists and strictly
+reopens one generation-scoped candidate, and advances the exact run to
+`candidate_ready` with the artifact identity as transition evidence. The
+correction envelope projects one server-owned review containing retained
+Fc/family/order, measured per-role attenuation and absolute delay, retained
+polarity proof, and exact isolated/summed provenance. Graph mutation/apply,
 verification/receipt, and Room authority remain unavailable.
+If the deterministic evaluator refuses otherwise complete evidence, Active
+persists a generation-scoped refusal artifact and binds it to the lifecycle's
+existing `candidate_scoring_failed` blocked transition. The browser offers one
+fresh full measurement run; it does not retry immutable evidence that must
+produce the same refusal.
 Legacy direct browser/raw combined-capture routes remain permanently pre-audio
 refused with `active_summed_persisted_admission_unavailable`. The production
 relay's recorder-only `kind=summed` branch now supplies real WAVs and explicit
 signed/fixed-axis geometry to the typed internal host without granting the
 browser scheduling or DSP authority. Historical B2b captures remain
-permanently non-admitted, and current projections still expose no candidate,
-apply, verification, receipt, or Room authority until the later Wave 3 gates
-are satisfied.
+permanently non-admitted. Current projections expose only the exact measured
+candidate review; apply, verification, receipt, and Room authority remain
+unavailable until their later Wave 3 gates are satisfied.
 
 ### Wave 2 level-run correlation and timeout boundary
 
@@ -1375,13 +1385,13 @@ CI-provable:
 
 ### Slice 3: measured candidate selection
 
-- Derive a measured usable overlap range above the validity floor.
-- Search the supported electrical frequencies and families/orders, even-order
-  Linkwitz–Riley by default.
-- Score on-axis blend quality, alignment, headroom, and off-axis evidence
-  where deliberately captured; refuse pairings that need per-driver EQ.
-- Produce the same canonical candidate and comparison used by Manual.
-- Allow explicit replacement of a manual or previously automatic crossover.
+- Keep the reviewed crossover frequency, family, and order for the 2-way launch.
+- Derive attenuation-only trims from fixed-axis isolated-driver overlap levels.
+- Prove the reviewed polarity with normal-versus-reverse evidence and select a
+  playback-clock-locked bounded relative delay from the scheduled walk.
+- Persist and read back one exact candidate, then expose its design, corrections,
+  and evidence provenance for explicit review before apply.
+- Defer automatic frequency/family/order search and off-axis optimization.
 
 This order delivers useful measured behavior at each step without pretending a
 trim calculation is a complete automatic crossover.
@@ -1453,10 +1463,10 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   fixed-axis relay now supplies those captures from its real WAV and one-shot
   admission handoff, while existing mutable and fail-soft driver records cannot
   be promoted or backfilled. The store-backed pure evaluator
-  can derive a deterministic electrical candidate from exact synthetic-admitted
-  complete evidence, but production does not invoke or persist it. There is
-  still no `candidate_ready` transition, candidate graph mutation/apply,
-  verification, receipt issuer, or Room authority path. Room's
+  derives the deterministic electrical candidate from exact admitted complete
+  evidence, and the production Active service now persists, reopens, binds, and
+  projects that candidate through `candidate_ready`. There is still no candidate
+  graph mutation/apply, verification, receipt issuer, or Room authority path. Room's
   temporary R1b adapter admits passive/not-required and
   blocks every active topology rather than trusting the applied-snapshot
   positive. Live receipt production/consumption and on-device proof remain later
@@ -1641,7 +1651,8 @@ group-by-region and isolated-driver evidence sets with typed run/attempt,
 physical-target, graph, admission, and geometry authority,
 the bounded low-frequency coarse-plus-refinement schedule and schedule-aware
 final evaluator, the store-backed pure deterministic electrical candidate
-evaluator, complete-plan replay
+evaluator, exact candidate persistence/readback and `candidate_ready` review
+projection, complete-plan replay
 guards, receipt schema-v2 one-shot roles,
 and Room's temporary passive-only admission boundary checked against the current
 implementation and cited measurement literature; no live audio/DSP/hardware

@@ -1551,6 +1551,28 @@ def attest_commissioning_region_geometry(raw: Mapping[str, Any]) -> dict[str, An
     )
 
 
+def prepare_commissioning_candidate() -> dict[str, Any]:
+    """Publish the exact current measured candidate, or idempotently reopen it."""
+
+    from jasper.active_speaker.commissioning_service import (
+        CommissioningServiceError,
+    )
+
+    service = _commissioning_capture_service()
+    try:
+        candidate = service.publish_candidate()
+    except CommissioningServiceError as exc:
+        if exc.code != "candidate_scoring_failed":
+            raise
+        status = service.status()
+        if status.get("status") != "candidate_refused":
+            raise RuntimeError(
+                "candidate refusal did not reopen as authoritative status"
+            ) from exc
+        return status
+    return {"status": "candidate_ready", "candidate": candidate}
+
+
 async def capture_next_commissioning_region(
     raw_capture_transport: Any,
     *,
@@ -1559,6 +1581,7 @@ async def capture_next_commissioning_region(
     """Execute one server-selected normal/reverse/delay recorder capture."""
 
     from jasper.active_speaker.commissioning_service import (
+        CommissioningServiceError,
         commissioning_runtime_port,
     )
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
@@ -1577,6 +1600,13 @@ async def capture_next_commissioning_region(
     if capture is None:
         raise RuntimeError("the server did not issue the expected recorder capture")
     after = service.status()
+    if after.get("status") == "measured":
+        try:
+            service.publish_candidate()
+        except CommissioningServiceError as exc:
+            if exc.code != "candidate_scoring_failed":
+                raise
+        after = service.status()
     return {
         "status": "recorded",
         "capture_fingerprint": capture.fingerprint,

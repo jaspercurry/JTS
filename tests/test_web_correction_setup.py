@@ -342,6 +342,8 @@ def test_get_crossover_subpath_renders_secure_capture_ui():
     assert b"/assets/correction/js/crossover/main.js" in resp
     assert b'id="crossover-verdict"' in resp
     assert b'id="crossover-steps"' in resp
+    assert b'id="crossover-review"' in resp
+    assert b'id="crossover-review-body"' in resp
     assert b'id="crossover-action"' in resp
     assert b'id="mic-support"' not in resp
 
@@ -468,7 +470,7 @@ def test_known_post_routes_reach_csrf_guard():
         "/sync/start", "/sync/play", "/sync/analyze",
         "/sync/relay-capture", "/sync/apply", "/sync/stop", "/sync/reset",
         "/crossover/level-match", "/crossover/recover-volume",
-        "/crossover/region-geometry",
+        "/crossover/region-geometry", "/crossover/candidate",
         "/crossover/apply",
         "/crossover/relay-capture", "/crossover/relay-cancel",
         "/crossover/driver-test",
