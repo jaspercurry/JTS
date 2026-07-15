@@ -113,8 +113,9 @@ existing layering):
     (`environment.CAMILLA_CLASS_PROGRAM_BAKE`) → **program-bake carrier**.
     This is a flat 2-channel program graph, but it is not DAC-bound: camilla#1
     writes `File` → Snapcast FIFO and camilla#2 owns Layer A driver protection.
-    The carrier seam remains implemented, but Active's v1 manual Room authority
-    is deliberately solo-only: primary `active_raw` here cannot prove the Layer
+    The carrier seam remains implemented, but Active's v1 Room authorities
+    (manual snapshot or verified automatic receipt) are deliberately solo-only:
+    primary `active_raw` here cannot prove the Layer
     A running on camilla#2. Active therefore projects
     `active_grouped_room_correction_not_supported` instead of a misleading
     crossover mismatch. A later Active-owned distributed identity must bind

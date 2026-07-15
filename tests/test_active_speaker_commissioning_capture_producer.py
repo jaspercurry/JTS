@@ -40,9 +40,17 @@ from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
 )
 from jasper.active_speaker.commissioning_host import RegionCaptureOperation
+from jasper.active_speaker.commissioning_receipt import (
+    AdmittedCaptureProof,
+    RequiredTargetPlan,
+)
+from jasper.active_speaker.commissioning_verification import (
+    PostApplyCaptureOperation,
+)
 from jasper.active_speaker.commissioning_run import CommissioningRunStore
 from jasper.active_speaker.driver_acoustics import (
     SUMMED_BLEND_OK,
+    SUMMED_POLARITY_OR_DELAY_PROBLEM,
     SummedAcousticResult,
 )
 from jasper.active_speaker.driver_safety import (
@@ -570,6 +578,74 @@ async def test_actual_analyzer_happy_path_reopens_complete_typed_evidence(
         assert harness.store.reopen_artifact(artifact)
     typed_artifact = harness.store.publish_admitted_region_capture(capture, ordinal=0)
     assert harness.store.reopen_admitted_region_capture(typed_artifact) == capture
+
+
+@pytest.mark.asyncio
+async def test_post_apply_capture_uses_current_protected_graph_and_receipt_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _harness(tmp_path)
+    monkeypatch.setattr(admitted_playback, "play_verified_wav", _fake_playback)
+    target_plan = RequiredTargetPlan.from_topology(
+        harness.topology,
+        placement_fingerprints={"mono": _hash("placement")},
+    )
+    required = target_plan.targets[0]
+    run_store = CommissioningRunStore(
+        path=tmp_path / "run.json", owner_id="1" * 32
+    )
+    post_attempt = run_store.reserve_attempt(
+        harness.operation.attempt.run,
+        target_id=f"post_apply:{required.target_id}",
+        target_fingerprint=required.target_fingerprint,
+    )
+    operation = PostApplyCaptureOperation(
+        plan_fingerprint=harness.plan.fingerprint,
+        target=harness.operation.target,
+        required_target=required,
+        attempt=post_attempt,
+        placement_fingerprint=required.placement_fingerprint,
+        driver_target_fingerprints=harness.operation.driver_target_fingerprints,
+        lower_channels=harness.operation.lower_channels,
+        upper_channels=harness.operation.upper_channels,
+        capture_ordinal=1,
+        commissioning_context_fingerprint=_hash("applied-context"),
+        issuance_id="3" * 32,
+    )
+
+    async def transport(play):
+        playback = await play()
+        return RawCaptureResult(
+            _synthetic_reference_axis_wav(playback),
+            {"fixture": "post_apply_reference_axis"},
+        )
+
+    result = await harness.producer(transport).capture_post_apply(
+        operation,
+        _context(harness.baseline_raw),
+    )
+
+    assert isinstance(result.payload, AdmittedCaptureProof)
+    assert result.payload.capture.consumer_id == "active_crossover"
+    assert result.payload.capture.measurement_kind == "active_crossover_post_apply"
+    assert result.payload.capture.target_fingerprint == required.target_fingerprint
+    assert result.payload.capture.context_fingerprint == _hash("applied-context")
+
+    monkeypatch.setattr(
+        producer_module,
+        "analyze_summed_crossover",
+        lambda *args, **kwargs: replace(
+            _refused_acoustic(),
+            verdict=SUMMED_POLARITY_OR_DELAY_PROBLEM,
+            quality={"failed": False, "issues": []},
+        ),
+    )
+    usable_failure = await harness.producer(transport).capture_post_apply(
+        replace(operation, capture_ordinal=2, issuance_id="4" * 32),
+        _context(harness.baseline_raw),
+    )
+    assert isinstance(usable_failure.payload, AdmittedCaptureProof)
 
 
 @pytest.mark.asyncio

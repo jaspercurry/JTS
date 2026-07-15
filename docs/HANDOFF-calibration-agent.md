@@ -704,10 +704,10 @@ Two key constraints from existing architecture:
 1. **`/start` resets to flat only when the topology contract permits it**
    ([`_handle_start`](../jasper/web/correction_setup.py)). The agent must never
    bypass this — fresh measurements capture the raw room for legal full-range
-   layouts. For active/protected layouts with matching manual applied-profile
-   authority, the active graph carrier preserves Layer A and strips only the
-   pre-split Room/preference layers; incomplete or mismatched active authority
-   remains blocked. If the agent wants to know how the *corrected* pipeline
+   layouts. For active/protected layouts with matching manual applied-profile or
+   verified automatic-receipt authority, the active graph carrier preserves
+   Layer A and strips only the pre-split Room/preference layers; incomplete or
+   mismatched active authority remains blocked. If the agent wants to know how the *corrected* pipeline
    measures, it goes through `/verify` (which deliberately doesn't reset).
 2. **`measurement_window()` precondition: no active voice session.**
    ([`jasper/correction/coordinator.py`](../jasper/correction/coordinator.py))
@@ -1322,7 +1322,7 @@ Codebase:
 
 ---
 
-Last verified: 2026-07-15 (manual-active Room admission, fresh Layer-A readback
+Last verified: 2026-07-15 (manual/verified-automatic Active Room admission, fresh Layer-A readback
 binding, and topology-preserving measurement baseline rechecked against
 `jasper/active_speaker/setup_status.py`, `jasper/sound/graph_carrier.py`, and
 `jasper/web/correction_setup.py`; prior 2026-07-13 Wave 2 paid tuning backend

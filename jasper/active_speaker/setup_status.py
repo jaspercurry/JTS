@@ -115,6 +115,7 @@ def _acoustic_commissioning_status(
     applied_profile: Mapping[str, Any] | None,
     measurements: Mapping[str, Any],
     layer_a_binding: Mapping[str, Any],
+    receipt_authority: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Room-correction prerequisite for an active Layer-A graph.
 
@@ -209,6 +210,14 @@ def _acoustic_commissioning_status(
         reason = None
         authority = ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE
         detail = f"The applied {tuning_owner} crossover is ready for room correction."
+    elif (
+        tuning_owner == "automatic"
+        and receipt_authority.get("allowed") is True
+        and receipt_authority.get("authority") == "automatic_verified_receipt"
+    ):
+        reason = None
+        authority = ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT
+        detail = "The verified automatic crossover is ready for room correction."
     else:
         # An automatic applied snapshot remains playback authority, but it is
         # not the receipt-backed commissioning authority Room requires.  Do
@@ -239,6 +248,11 @@ def _acoustic_commissioning_status(
         "reason": reason,
         "detail": detail,
         "setup_href": setup_href,
+        "receipt_fingerprint": (
+            receipt_authority.get("receipt_fingerprint")
+            if authority == ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT
+            else None
+        ),
         "applied_profile": {
             "available": isinstance(applied_profile, Mapping),
             "measured_level_match_applied": applied_measured,
@@ -874,6 +888,17 @@ def read_active_speaker_setup_status(
         if issues
         else "active speaker baseline is applied and output control is ready"
     )
+    receipt_authority = {
+        "allowed": False,
+        "authority": "automatic_verified_receipt",
+        "reason": "active_commissioning_receipt_unavailable",
+        "receipt_fingerprint": None,
+    }
+    if applied_crossover.get("owner") == "automatic":
+        # Manual/passive status stays free of the recorder/analyzer stack.
+        from .commissioning_verification import read_commissioning_room_authority
+
+        receipt_authority = read_commissioning_room_authority(topology)
     acoustic_commissioning = _acoustic_commissioning_status(
         topology,
         setup_ready=not blocked,
@@ -881,6 +906,7 @@ def read_active_speaker_setup_status(
         applied_profile=applied_profile,
         measurements=measurements,
         layer_a_binding=layer_a_binding,
+        receipt_authority=receipt_authority,
     )
     commissioning = commissioning_summary(
         topology,

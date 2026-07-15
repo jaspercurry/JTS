@@ -109,12 +109,16 @@ shared chokepoint both the relay flow and `web_measurement` call), and
 name; there is no separate `apply_failed`). Common fields, included when
 available and omitted otherwise: `session`, `group`, `role`, `verdict`,
 `outcome`, `reason`, `snr_db`, `floor_hz`, `graph_fingerprint`,
-`candidate_fingerprint`, `applied_fingerprint`. Five more names are
+`candidate_fingerprint`, `applied_fingerprint`. Post-apply commissioning now
+emits `correction.crossover_verification_passed` or
+`correction.crossover_verification_failed` exactly once from
+[`commissioning_verification.py`](../jasper/active_speaker/commissioning_verification.py),
+with the exact run, target/applied authority, and receipt or failure artifact
+identity as relevant. Three more names are
 **reserved but never emitted yet** — declared in
 `commissioning_capture.RESERVED_CROSSOVER_EVENTS` with a docstring naming which
-future slice/phase emits each: `correction.crossover_proposal_ready` (Slice 3),
-`correction.crossover_verification_passed` / `_verification_failed` (Phase 2
-post-apply verification), and `correction.crossover_level_locked` /
+future slice/phase emits each: `correction.crossover_proposal_ready` (Slice 3)
+and `correction.crossover_level_locked` /
 `_level_failed` (level locking already ships under
 `correction.crossover_driver_level_*` names; renaming it onto this namespace is
 a deliberate future migration, not something that happens silently). A static

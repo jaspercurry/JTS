@@ -21,7 +21,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias, cast
 
 from jasper.audio_measurement.admitted_playback import (
     AdmittedPlaybackResult,
@@ -79,6 +79,11 @@ from .commissioning_runtime import (
     CommissioningLiveContext,
     PreparedSummedExcitation,
     prepare_summed_excitation,
+)
+from .commissioning_receipt import (
+    POST_APPLY_CONSUMER_ID,
+    POST_APPLY_MEASUREMENT_KIND,
+    AdmittedCaptureProof,
 )
 from .driver_acoustics import (
     SUMMED_BLEND_OK,
@@ -158,6 +163,11 @@ class RegionCaptureOperation(Protocol):
 
     @property
     def target_fingerprint(self) -> str: ...
+
+
+class PostApplyCaptureOperation(RegionCaptureOperation, Protocol):
+    @property
+    def commissioning_context_fingerprint(self) -> str: ...
 
 
 class RawCaptureResult:
@@ -656,6 +666,7 @@ class SummedCaptureProducer:
         expected_graph_fingerprint: str,
         expected_volume_db: float,
         boundary: str,
+        post_apply: bool = False,
     ) -> ProtectionEvidence:
         current_targets = {
             value["target_fingerprint"]: value
@@ -724,14 +735,18 @@ class SummedCaptureProducer:
             else readback.delay_confirmation is None
         )
         graph_details = graph_safety.details
-        graph_target_current = bool(
-            graph_details.get("baseline_commissioning_candidate") is True
-            and graph_details.get("baseline_commissioning_group")
-            == operation.target.speaker_group_id
-            and set(graph_details.get("baseline_commissioning_roles") or ())
-            == {operation.target.lower_role, operation.target.upper_role}
-            and graph_details.get("unmuted_outputs")
-            == sorted(operation.lower_channels + operation.upper_channels)
+        graph_target_current = (
+            graph_safety.allowed
+            if post_apply
+            else bool(
+                graph_details.get("baseline_commissioning_candidate") is True
+                and graph_details.get("baseline_commissioning_group")
+                == operation.target.speaker_group_id
+                and set(graph_details.get("baseline_commissioning_roles") or ())
+                == {operation.target.lower_role, operation.target.upper_role}
+                and graph_details.get("unmuted_outputs")
+                == sorted(operation.lower_channels + operation.upper_channels)
+            )
         )
         current_checks = {
             "graph_exact": (
@@ -739,7 +754,10 @@ class SummedCaptureProducer:
             ),
             "graph_guarded_commissioning": (
                 graph_safety.allowed
-                and graph_safety.classification == GRAPH_GUARDED_COMMISSIONING
+                and (
+                    post_apply
+                    or graph_safety.classification == GRAPH_GUARDED_COMMISSIONING
+                )
             ),
             "graph_target_current": graph_target_current,
             "listening_volume_exact": math.isclose(
@@ -750,7 +768,10 @@ class SummedCaptureProducer:
             ),
             "graph_volume_ceiling": (
                 volume_limit is not None
-                and volume_limit <= expected_volume_db + 0.0001
+                and (
+                    (post_apply and volume_limit <= 0.0)
+                    or volume_limit <= expected_volume_db + 0.0001
+                )
             ),
             "profile_current": (
                 evaluation.confirmed_and_current
@@ -800,10 +821,11 @@ class SummedCaptureProducer:
         expected_null = operation.evidence_kind in {"reverse", "delay_null"}
         if quality.get("failed") is not False:
             issues.append("capture_quality_failed")
-        if result.verdict not in {
-            SUMMED_BLEND_OK,
-            SUMMED_POLARITY_OR_DELAY_PROBLEM,
-        }:
+        # A polarity/delay problem is a usable admitted measurement. The
+        # post-apply host classifies three exact repeats; this recorder layer
+        # rejects only captures that cannot support that decision.
+        accepted_verdicts = {SUMMED_BLEND_OK, SUMMED_POLARITY_OR_DELAY_PROBLEM}
+        if result.verdict not in accepted_verdicts:
             issues.append("summed_capture_unusable")
         if result.mic_clipping:
             issues.append("capture_clipped")
@@ -837,6 +859,34 @@ class SummedCaptureProducer:
     ) -> AdmittedCaptureCallbackResult[AdmittedRegionCapture]:
         """Admit, play, persist, analyze, and bind one exact operation."""
 
+        result = await self._capture(operation, context, post_apply=False)
+        if not isinstance(result.payload, AdmittedRegionCapture):
+            raise SummedCaptureProducerError(
+                "capture_kind_mismatch", "region capture returned another proof kind"
+            )
+        return result
+
+    async def capture_post_apply(
+        self,
+        operation: PostApplyCaptureOperation,
+        context: CommissioningLiveContext,
+    ) -> AdmittedCaptureCallbackResult[AdmittedCaptureProof]:
+        result = await self._capture(operation, context, post_apply=True)
+        if not isinstance(result.payload, AdmittedCaptureProof):
+            raise SummedCaptureProducerError(
+                "capture_kind_mismatch",
+                "post-apply capture returned another proof kind",
+            )
+        return result
+
+    async def _capture(
+        self,
+        operation: RegionCaptureOperation | PostApplyCaptureOperation,
+        context: CommissioningLiveContext,
+        *,
+        post_apply: bool,
+    ) -> AdmittedCaptureCallbackResult[Any]:
+
         issuance_id = _uuid_hex(operation.issuance_id, field_name="issuance_id")
         if (
             operation.plan_fingerprint != self.plan_fingerprint
@@ -855,6 +905,7 @@ class SummedCaptureProducer:
             expected_graph_fingerprint=context.graph.active_raw_fingerprint,
             expected_volume_db=context.listening_volume_db,
             boundary="generation",
+            post_apply=post_apply,
         )
         decision = admit_excitation(
             prepared.request,
@@ -888,6 +939,7 @@ class SummedCaptureProducer:
                 expected_graph_fingerprint=context.graph.active_raw_fingerprint,
                 expected_volume_db=context.listening_volume_db,
                 boundary="playback",
+                post_apply=post_apply,
             )
             return CurrentPlaybackAdmissionInputs(
                 limits=prepared.limits,
@@ -953,8 +1005,13 @@ class SummedCaptureProducer:
             )
 
         prefix = (
-            f"captures/{operation.attempt.attempt_id}/{issuance_id}/"
+            f"post-apply/{operation.attempt.attempt_id}/{issuance_id}/"
             f"{operation.capture_ordinal:04d}"
+            if post_apply
+            else (
+                f"captures/{operation.attempt.attempt_id}/{issuance_id}/"
+                f"{operation.capture_ordinal:04d}"
+            )
         )
         raw_artifact = self.evidence_store.publish_raw_artifact(
             f"{prefix}/raw.wav", raw_capture.wav_bytes
@@ -976,7 +1033,12 @@ class SummedCaptureProducer:
             raise SummedCaptureProducerError(
                 "admission_proof_missing", "admitted playback omitted exact proof"
             )
-        if operation.evidence_kind == "delay_null":
+        post_apply_operation = (
+            cast(PostApplyCaptureOperation, operation) if post_apply else None
+        )
+        if post_apply_operation is not None:
+            context_base = post_apply_operation.commissioning_context_fingerprint
+        elif operation.evidence_kind == "delay_null":
             if (
                 operation.null_walk_spec is None
                 or operation.relative_delay_us is None
@@ -994,19 +1056,23 @@ class SummedCaptureProducer:
             context_base = operation.target.context_base_fingerprint_for(
                 operation.evidence_kind
             )
-        context_fingerprint = capture_attempt_context_fingerprint(
-            self.authority,
-            attempt=operation.attempt,
-            evidence_kind=operation.evidence_kind,
-            target_fingerprint=operation.attempt.target_fingerprint,
-            context_base_fingerprint=context_base,
-            graph_fingerprint=context.graph.active_raw_fingerprint,
-            generation_protection_evidence_fingerprint=(
-                generation_proof_fingerprint
-            ),
-            playback_protection_evidence_fingerprint=(
-                playback_proof.evidence_fingerprint
-            ),
+        context_fingerprint = (
+            post_apply_operation.commissioning_context_fingerprint
+            if post_apply_operation is not None
+            else capture_attempt_context_fingerprint(
+                self.authority,
+                attempt=operation.attempt,
+                evidence_kind=operation.evidence_kind,
+                target_fingerprint=operation.attempt.target_fingerprint,
+                context_base_fingerprint=context_base,
+                graph_fingerprint=context.graph.active_raw_fingerprint,
+                generation_protection_evidence_fingerprint=(
+                    generation_proof_fingerprint
+                ),
+                playback_protection_evidence_fingerprint=(
+                    playback_proof.evidence_fingerprint
+                ),
+            )
         )
         analysis_authority = self._fresh_authority()
         acoustic = analyze_summed_crossover(
@@ -1088,9 +1154,15 @@ class SummedCaptureProducer:
                 f"{','.join(quality_issues)} ({quality_artifact.fingerprint})",
             )
         capture_identity = CaptureIdentity(
-            consumer_id=ACTIVE_REGION_EVIDENCE_CONSUMER_ID,
-            measurement_kind=measurement_kind_for_evidence(
-                operation.evidence_kind
+            consumer_id=(
+                POST_APPLY_CONSUMER_ID
+                if post_apply
+                else ACTIVE_REGION_EVIDENCE_CONSUMER_ID
+            ),
+            measurement_kind=(
+                POST_APPLY_MEASUREMENT_KIND
+                if post_apply
+                else measurement_kind_for_evidence(operation.evidence_kind)
             ),
             capture_id=f"capture-{issuance_id}",
             raw_artifact=raw_artifact,
@@ -1102,6 +1174,22 @@ class SummedCaptureProducer:
             quality_artifact=quality_artifact,
             admission_artifact=admitted.admission.artifact,
         )
+        if post_apply:
+            proof = AdmittedCaptureProof(
+                capture=capture_identity,
+                commissioning_session_id=self.authority.commissioning_session_id,
+                generation_admission=generation.admission,
+                admission=admitted.admission.admission,
+                generation_artifact=generation.artifact,
+            )
+            return AdmittedCaptureCallbackResult(
+                generation=generation,
+                playback=admitted.admission,
+                stimulus=stimulus,
+                protection_evidence=playback_proof,
+                payload=proof,
+            )
+
         capture = AdmittedRegionCapture(
             authority=self.authority,
             plan_fingerprint=self.plan_fingerprint,

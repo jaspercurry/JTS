@@ -805,7 +805,7 @@ The later Wave 3 control-plane integration now starts and exposes a durable
 set, claims its process owner at correction-web startup, and classifies a
 different active comparison as stale. The isolated-driver browser route now
 owns exact per-driver attempts and the first `protected` transition; summed
-collection and later lifecycle transitions remain internal-only. The typed internal
+collection now uses that same host through a recorder-only relay. The typed internal
 evidence host now reserves deterministic region attempts, persists and reopens
 exact admitted normal/reverse/delay sets, evaluates the bounded measured delay
 schedule, and advances the exact run from `unconfigured` through `protected`
@@ -830,9 +830,9 @@ relay's recorder-only `kind=summed` branch now supplies real WAVs and explicit
 signed/fixed-axis geometry to the typed internal host without granting the
 browser scheduling or DSP authority. Historical B2b captures remain
 permanently non-admitted. Current projections expose only the exact measured
-candidate review and the apply/recovery states described below; verification,
-receipt, and Room authority remain unavailable until their later Wave 3 gates
-are satisfied for automatic commissioning. That unavailable automatic authority
+candidate review and the apply/recovery states described below. Automatic Room
+authority remains unavailable until the retained graph passes three admitted
+post-apply fixed-axis captures and Active persists the exact receipt. That gate
 is separate from the operator-owned, explicitly applied manual-profile Room path
 described below.
 
@@ -1168,8 +1168,8 @@ graph. A failed, restored, attempted, or unknown mutation cannot mint the
 positive receipt.
 
 The admitted-capture, post-apply-target, and eligibility-receipt containers are
-schema version 2. There is no schema-v1 migration because no production issuer
-or persisted receipt exists yet; version 1 is rejected rather than guessed.
+schema version 2. There is no schema-v1 migration; version 1 is rejected rather
+than guessed.
 
 The Wave 1 transition and receipt values remain pure contracts. Wave 3 now
 persists the lifecycle's exact current-run identity in
@@ -1185,8 +1185,11 @@ hash, and passes relay WAV bytes to the host. It does not choose an operation or
 reconstruct progress; the host alone advances `protected` to `measured` after
 exact evidence.
 
-Current Active bundles remain forensic and fail-soft, and no production code
-issues or persists an automatic eligibility receipt. The
+Current Active bundles remain forensic and fail-soft. Production verification
+holds the existing writer lock without changing the already-applied graph,
+proves its exact graph/path/volume readback, and uses the summed recorder path
+for three admitted fixed-axis repeats per target. Active persists/reopens the
+receipt and transitions the run to `verified`. The
 `active_speaker.setup_status` producer owns one versioned Room decision. A
 topology-current immutable snapshot whose explicit apply owner is `manual`
 projects `manual_applied_profile` only when CamillaDSP's fresh running
@@ -1202,8 +1205,8 @@ driver-domain crossover instance. The identity
 covers output-device settings and the complete driver-domain
 mixer/pipeline/filter suffix while excluding the mutable pre-split
 Room/preference prefix. A mismatch asks for an explicit crossover reapply. An
-`automatic` snapshot without the strict receipt projects an incomplete
-decision. Room validates and consumes that projection without parsing the
+`automatic` snapshot projects ready only with the strict verified receipt;
+without it the decision remains incomplete. Room validates and consumes that projection without parsing the
 receipt or deriving authority from historical B2b evidence. An allowed
 projection includes Active's opaque loaded Layer-A identity so Room can carry
 it from Start and compare a freshly reissued decision inside its locked
@@ -1510,12 +1513,12 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   projects that candidate through `candidate_ready`. The reviewed candidate now
   compiles and applies through the existing bounded writer/readback/restore path,
   with exact predecessor recovery and a retained proof before
-  `applied_unverified`. There is still no post-apply verification, receipt
-  issuer, or automatic Room authority path. Active's
-  versioned Room projection admits passive/not-required and an explicitly
-  applied manual snapshot, while an automatic snapshot remains blocked instead
-  of being trusted as receipt authority. Live automatic receipt
-  production/consumption and on-device proof remain later slices.
+  `applied_unverified`. Post-apply verification now proves the retained current
+  graph without another mutation, persists three admitted fixed-axis repeats,
+  issues the exact receipt, and lets Room consume Active's decision. Three usable
+  failing acoustic verdicts instead persist one exact failure, stop capture, and
+  keep Room locked. On-device
+  proof remains outstanding.
 
 - Manual setup exposes frequency, filter family/slope, and trim. ~~There is
   still no `/sound/` UI for polarity/delay authoring~~ Closed (P2a): the
@@ -1586,8 +1589,8 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   never consumes a capture-carried delay. The production wizard now exposes one
   server-selected combined-capture action; the internal host—not browser
   metadata—runs the per-region normal/reverse loop, transient reverse graph, and
-  bounded measured delay *walk*. Candidate persistence/review and post-apply
-  verification remain later slices.
+  bounded measured delay *walk*. Candidate persistence/review, exact apply, and
+  three-repeat post-apply verification now continue from that same authority.
 - The shared delay-walk substrate includes a pure candidate graph-content
   proof (`jasper.audio_measurement.delay_graph`). Active-crossover and bass
   hosts share one typed lane proof while retaining their own authoritative
@@ -1700,10 +1703,11 @@ evaluator, exact candidate persistence/readback and `candidate_ready` review
 projection, explicit reviewed apply, compiler-ready measured corrections,
 writer-locked graph/path/volume readback, exact failure/cancellation/restart
 restore, retained-proof finalization, complete-plan replay
-guards, receipt schema-v2 one-shot roles,
+guards, receipt schema-v2 one-shot roles, current-graph verification,
+receipt persistence, and Active-owned Room authority,
 and Room's versioned passive/solo-manual-applied admission boundary, explicit
 grouped-active unsupported result, and strict automatic-receipt separation
-checked against the current
-implementation and cited measurement literature; the apply path was validated
-with injected runtime seams only, and no live audio/DSP/hardware operation was
-performed or hardware-validated.)
+checked against the current implementation and cited measurement literature;
+the complete path was
+validated with injected runtime seams only, and no live audio/DSP/hardware
+operation was performed or hardware-validated.)

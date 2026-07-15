@@ -1038,7 +1038,7 @@ class CommissioningCaptureService:
         }
 
     def status(self) -> dict[str, Any]:
-        """Return one current state without reserving attempts or live mutations."""
+        """Return one current state, finalizing only an exact completed receipt."""
 
         from .commissioning_apply import APPLY_PURPOSE
 
@@ -1118,6 +1118,7 @@ class CommissioningCaptureService:
         candidate_review = None
         candidate_failure = None
         applied_candidate = None
+        verification = None
         if lifecycle_state == "measured":
             # Lifecycle is not a second evidence authority.  Reuse the host's
             # exact complete-artifact reopen + transition-fingerprint check
@@ -1145,8 +1146,9 @@ class CommissioningCaptureService:
                 status = "restore_required"
             else:
                 status = "candidate_ready"
-        elif lifecycle_state == "applied_unverified":
+        elif lifecycle_state in {"applied_unverified", "verified"}:
             from .commissioning_apply import reopen_applied_candidate_proof
+            from .commissioning_verification import CommissioningVerificationService
 
             candidate, artifact = self._reopen_candidate(
                 current, require_transition=False
@@ -1182,7 +1184,18 @@ class CommissioningCaptureService:
                     proof.observed_fresh_readback_graph.fingerprint
                 ),
             }
-            status = "applied_unverified"
+            verification = CommissioningVerificationService(
+                run=self.run,
+                run_store=self.run_store,
+                evidence_store=self.evidence_store,
+                plan=current.plan,
+                target_plan=self._required_target_plan(current),
+                applied_candidate=proof,
+                retained_mutation=live_mutation,
+                load_current_authority=self.load_current_authority,
+            ).status()
+            lifecycle_state = self.run_store.lifecycle_state(self.run)
+            status = str(verification["status"])
         elif lifecycle_state == "rolled_back":
             candidate, artifact = self._reopen_candidate(
                 current, require_transition=False
@@ -1251,6 +1264,7 @@ class CommissioningCaptureService:
             "candidate": candidate_review,
             "candidate_failure": candidate_failure,
             "applied_candidate": applied_candidate,
+            "verification": verification,
             "live_mutation": (
                 {
                     "status": live_mutation.status,
@@ -1267,6 +1281,10 @@ class CommissioningCaptureService:
                 )
                 if status == "candidate_refused"
                 else (
+                    "The applied crossover failed its combined-response check; "
+                    "Room correction remains locked."
+                    if status == "verification_failed"
+                    else (
                     (
                         "The candidate graph is applied and read back; retry to "
                         "finish its durable state."
@@ -1287,6 +1305,7 @@ class CommissioningCaptureService:
                     else (
                         "commissioning cannot collect from lifecycle "
                         f"{lifecycle_state}"
+                    )
                     )
                 )
             ),
@@ -1326,6 +1345,68 @@ class CommissioningCaptureService:
         current = self._current()
         host = self._host(current, raw_capture_transport=raw_capture_transport)
         return await host.capture_next_with_runtime(port, config_dir=config_dir)
+
+    async def capture_post_apply(
+        self,
+        port: Any,
+        *,
+        raw_capture_transport: RawCaptureTransport,
+        config_dir: str,
+    ) -> dict[str, Any]:
+        """Collect one server-selected repeat from the retained applied graph."""
+
+        from .commissioning_apply import reopen_applied_candidate_proof
+        from .commissioning_runtime import CommissioningRuntimePort
+        from .commissioning_verification import CommissioningVerificationService
+
+        if not isinstance(port, CommissioningRuntimePort):
+            raise TypeError("port must be CommissioningRuntimePort")
+        current = self._current(verify_child_evidence=False)
+        if self.run_store.lifecycle_state(self.run) != "applied_unverified":
+            raise CommissioningServiceError(
+                "verification_not_ready",
+                "post-apply capture requires an applied unverified candidate",
+            )
+        mutation = self.run_store.current_live_mutation(self.run)
+        if mutation is None or mutation.status != "retained":
+            raise CommissioningServiceError(
+                "applied_proof_stale",
+                "post-apply capture has no retained candidate apply",
+            )
+        candidate, _artifact = self._reopen_candidate(
+            current, require_transition=False
+        )
+        target_plan = self._required_target_plan(current)
+        safety = evaluate_driver_safety_profile(
+            current.authority.safety_profile,
+            current.authority.topology,
+        )
+        if not safety.confirmed_and_current or safety.profile_fingerprint is None:
+            raise CommissioningServiceError(
+                "authority_stale", "driver safety authority is no longer current"
+            )
+        proof, _proof_artifact = reopen_applied_candidate_proof(
+            store=self.evidence_store,
+            run=self.run,
+            mutation=mutation,
+            candidate=candidate,
+            target_plan=target_plan,
+            safety_profile_fingerprint=safety.profile_fingerprint,
+        )
+        return await CommissioningVerificationService(
+            run=self.run,
+            run_store=self.run_store,
+            evidence_store=self.evidence_store,
+            plan=current.plan,
+            target_plan=target_plan,
+            applied_candidate=proof,
+            retained_mutation=mutation,
+            load_current_authority=self.load_current_authority,
+        ).capture_next(
+            port,
+            raw_capture_transport=raw_capture_transport,
+            config_dir=config_dir,
+        )
 
 
 def commissioning_runtime_port(camilla: Any) -> Any:

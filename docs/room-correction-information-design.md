@@ -42,15 +42,14 @@
 > one, three, or six positions and safe or balanced strategy. Relay is preferred
 > when configured, the phone's position count is not authority, and follow-up
 > capture-only sweeps authenticate the level-check microphone before sound.
-> Returning-user preferences, one persistent phone handoff,
-> and mandatory proof remain Wave 3 target behavior. Wave 1 added inert evidence
-> identities, excitation admission, and an exact automatic Active
-> eligibility-receipt contract; it did not make that receipt a live authority.
+> Returning-user preferences and one persistent phone handoff remain Wave 3
+> target behavior. Active's evidence identities, excitation admission, and exact
+> automatic eligibility receipt are now production-wired authority.
 > Active now also exposes a versioned Room decision that distinguishes an
 > explicitly applied manual profile from automatic commissioning. Room consumes
 > that one decision: a topology-current manual applied-profile snapshot is
-> eligible on the **solo active** runtime, while automatic tuning remains
-> blocked until Active issues and exposes the exact receipt-backed authority.
+> eligible on the **solo active** runtime; automatic tuning becomes eligible only
+> after Active issues and exposes the exact receipt-backed authority.
 > Room never inspects historical
 > evidence or reconstructs either decision. A grouped active member is an
 > explicit unsupported v1 decision: the leader's program-bake Camilla graph is
@@ -318,9 +317,9 @@ required for the requested action. Missing or malformed readiness fails closed.
 The existing `/start` readiness check remains defense in depth even after the
 idle envelope withholds Start. A browser bug or stale tab must not bypass it.
 The shipped Room adapter admits three explicit versioned authority values from
-Active: passive/not-required, an operator-applied manual profile, and (once the
-producer exists) the exact verified automatic commissioning receipt. Current
-automatic applied snapshots do not have that receipt and remain blocked. Room
+Active: passive/not-required, an operator-applied manual profile, and the exact
+verified automatic commissioning receipt. An automatic applied snapshot remains
+blocked until its three post-apply repeats issue that receipt. Room
 must not relabel an automatic snapshot as manual, claim receipt-backed or
 freshly verified authority, inspect measurement artifacts, or derive a second
 rule; the validated crossover setup link remains the active-path recovery

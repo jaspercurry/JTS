@@ -204,8 +204,8 @@
 > driver → each driver's stationary near-field repeat sequence → keep the mic
 > fixed on the tweeter reference axis while each driver gets a separate safe
 > level and a target of three gated repeats → attest signed path geometry → run
-> server-selected normal/reverse/bounded-delay combined captures → evidence
-> complete. Candidate apply/verification remain later slices. One bounded
+> server-selected normal/reverse/bounded-delay combined captures → candidate
+> review/apply → three current-graph verification captures → Room handoff. One bounded
 > fourth attempt may
 > replace a rejected capture, but automatic
 > apply still requires three accepted repeats for both geometries. The lower
@@ -699,13 +699,16 @@
 > mutation, and observed applied graph. Attempted/unknown mutation and
 > failed or performed rollback cannot mint a positive receipt. Exact rollback
 > state reuses `null_walk.DspPredecessor`; no generic graph-transaction
-> framework landed. The later Active integration now owns writer-locked
+> framework landed. The Active integration now owns writer-locked
 > candidate apply, fresh graph/path/volume readback, and exact predecessor
-> restoration; post-apply verification, receipt issuance/persistence, and Room
-> consumption remain the later integration lane.
+> restoration. It then holds that same writer lock without mutating the graph,
+> proves the current state still equals the retained apply readback, collects
+> exactly three admitted fixed-axis combined captures per topology target,
+> persists/reopens the receipt, and advances the exact run to `verified`.
 >
 > Current `active_speaker/bundles.py` evidence remains forensic/fail-soft. The
-> new lifecycle is not current `/state`, while `active_speaker.setup_status`
+> commissioning lifecycle remains separate from `/state`, while
+> `active_speaker.setup_status`
 > now owns a versioned Room eligibility projection. A topology-current immutable
 > snapshot with explicit manual apply ownership is
 > `manual_applied_profile` authority only after CamillaDSP's fresh running
@@ -728,6 +731,9 @@
 > driver-domain Layer A lives on the crossover instance, so Active returns
 > `active_grouped_room_correction_not_supported` with `/rooms/` recovery. Full
 > grouped support needs a later Active-owned identity spanning both daemons.
+> Automatic authority is now issued only from the strict verified receipt;
+> Room consumes Active's decision without parsing the receipt. This path is
+> hardware-free verified; live JTS3 acoustic behavior remains to be run.
 
 > **Update, 2026-07-14 (Wave 3 durable run;
 > hardware-free):** `jasper.active_speaker.commissioning_run` is now the bounded
@@ -794,7 +800,6 @@
 > transitions the run through the existing `candidate_scoring_failed` blocked
 > path, and requires a fresh complete measurement sequence rather than a futile
 > retry of immutable evidence.
-> Post-apply verification/receipt and Room consumption remain unavailable.
 > Real summed capture transport is now composed through the correction relay, but
 > live JTS3 playback and acoustic capture remain unvalidated.
 
@@ -826,8 +831,16 @@
 > the retained mutation's exact predecessor instead of being rebuilt from the
 > new applied graph. The browser owns
 > no mutation state machine. This slice has synthetic/contract coverage only;
-> post-apply fixed-axis verification, receipt issuance, Room handoff, and the
-> first live JTS3 candidate apply remain outstanding.
+> the first live JTS3 candidate apply remains outstanding.
+
+> **Update, 2026-07-15 (post-apply receipt and Room handoff; hardware-free):**
+> `commissioning_verification.py` reuses the production summed recorder and
+> one-shot admission path against the already-applied graph. It never opens a
+> second graph transaction or replaces the retained apply/restore sidecar.
+> Three passing combined-response repeats persist one schema-v2 receipt,
+> transition the run to `verified`, and expose Active's receipt-backed Room
+> decision. The browser sends only `{kind:"verification"}` and recorder bytes;
+> target, repeat, graph, admission, verdict, and receipt remain server-owned.
 
 ## Current Operational Truth
 
@@ -1779,8 +1792,9 @@ Delay alignment is measured, not guessed.
 > itself is unchanged — this is wiring persisted paired evidence around the
 > already-shipped proposer, per
 > [active-crossover-information-design.md](active-crossover-information-design.md)
-> "Slice 2: automatic alignment". The delay *walk* (a measured value) and
-> post-apply verification remain separate, not-yet-built pieces of Slice 2.
+> "Slice 2: automatic alignment". The delay *walk* and post-apply verification
+> are now production-wired through the server-owned summed and verification
+> relay kinds described above.
 
 ## CamillaDSP Profile Architecture
 
@@ -2227,12 +2241,9 @@ review projection, writer-locked measured-candidate compiler/apply, fresh
 protected graph/path/volume readback, exact cancellation/failure/restart
 restore, retained-proof finalization, receipt schema-v2 one-shot roles, and the
 durable bundle-backed commissioning-run store/start/status boundary and service owner-
-generation claim; no live post-apply automatic verification/receipt producer.
-The versioned passive/solo-manual-applied Room
-decision, grouped-active unsupported branch, and fail-closed automatic branch
-were checked contract-only; the candidate apply boundary was checked
-hardware-free and no hardware behavior was revalidated in that pass.
-Frozen applied-preset startup anchor, durable
+generation claim; the current-graph three-repeat verification producer,
+receipt persistence, and Active-owned Room decision were checked hardware-free;
+no hardware behavior was revalidated. Frozen applied-preset startup anchor, durable
 crossover-volume intent, confirmed recovery,
 and relay lease ownership checked; bounded CamillaDSP worker cancellation checked
 against the outer commissioning rollback transaction; superseded readiness and
