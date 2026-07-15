@@ -113,18 +113,18 @@ existing layering):
     (`environment.CAMILLA_CLASS_PROGRAM_BAKE`) → **program-bake carrier**.
     This is a flat 2-channel program graph, but it is not DAC-bound: camilla#1
     writes `File` → Snapcast FIFO and camilla#2 owns Layer A driver protection.
-    Before Room can use a manual applied-profile authority, Active's setup
-    projection compares CamillaDSP's fresh running `active_raw` output-device
-    settings and complete driver-domain mixer/pipeline/filter suffix with
-    snapshot-derived recomposition. Program-domain Room/preference filters
-    before the split do not affect that identity; any Layer-A mismatch requires
-    crossover reapply.
+    The carrier seam remains implemented, but Active's v1 manual Room authority
+    is deliberately solo-only: primary `active_raw` here cannot prove the Layer
+    A running on camilla#2. Active therefore projects
+    `active_grouped_room_correction_not_supported` instead of a misleading
+    crossover mismatch. A later Active-owned distributed identity must bind
+    both daemons before Room can reach this carrier through ordinary Start.
     The carrier therefore bypasses the DAC-bound protected-tweeter flat-graph
     refusal only after grouping state resolves back to a pipe sink with
     `enable_rate_adjust=false`; otherwise it refuses
     `program_bake_pipe_unavailable`. This is the JTS5 class where
-    `/correction/start` must strip Layer B/C for measurement without calling the
-    graph "custom". The resolver also treats a JTS-generated
+    the retained carrier can strip Layer B/C without calling the graph
+    "custom" once distributed Active authority lands. The resolver also treats a JTS-generated
     `sound_current.yml` as this carrier when it is the one-time stale-marker
     recovery shape: readable protected-tweeter topology plus content proving
     `File` → Snapcast FIFO. Other generic pipe configs, such as passive

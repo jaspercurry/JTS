@@ -293,20 +293,29 @@ async def _post_room_sweep_host_event(
             payload,
             hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
         )
-    except (asyncio.TimeoutError, OSError, RelayError) as exc:
+        return
+    except RelayError as exc:
+        # The Worker rejects 4xx before committing the event. A final 4xx
+        # (including 429 after the bounded retry) is therefore definitive:
+        # do not play a sweep whose recorder session is gone or unauthorized.
+        if exc.status < 500:
+            raise
+        reason = f"RelayError:{exc.status}"
+    except (asyncio.TimeoutError, OSError) as exc:
         # The request may have committed before its response timed out. Its
         # detached write remains ordered, and run_capture's ready blob is the
         # authoritative completion signal. Do not discard a valid WAV merely
         # because this progress acknowledgement is unconfirmed.
-        log_event(
-            logger,
-            "capture_relay.room_sweep_host_event",
-            level=logging.WARNING,
-            session_id=pi_session.session_id,
-            phase=payload.get("phase"),
-            result="unconfirmed",
-            reason=type(exc).__name__,
-        )
+        reason = type(exc).__name__
+    log_event(
+        logger,
+        "capture_relay.room_sweep_host_event",
+        level=logging.WARNING,
+        session_id=pi_session.session_id,
+        phase=payload.get("phase"),
+        result="unconfirmed",
+        reason=reason,
+    )
 
 
 def _summed_capture_unavailable(*, ingress: str) -> dict[str, Any]:

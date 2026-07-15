@@ -49,9 +49,14 @@
 > Active now also exposes a versioned Room decision that distinguishes an
 > explicitly applied manual profile from automatic commissioning. Room consumes
 > that one decision: a topology-current manual applied-profile snapshot is
-> eligible, while automatic tuning remains blocked until Active issues and
-> exposes the exact receipt-backed authority. Room never inspects historical
-> evidence or reconstructs either decision.
+> eligible on the **solo active** runtime, while automatic tuning remains
+> blocked until Active issues and exposes the exact receipt-backed authority.
+> Room never inspects historical
+> evidence or reconstructs either decision. A grouped active member is an
+> explicit unsupported v1 decision: the leader's program-bake Camilla graph is
+> not the driver-domain Layer A, so the household must turn grouping off before
+> measuring. Distributed-active support requires a later Active-owned identity
+> that binds both Camilla daemons; Room must not infer it.
 
 ## Product goal
 
@@ -609,9 +614,9 @@ The intended Room product is complete only when:
     crossover no-boost band, and volume/graph safety have guard tests.
 11. Room continues to use reverberant cross-position evidence and does not adopt
     Active reflection gating or same-target repeat state.
-12. Room apply on an active topology consumes the exact current eligibility
-    result without inference; passive topology behavior remains explicitly
-    tested.
+12. Room apply on a solo active topology consumes the exact current eligibility
+    result without inference; grouped active is an explicit unsupported v1
+    decision, and passive topology behavior remains explicitly tested.
 13. IIR-only design and the existing latency gate remain intact; FIR phase/group
     delay appears only with proven applied-bundle metadata.
 14. First-run decisions do not exceed five before the first sweep, and the relay

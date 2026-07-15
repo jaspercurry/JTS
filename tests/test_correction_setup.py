@@ -1057,6 +1057,83 @@ def test_room_relay_repeat_keeps_capture_alive_when_terminal_event_is_unconfirme
     )
 
 
+@pytest.mark.parametrize("repeat", [False, True], ids=["measurement", "repeat"])
+def test_room_relay_sweep_stops_before_playback_on_definitive_4xx(
+    monkeypatch,
+    repeat,
+):
+    """A rejected recorder session must never trigger Room sweep audio."""
+    from contextlib import asynccontextmanager
+
+    from jasper.capture_relay.client import RelayError
+    from jasper.correction import coordinator
+
+    events = []
+    playback = []
+    restored = []
+
+    @asynccontextmanager
+    async def measurement_window():
+        yield
+
+    async def post_host_event(_client, _pi_session, payload, *, hard_timeout_s):
+        events.append((dict(payload), hard_timeout_s))
+        raise RelayError("relay session is gone", 404)
+
+    class Session:
+        current_position = 1 if repeat else 0
+        total_positions = 6
+
+        async def ensure_level_match_volume(self, _setter):
+            return True
+
+        async def prepare_and_play_sweep(self, _play_sweep, *, runtime_probe_async):
+            playback.append("measurement")
+
+        async def prepare_and_play_repeat_sweep(
+            self,
+            _play_sweep,
+            *,
+            runtime_probe_async,
+        ):
+            playback.append("repeat")
+
+        async def restore_level_match_volume(self, _setter):
+            restored.append(True)
+            return True
+
+    class Camilla:
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+        async def get_runtime_status(self, *, best_effort):
+            return {}
+
+    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
+    monkeypatch.setattr(correction_setup, "_post_relay_host_event", post_host_event)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda awaitable, *, timeout: asyncio.run(awaitable),
+    )
+
+    with pytest.raises(RelayError, match="session is gone"):
+        correction_setup._run_relay_measurement_sweep(
+            Session(),
+            Camilla(),
+            client=SimpleNamespace(),
+            pi_session=SimpleNamespace(session_id="relay-gone", pull_token="pull"),
+            repeat=repeat,
+        )
+
+    assert playback == []
+    assert restored == [True]
+    assert [event[0]["phase"] for event in events] == [
+        "sweep_started",
+        "sweep_failed",
+    ]
+
+
 def test_room_relay_capture_refuses_changed_mic_before_playback(
     monkeypatch, tmp_path
 ):
@@ -1366,14 +1443,35 @@ def test_room_verify_checks_level_microphone_before_playback(monkeypatch, tmp_pa
     assert restored == [True]
 
 
-def test_room_relay_verify_keeps_capture_when_terminal_event_is_unconfirmed(
+@pytest.mark.parametrize(
+    ("failure", "expected_upload", "expected_phases"),
+    [
+        pytest.param(
+            "complete_timeout",
+            [b"RIFFfresh-verify"],
+            ["sweep_started", "sweep_complete"],
+            id="ambiguous-complete",
+        ),
+        pytest.param(
+            "start_404",
+            [],
+            ["sweep_started"],
+            id="definitive-start-refusal",
+        ),
+    ],
+)
+def test_room_relay_verify_host_event_failure_contract(
     monkeypatch,
     tmp_path,
+    failure,
+    expected_upload,
+    expected_phases,
 ):
-    """A committed verify upload outlives a timed-out sweep-complete response."""
+    """Verify preserves ambiguity but aborts on a definitive relay refusal."""
     import asyncio
     from contextlib import asynccontextmanager
 
+    from jasper.capture_relay.client import RelayError
     from jasper.capture_relay import session as relay_session
     from jasper.correction import coordinator
     from jasper.correction.session import SessionState
@@ -1394,8 +1492,10 @@ def test_room_relay_verify_keeps_capture_when_terminal_event_is_unconfirmed(
         hard_timeout_s,
     ):
         events.append((dict(payload), hard_timeout_s))
-        if payload["phase"] == "sweep_complete":
+        if failure == "complete_timeout" and payload["phase"] == "sweep_complete":
             raise asyncio.TimeoutError
+        if failure == "start_404" and payload["phase"] == "sweep_started":
+            raise RelayError("relay session is gone", 404)
 
     class Session:
         session_id = "room-verify-timeout"
@@ -1439,11 +1539,13 @@ def test_room_relay_verify_keeps_capture_when_terminal_event_is_unconfirmed(
         )
         return SimpleNamespace(wav=b"RIFFfresh-verify", device={"label": "UMIK-2"})
 
-    client = SimpleNamespace(
-        post_host_event=lambda *_args, **_kwargs: pytest.fail(
-            "Verify progress must use the bounded ordered relay path"
-        )
-    )
+    direct_events = []
+
+    def direct_host_event(_session_id, _pull_token, payload):
+        # Progress events must use the bounded ordered helper patched above.
+        direct_events.append(dict(payload))
+
+    client = SimpleNamespace(post_host_event=direct_host_event)
     pi_session = SimpleNamespace(session_id="relay-verify", pull_token="pull")
     monkeypatch.setattr(
         correction_setup,
@@ -1467,13 +1569,15 @@ def test_room_relay_verify_keeps_capture_when_terminal_event_is_unconfirmed(
     correction_setup._handle_relay_verify(
         SimpleNamespace(headers={"Host": "jts3.local"})
     )
-    asyncio.run(registered["kind"].run_and_consume(client, pi_session))
+    if failure == "start_404":
+        with pytest.raises(RelayError, match="session is gone"):
+            asyncio.run(registered["kind"].run_and_consume(client, pi_session))
+    else:
+        asyncio.run(registered["kind"].run_and_consume(client, pi_session))
 
-    assert uploaded == [b"RIFFfresh-verify"]
-    assert [event[0]["phase"] for event in events] == [
-        "sweep_started",
-        "sweep_complete",
-    ]
+    assert uploaded == expected_upload
+    assert [event[0]["phase"] for event in events] == expected_phases
+    assert direct_events == []
     assert all(
         event[0]["capture_kind"] == "verify"
         and event[1] == correction_setup._RELAY_CONTROL_TIMEOUT_S
@@ -3127,23 +3231,38 @@ async def test_ready_reset_restores_exact_pre_measurement_graph():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
-async def test_room_reversal_rejects_corrected_active_fallback(
+@pytest.mark.parametrize(
+    "fallback_shape",
+    ["corrected-active", "custom", "unreadable", "measurement-baseline"],
+)
+async def test_room_reversal_rejects_unverified_no_room_fallback(
     monkeypatch,
     tmp_path,
     automatic,
+    fallback_shape,
 ):
-    """A failed no-Room re-emit must never report the same Room graph restored."""
+    """Reset succeeds only for a readable, managed, allowlisted no-Room graph."""
     from jasper.correction import runtime_safety
     from jasper.correction.session import SessionState
 
-    corrected = tmp_path / "sound_current.yml"
-    corrected.write_text(
-        "# Source: "
-        "jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config\n"
-        "filters:\n"
-        "  room_peq_0:\n"
-        "    type: Biquad\n"
-    )
+    fallback = tmp_path / "sound_current.yml"
+    if fallback_shape == "corrected-active":
+        fallback.write_text(
+            "# Source: "
+            "jasper.active_speaker.camilla_yaml."
+            "emit_active_speaker_baseline_config\n"
+            "filters:\n"
+            "  room_peq_0:\n"
+            "    type: Biquad\n"
+        )
+    elif fallback_shape == "custom":
+        fallback = tmp_path / "advanced.yml"
+        fallback.write_text("pipeline: []\n")
+    elif fallback_shape == "measurement-baseline":
+        fallback = tmp_path / "correction_measurement_smoke_123.yml"
+        fallback.write_text("pipeline: []\n")
+    else:
+        assert fallback_shape == "unreadable"
     operations = []
 
     async def reemit_fails(_sess, _cam):
@@ -3157,7 +3276,7 @@ async def test_room_reversal_rejects_corrected_active_fallback(
     monkeypatch.setattr(
         runtime_safety,
         "reset_config_path",
-        lambda _base: corrected,
+        lambda _base: fallback,
     )
 
     class Session:

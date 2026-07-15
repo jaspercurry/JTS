@@ -142,7 +142,11 @@
   evidence and never relabels automatic tuning as manual. Manual authority is
   positive only when Active's semantic Layer-A fingerprint of CamillaDSP's
   fresh running `active_raw` readback matches a recomposition from the
-  immutable applied snapshot. The
+  immutable applied snapshot on the solo active runtime. Grouped active is an
+  explicit v1 unsupported decision because the leader program bake is not the
+  driver-domain Layer A; `/rooms/` is the recovery path, and a later
+  Active-owned identity must bind both Camilla daemons before Room can support
+  that runtime. The
   fingerprint includes output-device settings and the complete driver-domain
   mixer/pipeline/filter suffix, while deliberately excluding the mutable
   pre-split Room/preference prefix. A mismatch or unreadable graph withholds
@@ -481,7 +485,10 @@
   path. A timed-out response does not abort capture because the event may
   already have committed; the relay's authenticated ready blob remains the
   completion proof, and the ordinary upload deadline still fails a genuinely
-  undelivered event. The 2026-07-15 JTS3 UMIK-2 repeat smoke pinned this after a
+  undelivered event. A final 4xx (including 429 after the retry) is a definitive
+  Worker pre-commit refusal and aborts Room before sweep playback; only
+  transport ambiguity and relay 5xx are tolerated. The 2026-07-15 JTS3 UMIK-2
+  repeat smoke pinned the timeout case after a
   `sweep_complete` response timed out while the capture page uploaded the valid
   WAV. The repo build is
   intentionally not published by this hardware-free lane, so that external
@@ -1407,7 +1414,8 @@ GET  /calibration/models     supported calibrated mic providers/models
 POST /start                  first checks the setup-status active/passive flag,
                              room_correction_allowed, and matching acoustic status
                              plus its versioned authority (passive/not-required
-                             and manual-applied are allowed; automatic remains
+                             and solo manual-applied are allowed; grouped active
+                             is explicitly unsupported in v1; automatic remains
                              typed 409 until exact receipt authority lands;
                              unknown/malformed authority
                              gets retryable 503 before reservation),
@@ -2293,8 +2301,9 @@ These items can only be verified on real hardware. Deploy with
       CamillaDSP removes room PEQs cleanly while preserving the current sound
       profile. As a regression check with an already-corrected active graph,
       verify reset keeps the active speaker baseline and only clears room PEQs;
-      a manual-applied profile may enter Room, while automatic entry remains
-      fail-closed pending modern receipt authority.
+      a solo manual-applied profile may enter Room, grouped active is explicitly
+      unsupported in v1, and automatic entry remains fail-closed pending modern
+      receipt authority.
 - [ ] AEC bridge interaction (if enabled): routing resumes after measurement
       without permanent drift; allow the adaptive filter its normal convergence
       window described in [HANDOFF-aec.md](HANDOFF-aec.md).
@@ -2720,8 +2729,9 @@ callers and deterministic tone bytes. Room envelope v9
 section/action/blocker/failure/default ownership,
 six/flat/balanced/automatic-repeat policy, relay-first transport resolution,
 capture-only positioned relay specs, and pre-playback level-microphone checks;
-passive/manual-applied readiness admission and `/start` defense, with automatic
-entry still pending exact Active receipt authority,
+passive/solo-manual-applied readiness admission and `/start` defense, with
+grouped active scoped out and automatic entry still pending exact Active
+receipt authority,
 typed Start/relay/tuning/session/apply failures, static-edge report discovery,
 local capture setup binding, and the
 deleted legacy/certificate surfaces checked hardware-free against

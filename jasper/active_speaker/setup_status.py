@@ -58,6 +58,10 @@ _READINESS_DERIVATION_ERRORS = (
     KeyError,
 )
 _CROSSOVER_SETUP_HREF = "/correction/crossover/"
+_ROOMS_SETUP_HREF = "/rooms/"
+_PROGRAM_BAKE_SOURCE = (
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_program_bake_config"
+)
 
 
 def _issue(severity: str, code: str, message: str) -> dict[str, str]:
@@ -107,10 +111,11 @@ def _acoustic_commissioning_status(
     """Room-correction prerequisite for an active Layer-A graph.
 
     Room correction operates on the Layer-A graph that is actually applied. An
-    immutable, topology-current manual snapshot is sufficient operator
-    authority; an automatic snapshot additionally needs Active's strict
-    commissioning receipt. Mutable measurements remain quality evidence and
-    observability only and cannot stand in for that receipt.
+    immutable, topology-current manual snapshot is sufficient solo-runtime
+    operator authority; grouped active remains explicitly unsupported until
+    Active can bind its distributed Layer A. An automatic snapshot additionally
+    needs Active's strict commissioning receipt. Mutable measurements remain
+    quality evidence and observability only and cannot stand in for that receipt.
     """
     summary = _mapping(measurements.get("summary"))
     latest_summed = _mapping(summary.get("latest_summed_validations"))
@@ -159,6 +164,7 @@ def _acoustic_commissioning_status(
         >= required_active_groups
     )
     authority: str | None = None
+    setup_href = _CROSSOVER_SETUP_HREF
     if not setup_ready:
         reason = "active_speaker_setup_not_ready"
         detail = "Apply the active speaker profile before starting room correction."
@@ -170,6 +176,13 @@ def _acoustic_commissioning_status(
             if reason == "active_applied_profile_snapshot_missing"
             else str(applied_state["detail"])
         )
+    elif layer_a_binding.get("status") == "distributed_active_unsupported":
+        reason = "active_grouped_room_correction_not_supported"
+        detail = (
+            "Room correction for a grouped active speaker is not available "
+            "yet. Turn grouping off to measure the solo active speaker."
+        )
+        setup_href = _ROOMS_SETUP_HREF
     elif layer_a_binding.get("matches") is not True:
         reason = (
             "active_applied_profile_graph_mismatch"
@@ -217,7 +230,7 @@ def _acoustic_commissioning_status(
         "allowed": allowed,
         "reason": reason,
         "detail": detail,
-        "setup_href": _CROSSOVER_SETUP_HREF,
+        "setup_href": setup_href,
         "applied_profile": {
             "available": isinstance(applied_profile, Mapping),
             "measured_level_match_applied": applied_measured,
@@ -446,17 +459,30 @@ def _applied_layer_a_binding(
     ):
         return unavailable
     try:
+        loaded_yaml = (
+            active_config_text
+            if active_config_text is not None
+            else Path(str(active_config_path)).read_text(encoding="utf-8")
+        )
+        # A bonded active leader's primary Camilla instance carries only the
+        # program-domain File→Snapcast bake; its driver-domain Layer A lives on
+        # the crossover instance. The solo v1 fingerprint cannot honestly bind
+        # that distributed graph, so Active emits one explicit unsupported
+        # decision instead of a misleading crossover-reapply mismatch. A later
+        # distributed authority must remain Active-owned and bind both daemons.
+        if f"Source: {_PROGRAM_BAKE_SOURCE}" in loaded_yaml:
+            return {
+                "status": "distributed_active_unsupported",
+                "matches": False,
+                "expected_fingerprint": None,
+                "loaded_fingerprint": None,
+            }
         expected_yaml, expected_issues = recompose_applied_baseline_yaml(
             topology,
             applied_profile=applied_profile,
         )
         if expected_yaml is None or expected_issues:
             return unavailable
-        loaded_yaml = (
-            active_config_text
-            if active_config_text is not None
-            else Path(str(active_config_path)).read_text(encoding="utf-8")
-        )
         expected = active_layer_a_fingerprint(expected_yaml)
         loaded = active_layer_a_fingerprint(loaded_yaml)
     except _READINESS_DERIVATION_ERRORS:

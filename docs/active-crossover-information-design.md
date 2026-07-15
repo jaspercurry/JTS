@@ -22,10 +22,12 @@
 > or automatic-receipt producer. The existing Active setup projection now emits
 > a versioned Room authority that keeps manual applied-profile authority
 > separate from automatic commissioning: an explicitly applied manual profile
-> is eligible, while an automatic profile remains blocked until the later
-> integration lane issues, persists, and exposes the strict receipt. Room
+> is eligible on the solo active runtime, while an automatic profile remains
+> blocked until the later integration lane issues, persists, and exposes the
+> strict receipt. Room
 > consumes that one Active decision and does not inspect the underlying graph or
-> evidence.
+> evidence. Grouped active is explicitly outside this v1 authority: the leader
+> program bake does not expose the driver-domain Layer A carried by Camilla #2.
 
 > **Wave 3 lifecycle boundary (2026-07-14; hardware-free).** A
 > fresh authoritative comparison set that carries a production bundle session
@@ -1189,7 +1191,12 @@ issues or persists an automatic eligibility receipt. The
 topology-current immutable snapshot whose explicit apply owner is `manual`
 projects `manual_applied_profile` only when CamillaDSP's fresh running
 `active_raw` readback has the same semantic Layer-A fingerprint as a
-recomposition from that snapshot. The identity
+recomposition from that snapshot **and the speaker is on its solo active
+runtime**. A grouped active leader instead projects
+`active_grouped_room_correction_not_supported` and links to `/rooms/`; turning
+grouping off restores the solo proof boundary. A later distributed decision
+must be Active-owned and bind the program-bake Camilla instance plus the
+driver-domain crossover instance. The identity
 covers output-device settings and the complete driver-domain
 mixer/pipeline/filter suffix while excluding the mutable pre-split
 Room/preference prefix. A mismatch asks for an explicit crossover reapply. An
@@ -1692,8 +1699,9 @@ projection, explicit reviewed apply, compiler-ready measured corrections,
 writer-locked graph/path/volume readback, exact failure/cancellation/restart
 restore, retained-proof finalization, complete-plan replay
 guards, receipt schema-v2 one-shot roles,
-and Room's versioned passive/manual-applied admission boundary with strict
-automatic-receipt separation checked against the current
+and Room's versioned passive/solo-manual-applied admission boundary, explicit
+grouped-active unsupported result, and strict automatic-receipt separation
+checked against the current
 implementation and cited measurement literature; the apply path was validated
 with injected runtime seams only, and no live audio/DSP/hardware operation was
 performed or hardware-validated.)

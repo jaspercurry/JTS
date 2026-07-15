@@ -792,7 +792,11 @@ Room sweep-start/complete events use the same narrow, ordered path. An
 unconfirmed response does not discard the capture because the write may already
 have committed; the authenticated ready blob is the completion proof and the
 ordinary upload deadline still detects a truly undelivered terminal event. A
-2026-07-15 JTS3 UMIK-2 trust repeat exercised that exact case: the
+final relay 4xx, including 429 after the bounded retry, is different: the Worker
+rejects it before commit, so Room aborts before sweep playback instead of
+mislabeling it as ambiguous. Transport timeouts/OSErrors and relay 5xx remain
+the ambiguity-tolerant cases.
+A 2026-07-15 JTS3 UMIK-2 trust repeat exercised that exact case: the
 `sweep_complete` response timed out while the capture page uploaded the WAV.
 External publication is intentionally pending coordinator release.
 Active-crossover capture uses

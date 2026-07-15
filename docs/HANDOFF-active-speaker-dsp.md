@@ -720,7 +720,12 @@
 > incomplete until Active issues and exposes the exact receipt-backed result.
 > Room consumes that one decision and neither inspects the graph nor historical
 > B2b evidence. Automatic authority still requires fresh excitation-admitted
-> captures plus the measured delay walk.
+> captures plus the measured delay walk. This v1 positive manual authority is
+> explicitly **solo-active only**. A grouped active leader's primary Camilla
+> graph is the program bake while driver-domain Layer A lives on the crossover
+> instance, so Active returns `active_grouped_room_correction_not_supported`
+> with `/rooms/` recovery. Full grouped support needs a later Active-owned
+> identity spanning both daemons.
 
 > **Update, 2026-07-14 (Wave 3 durable run;
 > hardware-free):** `jasper.active_speaker.commissioning_run` is now the bounded
@@ -2221,9 +2226,11 @@ protected graph/path/volume readback, exact cancellation/failure/restart
 restore, retained-proof finalization, receipt schema-v2 one-shot roles, and the
 durable bundle-backed commissioning-run store/start/status boundary and service owner-
 generation claim; no live post-apply automatic verification/receipt producer.
-The versioned passive/manual-applied Room decision and fail-closed automatic
-branch were checked contract-only; the candidate apply boundary was checked
-hardware-free and no hardware behavior was revalidated in that pass. Frozen applied-preset startup anchor, durable
+The versioned passive/solo-manual-applied Room
+decision, grouped-active unsupported branch, and fail-closed automatic branch
+were checked contract-only; the candidate apply boundary was checked
+hardware-free and no hardware behavior was revalidated in that pass.
+Frozen applied-preset startup anchor, durable
 crossover-volume intent, confirmed recovery,
 and relay lease ownership checked; bounded CamillaDSP worker cancellation checked
 against the outer commissioning rollback transaction; superseded readiness and

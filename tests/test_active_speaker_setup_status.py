@@ -497,6 +497,65 @@ def test_manual_room_authority_allows_program_filters_on_exact_layer_a(
     assert binding["loaded_fingerprint"] == binding["expected_fingerprint"]
 
 
+def test_manual_room_authority_explicitly_scopes_out_distributed_active(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A bonded leader needs a future Active-owned two-daemon identity."""
+    from tests.test_active_speaker_runtime_contract import _program_bake_yaml
+
+    topology = _active_topology()
+    _save_topology(monkeypatch, tmp_path, topology)
+    protected_path = tmp_path / "active_speaker_baseline.yml"
+    current_path = tmp_path / "sound_current.yml"
+    manual = _applied_acoustic_profile(
+        measured=False,
+        config_path=protected_path,
+    )
+    _write_applied_graph(topology, manual, protected_path)
+    running_text = _program_bake_yaml()
+    current_path.write_text(running_text, encoding="utf-8")
+    monkeypatch.setattr(
+        setup_mod,
+        "build_baseline_profile_candidate",
+        lambda *a, **k: _candidate(status="applied", config_path=protected_path),
+    )
+    monkeypatch.setattr(
+        setup_mod,
+        "load_measurement_state",
+        lambda _topology: {"summary": {}},
+    )
+    monkeypatch.setattr(
+        setup_mod,
+        "load_applied_baseline_profile_state",
+        lambda _path=None: manual,
+    )
+
+    status = setup_mod.read_active_speaker_setup_status(
+        active_config_path=str(current_path),
+        active_config_text=running_text,
+    )
+
+    assert status["configured"] is True
+    assert status["volume_allowed"] is True
+    assert status["grouping_allowed"] is True
+    assert status["room_correction_allowed"] is False
+    acoustic = status["acoustic_commissioning"]
+    assert acoustic["authority"] is None
+    assert acoustic["layer_a_identity"] is None
+    assert acoustic["status"] == "incomplete"
+    assert acoustic["allowed"] is False
+    assert acoustic["reason"] == "active_grouped_room_correction_not_supported"
+    assert acoustic["setup_href"] == "/rooms/"
+    assert "Turn grouping off" in acoustic["detail"]
+    assert status["protected_profile"]["layer_a_binding"] == {
+        "status": "distributed_active_unsupported",
+        "matches": False,
+        "expected_fingerprint": None,
+        "loaded_fingerprint": None,
+    }
+
+
 def test_manual_room_authority_blocks_loaded_layer_a_mismatch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

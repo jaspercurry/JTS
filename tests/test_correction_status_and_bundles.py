@@ -1083,6 +1083,40 @@ def test_room_readiness_accepts_versioned_manual_active_authority(monkeypatch):
     )
 
 
+def test_room_readiness_consumes_active_owned_grouped_scope(monkeypatch):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {
+            "active": True,
+            "room_correction_allowed": False,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
+                "layer_a_identity": None,
+                "allowed": False,
+                "status": "incomplete",
+                "reason": "active_grouped_room_correction_not_supported",
+                "detail": "Active owns this unsupported scope decision.",
+                "setup_href": "/rooms/",
+            },
+        },
+    )
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.allowed is False
+    assert readiness.reason == "active_grouped_room_correction_not_supported"
+    assert readiness.blocker["code"] == "speaker_setup_incomplete"
+    assert readiness.blocker["recovery_action"] == {
+        "label": "Open speaker setup",
+        "href": "/rooms/",
+    }
+    assert "unsupported scope" not in str(readiness.blocker)
+
+
 def test_room_readiness_accepts_only_explicit_automatic_receipt_authority(
     monkeypatch,
 ):
@@ -1517,8 +1551,11 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     tmp_path: Path,
     monkeypatch,
 ):
-    """JTS5 regression: /start must treat the active-leader program bake as
-    hostable when it still resolves to the Snapcast pipe sink.
+    """Retain the carrier seam for future distributed Active authority.
+
+    The v1 Active eligibility projection explicitly scopes grouped active out;
+    once Active can bind both Camilla daemons, Room's lower-level carrier must
+    still host the leader program bake when it resolves to the Snapcast pipe.
     """
     from jasper.multiroom.reconcile import SNAPFIFO
     from jasper.web import correction_setup
