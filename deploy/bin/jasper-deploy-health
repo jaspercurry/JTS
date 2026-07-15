@@ -18,7 +18,9 @@ memory pressure, before we have evidence that the heavier Python stack is safe.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import socket
 import stat
@@ -180,8 +182,10 @@ def _read_regular_bounded_bytes(path: Path, max_bytes: int) -> bytes:
         os.close(fd)
 
 
-def _source_expectations(path: Path | None = None) -> dict[str, bool]:
-    """Return persisted active expectations for the fixed source set.
+def _source_expectations_with_fingerprint(
+    path: Path | None = None,
+) -> tuple[dict[str, bool], str]:
+    """Return persisted expectations and the coordinator-compatible fingerprint.
 
     This mirrors the tiny read-only subset of :mod:`jasper.source_intent` that
     a system-Python, stdlib-only deploy probe can safely use: the canonical
@@ -201,7 +205,7 @@ def _source_expectations(path: Path | None = None) -> dict[str, bool]:
             MAX_SOURCE_INTENT_BYTES,
         )
     except FileNotFoundError:
-        return dict(SOURCE_INTENT_DEFAULTS)
+        raw_bytes = b""
     except OSError as exc:
         raise RuntimeError(f"cannot read {intent_file}: {exc}") from exc
     try:
@@ -236,13 +240,14 @@ def _source_expectations(path: Path | None = None) -> dict[str, bool]:
             raise RuntimeError(
                 f"{key} is {value!r}, expected enabled or disabled"
             )
-    return expected
+    return expected, hashlib.sha256(raw_bytes).hexdigest()
 
 
 def _usb_effective_status(
     path: Path | None = None,
     *,
     expected_desired: bool | None = None,
+    expected_intent_fingerprint: str | None = None,
 ) -> tuple[bool, str, str]:
     """Read the coordinator-owned effective USB result for this boot.
 
@@ -264,6 +269,21 @@ def _usb_effective_status(
         ) from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("sources"), dict):
         raise RuntimeError("source reconcile status has an invalid root shape")
+    completed = payload.get("completed_monotonic_ns")
+    if isinstance(completed, bool) or not isinstance(completed, int) or completed < 0:
+        raise RuntimeError("source reconcile status has an invalid timestamp")
+    fingerprint = payload.get("intent_fingerprint")
+    if (
+        not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or any(character not in "0123456789abcdef" for character in fingerprint)
+    ):
+        raise RuntimeError("source reconcile status has an invalid intent fingerprint")
+    if (
+        expected_intent_fingerprint is not None
+        and fingerprint != expected_intent_fingerprint
+    ):
+        raise RuntimeError("source reconcile status is stale: intent does not match")
     row = payload["sources"].get("usbsink")
     if not isinstance(row, dict):
         raise RuntimeError("source reconcile status is missing the usbsink row")
@@ -493,6 +513,20 @@ def _progress_age_ms(payload: dict[str, Any]) -> int:
     return _nested_int(payload, ("watchdog", "last_progress_age_ms"))
 
 
+def _uptime_seconds(payload: dict[str, Any]) -> float:
+    value = payload.get("uptime_seconds")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise RuntimeError(
+            f"uptime_seconds is {value!r}, not a finite nonnegative number"
+        )
+    return float(value)
+
+
 def _fanin_xrun_counts(payload: dict[str, Any]) -> tuple[int, int]:
     output_xruns = _nested_int(payload, ("output", "xrun_count"))
     inputs = payload.get("inputs")
@@ -585,11 +619,14 @@ def main() -> int:
         )
         _line("OK", "local source policy", "parked (bonded follower)")
     try:
-        source_expectations = _source_expectations()
+        source_expectations, source_intent_fingerprint = (
+            _source_expectations_with_fingerprint()
+        )
     except RuntimeError as exc:
         failures += 1
         _line("FAIL", "source intent", str(exc))
         source_expectations = None
+        source_intent_fingerprint = None
     try:
         expected_usb_desired = (
             source_expectations["usbsink"]
@@ -597,7 +634,10 @@ def main() -> int:
             else None
         )
         usb_runtime_on, usb_effective, usb_effective_reason = (
-            _usb_effective_status(expected_desired=expected_usb_desired)
+            _usb_effective_status(
+                expected_desired=expected_usb_desired,
+                expected_intent_fingerprint=source_intent_fingerprint,
+            )
         )
     except RuntimeError as exc:
         failures += 1
@@ -734,24 +774,50 @@ def main() -> int:
 
     try:
         outputd = _status_json(OUTPUTD_SOCKET)
-        backend = outputd.get("backend")
-        content_xruns = _nested_int(outputd, ("content", "xrun_count"))
-        dac_xruns = _nested_int(outputd, ("dac", "xrun_count"))
+        first_backend = outputd.get("backend")
+        first_content_xruns = _nested_int(outputd, ("content", "xrun_count"))
+        first_dac_xruns = _nested_int(outputd, ("dac", "xrun_count"))
         content_empty = _nested_int(outputd, ("content", "empty_periods"))
         content_eagain = _nested_int(outputd, ("content", "eagain_count"))
-        age = _progress_age_ms(outputd)
+        first_age = _progress_age_ms(outputd)
+        first_uptime = _uptime_seconds(outputd)
+        time.sleep(1.0)
+        outputd_later = _status_json(OUTPUTD_SOCKET)
+        backend = outputd_later.get("backend")
+        content_xruns = _nested_int(outputd_later, ("content", "xrun_count"))
+        dac_xruns = _nested_int(outputd_later, ("dac", "xrun_count"))
+        later_content_empty = _nested_int(
+            outputd_later, ("content", "empty_periods")
+        )
+        later_content_eagain = _nested_int(
+            outputd_later, ("content", "eagain_count")
+        )
+        later_uptime = _uptime_seconds(outputd_later)
+        empty_delta = later_content_empty - content_empty
+        eagain_delta = later_content_eagain - content_eagain
+        age = _progress_age_ms(outputd_later)
         if (
-            backend == "alsa"
+            first_backend == "alsa"
+            and backend == "alsa"
+            and first_content_xruns == 0
+            and first_dac_xruns == 0
             and content_xruns == 0
             and dac_xruns == 0
-            and content_empty == 0
-            and content_eagain == 0
+            and empty_delta == 0
+            and eagain_delta == 0
+            and first_age <= MAX_PROGRESS_AGE_MS
             and age <= MAX_PROGRESS_AGE_MS
+            and later_uptime > first_uptime
         ):
             _line(
                 "OK",
                 "jasper-outputd STATUS",
-                f"backend=alsa xruns=0/0 empty=0 eagain=0 progress_age_ms={age}",
+                (
+                    f"backend=alsa xruns=0/0 empty={later_content_empty} "
+                    f"eagain={later_content_eagain} empty_delta=0 eagain_delta=0 "
+                    f"progress_age_ms={first_age}->{age} "
+                    f"uptime_seconds={first_uptime:g}->{later_uptime:g}"
+                ),
             )
         else:
             failures += 1
@@ -759,14 +825,34 @@ def main() -> int:
                 "FAIL",
                 "jasper-outputd STATUS",
                 (
-                    f"backend={backend!r} xruns={content_xruns}/{dac_xruns} "
-                    f"empty={content_empty} eagain={content_eagain} "
-                    f"progress_age_ms={age}"
+                    f"backend={first_backend!r}->{backend!r} "
+                    f"xruns={first_content_xruns}/{first_dac_xruns}"
+                    f"->{content_xruns}/{dac_xruns} "
+                    f"empty={later_content_empty} eagain={later_content_eagain} "
+                    f"empty_delta={empty_delta} eagain_delta={eagain_delta} "
+                    f"progress_age_ms={first_age}->{age} "
+                    f"uptime_seconds={first_uptime:g}->{later_uptime:g}"
                 ),
             )
     except Exception as exc:  # noqa: BLE001
         failures += 1
         _line("FAIL", "jasper-outputd STATUS", str(exc))
+
+    if source_intent_fingerprint is not None:
+        try:
+            _, final_source_intent_fingerprint = (
+                _source_expectations_with_fingerprint()
+            )
+            if final_source_intent_fingerprint != source_intent_fingerprint:
+                failures += 1
+                _line(
+                    "FAIL",
+                    "source intent stability",
+                    "persisted source intent changed during health verification; retry",
+                )
+        except RuntimeError as exc:
+            failures += 1
+            _line("FAIL", "source intent stability", str(exc))
 
     if failures:
         print(f"deploy health failed: {failures} failure(s), {warnings} warning(s)")

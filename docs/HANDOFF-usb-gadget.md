@@ -83,12 +83,16 @@ privileged gadget start boundary accepts only that management fact; its audio
 guard still requires strict availability. Stable host and unknown hardware
 fail closed, and reboot naturally removes the pending transport.
 
-JTS4 evidence on 2026-07-14: the board identified as Raspberry Pi Zero 2 W;
-its config forced `dwc2,dr_mode=peripheral`; no registered I²S/HAT overlay or
-output DAC was observable because the shared port was not acting as a host.
-The migration therefore resolves `host`, reports a pending reboot, and only
-after that reboot can the USB DAC enumerate and normal output reconciliation
-select it.
+Pre-reboot JTS4 evidence on 2026-07-14: the board identified as Raspberry Pi
+Zero 2 W; its config forced `dwc2,dr_mode=peripheral`; no registered I²S/HAT
+overlay or output DAC was observable because the shared port was not acting as
+a host. The migration therefore resolved `host` and reported a pending reboot.
+Post-reboot evidence on 2026-07-15 closed that loop: JTS4 resolved an active
+host role, detected its Apple USB-C output DAC with a ready output-hardware
+artifact and ALSA outputd backend, kept Bluetooth enabled, reported USB Audio
+Input intentionally unavailable, and passed strict deploy health with 0
+failures / 0 warnings. This proves the Zero USB-output path; it does not claim
+positive UAC2/gadget hardware validation.
 
 ## Unit topology
 
@@ -244,8 +248,16 @@ systemd-networkd, no dispatcher scripts.
 
 - **NM keyfile**: [`deploy/usb-network/jts-usb.nmconnection`](../deploy/usb-network/jts-usb.nmconnection),
   installed to `/etc/NetworkManager/system-connections/jts-usb.nmconnection`
-  (mode `0600`, root:root) by `install.sh`, followed by a best-effort
-  `nmcli connection reload`. `type=ethernet`, `interface-name=usb0`, fixed
+  (mode `0600`, root:root) by `install.sh`. Raspberry Pi OS deliberately marks
+  all `DEVTYPE=gadget` interfaces unmanaged; JTS overrides that distribution
+  default for `usb0` only with
+  [`deploy/usb-network/90-jasper-usbnet.conf`](../deploy/usb-network/90-jasper-usbnet.conf).
+  Its per-device `managed=1` has higher priority than the udev default and
+  `ignore-carrier=yes` lets this static-address profile activate before a
+  laptop is attached. Install reloads both files and performs one bounded
+  activation for an already-present `usb0`; later gadget rebuilds use normal
+  NetworkManager autoconnect, with no poller. The keyfile is `type=ethernet`,
+  `interface-name=usb0`, fixed
   `uuid`, `autoconnect=true` with a low `autoconnect-priority` (so a real
   network connection is always preferred when both exist), IPv4
   `method=manual, address1=10.12.194.1/24, never-default=true`
@@ -383,7 +395,8 @@ not interface existence — reflects the cable.
 | State | Cost | Notes |
 |---|---|---|
 | Kill-switched (`JASPER_USB_NETWORK=disabled`) AND audio off | Same as the historical zero-RAM contract (~50 KB, the dwc2 kernel module only) | `jasper-usbgadget-wanted` exits non-zero (nothing wanted), the unit's `ExecCondition` skips, libcomposite never loads, `usb0` never appears, `jasper-usbnet-dhcp` never starts. |
-| Gadget unavailable or role change pending | ~0-50 KB | A Zero USB-output product intentionally stays host-only; during a pending switch to peripheral, the gadget's `ExecCondition` skips and nothing binds. `jasper-doctor` distinguishes the intentional state from a reboot requirement. |
+| Gadget unavailable in stable host mode, or pending host→peripheral | ~0-50 KB | A Zero USB-output product intentionally stays host-only. When peripheral mode is desired but not active yet, no UDC is available, the gadget's `ExecCondition` skips, and nothing binds. `jasper-doctor` distinguishes the intentional state from a reboot requirement. |
+| Pending peripheral→host while the current controller is still peripheral | ~1 MB until reboot | Strict audio availability is false and UAC2 is withdrawn, but `management_transport_available` keeps or restores NCM-only composition so an in-flight deploy over USB does not sever itself. Reboot activates host mode and removes the UDC/NCM residents. |
 | Network composed (bound), no host plugged in | ~1 MB | `libcomposite` + `usb_f_ncm`/`u_ether` kernel modules loaded, `ncm.usb0` composed and bound, `usb0` **exists** (carrier down), and the `MemoryMax=16M`-bounded `jasper-usbnet-dhcp` instance **is resident** (device-activated on `usb0`, which is present from bind). Typically far below the cap for a one-pool DHCP server. |
 | Network composed, host plugged in, audio off | ~1 MB | Same residents as above; `usb0` now has carrier and the DHCP server hands out a lease. No new persistent cost over the no-host row. |
 | Network + audio both on | ~1 MB (network) + the bounded volume observer | The process-free readiness marker adds no resident process; fan-in is already part of the core audio graph. See [HANDOFF-usbsink.md](HANDOFF-usbsink.md) "RAM budget". |
@@ -468,8 +481,11 @@ contrast case. See `tests/test_http_security.py`.
 
 ## Hardware-validation checklist
 
-None of the following has been run against physical hardware as of this
-writing. Each item names the specific claim above it verifies.
+Items 1-8 and 10 below have not been run against physical hardware as of this
+writing. The carrierless lifecycle subset of item 9 was verified on JTS3 on
+2026-07-15: `usb0` activated with `10.12.194.1` and DHCP active without a host
+cable, then automatically reconverged after a full gadget destroy/recreate.
+Each item names the specific claim above it verifies.
 
 1. **Composite enumeration on macOS.** Plug a Mac into a configured
    speaker with USB audio enabled: confirm both an NCM network adapter
@@ -567,15 +583,18 @@ writing. Each item names the specific claim above it verifies.
 
 ---
 
-Last verified: 2026-07-14 (hardware-aware USB data-role matrix and conditional
-NCM availability rechecked; `jasper-usbsink.service` rechecked as the process-free
-readiness marker; USB audio composition requires canonical
+Last verified: 2026-07-15 (JTS4 active-host Apple-DAC recovery and strict
+deploy health verified; hardware-aware USB data-role matrix, pending-role RAM
+contract, and conditional NCM availability rechecked;
+`jasper-usbsink.service` rechecked as the process-free readiness marker; USB
+audio composition requires canonical
 source-aware authorization, derived lifecycle readiness, and a live fan-in
 DIRECT consumer, with canonical Off dominance and NCM preservation pinned;
+NetworkManager's usb0 managed/carrierless policy and automatic activation
+after gadget recreation were hardware-verified on JTS3;
 the canonical speaker-name reader and install-baseline/source-replay boundary
 were rechecked against the root scripts and installer; intent/transition
 ownership rechecked against `jasper.source_intent`; this doc retains gadget composition and links to
 HANDOFF-source-lifecycle.md for ordering/idempotence. Prior 2026-07-10 light
 touch: corrected the two audio-data-plane mentions for the then-standby helper;
-fan-in DIRECT-captures the gadget audio. Gadget-composition / ncm-network content
-unchanged and not re-verified this pass.)
+fan-in DIRECT-captures the gadget audio.)

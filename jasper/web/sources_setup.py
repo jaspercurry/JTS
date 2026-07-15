@@ -237,7 +237,7 @@ def _source_state(
 ) -> dict[str, bool | str]:
     if parked:
         effective = "parked"
-    elif not available:
+    elif desired and not available:
         effective = "unavailable"
     elif degraded_reason or observed != desired:
         effective = "degraded"
@@ -254,7 +254,7 @@ def _source_state(
     }
     if not available and unavailable_reason:
         state["unavailableReason"] = unavailable_reason
-    if available and effective == "degraded":
+    if effective == "degraded":
         state["degradedReason"] = degraded_reason or (
             "This source is set to "
             f"{'on' if desired else 'off'}, but its current runtime state "

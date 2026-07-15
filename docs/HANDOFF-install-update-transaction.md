@@ -145,12 +145,15 @@ full doctor stack under memory pressure. The probe reads the canonical
   coordinator's effective USB status, so saved On plus hardware-unavailable is
   certified only when the marker, UAC2 function, and DIRECT lane are all down.
 - Fan-in is sampled twice around a one-second interval and must show no xrun
-  increase and recent watchdog progress. Outputd must report its ALSA backend,
-  zero xruns / empty periods / EAGAINs, and recent progress. All counter and
-  progress fields are strict nonnegative JSON integers (booleans, strings,
-  negative values, missing fields, malformed input entries, and an empty input
-  list fail closed); this prevents a malformed status surface from certifying
-  a deploy. Each control-socket response is also capped at 256 KiB with a
+  increase and recent watchdog progress. Outputd is also sampled twice: both
+  snapshots must report the ALSA backend, zero xruns, recent progress, and
+  increasing process uptime; cumulative empty/EAGAIN startup counts may be
+  nonzero, but any increase during the sample fails. Counter and progress
+  fields are strict nonnegative JSON integers, and uptime is a finite
+  nonnegative number (booleans, strings, negative values, missing fields,
+  malformed input entries, and an empty input list fail closed); this prevents
+  a malformed or restarted status surface from certifying a deploy. Each
+  control-socket response is also capped at 256 KiB with a
   two-second absolute deadline, so a peer cannot defeat the probe's low-memory
   purpose by streaming forever or returning an unbounded payload.
 
@@ -354,7 +357,8 @@ sourced bash helpers). Confirm on a Pi:
 
 ---
 
-Last verified: 2026-07-14 (verified-manifest asset timing and exact
+Last verified: 2026-07-15 (outputd two-snapshot counter-growth, uptime
+continuity, and source-intent stability gates rechecked; verified-manifest asset timing and exact
 browser-visible `/system/` asset-token gate rechecked against
 `jasper/web/_common.py` and `scripts/deploy-to-pi.sh`; low-memory deploy-health
 source-intent contract re-verified for AirPlay, Spotify Connect, Bluetooth,

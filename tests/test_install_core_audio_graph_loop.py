@@ -216,7 +216,8 @@ def test_both_profiles_refresh_only_active_sources_then_reapply_intent():
         )
     # The shared helper is the ONE deploy path that runs the full coordinator.
     helper = _function_body(source, "reapply_source_intent")
-    assert "jasper-source-intent-reconcile --reason install" in helper
+    assert "jasper-source-intent-reconcile" in helper
+    assert "--reason install --invalidate-status-before" in helper
     assert (
         "/usr/bin/timeout --foreground --kill-after=5s "
         f"{int(source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS)}s"

@@ -261,9 +261,40 @@ def test_gather_state_shape(stub_backends):
     # USB unavailable because the output DAC owns the shared data port.
     assert state["usbsink"]["enabled"] is False
     assert state["usbsink"]["desired"] is False
-    assert state["usbsink"]["effective"] == "unavailable"
+    assert state["usbsink"]["effective"] == "off"
     assert state["usbsink"]["available"] is False
     assert "output DAC" in str(state["usbsink"]["unavailableReason"])
+
+
+def test_source_state_keeps_availability_independent_from_effective_off():
+    state = mod._source_state(
+        desired=False,
+        observed=False,
+        available=False,
+        unavailable_reason="hardware cannot provide this source",
+    )
+
+    assert state == {
+        "enabled": False,
+        "desired": False,
+        "effective": "off",
+        "available": False,
+        "unavailableReason": "hardware cannot provide this source",
+    }
+
+
+def test_source_state_reports_off_drift_even_when_source_is_unavailable():
+    state = mod._source_state(
+        desired=False,
+        observed=True,
+        available=False,
+        unavailable_reason="hardware cannot provide this source",
+    )
+
+    assert state["effective"] == "degraded"
+    assert state["available"] is False
+    assert state["unavailableReason"] == "hardware cannot provide this source"
+    assert "current runtime state does not match" in str(state["degradedReason"])
 
 
 def test_gather_state_renderer_units_unavailable(stub_backends):
@@ -970,6 +1001,20 @@ def test_es_module_exists_and_uses_shared_helpers():
     assert refresh.index("await stateFetchPromise;") < refresh.index(
         "postInFlight = false;"
     ) < refresh.index("return fetchState();")
+
+
+def test_es_module_prioritizes_actionable_degradation_over_unavailability():
+    text = SOURCES_MODULE.read_text(encoding="utf-8")
+
+    generic_start = text.index('const note = el(name + "-unavailable-note")')
+    generic_end = text.index("const bt = state.bluetooth", generic_start)
+    generic = text[generic_start:generic_end]
+    assert generic.index("if (degraded)") < generic.index("unavailable &&")
+
+    bluetooth_start = text.index("const bt = state.bluetooth")
+    bluetooth_end = text.index("const usb = state.usbsink", bluetooth_start)
+    bluetooth = text[bluetooth_start:bluetooth_end]
+    assert bluetooth.index("if (btDegraded)") < bluetooth.index("btUnavailable &&")
 
 
 def test_bluetooth_confirmation_posts_captured_intent_not_polled_dom_state():
