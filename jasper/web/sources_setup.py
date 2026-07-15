@@ -9,7 +9,8 @@ Playback-source toggles:
   - AirPlay and Spotify Connect use ordinary systemd lifecycle operations.
   - Bluetooth uses RF-kill, BlueZ power, and its audio/pairing services.
   - USB Audio Input preserves the ordered composite-gadget transition that
-    keeps the always-on USB management network up while adding/removing audio.
+    keeps the hardware-conditional USB management network up while
+    adding/removing audio.
 
 The web process owns none of those mechanisms. It records one desired source
 state and kicks ``jasper-source-intent-reconcile``; that fixed root oneshot is
@@ -56,6 +57,7 @@ from ..bluetooth.availability import (
     bluetooth_unavailable_reason,
     probe_bluetooth_availability,
 )
+from ..audio_hardware.usb_port_role import gadget_unavailable_detail
 from ..fanin.combo_health import (
     DIRECT_HEALTH_CAPTURING,
     DIRECT_HEALTH_IDLE,
@@ -66,6 +68,7 @@ from ..install_profile import install_profile_allows_local_sources, read_install
 from ..local_sources import local_source_lifecycle
 from ..log_event import log_event
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
+from ..output_hardware import current_usb_data_role
 from ..source_intent import (
     read_source_intents,
     request_source_intent,
@@ -112,7 +115,7 @@ def _single_unit(units: tuple[str, ...], label: str) -> str:
 
 # jasper-usbsink.service is the derived USB lifecycle unit; canonical intent is
 # owned by jasper.source_intent. The composite gadget unit owns the host-visible
-# ConfigFS gadget (always-on USB network + the user-toggled uac2 audio function).
+# ConfigFS gadget (default-on network where hardware permits + user-toggled audio).
 USBSINK_UNIT = _intent_unit(Source.USBSINK)
 USBSINK_GADGET_UNIT = _single_unit(
     local_source_lifecycle(Source.USBSINK).advertise_units,
@@ -140,19 +143,9 @@ SOURCE_UNAVAILABLE = {
 }
 IDLE_SHUTDOWN_SEC = 600.0
 
-# /boot/firmware/config.txt line that install.sh's set_usb_gadget_mode
-# writes. Without this, the BCM2712 OTG controller stays in host mode
-# (the Pi 5 default) and the USB-C port is power-only — flipping the
-# wizard toggle on would just fail at the init.service ConfigFS
-# write. The wizard surfaces this as `available: false` so the row
-# shows disabled instead of presenting a broken on/off.
-BOOT_CONFIG_PATH = "/boot/firmware/config.txt"
-USBSINK_DTOVERLAY_LINE = "dtoverlay=dwc2,dr_mode=peripheral"
-
-
 # The ALSA card the composite gadget's uac2 function registers. Its presence
 # is the host-visible "USB audio device is advertised" signal now that the
-# gadget unit is always-on (it also carries the USB network), so gadget-active
+# gadget unit can outlive audio (it also carries the USB network), so gadget-active
 # is no longer a proxy for audio-advertised.
 UAC2_CARD_PATH = "/proc/asound/UAC2Gadget"
 BLUETOOTH_RUNTIME_UNITS = local_source_lifecycle(Source.BLUETOOTH).runtime_units
@@ -176,22 +169,15 @@ def _uac2_card_present() -> bool:
         return False
 
 
-def _usbsink_available() -> bool:
-    """True iff the dtoverlay that puts the USB-C port in peripheral
-    mode is present in /boot/firmware/config.txt. Fail-soft on read
-    errors (treat as unavailable so the toggle is disabled) — the
-    operator can re-run install.sh to recover."""
+def _usbsink_capability() -> tuple[bool, str]:
+    """Read the shared hardware role instead of re-parsing boot config."""
+
     try:
-        with open(BOOT_CONFIG_PATH) as f:
-            content = f.read()
-    except OSError as e:
-        logger.debug("usbsink dtoverlay probe failed: %s", e)
-        return False
-    # Tolerate leading whitespace and trailing comments.
-    for line in content.splitlines():
-        if line.strip().startswith(USBSINK_DTOVERLAY_LINE):
-            return True
-    return False
+        state = current_usb_data_role()
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.debug("USB data-role probe failed: %s", exc)
+        return False, "USB hardware capability state is unavailable."
+    return state.gadget_available, gadget_unavailable_detail(state)
 
 
 def _systemctl(*args: str, timeout: int = 10) -> tuple[int, str]:
@@ -384,10 +370,12 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
     usbsink_units_available = (
         usbsink_main_unit_available and usbsink_gadget_unit_available
     )
-    usbsink_dtoverlay_available = (
-        _usbsink_available() if usbsink_units_available else False
+    usbsink_hardware_available, usbsink_hardware_reason = (
+        _usbsink_capability()
+        if usbsink_units_available
+        else (False, "")
     )
-    usbsink_available = usbsink_units_available and usbsink_dtoverlay_available
+    usbsink_available = usbsink_units_available and usbsink_hardware_available
     if not usbsink_main_unit_available:
         usbsink_reason = SOURCE_UNAVAILABLE["usbsink"]
     elif not usbsink_gadget_unit_available:
@@ -395,16 +383,13 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
             "USB Audio Input is missing its composite gadget unit. Re-run "
             "install.sh to repair the local renderer stack."
         )
-    elif not usbsink_dtoverlay_available:
-        usbsink_reason = (
-            "USB gadget mode is not enabled in /boot/firmware/config.txt. "
-            "Re-run install.sh and reboot before enabling USB Audio Input."
-        )
+    elif not usbsink_hardware_available:
+        usbsink_reason = usbsink_hardware_reason
     else:
         usbsink_reason = ""
     usbsink_main_active = unit_snapshot.active(USBSINK_UNIT)
     # Host-visible audio device presence is the uac2 ALSA card, NOT gadget-unit
-    # activity: the composite gadget is always-on (it also carries the USB
+    # activity: the composite gadget can outlive audio (it also carries the USB
     # management network), so its being active no longer implies audio is
     # advertised. The card exists iff the uac2 function is composed.
     usbsink_card_present = _uac2_card_present()
@@ -583,11 +568,10 @@ def _apply(source: str, enabled: bool) -> None:
                 "USB Audio Input is missing its composite gadget unit. Re-run "
                 "install.sh to repair the local renderer stack."
             )
-        if enabled and not _usbsink_available():
-            raise RuntimeError(
-                "USB gadget mode is not enabled in /boot/firmware/config.txt. "
-                "Re-run install.sh and reboot before enabling USB Audio Input."
-            )
+        if enabled:
+            usb_available, usb_reason = _usbsink_capability()
+            if not usb_available:
+                raise RuntimeError(usb_reason)
         target = Source.USBSINK
     else:  # guarded by VALID_SOURCES at the route boundary
         target = SOURCE_BY_WIZARD_KEY[source]
@@ -690,14 +674,13 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
                 "compatible power/data splitter or hub. Your computer sees "
                 "the speaker as a USB audio output device. (The USB link also "
                 "provides a management-network path to this speaker's web UI "
-                "even with Wi-Fi off — that stays on regardless of this "
-                "toggle.)</div>"
+                "when gadget hardware is available; this source toggle does "
+                "not switch that management link.)</div>"
             ),
             unavailable_html=(
                 '<div class="source-note warn" id="usbsink-unavailable-note" '
-                'style="display:none">USB gadget mode not enabled in '
-                "<code>/boot/firmware/config.txt</code> — re-run install.sh "
-                "and reboot.</div>"
+                'style="display:none">USB gadget support is unavailable for '
+                "the current hardware configuration.</div>"
             ),
         ),
     ])

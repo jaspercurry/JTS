@@ -47,6 +47,14 @@ but the UI reads the saved choice back and shows it checked with a degraded
 reason. This is why a Bluetooth switch may truthfully read “set to on, but the
 Bluetooth radio is not ready” instead of snapping back to Off.
 
+`parked` and `unavailable` are deliberately different. `parked` means grouping
+temporarily denies an otherwise-supported local source and retains derived
+enablement for restore. USB `unavailable` means the hardware resolver assigned
+the data controller to output-DAC host mode (or a role change awaits reboot):
+the coordinator preserves household intent but disables/stops every derived
+USB audio resource and reports the stable hardware reason without treating the
+expected state as a failed apply.
+
 ## The final start boundary
 
 The coordinator is the normal lifecycle writer, but it is not the only thing
@@ -60,6 +68,11 @@ household intent. Off or follower parking cleanly skips the start even when
 unit enablement or a maintenance snapshot is stale. Malformed/unreadable source
 intent fails closed and emits `event=local_sources.guard_intent_failed`; it
 never falls back to a shipped On default at this security boundary. The
+USB guard also requires the shared `usb_data_role.gadget_available` capability,
+so stale unit enablement or a manual start cannot bypass output ownership of a
+Zero's shared OTG port. The composite gadget's separate privileged boundary
+uses `management_transport_available`: this keeps NCM-only service during the
+named pending-host/current-peripheral deploy grace, never UAC2. The
 intent file remains `root:jasper 0660` below the non-world-traversable state
 directory. Renderer users are not added to the intent-writer group. Each final
 guard instead crosses a narrow privileged boundary with a fixed
@@ -203,8 +216,9 @@ voice startup already had the accessory oneshot activating.
 `jasper-usbsink.service` is the derived lifecycle/enablement readiness mirror
 consumed by gadget composition; it is not a second intent store and cannot
 authorize audio when canonical intent or role denies it.
-`jasper-usbgadget.service` owns the composite descriptor; the always-on NCM
-management network is independent of USB Audio Input intent.
+`jasper-usbgadget.service` owns the composite descriptor; NCM management is
+independent of USB Audio Input intent but exists only when the resolved
+hardware role supports a gadget.
 
 On enable, the coordinator writes unit enablement first, starts the fan-in
 coupling owner while UAC2 is still absent so the direct lane is armed and
@@ -221,6 +235,20 @@ On transition fails, cleanup preserves desired On but withdraws derived
 enablement, UAC2, and direct capture; stopping the composite gadget is the
 last-resort fail-closed state if UAC2 cannot be withdrawn.
 
+Before either ordinary On/Off sequence, the USB applier reads the reconciled
+hardware role. When USB audio hardware is unavailable it disables/stops the
+readiness marker, withdraws UAC2, disarms direct capture, and returns
+`effective=unavailable` with the resolver reason. In a stable host or
+unsupported role, it also stops the entire composite gadget. There is one
+bounded deployment grace: while a Zero-class controller is still actively
+peripheral but a host-role change is pending reboot, management transport
+remains available. The applier keeps or restores NCM-only composition so a
+deployment using that link can finish, but strict audio availability remains
+false and UAC2 stays withdrawn. After reboot activates host mode, the next
+reconcile stops the gadget normally. The applier never changes saved source
+intent or the USB controller role; only the hardware installer/reconciler owns
+that boot decision.
+
 The runtime combo-health fallback uses the same ownership boundary. After it
 records the fallback marker, it calls the source coordinator's narrow USB
 withdrawal phase while fan-in's direct consumer still exists. The coordinator
@@ -234,7 +262,8 @@ USB. The coupling owner may receive a bounded convergence request, but it
 restarts fan-in only when the derived plan actually changed; an unchanged
 CamillaDSP confirm uses the emitted-YAML equality fast path and reloads only
 when real drift exists. The NCM
-function remains available while audio is Off or parked. Composition, network
+function remains available while audio is Off or parked **when the board is
+gadget-capable**. Composition, network
 addressing, and gadget teardown details stay in
 [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md); the USB audio data plane stays
 in [HANDOFF-usbsink.md](HANDOFF-usbsink.md).
@@ -362,8 +391,9 @@ non-zero. `/sources/state`, `/bluetooth/state`, the `/system/` audio cards, and
 Bluetooth surfaces compare RF-kill, BlueZ power, and required resource units;
 doctor validates both desired-On radio readiness and Off-but-active drift. The
 system audio-health surface derives Off drift from each source's parked units,
-not its desired-On health dependencies. In particular, USB's always-on
-management gadget may remain active while USB Audio Input is Off; only an
+not its desired-On health dependencies. In particular, USB's management
+gadget may remain active while USB Audio Input is Off on gadget-capable
+hardware; only an
 active USB audio/volume resource is Off drift. The
 low-memory deploy probe parses the complete fixed four-source contract,
 including USB Audio Input's shipped Off default, and rejects unknown keys in
@@ -394,11 +424,11 @@ primary result and the shell only to explain a mismatch.
    clear, BlueZ reports `Powered: yes`, and the three resource units are
    enabled and active. Scan/pair a device to prove the control plane still
    works after the Off→On cycle.
-5. If JTS4's USB gadget topology is connected, toggle USB Audio Input On then
-   Off. On must expose `/proc/asound/UAC2Gadget`; Off must remove it; the USB
-   management page must remain reachable on both sides. Start
-   `jasper-source-intent-reconcile.service` once more without changing intent
-   to verify no-op reconciliation does not cause another re-enumeration.
+5. With JTS4's USB output DAC selected, confirm USB Audio Input reports
+   `available=false`, the reason says the shared port is reserved for output,
+   no UAC2/NCM gadget is composed, and the saved desired value is not silently
+   rewritten. A Zero configured with a registered I²S DAC is the separate
+   positive gadget-mode validation target.
 6. Redeploy once with Bluetooth Off and once with it On. Run
    `sudo deploy/bin/jasper-deploy-health` from the deployed checkout and
    confirm the persisted state is accepted in both cases rather than repaired
@@ -424,7 +454,8 @@ and units in both states. JTS4 has no configured output DAC, so its unrelated
 outputd fake-backend advisory remained. No physical pairing target or USB UAC2
 host was available; pairing and USB re-enumeration remain explicit gaps.
 
-Last verified: 2026-07-14 (fingerprinted per-source completion acknowledgement,
+Last verified: 2026-07-14 (USB hardware-unavailable state and final guard
+rechecked separately from follower parking; fingerprinted per-source completion acknowledgement,
 source-aware final start boundary, desired-Off failed-unit reset and timeout budget, declared accessory coverage,
 correction/claim restore races, and USB authorization-plus-readiness composition
 gate rechecked hardware-free; prior JTS4 validation evidence below remains

@@ -8,6 +8,9 @@ Before=jasper-outputd.service
 [Service]
 Type=oneshot
 EnvironmentFile=-/etc/jasper/jasper.env
+# Hardware path overrides are hermetic-test seams, not production config. The
+# root reconciler must always observe the real board, boot config, and UDC.
+UnsetEnvironment=JASPER_PI_MODEL_FILE JTS_BOOT_CONFIG_FILE JASPER_UDC_CLASS_DIR
 ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile --reason systemd
 StandardOutput=journal
 StandardError=journal

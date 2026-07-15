@@ -301,9 +301,9 @@ deltas and decide.
 ## USB DIRECT (combo mode) — delete the bridge hop + aloop cable (P3: DEFAULT-ON on gadget boxes)
 
 > **Default status (P3 default-flip, landed).** The USB combo is now the SHIPPED
-> DEFAULT — but only on a box that BOTH (a) has the gadget stack available
-> (`dtoverlay=dwc2,dr_mode=peripheral` present — the always-on USB network adds it
-> fleet-wide, so this alone is NOT the gate) AND (b) has USB Audio Input turned ON
+> DEFAULT — but only on a box that BOTH (a) has the hardware-resolved gadget
+> capability available (a boot overlay alone is not sufficient on a shared-port
+> Zero) AND (b) has USB Audio Input turned ON
 > by the household (the canonical USB key in
 > `/var/lib/jasper/source_intent.env`; `jasper-usbsink.service` enablement is
 > derived from it). The reconciler pass

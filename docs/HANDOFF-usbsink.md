@@ -17,6 +17,15 @@ function. [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md) is canonica
 for that transaction; [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) is canonical
 for ConfigFS composition and the NCM network.
 
+Availability is hardware-resolved, not an environment choice and not a source
+toggle side effect. A Zero / Zero 2 W has one shared OTG data port: a
+configured registered I²S DAC leaves it available for peripheral/gadget mode;
+otherwise JTS reserves it for USB output-DAC host mode and reports USB Audio
+Input as `unavailable` while preserving the household's saved intent. Pi 4/5
+products keep gadget mode because their separate USB host ports can carry the
+output DAC. The resolver and full decision matrix are canonical in
+[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#usb-data-role-policy).
+
 There is one audio pipeline:
 
 ```text
@@ -127,8 +136,8 @@ fallback.
 >
 > USB Audio Input is shipped and off by default. **Gadget ownership moved
 > to a composite model** — the ConfigFS descriptor is now owned by
-> `jasper-usbgadget.service`, which composes an always-on USB management
-> network (`ncm.usb0`) alongside the wizard-toggled audio function
+> `jasper-usbgadget.service`, which composes a hardware-conditional USB
+> management network (`ncm.usb0`) alongside the wizard-toggled audio function
 > (`uac2.usb0`). The old audio-only `jasper-usbsink-init.service` is
 > deleted. Gadget composition, the function truth table, the management
 > network (NM keyfile + scoped dnsmasq), OS support for the network side,
@@ -136,8 +145,9 @@ fallback.
 > [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) — this doc keeps only the
 > audio-source concerns (volume model, fan-in wiring, low-latency route).
 >
-> The installer writes the gadget overlay/config and requires reboot for
-> the dwc2 controller to enter peripheral mode. `/sources/` writes the
+> The installer resolves the USB data role from board topology and the
+> registered configured DAC overlay; a changed role requires reboot.
+> `/sources/` writes the
 > disabled-by-default USB household intent; the shared root source coordinator
 > derives `jasper-usbsink.service` enablement and performs the ordered,
 > idempotent stop/recompose/start transition. That transition is owned by
@@ -145,8 +155,9 @@ fallback.
 > data-plane reference. `jasper-usbgadget.service` still owns the descriptor
 > and composes it with or without `uac2.usb0`. When this speaker is a bonded
 > multiroom follower, grouping hands the completed role to the same source
-> coordinator, which parks USB: the host-visible audio device disappears while the always-on
-> management network keeps serving the follower's management UI.
+> coordinator, which parks USB: the host-visible audio device disappears while
+> the hardware-conditional management network keeps serving the follower's UI
+> wherever the resolved transport is available.
 > `jasper-usbsink.service` keeps its own source-aware `ExecCondition`
 > (`jasper-local-source-allowed --source usbsink`, run with systemd's `+`
 > privilege prefix), so a boot, manual start, or maintenance restore rechecks current
@@ -228,16 +239,11 @@ fallback.
 > checklist. This document's phase plan below is retained for
 > historical implementation context.
 >
-> `deploy/lib/install/renderers.sh` writes
-> `dtoverlay=dwc2,dr_mode=peripheral` under `[all]`, not `[pi5]`.
-> That is deliberate: streambox installs expose USB Audio Input on
-> Zero-class hardware so JTS4 can validate a powered USB splitter plus
-> DAC topology. The Pi 5 splitter-backed path remains the proven path;
-> the Zero 2 W path is an allowed hardware experiment because the same
-> OTG controller may also be needed for the DAC. If the powered splitter
-> cannot keep the host-facing gadget and Apple DAC stable at the same
-> time, remove or gate USB Audio Input for Zero-class streamboxes rather
-> than letting it silently compromise playback.
+> **Superseded:** the installer no longer forces peripheral mode fleet-wide.
+> The hardware resolver writes one owned `[all]` role: host on Zero-class
+> products unless a registered I²S overlay is configured; peripheral on Pi
+> 4/5 or a Zero with that I²S output. A splitter cannot make one OTG controller
+> act as USB host and peripheral simultaneously.
 >
 > Current production-boundary pins:
 >
@@ -366,7 +372,8 @@ changes.
 
 ### Boot config change (one-time, requires reboot)
 
-`/boot/firmware/config.txt` gains one line under `[pi5]`:
+On a Pi 5, `/boot/firmware/config.txt` gains one line in the
+installer-owned `[all]` role block:
 
 ```
 dtoverlay=dwc2,dr_mode=peripheral
@@ -377,7 +384,7 @@ mode permanently. The dtoverlay alone is a no-op from the host's
 perspective — it just makes the port gadget-capable. `libcomposite` and the
 ConfigFS descriptor are now owned by `jasper-usbgadget.service` (which
 replaced the retired `jasper-usbsink-init.service`), and because that unit
-carries the always-on USB *management network* it modprobes `libcomposite`
+carries the default-on USB *management network* on supported hardware, it modprobes `libcomposite`
 and composes the descriptor **by default at boot** — the `uac2.usb0` audio
 function is the only part gated behind the `/sources/` toggle. See
 [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) for the composite-gadget
@@ -2203,4 +2210,5 @@ includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)
 
-Last verified: 2026-07-14
+Last verified: 2026-07-14 (hardware-resolved USB role and Zero/USB-DAC
+unavailability contract rechecked against the shared output-hardware artifact.)

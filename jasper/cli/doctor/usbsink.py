@@ -7,7 +7,7 @@
 Originally re-homed verbatim from the monolithic ``jasper/cli/doctor.py``;
 reworked for the composite-gadget model (docs/HANDOFF-usb-gadget.md). The
 gadget is now ``jasper-usbgadget.service`` — a single ConfigFS owner that
-composes up to two functions onto one UDC: ``ncm.usb0`` (the always-on USB
+composes up to two functions onto one UDC: ``ncm.usb0`` (the USB
 management network) and ``uac2.usb0`` (the wizard-toggled USB Audio Input,
 whose readiness marker is ``jasper-usbsink.service``). The old invariant
 "libcomposite loaded <=> usbsink active" no longer holds — libcomposite can be
@@ -25,10 +25,12 @@ import json
 import os
 from pathlib import Path
 
+from jasper.audio_hardware.usb_port_role import gadget_unavailable_detail
 from jasper.audio_runtime_plan import UAC2_LOW_LATENCY_EXPECTED_ATTRS
 from jasper.audio_validation import route_live_state_issues
 from jasper.fanin.status import fanin_usbsink_lane_is_direct, read_fanin_status
 from jasper.music_sources import Source
+from jasper.output_hardware import current_usb_data_role
 from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET, read_status_socket
 from jasper.source_intent import source_intent_enabled
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR, udc_host_connected
@@ -89,7 +91,8 @@ def _network_wanted() -> bool:
     check_usbgadget_composition would false-fail when bash composed ncm but
     Python thought the kill switch was set (review core-7). The fail-safe
     direction is deliberate: a stray space must never silently drop the
-    always-on fallback network. Pinned by tests/test_usbgadget_script.py's
+    default-on fallback network when hardware permits it. Pinned by
+    tests/test_usbgadget_script.py's
     literal matrix (bash) and test_doctor_usbsink.py (Python)."""
     raw = os.environ.get("JASPER_USB_NETWORK", "enabled")
     return raw.lower() != "disabled"
@@ -134,42 +137,35 @@ def _audio_composition_wanted() -> tuple[bool, str]:
     return True, "enabled"
 
 @doctor_check(order=57, group="usbsink")
-def check_usbsink_dtoverlay() -> CheckResult:
-    """Verify dtoverlay=dwc2,dr_mode=peripheral is in
-    /boot/firmware/config.txt. Without it, the BCM2712 OTG controller
-    stays in host mode and the USB-C port is power-only; the
-    jasper-usbsink wizard toggle would be greyed out and turning it
-    on (manually via systemctl) would just fail at the ConfigFS UDC
-    bind."""
-    cfg_path = Path("/boot/firmware/config.txt")
-    if not cfg_path.exists():
-        return CheckResult(
-            "usbsink dtoverlay", "warn",
-            f"{cfg_path} missing — not running on a Pi?",
-        )
+def check_usb_data_role() -> CheckResult:
+    """Explain the resolved host/peripheral role and pending reboot state."""
+
     try:
-        content = cfg_path.read_text()
-    except OSError as e:
+        state = current_usb_data_role()
+    except (OSError, RuntimeError, ValueError) as exc:
         return CheckResult(
-            "usbsink dtoverlay", "warn",
-            f"can't read {cfg_path}: {e}",
+            "USB data role", "warn", f"capability state unavailable: {exc}"
         )
-    needle = "dtoverlay=dwc2,dr_mode=peripheral"
-    for line in content.splitlines():
-        if line.strip().startswith(needle):
-            return CheckResult(
-                "usbsink dtoverlay", "ok",
-                "dwc2 peripheral mode enabled (USB-C is gadget-capable)",
-            )
-    # Not present → not a fail, the feature is opt-in. Surface as a
-    # warn-with-fix so a user wondering "why is the toggle greyed
-    # out?" finds the answer here. install.sh's set_usb_gadget_mode
-    # is idempotent so re-running install.sh + reboot recovers.
+    detail = (
+        f"topology={state.board_topology}, desired={state.desired_role}, "
+        f"configured={state.configured_role}, active={state.active_role}, "
+        f"management_transport={state.management_transport_available}, "
+        f"reason={state.reason}"
+    )
+    if state.reboot_required:
+        return CheckResult(
+            "USB data role",
+            "warn",
+            f"{detail}; {gadget_unavailable_detail(state)}",
+        )
+    if state.gadget_available:
+        return CheckResult(
+            "USB data role", "ok", f"{detail}; USB gadget available"
+        )
     return CheckResult(
-        "usbsink dtoverlay", "warn",
-        "not set; USB sink wizard toggle will show as unavailable. "
-        "Re-run scripts/deploy-to-pi.sh (or sudo install.sh) and "
-        "reboot to enable.",
+        "USB data role",
+        "ok" if state.desired_role == "host" else "warn",
+        f"{detail}; {gadget_unavailable_detail(state)}",
     )
 
 @doctor_check(order=58, group="usbsink")
@@ -181,7 +177,7 @@ def check_usbsink_state() -> CheckResult:
     a split-brain source state: computers still see JTS as USB audio while
     /sources can otherwise appear off. The composite gadget itself
     (jasper-usbgadget.service / ConfigFS dir) legitimately persists for the
-    always-on management network even when audio is off — that alone is
+    hardware-permitted management network even when audio is off — that alone is
     never a drift signal here; check_usbgadget_composition owns the
     gadget-vs-network-intent story. A leftover libcomposite module with
     NEITHER function composed is RAM drift (network kill-switched + audio
@@ -189,6 +185,20 @@ def check_usbsink_state() -> CheckResult:
     active = _systemd_is_active(USBSINK_UNIT)
     uac2_present = _uac2_function_path().exists()
     libcomp = _module_loaded("libcomposite")
+    usb_role = current_usb_data_role()
+    if not usb_role.gadget_available:
+        if active or uac2_present:
+            return CheckResult(
+                "usbsink state",
+                "fail",
+                "USB gadget hardware is unavailable but USB Audio Input is "
+                f"still active/advertised (active={active}, uac2={uac2_present}).",
+            )
+        return CheckResult(
+            "usbsink state",
+            "ok",
+            f"USB Audio Input unavailable as resolved ({usb_role.reason})",
+        )
 
     if _parked_as_bonded_follower():
         if active or uac2_present:
@@ -237,7 +247,8 @@ def check_usbsink_state() -> CheckResult:
             "usbsink state", "ok",
             "USB Audio Input disabled (uac2.usb0 not composed; the "
             "composite gadget/libcomposite may still be resident for the "
-            "always-on USB management network — see check_usbgadget_composition)",
+            "hardware-conditional USB management network — see "
+            "check_usbgadget_composition)",
         )
 
     if not uac2_present:
@@ -282,6 +293,14 @@ def check_usbsink_card() -> CheckResult:
 @doctor_check(order=59.5, group="usbsink")
 def check_usbsink_low_latency_contract() -> CheckResult:
     """When the route claims low latency, verify the live USB data plane."""
+
+    usb_role = current_usb_data_role()
+    if not usb_role.gadget_available:
+        return CheckResult(
+            "usbsink low-latency contract",
+            "ok",
+            f"not applicable: USB gadget unavailable ({usb_role.reason})",
+        )
 
     from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
 
@@ -411,14 +430,13 @@ def check_usb_combo_fallback() -> CheckResult:
     - ``ok`` — armed coherently, or cleanly disarmed (USB audio off / non-gadget
       box), with no marker and no failed unit.
 
-    Skip-if-not-applicable: a box with no USB gadget dtoverlay can never run the
-    combo, so this reports ok with a skip note (check_usbsink_dtoverlay owns the
-    dtoverlay story)."""
+    Skip-if-not-applicable: a box whose resolved USB role cannot carry a gadget
+    reports ok with a skip note (check_usb_data_role owns the reason)."""
     from jasper.fanin.combo_health import read_fallback_marker
     from jasper.fanin.coupling_auto import (
         USB_COMBO_ENABLED_VALUE,
         USB_DIRECT_ENV_VAR,
-        read_boot_config_gadget_present,
+        read_usb_gadget_available,
     )
 
     # 1. A failed readiness-marker unit is the most actionable state — report first.
@@ -443,7 +461,7 @@ def check_usb_combo_fallback() -> CheckResult:
             "/sources/ USB Audio Input toggle off-then-on.",
         )
 
-    gadget = read_boot_config_gadget_present()
+    gadget = read_usb_gadget_available()
     audio_wanted, audio_reason = _audio_wanted()
     if audio_reason.startswith("intent_invalid:"):
         return CheckResult(
@@ -465,7 +483,8 @@ def check_usb_combo_fallback() -> CheckResult:
     if not gadget:
         return CheckResult(
             "usb combo fallback", "ok",
-            "no USB gadget dtoverlay — combo not applicable (see 'usbsink dtoverlay')",
+            "resolved USB gadget unavailable — combo not applicable "
+            "(see 'USB data role')",
         )
     if audio_wanted and not armed:
         return CheckResult(
@@ -652,11 +671,38 @@ def check_usbgadget_composition() -> CheckResult:
     on but ncm.usb0 missing" cases those per-daemon checks can't see.
 
     A missing UDC (`/sys/class/udc` empty — pre-reboot fresh install, no
-    dtoverlay applied yet) is reported as ok/skip: check_usbsink_dtoverlay
+    peripheral role applied yet) is reported as ok/skip: check_usb_data_role
     already owns that gap, and jasper-usbgadget-wanted cleanly skips the
     unit in this state (not a unit failure), so there is nothing to compose
     yet regardless of intent."""
     label = "usbgadget composition"
+    usb_role = current_usb_data_role()
+    if not usb_role.management_transport_available:
+        stale = (
+            USBSINK_GADGET_PATH.exists()
+            or _ncm_function_path().exists()
+            or _uac2_function_path().exists()
+        )
+        if stale:
+            return CheckResult(
+                label,
+                "fail",
+                "gadget is composed while the resolved USB hardware role is "
+                f"unavailable ({usb_role.reason}); stop {USBGADGET_UNIT} and "
+                "reboot if a role change is pending.",
+            )
+        return CheckResult(
+            label,
+            "ok",
+            f"nothing composed; USB gadget unavailable ({usb_role.reason})",
+        )
+    if not usb_role.gadget_available and _uac2_function_path().exists():
+        return CheckResult(
+            label,
+            "fail",
+            "USB audio remains composed during a management-only role "
+            f"transition ({usb_role.reason}); restart {USBGADGET_UNIT}.",
+        )
     udc_dir = Path(os.environ.get("JASPER_UDC_CLASS_DIR", "/sys/class/udc"))
     try:
         has_udc = udc_dir.is_dir() and any(udc_dir.iterdir())
@@ -666,7 +712,7 @@ def check_usbgadget_composition() -> CheckResult:
         return CheckResult(
             label, "ok",
             "no UDC present (fresh install pre-reboot, or non-gadget-"
-            "capable hardware) — see check_usbsink_dtoverlay",
+            "capable hardware) — see check_usb_data_role",
         )
 
     want_network = _network_wanted()
@@ -714,4 +760,14 @@ def check_usbgadget_composition() -> CheckResult:
             f"{'; '.join(mismatches)} ({intent}; observed {observed}). "
             f"Run `systemctl restart {USBGADGET_UNIT}` to recompose.",
         )
-    return CheckResult(label, "ok", f"composition matches intent ({intent})")
+    status = "warn" if usb_role.reboot_required else "ok"
+    suffix = (
+        "; NCM retained only until the pending host-role reboot"
+        if usb_role.reboot_required
+        else ""
+    )
+    return CheckResult(
+        label,
+        status,
+        f"composition matches intent ({intent}){suffix}",
+    )

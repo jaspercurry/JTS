@@ -36,13 +36,12 @@ PARKED_UNIT_DEPLOY_FILES = {
     "jasper-mux.service": REPO / "deploy/systemd/jasper-mux.service",
 }
 
-# The composite USB gadget is RECOMPOSED by the source coordinator, not stopped,
-# on park —
-# it is infrastructure now (it carries the always-on USB management network),
-# NOT a local-source unit. It must NOT carry the local-source ExecCondition:
-# the network function has to survive follower parking. The AUDIO-function gate
-# lives inside jasper-usbgadget-up instead. This is a deliberate change from
-# the pre-composite model where the gadget owner carried the guard.
+# The composite USB gadget is recomposed, not put in the ordinary source-park
+# stop set. It is hardware-gated infrastructure that may carry the default-on
+# management network, not a local-source unit. Its own hardware condition and
+# internal audio gate decide which functions survive follower parking. This is
+# a deliberate change from the pre-composite model where the gadget owner
+# carried the local-source guard.
 PARK_RESTART_UNIT_DEPLOY_FILES = {
     "jasper-usbgadget.service": REPO / "deploy/systemd/jasper-usbgadget.service",
 }
@@ -115,15 +114,16 @@ def test_source_start_guards_do_not_order_after_the_coordinator():
 def test_composite_gadget_is_infrastructure_without_local_source_guard():
     """The composite USB gadget is recomposed, not stopped, on park.
 
-    It carries the always-on USB management network, so it
-    must NOT carry the local-source ExecCondition — the network has to survive
-    follower parking. The audio-function gate lives inside jasper-usbgadget-up.
+    When hardware permits it, the gadget carries the default-on management
+    network, so it must not carry the local-source ExecCondition: follower
+    parking withdraws audio without dropping NCM. The hardware and
+    audio-function gates live inside the gadget boundary.
     """
     for unit, path in PARK_RESTART_UNIT_DEPLOY_FILES.items():
         assert path.exists(), unit
         assert GUARD not in path.read_text(), (
             f"{unit} must NOT carry the local-source ExecCondition — it is "
-            "infrastructure carrying the always-on USB network."
+            "hardware-gated infrastructure that may carry the USB network."
         )
 
 

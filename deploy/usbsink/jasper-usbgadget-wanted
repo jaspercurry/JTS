@@ -5,13 +5,14 @@
 # compose AND the hardware can carry it. Exits non-zero (systemd SKIPS the
 # unit cleanly — NOT a failure) when either:
 #
-#   1. No UDC under /sys/class/udc. This is the fresh-install pre-reboot case:
-#      install.sh added `dtoverlay=dwc2,dr_mode=peripheral` but the reboot
-#      that puts the OTG controller into peripheral mode hasn't happened yet,
-#      so there is nothing to bind. This MUST be a clean skip, not a unit
-#      failure — the doctor's dtoverlay check tells the user to reboot.
+#   1. The shared hardware resolver does not authorize the management
+#      transport. Strict gadget availability is required normally; the one
+#      grace is desired-host/current-peripheral while a deploy finishes before
+#      reboot. Stable host and unsupported hardware fail closed.
 #
-#   2. No function is wanted: network is kill-switched (JASPER_USB_NETWORK=
+#   2. No UDC under /sys/class/udc. This is the fresh-install pre-reboot case.
+#
+#   3. No function is wanted: network is kill-switched (JASPER_USB_NETWORK=
 #      disabled) AND audio is not authorized and ready. This restores the historic
 #      zero-RAM contract — libcomposite never loads, the gadget never exists.
 #
@@ -28,6 +29,7 @@ UDC_CLASS_DIR="${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
 AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}"
 AUDIO_READY_CMD="${JASPER_USBGADGET_AUDIO_READY_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
 AUDIO_DATA_READY_CMD="${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-/opt/jasper/.venv/bin/python -m jasper.fanin.status --usbsink-direct-armed}"
+HARDWARE_ALLOWED_CMD="${JASPER_USBGADGET_HARDWARE_ALLOWED_CMD:-/opt/jasper/.venv/bin/python -m jasper.audio_hardware.usb_port_role --require-management-transport}"
 
 emit() {
     if [[ -n "${2:-}" ]]; then
@@ -36,6 +38,11 @@ emit() {
         printf 'event=usb_gadget.%s\n' "$1" >&2
     fi
 }
+
+if ! ${HARDWARE_ALLOWED_CMD}; then
+    emit skip "reason=hardware_unavailable where=wanted"
+    exit 1
+fi
 
 # No UDC yet (pre-reboot fresh install): skip cleanly.
 udc=$(ls "${UDC_CLASS_DIR}" 2>/dev/null | head -n1 || true)

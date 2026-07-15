@@ -2554,15 +2554,17 @@ gadget lifecycle. (The old aloop "solo" path — a separate usbsink bridge
 capturing the gadget → `usbsink_substream` → fan-in — was removed 2026-07-10;
 the direct-capture path is the sole USB pipeline.)
 
-Off by default. Toggle at `http://jts.local/sources/`. **Requires a
-one-time install + reboot** for the `dtoverlay=dwc2,dr_mode=peripheral`
-in `/boot/firmware/config.txt` (added by install.sh's
-`set_usb_gadget_mode`). Without the dtoverlay, the wizard toggle
-greys out and surfaces a "re-run install.sh and reboot" note.
+Off by default. Toggle at `http://jts.local/sources/`. Availability is
+hardware-resolved: Pi 4/5 products retain gadget mode alongside a USB DAC;
+Zero-class products reserve their shared OTG port for a USB output DAC unless
+a registered I²S DAC overlay leaves it free. The installer reconciles the
+desired role and the Sources page reports when a reboot is needed to apply it.
+The user's saved source preference never selects the controller role.
 
-**The ConfigFS gadget is composite and shared with an always-on USB
-management network** (`ncm.usb0` — a laptop plugged into the same
-USB-C port reaches `http://<JASPER_HOSTNAME>/` even with Wi-Fi off).
+**The ConfigFS gadget is composite and shared with a hardware-conditional USB
+management network** (`ncm.usb0` — when the gadget role is available, a laptop
+plugged into the same USB-C port reaches `http://<JASPER_HOSTNAME>/` even with
+Wi-Fi off).
 Gadget ownership (`jasper-usbgadget.service`), the function truth
 table, and the network design are canonical in
 [`docs/HANDOFF-usb-gadget.md`](docs/HANDOFF-usb-gadget.md) — read
@@ -2576,12 +2578,12 @@ Full audio-source design at
 summary:
 
 **RAM contract**: see HANDOFF-usb-gadget.md "RAM contract" for the
-gadget's own baseline (paid whenever the network function isn't
-kill-switched). The readiness marker has no resident-process RAM cost; fan-in
+gadget's own baseline (paid whenever gadget hardware is available and the
+network function isn't kill-switched). The readiness marker has no resident-process RAM cost; fan-in
 already owns the shared source mixer.
 
 The on/off enforcement is in three places:
-1. install.sh adds the dtoverlay but does NOT opt USB audio in
+1. install.sh reconciles the hardware role but does NOT opt USB audio in
 2. the source coordinator resolves canonical intent + effective role, arms
    fan-in DIRECT before asking `jasper-usbgadget.service` to advertise UAC2,
    and withdraws UAC2 before disarming DIRECT

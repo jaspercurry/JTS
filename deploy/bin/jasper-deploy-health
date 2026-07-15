@@ -31,6 +31,7 @@ from typing import Any
 
 INSTALL_PROFILE_FILE = Path("/var/lib/jasper/install_profile")
 SOURCE_INTENT_FILE = Path("/var/lib/jasper/source_intent.env")
+SOURCE_RECONCILE_STATUS_FILE = Path("/run/jasper-source-intent/status.json")
 GROUPING_ENV_FILE = Path("/var/lib/jasper/grouping.env")
 FULL_INSTALL_PROFILE = "full"
 STREAMBOX_INSTALL_PROFILE = "streambox"
@@ -45,6 +46,7 @@ SOURCE_INTENT_PREFIX = "JASPER_SOURCE_INTENT_"
 SOURCE_INTENT_ENABLED = "enabled"
 SOURCE_INTENT_DISABLED = "disabled"
 MAX_SOURCE_INTENT_BYTES = 64 * 1024
+MAX_SOURCE_STATUS_BYTES = 64 * 1024
 MAX_GROUPING_ENV_BYTES = 64 * 1024
 RFKILL_CLASS_PATH = Path("/sys/class/rfkill")
 UAC2_CARD_PATH = Path("/proc/asound/UAC2Gadget")
@@ -235,6 +237,65 @@ def _source_expectations(path: Path | None = None) -> dict[str, bool]:
                 f"{key} is {value!r}, expected enabled or disabled"
             )
     return expected
+
+
+def _usb_effective_status(
+    path: Path | None = None,
+    *,
+    expected_desired: bool | None = None,
+) -> tuple[bool, str, str]:
+    """Read the coordinator-owned effective USB result for this boot.
+
+    Persisted intent is deliberately not enough: desired On can be healthy
+    while the hardware resolver reports ``unavailable``. The deploy gate runs
+    after source replay, so a missing, malformed, or failed completion fact is
+    a real incomplete-deploy signal and fails closed.
+    """
+
+    status_file = SOURCE_RECONCILE_STATUS_FILE if path is None else path
+    try:
+        raw = _read_regular_bounded_bytes(status_file, MAX_SOURCE_STATUS_BYTES)
+        payload = json.loads(raw.decode("utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"source reconcile status is missing: {status_file}") from exc
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise RuntimeError(
+            f"source reconcile status is unreadable: {status_file}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("sources"), dict):
+        raise RuntimeError("source reconcile status has an invalid root shape")
+    row = payload["sources"].get("usbsink")
+    if not isinstance(row, dict):
+        raise RuntimeError("source reconcile status is missing the usbsink row")
+    desired = row.get("desired")
+    effective = row.get("effective")
+    result = row.get("result")
+    reason = row.get("reason", "")
+    if desired not in {"enabled", "disabled"}:
+        raise RuntimeError(f"usbsink desired status is invalid: {desired!r}")
+    if effective not in {"on", "off", "parked", "unavailable"}:
+        raise RuntimeError(f"usbsink effective status is invalid: {effective!r}")
+    legal_effective = {
+        "disabled": {"off"},
+        "enabled": {"on", "parked", "unavailable"},
+    }
+    if effective not in legal_effective[desired]:
+        raise RuntimeError(
+            "usbsink desired/effective status is inconsistent: "
+            f"desired={desired!r} effective={effective!r}"
+        )
+    if expected_desired is not None:
+        persisted = "enabled" if expected_desired else "disabled"
+        if desired != persisted:
+            raise RuntimeError(
+                "usbsink reconcile status is stale: "
+                f"persisted desired={persisted!r} status desired={desired!r}"
+            )
+    if result != "ok" or not isinstance(reason, str):
+        raise RuntimeError(
+            f"usbsink reconcile did not succeed: result={result!r} reason={reason!r}"
+        )
+    return effective == "on", effective, reason
 
 
 def _read_bounded_env(path: Path, max_bytes: int) -> dict[str, str]:
@@ -529,6 +590,21 @@ def main() -> int:
         failures += 1
         _line("FAIL", "source intent", str(exc))
         source_expectations = None
+    try:
+        expected_usb_desired = (
+            source_expectations["usbsink"]
+            if source_expectations is not None
+            else None
+        )
+        usb_runtime_on, usb_effective, usb_effective_reason = (
+            _usb_effective_status(expected_desired=expected_usb_desired)
+        )
+    except RuntimeError as exc:
+        failures += 1
+        _line("FAIL", "USB Audio Input status", str(exc))
+        usb_runtime_on = False
+        usb_effective = "unknown"
+        usb_effective_reason = ""
 
     for unit in required_units:
         state = _systemctl_is_active(unit)
@@ -546,7 +622,9 @@ def main() -> int:
         for source, units in SOURCE_REQUIRED_UNITS.items():
             for unit in units:
                 expected_active = (
-                    False if parked_follower else source_expectations[source]
+                    usb_runtime_on
+                    if source == "usbsink"
+                    else (False if parked_follower else source_expectations[source])
                 )
                 state = _systemctl_is_active(unit)
                 expected_state = "active" if expected_active else "inactive"
@@ -554,6 +632,11 @@ def main() -> int:
                     detail = state
                     if parked_follower and not expected_active:
                         detail += " (parked on bonded follower)"
+                    elif source == "usbsink" and not expected_active:
+                        detail += f" (effective {usb_effective}"
+                        if usb_effective_reason:
+                            detail += f": {usb_effective_reason}"
+                        detail += "; saved intent preserved)"
                     elif not expected_active:
                         detail += " (disabled by persisted source intent)"
                     _line("OK", unit, detail)
@@ -636,16 +719,15 @@ def main() -> int:
             )
 
         if source_expectations is not None:
-            usb_desired = (
-                False if parked_follower else source_expectations["usbsink"]
-            )
-            usb_issues = _usb_source_issues(usb_desired, fanin_later)
+            usb_issues = _usb_source_issues(usb_runtime_on, fanin_later)
             if usb_issues:
                 failures += 1
                 _line("FAIL", "USB Audio Input", "; ".join(usb_issues))
             else:
-                desired = "on" if usb_desired else "off"
-                _line("OK", "USB Audio Input", f"matches desired {desired}")
+                detail = f"effective {usb_effective}"
+                if usb_effective_reason:
+                    detail += f" ({usb_effective_reason})"
+                _line("OK", "USB Audio Input", detail)
     except Exception as exc:  # noqa: BLE001
         failures += 1
         _line("FAIL", "jasper-fanin STATUS", str(exc))

@@ -360,9 +360,9 @@ zombie-handle reopen are prerequisites). What it does:
   box a manual arm would migrate and keep. Ineligible boxes (jts3 roleful, jts5
   composite, jts4 fanin-less, any grouped box) are a NO-OP that resolves loopback
   and succeeds.
-- **USB combo default (P3).** The combo arms only on a box that BOTH has the gadget
-  stack available (`dtoverlay=dwc2,dr_mode=peripheral` — added fleet-wide for the
-  always-on USB network, so NOT a sufficient gate alone) AND has USB Audio Input
+- **USB combo default (P3).** The combo arms only on a box that BOTH has the
+  hardware-resolved gadget capability available (a peripheral overlay alone is
+  not sufficient on a shared-port Zero) AND has USB Audio Input
   turned ON by the household (canonical
   `/var/lib/jasper/source_intent.env`; `jasper-usbsink.service` enablement is
   the coordinator's derived gadget-composition mirror). When armed, the auto

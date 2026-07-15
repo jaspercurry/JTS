@@ -257,7 +257,7 @@ from . import usbsink as usbsink
 from .usbsink import (
     _systemd_is_active,
     _module_loaded,
-    check_usbsink_dtoverlay,
+    check_usb_data_role,
     check_usbsink_state,
     check_usbsink_card,
     check_usbsink_low_latency_contract,
@@ -576,7 +576,7 @@ __all__ = [
     "check_xvf_mixer_state",
     "_systemd_is_active",
     "_module_loaded",
-    "check_usbsink_dtoverlay",
+    "check_usb_data_role",
     "check_usbsink_state",
     "check_usbsink_card",
     "check_usbsink_low_latency_contract",

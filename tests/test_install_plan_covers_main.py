@@ -56,7 +56,7 @@ _STEP_TO_PLAN_MARKER = {
     "ensure_outputd_camilla_statefile": "Seed or validate the outputd Camilla statefile",
     "ensure_crossover_camilla_statefile": "camilla#2 crossover Camilla statefile",
     "install_renderers": "shairport-sync source archive",
-    "set_usb_gadget_mode": "USB gadget dtoverlay",
+    "reconcile_usb_data_role": "USB data role",
     "tune_wifi_for_airplay": "Disable WiFi power-save on the active wlan0",
     "install_jasper": "Copy Python source",
     "ensure_output_hardware_state": "Write output hardware state before Camilla statefile seed",

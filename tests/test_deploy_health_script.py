@@ -89,6 +89,7 @@ def test_source_intent_constants_match_canonical_owner_and_fixed_contract() -> N
         "usbsink": ("jasper-usbsink.service",),
     }
     assert health.MAX_SOURCE_INTENT_BYTES == source_intent._MAX_INTENT_BYTES
+    assert health.SOURCE_RECONCILE_STATUS_FILE == Path(source_intent.SOURCE_STATUS_PATH)
 
 
 @pytest.fixture
@@ -284,6 +285,10 @@ def _run_main(
     outputd_payload: Any | None = None,
     usb_runtime_matches_intent: bool = True,
     usb_card_present: bool | None = None,
+    usb_effective: str | None = None,
+    usb_effective_reason: str = "",
+    usb_status_text: str | None = None,
+    in_process_status: bool = True,
 ) -> int:
     marker = short_socket_dir / "install_profile"
     if profile is not None:
@@ -305,17 +310,41 @@ def _run_main(
     monkeypatch.setattr(health.time, "sleep", lambda _seconds: None)
 
     try:
-        desired_usb = health._source_expectations(source_intent_file)["usbsink"]
+        saved_usb_desired = health._source_expectations(source_intent_file)["usbsink"]
     except RuntimeError:
-        desired_usb = False
-    if grouping and "JASPER_GROUPING_ROLE=follower" in grouping:
-        desired_usb = False
+        saved_usb_desired = False
+    if usb_effective is None:
+        if grouping and "JASPER_GROUPING_ROLE=follower" in grouping and saved_usb_desired:
+            usb_effective = "parked"
+        else:
+            usb_effective = "on" if saved_usb_desired else "off"
+    usb_runtime_on = usb_effective == "on"
+    source_status_file = short_socket_dir / "source-status.json"
+    if usb_status_text is None:
+        usb_status_text = json.dumps(
+            {
+                "sources": {
+                    "usbsink": {
+                        "desired": "enabled" if saved_usb_desired else "disabled",
+                        "effective": usb_effective,
+                        "result": "ok",
+                        "reason": usb_effective_reason,
+                    }
+                }
+            }
+        )
+    source_status_file.write_text(usb_status_text, encoding="utf-8")
+    monkeypatch.setattr(
+        health,
+        "SOURCE_RECONCILE_STATUS_FILE",
+        source_status_file,
+    )
     inactive = {
         unit for unit in os.environ.get("FAKE_INACTIVE_UNITS", "").split(",")
         if unit
     }
     if usb_runtime_matches_intent:
-        if desired_usb:
+        if usb_runtime_on:
             inactive.discard("jasper-usbsink.service")
         else:
             inactive.add("jasper-usbsink.service")
@@ -323,7 +352,7 @@ def _run_main(
 
     card = short_socket_dir / "UAC2Gadget"
     card_should_exist = (
-        desired_usb if usb_card_present is None else usb_card_present
+        usb_runtime_on if usb_card_present is None else usb_card_present
     )
     if card_should_exist:
         card.mkdir(exist_ok=True)
@@ -334,10 +363,15 @@ def _run_main(
     monkeypatch.setattr(health, "FANIN_SOCKET", str(fanin_path))
     monkeypatch.setattr(health, "OUTPUTD_SOCKET", str(outputd_path))
     fanin_payloads = fanin_payloads or [
-        _fanin_status(usb_direct=desired_usb),
-        _fanin_status(usb_direct=desired_usb),
+        _fanin_status(usb_direct=usb_runtime_on),
+        _fanin_status(usb_direct=usb_runtime_on),
     ]
     outputd_payload = _outputd_status() if outputd_payload is None else outputd_payload
+
+    if in_process_status:
+        payloads = iter([*fanin_payloads, outputd_payload])
+        monkeypatch.setattr(health, "_status_json", lambda _path: next(payloads))
+        return health.main()
 
     with (
         _SplitJsonStatusServer(fanin_path, fanin_payloads),
@@ -379,6 +413,75 @@ def test_source_intent_reader_uses_each_fixed_source_default_when_absent(
         "bluetooth": True,
         "usbsink": False,
     }
+
+
+def test_usb_effective_status_accepts_unavailable_and_rejects_malformed(
+    tmp_path: Path,
+) -> None:
+    status = tmp_path / "status.json"
+    status.write_text(
+        json.dumps(
+            {
+                "sources": {
+                    "usbsink": {
+                        "desired": "enabled",
+                        "effective": "unavailable",
+                        "result": "ok",
+                        "reason": "shared_otg_usb_output_requires_host",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert health._usb_effective_status(status) == (
+        False,
+        "unavailable",
+        "shared_otg_usb_output_requires_host",
+    )
+
+    status.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="unreadable"):
+        health._usb_effective_status(status)
+
+
+@pytest.mark.parametrize(
+    ("desired", "effective", "expected_desired", "message"),
+    [
+        ("disabled", "unavailable", None, "inconsistent"),
+        ("enabled", "off", None, "inconsistent"),
+        ("disabled", "off", True, "stale"),
+    ],
+)
+def test_usb_effective_status_rejects_impossible_or_stale_intent(
+    tmp_path: Path,
+    desired: str,
+    effective: str,
+    expected_desired: bool | None,
+    message: str,
+) -> None:
+    status = tmp_path / "status.json"
+    status.write_text(
+        json.dumps(
+            {
+                "sources": {
+                    "usbsink": {
+                        "desired": desired,
+                        "effective": effective,
+                        "result": "ok",
+                        "reason": "",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        health._usb_effective_status(
+            status,
+            expected_desired=expected_desired,
+        )
 
 
 def test_source_intent_reader_matches_last_wins_quoted_env_format(
@@ -684,6 +787,74 @@ def test_full_profile_main_requires_input_and_observes_voice_aec(
     assert "deploy health passed" in output
 
 
+def test_saved_usb_on_with_hardware_unavailable_is_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert _run_main(
+        monkeypatch,
+        short_socket_dir,
+        source_intent=f"{health.USBSINK_INTENT_KEY}=enabled\n",
+        usb_effective="unavailable",
+        usb_effective_reason="shared_otg_usb_output_requires_host",
+        in_process_status=True,
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert "effective unavailable" in output
+    assert "shared_otg_usb_output_requires_host" in output
+    assert "deploy health passed" in output
+
+
+def test_malformed_source_reconcile_status_fails_deploy_health(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert _run_main(
+        monkeypatch,
+        short_socket_dir,
+        usb_status_text="{not-json",
+        in_process_status=True,
+    ) == 1
+
+    assert "FAIL USB Audio Input status" in capsys.readouterr().out
+
+
+def test_stale_usb_reconcile_desired_fails_deploy_health(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status = json.dumps(
+        {
+            "sources": {
+                "usbsink": {
+                    "desired": "enabled",
+                    "effective": "unavailable",
+                    "result": "ok",
+                    "reason": "shared_otg_defaults_host_without_i2s",
+                }
+            }
+        }
+    )
+
+    assert _run_main(
+        monkeypatch,
+        short_socket_dir,
+        source_intent=f"{health.USBSINK_INTENT_KEY}=disabled\n",
+        usb_status_text=status,
+    ) == 1
+
+    output = capsys.readouterr().out
+    assert "FAIL USB Audio Input status" in output
+    assert "status is stale" in output
+
+
 @pytest.mark.parametrize("profile", ["streambox", "endpoint", "satellite"])
 def test_streambox_profiles_skip_parked_brain_and_input_units(
     monkeypatch: pytest.MonkeyPatch,
@@ -814,7 +985,10 @@ def test_main_honors_fixed_source_intents_for_both_profiles(
     queried = stub_systemctl.read_text(encoding="utf-8").splitlines()
     for unit in units:
         assert unit in queried
-    assert expected_detail in output
+    if source == "usbsink" and intent == "disabled":
+        assert "inactive (effective off; saved intent preserved)" in output
+    else:
+        assert expected_detail in output
     if source == "bluetooth" and intent == "disabled":
         assert "bt-agent.service" in queried
         assert "0 warning(s)" in output

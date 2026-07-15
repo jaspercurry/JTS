@@ -2,7 +2,7 @@
 
 **Status: operational.** Canonical for the ConfigFS composite USB gadget
 (`jts-usb-audio`) that carries two independent USB functions off the Pi's
-single dwc2 controller: an always-on **management network** (`ncm.usb0`)
+dwc2 controller: a hardware-conditional **management network** (`ncm.usb0`)
 and the wizard-toggled **USB audio input** source (`uac2.usb0`, owned
 operationally by [HANDOFF-usbsink.md](HANDOFF-usbsink.md)). This doc is the
 single source of truth for gadget composition and the USB network; the
@@ -22,7 +22,11 @@ path. Multiple speakers keep distinct hostnames (mDNS) and distinct MACs
 
 ## Product decisions
 
-1. **USB networking is always-on** after install (default enabled at boot).
+1. **USB networking is on whenever gadget hardware is available** (default
+   enabled at boot). On a Zero-class product whose one OTG data port is
+   reserved for a USB output DAC, the network and USB Audio Input are both
+   intentionally unavailable. They return together when a registered I²S DAC
+   overlay leaves that port free.
    USB **audio** stays wizard-toggled and off by default, exactly as before
    this change. Kill switch: `JASPER_USB_NETWORK=disabled` in
    `/etc/jasper/jasper.env` (exact literal, case-insensitive; any other
@@ -43,15 +47,54 @@ path. Multiple speakers keep distinct hostnames (mDNS) and distinct MACs
    Avahi already advertises on all multicast interfaces and this feature
    adds no interface restriction. The raw IP (`http://10.12.194.1/`) is the
    documented fallback, not the primary story.
-6. **Hardware validation is deferred.** Every claim below that can only be
-   confirmed on real hardware is called out and repeated in the checklist
-   at the bottom. Nothing here has been run against a physical Pi yet.
+6. **Port role is hardware-resolved, never selected by source intent.** Toggling
+   USB Audio Input cannot switch a controller between host and peripheral.
+
+## USB data-role policy
+
+`jasper.audio_hardware.usb_port_role` is the one resolver. Its inputs are the
+observed board model, the configured boot overlays registered by
+`DacProfile`, the active UDC role, and the observed output profile (for
+diagnostic detail). `jasper-audio-hardware-reconcile` publishes the result as
+`usb_data_role` inside
+`/run/jasper-output-hardware/output_hardware.json`; the source coordinator,
+final source guard, fan-in coupling, Sources UI, and doctor consume it.
+
+| Hardware | Configured output | Desired role | Gadget/network |
+|---|---|---|---|
+| Zero / Zero 2 W (one shared OTG port) | registered I²S overlay | peripheral | available after the role is active |
+| Zero / Zero 2 W | USB DAC, unknown DAC, or no registered I²S overlay | host | unavailable; port is reserved for output |
+| Pi 4 / Pi 5 (separate USB host ports) | USB or I²S DAC | peripheral | available; USB-A host ports carry the DAC |
+| unknown board | unknown | unchanged | fail-closed unavailable |
+
+The Zero default stays `host` when its USB DAC is temporarily absent. This is
+the resilience invariant that lets unplug/replug self-recover; absence is
+never treated as evidence of an I²S DAC. A role/configuration mismatch is
+reported as `role_change_pending_reboot`; the installer never reboots on its
+own. The installer owns a sentinel-delimited `[all]` role block and migrates
+the legacy unconditional peripheral block.
+
+The artifact deliberately exposes two related facts. `gadget_available` is
+strict and authorizes USB Audio Input only when desired, configured, and active
+roles are all peripheral. `management_transport_available` follows the
+currently active known controller, so an existing NCM-only link may survive a
+pending peripheral→host reboot long enough for deployment to finish. The
+privileged gadget start boundary accepts only that management fact; its audio
+guard still requires strict availability. Stable host and unknown hardware
+fail closed, and reboot naturally removes the pending transport.
+
+JTS4 evidence on 2026-07-14: the board identified as Raspberry Pi Zero 2 W;
+its config forced `dwc2,dr_mode=peripheral`; no registered I²S/HAT overlay or
+output DAC was observable because the shared port was not acting as a host.
+The migration therefore resolves `host`, reports a pending reboot, and only
+after that reboot can the USB DAC enumerate and normal output reconciliation
+select it.
 
 ## Unit topology
 
 ```
 jasper-usbgadget.service            (NEW — the composite gadget owner)
-  ├─ ExecCondition: jasper-usbgadget-wanted   (skip if no UDC, or nothing wanted)
+  ├─ ExecCondition: jasper-usbgadget-wanted   (hardware + UDC + function gate)
   ├─ ExecStart:     jasper-usbgadget-up       (composes ncm.usb0 and/or uac2.usb0)
   └─ ExecStop:      jasper-usbgadget-down
 
@@ -65,9 +108,9 @@ jasper-usbsink.service              (derived USB-audio Type=oneshot/RemainAfterE
 `jasper-usbsink-init.service` — the old audio-only gadget-owner oneshot —
 is **deleted**. `jasper-usbgadget.service` is its replacement and does more:
 it is the single owner of the ConfigFS descriptor for *both* functions, and
-unlike the old init unit it is enabled and started **unconditionally** at
-install time (it carries the always-on network, so it cannot be gated on
-audio being enabled or on multiroom follower status).
+unlike the old init unit it is enabled at install time. Its hardware/UDC
+condition cleanly skips the unit when the controller belongs to output host
+mode; when gadget-capable, it is not gated on audio intent or follower status.
 
 ### Function truth table
 
@@ -84,7 +127,8 @@ Computed once per `jasper-usbgadget-up` run and logged as a structured
 The audio gate lives **inside** both `jasper-usbgadget-wanted` and
 `jasper-usbgadget-up`, not on the unit itself —
 `jasper-usbgadget.service` has no whole-unit `jasper-local-source-allowed`
-`ExecCondition`, because the network function must keep serving even when USB
+`ExecCondition`, because the network function must keep serving (when hardware
+permits it) even when USB
 Audio is Off or this speaker is a parked multiroom follower. Both scripts call
 the same source-aware `jasper-local-source-allowed --source usbsink` check and
 then require `jasper-usbsink.service` to be enabled as the derived lifecycle
@@ -131,10 +175,10 @@ See
 
 ### Edge cases the truth table preserves
 
-- **Fresh install, pre-reboot** (dtoverlay not yet applied → no UDC under
+- **Fresh install or role change, pre-reboot** (desired peripheral role not yet active → no UDC under
   `/sys/class/udc`): `jasper-usbgadget-wanted` exits non-zero, the unit's
   `ExecCondition` skips cleanly — **not** a unit failure. `jasper-doctor`'s
-  existing dtoverlay check tells the operator to reboot.
+  USB data-role check tells the operator to reboot.
 - **Kill switch flipped at runtime**: an operator restarts
   `jasper-usbgadget.service`; recompose honors the new value immediately.
 - **`systemctl stop jasper-usbgadget`** (operator-initiated): `PartOf=`
@@ -175,9 +219,11 @@ partial (unbound) one is torn down and rebuilt.
   set rather than a stale cached one. **Hardware-verify**: confirm hosts
   actually re-enumerate on the bump (checklist #1).
 - **Testability**: the ConfigFS root, UDC class dir, CPU-serial file, canonical
-  audio-permission probe, derived-lifecycle-readiness probe, and live fan-in
-  data-readiness probe are env-overridable test seams
+  hardware-transport probe, audio-permission probe,
+  derived-lifecycle-readiness probe, and live fan-in data-readiness probe are
+  env-overridable test seams
   (`JASPER_CONFIGFS_ROOT`, `JASPER_UDC_CLASS_DIR`, `JASPER_CPUINFO_FILE`,
+  `JASPER_USBGADGET_HARDWARE_ALLOWED_CMD`,
   `JASPER_USBGADGET_AUDIO_ALLOWED_CMD`,
   `JASPER_USBGADGET_AUDIO_READY_CMD`,
   `JASPER_USBGADGET_AUDIO_DATA_READY_CMD`, and
@@ -337,7 +383,7 @@ not interface existence — reflects the cable.
 | State | Cost | Notes |
 |---|---|---|
 | Kill-switched (`JASPER_USB_NETWORK=disabled`) AND audio off | Same as the historical zero-RAM contract (~50 KB, the dwc2 kernel module only) | `jasper-usbgadget-wanted` exits non-zero (nothing wanted), the unit's `ExecCondition` skips, libcomposite never loads, `usb0` never appears, `jasper-usbnet-dhcp` never starts. |
-| No UDC (fresh install pre-reboot) | ~50 KB (dwc2 module only) | The dtoverlay is set but the OTG controller isn't peripheral yet, so the gadget's `ExecCondition` skips and nothing binds. `jasper-doctor`'s dtoverlay check tells the operator to reboot. |
+| Gadget unavailable or role change pending | ~0-50 KB | A Zero USB-output product intentionally stays host-only; during a pending switch to peripheral, the gadget's `ExecCondition` skips and nothing binds. `jasper-doctor` distinguishes the intentional state from a reboot requirement. |
 | Network composed (bound), no host plugged in | ~1 MB | `libcomposite` + `usb_f_ncm`/`u_ether` kernel modules loaded, `ncm.usb0` composed and bound, `usb0` **exists** (carrier down), and the `MemoryMax=16M`-bounded `jasper-usbnet-dhcp` instance **is resident** (device-activated on `usb0`, which is present from bind). Typically far below the cap for a one-pool DHCP server. |
 | Network composed, host plugged in, audio off | ~1 MB | Same residents as above; `usb0` now has carrier and the DHCP server hands out a lease. No new persistent cost over the no-host row. |
 | Network + audio both on | ~1 MB (network) + the bounded volume observer | The process-free readiness marker adds no resident process; fan-in is already part of the core audio graph. See [HANDOFF-usbsink.md](HANDOFF-usbsink.md) "RAM budget". |
@@ -369,7 +415,10 @@ the same way but keeps tracking the **audio readiness marker's** lifecycle
 (`PartOf=jasper-usbsink.service`), not the gadget's, since the gadget now
 outlives the audio function. `jasper-usbgadget.service` is the first
 gadget unit `install.sh` enables — deliberate, since it's the one carrying
-the always-on network. The migration is idempotent and safe under
+the default-on network when hardware permits. A pending host-role reboot keeps
+NCM-only composition while the controller is still peripheral so a deploy over
+that link can finish; strict USB audio availability remains false. The
+migration is idempotent and safe under
 `install.sh --dry-run`.
 
 **Restore from canonical intent after the migration.** The init-unit stop above runs
@@ -506,7 +555,7 @@ writing. Each item names the specific claim above it verifies.
   a solid red LED, unreachable on the network, and **no journal at all**
   (nothing reached userspace, so `journalctl --list-boots` shows no entry for
   the attempt) — even with a fully capable PSU on the power leg. `install.sh`'s
-  `set_usb_gadget_mode` writes `usb_max_current_enable=1` to
+  `reconcile_usb_data_role` writes `usb_max_current_enable=1` to
   `/boot/firmware/config.txt` (a second `[all]` step alongside the `dwc2`
   dtoverlay, checked independently so already-deployed gadget boxes backfill it
   on a re-run) to tell the firmware to allow full current without the PD
@@ -514,11 +563,12 @@ writing. Each item names the specific claim above it verifies.
   anyway); safe with a capable supply — the Pi's own undervoltage detection
   still guards a marginal one. Diagnosed + verified on jts.local 2026-07-06
   (red-LED halt → boots clean with the flag, `EXT5V=5.00 V`, `throttled=0x0`);
-  pinned by `tests/test_install_helpers.py::test_set_usb_gadget_mode_writes_dtoverlay_and_usb_max_current`.
+  pinned by `tests/test_install_helpers.py::test_reconcile_usb_data_role_keeps_pi5_peripheral_and_power_fix`.
 
 ---
 
-Last verified: 2026-07-14 (`jasper-usbsink.service` rechecked as the process-free
+Last verified: 2026-07-14 (hardware-aware USB data-role matrix and conditional
+NCM availability rechecked; `jasper-usbsink.service` rechecked as the process-free
 readiness marker; USB audio composition requires canonical
 source-aware authorization, derived lifecycle readiness, and a live fan-in
 DIRECT consumer, with canonical Off dominance and NCM preservation pinned;

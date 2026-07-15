@@ -66,11 +66,14 @@ def test_source_intent_reconcile_runs_at_boot_after_rfkill_restore() -> None:
         "sound.target",
         "avahi-daemon.service",
         "jasper-control.service",
+        "jasper-audio-hardware-reconcile.service",
         "jasper-fanin.service",
         "jasper-outputd.service",
         "jasper-camilla.service",
         "jasper-usbgadget.service",
     } <= set(after)
+    wants = next(value.split() for key, value in pairs if key == "Wants")
+    assert "jasper-audio-hardware-reconcile.service" in wants
     assert ("WantedBy", "multi-user.target") in pairs
 
 

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
+from types import SimpleNamespace
 
 from jasper.local_sources import guard, local_source_lifecycles
 from jasper.music_sources import Source
@@ -140,6 +141,11 @@ def test_source_guard_allows_only_current_canonical_on(monkeypatch, source):
         "source_intent_enabled",
         lambda candidate: intents[candidate],
     )
+    monkeypatch.setattr(
+        guard,
+        "current_usb_data_role",
+        lambda: SimpleNamespace(gadget_available=True, reason="available"),
+    )
 
     assert guard.local_source_allowed(source) == (True, None)
     assert guard.main(["--source", source.value]) == 0
@@ -181,3 +187,21 @@ def test_source_guard_checks_role_before_intent(monkeypatch):
     allowed, reason = guard.local_source_allowed(Source.SPOTIFY)
     assert allowed is False
     assert reason == LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER
+
+
+def test_usb_source_guard_denies_output_owned_shared_port(monkeypatch):
+    monkeypatch.setattr(guard, "load_config", lambda: _cfg(role="leader"))
+    monkeypatch.setattr(guard, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(
+        guard,
+        "current_usb_data_role",
+        lambda: SimpleNamespace(
+            gadget_available=False,
+            reason="shared_otg_usb_output_requires_host",
+        ),
+    )
+
+    assert guard.local_source_allowed(Source.USBSINK) == (
+        False,
+        "shared_otg_usb_output_requires_host",
+    )

@@ -135,6 +135,7 @@ def atomic_write_text(
     *,
     mode: int = 0o644,
     group_from_parent: bool = False,
+    durable: bool = False,
 ) -> None:
     """Atomically write ``text`` to ``path`` as UTF-8, then ``chmod`` to ``mode``.
 
@@ -146,6 +147,11 @@ def atomic_write_text(
     When ``group_from_parent`` is true, the tempfile's group is set to the
     parent directory's group before chmod+rename; this keeps root-run writers
     from publishing group-readable files under the wrong group.
+
+    ``durable=True`` flushes and fsyncs the tempfile before publication, then
+    fsyncs the parent directory where the platform supports directory fsync.
+    Boot-critical callers use this stronger contract; ordinary runtime state
+    keeps the cheaper default.
 
     Raises ``OSError`` on any I/O failure; the tempfile is unlinked
     (best-effort) before the error propagates. Does NOT swallow errors — a
@@ -166,7 +172,32 @@ def atomic_write_text(
         if parent_gid is not None:
             os.chown(tmp, -1, parent_gid)
         os.chmod(tmp, mode)  # before the rename: no wider-permission window
+        if durable:
+            # Sync after ownership/mode changes so the durability promise
+            # covers both file contents and the metadata published at rename.
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            file_fd = os.open(tmp, flags)
+            try:
+                os.fsync(file_fd)
+            finally:
+                os.close(file_fd)
         os.replace(tmp, fspath)
+        if durable:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory_fd = os.open(parent, flags)
+            try:
+                try:
+                    os.fsync(directory_fd)
+                except OSError as exc:
+                    unsupported = {
+                        errno.EINVAL,
+                        getattr(errno, "ENOTSUP", errno.EINVAL),
+                        getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+                    }
+                    if exc.errno not in unsupported:
+                        raise
+            finally:
+                os.close(directory_fd)
     except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp)

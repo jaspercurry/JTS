@@ -1332,9 +1332,10 @@ async def _get_state(
         # Phone-mic capture relay config snapshot (network-free; the doctor
         # probes reachability on demand). {configured, relay_base}.
         "capture_relay": capture_relay_state,
-        # USB management network (docs/HANDOFF-usb-gadget.md): the always-on
-        # NCM link on usb0 that lets http://<JASPER_HOSTNAME>/ work with WiFi
-        # off. {enabled, iface_present, carrier, address} — read fresh from
+        # USB management network (docs/HANDOFF-usb-gadget.md): the default-on,
+        # hardware-gated NCM link on usb0 that lets http://<JASPER_HOSTNAME>/
+        # work with WiFi off when the resolved USB role permits gadget mode.
+        # {enabled, iface_present, carrier, address} — read fresh from
         # /sys/class/net/usb0 and the kill-switch env every call, never
         # cached; carrier=False/absent is normal (nothing plugged in), never
         # an error. jasper-doctor's check_usbnet_* own the actionable

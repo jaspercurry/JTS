@@ -25,6 +25,7 @@ DUAL_APPLE_USB_C_DAC_4CH_ID = "dual_apple_usb_c_dac_4ch"
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
 
 DacKind = Literal["single", "composite"]
+DacConnection = Literal["usb", "i2s"]
 ClockDomainContract = Literal[
     "single_device",
     "independent",
@@ -141,6 +142,10 @@ class DacProfile:
     clock_domain_contract: ClockDomainContract
     outputd_sink: str
     supported_card_matches: tuple[str, ...]
+    # Physical host interface consumed by the final-output DAC. USB-role
+    # resolution reads this declaration; it must not infer I2S from the
+    # temporary absence of a USB device.
+    connection: DacConnection = "usb"
     usb_ids: tuple[str, ...] = ()
     child_profile_ids: tuple[str, ...] = ()
     requires_same_usb_bus: bool = False
@@ -168,6 +173,22 @@ class DacProfile:
             raise ValueError(f"{self.id}: label is required")
         if self.kind not in ("single", "composite"):
             raise ValueError(f"{self.id}: unsupported kind {self.kind!r}")
+        if self.connection not in ("usb", "i2s"):
+            raise ValueError(
+                f"{self.id}: unsupported DAC connection {self.connection!r}"
+            )
+        if self.connection == "usb" and self.dtoverlay:
+            raise ValueError(
+                f"{self.id}: USB DAC profiles cannot declare dtoverlay"
+            )
+        if self.connection == "i2s" and not self.dtoverlay:
+            raise ValueError(
+                f"{self.id}: I2S DAC profiles must declare dtoverlay"
+            )
+        if self.connection == "i2s" and self.usb_ids:
+            raise ValueError(
+                f"{self.id}: I2S DAC profiles cannot declare usb_ids"
+            )
         if self.physical_output_count < 0:
             raise ValueError(f"{self.id}: physical_output_count must be >= 0")
         if not self.clock_domain_label.strip():
@@ -332,6 +353,7 @@ HIFIBERRY_DAC8X = DacProfile(
     clock_domain_label="Single HiFiBerry DAC8x device clock",
     clock_domain_contract="single_device",
     outputd_sink="alsa",
+    connection="i2s",
     supported_card_matches=(
         "snd_rpi_hifiberry_dac8x(?!.*studio)",
         "hifiberry.*dac8x(?!.*studio)",
@@ -359,6 +381,7 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     clock_domain_label="Single HiFiBerry DAC8x Studio device clock",
     clock_domain_contract="single_device",
     outputd_sink="alsa",
+    connection="i2s",
     supported_card_matches=(
         "dac8x.*studio",
         "hifiberry.*dac8x.*studio",

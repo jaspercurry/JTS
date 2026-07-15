@@ -19,7 +19,7 @@ import re
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -33,6 +33,10 @@ from .audio_hardware.dac import (
     all_profiles as _all_dac_profiles,
     by_id as _dac_profile_by_id,
     profile_for_card_label as _dac_profile_for_card_label,
+)
+from .audio_hardware.usb_port_role import (
+    UsbPortRoleState,
+    resolve_system_usb_port_role,
 )
 
 
@@ -195,6 +199,7 @@ class OutputHardwareState:
     child_devices: tuple[OutputCardFact, ...] = field(default_factory=tuple)
     issues: tuple[dict[str, str], ...] = field(default_factory=tuple)
     observed_at: str | None = None
+    usb_data_role: UsbPortRoleState | None = None
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "OutputHardwareState":
@@ -215,6 +220,12 @@ class OutputHardwareState:
             if raw_apple_dac_count is None
             else _int(raw_apple_dac_count)
         )
+        raw_usb_data_role = raw.get("usb_data_role")
+        usb_data_role = (
+            UsbPortRoleState.from_mapping(raw_usb_data_role)
+            if isinstance(raw_usb_data_role, Mapping)
+            else None
+        )
         return cls(
             profile_id=profile_id,
             profile_label=_text(raw.get("profile_label"))
@@ -229,6 +240,7 @@ class OutputHardwareState:
             child_devices=children,
             issues=issues,
             observed_at=_text(raw.get("observed_at")),
+            usb_data_role=usb_data_role,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -249,6 +261,8 @@ class OutputHardwareState:
             out["selected_pcm"] = self.selected_pcm
         if self.observed_at:
             out["observed_at"] = self.observed_at
+        if self.usb_data_role is not None:
+            out["usb_data_role"] = self.usb_data_role.to_dict()
         return out
 
 
@@ -638,6 +652,25 @@ def load_state(path: str | Path | None = None) -> OutputHardwareState | None:
     return OutputHardwareState.from_mapping(raw)
 
 
+def current_usb_data_role(
+    path: str | Path | None = None,
+) -> UsbPortRoleState:
+    """Return the reconciler snapshot, with a fail-closed live fallback.
+
+    The output-hardware reconciler is the normal writer.  The fallback keeps
+    early boot and recovery safe if the ephemeral ``/run`` artifact has not
+    been published yet; it calls the same pure resolver rather than copying
+    policy into a consumer.
+    """
+
+    state = load_state(path)
+    if state is not None and state.usb_data_role is not None:
+        return state.usb_data_role
+    return resolve_system_usb_port_role(
+        observed_output_profile_id=(state.profile_id if state is not None else "unknown")
+    )
+
+
 def write_state(state: OutputHardwareState, path: str | Path | None = None) -> None:
     target = state_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -866,6 +899,12 @@ def main(argv: list[str] | None = None) -> int:
         listing = probe_aplay_listing(os.environ.get("JASPER_APLAY", "aplay"))
         cards = parse_aplay_listing(listing)
     state = classify_output_cards(cards)
+    state = replace(
+        state,
+        usb_data_role=resolve_system_usb_port_role(
+            observed_output_profile_id=state.profile_id,
+        ),
+    )
     if "--write" in argv:
         write_state(state)
     print(json.dumps(state.to_dict(), sort_keys=True))

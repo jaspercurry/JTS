@@ -53,13 +53,13 @@ def test_bluetooth_health_matches_its_required_on_contract():
 
 def test_usb_parking_stops_audio_lifecycle_not_the_composite_gadget():
     """USB Audio Input's lifecycle marker and composite gadget are separate
-    resources. Parking a follower must STOP the audio lifecycle units but NOT stop
-    the gadget owner — stopping it would drop the always-on USB management
-    network. The source coordinator recomposes the gadget instead."""
+    resources. Parking a follower must stop the audio lifecycle units but keep
+    the gadget owner out of the ordinary park set: when hardware permits, the
+    coordinator recomposes it to preserve the management network."""
     units = local_source_park_units()
     assert "jasper-usbsink.service" in units
     assert "jasper-usbsink-volume.service" in units
-    # The gadget must NOT be in the stop-park set — it stays up for the network.
+    # The gadget has hardware-aware composition policy, not a blanket park stop.
     assert "jasper-usbgadget.service" not in units
 
 

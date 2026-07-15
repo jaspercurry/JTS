@@ -11,7 +11,17 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbsink.service"
+GADGET_UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbgadget.service"
+HARDWARE_RECONCILE_UNIT_PATH = (
+    REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
+)
 PYPROJECT_PATH = REPO / "pyproject.toml"
+
+USB_ROLE_TEST_SEAMS = {
+    "JASPER_PI_MODEL_FILE",
+    "JTS_BOOT_CONFIG_FILE",
+    "JASPER_UDC_CLASS_DIR",
+}
 
 
 def _value_for(unit_text: str, key: str) -> str | None:
@@ -72,6 +82,26 @@ def test_readiness_marker_is_process_free_and_reproved_with_gadget_lifecycle():
         "EnvironmentFile",
     ):
         assert retired not in body
+
+
+def test_gadget_waits_for_reconciled_hardware_capability() -> None:
+    body = GADGET_UNIT_PATH.read_text()
+    assert "jasper-audio-hardware-reconcile.service" in (
+        _value_for(body, "After") or ""
+    )
+    assert "jasper-audio-hardware-reconcile.service" in (
+        _value_for(body, "Wants") or ""
+    )
+    unset = set((_value_for(body, "UnsetEnvironment") or "").split())
+    assert USB_ROLE_TEST_SEAMS <= unset
+    assert "JASPER_USBGADGET_HARDWARE_ALLOWED_CMD" in unset
+
+
+def test_hardware_reconciler_strips_usb_role_test_seams() -> None:
+    body = HARDWARE_RECONCILE_UNIT_PATH.read_text()
+    unset = set((_value_for(body, "UnsetEnvironment") or "").split())
+
+    assert USB_ROLE_TEST_SEAMS <= unset
 
 
 def test_readiness_marker_remains_unprivileged_and_read_only():

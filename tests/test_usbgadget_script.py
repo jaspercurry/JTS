@@ -72,6 +72,7 @@ def _run(
     audio_gate: str = TRUE,
     audio_ready: str | None = None,
     audio_data_ready: str | None = None,
+    hardware_allowed: str = TRUE,
     udc_present: bool = True,
     configfs: Path | None = None,
     cpuinfo_serial: str = "10000000abcdef01",
@@ -91,6 +92,7 @@ def _run(
         "JASPER_USBGADGET_AUDIO_ALLOWED_CMD": audio_allowed,
         "JASPER_USBGADGET_AUDIO_READY_CMD": audio_ready,
         "JASPER_USBGADGET_AUDIO_DATA_READY_CMD": audio_data_ready,
+        "JASPER_USBGADGET_HARDWARE_ALLOWED_CMD": hardware_allowed,
         "JASPER_CPUINFO_FILE": str(_cpuinfo(tmp_path, cpuinfo_serial)),
         # Keep the speaker-name source deterministic + absent by default.
         "JASPER_SPEAKER_NAME_FILE": str(
@@ -177,6 +179,18 @@ def test_up_no_function_wanted_skips_and_tears_down(tmp_path):
     assert not _gadget_dir(cfg).exists()
 
 
+def test_up_hardware_unavailable_tears_down_without_composing(tmp_path):
+    proc, cfg = _run(
+        UP,
+        tmp_path,
+        network="enabled",
+        hardware_allowed=FALSE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "reason=hardware_unavailable" in proc.stderr
+    assert not _gadget_dir(cfg).exists()
+
+
 # ---------- kill-switch literal parsing -------------------------------------
 
 
@@ -190,7 +204,7 @@ def test_up_killswitch_case_insensitive(tmp_path):
 
 
 def test_up_unset_network_defaults_enabled(tmp_path):
-    """An UNSET JASPER_USB_NETWORK defaults to enabled (always-on network)."""
+    """An unset network kill switch defaults On when hardware allows it."""
     proc, cfg = _run(UP, tmp_path, network=None, audio_intent=FALSE)
     assert proc.returncode == 0, proc.stderr
     assert "network=1 audio=0" in proc.stderr
@@ -380,6 +394,17 @@ def test_wanted_skips_cleanly_when_no_udc(tmp_path):
     proc, _ = _run(WANTED, tmp_path, network="enabled", audio_intent=FALSE, udc_present=False)
     assert proc.returncode == 1
     assert "event=usb_gadget.skip reason=no_udc" in proc.stderr
+
+
+def test_wanted_skips_when_hardware_transport_is_unavailable(tmp_path):
+    proc, _ = _run(
+        WANTED,
+        tmp_path,
+        network="enabled",
+        hardware_allowed=FALSE,
+    )
+    assert proc.returncode == 1
+    assert "reason=hardware_unavailable" in proc.stderr
 
 
 def test_usb_audio_requires_canonical_authority_plus_readiness_mirror():

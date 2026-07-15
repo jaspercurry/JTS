@@ -460,12 +460,14 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - Install jasper-usbsink.service as a process-free readiness marker. Fan-in
      owns the USB data plane and is covered by the core-graph restart above;
      the obsolete standalone binary and build cache are removed.
-   - Enable the always-on composite USB gadget (jasper-usbgadget.service):
-     USB management network (usb0 10.12.194.1/24, no forwarding) so
-     http://<hostname>/ works over USB even with Wi-Fi off, plus the
+   - Enable the hardware-gated composite USB gadget
+     (jasper-usbgadget.service): where the resolved USB role permits, its USB
+     management network (usb0 10.12.194.1/24, no forwarding) makes
+     http://<hostname>/ work over USB even with Wi-Fi off, alongside the
      wizard-toggled USB audio function. Install first parks derived USB audio
-     and establishes an NCM-only baseline; the source-intent coordinator later
-     restores canonical On in direct-lane-before-advertising order. NM keyfile owns usb0 and the
+     and establishes an NCM-only baseline when management transport is
+     available; the source-intent coordinator later restores canonical On in
+     direct-lane-before-advertising order. NM keyfile owns usb0 and the
      device-activated jasper-usbnet-dhcp.service (dnsmasq-base) serves DHCP.
      Retire the old jasper-usbsink-init.service. Kill switch:
      JASPER_USB_NETWORK=disabled.
@@ -625,7 +627,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - Seed defaults for speaker name, AirPlay mode, ALSA quality,
      wake model, AEC mode, peer_id, journald persistence, memory
      resilience, and correction TLS CA/cert files.
-   - Add Pi boot/config changes when needed: USB gadget dtoverlay,
+   - Reconcile the USB data role from board topology and the registered
+     output-DAC overlay; add other Pi boot/config changes when needed:
      memory cgroup/PSI kernel args, MGLRU tmpfiles, sysctl values,
      and rpi-swap zram sizing.
    - Disable WiFi power-save on the active wlan0 connection (nmcli)
@@ -665,13 +668,15 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      guardian, and the boot-loop guard.
    - Reconcile the USB Audio Input readiness marker from canonical source
      intent after fan-in and the composite gadget are installed.
-   - Enable the always-on composite USB gadget (jasper-usbgadget.service):
-     it carries a USB management network (ncm.usb0, 10.12.194.1/24, no
-     forwarding) so http://<hostname>/ works over USB even with Wi-Fi off,
-     plus the wizard-toggled USB audio function. Install first parks derived
-     USB audio and establishes an NCM-only baseline; the source-intent
-     coordinator later restores canonical On in direct-lane-before-advertising
-     order. Retire the old jasper-usbsink-init.service on upgrade. Install the
+   - Enable the hardware-gated composite USB gadget
+     (jasper-usbgadget.service): where the resolved USB role permits, it carries
+     a USB management network (ncm.usb0, 10.12.194.1/24, no forwarding) so
+     http://<hostname>/ works over USB even with Wi-Fi off, plus the
+     wizard-toggled USB audio function. Install first parks derived USB audio
+     and establishes an NCM-only baseline when management transport is
+     available; the source-intent coordinator later restores canonical On in
+     direct-lane-before-advertising order. Retire the old
+     jasper-usbsink-init.service on upgrade. Install the
      NM keyfile owning usb0 and the scoped,
      device-activated jasper-usbnet-dhcp.service (dnsmasq-base — no global
      dnsmasq service). USB audio stays off by default. Skips cleanly
@@ -826,7 +831,7 @@ install_deps() {
     # dnsmasq-base is the DHCP server BINARY only — NOT the full `dnsmasq`
     # package, which would enable a global dnsmasq.service. The scoped,
     # device-activated jasper-usbnet-dhcp.service runs it against usb0 for the
-    # always-on USB management network. See docs/HANDOFF-usb-gadget.md.
+    # hardware-gated USB management network. See docs/HANDOFF-usb-gadget.md.
     # rustc + cargo are required to build the Rust audio daemons
     # (rust/jasper-fanin/ and rust/jasper-outputd/). Trixie ships rustc 1.85, comfortably above
     # our crate's rust-version=1.75 floor. See
@@ -2401,7 +2406,7 @@ main() {
         install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
         install_camilladsp
         install_renderers
-        set_usb_gadget_mode
+        reconcile_usb_data_role
         tune_wifi_for_airplay
         install_streambox_jasper
         ensure_output_hardware_state
@@ -2448,7 +2453,7 @@ main() {
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
     install_camilladsp
     install_renderers
-    set_usb_gadget_mode
+    reconcile_usb_data_role
     tune_wifi_for_airplay
     install_jasper
     ensure_output_hardware_state

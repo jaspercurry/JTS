@@ -13,8 +13,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+import pytest
 
 from jasper import audio_runtime_plan
+from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.cli import doctor
 from jasper.fanin import combo_health as _ch
 from jasper.fanin import coupling_auto as _ca
@@ -22,40 +24,114 @@ from jasper.fanin import coupling_reconcile as _cr
 
 
 # ----------------------------------------------------------------------
-# check_usbsink_dtoverlay
+# shared USB data role
 # ----------------------------------------------------------------------
 
 
-def test_usbsink_dtoverlay_present(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text(
-        "[pi5]\ndtoverlay=dwc2,dr_mode=peripheral\ncountry=US\n",
+def _role(**overrides) -> UsbPortRoleState:
+    values = dict(
+        board_model="Raspberry Pi 5 Model B Rev 1.0",
+        board_topology="separate_host_ports",
+        desired_role="peripheral",
+        configured_role="peripheral",
+        active_role="peripheral",
+        gadget_available=True,
+        reboot_required=False,
+        reason="available",
+        decision_reason="dedicated_host_ports_leave_otg_available",
+        management_transport_available=True,
     )
-    # Patch Path resolution by patching the literal in the function.
-    with patch.object(doctor.usbsink, "Path", autospec=True) as mock_path:
-        mock_path.side_effect = lambda p: cfg if p == "/boot/firmware/config.txt" else Path(p)
-        r = doctor.check_usbsink_dtoverlay()
+    values.update(overrides)
+    return UsbPortRoleState(**values)
+
+
+@pytest.fixture(autouse=True)
+def _available_usb_role(monkeypatch):
+    monkeypatch.setattr(doctor.usbsink, "current_usb_data_role", _role)
+
+
+def test_usb_data_role_available():
+    r = doctor.check_usb_data_role()
     assert r.status == "ok"
-    assert "enabled" in r.detail.lower()
+    assert "gadget available" in r.detail.lower()
 
 
-def test_usbsink_dtoverlay_missing_returns_warn(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text("[pi5]\ncountry=US\n")  # no dtoverlay
-    with patch.object(doctor.usbsink, "Path") as mock_path:
-        mock_path.side_effect = lambda p: cfg if p == "/boot/firmware/config.txt" else Path(p)
-        r = doctor.check_usbsink_dtoverlay()
+def test_usb_data_role_intentional_zero_host_is_ok(monkeypatch):
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "current_usb_data_role",
+        lambda: _role(
+            board_model="Raspberry Pi Zero 2 W Rev 1.0",
+            board_topology="shared_otg_port",
+            desired_role="host",
+            configured_role="host",
+            active_role="host",
+            gadget_available=False,
+            reason="shared_otg_usb_output_requires_host",
+            decision_reason="shared_otg_usb_output_requires_host",
+            management_transport_available=False,
+        ),
+    )
+    r = doctor.check_usb_data_role()
+    assert r.status == "ok"
+    assert "output dac" in r.detail.lower()
+
+
+def test_usb_data_role_pending_reboot_is_warn(monkeypatch):
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "current_usb_data_role",
+        lambda: _role(
+            configured_role="host",
+            active_role="host",
+            gadget_available=False,
+            reboot_required=True,
+            reason="role_change_pending_reboot",
+            management_transport_available=False,
+        ),
+    )
+    r = doctor.check_usb_data_role()
     assert r.status == "warn"
-    assert "re-run" in r.detail.lower() or "reboot" in r.detail.lower()
+    assert "reboot" in r.detail.lower()
 
 
-def test_usbsink_dtoverlay_missing_config_file(monkeypatch, tmp_path):
-    """Not on a Pi → config.txt missing → warn (not a fail)."""
-    nonexistent = tmp_path / "config.txt"
-    with patch.object(doctor.usbsink, "Path") as mock_path:
-        mock_path.side_effect = lambda p: nonexistent if p == "/boot/firmware/config.txt" else Path(p)
-        r = doctor.check_usbsink_dtoverlay()
-    assert r.status == "warn"
+def test_composition_allows_ncm_only_during_pending_host_reboot(
+    monkeypatch,
+    tmp_path,
+):
+    gadget = tmp_path / "gadget"
+    (gadget / "functions" / "ncm.usb0").mkdir(parents=True)
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "current_usb_data_role",
+        lambda: _role(
+            board_model="Raspberry Pi Zero 2 W Rev 1.0",
+            board_topology="shared_otg_port",
+            desired_role="host",
+            configured_role="host",
+            active_role="peripheral",
+            gadget_available=False,
+            reboot_required=True,
+            reason="role_change_pending_reboot",
+            decision_reason="shared_otg_defaults_host_without_i2s",
+            management_transport_available=True,
+        ),
+    )
+    udc = tmp_path / "udc"
+    (udc / "3f980000.usb").mkdir(parents=True)
+    monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc))
+    monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "_audio_composition_wanted",
+        lambda: (False, "intent_disabled"),
+    )
+
+    result = doctor.check_usbgadget_composition()
+
+    assert result.status == "warn"
+    assert "retained" in result.detail.lower()
 
 
 # ----------------------------------------------------------------------
@@ -110,9 +186,9 @@ def test_usbsink_state_disabled_with_gadget_is_fail(monkeypatch, tmp_path):
 
 
 def test_usbsink_state_disabled_gadget_present_ncm_only_is_ok(monkeypatch, tmp_path):
-    """The composite gadget legitimately persists for the always-on USB
-    management network even when USB Audio Input is off — a ConfigFS dir
-    carrying only ncm.usb0 (no uac2.usb0) must NOT be treated as drift."""
+    """When the resolved role permits the default-on management network, the
+    composite gadget legitimately persists while USB Audio Input is off. A
+    ConfigFS dir carrying only ncm.usb0 must not be treated as audio drift."""
     gadget = tmp_path / "jts-usb-audio"
     (gadget / "functions" / "ncm.usb0").mkdir(parents=True)
     monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
@@ -141,8 +217,8 @@ def test_usbsink_state_parked_clean(monkeypatch, tmp_path):
 def test_usbsink_state_parked_clean_with_ncm_gadget_notes_network(
     monkeypatch, tmp_path,
 ):
-    """A parked follower's gadget dir may still legitimately carry
-    ncm.usb0 for the always-on management network — the ok detail should
+    """A parked follower's gadget dir may still legitimately carry ncm.usb0
+    when the resolved role permits management transport. The ok detail should
     say so rather than reading like the gadget vanished entirely."""
     monkeypatch.setattr(doctor.usbsink, "_parked_as_bonded_follower", lambda: True)
     gadget = tmp_path / "jts-usb-audio"
@@ -177,11 +253,10 @@ def test_usbsink_state_parked_with_gadget_is_fail(monkeypatch, tmp_path):
 
 
 def test_usbsink_state_parked_module_only_is_ok(monkeypatch, tmp_path):
-    """Parked + uac2.usb0 absent + libcomposite still loaded is no longer
-    RAM drift by itself in the composite model: libcomposite legitimately
-    stays resident whenever the gadget carries ncm.usb0 for the always-on
-    network. check_usbgadget_composition (not this check) owns genuine
-    RAM-drift detection for the composite gadget as a whole."""
+    """Parked + uac2.usb0 absent + libcomposite loaded is not audio drift by
+    itself: the hardware-permitted gadget may carry ncm.usb0 independently.
+    check_usbgadget_composition (not this check) owns genuine RAM-drift
+    detection for the composite gadget as a whole."""
     monkeypatch.setattr(doctor.usbsink, "_parked_as_bonded_follower", lambda: True)
     monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", tmp_path / "missing")
     monkeypatch.setattr(doctor.usbsink, "_module_loaded", lambda name: True)
@@ -687,7 +762,7 @@ def _patch_composition_env(
 def test_composition_no_udc_is_ok_skip(monkeypatch, tmp_path):
     """Fresh install pre-reboot (no UDC yet) must never fail — the unit
     itself skips cleanly via jasper-usbgadget-wanted, and
-    check_usbsink_dtoverlay already owns telling the user to reboot."""
+    check_usb_data_role already owns telling the user to reboot."""
     _patch_composition_env(
         monkeypatch, tmp_path,
         udc_present=False, network_env="enabled", usbsink_enabled=True,
@@ -976,7 +1051,7 @@ def _setup_combo(monkeypatch, tmp_path, *, failed=False, marker=None,
         _ch, "read_tick_state",
         lambda *a, **k: _ch.TickState(consecutive_broken=pending, sample=None),
     )
-    monkeypatch.setattr(_ca, "read_boot_config_gadget_present", lambda *a, **k: gadget)
+    monkeypatch.setattr(_ca, "read_usb_gadget_available", lambda *a, **k: gadget)
     monkeypatch.setattr(
         doctor.usbsink,
         "source_intent_enabled",

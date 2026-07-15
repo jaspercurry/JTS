@@ -872,7 +872,7 @@ def reconcile_auto(
     ``gadget_present`` / ``usb_intent_enabled`` / ``restart_*`` / ``stop_camilla`` /
     ``start_camilla`` / ``reconcile_camilla`` / ``kick_hardware_reconcile`` /
     ``active_leader_check`` are injectable for tests; ``gadget_present=None`` reads
-    the live boot config and ``usb_intent_enabled=None`` reads canonical source
+    the resolved USB hardware capability and ``usb_intent_enabled=None`` reads canonical source
     intent plus current local-source role permission.
     """
     from jasper.fanin.combo_health import fallback_active as read_fallback_active
@@ -880,7 +880,7 @@ def reconcile_auto(
         AutoCouplingDecision,
         default_ring_gates,
         is_operator_choice,
-        read_boot_config_gadget_present,
+        read_usb_gadget_available,
         read_marker,
         resolve_auto_decision,
         usb_combo_actions,
@@ -891,7 +891,7 @@ def reconcile_auto(
     outputd_snapshot = _read_snapshot(outputd_env_path)
     marker = read_marker(fanin_snapshot.text)
     gadget = (
-        read_boot_config_gadget_present() if gadget_present is None else gadget_present
+        read_usb_gadget_available() if gadget_present is None else gadget_present
     )
     usb_intent_failure = ""
     if usb_intent_enabled is None:

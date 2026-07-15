@@ -128,16 +128,22 @@ full doctor stack under memory pressure. The probe reads the canonical
   source keys, defaults, runtime convergence, and desired/effective semantics
   live in [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
 - USB gadget installation deliberately establishes one safe baseline before
-  source replay: `jasper-usbsink.service` disabled/stopped and the gadget
-  network-only. It does not interpret USB intent or advertise UAC2 before its
-  data plane exists. A converged NCM-only gadget is left bound so a deploy over
-  USB does not flap its management link; an upgrade arriving with prior derived
+  source replay: `jasper-usbsink.service` disabled/stopped and, where the
+  resolved transport permits, the gadget network-only. It does not interpret
+  USB intent or advertise UAC2 before its data plane exists. A converged
+  NCM-only gadget is left bound so a deploy over USB does not flap its
+  management link. During a Zero peripheral→host migration, NCM remains
+  available while the currently active controller is still peripheral; audio
+  is withdrawn, and reboot then activates host mode and removes the UDC. An
+  upgrade arriving with prior derived
   USB enablement, activity, or a visible UAC2 card is recomposed once to remove
   stale audio. The later shared source coordinator is the sole owner of replay:
   for canonical On it enables the mirror, arms fan-in direct capture, then
   recomposes UAC2 and starts the process-free readiness marker; Off stays NCM-only. A
   failed park or stale-UAC2 cleanup fails closed rather than leaving a
-  host-visible source without a consumer.
+  host-visible source without a consumer. Deploy health consumes the source
+  coordinator's effective USB status, so saved On plus hardware-unavailable is
+  certified only when the marker, UAC2 function, and DIRECT lane are all down.
 - Fan-in is sampled twice around a one-second interval and must show no xrun
   increase and recent watchdog progress. Outputd must report its ALSA backend,
   zero xruns / empty periods / EAGAINs, and recent progress. All counter and

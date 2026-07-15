@@ -73,6 +73,7 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
     assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is True
     assert APPLE_USB_C_DONGLE.active_outputd_lane_channels == 2
     assert APPLE_USB_C_DONGLE.usb_ids == ("05ac:110a",)
+    assert APPLE_USB_C_DONGLE.connection == "usb"
     assert APPLE_USB_C_DONGLE.supported_card_matches == ("usb-c to 3.5mm",)
     assert APPLE_USB_C_DONGLE.headphone_pinned_100 is True
     assert APPLE_USB_C_DONGLE.mixer_controls[0].name == "Headphone"
@@ -95,6 +96,7 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     )
     assert HIFIBERRY_DAC8X.clock_domain_contract == "single_device"
     assert HIFIBERRY_DAC8X.outputd_sink == "alsa"
+    assert HIFIBERRY_DAC8X.connection == "i2s"
     # Stage 2: the DAC-agnostic transport carries a coherent 8-channel single
     # DAC, so the DAC8x declares the active outputd lane at its full width.
     assert HIFIBERRY_DAC8X.supports_active_outputd_lane is True
@@ -113,6 +115,7 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     assert HIFIBERRY_DAC8X_STUDIO.physical_output_count == 8
     assert HIFIBERRY_DAC8X_STUDIO.clock_domain_contract == "single_device"
     assert HIFIBERRY_DAC8X_STUDIO.outputd_sink == "alsa"
+    assert HIFIBERRY_DAC8X_STUDIO.connection == "i2s"
     assert HIFIBERRY_DAC8X_STUDIO.supports_active_outputd_lane is True
     assert HIFIBERRY_DAC8X_STUDIO.active_outputd_lane_channels == 8
     assert HIFIBERRY_DAC8X_STUDIO.validation_profile == (
@@ -158,6 +161,7 @@ def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
         "measured_sync_required"
     )
     assert DUAL_APPLE_USB_C_DAC_4CH.outputd_sink == "dual_apple"
+    assert DUAL_APPLE_USB_C_DAC_4CH.connection == "usb"
     assert DUAL_APPLE_USB_C_DAC_4CH.child_profile_ids == (
         APPLE_USB_C_DONGLE_ID,
         APPLE_USB_C_DONGLE_ID,
@@ -175,6 +179,20 @@ def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
 
 
 def test_profile_validation_rejects_bad_static_shapes() -> None:
+    with pytest.raises(ValueError, match="unsupported DAC connection"):
+        DacProfile(
+            id="bad_connection",
+            label="Bad",
+            kind="single",
+            physical_output_count=2,
+            coherent_clock_domain=True,
+            clock_domain_label="Bad clock",
+            clock_domain_contract="single_device",
+            outputd_sink="alsa",
+            supported_card_matches=("bad",),
+            connection="spi",  # type: ignore[arg-type]
+        )
+
     with pytest.raises(ValueError, match="unsupported DAC profile id"):
         DacProfile(
             id="../bad",

@@ -94,12 +94,6 @@ _UNCODIFIED = {
     # -- /proc & /sys mount-point / probe-command overrides — pure test
     #    seams for the doctor / hardware probes.
     "JASPER_ASOUND_RENDER_COMMAND",
-    # Boot-config path override for the USB-gadget dtoverlay probe
-    # (jasper.fanin.coupling_auto). Default is /boot/firmware/config.txt; the
-    # override exists only so tests can point at a tmp file. The installer's own
-    # name for the same override is JTS_BOOT_CONFIG_FILE (renderers.sh); the probe
-    # honors both. Pure test seam, not operator config.
-    "JASPER_BOOT_CONFIG_PATH",
     "JASPER_PROC_ASOUND",
     "JASPER_SYS_CLASS_SOUND",
     # -- Internal AEC bridge / wake-corpus experiment knobs. Developer

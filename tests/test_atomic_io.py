@@ -34,6 +34,30 @@ def test_mode_is_applied(tmp_path):
     assert (os.stat(path).st_mode & 0o777) == 0o600
 
 
+def test_durable_write_fsyncs_file_and_parent(tmp_path, monkeypatch):
+    path = tmp_path / "boot-config.txt"
+    calls: list[str] = []
+    real_chmod = os.chmod
+    real_replace = os.replace
+
+    def recording_chmod(target, mode):
+        calls.append("chmod")
+        real_chmod(target, mode)
+
+    def recording_replace(source, target):
+        calls.append("replace")
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "chmod", recording_chmod)
+    monkeypatch.setattr(os, "replace", recording_replace)
+    monkeypatch.setattr(os, "fsync", lambda _fd: calls.append("fsync"))
+
+    atomic_write_text(path, "safe\n", durable=True)
+
+    assert path.read_text(encoding="utf-8") == "safe\n"
+    assert calls == ["chmod", "fsync", "replace", "fsync"]
+
+
 def test_group_from_parent_chowns_temp_before_publish(tmp_path, monkeypatch):
     path = tmp_path / "secret.env"
     calls: list[tuple[str, int, int]] = []

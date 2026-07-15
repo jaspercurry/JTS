@@ -117,9 +117,9 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
             "jasper-usbsink.service",
         ),
         # Park the audio readiness marker and volume observer only. The composite
-        # gadget owner is NOT stopped here — stopping it would also drop the
-        # always-on USB management network. The source coordinator separately
-        # recomposes it to remove UAC2 while preserving NCM.
+        # gadget owner is NOT stopped here — where hardware permits, stopping
+        # it would also drop the USB management network. The source coordinator
+        # separately recomposes it to remove UAC2 while preserving NCM.
         park_units=(
             "jasper-usbsink.service",
             "jasper-usbsink-volume.service",

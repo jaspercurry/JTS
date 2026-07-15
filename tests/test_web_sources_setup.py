@@ -11,7 +11,7 @@ The page was migrated to the canonical design system (canonical_page +
 toggle_html + an ES module). These tests pin both the canonical-look
 markers and the unchanged behaviour: the four per-source toggles, the
 /state snapshot shape, the /set CSRF gate + dispatch + read-back, the
-USB-gadget dtoverlay guard, and the Bluetooth DBus / HID-warning path.
+USB hardware-capability guard, and the Bluetooth DBus / HID-warning path.
 """
 from __future__ import annotations
 
@@ -92,12 +92,12 @@ def test_first_paint_toggles_are_disabled_and_unchecked():
 
 
 def test_usb_unavailable_note_present_but_hidden_at_render():
-    # The dtoverlay note exists in the markup (the /state poll un-hides it
+    # The hardware note exists in the markup (the /state poll un-hides it
     # when available=false); it is not server-gated.
     html = mod._index_html(csrf_token=CSRF).decode("utf-8")
     assert 'id="usbsink-unavailable-note"' in html
-    assert "re-run install.sh and reboot" in html
-    assert "/boot/firmware/config.txt" in html
+    assert "current hardware configuration" in html
+    assert 'id="usbsink-unavailable-note" style="display:none"' in html
 
 
 def test_profile_unavailable_notes_present_but_hidden_at_render():
@@ -187,9 +187,16 @@ def stub_backends(monkeypatch):
                 return False
 
         monkeypatch.setattr(mod, "probe_unit_snapshot", lambda _units: _Snapshot())
-        monkeypatch.setattr(mod, "_usbsink_available", lambda *a, **k: usb_ready)
+        monkeypatch.setattr(
+            mod,
+            "_usbsink_capability",
+            lambda *a, **k: (
+                usb_ready,
+                "" if usb_ready else "USB output DAC uses the shared port",
+            ),
+        )
         # The uac2 ALSA card is the host-visible "USB audio device advertised"
-        # signal now that the composite gadget is always-on (it also carries the
+        # signal now that the composite gadget can outlive audio (it also carries the
         # USB management network), so gadget-active is no longer that proxy.
         monkeypatch.setattr(mod, "_uac2_card_present", lambda: usb_card)
         monkeypatch.setattr(
@@ -251,12 +258,12 @@ def test_gather_state_shape(stub_backends):
         "available": True,
         "hasPairedHid": True,
     }
-    # USB unavailable because the dtoverlay is absent.
+    # USB unavailable because the output DAC owns the shared data port.
     assert state["usbsink"]["enabled"] is False
     assert state["usbsink"]["desired"] is False
     assert state["usbsink"]["effective"] == "unavailable"
     assert state["usbsink"]["available"] is False
-    assert "config.txt" in str(state["usbsink"]["unavailableReason"])
+    assert "output DAC" in str(state["usbsink"]["unavailableReason"])
 
 
 def test_gather_state_renderer_units_unavailable(stub_backends):
@@ -427,9 +434,9 @@ def test_apply_routes_each_source_through_shared_coordinator(
         events.append(("validate-unit", unit))
         return True
 
-    def usbsink_available():
-        events.append(("validate-dtoverlay",))
-        return True
+    def usbsink_capability():
+        events.append(("validate-usb-hardware",))
+        return True, ""
 
     def bluetooth_present():
         events.append(("validate-bluetooth-hardware",))
@@ -443,7 +450,7 @@ def test_apply_routes_each_source_through_shared_coordinator(
 
     monkeypatch.setattr(mod, "_local_sources_allowed", local_sources_allowed)
     monkeypatch.setattr(mod, "_unit_available", unit_available)
-    monkeypatch.setattr(mod, "_usbsink_available", usbsink_available)
+    monkeypatch.setattr(mod, "_usbsink_capability", usbsink_capability)
     monkeypatch.setattr(mod, "_bluetooth_availability", bluetooth_present)
     monkeypatch.setattr(
         mod,
@@ -537,17 +544,21 @@ def test_apply_off_persists_on_profile_without_local_sources(
     assert calls == [(source, False)]
 
 
-def test_apply_refuses_usbsink_without_dtoverlay(monkeypatch):
+def test_apply_refuses_usbsink_without_hardware_capability(monkeypatch):
     monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(mod, "_unit_available", lambda unit: True)
-    monkeypatch.setattr(mod, "_usbsink_available", lambda: False)
+    monkeypatch.setattr(
+        mod,
+        "_usbsink_capability",
+        lambda: (False, "USB output DAC uses the shared port"),
+    )
     monkeypatch.setattr(
         mod,
         "request_source_intent",
         lambda *a: pytest.fail("must not request intent"),
     )
 
-    with pytest.raises(RuntimeError, match="USB gadget mode"):
+    with pytest.raises(RuntimeError, match="USB output DAC"):
         mod._apply("usbsink", True)
 
 
@@ -625,24 +636,6 @@ def test_apply_bluetooth_reuses_specific_availability_reason(
 
     with pytest.raises(RuntimeError, match=expected):
         mod._apply("bluetooth", True)
-
-
-# ---- dtoverlay probe --------------------------------------------------------
-
-
-def test_usbsink_available_reads_boot_config(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text("# header\ndtoverlay=dwc2,dr_mode=peripheral\nother=1\n")
-    monkeypatch.setattr(mod, "BOOT_CONFIG_PATH", str(cfg))
-    assert mod._usbsink_available() is True
-
-    cfg.write_text("# header\nother=1\n")
-    assert mod._usbsink_available() is False
-
-
-def test_usbsink_available_failsoft_on_missing_file(monkeypatch, tmp_path):
-    monkeypatch.setattr(mod, "BOOT_CONFIG_PATH", str(tmp_path / "absent.txt"))
-    assert mod._usbsink_available() is False
 
 
 # ---- handler routing + CSRF -------------------------------------------------
