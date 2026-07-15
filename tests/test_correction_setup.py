@@ -2744,7 +2744,12 @@ def test_render_page_emits_registry_model_aliases():
 # level for measurement SNR; if a failed apply/reset skipped the restore, the
 # next song would play back at the (loud) measurement level. The restore now
 # lives in a finally so the exception can't strand the speaker loud.
-def _locked_autolevel_session(raises_on, *, original=-20.0):
+def _locked_autolevel_session(
+    raises_on,
+    *,
+    original=-20.0,
+    config_dir: Path | None = None,
+):
     """Fake session whose apply/reset raises, with a LOCKED autolevel that
     ramped main_volume up to a measurement level above `original`."""
     from jasper.correction.session import AutolevelData, AutolevelStatus, SessionState
@@ -2756,6 +2761,8 @@ def _locked_autolevel_session(raises_on, *, original=-20.0):
         room_authority_binding = (False, "passive_not_required", None)
 
         def __init__(self):
+            if config_dir is not None:
+                self.cfg = SimpleNamespace(config_dir=config_dir)
             self.autolevel = AutolevelData(
                 status=AutolevelStatus.LOCKED,
                 original_main_volume_db=original,
@@ -2795,7 +2802,8 @@ def _volume_recording_cam(restored):
     return _FakeCam()
 
 
-def test_ready_reset_restores_exact_pre_measurement_graph():
+@pytest.mark.asyncio
+async def test_ready_reset_restores_exact_pre_measurement_graph():
     from jasper.correction.session import SessionState
 
     predecessor = Path("/var/lib/camilladsp/configs/before-room.yml")
@@ -2804,7 +2812,10 @@ def test_ready_reset_restores_exact_pre_measurement_graph():
         pre_measurement_config_path=predecessor,
     )
 
-    assert correction_setup._resolve_reset_target(sess, None) == predecessor
+    assert (
+        await correction_setup._resolve_reset_target_async(sess, None)
+        == predecessor
+    )
 
 
 def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
@@ -2883,9 +2894,13 @@ def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
     assert applied == []
 
 
-def test_reset_restores_listening_volume_when_reset_raises(monkeypatch):
+def test_reset_restores_listening_volume_when_reset_raises(monkeypatch, tmp_path):
     restored: list[float] = []
-    sess = _locked_autolevel_session("reset", original=-18.0)
+    sess = _locked_autolevel_session(
+        "reset",
+        original=-18.0,
+        config_dir=tmp_path,
+    )
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
         correction_setup, "_camilla", lambda: _volume_recording_cam(restored)
@@ -2897,7 +2912,10 @@ def test_reset_restores_listening_volume_when_reset_raises(monkeypatch):
     assert restored == [-18.0]
 
 
-def test_reset_quiesces_audio_under_intent_before_resolving_graph(monkeypatch):
+def test_reset_quiesces_audio_under_intent_before_resolving_graph(
+    monkeypatch,
+    tmp_path,
+):
     """No ramp/sweep write may land after reset resolves or reloads its graph."""
     from jasper.correction.session import AutolevelData, AutolevelStatus, SessionState
 
@@ -2911,6 +2929,7 @@ def test_reset_quiesces_audio_under_intent_before_resolving_graph(monkeypatch):
         autolevel = AutolevelData(status=AutolevelStatus.LOCKED)
         autolevel_run_in_progress = True
         reset_intent = object()
+        cfg = SimpleNamespace(config_dir=tmp_path)
 
         async def begin_autolevel_reset(self):
             order.append("intent-and-ramp-quiesced")
@@ -2934,11 +2953,11 @@ def test_reset_quiesces_audio_under_intent_before_resolving_graph(monkeypatch):
     monkeypatch.setattr(
         correction_setup, "_camilla", lambda: _volume_recording_cam([])
     )
-    monkeypatch.setattr(
-        correction_setup,
-        "_resolve_reset_target",
-        lambda *_args: order.append("resolve") or Path("/tmp/reset.yml"),
-    )
+    async def resolve(*_args):
+        order.append("resolve")
+        return Path("/tmp/reset.yml")
+
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
 
     correction_setup._handle_reset(None)
 
@@ -2949,6 +2968,60 @@ def test_reset_quiesces_audio_under_intent_before_resolving_graph(monkeypatch):
         "reset",
         "intent-released",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
+async def test_room_reversal_resolves_and_loads_after_concurrent_active_writer(
+    monkeypatch,
+    tmp_path,
+    automatic,
+):
+    """A legal Active writer must finish before Room chooses its reset graph."""
+    from jasper.dsp_apply import dsp_writer_lock
+
+    current = {"path": "active-old.yml"}
+    resolved_from = []
+    loaded = []
+
+    async def resolve(_sess, _cam):
+        resolved_from.append(current["path"])
+        return tmp_path / f"no-room-from-{current['path']}"
+
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
+
+    class Session:
+        cfg = SimpleNamespace(config_dir=tmp_path)
+
+        async def reset(self, set_cb, *, target_config_path=None):
+            return await set_cb(str(target_config_path))
+
+        async def auto_revert(self, set_cb, *, target_config_path=None):
+            return await set_cb(str(target_config_path))
+
+    class Cam:
+        async def set_config_file_path(self, path, *, best_effort=False):
+            loaded.append(path)
+            current["path"] = path
+            return True
+
+    async with dsp_writer_lock(tmp_path, source="active_apply"):
+        reversal = asyncio.create_task(
+            correction_setup._run_locked_room_reset(
+                Session(),
+                Cam(),
+                automatic=automatic,
+            )
+        )
+        await asyncio.sleep(0.1)
+        assert not reversal.done()
+        assert resolved_from == []
+        assert loaded == []
+        current["path"] = "active-new.yml"
+
+    assert await reversal is True
+    assert resolved_from == ["active-new.yml"]
+    assert loaded == [str(tmp_path / "no-room-from-active-new.yml")]
 
 
 def test_reset_releases_intent_when_audio_quiescence_fails(monkeypatch):
@@ -3081,7 +3154,7 @@ def test_needs_noise_capture_offers_cancel_in_ui():
     assert "'Stop measurement'" in policy
 
 
-def test_e2e_reset_while_busy_returns_409(monkeypatch):
+def test_e2e_reset_while_busy_returns_409(monkeypatch, tmp_path):
     # A reset rejected because a sweep/analysis is in flight is a state
     # conflict, not a server error — the dispatch maps SessionBusyError to 409
     # (a stale/buggy client hitting /reset mid-sweep; the UI never does).
@@ -3090,6 +3163,7 @@ def test_e2e_reset_while_busy_returns_409(monkeypatch):
     class FakeSession:
         session_id = "busy-reset"
         state = SessionState.SWEEPING
+        cfg = SimpleNamespace(config_dir=tmp_path)
 
         async def reset(self, set_cb):
             raise SessionBusyError(

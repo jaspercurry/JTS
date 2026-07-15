@@ -154,10 +154,14 @@
   Active decision again inside the locked measurement-baseline preparation.
   Apply repeats that comparison inside its shared writer boundary, so a later
   legal DSP writer cannot substitute a different crossover during a Room run.
-  Reset and automatic revert remain independently available exact-predecessor
-  restoration paths. Measurement-baseline load, Apply, Reset, and
-  automatic revert wait for a terminal result after any shared writer
-  admission. Camilla transport attempts and shared writer-lock admission are
+  Reset and automatic revert remain independently available exact restoration
+  paths and do not require fresh Room authority: a mid-flight cancellation uses
+  the saved predecessor, while an applied/verified correction removes Room from
+  the current graph. They resolve that target only after acquiring the shared
+  DSP-writer lock, so a concurrent legal Active apply cannot be overwritten by
+  a target built from stale Layer A. Measurement-baseline load, Apply, Reset,
+  and automatic revert wait for a terminal result after writer admission.
+  Camilla transport attempts and shared writer-lock admission are
   bounded; a cancelled or timed-out waiter cannot acquire later. Room does not
   apply an outer deadline after admission that could cancel between graph
   mutation and rollback/state persistence.

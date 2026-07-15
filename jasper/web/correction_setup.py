@@ -5887,19 +5887,10 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         if autolevel_active:
             _run_async(sess.cancel_autolevel_and_wait(), timeout=7.0)
 
-    async def _set(path: str) -> bool:
-        return await cam.set_config_file_path(path, best_effort=False)
-
     try:
         if hasattr(sess, "stop_background_audio_for_reset"):
             _run_async(sess.stop_background_audio_for_reset(), timeout=45.0)
-        target = _resolve_reset_target(sess, cam)
-        reset_kwargs = (
-            {"target_config_path": target}
-            if _accepts_target_config_path(sess.reset)
-            else {}
-        )
-        _run_graph_mutation(sess.reset(_set, **reset_kwargs))
+        _run_graph_mutation(_run_locked_room_reset(sess, cam))
     finally:
         # Audio-safety: restore the pre-autolevel listening level even if
         # reset() raised (see _handle_apply).
@@ -5920,7 +5911,7 @@ def _pre_measurement_restore_target(sess: Any) -> Path | None:
     return Path(prior) if prior else None
 
 
-def _resolve_reset_target(sess: Any, cam: Any) -> Path:
+async def _resolve_reset_target_async(sess: Any, cam: Any) -> Path:
     """Resolve the graph to restore for a reset / auto-revert.
 
     The single source of truth for "what should the speaker load when we undo
@@ -5942,10 +5933,7 @@ def _resolve_reset_target(sess: Any, cam: Any) -> Path:
     target = _pre_measurement_restore_target(sess)
     if target is None:
         try:
-            target = _run_async(
-                _write_no_room_correction_config(sess, cam),
-                timeout=5.0,
-            )
+            target = await _write_no_room_correction_config(sess, cam)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "reset/auto-revert: no-room re-emit failed; falling back "
@@ -5953,6 +5941,40 @@ def _resolve_reset_target(sess: Any, cam: Any) -> Path:
             )
             target = reset_config_path(base_config_path)
     return target
+
+
+async def _run_locked_room_reset(
+    sess: Any,
+    cam: Any,
+    *,
+    automatic: bool = False,
+) -> Any:
+    """Resolve and load one Room reversal under the shared DSP-writer lock."""
+
+    from jasper.dsp_apply import dsp_writer_lock
+
+    cfg = getattr(sess, "cfg", None)
+    config_dir = getattr(cfg, "config_dir", None)
+    if config_dir is None:
+        raise RuntimeError("Room session has no CamillaDSP config directory")
+
+    async def _set(path: str) -> bool:
+        return await cam.set_config_file_path(path, best_effort=False)
+
+    operation = sess.auto_revert if automatic else sess.reset
+    source = "correction_auto_revert" if automatic else "correction_reset"
+    async with dsp_writer_lock(config_dir, source=source):
+        # Restoration must not depend on fresh Room authority: its purpose is
+        # to recover from a stale/failed Room session.  It does need to resolve
+        # the no-Room carrier after admission so a legal Active writer cannot
+        # swap Layer A between target construction and load.
+        target = await _resolve_reset_target_async(sess, cam)
+        kwargs = (
+            {"target_config_path": target}
+            if _accepts_target_config_path(operation)
+            else {}
+        )
+        return await operation(_set, **kwargs)
 
 
 def _maybe_auto_revert(sess: Any) -> bool:
@@ -5978,18 +6000,11 @@ def _maybe_auto_revert(sess: Any) -> bool:
         return False
     cam = _camilla()
 
-    async def _set(path: str) -> bool:
-        return await cam.set_config_file_path(path, best_effort=False)
-
     try:
-        target = _resolve_reset_target(sess, cam)
-        revert_kwargs = (
-            {"target_config_path": target}
-            if _accepts_target_config_path(sess.auto_revert)
-            else {}
-        )
         return bool(
-            _run_graph_mutation(sess.auto_revert(_set, **revert_kwargs))
+            _run_graph_mutation(
+                _run_locked_room_reset(sess, cam, automatic=True)
+            )
         )
     except Exception:  # noqa: BLE001
         logger.exception(

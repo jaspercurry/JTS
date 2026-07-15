@@ -328,8 +328,10 @@ Room/preference prefix. Room consumes the resulting decision; it does not
 perform this comparison itself. It carries Active's opaque identity from Start
 and asks Active for the same decision again inside both the locked measurement
 baseline preparation and Apply writer boundary. A changed authority or identity
-refuses the mutation; Reset and automatic revert still restore the exact saved
-predecessor without depending on new Room authority.
+refuses the mutation. Reset and automatic revert do not depend on new Room
+authority; they acquire the same writer boundary and resolve their restoration
+target after admission, preserving whichever Layer A a preceding legal Active
+apply actually loaded.
 
 Historical B2b evidence is forensic only: it cannot supply modern candidate or
 receipt authority. Automatic crossover readiness must come from Active's fresh,
