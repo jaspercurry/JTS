@@ -1579,7 +1579,7 @@ def test_live_status_locks_transport_and_restores_tab_session_identity():
     js = _module_js()
     sync = js.split("function syncSessionMechanics(snapshot)", 1)[1]
     sync = sync.split("async function refreshSessionMechanics", 1)[0]
-    poll = js.split("async function pollState()", 1)[1]
+    poll = js.split("async function pollState(options)", 1)[1]
     poll = poll.split("async function onCaptureReady", 1)[0]
 
     assert "serverSessionId = snapshot.session_id" in sync
@@ -1724,31 +1724,45 @@ def test_report_delete_refreshes_envelope_section_membership():
     )
 
 
-def test_render_page_includes_strategy_and_design_audit_controls():
+def test_render_page_includes_strategy_without_duplicate_design_audit():
     body = correction_setup._render_page("jts.local").decode()
     assert 'id="strategy-select"' in body  # picker markup stays in the page
     assert "Balanced" in body
     assert "Assertive" not in body
-    assert 'id="design-report"' in body
+    assert 'id="design-report"' not in body
     js = _module_js()  # the wiring + render moved to the module
     assert "strategy_choice: strategyChoice" in js
-    assert "renderDesignReport" in js
+    assert "renderDesignReport" not in js
 
 
-def test_render_page_includes_results_visualization_controls():
+def test_render_page_keeps_chart_but_removes_duplicate_result_policy():
     body = correction_setup._render_page("jts.local").decode()
-    # Markup containers + chart controls stay in the page.
-    assert 'id="results-summary"' in body
-    assert 'id="chart-smoothing"' in body
-    assert 'id="chart-show-spread"' in body
+    assert 'id="chart"' in body
     assert 'id="chart-show-filter"' in body
-    assert 'id="chart-show-band"' in body
-    assert 'id="runtime-integrity-panel"' in body
-    assert "spatial spread" in body
-    js = _module_js()  # the renderers moved to the module
-    assert "renderResultsSummary" in js
-    assert "renderRuntimeIntegrity" in js
-    assert "recommendedNextAction" in js
+    for removed_id in (
+        "results-summary",
+        "chart-smoothing",
+        "chart-show-spread",
+        "chart-show-band",
+        "confidence-panel",
+        "runtime-integrity-panel",
+        "design-report",
+        "peq-list",
+    ):
+        assert f'id="{removed_id}"' not in body
+
+    js = _module_js()
+    for duplicate_policy in (
+        "renderResultsSummary",
+        "renderRuntimeIntegrity",
+        "renderConfidence",
+        "renderDesignReport",
+        "recommendedNextAction",
+        "smoothCurve",
+        "smoothingWidthOctaves",
+    ):
+        assert duplicate_policy not in js
+    assert "drawEnvelopeCurves" in js
 
 
 def test_render_page_includes_read_only_measurement_reports():
@@ -1783,19 +1797,32 @@ def test_render_page_includes_noise_and_repeat_capture_flow():
     assert "awaiting_repeat_capture" in js
 
 
-def test_render_page_shows_result_before_drawing_chart():
-    """Bug fix pin: drawChart() must run AFTER `resultSection` is
-    shown, otherwise the canvas's getBoundingClientRect returns
-    0×0 (hidden ancestor) and the chart renders blank. Real user
-    bug — got 5 PEQ filters but an empty frequency-response box.
-    """
-    body = _module_js()  # behaviour relocated to the static ES module
-    # The fix marker comment must stay so a refactor doesn't silently
-    # reintroduce the old order.
-    assert "show resultSection BEFORE drawing the chart" in body
-    # And the drawChart defensive guard must reject zero-size
-    # bounding rects.
+def test_envelope_shows_result_before_drawing_chart():
+    """The envelope must lay out the result canvas before drawing it."""
+    body = _module_js()
+    start = body.index("function renderEnvelope(env)")
+    end = body.index("function renderTuning(block)", start)
+    router = body[start:end]
+    assert router.index("renderSections(env.sections") < router.index(
+        "drawEnvelopeCurves(env)"
+    )
     assert "drawChart skipped" in body
+
+
+def test_upload_capture_ack_refreshes_envelope_for_presentation():
+    js = _module_js()
+    start = js.index("async function onCaptureReady(arrayBuffer, kind)")
+    end = js.index("async function applyCorrection", start)
+    upload = js[start:end]
+
+    ack = upload.index("await resp.json()")
+    concurrent = upload.index("await Promise.all([")
+    status = upload.index("pollState({skipEnvelopeRefresh: true})", concurrent)
+    envelope = upload.index("refreshEnvelope()", concurrent)
+    assert ack < concurrent < status
+    assert ack < concurrent < envelope
+    assert "data.measured" not in upload
+    assert "drawChart(data" not in upload
 
 
 def test_render_page_redraws_chart_on_resize():
@@ -2621,6 +2648,18 @@ def _volume_recording_cam(restored):
             restored.append(db)
 
     return _FakeCam()
+
+
+def test_ready_reset_restores_exact_pre_measurement_graph():
+    from jasper.correction.session import SessionState
+
+    predecessor = Path("/var/lib/camilladsp/configs/before-room.yml")
+    sess = SimpleNamespace(
+        state=SessionState.READY,
+        pre_measurement_config_path=predecessor,
+    )
+
+    assert correction_setup._resolve_reset_target(sess, None) == predecessor
 
 
 def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):

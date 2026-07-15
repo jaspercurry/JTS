@@ -7,10 +7,7 @@
 // Exercises renderCurrentCorrection with representative server presentation
 // blocks and asserts the tone, reset authority, timestamp substitution, and
 // bounded malformed-block fallback.
-// Also pins the P3a honest measured before/after surfaces:
-//   - verifyHeadlineHtml: verb/colour choice from the server delta, the
-//     ±0.1 dB display deadband, the neutral bucket, band text from the
-//     server payload, and ''-on-missing-fields.
+// Also pins the P3a honest measured before/after chart:
 //   - drawBeforeAfterFill (via drawChart + a recording canvas context):
 //     per-segment polygon vertex counts, improved→green / regressed→amber
 //     fill colours, and that server-classified tones are consumed
@@ -253,11 +250,8 @@ source = source.replace(
   /\}\)\(\);\s*$/,
   `  globalThis.__testProbe = {
     renderCurrentCorrection,
-    verifyHeadlineHtml,
     drawChart,
-    // lastVerify is IIFE-local state read by drawChart's before/after
-    // fill; expose a setter that shares the closure binding.
-    setLastVerify: function (v) { lastVerify = v; },
+    drawEnvelopeCurves,
     // P3b stepped-wizard router surfaces (all IIFE-local).
     renderEnvelope,
     renderRunDefaults,
@@ -286,8 +280,6 @@ source = source.replace(
     onTuningPropose,
     renderBrowserAudioReport,
     renderQuality,
-    renderConfidence,
-    renderRuntimeIntegrity,
     loadSessionReport,
     // The tuning status line text, for the fetch-error-framing tests.
     getTuningStatusText: function () { return tuningStatus.textContent; },
@@ -505,9 +497,8 @@ runner(
 
 const {
   renderCurrentCorrection,
-  verifyHeadlineHtml,
   drawChart,
-  setLastVerify,
+  drawEnvelopeCurves,
   renderEnvelope,
   renderRunDefaults,
   validateRunDefaults,
@@ -534,8 +525,6 @@ const {
   onTuningPropose,
   renderBrowserAudioReport,
   renderQuality,
-  renderConfidence,
-  renderRuntimeIntegrity,
   loadSessionReport,
   getTuningStatusText,
   getEnvelopeFetchCount,
@@ -702,87 +691,6 @@ function currentPresentation(over) {
     "confirmed parked-state Cancel still dispatches reset");
 }
 
-// ---- P3a: honest measured before/after pins --------------------------------
-
-// Helper: a complete server-shaped verify_before_after payload.
-function makeBA(deltaRms, extra) {
-  return Object.assign({
-    band_hz: [50, 350],
-    before: { rms_db: 6.2, max_db: 11.0, n_points: 120 },
-    after: { rms_db: 2.1, max_db: 4.0, n_points: 120 },
-    delta: { rms_db: deltaRms, max_db: 7.0 },
-    fill_segments: [],
-  }, extra || {});
-}
-
-// 12. verifyHeadlineHtml: honest "better" verb + measured numbers + band
-//     text derived from the SERVER payload's band_hz (never hard-coded).
-{
-  const html = verifyHeadlineHtml(makeBA(4.1));
-  assert(html.includes('verify-headline improved'),
-    "positive measured delta must use the improved tone class", { got: html });
-  assert(html.includes('Bass evened out'),
-    "positive measured delta must use the 'evened out' verb", { got: html });
-  assert(html.includes('±6.2 dB → ±2.1 dB'),
-    "headline must show the server before → after RMS values", { got: html });
-  assert(html.includes('50–350 Hz'),
-    "band text must come from the payload band_hz", { got: html });
-
-  const wideBand = verifyHeadlineHtml(makeBA(4.1, { band_hz: [50, 500] }));
-  assert(wideBand.includes('50–500 Hz'),
-    "a non-default server band_hz must flow into the band text",
-    { got: wideBand });
-}
-
-// 13. verifyHeadlineHtml: honest "worse" verb — a regression is named,
-//     never dressed up as improvement.
-{
-  const html = verifyHeadlineHtml(makeBA(-3.0));
-  assert(html.includes('verify-headline regressed'),
-    "negative measured delta must use the regressed tone class", { got: html });
-  assert(html.includes('Bass deviation grew'),
-    "negative measured delta must use the 'deviation grew' verb", { got: html });
-  assert(!html.includes('evened out'),
-    "a regression must not claim the bass evened out", { got: html });
-}
-
-// 14. verifyHeadlineHtml: ±0.1 dB display deadband, both directions.
-//     |delta| <= 0.1 reads neutral ("held about the same"); just past the
-//     deadband flips to the directional verb. Strict comparison: exactly
-//     ±0.1 is still neutral.
-{
-  for (const delta of [0.0, 0.1, -0.1, 0.05, -0.05]) {
-    const html = verifyHeadlineHtml(makeBA(delta));
-    assert(html.includes('verify-headline neutral'),
-      `delta ${delta} is inside the ±0.1 dB deadband → neutral class`,
-      { got: html });
-    assert(html.includes('Bass held about the same'),
-      `delta ${delta} must use the neutral verb`, { got: html });
-  }
-  const justBetter = verifyHeadlineHtml(makeBA(0.11));
-  assert(justBetter.includes('verify-headline improved'),
-    "delta just above +0.1 dB must read improved", { got: justBetter });
-  const justWorse = verifyHeadlineHtml(makeBA(-0.11));
-  assert(justWorse.includes('verify-headline regressed'),
-    "delta just below -0.1 dB must read regressed", { got: justWorse });
-}
-
-// 15. verifyHeadlineHtml: missing/partial server payloads render nothing —
-//     no headline without a real measured before/after.
-{
-  assert(verifyHeadlineHtml(null) === '', "null payload → ''");
-  assert(verifyHeadlineHtml(undefined) === '', "undefined payload → ''");
-  assert(verifyHeadlineHtml({}) === '', "empty payload → ''");
-  assert(verifyHeadlineHtml({ before: {}, after: {} }) === '',
-    "payload without delta → ''");
-  assert(verifyHeadlineHtml(makeBA(undefined)) === '',
-    "non-numeric delta.rms_db → ''");
-  const noBeforeRms = makeBA(4.1);
-  delete noBeforeRms.before.rms_db;
-  assert(verifyHeadlineHtml(noBeforeRms) === '',
-    "missing before.rms_db → ''");
-}
-
 // ---- drawBeforeAfterFill (via drawChart + recording canvas context) --------
 
 const FILL_GREEN = 'rgba(29, 185, 84, 0.22)';
@@ -809,13 +717,12 @@ function makeRecordingContext() {
   return ctx;
 }
 
-// Drive drawChart with a recording context on the chart canvas stub and
-// return the recorded ops. drawChart reads IIFE-local `lastVerify` for the
-// verify overlay + fill, so callers set it via the probe first.
-function recordDrawChart(measured, target, predicted, payload) {
+// Drive drawChart with the server envelope's already-smoothed curves and
+// classified fill segments, recording canvas operations for assertions.
+function recordDrawChart(curves, fillSegments) {
   const ctx = makeRecordingContext();
   getOrMake('chart').getContext = () => ctx;
-  drawChart(measured, target, predicted, payload);
+  drawChart(curves, fillSegments);
   return ctx.ops;
 }
 
@@ -851,6 +758,34 @@ function curveOf(fn) {
   };
 }
 
+// A newly revealed canvas can report 0×0 for one frame on mobile Safari.
+// The presentation layer retries exactly once after layout becomes visible.
+await (async () => {
+  const chart = canvasEl();
+  const originalRect = chart.getBoundingClientRect;
+  chart.width = 0;
+  let layoutReads = 0;
+  chart.getBoundingClientRect = () => {
+    layoutReads += 1;
+    if (layoutReads === 1) {
+      return { width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
+    }
+    return { width: 600, height: 200, top: 0, left: 0, right: 600, bottom: 200 };
+  };
+  drawEnvelopeCurves({
+    curves: { measured: curveOf(() => 0) },
+    fill_segments: [],
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert(layoutReads === 2,
+    "chart retries exactly once when first-paint geometry is 0×0",
+    { got: layoutReads });
+  assert(chart.width === 600,
+    "bounded retry draws after the chart becomes visible",
+    { got: chart.width });
+  chart.getBoundingClientRect = originalRect;
+})();
+
 // 16. drawBeforeAfterFill: tone→colour mapping + per-segment polygon
 //     vertex counts. A segment spanning n grid points draws 1 moveTo +
 //     (2n − 1) lineTo (forward along `after`, back along `before`) and
@@ -865,17 +800,11 @@ function curveOf(fn) {
   const verify = curveOf(() => 0);
   verify.magnitude_db = verify.magnitude_db.map((v, i) =>
     (i >= 151 && i <= 200) ? 5.0 : 0.0);
-  setLastVerify(verify);
-  const payload = {
-    verify_before_after: {
-      band_hz: [50, 350],
-      fill_segments: [
-        { tone: 'improved', i_lo: 100, i_hi: 150, f_lo_hz: gridFreqs[100], f_hi_hz: gridFreqs[150] },
-        { tone: 'regressed', i_lo: 151, i_hi: 200, f_lo_hz: gridFreqs[151], f_hi_hz: gridFreqs[200] },
-      ],
-    },
-  };
-  const ops = recordDrawChart(measured, null, null, payload);
+  const fillSegments = [
+    { tone: 'improved', i_lo: 100, i_hi: 150, f_lo_hz: gridFreqs[100], f_hi_hz: gridFreqs[150] },
+    { tone: 'regressed', i_lo: 151, i_hi: 200, f_lo_hz: gridFreqs[151], f_hi_hz: gridFreqs[200] },
+  ];
+  const ops = recordDrawChart({measured, verify}, fillSegments);
   const fills = beforeAfterFills(ops);
   assert(fills.length === 2,
     "one fill per server segment", { got: fills.length });
@@ -907,15 +836,10 @@ function curveOf(fn) {
   const verify = curveOf(() => 0);
   verify.magnitude_db = verify.magnitude_db.map((v, i) =>
     (i >= 100 && i <= 120) ? 6.0 : 0.0);  // clearly worse than before
-  setLastVerify(verify);
-  const payload = {
-    verify_before_after: {
-      fill_segments: [
-        { tone: 'improved', i_lo: 100, i_hi: 120 },  // server says improved
-      ],
-    },
-  };
-  const ops = recordDrawChart(measured, null, null, payload);
+  const fillSegments = [
+    { tone: 'improved', i_lo: 100, i_hi: 120 },  // server says improved
+  ];
+  const ops = recordDrawChart({measured, verify}, fillSegments);
   const fills = beforeAfterFills(ops);
   assert(fills.length === 1, "segment must render", { got: fills.length });
   assert(fills[0] && fills[0].fillStyle === FILL_GREEN,
@@ -927,22 +851,15 @@ function curveOf(fn) {
 //     server payload — the chart never invents a before/after story.
 {
   const measured = curveOf(() => 0);
-  const payload = {
-    verify_before_after: {
-      fill_segments: [{ tone: 'improved', i_lo: 100, i_hi: 120 }],
-    },
-  };
-  setLastVerify(null);
-  let ops = recordDrawChart(measured, null, null, payload);
+  const fillSegments = [{ tone: 'improved', i_lo: 100, i_hi: 120 }];
+  let ops = recordDrawChart({measured}, fillSegments);
   assert(beforeAfterFills(ops).length === 0,
     "no verify measurement → no before/after fill");
 
   const verify = curveOf(() => 0);
-  setLastVerify(verify);
-  ops = recordDrawChart(measured, null, null, {});
+  ops = recordDrawChart({measured, verify}, []);
   assert(beforeAfterFills(ops).length === 0,
-    "no verify_before_after payload → no before/after fill");
-  setLastVerify(null);
+    "no envelope fill segments → no before/after fill");
 }
 
 // ---- P3b: stepped-wizard router (envelope-driven) --------------------------
@@ -1792,7 +1709,7 @@ await (async () => {
     "successful retry clears the prior typed refusal");
 })();
 
-// 29ac. Technical status evidence never bypasses the closed homeowner copy
+// 29ac. Mechanism status evidence never bypasses the closed homeowner copy
 //       on the primary wizard/result surfaces.
 {
   const raw = "RAW_DIAGNOSTIC_SENTINEL";
@@ -1803,19 +1720,7 @@ await (async () => {
   renderQuality({capture_quality: [{
     issues: [{severity: "warn", code: "future", message: raw}],
   }]});
-  renderConfidence({confidence_report: {
-    level: "low", score: 25, summary: raw,
-    position_variance: {available: false, reason: raw},
-    strategy_gates: {},
-    findings: [{severity: "fail", code: "future", message: raw}],
-  }});
-  renderRuntimeIntegrity({runtime_integrity: {
-    level: "warn", snapshot_count: 1, capture_count: 1,
-    latest_snapshot: {},
-    issues: [{severity: "warn", code: "future", message: raw}],
-  }});
-  ["browser-audio-report", "quality-banner", "confidence-panel",
-    "runtime-integrity-panel"].forEach((id) => {
+  ["browser-audio-report", "quality-banner"].forEach((id) => {
     assert(getOrMake(id).innerHTML.indexOf(raw) < 0,
       "primary status panel keeps raw diagnostic out of homeowner copy", {id});
   });
@@ -2477,4 +2382,4 @@ if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 50 }));
+console.log(JSON.stringify({ ok: true, tests: 51 }));

@@ -194,33 +194,15 @@ sounds fine, let's not touch anything below 150 Hz."
 Re-read [`HANDOFF-correction.md`](HANDOFF-correction.md) for the
 full picture. The bits that matter for this proposal:
 
-### Web wizard — `jasper-correction-web`
+### Room web boundary
 
-- **Socket-activated** (zero RAM idle; spawns on first request to
-  `https://jts.local/correction/`, 10-min idle timeout). Unit files
-  at [`deploy/jasper-correction-web.service`](../deploy/jasper-correction-web.service)
-  and [`.socket`](../deploy/jasper-correction-web.socket).
-- stdlib [`ThreadingHTTPServer`](../jasper/web/correction_setup.py) on
-  127.0.0.1:8770 behind nginx → `https://jts.local/correction/`.
-  HTTPS is mandatory because `getUserMedia` requires a secure
-  context; the page documents the iOS trust dance.
-- Routes (all in [`jasper/web/correction_setup.py`](../jasper/web/correction_setup.py)):
-  `GET /`, `GET /healthz`, `GET /status`, `GET /sessions`,
-  `GET /session-report?id=<id>`,
-  `POST /start`, `POST /next-position`, `POST /repeat-position`,
-  `POST /verify`, `POST /upload-noise`, `POST /upload-capture`,
-  `POST /apply`, `POST /reset`,
-  `POST /session/delete`,
-  `POST /test-tone`, `POST /autolevel/start`, `POST /autolevel/lock`,
-  `POST /autolevel/cancel`.
-- Frontend is an inline HTML / vanilla JS page emitted from the
-  `_PAGE_HTML` template with `__HOSTNAME__` / `__REQUIRED_SR__` /
-  navigation substitutions in `_render_page()`. It uses a canvas
-  chart and an AudioWorklet for mic capture at 48 kHz
-  (constraint-pinned; the page hard-rejects sample-rate / EC / NS /
-  AGC overrides per WebKit Bug 179411 mitigation).
-- Browser polls `GET /status` every 500 ms for state snapshots; no
-  SSE today.
+Current Room routes, browser flow, polling, presentation-envelope ownership,
+and capture constraints live in [`HANDOFF-correction.md`](HANDOFF-correction.md)
+and [`room-correction-information-design.md`](room-correction-information-design.md).
+This calibration-agent layer owns only the optional tuning operations exposed
+by the Room server: `/interpret`, `/propose`, and `/propose/apply`. The server
+revalidates and re-simulates every proposed filter set before the shared apply,
+verify, acceptance, and automatic-revert path can use it.
 
 ### DSP pipeline — [`jasper/correction/`](../jasper/correction/)
 

@@ -101,17 +101,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var positionCurrent = document.getElementById('position-current');
   var positionTotal = document.getElementById('position-total');
   var resultSection = document.getElementById('result-section');
-  var resultsSummary = document.getElementById('results-summary');
-  var chartSmoothing = document.getElementById('chart-smoothing');
-  var chartShowSpread = document.getElementById('chart-show-spread');
   var chartShowFilter = document.getElementById('chart-show-filter');
-  var chartShowBand = document.getElementById('chart-show-band');
   var canvas = document.getElementById('chart');
-  var peqList = document.getElementById('peq-list');
-  var verifySummary = document.getElementById('verify-summary');
-  var designReport = document.getElementById('design-report');
-  var confidencePanel = document.getElementById('confidence-panel');
-  var runtimeIntegrityPanel = document.getElementById('runtime-integrity-panel');
   var loadSessionsBtn = document.getElementById('load-sessions');
   var sessionHistory = document.getElementById('session-history');
   var sessionReport = document.getElementById('session-report');
@@ -134,8 +125,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var noiseCaptureResolve = null;
   var noiseCaptureReject = null;
   var noiseCaptureTimeout = null;
-  var lastResult = null;
-  var lastVerify = null;
+  var lastChartEnvelope = null;
   var inVerifyMode = false;
   var captureMode = 'measurement';
   // Latest mic RMS in dBFS, updated by the AudioWorklet at ~20 Hz.
@@ -1560,9 +1550,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   // The envelope router. Renders the full wizard chrome from one envelope
-  // and, on review/result, draws the server-smoothed curves + headline into
-  // the SAME canvas the /status path uses (the browser renders server data
-  // verbatim — no client smoothing on this path).
+  // and, on review/result, draws its server-smoothed curves into the shared
+  // result canvas (server data verbatim; no client smoothing or /status
+  // presentation path).
   function renderEnvelope(env) {
     if (!env || !wizardChrome) return;
     wizardChrome.classList.remove('hidden');
@@ -1838,32 +1828,26 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   }
 
-  // Draw the envelope's server-smoothed curves + two-tone fill + headline.
-  // Bridges the envelope shape onto the existing drawChart contract: the
-  // envelope's `verify` curve becomes drawChart's lastVerify overlay, and
-  // fill_segments ride in on a synthesized `verify_before_after` payload so
-  // drawBeforeAfterFill consumes them exactly as it does on the /status
-  // path (server tones verbatim — pinned by the render harness). Curves are
-  // already 1/N-oct smoothed on the Pi, so smoothCurve (client display
-  // smoothing) is a near no-op here; the honest server data is what draws.
+  // Draw the envelope's already-smoothed curves and server-classified fill.
+  // The canvas is deliberately a dumb renderer: no /status result payload,
+  // client smoothing, confidence policy, or verdict derivation enters here.
   function drawEnvelopeCurves(env) {
     var curves = env.curves || {};
     if (!curves.measured) return;   // nothing to draw before the first sweep
-    if (curves.verify) {
-      lastVerify = curves.verify;   // drawChart reads this for the overlay
-    }
-    // The one-number headline (env.headline) is already folded into
-    // verdict_text by the server for the result screen, so it needs no
-    // separate render here — the verdict line carries it.
-    var payload = {};
-    if (env.fill_segments && env.fill_segments.length && curves.verify) {
-      payload.verify_before_after = { fill_segments: env.fill_segments };
-    }
+    lastChartEnvelope = env;
     // result-section visibility is owned by renderSections (gated on
     // these same envelope curves), which renderEnvelope ran just before
     // this — the canvas is already laid out; no second un-hide here.
     void canvas.offsetWidth;   // force layout so getBoundingClientRect is real
-    drawChart(curves.measured, curves.target || null, curves.predicted || null, payload);
+    if (!drawChart(curves, env.fill_segments || [])) {
+      // Mobile Safari can report 0×0 for one frame after revealing the
+      // result section. Retry once, bounded, after layout catches up.
+      window.requestAnimationFrame(function () {
+        if (lastChartEnvelope === env) {
+          drawChart(curves, env.fill_segments || []);
+        }
+      });
+    }
   }
 
   // Fetch the screen envelope once and render it. Increments a probe-visible
@@ -2021,197 +2005,14 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   }
 
-  function renderPEQs(peqs) {
-    if (!peqs || peqs.length === 0) {
-      peqList.innerHTML = '<p class="hint">No filters needed — your room\'s bass is already flat (or close enough). Nothing to apply.</p>';
-      return;
-    }
-    var rows = peqs.map(function (p, i) {
-      return '<tr><td>peq_' + (i+1) + '</td>' +
-             '<td>' + p.freq_hz.toFixed(1) + ' Hz</td>' +
-             '<td>Q ' + p.q.toFixed(2) + '</td>' +
-             '<td>' + p.gain_db.toFixed(2) + ' dB</td></tr>';
-    }).join('');
-    peqList.innerHTML =
-      '<table><thead><tr><th>Filter</th><th>Freq</th><th>Q</th><th>Gain</th></tr></thead>' +
-      '<tbody>' + rows + '</tbody></table>';
-  }
-
-  function renderDesignReport(report) {
-    if (!report || !report.correction_strategy) {
-      designReport.classList.add('hidden');
-      designReport.innerHTML = '';
-      return;
-    }
-    var before = report.before || {};
-    var after = report.after || {};
-    // PREDICTED (model estimate), not a measured improvement. The
-    // server renames this key from the old "improvement" so the UI
-    // cannot claim the room got better without a verify measurement.
-    var predicted = report.predicted || {};
-    var warnings = report.warnings || [];
-    var filterAudits = report.filters || [];
-    var warningHtml = '';
-    if (warnings.length) {
-      warningHtml = '<ul>' + warnings.map(function (w) {
-        return '<li>' + escapeText(w.message || w.code) + '</li>';
-      }).join('') + '</ul>';
-    }
-    var filterHtml = '';
-    if (filterAudits.length) {
-      filterHtml = '<ul>' + filterAudits.map(function (f) {
-        return '<li>' + escapeText(f.rationale || (
-          'Filter near ' + Math.round(f.freq_hz) + ' Hz'
-        )) + '</li>';
-      }).join('') + '</ul>';
-    }
-    designReport.classList.remove('hidden');
-    designReport.innerHTML =
-      '<h3>Design audit</h3>' +
-      '<p class="hint">' +
-      'Strategy: <strong>' + escapeText(report.correction_strategy.label) +
-      '</strong> · Target: <strong>' + escapeText(report.target_profile.label) +
-      '</strong> · Band: ' + Math.round(report.band_hz[0]) + '-' +
-      Math.round(report.band_hz[1]) + ' Hz.</p>' +
-      '<p class="hint">Predicted modal-band RMS error: ' +
-      (before.rms_db || 0).toFixed(1) + ' dB -> ' +
-      (after.rms_db || 0).toFixed(1) + ' dB' +
-      ' (' + (predicted.rms_db || 0).toFixed(1) +
-      ' dB predicted change — model estimate, not yet measured). ' +
-      'Apply, then Verify to measure the real before/after.</p>' +
-      warningHtml + filterHtml;
-  }
-
-  function renderConfidence(payload) {
-    var report = payload && (
-      payload.confidence_report ||
-      (payload.design_report && payload.design_report.confidence_report)
-    );
-    if (!report) {
-      confidencePanel.className = 'confidence-card hidden';
-      confidencePanel.innerHTML = '';
-      return;
-    }
-
-    var level = report.level || 'low';
-    var score = typeof report.score === 'number' ? report.score : 0;
-    var variance = report.position_variance || {};
-    var gates = report.strategy_gates || {};
-    var gateHtml = ['safe', 'balanced', 'assertive'].map(function (name) {
-      var gate = gates[name] || {};
-      var allowed = !!gate.allowed;
-      return '<span class="gate ' + (allowed ? 'allowed' : 'blocked') + '">' +
-        escapeText(name) + ': ' + (allowed ? 'allowed' : 'blocked') +
-        '</span>';
-    }).join('');
-
-    var varianceHtml = '';
-    if (variance.available) {
-      varianceHtml =
-        '<p class="hint">Position variance: ' +
-        'p90 std ' + Number(variance.p90_std_db || 0).toFixed(1) + ' dB, ' +
-        'max range ' + Number(variance.max_range_db || 0).toFixed(1) +
-        ' dB across ' + Number(variance.position_count || 0) +
-        ' positions.</p>';
-    } else {
-      varianceHtml =
-        '<p class="hint">Measure more listening positions to compare how the room changes.</p>';
-    }
-
-    confidencePanel.className = 'confidence-card ' + level;
-    confidencePanel.innerHTML =
-      '<h3>Measurement confidence</h3>' +
-      '<p><strong>' + escapeText(level.toUpperCase()) + '</strong> · ' +
-      '<span class="confidence-score">' + score + '/100</span></p>' +
-      '<p class="hint">JTS combined the completed positions and quality ' +
-      'checks into this rating.</p>' +
-      varianceHtml +
-      '<div class="gate-list">' + gateHtml + '</div>';
-  }
-
-  function renderRuntimeIntegrity(payload) {
-    var report = payload && (
-      payload.runtime_integrity ||
-      (payload.confidence_report && payload.confidence_report.runtime_integrity)
-    );
-    if (!report || (!report.snapshot_count && !report.capture_count)) {
-      runtimeIntegrityPanel.className = 'runtime-card hidden';
-      runtimeIntegrityPanel.innerHTML = '';
-      return;
-    }
-    var level = report.level || 'ok';
-    var latest = report.latest_snapshot || {};
-    var memory = latest.memory || {};
-    var load = latest.load_per_core;
-    var issues = (report.issues || []).slice(0, 5);
-    var issueHtml = issues.length
-      ? '<p class="hint">The speaker recorded a runtime warning. Re-measuring may improve confidence.</p>'
-      : '<p class="hint">No runtime warnings were recorded around the sweep.</p>';
-    var loadText = Number.isFinite(Number(load))
-      ? Number(load).toFixed(2) + ' load/core'
-      : 'load unavailable';
-    var memText = Number.isFinite(Number(memory.available_mb))
-      ? Number(memory.available_mb).toFixed(0) + ' MB free'
-      : 'memory unavailable';
-    runtimeIntegrityPanel.className = 'runtime-card ' + level;
-    runtimeIntegrityPanel.innerHTML =
-      '<h3>Runtime integrity</h3>' +
-      '<p><strong>' + escapeText(level.toUpperCase()) + '</strong> · ' +
-      Number(report.capture_count || 0) + ' capture artifact(s), ' +
-      Number(report.snapshot_count || 0) + ' system snapshot(s).</p>' +
-      '<p class="hint">' + escapeText(loadText) + ' · ' +
-      escapeText(memText) + '</p>' +
-      issueHtml;
-  }
-
   function numberOrNull(value) {
     var n = Number(value);
     return Number.isFinite(n) ? n : null;
   }
 
-  function formatHz(value) {
-    var n = numberOrNull(value);
-    if (n === null) return '—';
-    if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + ' kHz';
-    return n.toFixed(n >= 100 ? 0 : 1) + ' Hz';
-  }
-
-  function formatDb(value) {
-    var n = numberOrNull(value);
-    if (n === null) return '—';
-    return (n > 0 ? '+' : '') + n.toFixed(1) + ' dB';
-  }
-
   function formatMaybeDb(value) {
     var n = numberOrNull(value);
     return n === null ? '—' : n.toFixed(1) + ' dB';
-  }
-
-  // Honest MEASURED before/after headline. All numbers are computed
-  // on the Pi (session.verify_before_after) and are authoritative;
-  // the client applies only a small ±0.1 dB display deadband to the
-  // server delta when choosing the verb/colour, so a sub-noise delta
-  // reads "held about the same" instead of over-claiming a change.
-  function verifyHeadlineHtml(ba) {
-    if (!ba || !ba.before || !ba.after || !ba.delta) return '';
-    var band = ba.band_hz || [50, 350];
-    var beforeRms = numberOrNull(ba.before.rms_db);
-    var afterRms = numberOrNull(ba.after.rms_db);
-    var deltaRms = numberOrNull(ba.delta.rms_db);
-    if (beforeRms === null || afterRms === null || deltaRms === null) return '';
-    // delta.rms_db > 0 means the measured deviation shrank.
-    var better = deltaRms > 0.1;
-    var worse = deltaRms < -0.1;
-    var verb = better
-      ? 'Bass evened out'
-      : (worse ? 'Bass deviation grew' : 'Bass held about the same');
-    return '<strong class="verify-headline ' +
-      (better ? 'improved' : (worse ? 'regressed' : 'neutral')) + '">' +
-      escapeText(verb) + ': ±' + beforeRms.toFixed(1) + ' dB → ±' +
-      afterRms.toFixed(1) + ' dB</strong> ' +
-      '<span class="hint">(measured RMS deviation from target over ' +
-      Math.round(Number(band[0])) + '–' + Math.round(Number(band[1])) +
-      ' Hz, before vs after correction).</span>';
   }
 
   function formatBytes(bytes) {
@@ -2450,155 +2251,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       '.</p>';
   }
 
-  function chartPayload(payload) {
-    payload = payload || lastResult || {};
-    return {
-      confidence: payload.confidence_report ||
-        (payload.design_report && payload.design_report.confidence_report) ||
-        null,
-      design: payload.design_report || null,
-      position: payload.position_analysis ||
-        (payload.design_report && payload.design_report.position_report) ||
-        null,
-      runtime: payload.runtime_integrity ||
-        (payload.confidence_report && payload.confidence_report.runtime_integrity) ||
-        null,
-      peqs: payload.peqs || []
-    };
-  }
-
-  function recommendedNextAction(payload) {
-    var p = chartPayload(payload);
-    var confidence = p.confidence || {};
-    var level = confidence.level || 'low';
-    var failed = (confidence.findings || []).some(function (finding) {
-      return finding.severity === 'fail';
-    });
-    if (p.runtime && p.runtime.level === 'fail') {
-      return 'Remeasure — runtime evidence says this sweep may be corrupted.';
-    }
-    if (p.runtime && p.runtime.level === 'warn' && level !== 'high') {
-      return 'Review runtime warnings, then remeasure if the curve looks surprising.';
-    }
-    if (failed || level === 'low') {
-      return 'Remeasure before trusting aggressive correction.';
-    }
-    if (!p.peqs.length) {
-      return 'No correction is needed from this measurement.';
-    }
-    if (level === 'medium') {
-      return 'Apply only a conservative strategy, then verify.';
-    }
-    return 'Apply the proposed correction, then verify from the main seat.';
-  }
-
-  function renderResultsSummary(payload) {
-    if (!payload || !payload.measured) {
-      resultsSummary.className = 'results-summary hidden';
-      resultsSummary.innerHTML = '';
-      return;
-    }
-    var p = chartPayload(payload);
-    var confidence = p.confidence || {};
-    var design = p.design || {};
-    // PREDICTED model estimate (renamed from "improvement" server-side).
-    var predicted = design.predicted || {};
-    var strategy = design.correction_strategy || {};
-    var position = p.position || {};
-    var bands = (position.bands || []).filter(function (band) {
-      return band.available;
-    }).slice(0, 5);
-    var flags = position.feature_flags || [];
-    var flagText = flags.length
-      ? flags.slice(0, 3).map(function (flag) {
-          return escapeText(flag.reason || flag.kind);
-        }).join('<br>')
-      : 'No rejected high-risk features were flagged.';
-    var bandRows = bands.map(function (band) {
-      var confidenceLevel = band.confidence_level || 'low';
-      var residual = band.residual || {};
-      return '<tr><td data-label="Band">' +
-        escapeText(band.label || band.band_id) + '</td>' +
-        '<td data-label="Range">' + formatHz((band.band_hz || [])[0]) + '-' +
-        formatHz((band.band_hz || [])[1]) + '</td>' +
-        '<td data-label="Confidence"><span class="band-pill ' + escapeText(confidenceLevel) + '">' +
-        escapeText(confidenceLevel) + '</span></td>' +
-        '<td data-label="Spread">' + formatDb(band.p90_std_db) + '</td>' +
-        '<td data-label="RMS error">' + formatDb(residual.rms_db) + '</td></tr>';
-    }).join('');
-
-    resultsSummary.className = 'results-summary';
-    resultsSummary.innerHTML =
-      '<h3>Correction readout</h3>' +
-      '<p class="hint"><strong>Recommended next action:</strong> ' +
-      escapeText(recommendedNextAction(payload)) + '</p>' +
-      '<div class="metric-grid">' +
-        '<div class="metric"><span class="label">Confidence</span>' +
-        '<span class="value">' + escapeText(confidence.level || '—') +
-        ' · ' + Number(confidence.score || 0).toFixed(0) + '/100</span></div>' +
-        '<div class="metric"><span class="label">Positions</span>' +
-        '<span class="value">' + Number(position.position_count || 0) +
-        '</span></div>' +
-        '<div class="metric"><span class="label">Strategy</span>' +
-        '<span class="value">' + escapeText(strategy.label || strategy.strategy_id || '—') +
-        '</span></div>' +
-        '<div class="metric"><span class="label">Filters</span>' +
-        '<span class="value">' + Number(p.peqs.length || 0) + '</span></div>' +
-        '<div class="metric"><span class="label">Runtime</span>' +
-        '<span class="value">' + escapeText((p.runtime && p.runtime.level) || '—') +
-        '</span></div>' +
-        '<div class="metric"><span class="label">Predicted RMS change</span>' +
-        '<span class="value">' + formatDb(predicted.rms_db) + '</span></div>' +
-      '</div>' +
-      (bandRows
-        ? '<table class="band-table"><thead><tr><th>Band</th><th>Range</th>' +
-          '<th>Confidence</th><th>Spread</th><th>RMS error</th></tr></thead>' +
-          '<tbody>' + bandRows + '</tbody></table>'
-        : '<p class="hint">Band confidence is unavailable for this run.</p>') +
-      '<p class="hint"><strong>Rejected / caution areas:</strong><br>' +
-      flagText + '</p>';
-  }
-
-  function smoothingWidthOctaves() {
-    var mode = chartSmoothing ? chartSmoothing.value : 'none';
-    if (mode === '1/3') return 1 / 3;
-    if (mode === '1/6') return 1 / 6;
-    if (mode === '1/12') return 1 / 12;
-    return 0;
-  }
-
-  function smoothValues(freqs, values) {
-    var width = smoothingWidthOctaves();
-    if (!width || !freqs || !values || freqs.length !== values.length) {
-      return values ? values.slice() : [];
-    }
-    var half = width / 2;
-    return values.map(function (_value, i) {
-      var f0 = Number(freqs[i]);
-      if (!Number.isFinite(f0) || f0 <= 0) return Number(values[i] || 0);
-      var sum = 0;
-      var count = 0;
-      for (var j = 0; j < values.length; j++) {
-        var f = Number(freqs[j]);
-        var v = Number(values[j]);
-        if (!Number.isFinite(f) || f <= 0 || !Number.isFinite(v)) continue;
-        if (Math.abs(Math.log2(f / f0)) <= half) {
-          sum += v;
-          count += 1;
-        }
-      }
-      return count ? sum / count : Number(values[i] || 0);
-    });
-  }
-
-  function smoothCurve(curve) {
-    if (!curve || !curve.freqs_hz || !curve.magnitude_db) return curve;
-    return {
-      freqs_hz: curve.freqs_hz,
-      magnitude_db: smoothValues(curve.freqs_hz, curve.magnitude_db)
-    };
-  }
-
   function filterEffectCurve(measured, predicted) {
     if (
       !measured || !predicted ||
@@ -2616,7 +2268,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     };
   }
 
-  function drawChart(measured, target, predicted, payload) {
+  function drawChart(curves, fillSegments) {
+    curves = curves || {};
+    var measured = curves.measured || null;
+    var target = curves.target || null;
+    var predicted = curves.predicted || null;
+    var verify = curves.verify || null;
     var dpr = window.devicePixelRatio || 1;
     var rect = canvas.getBoundingClientRect();
     // Defensive: a hidden canvas (display:none ancestor) reports
@@ -2644,18 +2301,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
     function fx(f) { return ml + W * (Math.log2(f / fMin) / Math.log2(fMax / fMin)); }
     function fy(db) { return mt + H * (1 - (db - dbMin) / (dbMax - dbMin)); }
-    var displayMeasured = smoothCurve(measured);
-    var displayTarget = smoothCurve(target);
-    var displayPredicted = smoothCurve(predicted);
-    var p = chartPayload(payload);
-    var band = p.design && p.design.band_hz;
-
-    if (chartShowBand && chartShowBand.checked && band && band.length === 2) {
-      c.fillStyle = 'rgba(29, 185, 84, 0.08)';
-      var x0 = fx(Math.max(fMin, Number(band[0])));
-      var x1 = fx(Math.min(fMax, Number(band[1])));
-      c.fillRect(x0, mt, Math.max(0, x1 - x0), H);
-    }
 
     // Grid
     c.strokeStyle = '#e6e6e6'; c.fillStyle = '#888';
@@ -2674,30 +2319,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // 0 dB emphasis
     c.strokeStyle = '#bbb';
     c.beginPath(); c.moveTo(ml, fy(0)); c.lineTo(ml + W, fy(0)); c.stroke();
-
-    function drawSpread(chart) {
-      if (
-        !chart || !chart.freqs_hz || !chart.min_db || !chart.max_db ||
-        chart.freqs_hz.length !== chart.min_db.length ||
-        chart.freqs_hz.length !== chart.max_db.length
-      ) return;
-      var minDb = smoothValues(chart.freqs_hz, chart.min_db);
-      var maxDb = smoothValues(chart.freqs_hz, chart.max_db);
-      c.fillStyle = 'rgba(212, 68, 68, 0.14)';
-      c.beginPath();
-      var first = true;
-      for (var i = 0; i < chart.freqs_hz.length; i++) {
-        var x = fx(chart.freqs_hz[i]);
-        var y = fy(maxDb[i]);
-        if (first) { c.moveTo(x, y); first = false; }
-        else c.lineTo(x, y);
-      }
-      for (var j = chart.freqs_hz.length - 1; j >= 0; j--) {
-        c.lineTo(fx(chart.freqs_hz[j]), fy(minDb[j]));
-      }
-      c.closePath();
-      c.fill();
-    }
 
     function drawCurve(curve, color, dashed, width) {
       if (!curve || !curve.freqs_hz) return;
@@ -2720,11 +2341,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // pre-correction measured curve and the post-correction verify
     // curve, green where the correction moved toward the target
     // (improved), amber where it moved away (regressed). The segment
-    // classification + grid indices come from the Pi
-    // (verify_before_after.fill_segments); this only renders them,
-    // mirroring drawSpread's polygon technique. Callers pass the
-    // display curves — smoothing preserves the grid, so the server's
-    // i_lo/i_hi still address the right frequency points.
+    // classification + grid indices come from the Pi envelope; this only
+    // renders them against the exact server-smoothed curves.
     function drawBeforeAfterFill(segments, beforeCurve, afterCurve) {
       if (
         !segments || !segments.length ||
@@ -2762,73 +2380,33 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       });
     }
 
-    if (
-      chartShowSpread && chartShowSpread.checked &&
-      p.position && p.position.chart
-    ) {
-      drawSpread(p.position.chart);
-    }
-
     // Measured before/after fill (green=improved, amber=regressed),
     // under the curves so both edges stay visible. The improved/
     // regressed verdict + grid indices are Pi-computed; we only fill
-    // between the displayed (smoothed) before/after curves within each
+    // between the server-smoothed before/after curves within each
     // server-classified segment. Render only when a verify exists.
-    var beforeAfter = payload && payload.verify_before_after;
-    if (lastVerify && beforeAfter && beforeAfter.fill_segments) {
-      drawBeforeAfterFill(
-        beforeAfter.fill_segments, displayMeasured, smoothCurve(lastVerify),
-      );
+    if (verify && fillSegments && fillSegments.length) {
+      drawBeforeAfterFill(fillSegments, measured, verify);
     }
 
-    drawCurve(displayTarget, '#888', true, 2);
-    drawCurve(displayMeasured, '#d44', false, 2);
-    drawCurve(displayPredicted, '#1db954', false, 2);
+    drawCurve(target, '#888', true, 2);
+    drawCurve(measured, '#d44', false, 2);
+    drawCurve(predicted, '#1db954', false, 2);
     if (chartShowFilter && chartShowFilter.checked) {
       drawCurve(
-        filterEffectCurve(displayMeasured, displayPredicted),
+        filterEffectCurve(measured, predicted),
         '#2b7bb9',
         true,
         1.6,
       );
     }
     // Phase 2: post-correction verify pass overlay (purple dashed).
-    if (lastVerify) {
-      drawCurve(smoothCurve(lastVerify), '#a050d0', true, 2);
-    }
-
-    (p.peqs || []).forEach(function (peq, idx) {
-      var freq = Number(peq.freq_hz);
-      if (!Number.isFinite(freq) || freq < fMin || freq > fMax) return;
-      var x = fx(freq);
-      c.strokeStyle = 'rgba(43, 123, 185, 0.45)';
-      c.lineWidth = 1;
-      c.beginPath(); c.moveTo(x, mt); c.lineTo(x, mt + H); c.stroke();
-      c.fillStyle = '#2b7bb9';
-      c.fillText(String(idx + 1), x - 3, mt + 11);
-    });
-
-    var flags = (p.position && p.position.feature_flags) || [];
-    flags.slice(0, 6).forEach(function (flag) {
-      var freq = Number(flag.freq_hz || flag.worst_freq_hz);
-      if (!Number.isFinite(freq) || freq < fMin || freq > fMax) return;
-      var x = fx(freq);
-      c.strokeStyle = 'rgba(214, 130, 0, 0.55)';
-      c.setLineDash([2, 3]);
-      c.beginPath(); c.moveTo(x, mt); c.lineTo(x, mt + H); c.stroke();
-      c.setLineDash([]);
-    });
+    drawCurve(verify, '#a050d0', true, 2);
+    return true;
   }
 
   function redrawLatestChart() {
-    if (lastResult && lastResult.measured) {
-      drawChart(
-        lastResult.measured,
-        lastResult.target,
-        lastResult.predicted,
-        lastResult,
-      );
-    }
+    if (lastChartEnvelope) drawEnvelopeCurves(lastChartEnvelope);
   }
 
   // -- Network --
@@ -2989,18 +2567,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     resetBtn.classList.add('hidden');
     resultSection.classList.add('hidden');
     positionPrompt.classList.add('hidden');
-    verifySummary.classList.add('hidden');
-    resultsSummary.className = 'results-summary hidden';
-    resultsSummary.innerHTML = '';
-    designReport.classList.add('hidden');
-    designReport.innerHTML = '';
-    confidencePanel.className = 'confidence-card hidden';
-    confidencePanel.innerHTML = '';
-    runtimeIntegrityPanel.className = 'runtime-card hidden';
-    runtimeIntegrityPanel.innerHTML = '';
     qualityBanner.className = 'quality-banner hidden';
     qualityBanner.innerHTML = '';
-    lastVerify = null;
+    lastChartEnvelope = null;
     inVerifyMode = false;
     setStateBadge('preparing', 'pausing music…');
   }
@@ -3446,7 +3015,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   }
 
-  async function pollState() {
+  async function pollState(options) {
+    options = options || {};
     if (pollTimer) clearTimeout(pollTimer);
     try {
       var s = await fetchStatus();
@@ -3461,16 +3031,21 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       setStateBadge(s.state, detail);
       renderQuality(s);
       renderBrowserAudioReport(s.browser_audio_report);
-      renderConfidence(s);
-      renderRuntimeIntegrity(s);
       applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
       // Edge-trigger the envelope-driven wizard chrome on a real transition
       // (state change, or autolevel sub-state change that flips the "level"
       // screen). Static screens are refreshed exactly here — never on every
       // /status tick — honouring the P3b-1 poll discipline.
-      maybeRefreshEnvelopeOnStateChange(
-        s.state, s.autolevel ? s.autolevel.status : 'idle',
-      );
+      var autolevelState = s.autolevel ? s.autolevel.status : 'idle';
+      if (options.skipEnvelopeRefresh) {
+        pendingHomeownerFailure = null;
+        lastObservedStatusState = s.state;
+        lastAutolevelStatus = autolevelState || 'idle';
+      } else {
+        maybeRefreshEnvelopeOnStateChange(
+          s.state, autolevelState,
+        );
+      }
 
       if (s.state === 'needs_next_position') {
         positionCurrent.textContent = (s.current_position + 1);
@@ -3504,31 +3079,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         }
         if (workletNode) workletNode.port.postMessage('stopCapture');
         return;  // upload-capture handler resumes polling
-      }
-      if (s.state === 'verified' && s.verify_metrics) {
-        var headline = verifyHeadlineHtml(s.verify_before_after);
-        // Band text comes from the server payload (verify_before_after
-        // shares verify_metrics' band); 50–350 is only the fallback for
-        // sessions verified before the before/after payload existed.
-        var vband = (s.verify_before_after && s.verify_before_after.band_hz) ||
-          [50, 350];
-        verifySummary.innerHTML =
-          (headline ? headline + '<br>' : '') +
-          '<strong>Post-correction (' + Math.round(Number(vband[0])) + '–' +
-          Math.round(Number(vband[1])) + ' Hz):</strong> RMS deviation ' +
-          s.verify_metrics.rms_db.toFixed(1) + ' dB, max ' +
-          s.verify_metrics.max_db.toFixed(1) + ' dB.<br>' +
-          '<span class="hint">' +
-          'Verify is a <em>single-position</em> measurement vs the ' +
-          'multi-position averaged design — in a modal room (especially a ' +
-          'cube), per-position swings of 10–15 dB at modal frequencies ' +
-          'are normal. Some bands will look corrected, some over-corrected, ' +
-          'some under-corrected. The audible test is what actually matters: ' +
-          'play familiar bass-heavy music and listen for the bass tightening ' +
-          'and modal "boom" reducing without the music sounding thinned-out.' +
-          '</span>';
-        verifySummary.classList.remove('hidden');
-        return;
       }
       if (s.state === 'idle' || s.state === 'ready' ||
           s.state === 'applied' || s.state === 'verified' ||
@@ -3586,47 +3136,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       if (!resp.ok) {
         throw await responseError(resp, GENERIC_STEP_FAILURE);
       }
-      var data = await resp.json();
-      lastResult = data;
-      // Verify pass: hold the design curves, overlay the new
-      // measurement as `lastVerify`. Otherwise: redraw with the
-      // freshly designed curves.
-      if (data.verify) {
-        lastVerify = data.verify;
-      }
-      // CRITICAL: show resultSection BEFORE drawing the chart. A
-      // hidden canvas has zero bounding-rect dimensions, so
-      // canvas.width gets set to 0 and the chart renders empty —
-      // which is exactly the "frequency response is blank" bug a
-      // user hit on the first measurement. Show, then draw, then
-      // request a follow-up frame to redraw in case layout hadn't
-      // settled (mobile Safari sometimes lags one frame on
-      // display:block transitions).
-      if (data.peqs) {
-        renderPEQs(data.peqs);
-      }
-      renderDesignReport(data.design_report);
-      renderConfidence(data);
-      renderRuntimeIntegrity(data);
-      renderResultsSummary(data);
-      renderQuality(data);
-      renderBrowserAudioReport(data.browser_audio_report);
-      var hasResultPayload = !!(
-        data.measured || data.verify || data.design_report ||
-        (data.peqs && data.peqs.length)
-      );
-      if (hasResultPayload) resultSection.classList.remove('hidden');
-      if (hasResultPayload && data.measured) {
-        // Force a layout flush so getBoundingClientRect returns
-        // real dimensions on the first draw.
-        void canvas.offsetWidth;
-        drawChart(data.measured, data.target, data.predicted, data);
-        // Safety redraw next frame.
-        requestAnimationFrame(function () {
-          drawChart(data.measured, data.target, data.predicted, data);
-        });
-      }
-      pollState();
+      // The upload response is only an acknowledgement. Presentation comes
+      // from the envelope after the server has committed the new state.
+      await resp.json();
+      pendingHomeownerFailure = null;
+      envelopeRetryArmed = true;
+      await Promise.all([
+        pollState({skipEnvelopeRefresh: true}),
+        refreshEnvelope(),
+      ]);
     } catch (e) {
       setStateBadge('failed', e.message);
       showHomeownerFailure(e);
@@ -3815,8 +3333,5 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
   window.addEventListener('resize', scheduleChartRedraw);
   window.addEventListener('orientationchange', scheduleChartRedraw);
-  chartSmoothing.addEventListener('change', redrawLatestChart);
-  chartShowSpread.addEventListener('change', redrawLatestChart);
   chartShowFilter.addEventListener('change', redrawLatestChart);
-  chartShowBand.addEventListener('change', redrawLatestChart);
 })();
