@@ -2890,6 +2890,11 @@ def test_crossover_envelope_projects_active_owned_alignment_actions():
         "status": "current",
         "isolated_evidence": {"status": "complete"},
     }
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
     status["region_commissioning"] = {
         "status": "needs_geometry",
         "next_geometry": {
@@ -2903,6 +2908,9 @@ def test_crossover_envelope_projects_active_owned_alignment_actions():
     geometry = crossover_envelope.build_crossover_envelope(status)
 
     assert geometry["progress"] == {"position": 4, "total": 5}
+    assert next(
+        step for step in geometry["steps"] if step["id"] == "apply"
+    )["status"] == "pending"
     assert geometry["next_action"] == {
         "id": "attest_region_geometry",
         "label": "Confirm signed geometry",
@@ -2937,6 +2945,9 @@ def test_crossover_envelope_projects_active_owned_alignment_actions():
     measured = crossover_envelope.build_crossover_envelope(status)
     assert measured["screen"] == "review"
     assert measured["next_action"] is None
+    assert next(
+        step for step in measured["steps"] if step["id"] == "apply"
+    )["status"] == "active"
 
 
 def test_driver_capture_geometry_must_match_server_owned_next_step():

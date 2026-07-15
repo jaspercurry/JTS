@@ -373,7 +373,11 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         done.add("drivers")
     if region_commissioning.get("status") == "measured":
         done.add("alignment")
-    if applied_ready and not automatic_remeasure:
+    if (
+        applied_ready
+        and not automatic_remeasure
+        and (not strict_isolated_complete or automatic_applied)
+    ):
         done.add("apply")
     if automatic_applied and not automatic_remeasure:
         done.update({"microphone", "drivers"})
