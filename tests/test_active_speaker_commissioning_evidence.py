@@ -40,6 +40,7 @@ from jasper.active_speaker.commissioning_evidence import (
     delay_point_target_fingerprint,
     derive_region_evidence_plan,
     evidence_attempt_target_id,
+    isolated_capture_context_base_fingerprint,
     isolated_capture_context_fingerprint,
     isolated_driver_attempt_target_id,
     isolated_driver_evidence_target_fingerprint,
@@ -48,6 +49,7 @@ from jasper.active_speaker.commissioning_run import (
     CommissioningAttemptHandle,
     CommissioningRunStore,
 )
+from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.admitted_playback import GeneratedExcitationWav
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity, CaptureIdentity
@@ -197,7 +199,10 @@ def _admission_artifact(
 
 
 def _allowed_admission(
-    plan: RegionEvidencePlan, target_fingerprint: str
+    plan: RegionEvidencePlan,
+    target_fingerprint: str,
+    *,
+    proof_token: str | None = None,
 ) -> ExcitationAdmission:
     excitation_plan = _hash(f"excitation:{target_fingerprint}")
     requirement = _hash(f"protection:{target_fingerprint}")
@@ -232,7 +237,9 @@ def _allowed_admission(
             protection_requirement_fingerprint=requirement,
             authority_fingerprint=limits.fingerprint,
             excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
-            evidence_fingerprint=_hash(f"graph-proof:{target_fingerprint}"),
+            evidence_fingerprint=_hash(
+                f"graph-proof:{proof_token or target_fingerprint}"
+            ),
             current=True,
         ),
     )
@@ -553,9 +560,32 @@ def _isolated_capture(
 ) -> AdmittedIsolatedDriverCapture:
     plan = harness.plan
     admission_id = f"isolated-{speaker_group_id}-{role}-{index}"
-    admission = _allowed_admission(plan, driver_target_fingerprint)
-    assert admission.protection_evidence is not None
-    proof = admission.protection_evidence.evidence_fingerprint
+    generation_admission = _allowed_admission(
+        plan,
+        driver_target_fingerprint,
+        proof_token=f"{admission_id}:generation",
+    )
+    playback_admission = _allowed_admission(
+        plan,
+        driver_target_fingerprint,
+        proof_token=f"{admission_id}:playback",
+    )
+    assert generation_admission.protection_evidence is not None
+    assert playback_admission.protection_evidence is not None
+    generation_proof = (
+        generation_admission.protection_evidence.evidence_fingerprint
+    )
+    playback_proof = playback_admission.protection_evidence.evidence_fingerprint
+    context_base = isolated_capture_context_base_fingerprint(
+        plan.authority,
+        plan_fingerprint=plan.fingerprint,
+        attempt=attempt,
+        evidence_target_fingerprint=evidence_target_fingerprint,
+        driver_target_id=driver_target_id,
+        driver_target_fingerprint=driver_target_fingerprint,
+        placement_fingerprint=placement_fingerprint,
+        graph_fingerprint=graph_fingerprint,
+    )
     context = isolated_capture_context_fingerprint(
         plan.authority,
         plan_fingerprint=plan.fingerprint,
@@ -565,23 +595,25 @@ def _isolated_capture(
         driver_target_fingerprint=driver_target_fingerprint,
         placement_fingerprint=placement_fingerprint,
         graph_fingerprint=graph_fingerprint,
-        generation_protection_evidence_fingerprint=proof,
-        playback_protection_evidence_fingerprint=proof,
+        generation_protection_evidence_fingerprint=generation_proof,
+        playback_protection_evidence_fingerprint=playback_proof,
     )
     session_id = plan.authority.commissioning_session_id
     generation = _admission_artifact(
         session_id,
         f"{GENERATION_PATH_PREFIX}/{admission_id}.json",
-        admission,
+        generation_admission,
     )
     playback = _admission_artifact(
         session_id,
         f"{PLAYBACK_PATH_PREFIX}/{admission_id}.json",
-        admission,
+        playback_admission,
     )
     stimulus = GeneratedExcitationWav(
         generation_artifact_fingerprint=generation.fingerprint,
-        excitation_plan_fingerprint=admission.limits.excitation_plan_fingerprint,
+        excitation_plan_fingerprint=(
+            generation_admission.limits.excitation_plan_fingerprint
+        ),
         artifact=_artifact(
             session_id,
             f"stimulus-fixture/{admission_id}.wav",
@@ -623,18 +655,19 @@ def _isolated_capture(
         evidence_target_fingerprint=evidence_target_fingerprint,
         driver_target_id=driver_target_id,
         driver_target_fingerprint=driver_target_fingerprint,
+        context_base_fingerprint=context_base,
         context_fingerprint=context,
         placement_fingerprint=placement_fingerprint,
         graph_fingerprint=graph_fingerprint,
-        generation_protection_evidence_fingerprint=proof,
-        playback_protection_evidence_fingerprint=proof,
+        generation_protection_evidence_fingerprint=generation_proof,
+        playback_protection_evidence_fingerprint=playback_proof,
         admission_id=admission_id,
         capture=capture,
         stimulus=stimulus,
         generation_artifact=generation,
         playback_artifact=playback,
-        generation_admission=admission,
-        playback_admission=admission,
+        generation_admission=generation_admission,
+        playback_admission=playback_admission,
     )
 
 
@@ -643,32 +676,42 @@ def _isolated_driver(
     *,
     speaker_group_id: str,
     role: str,
+    driver_target_id: str | None = None,
+    driver_target_fingerprint: str | None = None,
+    placement_fingerprint: str | None = None,
 ) -> IsolatedDriverEvidence:
     plan = harness.plan
-    driver_target_id = f"{speaker_group_id}:{role}"
-    driver_target_fingerprint = _hash(f"driver:{driver_target_id}")
+    planned_target = next(
+        target
+        for target in plan.driver_targets
+        if target.canonical_key == (speaker_group_id, role)
+    )
+    target_id = driver_target_id or planned_target.driver_target_id
+    target_fingerprint = (
+        driver_target_fingerprint or planned_target.driver_target_fingerprint
+    )
     evidence_target = isolated_driver_evidence_target_fingerprint(
         plan.authority,
         plan_fingerprint=plan.fingerprint,
         speaker_group_id=speaker_group_id,
         role=role,
-        driver_target_id=driver_target_id,
-        driver_target_fingerprint=driver_target_fingerprint,
+        driver_target_id=target_id,
+        driver_target_fingerprint=target_fingerprint,
     )
     attempt = harness.store.reserve_attempt(
         plan.authority.run,
         target_id=isolated_driver_attempt_target_id(evidence_target),
         target_fingerprint=evidence_target,
     )
-    placement = _hash("isolated-placement")
+    placement = placement_fingerprint or _hash("isolated-placement")
     graph = _hash(f"isolated-graph:{speaker_group_id}:{role}")
     captures = tuple(
         _isolated_capture(
             harness,
             speaker_group_id=speaker_group_id,
             role=role,
-            driver_target_id=driver_target_id,
-            driver_target_fingerprint=driver_target_fingerprint,
+            driver_target_id=target_id,
+            driver_target_fingerprint=target_fingerprint,
             evidence_target_fingerprint=evidence_target,
             attempt=attempt,
             index=index,
@@ -683,11 +726,11 @@ def _isolated_driver(
         speaker_group_id=speaker_group_id,
         role=role,
         evidence_target_fingerprint=evidence_target,
-        driver_target_id=driver_target_id,
-        driver_target_fingerprint=driver_target_fingerprint,
+        driver_target_id=target_id,
+        driver_target_fingerprint=target_fingerprint,
         attempt=attempt,
         placement_fingerprint=placement,
-        context_fingerprint=captures[0].context_fingerprint,
+        context_base_fingerprint=captures[0].context_base_fingerprint,
         graph_fingerprint=graph,
         captures=captures,
         repeatability_artifact=_artifact(
@@ -699,12 +742,6 @@ def _isolated_driver(
 
 
 def _complete_isolated(harness: _Harness) -> CompleteIsolatedDriverEvidence:
-    keys: list[tuple[str, str]] = []
-    for target in harness.plan.targets:
-        for role in (target.lower_role, target.upper_role):
-            key = (target.speaker_group_id, role)
-            if key not in keys:
-                keys.append(key)
     return CompleteIsolatedDriverEvidence(
         plan=harness.plan,
         drivers=tuple(
@@ -713,11 +750,11 @@ def _complete_isolated(harness: _Harness) -> CompleteIsolatedDriverEvidence:
                 speaker_group_id=speaker_group_id,
                 role=role,
             )
-            for speaker_group_id, role in keys
+            for speaker_group_id, role in (
+                target.canonical_key for target in harness.plan.driver_targets
+            )
         ),
     )
-
-
 def test_complete_isolated_driver_evidence_is_strict_run_bound_and_round_trips(
     tmp_path: Path,
 ) -> None:
@@ -730,6 +767,23 @@ def test_complete_isolated_driver_evidence_is_strict_run_bound_and_round_trips(
         ("mono", "tweeter"),
     ]
     assert all(len(driver.captures) == 3 for driver in complete.drivers)
+    for driver in complete.drivers:
+        assert {
+            capture.context_base_fingerprint for capture in driver.captures
+        } == {driver.context_base_fingerprint}
+        assert len(
+            {capture.context_fingerprint for capture in driver.captures}
+        ) == 3
+        assert len(
+            {
+                proof
+                for capture in driver.captures
+                for proof in (
+                    capture.generation_protection_evidence_fingerprint,
+                    capture.playback_protection_evidence_fingerprint,
+                )
+            }
+        ) == 6
     assert all(
         driver.attempt.run == complete.plan.authority.run
         and driver.attempt.target_fingerprint
@@ -772,6 +826,44 @@ def test_complete_isolated_driver_evidence_requires_exact_plan_roles_and_attempt
         replace(driver.captures[0], attempt=wrong_attempt)
 
 
+def test_complete_isolated_driver_evidence_requires_planned_driver_identities(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path, name="isolated-driver-binding")
+    complete = _complete_isolated(harness)
+    first = complete.drivers[0]
+    unplanned = _isolated_driver(
+        harness,
+        speaker_group_id=first.speaker_group_id,
+        role=first.role,
+        driver_target_id="driver:unplanned",
+        driver_target_fingerprint=_hash("driver:unplanned"),
+    )
+
+    with pytest.raises(CommissioningEvidenceError, match="exact plan"):
+        replace(complete, drivers=(unplanned, *complete.drivers[1:]))
+
+
+def test_complete_isolated_driver_evidence_requires_one_group_placement(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path, name="isolated-placement")
+    complete = _complete_isolated(harness)
+    second = complete.drivers[1]
+    moved = _isolated_driver(
+        harness,
+        speaker_group_id=second.speaker_group_id,
+        role=second.role,
+        placement_fingerprint=_hash("moved-placement"),
+    )
+
+    with pytest.raises(CommissioningEvidenceError, match="share one placement"):
+        replace(
+            complete,
+            drivers=(complete.drivers[0], moved, *complete.drivers[2:]),
+        )
+
+
 def test_complete_isolated_driver_evidence_rejects_context_and_global_replay(
     tmp_path: Path,
 ) -> None:
@@ -786,6 +878,16 @@ def test_complete_isolated_driver_evidence_rejects_context_and_global_replay(
 
     graph_replayed_captures = []
     for capture in second_driver.captures:
+        context_base = isolated_capture_context_base_fingerprint(
+            capture.authority,
+            plan_fingerprint=capture.plan_fingerprint,
+            attempt=capture.attempt,
+            evidence_target_fingerprint=capture.evidence_target_fingerprint,
+            driver_target_id=capture.driver_target_id,
+            driver_target_fingerprint=capture.driver_target_fingerprint,
+            placement_fingerprint=capture.placement_fingerprint,
+            graph_fingerprint=first_driver.graph_fingerprint,
+        )
         context = isolated_capture_context_fingerprint(
             capture.authority,
             plan_fingerprint=capture.plan_fingerprint,
@@ -806,6 +908,7 @@ def test_complete_isolated_driver_evidence_rejects_context_and_global_replay(
             replace(
                 capture,
                 graph_fingerprint=first_driver.graph_fingerprint,
+                context_base_fingerprint=context_base,
                 context_fingerprint=context,
                 capture=replace(
                     capture.capture,
@@ -816,7 +919,9 @@ def test_complete_isolated_driver_evidence_rejects_context_and_global_replay(
     graph_replayed_driver = replace(
         second_driver,
         graph_fingerprint=first_driver.graph_fingerprint,
-        context_fingerprint=graph_replayed_captures[0].context_fingerprint,
+        context_base_fingerprint=(
+            graph_replayed_captures[0].context_base_fingerprint
+        ),
         captures=tuple(graph_replayed_captures),
     )
     with pytest.raises(CommissioningEvidenceError, match="graph fingerprints"):
@@ -886,6 +991,21 @@ def test_plan_consumes_exact_durable_run_handle_and_round_trips(tmp_path: Path) 
     assert [target.region_id for target in plan.targets] == [
         "woofer_mid",
         "mid_tweeter",
+    ]
+    assert [
+        (
+            target.driver_target_id,
+            target.driver_target_fingerprint,
+        )
+        for target in plan.driver_targets
+    ] == [
+        (
+            target["target_id"],
+            target["target_fingerprint"],
+        )
+        for target in active_driver_targets(
+            mono_output_topology(mode="active_3_way")
+        )
     ]
     assert RegionEvidencePlan.from_mapping(plan.to_dict()) == plan
 
