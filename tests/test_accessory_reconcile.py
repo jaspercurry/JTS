@@ -517,6 +517,56 @@ def test_apply_adapter_services_disables_inactive_profile_service():
     assert failures == ()
 
 
+def test_adapter_teardown_ignores_reset_of_already_clean_unit(caplog):
+    calls = []
+
+    def clean_systemctl(args):
+        command = tuple(args)
+        calls.append(command)
+        if command[0] == "reset-failed":
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr=(
+                    "Failed to reset failed state: Unit adapter.service "
+                    "not loaded."
+                ),
+            )
+        if command[0] == "show":
+            return SimpleNamespace(
+                returncode=0,
+                stdout="UnitFileState=disabled\nActiveState=inactive\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with caplog.at_level(logging.WARNING):
+        failures = reconcile.apply_adapter_services((), systemctl=clean_systemctl)
+
+    assert ("reset-failed", "jasper-wiim-remote-mic.service") in calls
+    assert failures == ()
+    assert "event=accessory_mic.systemctl_failed" not in caplog.text
+
+
+def test_adapter_teardown_still_rejects_failed_terminal_state():
+    def failed_systemctl(args):
+        command = tuple(args)
+        if command[0] == "reset-failed":
+            return SimpleNamespace(returncode=1, stdout="", stderr="reset failed")
+        if command[0] == "show":
+            return SimpleNamespace(
+                returncode=0,
+                stdout="UnitFileState=disabled\nActiveState=failed\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    assert reconcile.apply_adapter_services((), systemctl=failed_systemctl) == (
+        "jasper-wiim-remote-mic.service: expected is-active=inactive, "
+        "observed failed",
+    )
+
+
 def test_adapter_teardown_is_synchronous_and_bounded(monkeypatch):
     captured = {}
 

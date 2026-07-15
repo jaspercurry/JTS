@@ -263,6 +263,23 @@ def _apply_adapter_service(
         expected_active = "inactive"
 
     for command in commands:
+        # ``reset-failed`` is cleanup, not the terminal-state contract.
+        # systemd returns nonzero when an already-clean inactive unit has no
+        # failed state to reset ("Unit ... not loaded"), even when its unit
+        # file is loaded and the requested disabled/inactive state is exact.
+        # Keep this best-effort and let the authoritative show probe below
+        # catch a genuinely failed or active adapter.
+        if command[0] == "reset-failed":
+            try:
+                systemctl(command)
+            except (
+                OSError,
+                RuntimeError,
+                TimeoutError,
+                subprocess.SubprocessError,
+            ):
+                pass
+            continue
         try:
             result = _invoke_systemctl(command, systemctl=systemctl)
         except (
