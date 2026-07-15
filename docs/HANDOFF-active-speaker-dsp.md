@@ -796,8 +796,11 @@
 > graph. Apply proof and compiler/apply artifacts are write-once under the exact
 > issuance. A cancellation, load/readback/protection failure, or unproved
 > retained-sidecar write restores graph, path, and volume before the lock is
-> released; a crash-interrupted pending mutation is recoverable from its exact
-> predecessor pointer. Once the retained proof is durable, retry performs only
+> released and replaces the shared DSP apply result with that restored outcome.
+> A crash-interrupted pending mutation drains writer admission and exact restore
+> despite request cancellation, records the same shared outcome, and is
+> recoverable from its exact predecessor pointer. Once the retained proof is
+> durable, retry performs only
 > baseline-state and lifecycle finalization and never re-applies audio.
 > `/crossover/status` projects `candidate_ready`,
 > `apply_finalization_required`, `apply_rolled_back`, `restore_required`,

@@ -273,7 +273,7 @@ async def _apply(
             config_path=candidate_path,
             validate=_valid,
         )
-    except BaseException as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         if not capture_error:
             raise
         result = exc
@@ -678,10 +678,14 @@ async def test_cancellation_after_mutation_intent_restores_exact_predecessor(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_before_writer", [False, True])
 async def test_restart_with_pending_mutation_performs_live_exact_restore(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    cancel_before_writer: bool,
 ) -> None:
+    dsp_state_path = tmp_path / "dsp-apply-state.json"
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(dsp_state_path))
     harness, current, candidate = _candidate_harness(tmp_path, monkeypatch)
     candidate_text = yaml.safe_dump(
         {
@@ -738,7 +742,7 @@ async def test_restart_with_pending_mutation_performs_live_exact_restore(
     )
 
     assert harness.service.status()["status"] == "restore_required"
-    result = await restore_pending_candidate_apply(
+    restore = restore_pending_candidate_apply(
         run=run,
         run_store=harness.run_store,
         store=harness.evidence_store,
@@ -746,8 +750,28 @@ async def test_restart_with_pending_mutation_performs_live_exact_restore(
         load_config_path=load,
         config_path=tmp_path / "candidate.yml",
     )
+    if cancel_before_writer:
+        writer_waiting = asyncio.Event()
+        admit_writer = asyncio.Event()
 
-    assert result["status"] == "rolled_back"
+        @asynccontextmanager
+        async def delayed_writer(*_args, **_kwargs):
+            writer_waiting.set()
+            await admit_writer.wait()
+            yield
+
+        monkeypatch.setattr(apply_module, "dsp_writer_lock", delayed_writer)
+        task = asyncio.create_task(restore)
+        await asyncio.wait_for(writer_waiting.wait(), timeout=2.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        admit_writer.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        result = await restore
+        assert result["status"] == "rolled_back"
     assert state == {
         "raw": predecessor_text,
         "path": "/etc/camilladsp/predecessor.yml",
@@ -755,6 +779,17 @@ async def test_restart_with_pending_mutation_performs_live_exact_restore(
     }
     mutation = harness.run_store.current_live_mutation(run)
     assert mutation is not None and mutation.status == "aborted"
+    shared_state = last_dsp_apply_state(state_path=dsp_state_path)
+    assert shared_state is not None
+    assert shared_state["source"] == (
+        f"{apply_module.APPLY_SOURCE}_recovery"
+    )
+    assert shared_state["result"] == (
+        "active_wrapper_restart_recovery_rolled_back"
+    )
+    assert shared_state["active_config_path"] == (
+        "/etc/camilladsp/predecessor.yml"
+    )
 
 
 @pytest.mark.asyncio

@@ -358,9 +358,8 @@ def _pre_mutation_retry(
     }
 
 
-def _record_wrapper_restore_outcome(
+def _record_exact_restore_apply_state(
     *,
-    error: BaseException,
     apply_state: DspApplyState | None,
     issuance: CommissioningLiveMutation,
     predecessor: ExactDspStateIdentity,
@@ -368,16 +367,15 @@ def _record_wrapper_restore_outcome(
     failure_code: str,
     rollback_succeeded: bool,
     rollback_error: str | None = None,
+    source: str = APPLY_SOURCE,
 ) -> None:
     state = apply_state
-    if state is None and isinstance(error, DspApplyError):
-        state = error.state
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if state is None:
         state = DspApplyState(
             schema_version=1,
             op_id=issuance.issuance_id,
-            source=APPLY_SOURCE,
+            source=source,
             phase="rollback",
             result="in_progress",
             started_at=now,
@@ -443,9 +441,13 @@ async def _restore_failed_mutation_locked(
             load_config_path=load_config_path,
         )
     except BaseException as restore_exc:  # noqa: BLE001 - evidence for cancellation too
-        _record_wrapper_restore_outcome(
-            error=error,
-            apply_state=apply_state,
+        observed_apply_state = (
+            error.state
+            if apply_state is None and isinstance(error, DspApplyError)
+            else apply_state
+        )
+        _record_exact_restore_apply_state(
+            apply_state=observed_apply_state,
             issuance=issuance,
             predecessor=predecessor,
             candidate_config_path=candidate_config_path,
@@ -477,9 +479,13 @@ async def _restore_failed_mutation_locked(
             "candidate apply failed and exact predecessor restore is not proved",
         ) from restore_exc
 
-    _record_wrapper_restore_outcome(
-        error=error,
-        apply_state=apply_state,
+    observed_apply_state = (
+        error.state
+        if apply_state is None and isinstance(error, DspApplyError)
+        else apply_state
+    )
+    _record_exact_restore_apply_state(
+        apply_state=observed_apply_state,
         issuance=issuance,
         predecessor=predecessor,
         candidate_config_path=candidate_config_path,
@@ -590,6 +596,65 @@ async def _shielded_restore_locked(
     return cancelled
 
 
+async def _shielded_pending_restore(
+    *,
+    run: CommissioningRunHandle,
+    run_store: CommissioningRunStore,
+    runtime_port: CommissioningRuntimePort,
+    predecessor: ExactDspStateIdentity,
+    mutation: CommissioningLiveMutation,
+    load_config_path: LoadConfigPath,
+    config_path: str | Path | None,
+) -> bool:
+    """Drain writer admission plus exact restart recovery despite cancellation."""
+
+    async def restore() -> None:
+        with run_store.claim_live_execution(run):
+            async with dsp_writer_lock(
+                baseline_config_path(config_path).parent,
+                source=f"{APPLY_SOURCE}_recovery",
+            ):
+                try:
+                    await restore_exact_dsp_state_locked(
+                        runtime_port,
+                        predecessor,
+                        load_config_path=load_config_path,
+                    )
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    _record_exact_restore_apply_state(
+                        apply_state=None,
+                        issuance=mutation,
+                        predecessor=predecessor,
+                        candidate_config_path=str(
+                            predecessor.state["config_path"]
+                        ),
+                        failure_code="restart_recovery",
+                        rollback_succeeded=False,
+                        rollback_error=str(exc),
+                        source=f"{APPLY_SOURCE}_recovery",
+                    )
+                    raise
+                _record_exact_restore_apply_state(
+                    apply_state=None,
+                    issuance=mutation,
+                    predecessor=predecessor,
+                    candidate_config_path=str(predecessor.state["config_path"]),
+                    failure_code="restart_recovery",
+                    rollback_succeeded=True,
+                    source=f"{APPLY_SOURCE}_recovery",
+                )
+
+    task = asyncio.create_task(restore())
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    return cancelled
+
+
 def _record_retained_or_reopen(
     *,
     run: CommissioningRunHandle,
@@ -605,7 +670,7 @@ def _record_retained_or_reopen(
             pending,
             applied_proof_fingerprint=applied_proof_fingerprint,
         )
-    except BaseException:
+    except (OSError, RuntimeError):
         persisted = run_store.current_live_mutation(run)
         if (
             persisted is not None
@@ -831,41 +896,37 @@ async def restore_pending_candidate_apply(
         )
 
     try:
-        with run_store.claim_live_execution(run):
-            async with dsp_writer_lock(
-                baseline_config_path(config_path).parent,
-                source=f"{APPLY_SOURCE}_recovery",
-            ):
-                cancelled = await _shielded_restore_locked(
-                    runtime_port,
-                    predecessor,
-                    load_config_path=load_config_path,
-                )
-    except BaseException as exc:  # noqa: BLE001 - retain pending recovery state
-        if isinstance(exc, asyncio.CancelledError):
-            cancelled = True
-        else:
-            restore_failure = CommissioningRollbackEvidence(
-                mutation_state="unknown",
-                status="unknown",
-                evidence_kind="uncertain_mutation",
-                operation_id=mutation.issuance_id,
-                mutation_fingerprint=mutation.operation_fingerprint,
-                predecessor_state=predecessor,
-                failure_code="rollback_readback_failed",
-            )
-            _publish_json(
-                store,
-                run,
-                mutation.issuance_id,
-                "restore-failure.json",
-                restore_failure.to_dict(),
-                owner_generation=mutation.started_owner_generation,
-            )
-            raise CommissioningApplyError(
-                "candidate_restore_required",
-                "the exact previous crossover could not be restored",
-            ) from exc
+        cancelled = await _shielded_pending_restore(
+            run=run,
+            run_store=run_store,
+            runtime_port=runtime_port,
+            predecessor=predecessor,
+            mutation=mutation,
+            load_config_path=load_config_path,
+            config_path=config_path,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        restore_failure = CommissioningRollbackEvidence(
+            mutation_state="unknown",
+            status="unknown",
+            evidence_kind="uncertain_mutation",
+            operation_id=mutation.issuance_id,
+            mutation_fingerprint=mutation.operation_fingerprint,
+            predecessor_state=predecessor,
+            failure_code="rollback_readback_failed",
+        )
+        _publish_json(
+            store,
+            run,
+            mutation.issuance_id,
+            "restore-failure.json",
+            restore_failure.to_dict(),
+            owner_generation=mutation.started_owner_generation,
+        )
+        raise CommissioningApplyError(
+            "candidate_restore_required",
+            "the exact previous crossover could not be restored",
+        ) from exc
 
     if unknown_artifact is None:
         unknown_artifact = _publish_json(
@@ -1146,7 +1207,7 @@ async def apply_measured_candidate(
                     )
                     try:
                         observed = await snapshot_exact_dsp_state(runtime_port)
-                    except Exception as exc:  # noqa: BLE001 - classified below
+                    except (OSError, RuntimeError, TypeError, ValueError) as exc:
                         failure_code = "fresh_readback_failed"
                         raise CommissioningApplyError(
                             failure_code, "fresh applied-state readback failed"
@@ -1245,7 +1306,7 @@ async def apply_measured_candidate(
                         safety_profile_fingerprint=safety_profile_fingerprint,
                         state_path=state_path,
                     )
-                except Exception as exc:  # no rollback after retained proof
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
                     raise CommissioningApplyError(
                         "candidate_apply_finalization_required",
                         "the graph is applied and proved; retry to finish durable state",
@@ -1276,7 +1337,7 @@ async def apply_measured_candidate(
         if pending is None:
             run_store.release_live_mutation(run, issuance)
         raise
-    except Exception as exc:
+    except (OSError, RuntimeError, TypeError, ValueError, yaml.YAMLError) as exc:
         if pending is None:
             if isinstance(exc, CommissioningApplyError):
                 detail = exc.detail
@@ -1290,7 +1351,7 @@ async def apply_measured_candidate(
                     issuance=issuance,
                     failure_code="candidate_apply_failed_before_mutation",
                 )
-            except Exception as block_exc:  # noqa: BLE001
+            except (OSError, RuntimeError, TypeError, ValueError) as block_exc:
                 raise CommissioningApplyError(
                     "candidate_apply_failed_before_mutation", detail
                 ) from block_exc
