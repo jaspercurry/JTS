@@ -181,21 +181,22 @@ class IncidentStore:
         return cleaned
 
     def save(self, incidents: list[dict[str, Any]]) -> bool:
+        cleaned_incidents = [
+            cleaned
+            for raw in incidents[:self._max_records]
+            if (cleaned := _clean_incident(raw)) is not None
+        ]
         payload = {
             "schema_version": INCIDENT_HISTORY_SCHEMA_VERSION,
-            "incidents": [
-                cleaned
-                for raw in incidents[:self._max_records]
-                if (cleaned := _clean_incident(raw)) is not None
-            ],
+            "incidents": cleaned_incidents,
         }
         try:
             encoded = json.dumps(payload, separators=(",", ":")) + "\n"
             while (
                 len(encoded.encode("utf-8")) > INCIDENT_HISTORY_MAX_BYTES
-                and len(payload["incidents"]) > 1
+                and len(cleaned_incidents) > 1
             ):
-                payload["incidents"].pop()
+                cleaned_incidents.pop()
                 encoded = json.dumps(payload, separators=(",", ":")) + "\n"
             if len(encoded.encode("utf-8")) > INCIDENT_HISTORY_MAX_BYTES:
                 raise ValueError("incident history exceeds read limit")
