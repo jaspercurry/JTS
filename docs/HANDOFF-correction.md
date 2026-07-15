@@ -166,6 +166,18 @@
   microphone/calibration binding. Shared-owned bundle/playback code, DSP
   design/apply safety, bundle schema, raw audio artifacts, and relay protocol
   bytes are unchanged.
+- ✅ **Room result presentation has one owner (hardware-free; real-device
+  browser pass pending).** `POST /upload-capture` now acknowledges only the
+  committed session/mechanism state. The browser then refreshes the Room
+  envelope and renders its exact sections, verdict, action, already-smoothed
+  curves, and classified helped/hurt fill. The main flow no longer carries a
+  second `/status`-derived result contract, client smoothing, recommended-next-
+  action logic, or duplicate confidence/runtime/design/PEQ panels. Those full
+  evidence records remain persisted; the useful trust summary remains visible
+  in the read-only session report. The optional tuning assistant and all three
+  `/interpret`, `/propose`, and `/propose/apply` routes are unchanged;
+  deterministic acceptance, apply, verification, and automatic revert remain
+  the authorities.
 - 🧱 **Wave 1 Active→Room receipt contract (types complete; active Room entry
   blocked pending production authority).** Active now owns a strict positive
   `CommissioningEligibilityReceipt` type whose required combined-speaker
@@ -661,14 +673,15 @@
   correction band, and strategy gates for `safe` / `balanced` /
   `assertive`. The report is persisted into `info.json` /
   `result.json`, embedded in the design audit, returned from the
-  upload/status path, and exposed through the read-only
+  status path, and exposed through the read-only
   calibration-agent intake tools. This is deliberately a v1
   instrument panel; SNR, repeatability, and research-tuned thresholds
   remain future refinements.
 - ✅ **Phase 2.7 — confidence UI + per-position analysis artifact.**
-  Implemented 2026-05-26. Adds a simple `/correction/` confidence
-  card showing score, findings, position-variance summary, and
-  allowed/blocked correction strategies. Each completed design now
+  Implemented 2026-05-26. The original `/correction/` confidence card was
+  retired from the primary flow on 2026-07-15 when the envelope became the
+  sole result-presentation contract; its full evidence remains in Reports.
+  Each completed design still
   writes `position_analysis.json` with per-position magnitude curves,
   spatial average, and per-frequency variance arrays so future FIR and
   LLM tooling can inspect seat-to-seat behavior without re-running
@@ -688,23 +701,22 @@
   deterministic preflight report built from `getUserMedia()`
   metadata: sample rate, mono channel count, processing flags, granted
   input-device identity, and calibrated-mic presence. The report is
-  shown inline in `/correction/`, returned from start/status/upload
-  endpoints, server-enforced at `/start`, persisted in `info.json` /
+  shown inline in `/correction/`, returned from start/status endpoints,
+  server-enforced at `/start`, persisted in `info.json` /
   `result.json`, and folded into the confidence model so browser
   processing or sample-rate failures block correction before a user
   wastes time measuring. This is still metadata confidence, not an
   acoustic loopback proof; real phone/Pi capture smoke testing remains
   outstanding.
 - ✅ **Phase 2.10 — correction visualization + confidence UX.**
-  Implemented 2026-05-28. `/correction/` results now expose the
-  measurement facts that already drive the deterministic engine:
-  display smoothing controls, correction-band shading, spatial-spread
-  overlay, filter-effect overlay, measured/target/predicted/verify
-  curves, PEQ markers, rejected-feature markers, band-confidence
-  summaries, confidence/strategy gates, runtime-integrity status, and a
-  deterministic recommended next action. The implementation stays
-  dependency-free in the socket-activated web process: one canvas and
-  small JSON summaries rather than a plotting framework.
+  Implemented 2026-05-28, then deliberately narrowed on 2026-07-15. The
+  primary result now draws the envelope's already-smoothed
+  measured/target/predicted/verify curves, server-classified helped/hurt fill,
+  and an optional filter-effect overlay. Client smoothing, correction-band and
+  spatial-spread controls, PEQ/rejected-feature markers, confidence/strategy
+  cards, runtime-integrity panel, design audit, and client-recommended next
+  action were removed from the main flow. The underlying evidence remains in
+  durable artifacts and Reports; the canvas remains dependency-free.
 - ✅ **Phase 2.11 — durable evidence bundle contract + runtime integrity.**
   Implemented 2026-05-28. Every new measurement session is a
   self-describing, replayable evidence packet rather than a set of
@@ -1329,7 +1341,9 @@ POST /next-position          advance to position[N+1] pre-sweep noise capture
 POST /repeat-position        play the optional same-seat repeat sweep
 POST /upload-noise           body = WAV (audio/wav); pre-sweep room noise
                              (local capture requires bound setup first)
-POST /upload-capture         body = WAV (audio/wav); per-position, repeat, OR verify capture
+POST /upload-capture         body = WAV (audio/wav); per-position, repeat, OR verify capture;
+                             response is mechanism ACK only, then the browser
+                             refreshes GET /envelope for presentation
 POST /local-capture/setup    bind the realized local mic/calibration to the
                              parked session before level match/noise upload;
                              identical retries are idempotent
@@ -1415,6 +1429,10 @@ at 900 ms on active capture screens. Idle uses `GET /entry-status` every 10
 seconds to refresh external speaker readiness and the current-correction
 banner together; it rebuilds the full envelope only when readiness or the
 logical screen changed, keeping report discovery off the steady-state cadence.
+After a local capture upload, the client reads the acknowledgement, refreshes
+mechanism state once without triggering a competing edge refresh, then fetches
+one envelope for all result presentation. The chart consumes the envelope's
+already-smoothed curves directly; no client-side smoothing pass remains.
 SSE was considered but never landed because bounded polling is simpler in
 stdlib and the latency budget allows it.
 
@@ -2576,7 +2594,12 @@ Internal:
 
 ---
 
-Last verified: 2026-07-14 (measurement isolation rechecked against mux's
+Last verified: 2026-07-15 (Room upload acknowledgement, envelope-only result
+presentation, and single-pass server-smoothed chart rendering checked against
+`correction_setup._handle_upload_capture`, `jasper.correction.envelope`,
+`deploy/assets/correction/js/main.js`, and focused contract tests; proposal /
+apply routes and deterministic acceptance/revert were unchanged. Measurement
+isolation rechecked against mux's
 closed owner vocabulary, transactional release acknowledgement, response-loss
 rollback, monotonic crash lease, and no source-process mutation; shared DSP-writer admission deadline/cancellation
 semantics checked against Room's terminal mutation policy; Active isolated-driver

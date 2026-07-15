@@ -856,10 +856,16 @@ def test_upload_handler_runs_auto_revert_on_confirmed_regression(
 
     resp = correction_setup._handle_upload_capture(object())
 
-    # The response tells the truth about what just happened...
-    assert resp["acceptance"]["verdict"] == "revert"
+    # The upload response is mechanism-only; the envelope owns presentation.
+    assert set(resp) == {
+        "session_id",
+        "state",
+        "current_position",
+        "total_positions",
+        "auto_reverted",
+    }
     assert resp["auto_reverted"] is True
-    # ...and the revert genuinely ran through the shared reset target.
+    # The revert genuinely ran through the shared reset target.
     assert sess.state.value == "idle"
     assert cam.loads == ["/tmp/no-room-test.yml"]
     assert sess.auto_revert_outcome["result"] == "ok"
@@ -886,7 +892,13 @@ def test_upload_handler_auto_revert_failure_still_returns_ok(
 
     resp = correction_setup._handle_upload_capture(object())
 
-    assert resp["acceptance"]["verdict"] == "revert"
+    assert set(resp) == {
+        "session_id",
+        "state",
+        "current_position",
+        "total_positions",
+        "auto_reverted",
+    }
     assert resp["auto_reverted"] is False
     assert cam.loads == []  # nothing was loaded
     assert sess.state.value == "verified"  # correction still applied

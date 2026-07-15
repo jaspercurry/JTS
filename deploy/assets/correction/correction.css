@@ -85,7 +85,6 @@
   font-size: 0.95rem;
   box-sizing: border-box;
 }
-.correction-stack .chart-controls select { width: auto; }
 .correction-stack select:focus,
 .correction-stack input:focus { outline: none; border-color: var(--primary); }
 
@@ -362,62 +361,7 @@
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 40%, transparent);
 }
 
-/* ---- Confidence / runtime-integrity cards ----------------------------- */
-.confidence-card,
-.runtime-card {
-  border: 1px solid var(--border);
-  border-left: 5px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  padding: 0.75rem 0.9rem;
-  margin: 0.8rem 0;
-  background: color-mix(in oklab, var(--secondary) 40%, transparent);
-}
-.confidence-card.high,
-.runtime-card.ok { border-left-color: var(--status-ok); }
-.confidence-card.medium,
-.runtime-card.warn { border-left-color: var(--status-warn); }
-.confidence-card.low,
-.runtime-card.fail { border-left-color: var(--status-danger); }
-.confidence-card h3,
-.runtime-card h3 { margin-top: 0; }
-.confidence-card .confidence-score {
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-.confidence-card .gate-list {
-  display: flex;
-  gap: 0.4rem;
-  flex-wrap: wrap;
-  margin: 0.5rem 0;
-}
-.confidence-card .gate {
-  display: inline-block;
-  border-radius: var(--radius-sm);
-  padding: 0.18rem 0.45rem;
-  font-size: 0.86rem;
-  background: var(--surface-quiet);
-  color: var(--muted);
-}
-.confidence-card .gate.allowed {
-  background: color-mix(in oklab, var(--status-ok) 16%, transparent);
-  color: var(--text);
-}
-.confidence-card .gate.blocked {
-  background: color-mix(in oklab, var(--status-danger) 14%, transparent);
-  color: var(--text);
-}
-.confidence-card ul,
-.runtime-card ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
-
-/* ---- Results summary (metric grid + per-band table) ------------------- */
-.results-summary {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: color-mix(in oklab, var(--secondary) 40%, transparent);
-  padding: 0.75rem 0.9rem;
-  margin: 0.8rem 0;
-}
-.results-summary h3 { margin: 0 0 0.45rem; }
+/* ---- Read-only report metric grid ------------------------------------- */
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -438,66 +382,6 @@
   font-variant-numeric: tabular-nums;
   margin-top: 0.1rem;
 }
-.band-table { width: 100%; border-collapse: collapse; margin-top: 0.55rem; font-size: 0.9rem; }
-.band-table th,
-.band-table td {
-  padding: 0.35rem 0.45rem;
-  border-bottom: 1px solid var(--border);
-  text-align: right;
-}
-.band-table th:first-child,
-.band-table td:first-child { text-align: left; }
-@media (max-width: 520px) {
-  .band-table,
-  .band-table thead,
-  .band-table tbody,
-  .band-table tr,
-  .band-table th,
-  .band-table td { display: block; }
-  .band-table thead { display: none; }
-  .band-table tr {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: 0.4rem 0.55rem;
-    margin: 0.55rem 0;
-    background: var(--surface);
-  }
-  .band-table td {
-    display: flex;
-    justify-content: space-between;
-    gap: 1rem;
-    border-bottom: 1px solid var(--border);
-    text-align: right;
-    padding: 0.3rem 0;
-  }
-  .band-table td:first-child { font-weight: 700; }
-  .band-table td:last-child { border-bottom: 0; }
-  .band-table td::before {
-    content: attr(data-label);
-    color: var(--muted);
-    font-weight: 600;
-    text-align: left;
-  }
-  .band-table td:first-child::before { content: ''; }
-}
-.band-pill {
-  display: inline-block;
-  border-radius: var(--radius-sm);
-  padding: 0.1rem 0.35rem;
-  font-size: 0.82rem;
-  background: var(--surface-quiet);
-  color: var(--muted);
-}
-.band-pill.high { background: color-mix(in oklab, var(--status-ok) 16%, transparent); color: var(--text); }
-.band-pill.medium { background: color-mix(in oklab, var(--status-warn) 18%, transparent); color: var(--text); }
-.band-pill.low { background: color-mix(in oklab, var(--status-danger) 14%, transparent); color: var(--text); }
-
-/* Measured before/after headline in the verify summary. */
-.verify-headline { font-size: 1.02rem; }
-.verify-headline.improved { color: var(--status-ok); }
-.verify-headline.regressed { color: var(--status-danger); }
-.verify-headline.neutral { color: var(--muted); }
-
 /* ---- Frequency-response chart ----------------------------------------- */
 .chart-controls {
   display: flex;
@@ -513,8 +397,6 @@
   font-size: 0.9rem;
   font-weight: 400;
 }
-.chart-controls label.stacked { display: block; }
-.chart-controls select { min-width: 135px; }
 .chart-wrap {
   width: 100%;
   max-width: 580px;
@@ -524,21 +406,6 @@
   border-radius: var(--radius-sm);
 }
 canvas#chart { display: block; width: 100%; height: 240px; }
-
-/* ---- Designed-filter (PEQ) list --------------------------------------- */
-.peq-list {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.92rem;
-}
-.peq-list table { width: 100%; border-collapse: collapse; }
-.peq-list th,
-.peq-list td {
-  text-align: right;
-  padding: 0.3rem 0.6rem;
-  border-bottom: 1px solid var(--border);
-}
-.peq-list th:first-child,
-.peq-list td:first-child { text-align: left; }
 
 /* The measurement workflow's buttons reuse .btn / .btn--* from app.css;
    the relocated JS toggles `disabled` directly and app.css styles

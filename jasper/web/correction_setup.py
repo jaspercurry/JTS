@@ -985,22 +985,9 @@ __TABS__
 
 <section id="measurement-review" data-envelope-section="measurement-review" class="hidden">
   <div id="result-section" class="hidden">
-    <div id="confidence-panel" class="confidence-card hidden"></div>
-    <div id="runtime-integrity-panel" class="runtime-card hidden"></div>
-    <div id="results-summary" class="results-summary hidden"></div>
     <h3>Frequency response</h3>
     <div class="chart-controls">
-      <label class="stacked" for="chart-smoothing">Display smoothing<br>
-        <select id="chart-smoothing">
-          <option value="none">Saved 1/48-oct</option>
-          <option value="1/12" selected>1/12-oct</option>
-          <option value="1/6">1/6-oct</option>
-          <option value="1/3">1/3-oct</option>
-        </select>
-      </label>
-      <label><input id="chart-show-spread" type="checkbox" checked> spatial spread</label>
       <label><input id="chart-show-filter" type="checkbox" checked> filter effect</label>
-      <label><input id="chart-show-band" type="checkbox" checked> correction band</label>
     </div>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
     <p class="hint">
@@ -1013,10 +1000,6 @@ __TABS__
       <span style="color:#1db954">green</span> where it moved toward target and
       <span style="color:#d68200">amber</span> where it moved away.
     </p>
-    <p id="verify-summary" class="hint hidden"></p>
-    <div id="design-report" class="hidden"></div>
-    <h3>Filters designed</h3>
-    <div class="peq-list" id="peq-list"></div>
     <button id="reset-correction" type="button" class="btn btn--danger hidden">Reset correction</button>
   </div>
 </section>
@@ -2990,41 +2973,15 @@ def _handle_upload_capture(
     else:
         _run_async(sess.on_capture_uploaded(captured_path), timeout=30.0)
 
+    # The upload response is a mechanism acknowledgement, not a second
+    # presentation contract. The browser refreshes the server envelope for
+    # curves, verdict, nudges, sections, and actions.
     return {
         "session_id": sess.session_id,
         "state": sess.state.value,
         "current_position": sess.current_position,
         "total_positions": sess.total_positions,
-        "measured": (
-            sess.measured_curve.__dict__ if sess.measured_curve else None
-        ),
-        "target": (
-            sess.target_curve.__dict__ if sess.target_curve else None
-        ),
-        "predicted": (
-            sess.predicted_curve.__dict__ if sess.predicted_curve else None
-        ),
-        "verify": (
-            sess.verify_curve.__dict__ if sess.verify_curve else None
-        ),
-        "verify_metrics": sess.verify_metrics,
-        "verify_before_after": sess.verify_before_after,
-        "acceptance": getattr(sess, "acceptance", None),
         "auto_reverted": auto_reverted,
-        "capture_quality": sess.capture_quality,
-        "noise_reports": sess.noise_reports,
-        "repeat": (
-            sess.repeat_curve.__dict__ if sess.repeat_curve else None
-        ),
-        "repeat_quality": sess.repeat_quality,
-        "repeatability_report": sess.repeatability_report,
-        "verify_quality": sess.verify_quality,
-        "browser_audio_report": sess.browser_audio_report,
-        "confidence_report": sess.confidence_report,
-        "runtime_integrity": _runtime_integrity_summary(sess),
-        "position_analysis": sess.position_analysis,
-        "peqs": [p.__dict__ for p in sess.peqs],
-        "design_report": sess.design_report,
     }
 
 

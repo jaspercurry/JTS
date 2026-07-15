@@ -11,7 +11,7 @@
 > Those documents should link here for Room product behavior rather than restate
 > it.
 
-> **Implementation boundary (2026-07-13).** The sequential Room envelope,
+> **Implementation boundary (2026-07-15).** The sequential Room envelope,
 > multi-position measurement, IIR PEQ design, deterministic verification, and
 > automatic revert loop ship today. R1 now ships the hardware-free
 > server-owned entry, defaults, and whole-page visibility contract: envelope
@@ -29,6 +29,14 @@
 > Start, relay, tuning, and stored session failures use closed homeowner copy;
 > raw diagnostics remain in logs/evidence, not primary Room surfaces. The local
 > fallback binds its realized microphone before level matching and capture.
+> `POST /upload-capture` is a mechanism acknowledgement only; after it commits
+> the session state, the browser refreshes the envelope for all result copy,
+> sections, actions, and curves. The envelope supplies the display-smoothed
+> curves and classified helped/hurt segments, so the chart draws them once and
+> carries no second smoothing or verdict policy. Detailed confidence, runtime,
+> design, spatial-spread, and PEQ evidence remains in durable artifacts, with
+> the useful trust summary in Reports, instead of competing with the primary
+> household result.
 > The envelope and `/start` share the disclosed six-position, flat-target,
 > balanced-strategy, automatic-main-seat-repeat policy; the household can choose
 > one, three, or six positions and safe or balanced strategy. Relay is preferred
@@ -209,10 +217,10 @@ The section vocabulary is intentionally Room-specific:
 | `local-certificate-warning` | One sentence acknowledging the browser warning; never an installation guide. |
 | `level-check` | Level progress, headroom, and the bounded level action. |
 | `position-capture` | Current position, capture progress, and quality nudges. |
-| `measurement-review` | Measured response, proposed adjustments, confidence, and Apply summary. |
+| `measurement-review` | Server-smoothed measured response and the envelope-owned Apply summary. Detailed design/confidence evidence stays in Reports. |
 | `apply-status` | In-flight/applied state and what verification will do next. |
 | `verification` | Main-seat re-measurement and restoration status. |
-| `result-proof` | Authoritative verdict plus mandatory helped/hurt before/after proof. |
+| `result-proof` | Authoritative verdict plus mandatory helped/hurt before/after proof from server-smoothed curves. |
 | `tuning` | Optional paid assistant explanation/proposal when server-offered; never verdict authority. |
 | `reports` | Prior run list/report, only when at least one session exists. |
 
@@ -454,18 +462,25 @@ main-seat basis, 1/3-octave aggregation, repeatability threshold, and
 confirmatory re-measure before automatic revert.
 
 The tuning LLM may interpret evidence or propose a bounded tweak. The browser
-may format the result. Neither may replace, soften, relabel, or suppress the
-acceptance verdict. A failed automatic restore must continue to say that the
-correction is **still applied** and present the safe manual recovery action.
+may draw the envelope's display curves and format server-owned text. It does
+not recompute smoothing, confidence, acceptance, or the next action. Neither
+the LLM nor browser may replace, soften, relabel, or suppress the acceptance
+verdict. A failed automatic restore must continue to say that the correction
+is **still applied** and present the safe manual recovery action.
 
 At minimum, the result names:
 
 - whether the correction was accepted, needs review, or was restored;
 - the before/after headline and helped/hurt frequency spread;
-- measurement confidence and relevant nudges;
-- which adjustments are currently applied in plain language;
+- relevant server-owned measurement nudges;
+- current correction state in plain language;
 - any FIR phase mode/group delay proven by applied-bundle metadata; and
 - the next safe action.
+
+Detailed confidence and runtime-integrity summaries remain available through
+the read-only report. Full design, spatial-spread, and individual-PEQ evidence
+remains in the durable session artifacts. They are not parallel decision panels
+in the primary flow.
 
 ## Architecture and ownership
 
@@ -479,6 +494,7 @@ web handler, Room session host, Active host, or CamillaDSP controller.
 | Whole-page visibility and next action | `jasper.correction.envelope` | Active readiness derivation or HTTP side effects |
 | Closed homeowner failure presentation | `jasper.correction.failures` | Diagnostic capture, Active authority, or feature state transitions |
 | HTTP admission and context assembly | Room handlers under `jasper.web` | Acoustic math or a second product state machine |
+| Upload acknowledgement | Room handler under `jasper.web` | Result presentation, chart policy, or verdict copy |
 | Sweep, deconvolution, calibration, and shared quality primitives | `jasper.audio_measurement` | Room positions, target policy, or product sequencing |
 | Reverberant cross-position aggregation | `jasper.correction.spatial` | Active same-target repeat/admission policy |
 | Room capture analysis and quality report composition | Room analysis modules under `jasper.correction` | HTTP, paid calls, or live DSP mutation |
@@ -604,4 +620,4 @@ The serialized hardware track must still perform:
 No Pi deployment, microphone use, phone publication, or audible acceptance is
 implied by a hardware-free merge.
 
-Last verified: 2026-07-13
+Last verified: 2026-07-15
