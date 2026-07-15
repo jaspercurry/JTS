@@ -2124,6 +2124,97 @@ def test_recompose_baseline_yaml_inserts_room_peqs_and_folds_headroom(
     assert graph.allowed is True, graph.issues
 
 
+def test_applied_room_and_reset_only_mutate_program_domain(tmp_path: Path) -> None:
+    """Room apply/reset preserve the exact immutable Layer-A suffix.
+
+    The production carrier calls ``recompose_applied_baseline_yaml`` for both
+    Room apply and the shared Reset/automatic-revert no-room target.  Compare
+    the parsed driver-domain graph, not just filter counts: routing, crossover
+    filters, polarity, delay, gain, and protection must remain identical while
+    Room PEQs and their headroom live only before the split mixer.
+    """
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    applied = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    applied["status"] = "applied"
+
+    flat_yaml, flat_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+    )
+    room_yaml, room_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        room_peqs=[
+            PeqFilter(freq=45.0, q=5.0, gain=2.0),
+            PeqFilter(freq=80.0, q=6.0, gain=-4.0),
+        ],
+    )
+    reset_yaml, reset_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        room_peqs=[],
+    )
+
+    assert flat_issues == room_issues == reset_issues == []
+    assert flat_yaml is not None and room_yaml is not None
+    assert reset_yaml == flat_yaml
+    flat = yaml_lib.safe_load(flat_yaml)
+    room = yaml_lib.safe_load(room_yaml)
+
+    def driver_domain(document: dict) -> dict:
+        pipeline = document["pipeline"]
+        split_index = next(
+            index
+            for index, step in enumerate(pipeline)
+            if step.get("type") == "Mixer"
+        )
+        suffix = pipeline[split_index:]
+        driver_filter_names = {
+            name
+            for step in suffix
+            if step.get("type") == "Filter"
+            for name in step.get("names", [])
+        }
+        return {
+            "devices": document["devices"],
+            "mixers": document["mixers"],
+            "pipeline_suffix": suffix,
+            "filters": {
+                name: document["filters"][name]
+                for name in sorted(driver_filter_names)
+            },
+        }
+
+    assert driver_domain(room) == driver_domain(flat)
+    room_split_index = next(
+        index
+        for index, step in enumerate(room["pipeline"])
+        if step.get("type") == "Mixer"
+    )
+    assert any(
+        name.startswith("room_peq_")
+        for step in room["pipeline"][:room_split_index]
+        for name in step.get("names", [])
+    )
+    assert not any(
+        name.startswith("room_peq_")
+        for step in room["pipeline"][room_split_index:]
+        for name in step.get("names", [])
+    )
+
+
 def test_recompose_baseline_yaml_refuses_when_preview_not_ready() -> None:
     # When the saved evidence can no longer produce a baseline, recompose returns
     # (None, issues) so the carrier refuses instead of emitting a partial graph.

@@ -127,6 +127,7 @@ def _applied_acoustic_profile(
     measured: bool = True,
     config_path: Path | None = None,
     with_snapshot: bool = True,
+    tuning_owner: str = "manual",
 ) -> dict:
     profile = {
         "artifact_schema_version": 1,
@@ -140,6 +141,7 @@ def _applied_acoustic_profile(
             "path": str(config_path) if config_path is not None else "",
         },
         "provisional": not measured,
+        "tuning_owner": tuning_owner,
     }
     if with_snapshot:
         profile["candidate_fingerprint"] = "candidate-fp"
@@ -167,6 +169,7 @@ def _applied_acoustic_profile(
                 "woofer": "measured" if measured else "none",
                 "tweeter": "measured" if measured else "sensitivity",
             },
+            "tuning_owner": tuning_owner,
         }
     return profile
 
@@ -234,6 +237,10 @@ def test_passive_speaker_is_ready_without_active_baseline(
     assert status["grouping_allowed"] is True
     assert status["room_correction_allowed"] is True
     assert status["acoustic_commissioning"]["status"] == "not_required"
+    assert status["acoustic_commissioning"]["decision_schema_version"] == 1
+    assert status["acoustic_commissioning"]["authority"] == (
+        "passive_not_required"
+    )
     # A passive speaker has no commissioning session, but the "commissioning"
     # block is still present with a well-defined idle shape, and its
     # room_correction_allowed mirrors the top-level value exactly (design doc
@@ -346,6 +353,9 @@ def test_active_speaker_allows_room_correction_only_after_acoustic_commissioning
     assert status["configured"] is True
     assert status["room_correction_allowed"] is True
     assert status["acoustic_commissioning"]["status"] == "ready"
+    assert status["acoustic_commissioning"]["authority"] == (
+        "manual_applied_profile"
+    )
     assert status["acoustic_commissioning"]["drivers"] == {
         "required_groups": 1,
         "usable_groups": 1,
@@ -411,7 +421,7 @@ def test_applied_manual_snapshot_allows_room_without_phone_measurements(
     }
 
 
-def test_applied_automatic_snapshot_allows_room_after_measurement_store_clears(
+def test_applied_automatic_snapshot_requires_receipt_after_measurement_store_clears(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -442,7 +452,11 @@ def test_applied_automatic_snapshot_allows_room_after_measurement_store_clears(
         active_config_path=str(config_path),
     )
 
-    assert status["room_correction_allowed"] is True
+    assert status["room_correction_allowed"] is False
+    assert status["acoustic_commissioning"]["authority"] is None
+    assert status["acoustic_commissioning"]["reason"] == (
+        "active_automatic_commissioning_receipt_missing"
+    )
     assert status["applied_crossover"]["valid"] is True
     assert status["applied_crossover"]["owner"] == "automatic"
     assert status["automatic_candidate"]["ready"] is False

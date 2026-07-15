@@ -705,14 +705,14 @@
 > consumption remain the later integration lane.
 >
 > Current `active_speaker/bundles.py` evidence remains forensic/fail-soft. The
-> new lifecycle is not current `/state`, and `active_speaker.setup_status` still
-> reports the legacy topology-current applied-recomposition decision. Room R1b
-> no longer accepts that positive decision for an active topology: it admits
-> only passive/not-required and blocks active entry until Active issues and
-> exposes the exact receipt-backed result. Historical B2b evidence remains
-> forensic only; automatic authority requires fresh excitation-admitted
-> captures plus the measured delay walk. No hardware behavior was changed or
-> revalidated by these hardware-free slices.
+> new lifecycle is not current `/state`, while `active_speaker.setup_status`
+> now owns a versioned Room eligibility projection. A topology-current immutable
+> snapshot with explicit manual apply ownership is
+> `manual_applied_profile` authority; an automatic applied snapshot stays
+> incomplete until Active issues and exposes the exact receipt-backed result.
+> Room consumes that one decision and neither inspects the graph nor historical
+> B2b evidence. Automatic authority still requires fresh excitation-admitted
+> captures plus the measured delay walk.
 
 > **Update, 2026-07-14 (Wave 3 durable run;
 > hardware-free):** `jasper.active_speaker.commissioning_run` is now the bounded
@@ -2212,10 +2212,10 @@ review projection, writer-locked measured-candidate compiler/apply, fresh
 protected graph/path/volume readback, exact cancellation/failure/restart
 restore, retained-proof finalization, receipt schema-v2 one-shot roles, and the
 durable bundle-backed commissioning-run store/start/status boundary and service owner-
-generation claim; no live post-apply verification/receipt producer, and
-temporary passive-only Room
-admission checked contract-only; the candidate apply boundary was checked
-hardware-free and no hardware behavior revalidated. Frozen applied-preset startup anchor, durable
+generation claim; no live post-apply automatic verification/receipt producer.
+The versioned passive/manual-applied Room decision and fail-closed automatic
+branch were checked contract-only; the candidate apply boundary was checked
+hardware-free and no hardware behavior was revalidated in that pass. Frozen applied-preset startup anchor, durable
 crossover-volume intent, confirmed recovery,
 and relay lease ownership checked; bounded CamillaDSP worker cancellation checked
 against the outer commissioning rollback transaction; superseded readiness and

@@ -894,6 +894,8 @@ _READY_ROOM_CORRECTION_SETUP = {
     "active": False,
     "room_correction_allowed": True,
     "acoustic_commissioning": {
+        "decision_schema_version": 1,
+        "authority": "passive_not_required",
         "allowed": True,
         "status": "not_required",
     },
@@ -915,7 +917,7 @@ def test_room_readiness_accepts_consistent_passive_authority(monkeypatch):
     assert readiness.blocker is None
 
 
-def test_room_readiness_rejects_legacy_active_snapshot_authority(monkeypatch):
+def test_room_readiness_rejects_unversioned_active_snapshot_authority(monkeypatch):
     from jasper.web import correction_setup
 
     monkeypatch.setattr(
@@ -942,21 +944,73 @@ def test_room_readiness_rejects_legacy_active_snapshot_authority(monkeypatch):
     readiness = correction_setup._room_readiness()
 
     assert readiness.allowed is False
-    assert readiness.reason == "active_receipt_authority_unavailable"
+    assert readiness.reason == "speaker_readiness_malformed"
     assert readiness.blocker == {
-        "code": "speaker_setup_incomplete",
-        "text": "Finish speaker setup first.",
-        "retryable": False,
+        "code": "speaker_readiness_unavailable",
+        "text": "Speaker setup could not be checked. Try again.",
+        "retryable": True,
         "recovery_action": {
-            "label": "Open speaker setup",
-            "href": "/correction/crossover/",
+            "label": "Check again",
+            "href": "/correction/room/",
         },
     }
     assert "historical B2b" not in str(readiness.blocker)
 
     with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
         correction_setup._handle_start(_DummyJsonHandler())
-    assert exc_info.value.status == HTTPStatus.CONFLICT
+    assert exc_info.value.status == HTTPStatus.SERVICE_UNAVAILABLE
+
+
+def test_room_readiness_accepts_versioned_manual_active_authority(monkeypatch):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {
+            "active": True,
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": "manual_applied_profile",
+                "allowed": True,
+                "status": "ready",
+                "setup_href": "/correction/crossover/",
+            },
+        },
+    )
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.allowed is True
+    assert readiness.blocker is None
+
+
+def test_room_readiness_accepts_only_explicit_automatic_receipt_authority(
+    monkeypatch,
+):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {
+            "active": True,
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": "automatic_commissioning_receipt",
+                "allowed": True,
+                "status": "ready",
+                "setup_href": "/correction/crossover/",
+            },
+        },
+    )
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.allowed is True
+    assert readiness.blocker is None
 
 
 @pytest.mark.parametrize(
@@ -1021,6 +1075,8 @@ def test_room_readiness_unknown_authority_is_retryable_unavailable(monkeypatch):
             "active": True,
             "room_correction_allowed": False,
             "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
                 "required": True,
                 "allowed": False,
                 "status": "unknown",
@@ -1084,6 +1140,8 @@ def test_room_readiness_rejects_unsafe_owner_recovery_links(monkeypatch, href):
             "active": True,
             "room_correction_allowed": False,
             "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
                 "allowed": False,
                 "status": "incomplete",
                 "reason": "active_speaker_setup_not_ready",
@@ -1639,6 +1697,8 @@ def test_start_handler_rejects_uncommissioned_active_speaker_before_reservation(
             "active": True,
             "room_correction_allowed": False,
             "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
                 "allowed": False,
                 "status": "incomplete",
                 "reason": "active_summed_acoustic_evidence_incomplete",

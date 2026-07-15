@@ -35,6 +35,12 @@ from .design_draft import load_design_draft
 from .measurement import load_measurement_state
 
 SETUP_STATUS_KIND = "jts_active_speaker_setup_status"
+ROOM_ELIGIBILITY_SCHEMA_VERSION = 1
+ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED = "passive_not_required"
+ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE = "manual_applied_profile"
+ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT = (
+    "automatic_commissioning_receipt"
+)
 
 _CAMILLA_STATEFILE_ENV = "JASPER_CAMILLA_STATEFILE"
 _DEFAULT_CAMILLA_STATEFILE = "/var/lib/camilladsp/outputd-statefile.yml"
@@ -97,10 +103,11 @@ def _acoustic_commissioning_status(
 ) -> dict[str, Any]:
     """Room-correction prerequisite for an active Layer-A graph.
 
-    Room correction operates on the Layer-A graph that is actually applied. Its
-    prerequisite is therefore the immutable, topology-current applied snapshot
-    — not whether that crossover was tuned manually or with the microphone.
-    Mutable measurements remain quality evidence and observability only.
+    Room correction operates on the Layer-A graph that is actually applied. An
+    immutable, topology-current manual snapshot is sufficient operator
+    authority; an automatic snapshot additionally needs Active's strict
+    commissioning receipt. Mutable measurements remain quality evidence and
+    observability only and cannot stand in for that receipt.
     """
     summary = _mapping(measurements.get("summary"))
     latest_summed = _mapping(summary.get("latest_summed_validations"))
@@ -148,6 +155,7 @@ def _acoustic_commissioning_status(
         and _nonnegative_int(level_match.get("groups_measured"))
         >= required_active_groups
     )
+    authority: str | None = None
     if not setup_ready:
         reason = "active_speaker_setup_not_ready"
         detail = "Apply the active speaker profile before starting room correction."
@@ -159,12 +167,26 @@ def _acoustic_commissioning_status(
             if reason == "active_applied_profile_snapshot_missing"
             else str(applied_state["detail"])
         )
-    else:
+    elif tuning_owner == "manual":
         reason = None
+        authority = ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE
         detail = f"The applied {tuning_owner} crossover is ready for room correction."
+    else:
+        # An automatic applied snapshot remains playback authority, but it is
+        # not the receipt-backed commissioning authority Room requires.  Do
+        # not infer that receipt from mutable measurements or from the graph
+        # having been applied successfully; the strict receipt integration is
+        # a separate Active-owned authority chain.
+        reason = "active_automatic_commissioning_receipt_missing"
+        detail = (
+            "Finish receipt-backed automatic crossover commissioning, or "
+            "explicitly apply the current crossover as a manual profile."
+        )
 
     allowed = reason is None
     return {
+        "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
+        "authority": authority,
         "required": True,
         "status": "ready" if allowed else "incomplete",
         "allowed": allowed,
@@ -424,6 +446,8 @@ def read_active_speaker_setup_status(
             "grouping_allowed": False,
             "room_correction_allowed": False,
             "acoustic_commissioning": {
+                "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
+                "authority": None,
                 "required": True,
                 "status": "unknown",
                 "allowed": False,
@@ -458,6 +482,8 @@ def read_active_speaker_setup_status(
             "grouping_allowed": True,
             "room_correction_allowed": True,
             "acoustic_commissioning": {
+                "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
+                "authority": ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED,
                 "required": False,
                 "status": "not_required",
                 "allowed": True,

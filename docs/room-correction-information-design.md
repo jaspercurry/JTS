@@ -44,12 +44,14 @@
 > capture-only sweeps authenticate the level-check microphone before sound.
 > Returning-user preferences, one persistent phone handoff,
 > and mandatory proof remain Wave 3 target behavior. Wave 1 added inert evidence
-> identities, excitation admission, and an exact Active eligibility-receipt
-> contract; it did not make that receipt a live Room authority. The R1b adapter
-> therefore rejects active topologies even when the older setup status calls an
-> applied-recomposition snapshot ready. It does not inspect historical evidence
-> or reconstruct receipt authority; Active must issue and expose the exact
-> receipt-backed decision before Room can admit that path.
+> identities, excitation admission, and an exact automatic Active
+> eligibility-receipt contract; it did not make that receipt a live authority.
+> Active now also exposes a versioned Room decision that distinguishes an
+> explicitly applied manual profile from automatic commissioning. Room consumes
+> that one decision: a topology-current manual applied-profile snapshot is
+> eligible, while automatic tuning remains blocked until Active issues and
+> exposes the exact receipt-backed authority. Room never inspects historical
+> evidence or reconstructs either decision.
 
 ## Product goal
 
@@ -310,11 +312,14 @@ required for the requested action. Missing or malformed readiness fails closed.
 
 The existing `/start` readiness check remains defense in depth even after the
 idle envelope withholds Start. A browser bug or stale tab must not bypass it.
-Until Active integrates the exact verified eligibility receipt, the shipped
-Room adapter admits the explicit passive/not-required result and rejects every
-active topology even when the older setup-status boolean says ready. It must
-not claim receipt-backed or freshly verified crossover authority, and the
-validated crossover setup link remains the only active-path recovery action.
+The shipped Room adapter admits three explicit versioned authority values from
+Active: passive/not-required, an operator-applied manual profile, and (once the
+producer exists) the exact verified automatic commissioning receipt. Current
+automatic applied snapshots do not have that receipt and remain blocked. Room
+must not relabel an automatic snapshot as manual, claim receipt-backed or
+freshly verified authority, inspect measurement artifacts, or derive a second
+rule; the validated crossover setup link remains the active-path recovery
+action.
 
 Historical B2b evidence is forensic only: it cannot supply modern candidate or
 receipt authority. Automatic crossover readiness must come from Active's fresh,
@@ -614,7 +619,7 @@ The serialized hardware track must still perform:
 - H1 settle-cadence tuning, AGC-freeze confirmation, and measured retuning of
   placeholder `JASPER_ACCEPT_*` / `JASPER_RAMP_*` thresholds;
 - audible apply/verify/restore evidence on the production chain;
-- exact Active receipt issuance/consumption on an active topology; and
+- exact automatic Active receipt issuance/consumption on an active topology;
 - capture-page artifact publication/version coordination.
 
 No Pi deployment, microphone use, phone publication, or audible acceptance is

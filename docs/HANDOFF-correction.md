@@ -134,14 +134,15 @@
   `event=correction.async_cancel_drain_timeout` and remains fail-closed until
   cleanup exits. A terminal HTTP/relay result must not stand in for cleanup
   that is still running.
-  Idle envelopes consume the Active-owned setup status, admit its explicit
-  passive/not-required result, and withhold Start on incomplete, unknown,
-  missing, malformed, or active authority. The active case is intentionally
-  blocked even when the older producer calls an applied recomposition snapshot
-  ready: that snapshot is not the exact receipt-backed eligibility decision. A
-  valid Active recovery path is carried through; otherwise **Check again**
-  reloads the Room entry. `/start` repeats the same check before reading the
-  body or reserving a session. Measurement-baseline load, Apply, Reset, and
+  Idle envelopes consume the Active-owned, versioned setup decision. They admit
+  passive/not-required and an explicitly applied manual profile, while an
+  automatic applied snapshot remains blocked until Active supplies the exact
+  receipt-backed authority. Missing, malformed, incomplete, or unknown
+  authority withholds Start; Room never reconstructs graph or measurement
+  evidence and never relabels automatic tuning as manual. A valid Active
+  recovery path is carried through; otherwise **Check again** reloads the Room
+  entry. `/start` repeats the same check before reading the body or reserving a
+  session. Measurement-baseline load, Apply, Reset, and
   automatic revert wait for a terminal result after any shared writer
   admission. Camilla transport attempts and shared writer-lock admission are
   bounded; a cancelled or timed-out waiter cannot acquire later. Room does not
@@ -186,8 +187,8 @@
   `/interpret`, `/propose`, and `/propose/apply` routes are unchanged;
   deterministic acceptance, apply, verification, and automatic revert remain
   the authorities.
-- 🧱 **Wave 1 Active→Room receipt contract (types complete; active Room entry
-  blocked pending production authority).** Active now owns a strict positive
+- 🧱 **Wave 1 automatic Active→Room receipt contract (types complete; automatic
+  Room entry blocked pending production authority).** Active now owns a strict positive
   `CommissioningEligibilityReceipt` type whose required combined-speaker
   targets are derived only from a current, evaluated-`verified`
   `OutputTopology`; blocked or physically unverified output maps cannot create
@@ -201,13 +202,14 @@
   graph. An attempted/unknown mutation, a failed restore, or even a
   successful rollback cannot mint this positive receipt.
 
-  The receipt remains an inert contract. No Active production flow issues or
-  persists it; current Active bundles remain forensic/fail-soft, and
-  `active_speaker.setup_status` still derives its positive boolean from the
-  topology-current applied recomposition snapshot. Room no longer treats that
-  legacy positive boolean as modern authority: its R1b adapter admits passive
-  speakers and rejects active topologies before session reservation. It neither
-  parses the receipt nor inspects historical B2b evidence. The nine-state
+  The receipt remains an inert automatic-commissioning contract. No Active
+  production flow issues or persists it; current Active bundles remain
+  forensic/fail-soft. `active_speaker.setup_status` now projects a versioned
+  authority decision: passive/not-required and an explicitly applied manual
+  profile may enter Room, while an automatic applied snapshot without this
+  receipt remains incomplete. Room consumes that decision before session
+  reservation; it neither parses the receipt nor inspects historical B2b
+  evidence. The nine-state
   lifecycle now has a separate durable, bundle-backed current-run store and a
   fail-closed `commissioning_run` projection on `/crossover/status`; startup
   claims its owner generation so stale callbacks cannot commit. No browser route
@@ -1353,9 +1355,10 @@ GET  /session-report?id=<id> read-only evidence report for one bundle
 GET  /calibration/models     supported calibrated mic providers/models
 POST /start                  first checks the setup-status active/passive flag,
                              room_correction_allowed, and matching acoustic status
-                             (passive/not-required is allowed; every active path
-                             gets typed 409 + the validated owner path until exact
-                             receipt authority lands; unknown/malformed authority
+                             plus its versioned authority (passive/not-required
+                             and manual-applied are allowed; automatic remains
+                             typed 409 until exact receipt authority lands;
+                             unknown/malformed authority
                              gets retryable 503 before reservation),
                              then loads a topology-preserving measurement
                              baseline (Room/preference EQ removed; protected
@@ -2239,8 +2242,8 @@ These items can only be verified on real hardware. Deploy with
       CamillaDSP removes room PEQs cleanly while preserving the current sound
       profile. As a regression check with an already-corrected active graph,
       verify reset keeps the active speaker baseline and only clears room PEQs;
-      fresh active Room entry remains fail-closed pending modern receipt
-      authority.
+      a manual-applied profile may enter Room, while automatic entry remains
+      fail-closed pending modern receipt authority.
 - [ ] AEC bridge interaction (if enabled): routing resumes after measurement
       without permanent drift; allow the adaptive filter its normal convergence
       window described in [HANDOFF-aec.md](HANDOFF-aec.md).
@@ -2650,8 +2653,10 @@ summed evidence host, exact
 graph/capture/restore runtime, durable artifacts, and deterministic measured
 progression were also checked with synthetic admitted fixtures; Active's durable bundle-backed commissioning-run start,
 startup owner-generation claim, stale-callback refusal, and fail-closed
-crossover status were also checked; post-apply verification/receipt and Room
-authority remain unavailable, and no live crossover graph was changed. Wave 2 paid tuning backend extraction checked the
+crossover status were also checked; post-apply automatic verification/receipt
+authority remains unavailable. The versioned manual-applied Room decision is
+live and keeps that authority separate from automatic commissioning; no live
+crossover graph was changed in that pass. Wave 2 paid tuning backend extraction checked the
 shared cross-route throttle, fresh household spend gate, exact provider
 arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP
 error translation without moving proposal acceptance or live apply. Acoustic-
@@ -2663,17 +2668,18 @@ callers and deterministic tone bytes. Room envelope v9
 section/action/blocker/failure/default ownership,
 six/flat/balanced/automatic-repeat policy, relay-first transport resolution,
 capture-only positioned relay specs, and pre-playback level-microphone checks;
-passive-only readiness admission and `/start` defense pending exact Active
-receipt authority,
+passive/manual-applied readiness admission and `/start` defense, with automatic
+entry still pending exact Active receipt authority,
 typed Start/relay/tuning/session/apply failures, static-edge report discovery,
 local capture setup binding, and the
 deleted legacy/certificate surfaces checked hardware-free against
 `jasper.correction.envelope`, `jasper.correction.failures`,
 `MeasurementSession.bind_local_capture_setup`, `correction_setup._POST_ROUTES`,
 and `deploy/assets/correction/js/main.js`; real-device browser behavior remains
-pending. Wave 1 Active eligibility-receipt shape and the temporary fail-closed
-Room rejection of applied-snapshot active authority checked contract-only; no
-hardware behavior revalidated. Full GET/POST route inventory rechecked against
+pending. Wave 1 automatic eligibility-receipt shape and the fail-closed
+rejection of unversioned/automatic applied-snapshot authority were checked
+alongside the explicit manual-applied decision; no hardware behavior was
+revalidated in that pass. Full GET/POST route inventory rechecked against
 `correction_setup._POST_ROUTES` and `Handler.do_GET`; durable crossover-volume
 recovery and route gating; per-driver fixed-reference-axis orchestration;
 geometry-scoped repeats/apply gate; summed fixed-axis placement and relay metadata

@@ -1694,12 +1694,19 @@ def _room_readiness() -> _RoomReadiness:
     """Normalize Active's one readiness decision for envelope and `/start`.
 
     Room does not inspect measurement artifacts or reconstruct crossover
-    authority. It validates the small public response, admits only its explicit
-    passive/not-required result, and temporarily rejects every active topology
-    until Active exposes the exact receipt-backed decision. Only Active's safe
-    local recovery href crosses this adapter.
+    authority. It validates the versioned Active-owned decision and consumes
+    that one result. Manual applied-profile authority and automatic
+    receipt-backed authority are deliberately distinct; an older unversioned
+    active result remains rejected. Only Active's safe local recovery href
+    crosses this adapter.
     """
     from jasper.correction import failures
+    from jasper.active_speaker.setup_status import (
+        ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT,
+        ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE,
+        ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED,
+        ROOM_ELIGIBILITY_SCHEMA_VERSION,
+    )
 
     try:
         raw = _room_correction_readiness()
@@ -1727,25 +1734,38 @@ def _room_readiness() -> _RoomReadiness:
     allowed = setup.get("room_correction_allowed")
     acoustic_allowed = acoustic.get("allowed")
     acoustic_status = acoustic.get("status")
+    decision_schema_version = acoustic.get("decision_schema_version")
+    authority = acoustic.get("authority")
     well_formed = (
         isinstance(active, bool)
         and isinstance(allowed, bool)
         and isinstance(acoustic_raw, Mapping)
         and isinstance(acoustic_allowed, bool)
         and acoustic_allowed is allowed
+        and type(decision_schema_version) is int
+        and decision_schema_version == ROOM_ELIGIBILITY_SCHEMA_VERSION
         and (
             (
                 active is False
                 and allowed is True
                 and acoustic_status == "not_required"
+                and authority == ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED
             )
             or (
                 active is True
                 and (
-                    (allowed is True and acoustic_status == "ready")
+                    (
+                        allowed is True
+                        and acoustic_status == "ready"
+                        and authority in {
+                            ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE,
+                            ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT,
+                        }
+                    )
                     or (
                         allowed is False
                         and acoustic_status in {"incomplete", "unknown"}
+                        and authority is None
                     )
                 )
             )
@@ -1767,7 +1787,7 @@ def _room_readiness() -> _RoomReadiness:
     ):
         action = {"label": "Open speaker setup", "href": href}
 
-    if well_formed and allowed is True and active is False:
+    if well_formed and allowed is True:
         return _RoomReadiness(
             allowed=True,
             blocker=None,
@@ -1775,33 +1795,20 @@ def _room_readiness() -> _RoomReadiness:
             detail="speaker readiness allows room correction",
         )
 
-    legacy_active_authority = (
-        well_formed and active is True and allowed is True
+    reason = str(
+        acoustic.get("reason")
+        or setup.get("reason")
+        or (
+            "speaker_readiness_malformed"
+            if not well_formed
+            else "speaker_room_correction_not_ready"
+        )
     )
-    if legacy_active_authority:
-        # Wave 1's Active setup status can call an applied recomposition
-        # snapshot ready even when its mutable measurement set is missing.
-        # That snapshot is playback ownership, not the modern positive
-        # eligibility receipt. Until Active exposes its exact receipt-backed
-        # decision, Room rejects active topologies without inspecting or
-        # reconstructing crossover evidence itself.
-        reason = "active_receipt_authority_unavailable"
-        detail = "active crossover receipt-backed readiness is unavailable"
-    else:
-        reason = str(
-            acoustic.get("reason")
-            or setup.get("reason")
-            or (
-                "speaker_readiness_malformed"
-                if not well_formed
-                else "speaker_room_correction_not_ready"
-            )
-        )
-        detail = str(
-            acoustic.get("detail")
-            or setup.get("detail")
-            or "speaker setup is not ready for room correction"
-        )
+    detail = str(
+        acoustic.get("detail")
+        or setup.get("detail")
+        or "speaker setup is not ready for room correction"
+    )
     unavailable = not well_formed or acoustic_status == "unknown"
     public_code = (
         failures.SPEAKER_READINESS_UNAVAILABLE
