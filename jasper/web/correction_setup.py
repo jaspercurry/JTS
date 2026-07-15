@@ -3613,6 +3613,7 @@ async def _run_relay_level_match(
 
     async def _pump() -> None:
         unhealthy = False
+        host_event_unconfirmed = False
         while not stop_pump.is_set():
             if stop_requested is not None and stop_requested():
                 cancel_level_match = getattr(sess, "cancel_level_match", None)
@@ -3634,12 +3635,38 @@ async def _run_relay_level_match(
                 # elapsed retry+status budget below feed_timeout_s.
                 if outbound:
                     payload = outbound.pop(0)
-                    await _post_relay_host_event(
-                        control_client,
-                        pi_session,
-                        payload,
-                        hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
-                    )
+                    try:
+                        await _post_relay_host_event(
+                            control_client,
+                            pi_session,
+                            payload,
+                            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
+                        )
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        # A response timeout is ambiguous: the ordered write may
+                        # already have committed. Status is the live microphone
+                        # feed, so it must still get its turn this iteration;
+                        # otherwise repeated slow acknowledgements alone can
+                        # manufacture an eight-second feed-loss failure.
+                        if not host_event_unconfirmed:
+                            log_event(
+                                logger,
+                                "capture_relay.level_host_event",
+                                level=logging.WARNING,
+                                session_id=pi_session.session_id,
+                                result="unconfirmed",
+                                reason=type(exc).__name__,
+                            )
+                        host_event_unconfirmed = True
+                    else:
+                        if host_event_unconfirmed:
+                            log_event(
+                                logger,
+                                "capture_relay.level_host_event",
+                                session_id=pi_session.session_id,
+                                result="recovered",
+                            )
+                        host_event_unconfirmed = False
                 fresh = await _run_relay_control_request(
                     control_client.status,
                     pi_session.session_id,

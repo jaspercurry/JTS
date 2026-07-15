@@ -784,6 +784,10 @@ a write that outlives the awaiting deadline stays ordered ahead of newer
 writes; an older progress event therefore cannot complete after and replace a
 newer terminal event in the relay's last-write-wins slot. The Pi gives
 idempotent host-progress writes one retry after a timeout, 429, or relay 5xx.
+The level pump still refreshes status after an unconfirmed host-event response;
+slow acknowledgements cannot starve fresh microphone samples and manufacture
+the eight-second feed-loss condition. Delivery degradation and recovery are
+latched in the journal rather than logged on every poll.
 Room sweep-start/complete events use the same narrow, ordered path. An
 unconfirmed response does not discard the capture because the write may already
 have committed; the authenticated ready blob is the completion proof and the

@@ -471,6 +471,11 @@
   worker. A write that outlives the awaiting deadline remains ahead of newer
   writes, so a late progress event cannot replace a newer terminal event in the
   relay's last-write-wins slot.
+  The level pump always performs its next status refresh even when the preceding
+  host-event response is unconfirmed; otherwise repeated slow acknowledgements
+  can starve fresh microphone samples and manufacture the eight-second feed-loss
+  condition. A latched warning/recovery pair keeps that degraded control path
+  observable without journal spam.
   The Pi retries one idempotent host-progress write after a timeout, 429, or
   relay 5xx. Room sweep-start/complete events use that same narrow, ordered
   path. A timed-out response does not abort capture because the event may

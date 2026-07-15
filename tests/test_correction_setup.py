@@ -511,6 +511,117 @@ async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_level_pump_refreshes_status_after_host_event_timeout(monkeypatch):
+    """A slow acknowledgement cannot manufacture microphone feed loss."""
+    from contextlib import asynccontextmanager
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator, level_match, playback
+
+    status_reads = []
+    host_events = []
+    purged = []
+
+    class Session:
+        session_id = "room-level"
+        noise_floor_db = -40.0
+        input_device = None
+        mic_calibration = None
+
+        async def run_level_match(
+            self,
+            _geometry,
+            *,
+            read_status,
+            post_host_event,
+            **_ports,
+        ):
+            post_host_event({"phase": "ramp_progress"})
+            for _attempt in range(50):
+                if read_status().get("event"):
+                    return SimpleNamespace(
+                        locked=True,
+                        ramp=SimpleNamespace(error=None),
+                    )
+                await asyncio.sleep(0.01)
+            pytest.fail("status was never refreshed after the host-event timeout")
+
+    class Client:
+        def post_host_event(self, _session_id, _pull_token, payload):
+            host_events.append(dict(payload))
+            raise TimeoutError("response timed out after the write")
+
+        def status(self, _session_id, _pull_token):
+            status_reads.append(True)
+            return {"event": {"level_batch": {"samples": []}}}
+
+        def delete(self, session_id, _pull_token):
+            purged.append(session_id)
+
+    class Camilla:
+        async def get_volume_db(self, *, best_effort):
+            return -30.0
+
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+    class TonePlayer:
+        def __init__(self, _path):
+            pass
+
+        async def play(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    class EventVerifier:
+        def __init__(self, _pi_session):
+            pass
+
+        def verify(self, event):
+            return event
+
+    @asynccontextmanager
+    async def measurement_window():
+        yield
+
+    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: Camilla())
+    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: "tone.wav")
+    monkeypatch.setattr(playback, "TonePlayer", TonePlayer)
+    monkeypatch.setattr(
+        level_match,
+        "parse_level_batch",
+        lambda *_args, **_kwargs: [
+            SimpleNamespace(rms_dbfs=-40.0, seq=1, t_client_ms=1)
+        ],
+    )
+    monkeypatch.setattr(relay_session, "PhoneEventVerifier", EventVerifier)
+    monkeypatch.setattr(relay_session, "validate_capture_page", lambda *_args: None)
+    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
+
+    await correction_setup._run_relay_level_match(
+        Session(),
+        Client(),
+        SimpleNamespace(
+            session_id="cap-level",
+            pull_token="pull",
+            spec=SimpleNamespace(capture_protocol_version=1, kind="level_ramp"),
+        ),
+        geometry="listening_position",
+        run_token="run-level",
+    )
+
+    assert host_events == [
+        {"phase": "ramp_progress"},
+        {"phase": "ramp_progress"},
+    ]
+    assert status_reads
+    assert purged == ["cap-level"]
+
+
+@pytest.mark.asyncio
 async def test_relay_host_event_retries_one_transient_timeout(monkeypatch):
     attempts = []
 
