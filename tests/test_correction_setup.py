@@ -2457,11 +2457,30 @@ def test_render_page_autolevel_target_band_clamps():
     assert "ROOM_LEVEL_WINDOW_LOW_DBFS = -26" in body
     assert "ROOM_LEVEL_WINDOW_HIGH_DBFS = -18" in body
     target = body.split("function computeTargetBand", 1)[1].split(
-        "async function startAutolevel", 1
+        "function autolevelAutoLockEligible", 1
     )[0]
     assert "low: ROOM_LEVEL_WINDOW_LOW_DBFS" in target
     assert "high: ROOM_LEVEL_WINDOW_HIGH_DBFS" in target
     assert "noiseFloorDb +" not in target
+
+
+def test_render_page_autolevel_requires_ambient_trust_after_tone_start(
+    monkeypatch,
+):
+    """Ambient in the fixed window cannot impersonate the level tone."""
+    monkeypatch.setenv("JASPER_RAMP_TRUST_MARGIN_DB", "12.5")
+    page = correction_setup._render_page("jts.local").decode()
+    assert 'data-level-trust-margin-db="12.5"' in page
+
+    body = _module_js()
+    start = body.split("async function startAutolevel", 1)[1].split(
+        "async function cancelAutolevel", 1
+    )[0]
+    assert start.index("await postJson('autolevel/start', {})") < start.index(
+        "watcher = setInterval(watchAutolevelRms, 50)"
+    )
+    assert "autolevelAutoLockEligible(" in start
+    assert "noiseFloorDb + trustMarginDb" in body
 
 
 def test_render_page_amp_message_is_generic_not_tpa3255():

@@ -272,6 +272,7 @@ source = source.replace(
     startMicCapture,
     applyButtonPolicy,
     cancelMeasurement,
+    autolevelAutoLockEligible,
     // P6 tuning-assistant surfaces (IIFE-local).
     renderTuning,
     renderTuningProposals,
@@ -336,7 +337,7 @@ const fakeDocument = {
   querySelector(selector) {
     if (selector === "main.correction-stack") {
       const main = getOrMake("correction-stack");
-      main.dataset = { captureRelayEnabled: "0" };
+      main.dataset = { captureRelayEnabled: "0", levelTrustMarginDb: "10" };
       return main;
     }
     const match = /^\[data-envelope-section="([^"]+)"\]$/.exec(selector);
@@ -518,6 +519,7 @@ const {
   startMicCapture,
   applyButtonPolicy,
   cancelMeasurement,
+  autolevelAutoLockEligible,
   renderTuning,
   renderTuningProposals,
   applyCorrectionProposal,
@@ -2377,9 +2379,24 @@ await (async () => {
     "same-state envelope recovery clears transient status failure copy");
 })();
 
+// 37. Local-browser auto-lock needs the fixed headroom window AND fresh
+//     evidence above the measured ambient trust floor. Loud ambient in-band
+//     is not calibration-tone evidence.
+(() => {
+  const band = {low: -26, high: -18};
+  assert(!autolevelAutoLockEligible(-20, band, -20, 10),
+    "autolevel: in-band ambient cannot auto-lock");
+  assert(autolevelAutoLockEligible(-20, band, -35, 10),
+    "autolevel: trusted tone evidence in-band can auto-lock");
+  assert(!autolevelAutoLockEligible(-27, band, -45, 10),
+    "autolevel: trusted evidence below the headroom window cannot lock");
+  assert(!autolevelAutoLockEligible(-20, band, -35, Infinity),
+    "autolevel: missing server trust policy fails closed");
+})();
+
 resetEnvelopeBookkeeping();
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 51 }));
+console.log(JSON.stringify({ ok: true, tests: 55 }));

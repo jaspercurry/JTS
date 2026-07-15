@@ -954,7 +954,7 @@ def _replace_session(
 
 _PAGE_BODY = """
 __HEADER__
-<main class="page correction-stack" data-required-sr="__REQUIRED_SR__" data-capture-relay-enabled="__CAPTURE_RELAY_ENABLED__">
+<main class="page correction-stack" data-required-sr="__REQUIRED_SR__" data-capture-relay-enabled="__CAPTURE_RELAY_ENABLED__" data-level-trust-margin-db="__LEVEL_TRUST_MARGIN_DB__">
 __TABS__
 <p class="page-sub">Measure your room with a phone and apply the result to the speaker.</p>
 
@@ -1234,6 +1234,7 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         DEFAULT_ROOM_POSITION_COUNT,
         ROOM_POSITION_COUNT_CHOICES,
     )
+    from jasper.audio_measurement.ramp import MeasurementRamp
 
     # data-aliases carries the registry's label tokens to the wizard so it can
     # infer the model from a device label without a hardcoded client-side map.
@@ -1323,6 +1324,10 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         .replace(
             "__CAPTURE_RELAY_ENABLED__",
             "1" if capture_relay_enabled else "0",
+        )
+        .replace(
+            "__LEVEL_TRUST_MARGIN_DB__",
+            format(MeasurementRamp.from_env().trust_margin_db, ".6g"),
         )
         .replace("__MIC_MODEL_OPTIONS__", mic_model_options)
         .replace("__TARGET_PROFILE_OPTIONS__", target_profile_options_html)

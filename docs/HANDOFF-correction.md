@@ -113,6 +113,12 @@
   the same per-tab identity, while relay, later-position, identity-changing,
   unsafe, and stale-run mutations fail before capture. The upload and
   autolevel routes enforce the completed local binding as an admission gate.
+  The local-browser auto-lock keeps Room's fixed −26…−18 dBFS ESS-headroom
+  window, starts watching only after the server confirms the bounded tone/ramp,
+  and additionally requires RMS at least the shared
+  `MeasurementRamp.from_env().trust_margin_db` above the measured ambient.
+  If room noise makes both conditions impossible, automatic lock stays off and
+  the visible manual Lock/retry controls remain available.
   The persistent shell also exposes **Stop measurement** throughout
   preparation/sweep/verification audio; the server cancels and reaps the exact
   playback task (including `aplay`) before restoring the graph. CPU-only

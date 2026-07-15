@@ -26,6 +26,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var REQUIRED_SR = 48000;  // REQUIRED_SAMPLE_RATE — see jasper/web/correction_setup.py
 
   var pageRoot = document.querySelector('main.correction-stack');
+  // The shared measurement kernel owns this trust margin. If the server ever
+  // omits or corrupts it, suppress automatic lock and leave the bounded manual
+  // Lock/cancel path available instead of treating ambient sound as the tone.
+  var autolevelTrustMarginDb = Number(
+    pageRoot ? pageRoot.dataset.levelTrustMarginDb : NaN
+  );
+  if (!Number.isFinite(autolevelTrustMarginDb) || autolevelTrustMarginDb < 0) {
+    autolevelTrustMarginDb = Infinity;
+  }
   var relayConfigured = !!(
     pageRoot && pageRoot.dataset.captureRelayEnabled === '1'
   );
@@ -2737,6 +2746,17 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     };
   }
 
+  function autolevelAutoLockEligible(
+    averageDb, targetBand, noiseFloorDb, trustMarginDb
+  ) {
+    return Number.isFinite(averageDb) &&
+      Number.isFinite(noiseFloorDb) &&
+      Number.isFinite(trustMarginDb) &&
+      averageDb >= targetBand.low &&
+      averageDb <= targetBand.high &&
+      averageDb >= noiseFloorDb + trustMarginDb;
+  }
+
   async function startAutolevel() {
     autolevelStatus.classList.remove('hidden');
     autolevelLockBtn.classList.remove('hidden');
@@ -2791,10 +2811,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     var prevCancelHandler = autolevelCancelBtn.onclick;
     autolevelCancelBtn.onclick = function () { cancelAutolevel(); };
 
-    // Watch the latest mic RMS at 50 ms granularity. As soon as the
-    // smoothed (last ~250 ms) RMS lands in the target range, send
-    // auto-lock. Target band is the fixed Room measurement band above.
-    var watcher = setInterval(function () {
+    // Watch the latest mic RMS at 50 ms granularity after the server confirms
+    // the bounded tone/ramp has started. Automatic lock requires both the
+    // fixed Room headroom window and the shared ambient trust margin; a noisy
+    // room that cannot satisfy both keeps the manual/retry path instead of
+    // mistaking ambient sound for the calibration tone.
+    var watcher = null;
+    var watchAutolevelRms = function () {
       if (lockSent) return;
       var db = latestMicRmsDb;
       if (db <= -100) return;
@@ -2804,12 +2827,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       for (var i = 0; i < autolevelRmsBuffer.length; i++) sum += autolevelRmsBuffer[i];
       var avg = sum / autolevelRmsBuffer.length;
       if (autolevelRmsBuffer.length >= 3 &&
-          avg >= targetBand.low &&
-          avg <= targetBand.high) {
+          autolevelAutoLockEligible(
+            avg, targetBand, noiseFloorDb, autolevelTrustMarginDb
+          )) {
         sendLock('mic ' + avg.toFixed(1) + ' dBFS in band ' +
           targetBand.low.toFixed(0) + '..' + targetBand.high.toFixed(0));
       }
-    }, 50);
+    };
 
     try {
       await postJson('autolevel/start', {});
@@ -2822,6 +2846,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       autolevelCancelBtn.classList.add('hidden');
       return;
     }
+    watcher = setInterval(watchAutolevelRms, 50);
 
     // Poll /status every 200 ms until autolevel reaches terminal.
     var pollOnce = async function () {
