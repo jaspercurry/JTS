@@ -480,4 +480,5 @@ boundary:
 
 Last verified: 2026-07-15 (graph-carrier ownership rechecked against bounded,
 cancellation-safe shared DSP-writer admission and the measured-candidate
-baseline promotion boundary; carrier dispatch is unchanged)
+baseline promotion boundary plus Room's locked Active-authority prepare guard;
+carrier dispatch is unchanged)

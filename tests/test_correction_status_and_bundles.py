@@ -646,6 +646,66 @@ async def test_correction_apply_replaces_existing_room_peqs(
 
 
 @pytest.mark.asyncio
+async def test_correction_apply_runs_authority_guard_inside_dsp_lock(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from contextlib import asynccontextmanager
+    from jasper import dsp_apply
+    from jasper.correction.session import PEQJSON
+
+    sess = _make_session(tmp_path)
+    sess.state = SessionState.READY
+    sess.peqs = [PEQJSON(freq_hz=80.0, q=4.0, gain_db=-3.0)]
+    sess.cfg.config_dir.mkdir()
+    current = sess.cfg.config_dir / "sound_current.yml"
+    current.write_text(
+        emit_sound_config(SoundProfile(enabled=False)),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing.json"))
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+
+    lock_held = False
+    guard_observations = []
+
+    @asynccontextmanager
+    async def observed_lock(*_args, **_kwargs):
+        nonlocal lock_held
+        lock_held = True
+        try:
+            yield
+        finally:
+            lock_held = False
+
+    async def prepare_guard():
+        guard_observations.append(lock_held)
+
+    loaded = {"path": str(current)}
+
+    async def fake_set_config(path: str) -> bool:
+        loaded["path"] = path
+        return True
+
+    async def fake_get_config() -> str:
+        return loaded["path"]
+
+    monkeypatch.setattr(dsp_apply, "_maybe_dsp_apply_lock", observed_lock)
+
+    await sess.apply(
+        fake_set_config,
+        camilla_get_config=fake_get_config,
+        prepare_guard=prepare_guard,
+    )
+
+    assert guard_observations == [True]
+    assert lock_held is False
+
+
+@pytest.mark.asyncio
 async def test_reset_no_room_config_preserves_preference_and_strips_room(
     tmp_path: Path,
     monkeypatch,

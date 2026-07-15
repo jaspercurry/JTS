@@ -453,12 +453,15 @@
   `https://capture.jasper.tech/version.json` reported `20260712.3` on
   2026-07-12. Repo build 20260715.3 adds the Room-specific trust-repeat copy,
   renders host `sweep_cancelled` as expected Stop control flow, and keeps a
-  safely bounded level walk alive across a transient relay status-poll failure.
+  safely bounded level walk alive across a transient relay status-poll failure;
+  the page entry and relay-client import both use the matching `20260715-3`
+  cache key.
   Page-side control requests abort after three seconds through response-body
   parsing, so stalled headers cannot freeze mic batches. Pi-side level control
-  uses a separate 1.5-second request timeout, publishes at most one queued host
-  event before refreshing status, and bounds one retry plus that status read to
-  4.75 seconds inside the default eight-second feed-loss guard.
+  uses a separate 1.5-second socket timeout plus an async wall-clock deadline,
+  publishes at most one queued host event before refreshing status, and bounds
+  one retry plus that status read to 4.75 seconds inside the default
+  eight-second feed-loss guard.
   The Pi retries one idempotent host-progress write after a timeout, 429, or
   relay 5xx. The repo build is
   intentionally not published by this hardware-free lane, so that external

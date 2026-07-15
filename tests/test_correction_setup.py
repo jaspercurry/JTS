@@ -555,6 +555,29 @@ async def test_relay_host_event_does_not_retry_nontransient_4xx(monkeypatch):
     assert attempts == [{"phase": "setup_validated"}]
 
 
+@pytest.mark.asyncio
+async def test_relay_control_request_enforces_wall_clock_deadline():
+    started = threading.Event()
+    release = threading.Event()
+
+    def stalled_body():
+        started.set()
+        release.wait(timeout=1.0)
+
+    began = time.monotonic()
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await correction_setup._run_relay_control_request(
+                stalled_body,
+                hard_timeout_s=0.02,
+            )
+    finally:
+        release.set()
+
+    assert started.is_set()
+    assert time.monotonic() - began < 0.25
+
+
 def test_relay_level_control_budget_stays_inside_default_feed_guard():
     from jasper.audio_measurement.ramp import MeasurementRamp
 
@@ -2685,7 +2708,15 @@ def _locked_autolevel_session(raises_on, *, original=-20.0):
                 locked_main_volume_db=-8.0,
             )
 
-        async def apply(self, set_cb, camilla_get_config=None):
+        async def apply(
+            self,
+            set_cb,
+            camilla_get_config=None,
+            *,
+            prepare_guard=None,
+        ):
+            if prepare_guard is not None:
+                await prepare_guard()
             if raises_on == "apply":
                 raise RuntimeError("CamillaDSP reload failed")
 
@@ -2761,7 +2792,8 @@ def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
             "layer-a-at-start",
         )
 
-        async def apply(self, *_args, **_kwargs):
+        async def apply(self, *_args, **kwargs):
+            await kwargs["prepare_guard"]()
             applied.append(True)
 
     async def changed_authority(_cam):

@@ -180,10 +180,35 @@ _RELAY_LEVEL_AMBIENT_MIN_SAMPLES = 10
 _ROOM_SWEEP_PHONE_FAILURE = "the speaker could not complete this measurement"
 
 
+async def _run_relay_control_request(
+    call: Callable[..., Any],
+    *args: Any,
+    hard_timeout_s: float | None = None,
+) -> Any:
+    """Run one blocking relay request with an optional wall-clock deadline."""
+
+    request = asyncio.get_running_loop().run_in_executor(None, call, *args)
+    if hard_timeout_s is None:
+        return await request
+    done, _pending = await asyncio.wait(
+        {request},
+        timeout=hard_timeout_s,
+    )
+    if not done:
+        # A running thread cannot be killed safely, but the level-control pump
+        # must not wait for it. The cloned RelayClient's socket timeout remains
+        # the transport backstop; idempotent host events tolerate a late result.
+        request.cancel()
+        raise asyncio.TimeoutError
+    return request.result()
+
+
 async def _post_relay_host_event(
     client: Any,
     pi_session: Any,
     payload: Mapping[str, Any],
+    *,
+    hard_timeout_s: float | None = None,
 ) -> None:
     """Publish one idempotent host event with one bounded transient retry."""
 
@@ -191,11 +216,12 @@ async def _post_relay_host_event(
 
     for attempt in range(1, _RELAY_HOST_EVENT_ATTEMPTS + 1):
         try:
-            await asyncio.to_thread(
+            await _run_relay_control_request(
                 client.post_host_event,
                 pi_session.session_id,
                 pi_session.pull_token,
                 payload,
+                hard_timeout_s=hard_timeout_s,
             )
             return
         except RelayError as exc:
@@ -3553,11 +3579,13 @@ async def _run_relay_level_match(
                         control_client,
                         pi_session,
                         payload,
+                        hard_timeout_s=_RELAY_LEVEL_CONTROL_TIMEOUT_S,
                     )
-                fresh = await asyncio.to_thread(
+                fresh = await _run_relay_control_request(
                     control_client.status,
                     pi_session.session_id,
                     pi_session.pull_token,
+                    hard_timeout_s=_RELAY_LEVEL_CONTROL_TIMEOUT_S,
                 )
                 if isinstance(fresh, dict):
                     verified_event = event_verifier.verify(fresh.get("event"))
@@ -3584,6 +3612,7 @@ async def _run_relay_level_match(
                             "phase": "capture_incompatible",
                             "error": "capture control integrity check failed",
                         },
+                        hard_timeout_s=_RELAY_LEVEL_CONTROL_TIMEOUT_S,
                     )
                 except (OSError, RuntimeError, ValueError):
                     logger.warning(
@@ -3726,6 +3755,7 @@ async def _run_relay_level_match(
                             control_client,
                             pi_session,
                             response,
+                            hard_timeout_s=_RELAY_LEVEL_CONTROL_TIMEOUT_S,
                         )
                         if response["phase"] == "setup_validation_failed":
                             raise ValueError(str(response["error"]))
@@ -3950,6 +3980,7 @@ async def _run_relay_level_match(
                         "error": str(exc),
                     }
                 },
+                hard_timeout_s=_RELAY_LEVEL_CONTROL_TIMEOUT_S,
             )
             await asyncio.sleep(0.75)
         except (OSError, RuntimeError, ValueError):
@@ -5525,17 +5556,17 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     async def _get() -> str | None:
         return await cam.get_config_file_path(best_effort=True)
 
-    async def _apply_with_current_authority() -> None:
-        # _run_graph_mutation holds the shared DSP-writer lock across this
-        # check and MeasurementSession.apply's carrier/write transaction.
-        await _assert_room_authority_current(
-            cam,
-            sess.room_authority_binding,
-        )
-        await sess.apply(_set, camilla_get_config=_get)
-
     try:
-        _run_graph_mutation(_apply_with_current_authority())
+        _run_graph_mutation(
+            sess.apply(
+                _set,
+                camilla_get_config=_get,
+                prepare_guard=lambda: _assert_room_authority_current(
+                    cam,
+                    sess.room_authority_binding,
+                ),
+            )
+        )
     finally:
         # Audio-safety: autolevel may have ramped main_volume well above the
         # listening level for measurement SNR. Restore it even if apply()

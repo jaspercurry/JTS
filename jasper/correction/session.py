@@ -1901,6 +1901,8 @@ class MeasurementSession:
         self,
         camilla_set_config: Callable[[str], Awaitable[bool]],
         camilla_get_config: Callable[[], Awaitable[str | None]] | None = None,
+        *,
+        prepare_guard: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         async with self._lock:
             if self.state != SessionState.READY:
@@ -1926,6 +1928,12 @@ class MeasurementSession:
             raise
 
         async def _prepare_config() -> dict[str, Any]:
+            # apply_dsp_config invokes prepare only after acquiring the shared
+            # DSP-writer lock. The web owner injects its Active-owned authority
+            # check here so no legal writer can change Layer A between the
+            # decision and carrier re-emission.
+            if prepare_guard is not None:
+                await prepare_guard()
             profile = load_profile()
             prior_config_path: str | None = None
             if camilla_get_config is not None:

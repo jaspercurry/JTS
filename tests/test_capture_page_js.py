@@ -94,13 +94,13 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "supported_capture_protocol_versions": [1, 2],
         "capture_page_build": "20260715.3",
     }
-    assert "main.js?v=20260715-2" in index_html
+    assert "main.js?v=20260715-3" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
     assert 'from "./constraints.js?v=20260711-4"' in main_js
-    assert 'from "./relay-client.js?v=20260715-2"' in main_js
-    assert 'from "./level-events.js?v=20260715-2"' in main_js
+    assert 'from "./relay-client.js?v=20260715-3"' in main_js
+    assert 'from "./level-events.js?v=20260715-3"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
 
 
@@ -172,7 +172,7 @@ def test_capture_page_level_ramp_uses_meter_protocol_without_wav_upload():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     assert (
-        'import { runLevelRampProtocol } from "./level-events.js?v=20260715-2"'
+        'import { runLevelRampProtocol } from "./level-events.js?v=20260715-3"'
         in main_js
     )
     assert 'spec.kind === "level_ramp"' in main_js
