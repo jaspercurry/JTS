@@ -212,16 +212,15 @@ def test_runtime_state_units_track_coupling_reconciler_oneshots():
     """#1233 follow-up: a failed coupling-reconcile oneshot (e.g. an arm-abort —
     env written, fan-in restart aborted because camilla would not stop) parks
     the unit in `failed` with the evidence only in `systemctl --failed` + the
-    journal. Both entry units must be in the doctor's tracked set so that state
+    journal. The durable entry unit must be in the doctor's tracked set so state
     surfaces in one-shot diagnostics."""
     assert "jasper-fanin-coupling-auto.service" in doctor._RUNTIME_STATE_UNITS
-    assert "jasper-fanin-combo-health.service" in doctor._RUNTIME_STATE_UNITS
 
 
 def test_check_service_runtime_state_fails_on_failed_coupling_oneshot(monkeypatch):
     class FakeRun:
         stdout = (
-            "Id=jasper-fanin-combo-health.service\n"
+            "Id=jasper-fanin-coupling-auto.service\n"
             "LoadState=loaded\n"
             "ActiveState=failed\n"
             "SubState=failed\n"
@@ -234,7 +233,7 @@ def test_check_service_runtime_state_fails_on_failed_coupling_oneshot(monkeypatc
     r = doctor.check_service_runtime_state()
 
     assert r.status == "fail"
-    assert "jasper-fanin-combo-health.service state=failed/failed" in r.detail
+    assert "jasper-fanin-coupling-auto.service state=failed/failed" in r.detail
 
 
 def test_check_service_runtime_state_ignores_in_flight_oneshot(monkeypatch):

@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Apply the desired JTS USB microphone shape
+Documentation=file:///opt/jasper/docs/HANDOFF-usb-gadget.md
+
+[Service]
+Type=oneshot
+# Keep the USB-NCM response alive long enough for the switch POST to reach the
+# browser. Restarting this active oneshot restarts the sleep, which naturally
+# debounces rapid switch changes while the durable intent remains authoritative.
+ExecStart=/bin/sleep 0.35
+# This inner restart is intentionally blocking: the following applied event
+# means both target jobs completed, not merely that systemd accepted them.
+ExecStartPost=/usr/bin/systemctl restart jasper-aec-bridge.service jasper-usbgadget.service
+ExecStartPost=/usr/bin/logger --tag jasper-usbmic-apply event=usb_mic.recompose_applied unit=jasper-usbmic-apply.service
+# SERVICE_RESULT/EXIT_* are systemd-provided to ExecStopPost. The helper stays
+# silent on success and emits the stable failed event for every failed result.
+ExecStopPost=/usr/local/sbin/jasper-usbmic-apply-result
+TimeoutStartSec=30s
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+UMask=0027
+SyslogIdentifier=jasper-usbmic-apply

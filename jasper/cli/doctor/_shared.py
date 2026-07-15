@@ -359,7 +359,6 @@ _RUNTIME_STATE_UNITS = (
     # `systemctl --failed` + the journal; tracking them here makes it
     # doctor-visible.
     "jasper-fanin-coupling-auto.service",
-    "jasper-fanin-combo-health.service",
 )
 
 # Type=oneshot members of the tracked set: `activating` is their NORMAL
@@ -370,7 +369,6 @@ _RUNTIME_STATE_UNITS = (
 # moves it to `failed`, which this check then surfaces on the next run.
 _ONESHOT_RUNTIME_STATE_UNITS = frozenset({
     "jasper-fanin-coupling-auto.service",
-    "jasper-fanin-combo-health.service",
 })
 
 def _service_runtime_states() -> dict[str, dict[str, object]] | None:

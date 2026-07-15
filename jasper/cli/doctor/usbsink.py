@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import time
 
 from jasper.audio_hardware.usb_port_role import gadget_unavailable_detail
 from jasper.audio_runtime_plan import UAC2_LOW_LATENCY_EXPECTED_ATTRS
@@ -34,6 +35,15 @@ from jasper.output_hardware import current_usb_data_role
 from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET, read_status_socket
 from jasper.source_intent import source_intent_enabled
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR, udc_host_connected
+from jasper.usb_mic import (
+    RELAY_STATUS_FRESH_SECONDS,
+    RELAY_STATUS_PATH,
+    USB_MIC_BCD_DEVICE,
+    USB_NO_MIC_BCD_DEVICE,
+    USBMIC_UNIT,
+    read_intent as read_usb_mic_intent,
+    relay_audio_issue,
+)
 
 from ._registry import doctor_check
 from ._shared import CheckResult, _parked_as_bonded_follower, _run
@@ -42,6 +52,7 @@ USBSINK_UNIT = "jasper-usbsink.service"
 USBGADGET_UNIT = "jasper-usbgadget.service"
 USBSINK_GADGET_PATH = Path("/sys/kernel/config/usb_gadget/jts-usb-audio")
 UAC2_EXPECTED_LOW_LATENCY_ATTRS = UAC2_LOW_LATENCY_EXPECTED_ATTRS
+USB_NAME_PATCH_SCHEMA = "3"
 
 
 def _systemd_is_active(unit: str) -> bool:
@@ -396,10 +407,113 @@ def check_usbsink_low_latency_contract() -> CheckResult:
         )
     return CheckResult("usbsink low-latency contract", "ok", detail)
 
+
+@doctor_check(order=59.7, group="usbsink")
+def check_usb_mic_export() -> CheckResult:
+    """Cross-check USB-microphone intent, descriptor, relay, and privacy."""
+
+    intent = read_usb_mic_intent()
+    function = _uac2_function_path()
+    try:
+        p_chmask = (function / "p_chmask").read_text(encoding="utf-8").strip()
+    except OSError:
+        p_chmask = ""
+    advertised = p_chmask == "1"
+    try:
+        bcd_device = (USBSINK_GADGET_PATH / "bcdDevice").read_text(
+            encoding="utf-8",
+        ).strip()
+    except OSError:
+        bcd_device = ""
+    if not intent.valid:
+        return CheckResult(
+            "USB microphone export", "fail", intent.detail,
+        )
+    if not intent.enabled:
+        if advertised:
+            return CheckResult(
+                "USB microphone export",
+                "fail",
+                "preference is Off but UAC2 p_chmask=1 still advertises a host "
+                f"microphone; restart {USBGADGET_UNIT}",
+            )
+        if function.is_dir() and bcd_device != USB_NO_MIC_BCD_DEVICE:
+            return CheckResult(
+                "USB microphone export",
+                "fail",
+                "preference is Off but the composed UAC2 descriptor revision is "
+                f"{bcd_device or 'missing'}, expected {USB_NO_MIC_BCD_DEVICE}; "
+                f"restart {USBGADGET_UNIT}",
+            )
+        return CheckResult(
+            "USB microphone export", "ok", "disabled; host microphone absent",
+        )
+
+    audio_wanted, audio_reason = _audio_composition_wanted()
+    if not audio_wanted:
+        return CheckResult(
+            "USB microphone export",
+            "warn",
+            "preference is On but USB Audio Input is unavailable "
+            f"({audio_reason}); saved intent will apply when that source recovers",
+        )
+    if not advertised:
+        return CheckResult(
+            "USB microphone export",
+            "fail",
+            "preference is On but UAC2 does not advertise the mono host input "
+            f"(p_chmask={p_chmask or 'missing'}); restart {USBGADGET_UNIT}",
+        )
+    if bcd_device != USB_MIC_BCD_DEVICE:
+        return CheckResult(
+            "USB microphone export",
+            "fail",
+            "host microphone is advertised but the descriptor revision is "
+            f"{bcd_device or 'missing'}, expected {USB_MIC_BCD_DEVICE}; "
+            f"restart {USBGADGET_UNIT}",
+        )
+    if not _systemd_is_active(USBMIC_UNIT):
+        return CheckResult(
+            "USB microphone export",
+            "fail",
+            f"host microphone is advertised but {USBMIC_UNIT} is inactive",
+        )
+    try:
+        relay_payload = json.loads(
+            Path(RELAY_STATUS_PATH).read_text(encoding="utf-8")
+        )
+        relay = relay_payload if isinstance(relay_payload, dict) else {}
+        age = time.time() - float(relay.get("updated_epoch_sec", 0))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        relay = {}
+        age = float("inf")
+    if age > RELAY_STATUS_FRESH_SECONDS:
+        return CheckResult(
+            "USB microphone export",
+            "warn",
+            f"{USBMIC_UNIT} is active but relay status is missing or stale",
+        )
+    audio_issue = relay_audio_issue(relay)
+    if audio_issue:
+        return CheckResult(
+            "USB microphone export",
+            "warn",
+            f"advertised but audio progress is unhealthy: {audio_issue} "
+            f"host_streaming={bool(relay.get('host_streaming'))}, "
+            f"queue_drops={relay.get('periods_dropped', 0)}, "
+            f"drop_rate={relay.get('drop_rate_periods_per_sec', 0)} periods/s",
+        )
+    return CheckResult(
+        "USB microphone export",
+        "ok",
+        "advertised and relay healthy; "
+        f"host_streaming={bool(relay.get('host_streaming'))}, "
+        f"queue_drops={int(relay.get('periods_dropped', 0))}",
+    )
+
 @doctor_check(order=59.8, group="usbsink")
-def check_usb_combo_fallback() -> CheckResult:
-    """Cross-check the USB-combo intent vs the resolved combo state vs the
-    runtime-fallback marker (defect 2026-07-10).
+def check_usb_combo_consistency() -> CheckResult:
+    """Cross-check canonical USB permission against the resolved combo state.
 
     Three facts that must agree on a healthy combo box:
 
@@ -410,29 +524,20 @@ def check_usb_combo_fallback() -> CheckResult:
        not a second preference store. Invalid intent remains a loud failure.
     2. RESOLVED — ``fanin.env`` carries ``JASPER_FANIN_USB_DIRECT=enabled`` (the
        reconciler armed the combo so fan-in DIRECT-captures the gadget).
-    3. FALLBACK — the runtime watcher's marker
-       (``/var/lib/jasper/usb_combo_fallback.json``): present == it disarmed the
-       combo after a sustained direct-capture break, leaving USB audio UNAVAILABLE
-       (there is no aloop solo fallback anymore).
-
     Reported outcomes:
 
     - ``fail`` — ``jasper-usbsink.service`` is in the ``failed`` state (its
       composed-function or bounded ALSA-card readiness gate failed; USB audio is
       unavailable until the gadget is reconciled).
-    - ``warn`` — the fallback marker is present (combo disarmed — USB audio
-      unavailable; surfaces the reason + how it recovers), OR the combo is armed but
-      the runtime watcher has a non-zero consecutive-broken count (a real
-      direct-capture break in progress, surfaced before it disarms — defect
-      2026-07-11), OR USB audio is effectively wanted + gadget present but the
-      combo was never armed (the coupling kick did not land — the PR #1197 nit:
-      a failed wizard kick otherwise leaves no durable surface).
+    - ``warn`` — USB audio is effectively wanted + gadget present but the combo
+      was never armed (the coupling kick did not land — the PR #1197 nit: a
+      failed wizard kick otherwise leaves no durable surface), or the combo is
+      armed while canonical permission is Off.
     - ``ok`` — armed coherently, or cleanly disarmed (USB audio off / non-gadget
-      box), with no marker and no failed unit.
+      box), with no failed unit.
 
     Skip-if-not-applicable: a box whose resolved USB role cannot carry a gadget
     reports ok with a skip note (check_usb_data_role owns the reason)."""
-    from jasper.fanin.combo_health import read_fallback_marker
     from jasper.fanin.coupling_auto import (
         USB_COMBO_ENABLED_VALUE,
         USB_DIRECT_ENV_VAR,
@@ -442,7 +547,7 @@ def check_usb_combo_fallback() -> CheckResult:
     # 1. A failed readiness-marker unit is the most actionable state — report first.
     if _systemd_is_failed(USBSINK_UNIT):
         return CheckResult(
-            "usb combo fallback", "fail",
+            "USB combo consistency", "fail",
             f"{USBSINK_UNIT} is in the failed state — the USB readiness marker "
             "did not pass its composed-function/card gate. USB audio is unavailable "
             "until recovery: "
@@ -450,22 +555,11 @@ def check_usb_combo_fallback() -> CheckResult:
             "jasper-usbgadget`.",
         )
 
-    marker = read_fallback_marker()
-    if marker is not None:
-        return CheckResult(
-            "usb combo fallback", "warn",
-            "USB audio unavailable — the fan-in DIRECT capture broke at runtime "
-            f"(reason: {marker.reason or 'unknown'}) and the combo was disarmed. "
-            "There is no aloop solo fallback: USB audio stays off until the direct "
-            "capture is fixed, then it recovers on the next reboot, deploy, or a "
-            "/sources/ USB Audio Input toggle off-then-on.",
-        )
-
     gadget = read_usb_gadget_available()
     audio_wanted, audio_reason = _audio_wanted()
     if audio_reason.startswith("intent_invalid:"):
         return CheckResult(
-            "usb combo fallback",
+            "USB combo consistency",
             "fail",
             "USB Audio Input source intent is invalid or unreadable: "
             + audio_reason.removeprefix("intent_invalid:"),
@@ -482,56 +576,35 @@ def check_usb_combo_fallback() -> CheckResult:
 
     if not gadget:
         return CheckResult(
-            "usb combo fallback", "ok",
+            "USB combo consistency", "ok",
             "resolved USB gadget unavailable — combo not applicable "
             "(see 'USB data role')",
         )
     if audio_wanted and not armed:
         return CheckResult(
-            "usb combo fallback", "warn",
+            "USB combo consistency", "warn",
             "USB Audio Input is effectively wanted (intent enabled and role "
             "allowed) and the gadget is present, but the combo is NOT armed in "
-            "fanin.env (JASPER_FANIN_USB_DIRECT != enabled) and no fallback marker "
-            "is set — the coupling reconcile likely did not run (a failed "
+            "fanin.env (JASPER_FANIN_USB_DIRECT != enabled) — the coupling "
+            "reconcile likely did not run (a failed "
             "post-toggle kick). Re-run the /sources/ toggle or `sudo systemctl "
             "start jasper-fanin-coupling-auto.service`.",
         )
     if armed and not audio_wanted:
         return CheckResult(
-            "usb combo fallback", "warn",
+            "USB combo consistency", "warn",
             f"combo is armed in fanin.env but USB Audio Input is not effectively "
             f"wanted ({audio_reason}) — a stale arm. `sudo systemctl start "
             "jasper-fanin-coupling-auto.service` to reconcile.",
         )
     if armed:
-        # Surface an IN-PROGRESS break before it disarms (defect 2026-07-11): the
-        # repeated broken-tick WARNs only hit the journal, so a genuine break
-        # accumulating toward the 2-tick disarm was invisible to anyone reading
-        # /system/ or the doctor. Post-fix this counter only climbs on a real
-        # capturing-state break (idle churn no longer counts), so >0 is a signal
-        # worth acting on, not noise.
-        from jasper.fanin.combo_health import (
-            FALLBACK_CONSECUTIVE_TICKS,
-            read_tick_state,
-        )
-
-        pending = read_tick_state().consecutive_broken
-        if pending > 0:
-            return CheckResult(
-                "usb combo fallback", "warn",
-                f"combo armed, but the runtime watcher has counted {pending} "
-                "consecutive broken tick(s) — a real direct-capture break is in "
-                f"progress (the combo disarms at {FALLBACK_CONSECUTIVE_TICKS} "
-                "consecutive). Inspect `journalctl -u jasper-fanin-combo-health` "
-                "and `journalctl -u jasper-fanin | grep usb_direct.reopen`.",
-            )
         return CheckResult(
-            "usb combo fallback", "ok",
-            "combo armed (fan-in direct-captures the gadget as the sole live "
-            "ingress owner) — no runtime fallback.",
+            "USB combo consistency", "ok",
+            "combo armed from canonical source intent (fan-in direct-captures "
+            "the gadget as the sole live ingress owner)",
         )
     return CheckResult(
-        "usb combo fallback", "ok",
+        "USB combo consistency", "ok",
         f"combo disarmed (USB Audio Input {audio_reason}) — the fan-in DIRECT lane "
         "is off (USB audio inactive, as intended).",
     )
@@ -541,9 +614,9 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
     """When jasper-usbsink is enabled, verify the host-visible device
     name has been patched to track the Speaker Name.
 
-    The kernel hardcodes the UAC2 AudioStreaming string ("Playback
-    Inactive") that macOS shows as the device name; configfs can't set
-    it on 6.12, so jasper-usbsink-name-patch builds a name-patched
+    The kernel hardcodes the UAC2 playback/capture AudioStreaming strings that
+    macOS shows as device names; configfs can't set them on 6.12, so
+    jasper-usbsink-name-patch builds a name-patched
     `updates/` module override at bring-up. This check confirms the
     override exists, is genuinely patched, and matches the current
     Speaker Name + running kernel. A `warn` here is cosmetic only —
@@ -579,9 +652,22 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
             "here gracefully; audio is unaffected).",
         )
 
-    # The override must be genuinely patched — the stock string gone.
+    # The override must be a complete schema-3 patch — all four stock
+    # alt-setting strings gone. Capture is checked even while p_chmask=0 so a
+    # later switch cannot reveal an upgrade-stale label. The patcher publishes
+    # no partial override; this scan keeps doctor truthful for manually copied
+    # or upgrade-stale modules as well.
     try:
-        if b"Playback Inactive\x00" in override.read_bytes():
+        override_bytes = override.read_bytes()
+        if any(
+            token in override_bytes
+            for token in (
+                b"Playback Inactive\x00",
+                b"Playback Active\x00",
+                b"Capture Inactive\x00",
+                b"Capture Active\x00",
+            )
+        ):
             return CheckResult(
                 "usbsink name", "warn",
                 f"override {override} still contains the stock string — "
@@ -593,18 +679,25 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
             f"can't read {override}: {exc}",
         )
 
-    # Marker records the (kernel, name, stock-hash) the override was
-    # built for; a mismatch means a rename or kernel bump hasn't been
-    # re-applied yet.
+    # Marker records (patch-schema, kernel, speaker name, derived mic name,
+    # stock-hash). A mismatch means a transform, rename, or kernel bump has not
+    # been re-applied yet.
     try:
         fields = marker.read_text().split("\t")
     except OSError:
         fields = []
-    if len(fields) >= 2 and fields[0] == kver and fields[1] == name:
+    if (
+        len(fields) >= 4
+        and fields[0] == USB_NAME_PATCH_SCHEMA
+        and fields[1] == kver
+        and fields[2] == name
+        and fields[3] == f"{name} Mic"
+    ):
         return CheckResult(
             "usbsink name", "ok",
-            f"device name patched to track Speaker Name '{name}' "
-            f"(kernel {kver}); host shows it (truncated to 15 chars).",
+            f"speaker label tracks Speaker Name '{name}'; microphone label "
+            f"tracks '{name} Mic' (kernel {kver}; each is truncated to its "
+            "14-character USB slot while preserving the Mic suffix).",
         )
     return CheckResult(
         "usbsink name", "warn",

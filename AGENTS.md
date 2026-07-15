@@ -36,7 +36,7 @@ document order):
 - [Wake-word switching — read first](#wake-word-switching--read-first)
 - [AEC bridge — input profile and reconciler](#aec-bridge--input-profile-and-reconciler)
 - [Wake-event telemetry — capture + labeling](#wake-event-telemetry--capture--labeling)
-- [Mic mute — persists across restarts](#mic-mute--persists-across-restarts)
+- [Voice assistant pause — persists across restarts](#voice-assistant-pause--persists-across-restarts)
 
 **Integrations & connectivity**
 - [Wi-Fi switching — read first](#wi-fi-switching--read-first)
@@ -1767,10 +1767,11 @@ ssh pi@jts.local 'sudo rm -f /var/lib/jasper-intsecrets/home_assistant.env \
 
 ---
 
-## Mic mute — persists across restarts
+## Voice assistant pause — persists across restarts
 
-User-driven mic mute is a privacy promise. When on, the wake loop
-drains mic frames without feeding wake detection or any session.
+The user-driven Voice assistant Pause control stops wake detection and JTS
+voice capture. It is not a hardware-wide microphone mute: an explicitly
+enabled “Use JTS as a Mac microphone” export continues independently.
 State persists to `/var/lib/jasper/mic_mute.env`
 (`JASPER_MIC_MUTED=0|1`, mode 0644, atomic tempfile+rename) so it
 survives every daemon restart — deploys, web-wizard saves, watchdog
@@ -1796,17 +1797,17 @@ Two ways to toggle (no voice tool — see footnote):
   ```
 
 **Fail-safe direction**: a missing, unreadable, or malformed
-`mic_mute.env` resolves to **unmuted** at boot. Better the speaker
+`mic_mute.env` resolves to **active** at boot. Better the speaker
 respond than be silently deaf because of one bad byte on disk.
 
-**On boot when restored as muted**, jasper-voice logs a single
+**On boot when restored as paused**, jasper-voice logs a single
 `mic mute: restored from /var/lib/jasper/mic_mute.env (mic is muted
 at startup)` line. If wake stops responding after a deploy/reboot,
 check this first.
 
-**No voice tool by design.** "Hey Jarvis, mute the mic" would
-create a one-way trap — once muted, wake detection is off, so the
-user couldn't say "Hey Jarvis, unmute" to get back. Toggle via the
+**No voice tool by design.** "Hey Jarvis, pause" would create a one-way trap —
+once paused, wake detection is off, so the user could not ask it to resume.
+Toggle via the
 dashboard or HTTP endpoint, never via the assistant itself.
 
 ---
@@ -2573,6 +2574,18 @@ that first for anything touching gadget composition, ConfigFS, or the
 `jasper-usbgadget.service`). This section stays scoped to the audio
 source itself.
 
+**Optional Mac microphone direction:** when USB Audio Input is already On and
+an echo-cancelled input profile is active, `/wake/` exposes a separate “Use JTS
+as a Mac microphone” switch. Intent lives in
+`/var/lib/jasper/usb_mic.env` (off by default). Gadget composition owns the
+UAC2 `p_chmask`/descriptor revision; `jasper-aec-bridge` duplicates its final
+clean stream on dedicated localhost UDP `:9894`; `jasper-usbmic.service` owns
+the bounded ALSA relay. Do not bind voice's `:9876` or make the return path part
+of fan-in. The USB-mic switch is the sole end-user authority for export;
+Voice assistant Pause does not silence it. Canonical lifecycle, privacy, and
+status details are in
+[`docs/HANDOFF-usb-gadget.md`](docs/HANDOFF-usb-gadget.md).
+
 Full audio-source design at
 [`docs/HANDOFF-usbsink.md`](docs/HANDOFF-usbsink.md). Operational
 summary:
@@ -2636,7 +2649,10 @@ PY
 
 **Common failure modes**:
 - *Mac sees "Playback Inactive"*: cosmetic kernel bug in
-  `f_uac2.c`; music still plays. Don't chase.
+  `f_uac2.c`; music still plays. The same applies to "Capture Inactive" for
+  the optional Mac input. A gadget restart should rebuild the schema-3
+  name-patched module; `jasper-doctor` reports stale patches in its
+  `usbsink name` check.
 - *No volume response*: check `amixer -c UAC2Gadget controls` —
   the gadget descriptor must expose `PCM Capture Volume` (it does;
   driven by `c_volume_present=1` in `jasper-usbgadget-up`).

@@ -123,6 +123,10 @@ MANAGED_UNITS = frozenset({
     "nqptp.service",
     "librespot.service",
     "jasper-usbsink.service",
+    # Durable, naturally-debounced USB microphone descriptor/producer apply.
+    # jasper-control restarts it after persisting intent; the root oneshot owns
+    # the delayed recompose so an in-process timer cannot be lost on exit.
+    "jasper-usbmic-apply.service",
     # jasper-usbgadget owns the hardware-gated composite ConfigFS gadget
     # (default-on USB network + wizard-toggled USB audio). The root coordinator restarts
     # it to recompose the audio function after source/role changes; /speaker

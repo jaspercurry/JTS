@@ -20,6 +20,7 @@ import json
 import socket
 import sys
 import time
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -31,6 +32,63 @@ from typing import Any
 FANIN_INPUT_SOURCE_DIRECT = "direct"
 USBSINK_INPUT_LABEL = "usbsink"
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
+
+# Stable ``direct.health`` tokens produced by rust/jasper-fanin.  Health is an
+# instantaneous observability signal owned by the capture process; cumulative
+# reopen counters describe successful self-heal activity and are deliberately
+# not interpreted here as permission to add or remove the USB function.
+DIRECT_HEALTH_CAPTURING = "capturing"
+DIRECT_HEALTH_IDLE = "idle"
+DIRECT_HEALTH_BROKEN = "broken"
+
+
+@dataclass(frozen=True)
+class DirectHealthSample:
+    """The identity-bound USB DIRECT lane's status projection.
+
+    ``reopens`` and ``card_gen_reopens`` are telemetry: a climb means fan-in
+    closed and reopened a capture handle.  It does not mean the recovery failed.
+    Callers that need readiness use ``present`` plus ``health``; lifecycle intent
+    remains owned by the source coordinator.
+    """
+
+    present: bool
+    health: str
+    reopens: int
+    card_gen_reopens: int
+    frames_read: int
+
+
+def _as_int(raw: Any) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def extract_direct_sample(
+    fanin_status: dict[str, Any] | None,
+) -> DirectHealthSample | None:
+    """Return the USB DIRECT lane's health projection, or ``None``.
+
+    The selection is bound to both ``label=usbsink`` and ``source=direct`` so an
+    ordinary ALoop lane or a future direct lane cannot be mistaken for this one.
+    Missing and malformed snapshots fail soft.
+    """
+
+    entry = fanin_usbsink_input(fanin_status)
+    if not entry or entry.get("source") != FANIN_INPUT_SOURCE_DIRECT:
+        return None
+    direct = entry.get("direct")
+    if not isinstance(direct, dict):
+        return None
+    return DirectHealthSample(
+        present=bool(direct.get("present", False)),
+        health=str(direct.get("health", "")),
+        reopens=_as_int(direct.get("reopens")),
+        card_gen_reopens=_as_int(direct.get("card_gen_reopens")),
+        frames_read=_as_int(entry.get("frames_read")),
+    )
 
 
 def read_fanin_status(
@@ -130,8 +188,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = [
+    "DIRECT_HEALTH_BROKEN",
+    "DIRECT_HEALTH_CAPTURING",
+    "DIRECT_HEALTH_IDLE",
+    "DirectHealthSample",
     "FANIN_INPUT_SOURCE_DIRECT",
     "USBSINK_INPUT_LABEL",
+    "extract_direct_sample",
     "fanin_usbsink_input",
     "fanin_usbsink_lane_is_direct",
     "FANIN_STATUS_SOCKET",

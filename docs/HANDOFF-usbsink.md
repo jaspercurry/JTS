@@ -6,7 +6,7 @@
 **Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
 UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
-## Current operational truth (2026-07-14)
+## Current operational truth (2026-07-15)
 
 USB Audio Input is an opt-in source controlled from `/sources/`; canonical
 household intent lives in `/var/lib/jasper/source_intent.env`. The root source
@@ -31,6 +31,12 @@ There is one audio pipeline:
 ```text
 host -> UAC2 gadget -> jasper-fanin USB DIRECT lane -> summed music -> CamillaDSP/outputd
 ```
+
+That statement is specifically the **host-to-speaker source** data plane. The
+optional `/wake/` “Use JTS as a Mac microphone” switch adds the reverse
+Pi-to-host direction to the same UAC2 function through the independent
+`jasper-usbmic` relay; it does not change fan-in ownership. Descriptor and relay
+truth are canonical in [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md).
 
 `jasper-fanin` owns capture, level/activity, mix-mute, resampling, host-clock,
 xrun, and route-health telemetry. The Rust `jasper-usbsink-audio` crate/binary
@@ -74,7 +80,7 @@ Operational checks:
 ```sh
 curl -s http://jts.local:8780/state | jq '{renderer:.renderers.usbsink, ingress:.audio_graph.fanin.usbsink_input}'
 systemctl status jasper-usbsink.service jasper-usbgadget.service jasper-fanin.service
-jasper-doctor --group usbsink
+jasper-doctor
 ```
 
 The readiness marker has zero resident-process RAM. USB-specific incremental
@@ -125,12 +131,12 @@ fallback.
 > shared `jasper-host-clock` crate), surfaced at
 > `/state.audio_graph.fanin.host_clock`.
 >
-> **One consequence:** because there is no aloop solo capture to fall
-> back to, a sustained runtime direct-capture break now disarms the
-> combo to **USB audio UNAVAILABLE** (not to an aloop bridge) — surfaced
-> loudly by `jasper-doctor`'s `check_usb_combo_fallback` + `/state`, and
-> recovered on the next boot / deploy / `/sources/` toggle once the
-> direct capture is fixed. See §6 "Runtime fallback".
+> **Recovery boundary:** because there is no aloop solo capture to fall
+> back to, fan-in owns bounded reopen/self-heal of its direct UAC2 handle.
+> Reopen counters and `direct.health` are telemetry, not authorization to
+> remove USB functions. USB composition follows only canonical source intent,
+> effective role, and hardware availability; an observer must never turn off
+> the Mac-visible output or microphone. See §6 "Runtime capture recovery".
 
 > ### Current operational truth (updated 2026-07-10)
 >
@@ -296,8 +302,10 @@ operation assumes the splitter-backed path.
   `pcm.jasper_capture` exposes as the music reference)
 
 **Out of scope (explicit non-goals)**
-- USB-side capture (host recording from JTS mic over USB) — would
-  require a UAC2 input endpoint, no use case for it now
+- The optional JTS-mic → host direction is a separate product relay, not part
+  of this source's fan-in capture/volume/preemption data plane. Long-run
+  adaptive USB/Pi clock-drift correction remains a follow-up if hardware soak
+  demonstrates it is necessary; the shipped relay is bounded and observable.
 - Multi-host (two computers plugged in at once) — UAC2 gadget is
   single-host by spec
 - Bit-perfect / high-resolution audio (96k/192k, DSD, etc.) — the
@@ -816,8 +824,9 @@ see §4.1a.)
 
 A connected Mac shows the speaker in its audio-output list using the
 UAC2 **AudioStreaming interface string**, which the kernel hardcodes as
-`"Playback Inactive"` (`STR_AS_OUT_ALT0`) / `"Playback Active"`
-(`STR_AS_OUT_ALT1`) in `drivers/usb/gadget/function/f_uac2.c`. macOS
+`"Playback Inactive"` / `"Playback Active"` for host playback and
+`"Capture Inactive"` / `"Capture Active"` for the optional host microphone
+in `drivers/usb/gadget/function/f_uac2.c`. macOS
 prefers this over the configfs-settable `iProduct` string, so the
 "JTS USB Audio" product string the gadget-up script sets is *not* what
 the Mac displays. As of Trixie's 6.12 kernel these AS strings are the
@@ -826,28 +835,31 @@ the Mac displays. As of Trixie's 6.12 kernel these AS strings are the
 is the only lever. (Windows uses `iProduct` and already shows the
 product string correctly; this is macOS-specific.)
 
-We make the host label track the **Speaker Name** (`/system/` wizard →
-`speaker_name.env`) by overwriting those two strings in a patched copy
-of `usb_f_uac2.ko`:
+We derive both host labels from the **Speaker Name** (`/system/` wizard →
+`speaker_name.env`): output uses the canonical name and input appends ` Mic`
+(for example, `JTS` / `JTS Mic`). We overwrite the four strings in a patched
+copy of `usb_f_uac2.ko`:
 
 - [`deploy/usbsink/uac2_name_patch.py`](../deploy/usbsink/uac2_name_patch.py)
   — stdlib-only byte transform (`patch_module_bytes`): finds the
   null-terminated tokens *by content* (offset-independent, so it
   survives the strings moving between kernel builds), overwrites them
-  in place preserving length, null-padded. Bounded to **15 chars** (the
-  shorter `"Playback Active"` slot), so both alt strings carry the same
-  name and the label never flickers between idle/streaming. Names
-  longer than 15 chars are truncated *only for this USB label* — the
-  full name still drives `iProduct`, Bluetooth, etc.
+  in place preserving length, null-padded. Bounded to **14 chars** (the
+  shortest `"Capture Active"` slot). Each direction's idle/streaming pair uses
+  one stable label. Names longer than 14 chars are truncated *only for this USB
+  label*; the microphone shortens the base as needed so the ` Mic` suffix is
+  always preserved. Schema 3 is all-or-nothing: if any of the four stock
+  strings is missing or ambiguous, no override or current marker is published.
+  The full Speaker Name still drives `iProduct`, Bluetooth, etc.
 - [`deploy/usbsink/jasper-usbsink-name-patch`](../deploy/usbsink/jasper-usbsink-name-patch)
   — bash orchestrator (mirrors the `jasper-wifi-guardian` self-heal
   idiom). Builds the patched module into the kernel's
   `/lib/modules/$(uname -r)/updates/usb_f_uac2.ko` override (modprobe
   searches `updates/` before `kernel/`), runs `depmod`, and `rmmod`s a
   stale in-memory module so the next gadget-up autoloads the override.
-  A marker (`kernel ver + name + stock-module hash`) makes the
-  steady-state boot a millisecond no-op. Structured `event=usbsink_name.*`
-  logs.
+  A versioned marker (`patch schema + kernel ver + speaker name + derived mic
+  name + stock-module hash`) makes the steady-state boot a millisecond no-op.
+  Structured `event=usbsink_name.*` logs.
 
 Wired as `jasper-usbgadget.service`'s **best-effort** `ExecStartPre`
 (leading `-`): it runs before gadget-up so the patched module is loaded
@@ -1518,116 +1530,45 @@ the same size as the AEC bridge subsystem.
 | Mux POST to preempt endpoint fails | httpx exception in `Mux._pause(USBSINK)` | Logs warning; USB audio continues mixing briefly. Documented limitation (matches Bluetooth's behavior, but rarer because the local HTTP path is more reliable than DBus). |
 | Two USB hosts plugged in simultaneously (impossible by UAC2 spec) | Splitter physically prevents this | Hardware-enforced; nothing to do |
 | Sample rate negotiation failure (host requests 44.1k, gadget descriptor only offers 48k) | sounddevice opens at the descriptor's rate; host resamples its own output | No issue — host always resamples to the device's reported rate. Documented in BRINGUP.md so users know JTS doesn't do 192k. |
-| **Combo direct-capture breaks at runtime** (the UAC2 gadget is rebuilt underneath fan-in's open `hw:UAC2Gadget` handle — a UDC rebind / usbsink stop-start under a live stream — leaving the handle deaf, the flowing→dead "zombie" signature) | fan-in self-heals within ~1-2 s via a bounded reopen. If the self-heal is NOT restoring durable flow, `jasper-fanin-combo-health.timer` (~3 min) catches it: fan-in exports `direct.health` in STATUS and the watcher acts on the `reopens`/`card_gen_reopens` self-heal counters climbing across ticks **while the lane is actively `capturing`** (an idle host's routine re-enumeration churn does not count — defect 2026-07-11). | After **2 consecutive broken ticks (~6 min)** the combo is disarmed (the reconciler disarms it exactly as it arms it), which now leaves **USB audio unavailable** — there is no aloop solo capture to fall back to since 2026-07-10 — and writes a fallback marker; doctor + `/state` surface it loudly and it recovers on the next boot/deploy/`/sources/` toggle. See **"Runtime fallback"** below. |
+| **Combo direct-capture breaks at runtime** (the UAC2 gadget is rebuilt underneath fan-in's open `hw:UAC2Gadget` handle — a UDC rebind / usbsink stop-start under a live stream — leaving the handle deaf, the flowing→dead "zombie" signature) | fan-in exports `direct.health` plus cumulative open/reopen counters in STATUS and logs each recovery transition. | fan-in self-heals locally within ~1-2 s via bounded reopen. The counters remain telemetry: they never withdraw UAC2 or change saved source intent. See **"Runtime capture recovery"** below. |
 
-### Runtime fallback — combo → USB-unavailable on capture break
+### Runtime capture recovery — local and non-destructive
 
-**Current state (2026-07-10).** The USB combo (fan-in DIRECT-captures the gadget,
-the usbsink helper in standby) is only *(re)resolved* on a config change — boot,
-deploy, or a `/sources/` toggle (all three run
-`jasper-fanin-coupling-reconcile --auto`). Nothing re-resolved it on a **live**
-capture failure, so a gadget rebuilt underneath fan-in's open handle could leave
-USB silent with no observable reason. With the aloop solo path deleted
-(2026-07-10) there is no capture to fall back TO, so the runtime-fallback
-watcher's job is to disarm the wedged combo cleanly and surface **USB audio
-unavailable** loudly (doctor + `/state`) until a config change re-arms it.
+The USB combo has one lifecycle authority: gadget composition and fan-in direct
+capture are derived from canonical USB source intent, effective grouping role,
+hardware availability, and the readiness mirror. Boot, deploy, and `/sources/`
+changes run `jasper-fanin-coupling-reconcile --auto`; capture telemetry is not an
+input to that ownership decision.
 
-**The signal (fan-in side).** `rust/jasper-fanin/src/mixer.rs` `direct_health`
-classifies the direct lane, exported as `direct.health` in the STATUS
-`inputs[].direct{}` block:
+Fan-in owns failures of its open `hw:UAC2Gadget` handle. Its existing bounded
+reopen paths recover the flowing→dead zombie signature and card-generation
+changes within roughly 1-2 seconds without changing the USB descriptor. STATUS
+keeps the `inputs[].direct.health` classification (`capturing`, `idle`, `broken`)
+and cumulative `opens`, `retries`, `reopens`, and `card_gen_reopens` counters.
+Those fields plus structured fan-in logs make recovery observable; counter
+increments are not proof that the product should be disabled. Normal stream
+stop/start, host sleep/wake, re-enumeration, and idle digital silence can all
+exercise a successful reopen.
 
-- `"capturing"` — present + frames flowing (host streaming). Healthy.
-- `"idle"` — no host, an attached-but-silent host, or the handle (re)opening. Healthy.
-  An idle or unplugged Mac reads `"idle"` and can **never** trip the fallback.
-- `"broken"` — the flowing→dead **zombie** signature only (frames flowed on the
-  handle, then `avail_update` returned exactly 0 for ~2 s). Reuses the existing
-  `zombie_handle_suspected` gate, which is already immune to the attached-idle
-  false-positive.
-
-Because `"broken"` is instantaneous (the self-heal reopen resets the zombie streak
-the moment it trips, so a ~3-min poll rarely lands on it), the **durable**
-cross-tick signal the watcher acts on is the cumulative `reopens` (zombie) /
-`card_gen_reopens` (dead-handle liveness probe) counters **climbing between
-ticks** — BUT **only while the lane is simultaneously `health=="capturing"`**.
-
-> **The `capturing` gate is load-bearing (defect 2026-07-11).** The earlier claim
-> that "idle/no-host can't move those counters" was **wrong**, and it false-disarmed
-> an idle jts.local twice in one day. A Mac left connected as the default output
-> streams **digital silence**, and the UAC2 gadget routinely **re-enumerates** (host
-> sleep/wake, USB autosuspend, a `/sources/` toggle). Each rebuild is a normal
-> fan-in self-heal that bumps `card_gen_reopens` (function rebuilt, no frames
-> flowed) or `reopens` (silence flowed, then went deaf) — while `health` reads
-> `"idle"` the whole time. Counting those raw climbs as brokenness violated the
-> binding invariant (*an idle or unplugged host must NEVER trip the fallback —
-> `Broken` requires flowing→dead*). A **real** break of an actively-playing stream
-> re-establishes capture within milliseconds of each self-heal reopen, so the
-> ~3-min poll reads `"capturing"`; gating the counter delta on `capturing`
-> preserves that real detection while rejecting idle churn. A physical unplug/replug
-> moves `opens`/`retries`, **not** `reopens`/`card_gen_reopens`, so the signal stays
-> unplug-immune by construction as well.
-
-**The watcher (Pi side).** `jasper-fanin-combo-health.timer` fires
-`jasper-fanin-coupling-reconcile --health` every ~3 min (a oneshot; no resident
-daemon — mirrors `jasper-wifi-recover`). Pure policy in
-[`jasper/fanin/combo_health.py`](../jasper/fanin/combo_health.py); orchestration
-in `run_health_check` (`jasper/fanin/coupling_reconcile.py`). Healthy ticks produce
-**no** output (journal-quiet); only real transitions log
-(`event=fanin.combo_health.*`). A tick is "broken" on `health=="broken"` OR a
-reopen-counter delta **while `health=="capturing"`** (see the gate above); the tick
-state persists to `/var/lib/jasper/combo_health_tick.json`. Each tick runs under
-the shared reconcile entry flock (`/run/jasper-fanin-coupling.lock`) so it can
-never interleave with a concurrent `--auto` pass or operator CLI run. On
-contention past a bounded 10 s wait the tick **stands down** (WARNING +
-`event=…entry_lock_contended_health_skip` + exit 0), not fails: a reconcile in
-flight is exactly when the watcher has nothing to observe, so failing its unit on
-every collision with a deploy's `--auto` arm would be a false doctor positive.
-A real disarm *failure* still exits non-zero (that path holds the lock and does
-work), so it stays doctor-visible.
-
-**The action.** After brokenness **sustained across 2 consecutive ticks (~6 min)**,
-the watcher first writes the fallback marker and delegates the host-visible phase
-to the canonical source coordinator. While fan-in's direct consumer still exists,
-that owner stops/disables the derived USB readiness mirror and recomposes the
-composite gadget to NCM-only. Only after UAC2 is proven absent does the coupling
-reconciler disarm DIRECT exactly the way it arms it (the same `fanin.env` write
-plus ordered fan-in restart). If UAC2 withdrawal fails,
-the gadget is stopped fail-closed and the direct lane stays armed for retry; the
-health unit fails visibly rather than leaving an advertised endpoint without a
-consumer.
-The helper remains standby-only, so disarming does **not** promote a bridge
-capture; the box lands on **USB audio
-unavailable** — there is no aloop solo path to fall back to since 2026-07-10 — and
-writes a fallback marker (`/var/lib/jasper/usb_combo_fallback.json`, timestamp +
-reason).
-
-**Flap-proof.** While the marker exists, the periodic `--health` pass never
-re-arms (it is disarm-only). The marker — and combo re-arm — is cleared only by an
-`--auto` pass, which runs on exactly the three clear-events (boot, deploy,
-`/sources/` toggle) and **clears-and-retries once per event**. So combo never
-oscillates combo↔unavailable within a boot on its own. (Design choice: every `--auto`
-clears the marker because those are the only three ways `--auto` runs, and all
-three are legitimate re-attempt moments; the periodic watcher is the only thing
-that ever *sets* it.)
+On 2026-07-15 the periodic combo-health timer and persisted fallback marker were
+retired. The prior observer treated successful reopen-counter increments as a
+reason to withdraw UAC2 after two ticks. It false-disarmed idle jts.local twice,
+and after the aloop capture path was deleted its "fallback" had no alternative
+audio path—it only removed both Mac-visible USB audio functions. An upgrade
+disables/removes the obsolete units and deletes their tick/marker files.
 
 **Observability.**
-- `/state.audio_graph.coupling.combo` → `{state: "armed"|"fallback"|"disarmed",
-  fallback: {reason, at_epoch} | null}`.
-- `jasper-doctor`'s `check_usb_combo_fallback` cross-checks canonical USB source
-  intent plus effective role permission against the resolved `fanin.env` armed
-  state and the marker. Desired-On plus bonded-follower parking is therefore a
-  healthy disarmed state; desired-On on a solo/leader remains a warning when
-  disarmed, and malformed intent remains a failure. The check also flags a
-  `jasper-usbsink.service` parked in the `failed` state, and (defect 2026-07-11)
-  warns when the combo is armed but the watcher's `combo_health_tick.json`
-  `consecutive_broken` count is non-zero — surfacing an in-progress genuine break
-  BEFORE it disarms, so the repeated broken-tick WARNs no longer go unnoticed until
-  an unexplained disarm.
-- Gadget composition and fan-in coupling both require canonical intent/role
-  authorization *and* the derived `jasper-usbsink.service` enablement readiness
-  mirror. Off dominates stale enabled state; desired-On with a stale/failed
-  disabled mirror leaves UAC2 and direct capture disarmed together instead of
-  creating a split-brain audio path.
-- `journalctl -u jasper-fanin-combo-health | grep event=fanin.combo_health`.
+
+- `/state.audio_graph.coupling.combo` reports only resolved ownership:
+  `{state: "armed"|"disarmed"}`.
+- `jasper-doctor`'s `check_usb_combo_consistency` cross-checks canonical source
+  intent and effective role against the resolved `fanin.env` arm, and reports a
+  failed `jasper-usbsink.service` readiness unit.
+- Fan-in STATUS and journal events retain the direct-health and reopen evidence
+  needed to diagnose a capture path that cannot self-heal.
+- No health reader may stop `jasper-usbsink`, recompose the gadget, write source
+  intent, or disarm fan-in. A future non-local recovery rung must first provide a
+  real alternate capture path and use the canonical source/gadget coordinator.
 
 **Unit hardening (rider).** `jasper-usbsink.service` gained
 `StartLimitIntervalSec=300` / `StartLimitBurst=20` (with **no**
@@ -2146,7 +2087,11 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Verification history through 2026-07-14 (source-aware USB start/composition gates rechecked
+Verification history through 2026-07-15 (runtime capture recovery ownership
+rechecked: fan-in's bounded reopen is local, direct-health/reopen counters are
+telemetry, and the destructive periodic observer plus persisted override state
+are retired; source intent, effective role, and hardware remain the only USB
+composition inputs). Prior 2026-07-14 (source-aware USB start/composition gates rechecked
 against canonical intent plus derived lifecycle readiness, with canonical Off
 dominance and NCM preserved; current USB lifecycle ownership rechecked against
 `jasper.source_intent` and linked to HANDOFF-source-lifecycle.md; this doc now
@@ -2166,8 +2111,9 @@ DIRECT-captures `hw:UAC2Gadget` as the SOLE USB pipeline. Removed with it: the
 bridge `:8781` listener + impulse tap, the bridge's solo `host_clock`, the
 `pcm.usbsink_substream` write alias, and the `check_usbsink_host_clock` /
 `check_usbsink_preempt_port_reachable` doctor checks. The fan-in lane
-`MUTE`/`UNMUTE` is now the only USB-silencing primitive; a runtime capture break
-disarms to USB-unavailable rather than an aloop bridge. Added the
+`MUTE`/`UNMUTE` is now the only USB-silencing primitive; the then-current
+runtime observer disarmed to USB-unavailable rather than an aloop bridge (that
+observer was retired on 2026-07-15). Added the
 removed-2026-07-10 callout near the top; updated the top
 block, §3.1, §3.3, §4.4, §4.5, and §6. Prior 2026-07-10: §3.3 + top blockquote
 updated for the fanin-native
@@ -2175,12 +2121,11 @@ combo preempt: on a combo box mux `MUTE`/`UNMUTE usbsink` over fan-in's control
 socket instead of the standby bridge's no-op :8781 POST; the lane is dropped at
 fan-in's mix stage with pre-mute telemetry preserved and a `muted` flag surfaced
 at `/state.renderers.usbsink.muted`; solo boxes keep :8781. Prior 2026-07-10:
-added §6 "Runtime fallback — combo → aloop bridge on
-capture break": fan-in exports `direct.health` in STATUS; the
-`jasper-fanin-combo-health.timer` watcher disarms the combo to the aloop bridge
-after a sustained runtime capture break, flap-proofed by a fallback marker cleared
-only by `--auto`; `/state.audio_graph.coupling.combo` + `check_usb_combo_fallback`
-surface it; `jasper-usbsink.service` gained a StartLimit hardening rider. Prior
+added the original, later-superseded runtime fallback: fan-in exported
+`direct.health` in STATUS and a timer could disarm the combo after a sustained
+capture break. The 2026-07-15 ownership correction retained the telemetry and
+StartLimit hardening but deleted that timer, its persisted marker, and the
+fallback state projection. Prior
 2026-07-10: §4.4/§4.5/§4.9 updated for the combo silence gate:
 fan-in now serialises a per-lane `rms_dbfs` in every `STATUS` input; combo mux
 liveness is frames-advanced **AND** level above the shared `-60` dBFS
@@ -2210,5 +2155,8 @@ includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)
 
-Last verified: 2026-07-14 (hardware-resolved USB role and Zero/USB-DAC
-unavailability contract rechecked against the shared output-hardware artifact.)
+Last verified: 2026-07-15 (hardware-resolved USB role and Zero/USB-DAC
+unavailability contract rechecked against the shared output-hardware artifact;
+the optional reverse USB-mic path is explicitly separated from the one
+host-to-speaker fan-in data plane; runtime capture recovery was rechecked as
+local fan-in self-heal plus telemetry with no health-driven composition owner.)

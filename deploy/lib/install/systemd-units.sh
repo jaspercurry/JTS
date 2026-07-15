@@ -101,8 +101,6 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     "0644 deploy/systemd/jasper-fanin.service ${SYSTEMD_DIR}/jasper-fanin.service"
     "0644 deploy/systemd/jasper-fanin-coupling-auto.service ${SYSTEMD_DIR}/jasper-fanin-coupling-auto.service"
     "0644 deploy/systemd/jasper-source-intent-reconcile.service ${SYSTEMD_DIR}/jasper-source-intent-reconcile.service"
-    "0644 deploy/systemd/jasper-fanin-combo-health.service ${SYSTEMD_DIR}/jasper-fanin-combo-health.service"
-    "0644 deploy/systemd/jasper-fanin-combo-health.timer ${SYSTEMD_DIR}/jasper-fanin-combo-health.timer"
     "0644 deploy/systemd/jasper-outputd.service ${SYSTEMD_DIR}/jasper-outputd.service"
     "0644 deploy/systemd/jasper-control.service ${SYSTEMD_DIR}/jasper-control.service"
     "0644 deploy/systemd/jasper-doctor-json.service ${SYSTEMD_DIR}/jasper-doctor-json.service"
@@ -120,6 +118,18 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
 install_local_audio_graph_unit_files() {
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
+    # The former combo-health timer inferred capture failure from successful
+    # reopen counters and could withdraw the entire UAC2 function. Its alternate
+    # capture fallback no longer exists, so upgrades retire the destructive
+    # observer before staging the remaining graph units. Fresh installs no-op.
+    systemctl disable --now jasper-fanin-combo-health.timer \
+        >/dev/null 2>&1 || true
+    systemctl stop jasper-fanin-combo-health.service \
+        >/dev/null 2>&1 || true
+    rm -f "${SYSTEMD_DIR}/jasper-fanin-combo-health.timer" \
+          "${SYSTEMD_DIR}/jasper-fanin-combo-health.service"
+    rm -f /var/lib/jasper/usb_combo_fallback.json \
+          /var/lib/jasper/combo_health_tick.json 2>/dev/null || true
     # The guards below are a coupled runtime set. Do not continue to overwrite
     # either consumer when its required library could not be staged.
     if ! install -m 0644 \
@@ -147,6 +157,11 @@ install_local_audio_graph_unit_files() {
     # rather than waiting for the next reboot. Best-effort (the caller reloads
     # again centrally; a transient reload miss here must not mask a row failure).
     systemctl daemon-reload 2>/dev/null || true
+    # A tick that raced the upgrade can finish after the stop and leave the now
+    # removed service as a not-found/failed tombstone. Clear that terminal state
+    # only after daemon-reload has forgotten the old unit files.
+    systemctl reset-failed jasper-fanin-combo-health.service \
+        jasper-fanin-combo-health.timer >/dev/null 2>&1 || true
     if [[ -n "${failed}" ]]; then
         echo "  ERROR: core audio-graph unit install failed for: ${failed}" >&2
         return 1
@@ -301,6 +316,12 @@ install_usbsink_unit_files() {
         "${REPO_DIR}/deploy/systemd/jasper-usbsink-volume.service" \
         "${SYSTEMD_DIR}/jasper-usbsink-volume.service"
     install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usbmic.service" \
+        "${SYSTEMD_DIR}/jasper-usbmic.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usbmic-apply.service" \
+        "${SYSTEMD_DIR}/jasper-usbmic-apply.service"
+    install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbnet-dhcp.service" \
         "${SYSTEMD_DIR}/jasper-usbnet-dhcp.service"
     install -m 0755 \
@@ -312,6 +333,9 @@ install_usbsink_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-wanted" \
         /usr/local/sbin/jasper-usbgadget-wanted
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbmic-apply-result" \
+        /usr/local/sbin/jasper-usbmic-apply-result
     install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/jasper-usbsink-wait-card" \
         /usr/local/sbin/jasper-usbsink-wait-card
@@ -458,6 +482,11 @@ enable_usbgadget() {
     # `systemctl enable --now` reports as a SUCCESSFUL job (rc=0), so the
     # benign pre-reboot no-UDC case does NOT reach here. Point the operator at
     # the unit's journal rather than mislabeling every failure as "no UDC yet".
+    # The relay is dependency-enabled (not independently boot-started). Its
+    # ExecCondition keeps it inert unless the wizard intent + descriptor are
+    # both On; the wants links let either gadget or AEC recovery bring it back.
+    systemctl enable jasper-usbmic.service >/dev/null 2>&1 || \
+        echo "  WARN: could not enable jasper-usbmic dependency links"
     systemctl enable --now jasper-usbgadget.service >/dev/null 2>&1 || \
         echo "  WARN: jasper-usbgadget failed to enable/compose — check 'systemctl status jasper-usbgadget' and 'journalctl -u jasper-usbgadget' (pre-reboot no-UDC is a clean skip, not this error)"
     systemctl enable jasper-usbnet-dhcp.service >/dev/null 2>&1 || true
@@ -793,7 +822,6 @@ start_streambox_runtime_units() {
     # is cheaper and safer than coupling output policy to aggregate source state.
     systemctl enable --now jasper-mux.service
     systemctl enable jasper-fanin-coupling-auto.service
-    systemctl enable --now jasper-fanin-combo-health.timer
     systemctl try-restart bluealsa-aplay.service nqptp.service \
         shairport-sync.service librespot.service bt-agent.service \
         2>/dev/null || true

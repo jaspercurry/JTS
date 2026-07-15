@@ -382,23 +382,20 @@ zombie-handle reopen are prerequisites). What it does:
 - **Revert lever.** `JASPER_FANIN_COUPLING_CHOICE=operator` (written by the
   explicit reconciler CLI path) freezes the transport coupling — the auto pass
   never overrides that operator choice. USB direct/combo authorization still
-  follows canonical USB source intent and runtime fallback, so the marker cannot
-  preserve capture after household Off. `/state.audio_graph.coupling.choice`
+  follows canonical USB source intent, so the marker cannot preserve capture
+  after household Off. `/state.audio_graph.coupling.choice`
   reports operator-vs-auto.
-- **Entry serialization.** Every reconcile entry verb (`--auto`, `--health`,
-  explicit CLI) runs under one advisory flock
-  (`/run/jasper-fanin-coupling.lock`, `_acquire_entry_lock` in
-  `coupling_reconcile.py`) — the two oneshot units have no systemd ordering
-  between them, and install.sh / the operator CLI run the same verbs, so
+- **Entry serialization.** Every reconcile entry (`--auto` or explicit CLI)
+  runs under one advisory flock (`/run/jasper-fanin-coupling.lock`,
+  `_acquire_entry_lock` in `coupling_reconcile.py`) — install.sh and the
+  operator CLI run the same ownership path, so
   without it two concurrent passes could interleave their ordered daemon
   transitions (worst case reproducing the camilla RTTIME-SIGKILL cascade #1233
   fixed). Bounded 10 s wait; nothing touches env or daemons on contention.
-  Loudness is verb-specific: `--auto` / explicit (a requested *change*) abort at
-  ERROR with exit 1 → the oneshot lands `failed`, which
-  `check_service_runtime_state` now tracks; the periodic `--health` watcher
-  stands down at WARNING with exit 0 (a reconcile in flight is when it has
-  nothing to observe — failing its unit on every deploy-arm collision would be a
-  false doctor positive).
+  Contention aborts at ERROR with exit 1, so the requested change is never
+  reported as applied when it did not run; the oneshot lands `failed`, which
+  `check_service_runtime_state` tracks. Runtime capture health remains fan-in
+  telemetry and cannot invoke this lifecycle path.
 
 **Finding G resolved: Ring-A slot default is 2.** The production default is now
 `DEFAULT_FANIN_RING_SLOTS = 2` and the packaged `jts_ring_capture` conf.d block
@@ -555,8 +552,9 @@ renderers,aec}.py`, `jasper/cli/{aec_tune,aec_bridge}.py`,
 measured floors: [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md)
 "Final state — 2026-07-03".
 
-Last verified: 2026-07-14 (USB combo intent ownership rechecked against
-`jasper.source_intent`; streambox keeps automatic P4 coupling on loopback while
+Last verified: 2026-07-15 (USB combo intent ownership rechecked against
+`jasper.source_intent`; the retired periodic capture-health entry no longer
+shares the reconcile lock or mutates composition; streambox keeps automatic P4 coupling on loopback while
 the independent USB DIRECT decision still runs; unit enablement is documented only as the derived
 gadget-composition mirror. Prior 2026-07-12 cross-language ring open/reclaim transaction and
 role-qualified event vocabulary checked;

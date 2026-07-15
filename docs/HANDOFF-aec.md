@@ -99,6 +99,25 @@ instantiated. Operator surfaces expose this as `software_aec3.bypassed=true`;
 turning off the software-AEC3 layer must not stop the chip-AEC carrier. To
 stop the carrier entirely, choose the `direct_mic` profile.
 
+The optional Mac microphone is a second consumer of that carrier, not a voice
+socket takeover. When `/var/lib/jasper/usb_mic.env` explicitly enables the
+feature, the bridge duplicates the final cleaned 16 kHz mono stream to
+localhost UDP `:9894`; `jasper-usbmic` alone consumes that port and writes the
+UAC2 Pi-to-host direction. This consumer emits each native 320-sample AEC frame
+immediately (20 ms); voice/wake legs keep their established 1280-sample / 80 ms
+packet contract. The relay accepts the old 80 ms packet shape only as a rolling-
+upgrade compatibility seam. Its drop-oldest queue is two 20 ms periods and its
+ALSA period is 10 ms because the Pi kernel fixes this UAC2 playback ring at four
+periods; hardware validation therefore realizes the intended 40 ms buffer
+instead of the 80 ms ring negotiated from a 20 ms period. Those latency
+reductions remain local to the Mac microphone rather than changing wake/session
+timing. The normal
+voice/session stream stays on `:9876`. When the feature is off, the extra emitter
+is not created. The `/wake/` switch restarts the bridge so intent and producer
+agree, while
+[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) owns descriptor composition and
+[PRIVACY.md](../PRIVACY.md) owns mic-mute behavior.
+
 The chip-AEC profile's default wake surface is deliberately one detector:
 the primary/session beam (`JASPER_MIC_DEVICE=udp:9876`, wake leg `on`).
 The 150-degree and 210-degree chip beams are advanced custom opt-ins via
@@ -2738,7 +2757,10 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-07-12 (`jasper-aec-tune` mic card and capture-width
+Last verified: 2026-07-15 (the optional USB-host-mic duplicate on dedicated
+`:9894`, conditional intent gate, and frozen `:9876` voice ownership were
+rechecked against `jasper/cli/aec_bridge.py`, `jasper/usb_mic.py`, and focused
+bridge tests. Prior 2026-07-12 pass: `jasper-aec-tune` mic card and capture-width
 defaults rechecked against the shared XVF runtime profile, including the
 legacy hardware-absent fallback and registered Flex variants; its
 diagnostic-only default, guarded volatile apply/readback, reconciler overwrite

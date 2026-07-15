@@ -48,7 +48,8 @@ Topology:
        ▼                                                          ▼
     UDP 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876)      UDP 127.0.0.1:JASPER_AEC_UDP_PORT_RAW
        │  one packet per 1280 samples (80 ms, matches             │  (default 9877)
-       │  MicCapture frame size)                                  │  same packet shape
+       │  MicCapture frame size; optional USB host mic             │  same packet shape
+       │  consumer uses one 320-sample / 20 ms frame)             │
        ▼                                                          ▼
     jasper-voice's UdpMicCapture (binds 9876)             jasper-voice's second
                                                           UdpMicCapture (binds 9877)
@@ -128,6 +129,8 @@ from jasper.wake_corpus.capture_plan import (
     PLAN_ID_ENV,
 )
 from jasper.log_event import log_event
+from jasper.usb_mic import INTENT_PATH as USB_MIC_INTENT_PATH
+from jasper.usb_mic import USB_HOST_MIC_UDP_PORT, usb_mic_enabled
 from ..mics import xvf3800 as _mic_profile
 
 logger = logging.getLogger("jasper.aec_bridge")
@@ -294,6 +297,8 @@ class BridgeConfig:
     emit_chip_aec_210: bool
     out_port_xvf_raw0_webrtc_aec3: int
     out_port_xvf_raw0_dtln: int
+    out_port_usb_host_mic: int
+    emit_usb_host_mic: bool
     outputd_ref_udp_host: str
     outputd_ref_udp_port: int
     ref_source: str
@@ -400,6 +405,12 @@ class BridgeConfig:
             out_port_xvf_raw0_dtln=_env_leg_port(
                 "JASPER_AEC_UDP_PORT_XVF_RAW0_DTLN",
                 "xvf_raw0_dtln",
+            ),
+            # Product wiring, not an operator knob: the relay owns the paired
+            # listener constant and accessories are regression-guarded from it.
+            out_port_usb_host_mic=USB_HOST_MIC_UDP_PORT,
+            emit_usb_host_mic=usb_mic_enabled(
+                os.environ.get("JASPER_USB_MIC_INTENT_PATH", USB_MIC_INTENT_PATH)
             ),
             outputd_ref_udp_host=os.environ.get(
                 "JASPER_AEC_OUTPUTD_REF_UDP_HOST",
@@ -650,17 +661,18 @@ def emit_packet(
     batch: bytearray,
     pcm: bytes,
     leg: str,
+    frame_bytes: int = OUT_FRAME_BYTES,
 ) -> None:
     batch.extend(pcm)
-    if len(batch) < OUT_FRAME_BYTES:
+    if len(batch) < frame_bytes:
         return
     try:
-        sock.sendto(bytes(batch[:OUT_FRAME_BYTES]), dest)
+        sock.sendto(bytes(batch[:frame_bytes]), dest)
         _bridge_stats.inc_nested("packets_sent_by_leg", leg)
     except BlockingIOError:
         _bridge_stats.inc_nested("udp_send_drops_by_leg", leg)
         logger.warning("udp %s sendto would block, dropping frame", leg)
-    del batch[:OUT_FRAME_BYTES]
+    del batch[:frame_bytes]
 
 
 @dataclass
@@ -669,6 +681,7 @@ class LegEmitter:
     dest: tuple[str, int]
     batch: bytearray
     stats_key: str
+    frame_samples: int = OUT_FRAME_SAMPLES
     engine_token: str | None = None
 
     def emit(self, pcm: bytes) -> None:
@@ -678,6 +691,7 @@ class LegEmitter:
             batch=self.batch,
             pcm=pcm,
             leg=self.stats_key,
+            frame_bytes=self.frame_samples * 2,
         )
 
     def close(self) -> None:
@@ -1687,12 +1701,14 @@ def _aec_loop(  # noqa: PLR0915
         port: int,
         *,
         engine_token: str | None = None,
+        frame_samples: int = OUT_FRAME_SAMPLES,
     ) -> LegEmitter:
         emitter = LegEmitter(
             sock=socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
             dest=(config.out_host, port),
             batch=bytearray(),
             stats_key=leg,
+            frame_samples=frame_samples,
             engine_token=engine_token,
         )
         emitter.sock.setblocking(False)
@@ -1700,6 +1716,19 @@ def _aec_loop(  # noqa: PLR0915
         return emitter
 
     on_emitter = add_emitter("on", config.out_port)
+    # Dedicated non-wake consumer for the optional USB host microphone.  This
+    # duplicate keeps jasper-voice's frozen :9876 ownership intact; the
+    # jasper-usbmic service may bind/unbind independently with no effect on the
+    # primary wake/session carrier.
+    usb_host_mic_emitter = (
+        add_emitter(
+            "usb_host_mic",
+            config.out_port_usb_host_mic,
+            frame_samples=FRAME_SAMPLES,
+        )
+        if config.emit_usb_host_mic
+        else None
+    )
     # Secondary socket carries the chip-direct mic (pre-AEC3),
     # batched and packetized identically to the primary AEC ON
     # stream. See OUT_PORT_RAW comment above for the rationale.
@@ -1967,6 +1996,10 @@ def _aec_loop(  # noqa: PLR0915
             )
 
     output_parts = [f"aec={config.out_host}:{config.out_port}"]
+    if usb_host_mic_emitter is not None:
+        output_parts.append(
+            f"usb_host_mic={config.out_host}:{config.out_port_usb_host_mic}"
+        )
     if production_chip_aec_enabled:
         output_parts.append(f"aec_source={chip_aec_primary_leg}")
     else:
@@ -2045,9 +2078,10 @@ def _aec_loop(  # noqa: PLR0915
         "udp outputs: %s frame=%d samples (%d bytes)",
         " ".join(output_parts), OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
     )
-    # Each LegEmitter aggregates four 320-sample frames into one
-    # 1280-sample UDP packet so voice's UdpMicCapture sees the same
-    # chunk size it gets from the PortAudio path.
+    # Voice/wake LegEmitters aggregate four 320-sample frames into one
+    # 1280-sample UDP packet so UdpMicCapture keeps its established wire
+    # contract. The dedicated USB host-mic consumer emits each 320-sample
+    # frame immediately; it is latency-sensitive and has no voice consumer.
     silence = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
     # Cold-start value for ref carry-forward. Used only until the first
     # real ref frame arrives — after that, last_ref_bytes always holds
@@ -2382,6 +2416,8 @@ def _aec_loop(  # noqa: PLR0915
                 arr = 32767.0 * np.tanh(arr / 32767.0)
                 clean = arr.astype(np.int16).tobytes()
             on_emitter.emit(clean)
+            if usb_host_mic_emitter is not None:
+                usb_host_mic_emitter.emit(clean)
             frames_processed += 1
             _bridge_stats.inc("frames_processed")
             if heartbeat is not None:

@@ -5,7 +5,8 @@ Description=Jasper composite USB gadget (management network + optional audio)
 #   - ncm.usb0  — default-on USB management network where the resolved
 #     hardware transport is available (a laptop plugged into the USB-C port
 #     reaches http://<hostname>/ even with Wi-Fi off);
-#   - uac2.usb0 — the wizard-toggled USB audio input (jasper-usbsink source).
+#   - uac2.usb0 — the wizard-toggled USB audio input (jasper-usbsink source),
+#     optionally refined with the /wake-controlled mono host-microphone return.
 #
 # This is the FIRST gadget unit install.sh enables (systemctl enable --now),
 # deliberately — it carries the management network. jasper-usbsink.service is a
@@ -40,7 +41,7 @@ EnvironmentFile=-/etc/jasper/jasper.env
 # by gadget-up; never inject it into this root process. Test-only path/command
 # seams are also stripped from the production unit environment.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PYTHONPATH PYTHONHOME JASPER_CONFIGFS_ROOT JASPER_PI_MODEL_FILE JTS_BOOT_CONFIG_FILE JASPER_UDC_CLASS_DIR JASPER_CPUINFO_FILE JASPER_MODULES_ROOT JASPER_SPEAKER_NAME_FILE JASPER_SPEAKER_NAME_READER JASPER_USBGADGET_AUDIO_ALLOWED_CMD JASPER_USBGADGET_AUDIO_READY_CMD JASPER_USBGADGET_AUDIO_DATA_READY_CMD JASPER_USBGADGET_HARDWARE_ALLOWED_CMD
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PYTHONPATH PYTHONHOME JASPER_CONFIGFS_ROOT JASPER_PI_MODEL_FILE JTS_BOOT_CONFIG_FILE JASPER_UDC_CLASS_DIR JASPER_CPUINFO_FILE JASPER_MODULES_ROOT JASPER_SPEAKER_NAME_FILE JASPER_SPEAKER_NAME_READER JASPER_USBGADGET_AUDIO_ALLOWED_CMD JASPER_USBGADGET_AUDIO_READY_CMD JASPER_USBGADGET_AUDIO_DATA_READY_CMD JASPER_USBGADGET_HARDWARE_ALLOWED_CMD JASPER_USBGADGET_USB_MIC_ENABLED_CMD
 # Skip (NOT fail) when hardware transport is unavailable, there is no UDC yet,
 # or no function is wanted (network kill-switched AND audio off/parked). The
 # zero-function case restores the historic zero-RAM contract: libcomposite
@@ -50,11 +51,11 @@ ExecCondition=/usr/local/sbin/jasper-usbgadget-wanted
 # A failure means the kernel lacks CONFIG_USB_GADGET / CONFIG_USB_CONFIGFS —
 # surface that as a unit failure rather than a mysterious later error.
 ExecStartPre=/sbin/modprobe libcomposite
-# Make the host-visible audio device name track the Speaker Name by patching
-# the kernel's hardcoded UAC2 AudioStreaming string. Best-effort (leading `-`):
-# a failure only means the host shows the default label — it must never block
-# the gadget. Runs before gadget-up so the patched module autoloads when the
-# uac2 function is created. See docs/HANDOFF-usbsink.md "Device name".
+# Make output track Speaker Name and input track "<Speaker Name> Mic" by
+# patching the kernel's hardcoded UAC2 AudioStreaming strings. Best-effort
+# (leading `-`): a failure only means the host shows default labels — it must
+# never block the gadget. Runs before gadget-up so the patched module autoloads
+# when the uac2 function is created. See docs/HANDOFF-usbsink.md "Device name".
 ExecStartPre=-/usr/local/sbin/jasper-usbsink-name-patch
 ExecStart=/usr/local/sbin/jasper-usbgadget-up
 ExecStop=/usr/local/sbin/jasper-usbgadget-down

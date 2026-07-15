@@ -8,7 +8,9 @@
 # jasper-mux / jasper-input (3b-1), jasper-control (3b-2, polkit-mediated
 # restarts/reboots), and jasper-web (3b-3, polkit-mediated NetworkManager +
 # bluetooth/systemd-journal groups). The first Tier-B DAC mixer slice adds
-# jasper-recon for non-root amixer access via the `audio` group. All share
+# jasper-recon for non-root amixer access via the `audio` group. The optional
+# USB host-microphone relay has its own `jasper-usbmic` identity so it can use
+# ALSA without inheriting `jasper-input`'s /dev/input authority. All share
 # primary group `jasper` so the cross-daemon /run sockets (the broker) and
 # /var/lib/jasper state are reachable. Mirrors the existing shairport-sync
 # user-creation pattern in renderers.sh. All operations are idempotent and safe
@@ -56,6 +58,14 @@ create_jasper_service_users() {
     if ! getent passwd jasper-input >/dev/null 2>&1; then
         useradd -r -M -s /usr/sbin/nologin -g jasper -G input jasper-input
     fi
+    # Optional Pi-to-host USB microphone relay. Keep this separate from
+    # jasper-input: the relay needs ALSA playback plus group-readable Jasper
+    # state, never HID event devices or the accessory daemon's signaling
+    # boundary.
+    if ! getent passwd jasper-usbmic >/dev/null 2>&1; then
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G audio jasper-usbmic
+    fi
+    usermod -aG audio jasper-usbmic 2>/dev/null || true
     # WS1 Phase 3b-2 — jasper-control drops to non-root too. It binds TCP
     # (0.0.0.0:8780), opens a localhost WebSocket to CamillaDSP, and writes
     # /var/lib/jasper + /etc/avahi/services — no /dev/snd or /dev/input. Its
@@ -130,7 +140,7 @@ create_jasper_service_users() {
         usermod -aG jasper-intsecrets jasper-mux 2>/dev/null || true
         usermod -aG jasper-intsecrets jasper-web 2>/dev/null || true
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web)"
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every

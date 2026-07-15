@@ -64,10 +64,7 @@ from __future__ import annotations
 import fcntl
 import logging
 from collections.abc import Callable
-from contextlib import ExitStack
-import json
 import os
-import socket
 import sys
 import time
 from dataclasses import dataclass
@@ -77,10 +74,6 @@ from typing import IO
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_runtime_plan import RouteMode, RuntimeEnvAction, fanin_coupling_action
 from jasper.env_file import read_value, remove, upsert
-from jasper.fanin.combo_health import (
-    FALLBACK_MARKER_PATH as COMBO_HEALTH_FALLBACK_MARKER_PATH,
-    TICK_STATE_PATH as COMBO_HEALTH_TICK_STATE_PATH,
-)
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
@@ -102,9 +95,6 @@ logger = logging.getLogger(__name__)
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 JASPER_ENV_PATH = "/etc/jasper/jasper.env"
 OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
-# Runtime-fallback watcher state (defect 2026-07-10). Re-exported from the pure
-# policy module (its SSOT) so the reconciler's --health verb and the CLI share the
-# exact paths without a second literal.
 FANIN_UNIT = "jasper-fanin.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 CAMILLA_UNIT = "jasper-camilla.service"
@@ -116,7 +106,6 @@ AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 # route policy's own ``support.reason`` normally wins). Today the only blocked
 # combination is shm_ring on a grouped box.
 UNSUPPORTED_COUPLING_BLOCK_REASON = "coupling_unsupported_for_route"
-FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 
 # Legacy env key of the REMOVED ``transport_pipe`` coupling (the Camilla -> outputd
 # File playback pipe outputd used to read). Retained ONLY so the loopback/shm_ring
@@ -134,10 +123,6 @@ _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
 ENTRY_LOCK_PATH = "/run/jasper-fanin-coupling.lock"
 ENTRY_LOCK_TIMEOUT_SECONDS = 10.0
 ENTRY_LOCK_POLL_SECONDS = 0.2
-# Health holds the higher-level source lifecycle lock before probing coupling.
-# Never wait behind a coupling pass while monopolizing source intent; the timer
-# can safely stand down immediately and retry on its next tick.
-HEALTH_ENTRY_LOCK_TIMEOUT_SECONDS = 0.0
 
 # A daemon op (fan-in restart or camilla reconcile) returns (ok, detail).
 DaemonOp = Callable[[], tuple[bool, str]]
@@ -801,10 +786,6 @@ class AutoResult:
     reason: str
     combo_armed: bool = False
     usb_intent_enabled: bool = False
-    # True when the runtime-fallback marker forced the combo OFF on an otherwise
-    # combo-eligible box (defect 2026-07-10). See ``fallback_active`` on
-    # :func:`reconcile_auto`.
-    fallback_active: bool = False
     coupling_result: "CouplingResult | None" = None
     restarted_fanin_for_combo: bool = False
     detail: str = ""
@@ -818,7 +799,6 @@ def reconcile_auto(
     apply: bool = True,
     gadget_present: bool | None = None,
     usb_intent_enabled: bool | None = None,
-    fallback_active: bool | None = None,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
     stop_camilla: "DaemonOp | None" = None,
@@ -835,7 +815,7 @@ def reconcile_auto(
     1. Read the operator-choice marker from fanin.env. If it names an explicit
        operator choice (``JASPER_FANIN_COUPLING_CHOICE=operator``), preserve that
        exact coupling and return ``owned=False``. USB combo state remains owned
-       here and still follows canonical USB intent/runtime fallback; an operator
+       here and still follows canonical USB intent; an operator
        transport choice cannot authorize a household-Off capture lane.
     2. Otherwise the pass OWNS the box. First self-heal a shear-prone stale
        ``JASPER_FANIN_RING_SLOTS`` (the same migration a manual arm runs) so the
@@ -875,7 +855,6 @@ def reconcile_auto(
     the resolved USB hardware capability and ``usb_intent_enabled=None`` reads canonical source
     intent plus current local-source role permission.
     """
-    from jasper.fanin.combo_health import fallback_active as read_fallback_active
     from jasper.fanin.coupling_auto import (
         AutoCouplingDecision,
         default_ring_gates,
@@ -918,12 +897,6 @@ def reconcile_auto(
             )
     else:
         usb_intent = usb_intent_enabled
-    # Runtime-fallback flap guard (defect 2026-07-10). None → read the live marker.
-    # The ``--auto`` CLI clears the marker BEFORE calling us (clear-and-retry on
-    # boot/deploy/toggle), so an --auto pass normally sees no marker; the periodic
-    # ``--health`` disarm path writes the marker then calls us with it forced True.
-    fallback = read_fallback_active() if fallback_active is None else fallback_active
-
     # MIGRATION — a persisted REMOVED coupling value (the deleted transport_pipe,
     # or any typo) is NOT a valid operator choice; the mode the operator picked no
     # longer exists. Converge the box to loopback (the fail-safe rung) LOUDLY,
@@ -999,7 +972,6 @@ def reconcile_auto(
             combo_armed=False,
             gadget_present=gadget,
             usb_intent_enabled=False,
-            fallback_active=False,
             reason=(
                 "USB source intent invalid — combo failed closed; "
                 + (
@@ -1020,7 +992,6 @@ def reconcile_auto(
             gadget_present=gadget,
             usb_intent_enabled=usb_intent,
             ring_gates=(),
-            fallback_active=fallback,
             current_coupling=current,
         )
     else:
@@ -1053,7 +1024,6 @@ def reconcile_auto(
             gadget_present=gadget,
             usb_intent_enabled=usb_intent,
             ring_gates=ring_gates,
-            fallback_active=fallback,
         )
 
     # Step 3a — fan-in combo keys (reconciler = single writer). Write only on change.
@@ -1080,7 +1050,6 @@ def reconcile_auto(
                 gadget_present=gadget,
                 usb_intent_enabled=usb_intent,
                 combo_armed=decision.combo_armed,
-                fallback_active=decision.fallback_active,
                 usb_combo_changed=False,
                 reason=decision.reason,
                 detail="; ".join(part for part in (usb_intent_failure, str(e)) if part),
@@ -1111,7 +1080,6 @@ def reconcile_auto(
         gadget_present=gadget,
         usb_intent_enabled=usb_intent,
         combo_armed=decision.combo_armed,
-        combo_fallback=decision.fallback_active,
         usb_combo_changed=combo_changed,
         detail=decision.reason,
     )
@@ -1145,8 +1113,8 @@ def reconcile_auto(
     # (a combo-only change on an already-at-desired-coupling box takes the no-bounce
     # confirm path), the new combo won't be live until fan-in restarts. Issue one —
     # CamillaDSP-coordinated when a ring/pipe coupling is live so it can't RTTIME-
-    # SIGKILL camilla (see _restart_fanin_coordinated). This is the combo-arm,
-    # combo-disarm, AND runtime-fallback-disarm restart (all funnel here). The
+    # SIGKILL camilla (see _restart_fanin_coordinated). This is the combo-arm or
+    # combo-disarm restart. The
     # active coupling is re-read from the just-written fanin.env so a block-forced
     # loopback is honoured (skip the pause) even when decision.coupling was shm_ring.
     restarted_for_combo = False
@@ -1184,7 +1152,6 @@ def reconcile_auto(
                 gadget_present=gadget,
                 usb_intent_enabled=usb_intent,
                 combo_armed=decision.combo_armed,
-                fallback_active=decision.fallback_active,
                 usb_combo_changed=combo_changed,
                 reason=decision.reason,
                 coupling_result=coupling_result,
@@ -1218,337 +1185,12 @@ def reconcile_auto(
         gadget_present=gadget,
         usb_intent_enabled=usb_intent,
         combo_armed=decision.combo_armed,
-        fallback_active=decision.fallback_active,
         usb_combo_changed=combo_changed,
         reason=decision.reason,
         coupling_result=coupling_result,
         restarted_fanin_for_combo=restarted_for_combo,
         detail=detail,
     )
-
-
-@dataclass(frozen=True)
-class HealthResult:
-    """Outcome of one ``--health`` runtime-fallback watcher tick.
-
-    ``watched`` is False when the box is NOT running the combo (no direct usbsink
-    lane in fan-in STATUS) — a non-combo box or one the fallback already disarmed;
-    the tick is a silent no-op. ``broken`` / ``disarmed`` / ``transition`` /
-    ``consecutive_broken`` mirror the pure :class:`~jasper.fanin.combo_health.HealthTickDecision`;
-    ``auto_result`` is the delegated :class:`AutoResult` when a disarm fired.
-    ``ok`` is True unless a fired disarm failed.
-    """
-
-    ok: bool
-    watched: bool
-    broken: bool = False
-    disarmed: bool = False
-    transition: str = ""
-    consecutive_broken: int = 0
-    auto_result: "AutoResult | None" = None
-    detail: str = ""
-
-
-def run_health_check(
-    *,
-    reason: str = "health",
-    apply: bool = True,
-    tick_state_path: str = COMBO_HEALTH_TICK_STATE_PATH,
-    marker_path: str = COMBO_HEALTH_FALLBACK_MARKER_PATH,
-    read_fanin_status: "Callable[[], tuple[dict[str, object] | None, str]] | None" = None,
-    run_reconcile: "Callable[[], AutoResult] | None" = None,
-    withdraw_usb_audio: "Callable[[], tuple[bool, str]] | None" = None,
-    source_intent_env_path: str | None = None,
-    source_lock_timeout_seconds: float | None = None,
-    entry_lock_path: str | Path | None = None,
-    entry_lock_timeout_seconds: float | None = None,
-) -> HealthResult:
-    """Run one health tick under the global ``source -> coupling`` lock order.
-
-    Normal source reconciliation holds the source lifecycle lock while it starts
-    the coupling reconciler.  The fallback path must therefore take that same
-    lock *before* the coupling entry lock, then keep both held across UAC2
-    withdrawal and the ordered fan-in disarm.  This prevents a reverse-order
-    deadlock while leaving :mod:`jasper.source_intent` the sole lifecycle owner.
-
-    Lock contention is a quiet watcher stand-down: another reconcile already in
-    flight is exactly when this periodic observation has nothing safe to change.
-    """
-    from jasper.source_intent import (
-        SOURCE_INTENT_ENV,
-        SOURCE_RECONCILE_LOCK_TIMEOUT_SECONDS,
-        source_reconcile_lock,
-    )
-
-    source_path = source_intent_env_path or SOURCE_INTENT_ENV
-    source_timeout = (
-        SOURCE_RECONCILE_LOCK_TIMEOUT_SECONDS
-        if source_lock_timeout_seconds is None
-        else source_lock_timeout_seconds
-    )
-    coupling_path = ENTRY_LOCK_PATH if entry_lock_path is None else entry_lock_path
-    coupling_timeout = (
-        HEALTH_ENTRY_LOCK_TIMEOUT_SECONDS
-        if entry_lock_timeout_seconds is None
-        else entry_lock_timeout_seconds
-    )
-    with ExitStack() as stack:
-        try:
-            stack.enter_context(source_reconcile_lock(
-                env_path=source_path,
-                timeout_sec=source_timeout,
-            ))
-        except TimeoutError as exc:
-            return _health_lock_stand_down(
-                reason=reason,
-                result="source_lock_contended_health_skip",
-                lock_path=f"{source_path}.reconcile.lock",
-                timeout_seconds=source_timeout,
-                detail=str(exc),
-            )
-
-        lock = _acquire_entry_lock(
-            coupling_path,
-            timeout_seconds=coupling_timeout,
-            poll_seconds=ENTRY_LOCK_POLL_SECONDS,
-        )
-        if lock.outcome == "contended":
-            return _health_lock_stand_down(
-                reason=reason,
-                result="entry_lock_contended_health_skip",
-                lock_path=str(coupling_path),
-                timeout_seconds=coupling_timeout,
-                detail=lock.detail,
-            )
-        try:
-            return _run_health_check_locked(
-                reason=reason,
-                apply=apply,
-                tick_state_path=tick_state_path,
-                marker_path=marker_path,
-                read_fanin_status=read_fanin_status,
-                run_reconcile=run_reconcile,
-                withdraw_usb_audio=withdraw_usb_audio,
-            )
-        finally:
-            if lock.fh is not None:
-                lock.fh.close()
-
-
-def _health_lock_stand_down(
-    *,
-    reason: str,
-    result: str,
-    lock_path: str,
-    timeout_seconds: float,
-    detail: str = "",
-) -> HealthResult:
-    """Report a bounded health-lock collision without failing the timer unit."""
-
-    log_event(
-        logger,
-        "fanin.coupling_reconcile",
-        result=result,
-        reason=reason,
-        lock_path=lock_path,
-        timeout_seconds=timeout_seconds,
-        detail=detail or None,
-        level=logging.WARNING,
-    )
-    print(
-        "fan-in coupling health: another reconcile pass holds "
-        f"{lock_path} ({detail or 'unknown holder'}); skipped this "
-        f"health-watcher tick after {timeout_seconds:g}s without touching "
-        "state or daemons.",
-        file=sys.stderr,
-    )
-    return HealthResult(ok=True, watched=False, detail=detail)
-
-
-def _run_health_check_locked(
-    *,
-    reason: str = "health",
-    apply: bool = True,
-    tick_state_path: str = COMBO_HEALTH_TICK_STATE_PATH,
-    marker_path: str = COMBO_HEALTH_FALLBACK_MARKER_PATH,
-    read_fanin_status: "Callable[[], tuple[dict[str, object] | None, str]] | None" = None,
-    run_reconcile: "Callable[[], AutoResult] | None" = None,
-    withdraw_usb_audio: "Callable[[], tuple[bool, str]] | None" = None,
-) -> HealthResult:
-    """RUNTIME-FALLBACK watcher body. Caller holds source then coupling locks.
-
-    Journal-quiet on a healthy tick; only real transitions log.
-
-    Fired every ~3 min by ``jasper-fanin-combo-health.timer`` (mirrors
-    ``jasper-wifi-recover`` — a timer + oneshot, no resident daemon). Steps:
-
-    1. Read fan-in STATUS and extract the USB DIRECT lane's health sample. No
-       direct lane → NOT a combo box (or already disarmed): reset the tick
-       accounting and return a silent no-op (``watched=False``).
-    2. Advance the consecutive-broken accounting (pure
-       :func:`~jasper.fanin.combo_health.decide_health_tick`): a tick is broken on
-       fan-in's own ``health=="broken"`` OR the self-heal reopen counters climbing
-       since the last tick WHILE the lane is actively ``health=="capturing"`` — an
-       idle/no-host lane (whose counters still churn on routine gadget
-       re-enumeration) can never trip either (defect 2026-07-11).
-    3. On brokenness SUSTAINED across ``FALLBACK_CONSECUTIVE_TICKS`` (~6 min): write
-       the fallback marker, ask the source-lifecycle owner to withdraw UAC2 while
-       its direct consumer still exists, then delegate to :func:`reconcile_auto`,
-       which — reading the marker we just wrote — forces the combo OFF the same way
-       it arms it (env writes + restarts). Since the ALoop solo path was deleted
-       there is NO capture to fall back to, so this leaves USB audio UNAVAILABLE
-       (fan-in's DIRECT lane disarmed and UAC2 withdrawn) — the doctor + ``/state``
-       surface it LOUDLY. The marker then blocks the periodic
-       pass from re-arming until the next ``--auto`` clear-event (boot/deploy/toggle).
-
-    Injectables (``read_fanin_status`` / ``withdraw_usb_audio`` /
-    ``run_reconcile`` / paths) keep this
-    hardware-free testable; the defaults read the live fan-in socket and run the
-    real :func:`reconcile_auto`.
-    """
-    from jasper.fanin.combo_health import (
-        decide_health_tick,
-        extract_direct_sample,
-        read_tick_state,
-        write_fallback_marker,
-        write_tick_state,
-    )
-
-    status_reader = read_fanin_status or (
-        lambda: _read_status_socket(FANIN_STATUS_SOCKET)
-    )
-    fanin_status, read_err = status_reader()
-    sample = extract_direct_sample(fanin_status)
-    if sample is None:
-        # Not a combo box (or already disarmed) — nothing to watch. Reset the tick
-        # accounting so a later --auto re-arm starts from a clean slate, and stay
-        # journal-quiet (a dead/socketless fan-in is not this watcher's concern).
-        write_tick_state(_combo_health_empty_tick(), tick_state_path)
-        return HealthResult(
-            ok=True, watched=False, detail=read_err or "no direct usbsink lane"
-        )
-
-    prev = read_tick_state(tick_state_path)
-    decision = decide_health_tick(sample, prev)
-    write_tick_state(decision.next_state, tick_state_path)
-
-    if decision.transition == "first_broken":
-        log_event(
-            logger,
-            "fanin.combo_health",
-            result="broken_tick",
-            reason=reason,
-            health=sample.health,
-            present=sample.present,
-            reopens=sample.reopens,
-            card_gen_reopens=sample.card_gen_reopens,
-            frames_read=sample.frames_read,
-            consecutive_broken=decision.next_state.consecutive_broken,
-            level=logging.WARNING,
-        )
-    elif decision.transition == "recovered":
-        log_event(
-            logger,
-            "fanin.combo_health",
-            result="recovered",
-            reason=reason,
-            health=sample.health,
-            present=sample.present,
-            level=logging.INFO,
-        )
-
-    if not decision.disarm:
-        return HealthResult(
-            ok=True,
-            watched=True,
-            broken=decision.broken,
-            transition=decision.transition,
-            consecutive_broken=decision.next_state.consecutive_broken,
-        )
-
-    # SUSTAINED brokenness → disarm the combo. There is no aloop solo fallback
-    # anymore, so this leaves USB audio unavailable until an --auto clear-event.
-    fallback_reason = (
-        f"direct capture broke on {decision.next_state.consecutive_broken} "
-        f"consecutive ticks (health={sample.health}, reopens={sample.reopens}, "
-        f"card_gen_reopens={sample.card_gen_reopens})"
-    )
-    log_event(
-        logger,
-        "fanin.combo_health",
-        result="fallback_disarm",
-        reason=reason,
-        health=sample.health,
-        reopens=sample.reopens,
-        card_gen_reopens=sample.card_gen_reopens,
-        consecutive_broken=decision.next_state.consecutive_broken,
-        detail=fallback_reason,
-        level=logging.WARNING,
-    )
-    write_fallback_marker(fallback_reason, marker_path)
-    if apply:
-        if withdraw_usb_audio is None:
-            from jasper.source_intent import withdraw_usbsink_audio_for_fallback
-
-            withdraw_usb_audio = withdraw_usbsink_audio_for_fallback
-        withdrawn, withdraw_detail = withdraw_usb_audio()
-        if not withdrawn:
-            log_event(
-                logger,
-                "fanin.combo_health",
-                result="fallback_uac2_withdraw_failed",
-                reason=reason,
-                detail=withdraw_detail or None,
-                level=logging.ERROR,
-            )
-            return HealthResult(
-                ok=False,
-                watched=True,
-                broken=True,
-                disarmed=False,
-                transition=decision.transition,
-                consecutive_broken=decision.next_state.consecutive_broken,
-                detail=(
-                    f"{fallback_reason}; UAC2 withdrawal failed"
-                    + (f": {withdraw_detail}" if withdraw_detail else "")
-                ),
-            )
-    # reconcile_auto reads the marker fresh (fallback_active=None) → forces combo
-    # off + runs the ordered disarm restarts. Reset the tick accounting after so a
-    # post-disarm residual can't immediately re-fire.
-    reconciler = run_reconcile or (lambda: reconcile_auto(reason=reason, apply=apply))
-    auto = reconciler()
-    write_tick_state(_combo_health_empty_tick(), tick_state_path)
-    log_event(
-        logger,
-        "fanin.combo_health",
-        result="fallback_disarmed" if auto.ok else "fallback_disarm_failed",
-        reason=reason,
-        coupling=auto.coupling,
-        combo_armed=auto.combo_armed,
-        usb_combo_changed=auto.usb_combo_changed,
-        ok=auto.ok,
-        detail=auto.detail or None,
-        level=logging.INFO if auto.ok else logging.WARNING,
-    )
-    return HealthResult(
-        ok=auto.ok,
-        watched=True,
-        broken=True,
-        disarmed=True,
-        transition=decision.transition,
-        consecutive_broken=decision.next_state.consecutive_broken,
-        auto_result=auto,
-        detail=fallback_reason,
-    )
-
-
-def _combo_health_empty_tick():
-    """The empty :class:`~jasper.fanin.combo_health.TickState` (lazy import keeps
-    this module import-cheap for the non-health CLI paths)."""
-    from jasper.fanin.combo_health import TickState
-
-    return TickState.empty()
 
 
 def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
@@ -2534,37 +2176,6 @@ def _arm_ring(
     )
 
 
-def _read_status_socket(
-    path: str,
-    *,
-    timeout: float = 1.5,
-) -> tuple[dict[str, object] | None, str]:
-    sock: socket.socket | None = None
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect(path)
-        sock.sendall(b"STATUS\n")
-        chunks: list[bytes] = []
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
-        return None, str(e)
-    finally:
-        if sock is not None:
-            try:
-                sock.close()
-            except OSError:
-                pass
-    if not isinstance(payload, dict):
-        return None, f"STATUS payload is {type(payload).__name__}, not object"
-    return payload, ""
-
-
 def _leaves_live_shm_ring_bridge(prior_outputd_text: str) -> bool:
     """True when the outputd.env being rewritten carried a LIVE shm_ring bridge.
 
@@ -2900,26 +2511,18 @@ def _acquire_entry_lock(
 ) -> EntryLock:
     """Serialize the reconcile entry verbs behind one advisory flock.
 
-    WHY (#1233 adversarial review): ``jasper-fanin-coupling-auto.service``
-    (``--auto``) and ``jasper-fanin-combo-health.service`` (``--health``) are
-    independent ``Type=oneshot`` units with NO systemd ordering between them,
-    and install.sh / the operator CLI run the same verbs directly. Two
-    concurrent passes can interleave their ordered daemon transitions — worst
-    case, one pass's coordinated camilla stop -> fan-in restart -> camilla
-    start sequence (:func:`_restart_fanin_coordinated`) interleaved with the
-    other's bare fan-in restart reproduces exactly the RTTIME-SIGKILL cascade
-    #1233 fixed. One flock held for the whole pass makes the sequences atomic
-    with respect to each other. systemd already serializes concurrent starts of
-    the SAME unit; this lock covers the cross-unit and unit-vs-CLI pairs.
+    ``jasper-fanin-coupling-auto.service``, install.sh, and an operator CLI can
+    invoke the same transition concurrently. One flock held for the whole pass
+    keeps their ordered CamillaDSP/fan-in/outputd transitions atomic. systemd
+    serializes starts of the same unit; this lock covers unit-vs-CLI and direct
+    CLI-vs-CLI pairs.
 
     Bounded wait, never open-ended: contention past ``timeout_seconds`` returns
     ``contended`` and the caller reacts before any env write or daemon op (no
     partial state to unwind). ``--auto`` / explicit abort through
-    :func:`_handle_entry_lock_contention`; the periodic ``--health`` watcher
-    acquires source first and stands down through :func:`run_health_check`. The
-    wait absorbs the common fast holder (a healthy ``--health`` tick, a
-    confirm-path ``--auto``); a genuinely long transition in flight is the case
-    that SHOULD abort/skip rather than stack.
+    :func:`_handle_entry_lock_contention`. The wait absorbs the common fast
+    confirm-path ``--auto`` holder; a genuinely long transition in flight is the
+    case that SHOULD abort rather than stack.
 
     Fail-open on an unopenable lock file (missing /run on a dev host, a
     non-root probe): a broken lock path must not brick reconciles — proceed
@@ -2974,31 +2577,21 @@ def _acquire_entry_lock(
 
 def main(argv: "list[str] | None" = None) -> int:
     """CLI: ``jasper-fanin-coupling-reconcile <loopback|shm_ring>``
-    (explicit operator choice), ``--auto`` (P3/P4 default resolution), or
-    ``--health`` (the USB-combo runtime-fallback watcher tick).
+    (explicit operator choice) or ``--auto`` (P3/P4 default resolution).
 
     The explicit positional path stamps the operator-choice marker so a later
     ``--auto`` pass never overrides the operator's pick; ``--auto`` resolves the
-    coupling + USB combo by eligibility and leaves the marker absent (auto-owned);
-    ``--health`` polls fan-in's direct-capture health and disarms the combo (leaving
-    USB audio unavailable — no solo fallback) when it is broken at runtime for >= 2
-    consecutive ticks.
+    coupling + USB combo by eligibility and leaves the marker absent (auto-owned).
 
     Every verb runs under the shared entry flock (:func:`_acquire_entry_lock`)
-    so two passes can never interleave their ordered daemon transitions. Health
-    additionally takes the source-lifecycle lock first; :func:`run_health_check`
-    owns that nested order.
+    so two passes can never interleave their ordered daemon transitions.
     """
     import argparse
 
-    # This CLI is the systemd-oneshot entrypoint (jasper-fanin-coupling-auto /
-    # jasper-fanin-combo-health), so its journal is where the module's INFO-level
-    # ``event=`` lines land — the #1233 camilla pause/resume evidence,
-    # auto_resolved, the --health ``recovered`` transition. Without a configured
-    # handler the root logger falls back to Python's lastResort handler
-    # (WARNING+), silently dropping all of them. The --health healthy-tick
-    # journal-quiet guarantee is unaffected: a quiet tick emits no log_event at
-    # all (decide_health_tick returns transition=""), not a below-threshold one.
+    # This CLI is the jasper-fanin-coupling-auto systemd entrypoint, so its
+    # journal is where INFO-level transition evidence lands. Without a configured
+    # handler the root logger falls back to Python's lastResort handler (WARNING+)
+    # and silently drops normal confirmations.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -3016,7 +2609,7 @@ def main(argv: "list[str] | None" = None) -> int:
             "explicit operator choice (stamps the operator-choice marker so --auto "
             "won't override it): loopback (snd-aloop); shm_ring (Ring A + Ring B SHM "
             "rings — arms both fan-in and outputd). Mutually exclusive with "
-            "--auto/--health."
+            "--auto."
         ),
     )
     parser.add_argument(
@@ -3026,19 +2619,7 @@ def main(argv: "list[str] | None" = None) -> int:
             "DEFAULT-RESOLUTION pass (P3/P4): when NO operator choice is recorded, "
             "resolve shm_ring on a ring-eligible box (else loopback) and arm the USB "
             "combo on a gadget box. An operator marker preserves the coupling choice "
-            "while USB still follows source intent. Clears the runtime-fallback "
-            "marker first (clear-and-retry on boot/deploy/toggle)."
-        ),
-    )
-    parser.add_argument(
-        "--health",
-        action="store_true",
-        help=(
-            "RUNTIME-FALLBACK watcher tick: poll fan-in's USB direct-capture health "
-            "and, if it is broken for >= 2 consecutive ticks, disarm the combo "
-            "(leaving USB audio unavailable — no solo fallback) and write the "
-            "fallback marker. Journal-quiet on a healthy tick. Mutually exclusive "
-            "with --auto / an explicit coupling."
+            "while USB still follows source intent."
         ),
     )
     parser.add_argument("--reason", default="cli")
@@ -3048,19 +2629,11 @@ def main(argv: "list[str] | None" = None) -> int:
         help="write the env only; skip the daemon transition (staging).",
     )
     args = parser.parse_args(argv)
-    _modes = [args.auto, args.health, args.coupling is not None]
+    _modes = [args.auto, args.coupling is not None]
     if sum(bool(m) for m in _modes) > 1:
-        parser.error(
-            "--auto, --health, and an explicit coupling choice are mutually exclusive"
-        )
+        parser.error("--auto and an explicit coupling choice are mutually exclusive")
     if not any(_modes):
-        parser.error("give an explicit coupling choice, --auto, or --health")
-
-    # Health may withdraw UAC2 through the source-lifecycle owner. Normal source
-    # reconciliation already nests source -> coupling, so the health wrapper must
-    # acquire both in that same order. Never pre-acquire coupling here.
-    if args.health:
-        return _run_entry_verb(args)
+        parser.error("give an explicit coupling choice or --auto")
 
     # Serialize the WHOLE pass against the sibling entry verbs (the two oneshot
     # units + install.sh / operator CLI runs) — see _acquire_entry_lock. On
@@ -3084,8 +2657,7 @@ def _handle_entry_lock_contention(args, *, detail: str = "") -> int:
     """Abort an apply verb that could not acquire the coupling entry lock.
 
     ``--auto`` / an explicit coupling wanted to apply a change and could not, so
-    they abort loudly. Health contention is handled inside
-    :func:`run_health_check`, which must acquire the source lock first.
+    they abort loudly.
     """
     log_event(
         logger,
@@ -3108,7 +2680,7 @@ def _handle_entry_lock_contention(args, *, detail: str = "") -> int:
 
 
 def _run_entry_verb(args) -> int:
-    """Body after validation; health acquires its ordered locks internally."""
+    """Body after validation and entry-lock acquisition."""
     # Hydrate os.environ from the wizard-owned env files (same set the daemons
     # load) BEFORE reconciling, so the camilla reconcile this triggers emits with
     # the persisted JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} etc. — not their
@@ -3120,40 +2692,7 @@ def _run_entry_verb(args) -> int:
 
     load_env_files()
 
-    if args.health:
-        health = run_health_check(reason=args.reason, apply=not args.no_apply)
-        # Print only when there is something to say (a disarm or a broken-tick
-        # transition); a healthy/idle tick prints nothing (journal-quiet, mirrors
-        # jasper-wifi-recover).
-        if health.watched and (health.disarmed or health.transition):
-            print(
-                f"combo health: watched={health.watched} broken={health.broken} "
-                f"disarmed={health.disarmed} "
-                f"consecutive_broken={health.consecutive_broken} ok={health.ok}"
-                + (f" detail={health.detail}" if health.detail else "")
-            )
-        return 0 if health.ok else 1
-
     if args.auto:
-        # Clear-and-retry: --auto runs on exactly the three fallback-marker
-        # clear-events (boot, deploy, /sources/ toggle), so it drops any marker a
-        # prior --health disarm wrote and re-attempts the combo from eligibility.
-        # The periodic --health pass never clears the marker, so the combo never
-        # oscillates on/off within a boot on its own.
-        from jasper.fanin.combo_health import (
-            clear_fallback_marker,
-            read_fallback_marker,
-        )
-
-        prior = read_fallback_marker()
-        if clear_fallback_marker() and prior is not None:
-            log_event(
-                logger,
-                "fanin.combo_health",
-                result="fallback_marker_cleared",
-                reason=args.reason,
-                prior_reason=prior.reason or None,
-            )
         auto = reconcile_auto(reason=args.reason, apply=not args.no_apply)
         print(
             f"coupling auto: owned={auto.owned} coupling={auto.coupling} "

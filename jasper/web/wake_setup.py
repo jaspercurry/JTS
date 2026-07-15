@@ -54,6 +54,8 @@ URL surface (after nginx strips the /wake/ prefix):
   POST /firmware/update proxy jasper-control /aec/firmware/update — start
                         a required mic firmware update job
   POST /profile         body {profile: str} — set canonical input profile
+  POST /usb-mic         body {enabled: bool} — expose/remove the cleaned mic
+                        as the UAC2 host-input direction
   POST /layer/aec       body {enabled: bool} — legacy compatibility shim
                         for the old software-AEC3 toggle; not rendered
   POST /layer/raw       body {enabled: bool} — set chip-direct leg
@@ -327,13 +329,14 @@ def _advanced_fusion_html() -> str:
 
 
 def _mic_status_card_html() -> str:
-    """Render the compact read-only mic/topology card.
+    """Render the compact mic/topology card and related USB export switch.
 
     Values are placeholders until deploy/assets/wake/js/main.js hydrates
-    them from /detection.json. Keep this card non-controlling: the
-    echo/fusion rows below are the action surface.
+    them from /detection.json. Detection/profile controls stay in the
+    echo/fusion rows below; the USB export action lives beside the physical
+    microphone prerequisites it depends on.
     """
-    return """
+    return f"""
 <section class="section mic-status-card">
   <div class="section__head">
     <h2 class="section__title">Microphone</h2>
@@ -366,6 +369,17 @@ def _mic_status_card_html() -> str:
       </div>
     </div>
     <div class="mic-status-warning" id="mic-status-warning" hidden></div>
+    <div class="usb-mic-row is-disabled" id="usb-mic-row">
+      <div class="usb-mic-copy">
+        <div class="usb-mic-name">Use JTS as a Mac microphone</div>
+        <div class="usb-mic-desc">
+          Adds the echo-cancelled microphone to the same USB connection.
+        </div>
+        <div class="usb-mic-status" id="usb-mic-status">checking…</div>
+      </div>
+      {toggle_html("usb-mic-toggle", disabled=True)}
+    </div>
+    <div class="usb-mic-notice" id="usb-mic-notice">—</div>
   </div>
 </section>"""
 
@@ -711,6 +725,23 @@ def _apply_profile(profile: str, *, control_base: str) -> tuple[int, bytes]:
     )
 
 
+def _apply_usb_mic(
+    enabled: bool,
+    *,
+    control_base: str,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    """Forward the Mac-microphone switch to jasper-control."""
+
+    return proxy_post(
+        "/aec/usb-mic",
+        control_base=control_base,
+        timeout=5.0,
+        body=json.dumps({"enabled": enabled}).encode(),
+        headers=headers,
+    )
+
+
 def _start_firmware_update(
     *,
     control_base: str,
@@ -786,6 +817,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     reject_csrf(self)
                     return
                 self._handle_profile()
+                return
+            if path == "/usb-mic":
+                if not guard_mutating_request(self):
+                    reject_csrf(self)
+                    return
+                self._handle_usb_mic()
                 return
             if path == "/sensitivity":
                 if not guard_mutating_request(self):
@@ -903,6 +940,36 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
             status, resp = _apply_sensitivity(
                 value, control_base=cfg["control_base"],
+            )
+            send_proxy_json(self, resp, status=status)
+
+        def _handle_usb_mic(self) -> None:
+            body, err = _read_json_body(self)
+            if err is not None:
+                send_proxy_json(
+                    self,
+                    json.dumps({"error": err}).encode(),
+                    status=400,
+                )
+                return
+            enabled = body.get("enabled") if body is not None else None
+            if not isinstance(enabled, bool):
+                send_proxy_json(
+                    self,
+                    b'{"error":"enabled must be a boolean"}',
+                    status=400,
+                )
+                return
+            log_event(
+                logger,
+                "wake.usb_mic",
+                enabled=enabled,
+                client=self.address_string(),
+            )
+            status, resp = _apply_usb_mic(
+                enabled,
+                control_base=cfg["control_base"],
+                headers=forward_control_token_headers(self),
             )
             send_proxy_json(self, resp, status=status)
 

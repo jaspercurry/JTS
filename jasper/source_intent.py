@@ -53,12 +53,12 @@ from jasper.atomic_io import (
     read_regular_bytes_nofollow,
 )
 from jasper.env_file import parse_env_lines
-from jasper.fanin.combo_health import (
+from jasper.fanin.status import (
     DIRECT_HEALTH_CAPTURING,
     DIRECT_HEALTH_IDLE,
     extract_direct_sample,
+    read_fanin_status,
 )
-from jasper.fanin.status import read_fanin_status
 from jasper.local_sources import (
     local_source_lifecycle,
     local_source_lifecycles,
@@ -1323,70 +1323,6 @@ def _reconcile_usbsink(
     return "parked" if desired else "off"
 
 
-def withdraw_usbsink_audio_for_fallback(
-    *,
-    ops: ReconcileOps | None = None,
-) -> tuple[bool, str]:
-    """Withdraw host-visible UAC2 before the health watcher removes its consumer.
-
-    The periodic fan-in health check owns the decision to disarm a broken
-    direct lane, but this coordinator remains the only owner of the USB source
-    lifecycle and ConfigFS composition.  The watcher calls this narrow phase
-    after publishing its fallback marker and *before* restarting fan-in.  NCM
-    therefore survives the ordinary path while UAC2 is never left advertised
-    without a consumer.
-
-    A failed recompose leaves the direct lane running.  If UAC2 is still
-    present, the composite gadget is stopped as the final fail-closed action;
-    the caller then refuses to disarm fan-in and reports the failed fallback.
-    The caller holds :func:`source_reconcile_lock`; the health wrapper acquires
-    it before the coupling lock so this phase cannot race ordinary source work.
-    """
-
-    operations = ops or default_reconcile_ops()
-    lifecycle = local_source_lifecycle(Source.USBSINK)
-    unit = lifecycle.intent_unit
-    if unit is None or len(lifecycle.advertise_units) != 1:
-        return False, "USB lifecycle declaration is incomplete"
-    gadget = lifecycle.advertise_units[0]
-    errors: list[str] = []
-
-    _attempt_teardown(
-        errors,
-        f"stop {unit} before fallback",
-        lambda: _ensure_active(operations, unit, False, force=False),
-    )
-    # This is derived readiness, not household intent.  Canonical desired-On
-    # remains in source_intent.env and is surfaced as degraded until a later
-    # explicit clear event re-arms the combo.
-    _attempt_teardown(
-        errors,
-        f"disable {unit} before fallback",
-        lambda: _ensure_enabled(operations, unit, False),
-    )
-    if operations.usb_audio_present():
-        _attempt_teardown(
-            errors,
-            f"recompose {gadget} without UAC2",
-            lambda: _check_result(
-                *operations.run_unit(gadget, "restart"),
-                f"systemctl restart {gadget}",
-            ),
-        )
-    if operations.usb_audio_present():
-        _attempt_teardown(
-            errors,
-            f"stop {gadget} after failed UAC2 withdrawal",
-            lambda: _check_result(
-                *operations.run_unit(gadget, "stop"),
-                f"systemctl stop {gadget}",
-            ),
-        )
-    if operations.usb_audio_present():
-        errors.append("USB audio function remained after fallback withdrawal")
-    return not errors, "; ".join(errors)
-
-
 def _wait_for_bluetooth_radio(
     ops: ReconcileOps,
     *,
@@ -1831,10 +1767,9 @@ def source_reconcile_lock(
 ):
     """Return the shared source-lifecycle reconcile lock context.
 
-    Cross-subsystem callers that must compose source lifecycle work with a
-    second reconciler acquire this lock first.  In particular, the fan-in
-    combo health fallback then acquires its coupling lock, preserving the one
-    global order ``source -> coupling`` used by :func:`reconcile`.
+    Cross-subsystem callers that must compose source lifecycle work acquire this
+    lock first. The ordinary source reconcile holds it while invoking the
+    coupling owner, preserving the global ``source -> coupling`` order.
     """
 
     return advisory_file_lock(

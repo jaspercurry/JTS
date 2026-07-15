@@ -5,8 +5,8 @@
 """jasper-doctor checks — privilege-separation read access.
 
 WS1 dropped jasper-control/-web/-chat-web/-mux/-voice/-input/-wiim-remote-mic
-to non-root (each runs as its own ``jasper-<role>`` user with primary group
-``jasper``). A config or
+to non-root; the USB mic relay likewise runs under its own non-secret-bearing
+``jasper-usbmic`` identity (all use primary group ``jasper``). A config or
 state file written ``0600`` root-only is then **unreadable** by the owning
 daemon — and because every one of these reads is fail-soft (a caught
 ``OSError`` mapped to a benign default), a permission failure looks *identical*
@@ -214,6 +214,19 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         group="jasper",
         supplementary_groups=("input",),
         paths=(),
+    ),
+    DaemonReadSpec(
+        unit="jasper-usbmic",
+        unit_file="deploy/systemd/jasper-usbmic.service",
+        user="jasper-usbmic",
+        group="jasper",
+        supplementary_groups=("audio",),
+        paths=(
+            # Explicit export intent is the relay's only persisted policy
+            # input. Assistant pause state deliberately does not gate the Mac
+            # microphone export.
+            "/var/lib/jasper/usb_mic.env",
+        ),
     ),
     # jasper-wiim-remote-mic reads NO on-disk config/state at runtime. It listens
     # to BlueZ over system D-Bus ('bluetooth' supplementary group) and forwards
@@ -497,6 +510,12 @@ def check_input_readable_inputs() -> CheckResult:
     """jasper-input declares no on-disk reads; this is its drift-pin so a future
     file read is forced into the manifest."""
     return _check_daemon("jasper-input")
+
+
+@doctor_check(order=23.592, group="privsep")
+def check_usbmic_readable_inputs() -> CheckResult:
+    """The USB mic relay must be able to read its explicit export intent."""
+    return _check_daemon("jasper-usbmic")
 
 
 @doctor_check(order=23.595, group="privsep")

@@ -529,7 +529,7 @@ JTS ladder, descending priority:
 | `jasper-control` | -600 | Recovery surface |
 | `jasper-voice`, `jasper-camilla-crossover` | -500 | Voice's large blast radius plus the reconciler-gated active-speaker crossover |
 | `nginx` | -450 | Management front door; package-owned, recoverable, protected below control/voice/audio |
-| `jasper-mux`, `jasper-input`, `jasper-wiim-remote-mic`, `jasper-snapclient`, `jasper-snapserver` | -300 | Restartable control/accessory and managed grouping daemons; mux outage is user-visible because fan-in starts safe/closed; WiiM falls back to the normal mic; Snapcast is reconciler-recoverable |
+| `jasper-mux`, `jasper-input`, `jasper-usbmic`, `jasper-wiim-remote-mic`, `jasper-snapclient`, `jasper-snapserver` | -300 | Restartable control/accessory and managed grouping daemons; mux outage is user-visible because fan-in starts safe/closed; USB mic export stops safely and systemd restarts it; WiiM falls back to the normal mic; Snapcast is reconciler-recoverable |
 | `sshd` | -250 | Recovery path; moderately protected, but SSH-launched diagnostics stay killable |
 | `jasper-usbsink-volume` | +100 | Optional long-running, non-real-time volume observer; deliberately preferred over audio/control owners |
 
@@ -1383,7 +1383,9 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-07-14 (shairport Tier-3 final mutation rechecked as
+Last verified: 2026-07-15 (`jasper-usbmic` placed in the -300 optional,
+restartable OOM class and the complete explicit unit ladder rechecked against
+`jasper._oom_adj`; prior 2026-07-14 pass: shairport Tier-3 final mutation rechecked as
 inactive-capable `restart`, with concurrent Off/role-park safety owned by the
 source guard at the final systemd start boundary;
 supervisor loop/thread ownership rechecked against

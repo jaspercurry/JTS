@@ -37,8 +37,6 @@ EXPECTED_DSTS = (
     "jasper-fanin.service",
     "jasper-fanin-coupling-auto.service",
     "jasper-source-intent-reconcile.service",
-    "jasper-fanin-combo-health.service",
-    "jasper-fanin-combo-health.timer",
     "jasper-outputd.service",
     "jasper-control.service",
     "jasper-doctor-json.service",
@@ -143,8 +141,8 @@ def test_full_install_uses_transactional_core_graph_installer():
     """The full profile must consume the same table as streambox installs.
 
     Otherwise a row can pass the table's unit tests yet never land on the
-    production speaker path, which is how the combo-health timer was enabled
-    before its unit file existed.
+    production speaker path, which previously allowed install wiring to drift
+    from the unit files actually shipped.
     """
     source = FRAGMENT.read_text()
     function_tail = source.split("install_systemd_units() {", 1)[1]
@@ -227,7 +225,7 @@ def test_both_profiles_refresh_only_active_sources_then_reapply_intent():
     assert "--stop-disabled" not in helper
 
 
-def test_streambox_arms_usb_combo_supervision_before_source_intent_reapply():
+def test_streambox_arms_usb_combo_owner_before_source_intent_reapply():
     """Streambox uses the same direct USB data plane as a full speaker."""
 
     body = _function_body(
@@ -236,11 +234,26 @@ def test_streambox_arms_usb_combo_supervision_before_source_intent_reapply():
     )
     baseline_idx = body.find("enable_usbgadget")
     coupling_idx = body.find("systemctl enable jasper-fanin-coupling-auto.service")
-    health_idx = body.find("systemctl enable --now jasper-fanin-combo-health.timer")
     reapply_idx = body.find("reapply_source_intent")
 
-    assert -1 not in (baseline_idx, coupling_idx, health_idx, reapply_idx)
-    assert baseline_idx < coupling_idx < health_idx < reapply_idx
+    assert -1 not in (baseline_idx, coupling_idx, reapply_idx)
+    assert baseline_idx < coupling_idx < reapply_idx
+
+
+def test_upgrade_retires_destructive_combo_health_watcher():
+    """A deploy removes the obsolete observer and its persisted override state."""
+
+    body = _function_body(
+        FRAGMENT.read_text(),
+        "install_local_audio_graph_unit_files",
+    )
+    assert "systemctl disable --now jasper-fanin-combo-health.timer" in body
+    assert "systemctl stop jasper-fanin-combo-health.service" in body
+    assert "systemctl reset-failed jasper-fanin-combo-health.service" in body
+    assert '"${SYSTEMD_DIR}/jasper-fanin-combo-health.timer"' in body
+    assert '"${SYSTEMD_DIR}/jasper-fanin-combo-health.service"' in body
+    assert "/var/lib/jasper/usb_combo_fallback.json" in body
+    assert "/var/lib/jasper/combo_health_tick.json" in body
 
 
 def test_midloop_failure_still_attempts_every_later_unit(tmp_path):

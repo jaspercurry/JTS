@@ -1079,6 +1079,136 @@ def test_aec_profile_restarts_reconciler(
     ]
 
 
+def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    statuses = iter([
+        {"usb_mic": {"enabled": False, "toggle_enabled": True}},
+        {"usb_mic": {"enabled": True, "state": "starting"}},
+    ])
+    writes: list[bool] = []
+    recomposes: list[bool] = []
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: next(statuses))
+    monkeypatch.setattr(srv_mod, "write_usb_mic_enabled", writes.append)
+    monkeypatch.setattr(
+        srv_mod,
+        "_schedule_usb_gadget_recompose",
+        lambda: recomposes.append(True),
+    )
+
+    status, body = _post(f"{base}/aec/usb-mic", {"enabled": True})
+
+    assert status == 200
+    assert body["usb_mic"] == {"enabled": True, "state": "starting"}
+    assert writes == [True]
+    assert recomposes == [True]
+
+
+def test_usb_mic_refuses_enable_when_status_gate_is_closed(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {
+            "usb_mic": {
+                "enabled": False,
+                "toggle_enabled": False,
+                "detail": "Turn on USB Audio Input in Sources first.",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_enabled",
+        lambda _enabled: pytest.fail("unavailable switch must not persist intent"),
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "_schedule_usb_gadget_recompose",
+        lambda: pytest.fail("unavailable switch must not recompose USB"),
+    )
+
+    status, body = _post(f"{base}/aec/usb-mic", {"enabled": True})
+
+    assert status == 409
+    assert body["error"] == "Turn on USB Audio Input in Sources first."
+
+
+def test_usb_mic_recompose_is_handed_to_durable_systemd_job(monkeypatch):
+    import jasper.control.server as srv_mod
+
+    commands = []
+    events = []
+
+    class Result:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    monkeypatch.setattr(
+        srv_mod.subprocess,
+        "run",
+        lambda command, **_kwargs: commands.append(command) or Result(),
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
+
+    srv_mod._schedule_usb_gadget_recompose()
+
+    assert commands == [[
+        "systemctl", "restart", "--no-block", "jasper-usbmic-apply.service",
+    ]]
+    assert events == [(
+        "usb_mic.recompose_scheduled",
+        {
+            "unit": "jasper-usbmic-apply.service",
+            "grace_ms": 350,
+        },
+    )]
+
+
+def test_usb_mic_recompose_schedule_failure_is_observable(monkeypatch):
+    import jasper.control.server as srv_mod
+
+    events = []
+
+    class Result:
+        returncode = 1
+        stderr = "access denied\n"
+        stdout = ""
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", lambda *_a, **_kw: Result())
+    monkeypatch.setattr(
+        srv_mod,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
+
+    srv_mod._schedule_usb_gadget_recompose()
+
+    assert events == [(
+        "usb_mic.recompose_failed",
+        {
+            "unit": "jasper-usbmic-apply.service",
+            "returncode": 1,
+            "detail": "access denied",
+            "level": srv_mod.logging.ERROR,
+        },
+    )]
+
+
 def test_aec_firmware_update_starts_when_required(
     monkeypatch, server_with_coordinator,
 ):
@@ -5065,9 +5195,16 @@ def test_grouping_set_stays_in_token_gated_routes():
         "/system/restart/voice",
         "/system/restart/audio",
         "/mic/mute",
+        "/aec/usb-mic",
         "/grouping/set",
         "/aec/firmware/update",
     })
+
+
+def test_usb_mic_export_stays_in_token_gated_routes():
+    """Live room-audio export is a privacy mutation, not a LAN-open control."""
+
+    assert "/aec/usb-mic" in _srv_mod._TOKEN_GATED_ROUTES
 
 
 def _enable_control_token(monkeypatch, tmp_path, token="t0ken-value"):

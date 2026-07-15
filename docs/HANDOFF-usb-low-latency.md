@@ -328,7 +328,7 @@ deltas and decide.
 > read that as the pre-P3 posture. **To revert:** set
 > `JASPER_FANIN_COUPLING_CHOICE=operator` to freeze the transport coupling (see
 > `.env.example`). USB direct/combo keys remain derived from canonical USB source
-> intent and runtime fallback, so household Off still disarms capture. The floor
+> intent and hardware/role availability, so household Off still disarms capture. The floor
 > default is now the validated **576** (`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`) so a
 > combo-armed default constructs.
 
@@ -1259,13 +1259,12 @@ truth for the checklist.
 - Fan-in STATUS (`/run/jasper-fanin/control.sock` `STATUS`, surfaced on `/state`):
   every input gains `"source":"lane"|"direct"`; the direct lane also gains
   `"direct":{"device","present","health","opens","retries","reopens","card_gen_reopens"}`.
-  `health` is the coarse capture classification for the runtime-fallback watcher —
+  `health` is the coarse capture classification for fan-in's local recovery —
   `"capturing"` (present + flowing), `"idle"` (no host / attached-but-silent /
   (re)opening — never a failure), or `"broken"` (the flowing→dead zombie signature)
-  — see **"Runtime fallback — combo → USB-unavailable on capture break"** in
-  [HANDOFF-usbsink.md](HANDOFF-usbsink.md), which owns the watcher that acts on
-  `health` + the `reopens`/`card_gen_reopens` churn to withdraw UAC2 first and
-  disarm direct capture when it breaks at runtime.
+  — see **"Runtime capture recovery — local and non-destructive"** in
+  [HANDOFF-usbsink.md](HANDOFF-usbsink.md). The `health` and reopen-counter fields
+  are observability only; they never withdraw UAC2 or disarm direct capture.
   The lane's frames/xruns ride the existing `frames_read`/`xrun_count`; its
   rate-lock rides the existing `resampler{}` block. `reopens` is the ZOMBIE-handle
   forced-reopen counter (C): a growing value means the flowing→dead zero-avail latch
@@ -2147,7 +2146,9 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-14 (the retired Rust bridge/state surface was removed;
+Last verified: 2026-07-15 (direct-health and reopen fields were rechecked as
+fan-in recovery observability only, with no health-driven USB lifecycle action;
+the retired Rust bridge/state surface was removed;
 USB-toggle trigger ownership rechecked against
 `jasper.source_intent`; `/sources/` now requests intent and the shared source
 coordinator kicks coupling only after a real USB transition. See

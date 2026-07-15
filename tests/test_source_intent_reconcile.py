@@ -1286,53 +1286,6 @@ def test_usb_off_or_park_keeps_direct_armed_if_uac2_cannot_be_withdrawn(
     assert ("start", source_intent._USB_COUPLING_UNIT) not in host.calls
 
 
-def test_usb_health_fallback_withdraws_uac2_before_direct_disarm():
-    """The health watcher delegates the host-visible phase to this owner.
-
-    UAC2 is recomposed away while the direct consumer is still present; the
-    coupling watcher may disarm that consumer only after this returns success.
-    The ordinary restart preserves the composite gadget/NCM owner.
-    """
-
-    host = _FakeHost(
-        enabled={"jasper-usbsink.service": True},
-        active={"jasper-usbsink.service": True},
-        usb_audio=True,
-        usb_direct=True,
-    )
-
-    ok, detail = source_intent.withdraw_usbsink_audio_for_fallback(ops=host.ops())
-
-    assert ok is True
-    assert detail == ""
-    assert host.usb_audio is False
-    assert host.usb_direct is True
-    assert host.enabled["jasper-usbsink.service"] is False
-    assert host.active["jasper-usbsink.service"] is False
-    assert host.calls == [
-        ("stop", "jasper-usbsink.service"),
-        ("disable", "jasper-usbsink.service"),
-        ("restart", "jasper-usbgadget.service"),
-    ]
-    assert ("stop", "jasper-usbgadget.service") not in host.calls
-
-
-def test_usb_health_fallback_recompose_failure_stops_gadget_fail_closed():
-    host = _FakeHost(
-        enabled={"jasper-usbsink.service": True},
-        active={"jasper-usbsink.service": True},
-        usb_audio=True,
-        usb_direct=True,
-        fail={("restart", "jasper-usbgadget.service")},
-    )
-
-    ok, detail = source_intent.withdraw_usbsink_audio_for_fallback(ops=host.ops())
-
-    assert ok is False
-    assert "injected failure" in detail
-    assert host.usb_audio is False
-    assert host.usb_direct is True
-    assert host.calls[-1] == ("stop", "jasper-usbgadget.service")
 
 
 def test_converged_usb_off_still_repairs_persisted_coupling_state(tmp_path):

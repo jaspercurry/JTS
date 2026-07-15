@@ -33,6 +33,7 @@ from ..audio_validation import (
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..atomic_io import locked_update_env_file
 from ..audio_input_view import build_microphone_settings_view
+from ..usb_mic import build_usb_mic_status
 from ..chip_aec_policy import (
     combine_mic_availability,
     gate_from_runtime_env,
@@ -695,6 +696,7 @@ def _aec_full_status() -> dict:
         "validation": _audio_validation_summary(**validation_filters),
         "firmware_update": _xvf_firmware_update_status(),
     }
+    payload["usb_mic"] = build_usb_mic_status(payload)
     payload["mic_settings"] = build_microphone_settings_view(payload)
     return payload
 

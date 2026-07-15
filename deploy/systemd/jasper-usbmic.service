@@ -1,0 +1,38 @@
+[Unit]
+Description=Export the JTS AEC-cleaned microphone to the connected USB host
+After=jasper-usbgadget.service jasper-aec-bridge.service sound.target
+PartOf=jasper-usbgadget.service jasper-aec-bridge.service
+
+[Service]
+Type=simple
+User=jasper-usbmic
+Group=jasper
+SupplementaryGroups=audio
+RuntimeDirectory=jasper-usbmic
+RuntimeDirectoryMode=0755
+ExecCondition=/opt/jasper/.venv/bin/jasper-usbmic --check-ready
+ExecStart=/opt/jasper/.venv/bin/jasper-usbmic
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=3
+Nice=-5
+# Optional and restartable: shed with accessory/control helpers before the
+# core voice/AEC path under whole-box memory pressure.
+OOMScoreAdjust=-300
+MemoryMax=48M
+TasksMax=32
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=jasper-usbgadget.service jasper-aec-bridge.service

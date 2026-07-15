@@ -641,8 +641,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
 
 5. Services and live actions
    - Create the \`jasper\` group and the non-root service users
-     (jasper-voice / jasper-mux / jasper-input / jasper-control /
-     jasper-web) the Tier-A daemons drop to, plus the Phase 4
+     (jasper-voice / jasper-mux / jasper-input / jasper-usbmic /
+     jasper-control / jasper-web) the Tier-A daemons drop to, plus the Phase 4
      secret-compartment groups.
    - Install /etc/polkit-1/rules.d/49-jasper-control.rules granting the
      non-root jasper-control its scoped systemctl (MANAGED_UNITS allowlist)
@@ -1665,6 +1665,13 @@ install_journald_persistent_storage() {
 
 reconcile_aec_state() {
     ensure_state_dir
+    # /wake owns the independent host-microphone preference. Seed it Off so a
+    # fresh install never exports room audio merely because USB Audio Input is
+    # enabled; the UI must record an explicit household choice first.
+    if [[ ! -f "${STATE_DIR}/usb_mic.env" ]]; then
+        printf 'JASPER_USB_MIC=disabled\n' > "${STATE_DIR}/usb_mic.env"
+        chmod 0644 "${STATE_DIR}/usb_mic.env"
+    fi
     # These keys live in aec_mode.env, all owned by the /wake/
     # input-profile / wake-detection cards:
     #   - JASPER_AUDIO_INPUT_PROFILE  canonical profile selection
@@ -1741,24 +1748,12 @@ resolve_fanin_coupling_default() {
     # An explicit operator choice
     # (JASPER_FANIN_COUPLING_CHOICE=operator in fanin.env) freezes only the
     # fan-in/Camilla coupling — a deliberate transport revert sticks across
-    # deploys. USB direct-capture still follows canonical source intent and its
-    # runtime-fallback marker. An already-resolved box remains a zero-churn confirm.
+    # deploys. USB direct-capture still follows canonical source intent. An
+    # already-resolved box remains a zero-churn confirm.
     # Mirrors reconcile_aec_state / reconcile_grouping_state: reconciler is the
     # single env writer; daemons read the resolved env. The reconciler CLI hydrates
     # its own env (load_env_files) so the camilla re-emit keeps the tuned chunksize.
     systemctl enable jasper-fanin-coupling-auto.service
-    # Runtime-fallback watcher (defect 2026-07-10): the periodic timer that disarms
-    # fan-in's USB direct lane and withdraws UAC2 when direct capture breaks at
-    # runtime (>= 2 consecutive broken ticks). USB then stays visibly unavailable
-    # until a boot/deploy/toggle retry; there is no deleted ALoop fallback. Enable
-    # + start (`--now`) the TIMER
-    # so the periodic tick goes live on THIS deploy instead of sitting inactive
-    # (ActiveState=inactive, NextElapse=infinity) until the next reboot — a bare
-    # `enable` only arms it for the next boot. The boot/deploy --auto pass above
-    # already clears-and-retries any stale fallback marker before it re-resolves
-    # the combo. Mirrors jasper-wifi-recover.timer / jasper-identity-reconcile.timer,
-    # which are likewise `enable --now`.
-    systemctl enable --now jasper-fanin-combo-health.timer
     /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || \
         echo "  WARN: fan-in coupling default resolution failed. Check logs with: journalctl -u jasper-fanin-coupling-auto -e"
 }

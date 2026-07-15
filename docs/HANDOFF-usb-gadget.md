@@ -4,7 +4,9 @@
 (`jts-usb-audio`) that carries two independent USB functions off the Pi's
 dwc2 controller: a hardware-conditional **management network** (`ncm.usb0`)
 and the wizard-toggled **USB audio input** source (`uac2.usb0`, owned
-operationally by [HANDOFF-usbsink.md](HANDOFF-usbsink.md)). This doc is the
+operationally by [HANDOFF-usbsink.md](HANDOFF-usbsink.md)). The same UAC2
+function can optionally advertise a mono **Mac microphone** direction controlled
+from `/wake/`. This doc is the
 single source of truth for gadget composition and the USB network; the
 audio-source design (volume model, fan-in wiring, low-latency route) stays
 in HANDOFF-usbsink.md and HANDOFF-usb-low-latency.md. Persisted USB Audio
@@ -49,6 +51,13 @@ path. Multiple speakers keep distinct hostnames (mDNS) and distinct MACs
    documented fallback, not the primary story.
 6. **Port role is hardware-resolved, never selected by source intent.** Toggling
    USB Audio Input cannot switch a controller between host and peripheral.
+7. **The Mac microphone is explicit, subordinate, and off by default.** Its
+   durable preference is `/var/lib/jasper/usb_mic.env`; it is eligible only
+   while USB Audio Input is authorized/composed and an echo-cancelled AEC bridge
+   profile is active. On uses UAC2 `p_chmask=1`, 48 kHz mono S16, microphone
+   terminal type, and descriptor revision `0x0210`; Off uses `p_chmask=0` and
+   revision `0x0200`. The distinct revision makes macOS discard the opposite
+   cached shape.
 
 ## USB data-role policy
 
@@ -107,7 +116,24 @@ jasper-usbnet-dhcp.service          (NEW — device-activated dnsmasq on usb0)
 
 jasper-usbsink.service              (derived USB-audio Type=oneshot/RemainAfterExit readiness marker; no resident process — fan-in DIRECT-captures audio)
   Requires=/PartOf=jasper-usbgadget.service   (repointed from the deleted init unit)
+
+jasper-usbmic.service               (optional Pi-to-host clean-mic relay)
+  After/PartOf=jasper-usbgadget + jasper-aec-bridge
+  ExecCondition: intent On + p_chmask=1 + bridge active
+  Consumes dedicated localhost UDP :9894; voice remains on :9876
 ```
+
+`jasper-usbmic` publishes `/run/jasper-usbmic/status.json` schema 2 with
+separate source-packet, sink-write, and host `hw_ptr` progress timestamps plus
+drop counts/rate. ALSA's gadget PCM reports `RUNNING` as soon as `aplay` opens,
+even when no Mac application is consuming it, so `RUNNING` is never treated as
+host use by itself. The Wake page says Streaming only after `hw_ptr` actually
+advances. A never-advanced or later-idle clock is normal Ready state; queue
+drops while that host clock is idle are expected drop-oldest behavior. Missing
+AEC packets, or sustained drops while the host clock is independently advancing,
+are degraded relay health and produce a stable `event=usb_mic.audio_health`
+transition plus a doctor warning. This distinction keeps idle Macs from raising
+false alarms while ensuring an alive-but-stuck writer cannot claim Streaming.
 
 `jasper-usbsink-init.service` — the old audio-only gadget-owner oneshot —
 is **deleted**. `jasper-usbgadget.service` is its replacement and does more:
@@ -127,6 +153,11 @@ Computed once per `jasper-usbgadget-up` run and logged as a structured
 | enabled | no / parked follower | `ncm.usb0` only |
 | disabled | yes | `uac2.usb0` only (legacy, audio-only shape) |
 | disabled | no | none — the unit's `ExecCondition` already skipped the whole unit |
+
+When `uac2.usb0` is present, `JASPER_USB_MIC=enabled` refines that single
+function to bidirectional audio; it never composes UAC2 by itself. With USB
+Audio Input off/parked/unready, the microphone preference remains saved but
+`p_chmask` stays `0` and `jasper-usbmic` stays inactive.
 
 The audio gate lives **inside** both `jasper-usbgadget-wanted` and
 `jasper-usbgadget-up`, not on the unit itself —
@@ -155,6 +186,29 @@ recomposes only when the observed UAC2 card disagrees with the target, so an
 unrelated toggle does not re-enumerate this gadget. The complete transition and
 verification contract is canonical in
 [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
+
+### Toggling the Mac microphone from `/wake/`
+
+`/wake/` writes only the independent `JASPER_USB_MIC=enabled|disabled` intent.
+The control daemon hands the change to `jasper-usbmic-apply.service`, whose
+350 ms grace is durable across a control-daemon exit and naturally debounces
+rapid changes. The apply job restarts `jasper-aec-bridge.service` plus
+`jasper-usbgadget.service`: the bridge adds or removes the dedicated `:9894`
+duplicate, the gadget changes `p_chmask` and `bcdDevice`, and systemd
+starts/stops the dependency-enabled `jasper-usbmic.service`. The grace lets a
+request arriving over USB NCM finish before descriptor re-enumeration briefly
+drops that link.
+
+The relay is bounded to two 20 ms periods and drops oldest audio if the host is
+not consuming, preventing an unbounded/stale backlog. It uses ALSA's blocking
+16→48 kHz conversion proven by the lab, with a 10 ms ALSA period that the Pi's
+four-period UAC2 ring realizes as a 40 ms hardware buffer. It publishes fresh
+status under `/run/jasper-usbmic/status.json`; “streaming” requires the gadget
+PCM hardware pointer and sink writer to advance, while an idle host stays
+“ready.” The `/wake/` switch is the sole end-user authority for this export:
+pausing the JTS voice assistant does not alter or silence an explicitly enabled
+Mac microphone. `/wake/`, `/aec`, logs, and the usbsink doctor group expose
+desired, advertised, relay, and streaming state.
 
 From this descriptor owner's perspective, an actual transition adds or removes
 `uac2.usb0` while leaving the network function wanted. A brief host-visible
@@ -358,28 +412,38 @@ confirm.
 | **Windows 11** | In-box `UsbNcm.sys` (Microsoft's open-sourced reference: `microsoft/NCM-Driver-for-Windows`). Correctly sends the NCM-spec zero-length-packet on transfer boundaries. | **Verified.** One real caveat: the driver is present but not always auto-bound by class/subclass alone — some devices need an explicit compatible-ID nudge or a manual "Update Driver → Network adapters → Microsoft → UsbNcm Host Device" in Device Manager. No canonical minimum build number found; treat "Windows 11, any current build" as the verified floor. |
 | **Windows 10** | Documented as **unsupported**. | **Verified, with nuance.** Microsoft's own Q&A material frames Windows 10's NCM host-driver ZLP handling as not spec-compliant, and community reports (TI E2E, BeagleBoard forum) show users hunting for third-party drivers. The failure mode is "binds incorrectly / ZLP handling broken" or "nothing binds," not literally "no driver file exists anywhere," but the practical guidance across the ecosystem is: don't rely on Windows 10 for NCM. |
 | **macOS** | Native NCM class driver since OS X El Capitan (10.11); solid/reliable framing from Big Sur (11.0) onward — no driver install needed. | **Likely, not primary-sourced.** All evidence is secondary (forums, vendor FAQ pages) — no Apple-authored document naming the driver (commonly referred to as `AppleUSBNCM`) was found. Treat "native since 10.11, solid by 11.0+" as likely true. |
-| **macOS + composite UAC2+NCM specifically** | Whether combining a UAC2 audio function and an NCM function on one composite descriptor has macOS-specific quirks. | **Unverified — no direct evidence found.** Searches turned up only generic USB-Ethernet-dongle complaints unrelated to composite gadgets, plus a suggestive-but-not-specific note that macOS is less forgiving of composite Linux gadgets generally (`g_multi.ko`). Do not assume a specific failure mode here; hardware checklist item #1 is the only way to close this. |
+| **macOS + composite UAC2+NCM specifically** | Whether combining a UAC2 audio function and an NCM function on one composite descriptor has macOS-specific quirks. | **Hardware-verified on the current Pi 5 + Mac Studio path (2026-07-15).** Production NCM and host-playback UAC2 enumerate together. A bounded lab descriptor also added a mono host-capture stream; macOS bound it as a one-channel input manufactured by `Jasper Tech Speaker` and recorded real mic audio while NCM remained composed. After a one-time USB-clock warmup, a 15.02 s capture had no CoreAudio overflow or silent 20 ms block. This proves the bounded lab path—not long-run product quality or a blanket macOS-version claim. |
 | **Linux** | NCM is a standard `usbnet`/`cdc_ncm` in-kernel driver, auto-binds by class/subclass. | Not separately re-verified in this pass (long-standing, uncontroversial upstream support); treated as a given. |
 
-### dwc2 endpoint capacity — unverified, needs hardware measurement
+### dwc2 endpoint capacity — positive bind/capture proof; stress pending
 
-Whether the BCM2712 (Pi 5) dwc2 controller has enough USB endpoints to
-carry a composite gadget with **both** UAC2 (isochronous IN capture +
-feedback) and NCM (bulk IN/OUT + interrupt IN) functions simultaneously is
-**not verified by any source found**. No document gives a hard endpoint
-count for BCM2712's dwc2 instance, nor an explicit statement that this
-specific combination fits or doesn't. What is corroborated only
-indirectly: the Pi 5's dwc2 is confirmed to be the sole USB
-peripheral-mode controller (no XHCI-peripheral alternative), so whatever
-budget exists is a singular constraint; and community reports describe
-*other* multi-function composite conflicts (e.g. RNDIS + UAC1, "only one
-will work," on some Pi setups), suggesting composite endpoint exhaustion
-is a known real-world failure class on dwc2 gadgets generally — but no
-source quantifies whether UAC2+NCM specifically fits. **Do not treat this
-as settled.** Hardware checklist item #1 covers the only reliable way to
-know: bind the composite gadget with both functions and check for
-`-ENODEV`/`-EBUSY` from libcomposite at UDC-bind time, or read
-`/sys/kernel/debug/usb/*/state` if available.
+The current BCM2712 (Pi 5) dwc2 controller has enough endpoints to **bind and
+transfer** the tested composite: NCM plus UAC2 host playback and a temporary
+UAC2 host-capture endpoint. A bounded prototype on 2026-07-15 bound that shape
+without `-ENODEV`/`-EBUSY`; macOS fetched its BCD 2.90 descriptor, kept the
+existing JTS output, published a one-channel Jasper input, and recorded real
+AEC-mic samples into a 48 kHz CoreAudio WAV. The first nonblocking prototype had
+continuity gaps. Its blocking successor used ALSA's resampler behind a bounded
+drop-oldest queue; after a one-time five-second host-clock warmup, a
+720,960-frame / 15.02 s recording reported zero CoreAudio overflows, zero
+digital-silent 20 ms blocks, and a 0.1 ms longest zero run. The Pi reported zero
+writer errors, then restored the then-current production descriptor (BCD 2.00 /
+`p_chmask=0`); gadget, USB Audio Input, fan-in, AEC, and voice were all active
+afterward. The superseded prototype scripts were removed when the shipped
+`jasper-usbmic` route became the single maintained implementation.
+
+This closes the basic endpoint-allocation unknown for this Pi 5. It does **not**
+yet certify simultaneous sustained Mac→Pi music + Pi→Mac mic + heavy NCM
+traffic: the proof transferred the return stream while the opposite UAC2
+direction was enumerated but idle. That bidirectional traffic/soak case and
+xrun/counter evidence remain hardware checklist items #1 and #3.
+
+Repeated development-time descriptor cycling is also not benign on the tested
+macOS 26 build: after many back-to-back production/lab swaps, CoreAudio once
+lost its entire device graph (including built-in devices), and restarting its
+daemon group did not recover it. Physical reconnect or a Mac restart remains
+the recovery for that observed wedge. Avoid rapid repeated descriptor cycling;
+use the product switch for ordinary operation.
 
 ## RAM contract
 
@@ -481,8 +545,9 @@ contrast case. See `tests/test_http_security.py`.
 
 ## Hardware-validation checklist
 
-Items 1-8 and 10 below have not been run against physical hardware as of this
-writing. The carrierless lifecycle subset of item 9 was verified on JTS3 on
+Item 1 now has a positive enumeration/return-capture proof but retains its
+simultaneous-traffic stress half. Items 2-8 and 10 otherwise remain open. The
+carrierless lifecycle subset of item 9 was verified on JTS3 on
 2026-07-15: `usb0` activated with `10.12.194.1` and DHCP active without a host
 cable, then automatically reconverged after a full gadget destroy/recreate.
 Each item names the specific claim above it verifies.
@@ -492,7 +557,14 @@ Each item names the specific claim above it verifies.
    and a UAC2 audio device appear, and that dwc2's endpoint capacity holds
    with both functions active simultaneously (isochronous + bulk +
    interrupt all in use at once). Confirms the "dwc2 endpoint capacity"
-   claim above and the macOS composite-quirk unknown.
+   claim above and the macOS composite-quirk unknown. **Partial pass
+   2026-07-15:** NCM had carried the original management session and remained
+   composed, production JTS output was present, and the lab-only return endpoint
+   recorded real AEC-mic audio into CoreAudio. The bounded blocking bridge's
+   post-warmup 15.02 s continuity run also passed (see the endpoint section
+   above). Still run a long-lived bridge with sustained
+   Mac→Pi playback and Pi→Mac capture together while exercising NCM before
+   calling the traffic-stress half complete.
 2. **`jts.local` resolution + fallback + no-hijack.** With the Pi's Wi-Fi
    off, confirm `jts.local` resolves from the plugged-in host over usb0,
    `http://10.12.194.1/` works as a fallback, DHCP hands out a lease, and
@@ -586,6 +658,13 @@ Each item names the specific claim above it verifies.
 Last verified: 2026-07-15 (JTS4 active-host Apple-DAC recovery and strict
 deploy health verified; hardware-aware USB data-role matrix, pending-role RAM
 contract, and conditional NCM availability rechecked;
+the `/wake/` USB-microphone intent, `p_chmask`/BCD descriptor split, dedicated
+`:9894` relay, dependency lifecycle, assistant-pause independence, and
+status/doctor surfaces
+were rechecked against the implementation and focused tests;
+Pi 5 + Mac Studio composite enumeration and lab-only UAC2 return capture were
+hardware-verified, closing basic dwc2 endpoint allocation while leaving
+simultaneous bidirectional-audio/NCM stress open;
 `jasper-usbsink.service` rechecked as the process-free readiness marker; USB
 audio composition requires canonical
 source-aware authorization, derived lifecycle readiness, and a live fan-in

@@ -6,7 +6,7 @@
 
 Pins the campaign brief's contracts + the review remediation:
   - marker semantics (operator coupling choice survives the auto pass, while USB
-    combo permission still follows canonical source intent/runtime fallback);
+    combo permission still follows canonical source intent);
   - eligibility no-ops across the validated box shapes
     (jts.local eligible; jts3 roleful; jts5 composite; jts4 streambox loopback);
   - the USB combo arms ONLY on a gadget box that ALSO has canonical USB intent
@@ -279,6 +279,20 @@ def test_combo_is_armed_requires_both_signals():
     assert ca.combo_is_armed(gadget_present=False, usb_intent_enabled=False) is False
 
 
+def test_usb_combo_authority_has_no_runtime_health_override():
+    """Only gadget availability plus canonical intent can resolve composition."""
+
+    decision = ca.resolve_auto_decision(
+        marker_raw=None,
+        gadget_present=True,
+        usb_intent_enabled=True,
+        ring_gates=(),
+    )
+
+    assert decision.combo_armed is True
+    assert not hasattr(decision, "fallback_active")
+
+
 def test_usb_combo_actions_enabled_when_armed():
     acts = ca.usb_combo_actions(armed=True)
     assert all(a.action == "set" and a.value == "enabled" for a in acts)
@@ -356,7 +370,6 @@ def _auto(
     fanin_ok=True,
     camilla_stop_ok=True,
     camilla_start_ok=True,
-    fallback_active=False,
 ):
     """Run reconcile_auto with recorded daemon ops.
 
@@ -394,7 +407,6 @@ def _auto(
         outputd_env_path=outputd,
         gadget_present=gadget,
         usb_intent_enabled=usb_intent,
-        fallback_active=fallback_active,
         restart_fanin=rf,
         restart_outputd=ro,
         stop_camilla=rsc,
@@ -402,7 +414,6 @@ def _auto(
         reconcile_camilla=rc,
         active_leader_check=lambda: leader,
     )
-
 
 def test_auto_operator_marker_preserves_coupling_and_converges_usb_combo(
     tmp_path, monkeypatch,
@@ -436,11 +447,10 @@ def test_auto_operator_marker_preserves_coupling_and_converges_usb_combo(
 
 @pytest.mark.parametrize("coupling", [COUPLING_LOOPBACK, COUPLING_SHM_RING])
 @pytest.mark.parametrize(
-    "initial_value,usb_intent,fallback_active,expected_value",
+    "initial_value,usb_intent,expected_value",
     [
-        ("enabled", False, False, "disabled"),
-        ("disabled", True, False, "enabled"),
-        ("enabled", True, True, "disabled"),
+        ("enabled", False, "disabled"),
+        ("disabled", True, "enabled"),
     ],
 )
 def test_operator_frozen_coupling_still_converges_usb_authorization(
@@ -449,7 +459,6 @@ def test_operator_frozen_coupling_still_converges_usb_authorization(
     coupling,
     initial_value,
     usb_intent,
-    fallback_active,
     expected_value,
 ):
     fanin = tmp_path / "fanin.env"
@@ -470,7 +479,6 @@ def test_operator_frozen_coupling_still_converges_usb_authorization(
         outputd,
         gadget=True,
         usb_intent=usb_intent,
-        fallback_active=fallback_active,
         restarts=restarts,
     )
 
@@ -481,8 +489,6 @@ def test_operator_frozen_coupling_still_converges_usb_authorization(
     assert read_value(fanin.read_text(), ca.USB_DIRECT_ENV_VAR) == expected_value
     assert "fanin" in restarts
     assert not any(item.startswith("camilla:") for item in restarts)
-    if fallback_active:
-        assert result.fallback_active is True
 
 
 def test_auto_eligible_gadget_box_with_intent_arms_ring_and_combo(
@@ -577,7 +583,6 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
         env_path=fanin,
         outputd_env_path=outputd,
         gadget_present=True,
-        fallback_active=False,
         restart_fanin=lambda: (restarts.append("fanin"), (True, ""))[1],
         restart_outputd=lambda: (restarts.append("outputd"), (True, ""))[1],
         reconcile_camilla=lambda _coupling: (True, "reconciled"),
@@ -763,45 +768,6 @@ def test_auto_combo_change_on_ring_pauses_camilla_around_fanin_restart(
     # combo's, and it is wrapped: camilla stopped BEFORE, started AFTER.
     assert restarts.count("fanin") == 1
     assert "camilla_stop" in restarts and "camilla_start" in restarts
-    assert restarts.index("camilla_stop") < restarts.index("fanin")
-    assert restarts.index("fanin") < restarts.index("camilla_start")
-
-
-def test_auto_fallback_disarm_on_live_ring_pauses_camilla(tmp_path, monkeypatch):
-    """The realistic runtime-fallback disarm path: an ALREADY-armed shm_ring box
-    (coupling stays shm_ring, only the combo turns off) hits the confirm path, so the
-    combo-off fan-in restart is the one that must be camilla-coordinated. (The
-    fallback watcher delegates to reconcile_auto with fallback_active=True.)"""
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    # Live ring + combo currently armed; standby already 1.
-    fanin.write_text(
-        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
-        f"{ca.USB_DIRECT_ENV_VAR}=enabled\n{ca.HOST_CLOCK_ENV_VAR}=enabled\n"
-        f"{ca.CUSHION_DECAY_ENV_VAR}=enabled\n"
-    )
-    outputd.write_text(_armed_shm_ring_outputd())
-    _stub_ring_gates(monkeypatch, eligible=True)
-    restarts: list[str] = []
-    r = cr.reconcile_auto(
-        reason="health",
-        env_path=fanin,
-        outputd_env_path=outputd,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        fallback_active=True,  # marker forces combo off, coupling stays shm_ring
-        restart_fanin=lambda: (restarts.append("fanin"), (True, ""))[1],
-        restart_outputd=lambda: (restarts.append("outputd"), (True, ""))[1],
-        stop_camilla=lambda: (restarts.append("camilla_stop"), (True, ""))[1],
-        start_camilla=lambda: (restarts.append("camilla_start"), (True, ""))[1],
-        reconcile_camilla=lambda coupling: (True, "reconciled"),
-        active_leader_check=lambda: False,
-    )
-    assert r.combo_armed is False
-    assert r.usb_combo_changed is True
-    assert r.coupling == COUPLING_SHM_RING
-    # fan-in restarts to release the gadget, camilla-coordinated (stop -> fan-in -> start).
-    assert restarts.count("fanin") == 1
     assert restarts.index("camilla_stop") < restarts.index("fanin")
     assert restarts.index("fanin") < restarts.index("camilla_start")
 
@@ -1130,78 +1096,3 @@ def test_fresh_install_cushion_decay_floor_default_is_576():
         "config.rs DEFAULT_CUSHION_DECAY_FLOOR_FRAMES must stay 576 — the "
         "hardware-validated floor the measurement doc §2 table ships"
     )
-
-
-# ---- runtime-fallback flap guard (defect 2026-07-10) -----------------------
-
-
-def _ring_gates_ok():
-    return (("ring_assets", lambda: (True, "a")), ("ring_topology", lambda: (True, "t")))
-
-
-def test_resolve_fallback_active_forces_combo_off_when_eligible():
-    """A combo-eligible box (gadget + USB intent) whose live capture broke carries
-    the fallback marker -> combo forced OFF (fan-in keys explicit disabled),
-    fallback_active reported, but the ring coupling is UNAFFECTED."""
-    d = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        ring_gates=_ring_gates_ok(),
-        fallback_active=True,
-    )
-    assert d.combo_armed is False
-    assert d.fallback_active is True
-    assert d.coupling == COUPLING_SHM_RING  # ring decision untouched by the fallback
-    # fan-in keys are written to explicit-off.
-    for a in d.usb_combo_actions:
-        assert a.value == ca.USB_COMBO_DISABLED_VALUE
-
-
-def test_resolve_fallback_on_ineligible_box_is_not_reported():
-    """fallback_active is only meaningful when the box WOULD otherwise arm; on an
-    ineligible box (USB intent off) it is not reported as a fallback."""
-    d = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=True,
-        usb_intent_enabled=False,  # not eligible
-        ring_gates=_ring_gates_ok(),
-        fallback_active=True,
-    )
-    assert d.combo_armed is False
-    assert d.fallback_active is False
-
-
-def test_reconcile_auto_fallback_marker_disarms_a_combo_box(tmp_path, monkeypatch):
-    """End-to-end: an eligible gadget box (would arm) with fallback_active=True
-    resolves the combo OFF (fan-in keys disabled), leaving USB audio unavailable.
-    fan-in restarts to release the gadget."""
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    # Pre-arm the combo so the disarm is an actual change.
-    fanin.write_text(
-        f"{ca.USB_DIRECT_ENV_VAR}=enabled\n{ca.HOST_CLOCK_ENV_VAR}=enabled\n"
-        f"{ca.CUSHION_DECAY_ENV_VAR}=enabled\n"
-    )
-    outputd.write_text("")
-    _stub_ring_gates(monkeypatch, eligible=True)
-    restarts: list[str] = []
-    r = cr.reconcile_auto(
-        reason="health",
-        env_path=fanin,
-        outputd_env_path=outputd,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        fallback_active=True,  # the marker forces combo off
-        restart_fanin=lambda: (restarts.append("fanin"), (True, ""))[1],
-        restart_outputd=lambda: (restarts.append("outputd"), (True, ""))[1],
-        reconcile_camilla=lambda coupling: (True, "reconciled"),
-        active_leader_check=lambda: False,
-    )
-    assert r.combo_armed is False
-    assert r.fallback_active is True
-    assert r.usb_combo_changed is True
-    # fan-in keys are forced to explicit-off.
-    assert read_value(fanin.read_text(), ca.USB_DIRECT_ENV_VAR) == "disabled"
-    # fan-in restarts to release the gadget; no second audio owner is involved.
-    assert "fanin" in restarts

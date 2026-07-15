@@ -992,6 +992,37 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     ]
 
 
+def test_usb_host_mic_packetizes_each_20ms_frame_without_changing_voice():
+    frame = bytes(FRAME_SAMPLES * 2)
+    voice_sock = MagicMock()
+    usb_sock = MagicMock()
+    voice = aec_bridge.LegEmitter(
+        voice_sock,
+        (OUT_HOST, OUT_PORT),
+        bytearray(),
+        "on",
+    )
+    usb = aec_bridge.LegEmitter(
+        usb_sock,
+        (OUT_HOST, 9894),
+        bytearray(),
+        "usb_host_mic",
+        frame_samples=FRAME_SAMPLES,
+    )
+
+    for _ in range(3):
+        voice.emit(frame)
+        usb.emit(frame)
+
+    voice_sock.sendto.assert_not_called()
+    assert usb_sock.sendto.call_count == 3
+    voice.emit(frame)
+    voice_sock.sendto.assert_called_once_with(
+        bytes(OUT_FRAME_BYTES),
+        (OUT_HOST, OUT_PORT),
+    )
+
+
 def test_dtln_runtime_failure_degrades_once_and_primary_aec_continues(
     monkeypatch, caplog, tmp_path,
 ):
