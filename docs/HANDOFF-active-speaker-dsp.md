@@ -745,9 +745,13 @@
 > three admitted fixed-axis captures per physical driver, one semantic durable
 > attempt per driver, globally unique capture/admission/artifact identities,
 > and one canonical run-scoped complete artifact whose store reopens every
-> child byte and both admission decisions. Historical and current fail-soft
-> driver records cannot satisfy or be migrated into this contract; the trusted
-> production population is still Wave 4 work.
+> child byte and both admission decisions. The production fixed-axis driver
+> relay now populates this authority from its real recorder WAVs and exact live
+> admission handoffs; resumable accepted/required progress and the complete
+> fingerprint are projected from `/crossover/status`. Fixed-axis attempt four
+> refuses below three accepted captures, and status repairs only write-once
+> derived anchors after the typed captures are already durable. Historical and current
+> fail-soft driver records cannot satisfy or be migrated into this contract.
 > The positive receipt now likewise requires a unique one-shot generation and
 > playback pair for each of its three post-apply captures, with raw,
 > analysis-input, quality, generation, and playback identities and paths unique
@@ -758,8 +762,7 @@
 > repeatability, plateau, and tie policy. A store-backed pure deterministic
 > evaluator now consumes exact complete isolated and summed evidence and
 > derives an attenuation/polarity/delay-only electrical candidate. The
-> production host does not invoke it and the product does not yet populate the
-> required isolated evidence; candidate persistence, `candidate_ready`, graph
+> production host does not invoke it; candidate persistence, `candidate_ready`, graph
 > mutation/apply, verification/receipt, Room consumption, and hardware capture
 > composition remain unavailable.
 
@@ -2148,7 +2151,8 @@ strict group-by-region
 normal/reverse/delay evidence values with typed run/attempt and geometry
 authority, the bounded low-frequency coarse-plus-refinement schedule,
 schedule-aware final evaluator,
-complete-plan replay guards, the store-backed pure deterministic electrical
+complete-plan replay guards, production fixed-axis relay population of the
+strict three-repeat-per-driver aggregate, the store-backed pure deterministic electrical
 candidate evaluator, receipt schema-v2 one-shot roles, and the
 durable bundle-backed commissioning-run store/start/status boundary and service owner-
 generation claim; no production candidate persistence/readiness/apply or live

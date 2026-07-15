@@ -62,6 +62,7 @@ from .commissioning_evidence import (
     CompleteCommissioningEvidence,
     DelayPointEvidence,
     DelayWalkEvidence,
+    IsolatedDriverEvidence,
     RegionCommissioningEvidence,
     RegionEvidencePlan,
     StationaryRegionEvidence,
@@ -281,6 +282,16 @@ def attempt_capture_relative_path(attempt_id: str, ordinal: int) -> str:
     return f"{EVIDENCE_ROOT}/attempts/{attempt}/captures/{ordinal:04d}.json"
 
 
+def isolated_attempt_capture_relative_path(attempt_id: str, ordinal: int) -> str:
+    if type(ordinal) is not int or not 0 <= ordinal <= 9999:
+        raise CommissioningEvidenceStoreError(
+            CommissioningEvidenceStoreErrorCode.INVALID_PATH,
+            "capture ordinal must be an integer from 0 through 9999",
+        )
+    attempt = _component_key(attempt_id, field_name="attempt_id")
+    return f"{EVIDENCE_ROOT}/isolated-attempts/{attempt}/captures/{ordinal:04d}.json"
+
+
 def stationary_relative_path(attempt_id: str) -> str:
     attempt = _component_key(attempt_id, field_name="attempt_id")
     return f"{EVIDENCE_ROOT}/attempts/{attempt}/stationary.json"
@@ -336,6 +347,19 @@ def complete_relative_path(run_id: str) -> str:
 
 def isolated_driver_evidence_relative_path(run_id: str) -> str:
     return f"{_run_root(run_id)}/isolated-driver-evidence.json"
+
+
+def isolated_driver_relative_path(
+    run: CommissioningRunHandle,
+    speaker_group_id: str,
+    role: str,
+) -> str:
+    group = _component_key(speaker_group_id, field_name="speaker_group_id")
+    driver_role = _component_key(role, field_name="role")
+    return (
+        f"{_generation_root(run)}/drivers/{group}/{driver_role}/"
+        "isolated-driver-evidence.json"
+    )
 
 
 def _max_bytes_for_path(relative_path: str) -> int:
@@ -956,7 +980,13 @@ class CommissioningEvidenceStore:
         self,
         attempt_id: str,
     ) -> tuple[AdmittedRegionCapture, ...]:
-        first = Path(attempt_capture_relative_path(attempt_id, 0))
+        ordinals = self._attempt_capture_ordinals(
+            attempt_capture_relative_path(attempt_id, 0)
+        )
+        return tuple(self.reopen_attempt_capture(attempt_id, item) for item in ordinals)
+
+    def _attempt_capture_ordinals(self, first_relative_path: str) -> tuple[int, ...]:
+        first = Path(first_relative_path)
         directory = self._target(first.parent.as_posix())
         try:
             metadata = directory.lstat()
@@ -1002,7 +1032,169 @@ class CommissioningEvidenceStore:
                 CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
                 "attempt capture ordinals must be contiguous from zero",
             )
-        return tuple(self.reopen_attempt_capture(attempt_id, item) for item in ordinals)
+        return tuple(ordinals)
+
+    def publish_admitted_isolated_driver_capture(
+        self,
+        capture: AdmittedIsolatedDriverCapture,
+        *,
+        ordinal: int,
+    ) -> ArtifactIdentity:
+        """Publish one resumable strict isolated capture for its attempt."""
+
+        self._assert_session(capture)
+        return self._publish_typed(
+            isolated_attempt_capture_relative_path(
+                capture.attempt.attempt_id,
+                ordinal,
+            ),
+            capture,
+            AdmittedIsolatedDriverCapture.from_mapping,
+            verify=self._verify_isolated_capture,
+        )
+
+    def reopen_admitted_isolated_driver_capture(
+        self,
+        artifact: ArtifactIdentity,
+    ) -> AdmittedIsolatedDriverCapture:
+        result = self._reopen_typed(
+            artifact,
+            AdmittedIsolatedDriverCapture.from_mapping,
+        )
+        self._assert_session(result)
+        attempt_id = result.attempt.attempt_id
+        prefix = (
+            f"{EVIDENCE_ROOT}/isolated-attempts/"
+            f"{_component_key(attempt_id, field_name='attempt_id')}/captures/"
+        )
+        suffix = artifact.relative_path.removeprefix(prefix)
+        match = _ATTEMPT_CAPTURE_NAME_RE.fullmatch(suffix)
+        if not artifact.relative_path.startswith(prefix) or match is None:
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
+                "isolated capture does not occupy its exact attempt namespace",
+            )
+        _require_identity_path(
+            artifact,
+            isolated_attempt_capture_relative_path(
+                attempt_id,
+                int(match.group(1)),
+            ),
+        )
+        self._verify_isolated_capture(result, _ReadBudget())
+        return result
+
+    def reopen_isolated_attempt_capture(
+        self,
+        attempt_id: str,
+        ordinal: int,
+    ) -> AdmittedIsolatedDriverCapture:
+        relative = isolated_attempt_capture_relative_path(attempt_id, ordinal)
+        result = self.reopen_admitted_isolated_driver_capture(
+            self._identity_for_path(relative)
+        )
+        if result.attempt.attempt_id != attempt_id:
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
+                "isolated attempt path does not match its typed attempt",
+            )
+        return result
+
+    def reopen_isolated_attempt_captures(
+        self,
+        attempt_id: str,
+    ) -> tuple[AdmittedIsolatedDriverCapture, ...]:
+        ordinals = self._attempt_capture_ordinals(
+            isolated_attempt_capture_relative_path(attempt_id, 0)
+        )
+        return tuple(
+            self.reopen_isolated_attempt_capture(attempt_id, item) for item in ordinals
+        )
+
+    def isolated_attempt_capture_count(self, attempt_id: str) -> int:
+        """Count contiguous write-once capture records without reading WAVs."""
+
+        return len(
+            self._attempt_capture_ordinals(
+                isolated_attempt_capture_relative_path(attempt_id, 0)
+            )
+        )
+
+    def publish_isolated_driver_evidence(
+        self,
+        evidence: IsolatedDriverEvidence,
+    ) -> ArtifactIdentity:
+        """Publish one completed physical-driver set for resumable assembly."""
+
+        self._assert_session(evidence)
+        return self._publish_typed(
+            isolated_driver_relative_path(
+                evidence.authority.run,
+                evidence.speaker_group_id,
+                evidence.role,
+            ),
+            evidence,
+            IsolatedDriverEvidence.from_mapping,
+            verify=self._verify_isolated_driver_evidence,
+        )
+
+    def reopen_isolated_driver_evidence(
+        self,
+        *,
+        run: CommissioningRunHandle,
+        speaker_group_id: str,
+        role: str,
+        artifact: ArtifactIdentity | None = None,
+    ) -> IsolatedDriverEvidence:
+        expected_path = isolated_driver_relative_path(
+            run,
+            speaker_group_id,
+            role,
+        )
+        identity = artifact or self._identity_for_path(expected_path)
+        _require_identity_path(identity, expected_path)
+        result = self._reopen_typed(identity, IsolatedDriverEvidence.from_mapping)
+        self._assert_session(result)
+        if (
+            result.authority.run != run
+            or result.speaker_group_id != speaker_group_id
+            or result.role != role
+        ):
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
+                "isolated driver evidence path does not match its typed target",
+            )
+        self._verify_isolated_driver_evidence(result, _ReadBudget())
+        return result
+
+    def isolated_driver_evidence_is_published(
+        self,
+        *,
+        run: CommissioningRunHandle,
+        speaker_group_id: str,
+        role: str,
+    ) -> bool:
+        """Validate the small status anchor without rereading child WAVs."""
+
+        expected_path = isolated_driver_relative_path(
+            run,
+            speaker_group_id,
+            role,
+        )
+        identity = self._identity_for_path(expected_path)
+        _require_identity_path(identity, expected_path)
+        result = self._reopen_typed(identity, IsolatedDriverEvidence.from_mapping)
+        self._assert_session(result)
+        if (
+            result.authority.run != run
+            or result.speaker_group_id != speaker_group_id
+            or result.role != role
+        ):
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
+                "isolated driver status anchor does not match its typed target",
+            )
+        return True
 
     def publish_stationary_region_evidence(
         self,
@@ -1236,6 +1428,28 @@ class CommissioningEvidenceStore:
         self._verify_complete_isolated_driver_evidence(result, _ReadBudget())
         return result
 
+    def complete_isolated_driver_evidence_fingerprint(
+        self,
+        *,
+        run_id: str,
+    ) -> str:
+        """Read the typed status anchor without rereading every child WAV."""
+
+        expected_path = isolated_driver_evidence_relative_path(run_id)
+        identity = self._identity_for_path(expected_path)
+        _require_identity_path(identity, expected_path)
+        result = self._reopen_typed(
+            identity,
+            CompleteIsolatedDriverEvidence.from_mapping,
+        )
+        self._assert_session(result)
+        if result.plan.authority.run.run_id != run_id:
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
+                "isolated status anchor does not match its exact durable run",
+            )
+        return result.fingerprint
+
     def _verify_capture(
         self,
         capture: AdmittedRegionCapture,
@@ -1372,13 +1586,20 @@ class CommissioningEvidenceStore:
         budget: _ReadBudget,
     ) -> None:
         for driver in evidence.drivers:
-            _require_evidence_artifact(
-                driver.repeatability_artifact,
-                role="isolated repeatability evidence",
-            )
-            self._read_identity(driver.repeatability_artifact, budget=budget)
-            for capture in driver.captures:
-                self._verify_isolated_capture(capture, budget)
+            self._verify_isolated_driver_evidence(driver, budget)
+
+    def _verify_isolated_driver_evidence(
+        self,
+        evidence: IsolatedDriverEvidence,
+        budget: _ReadBudget,
+    ) -> None:
+        _require_evidence_artifact(
+            evidence.repeatability_artifact,
+            role="isolated repeatability evidence",
+        )
+        self._read_identity(evidence.repeatability_artifact, budget=budget)
+        for capture in evidence.captures:
+            self._verify_isolated_capture(capture, budget)
 
     def verify_complete(
         self,

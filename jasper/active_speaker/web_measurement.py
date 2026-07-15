@@ -21,7 +21,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.log_event import log_event
@@ -855,7 +855,7 @@ def finalize_driver_repeats_after_terminal_failure(
     failure_type: str,
     repeat_store: Any,
 ) -> dict[str, Any] | None:
-    """Finalize two accepted repeats when attempt four dies in transport."""
+    """Finalize two legacy near-field repeats when attempt four dies."""
 
     from jasper.active_speaker import repeat_admission
     from jasper.active_speaker.commissioning_capture import (
@@ -864,6 +864,12 @@ def finalize_driver_repeats_after_terminal_failure(
     )
 
     if int(reservation.get("attempt") or 0) < repeat_admission.MAX_ATTEMPTS:
+        return None
+    if capture_geometry == "reference_axis":
+        # Fixed-axis admitted captures feed strict commissioning authority,
+        # whose load-bearing contract is three fresh accepted repetitions.
+        # The caller will terminally refuse this fourth attempt rather than
+        # publishing a legacy completion that strict status cannot promote.
         return None
     from jasper.active_speaker.capture_geometry import driver_repeat_binding
 
@@ -919,6 +925,34 @@ def finalize_driver_repeats_after_terminal_failure(
     )
 
 
+def _record_authoritative_driver_capture(
+    *,
+    recorder: Callable[..., Mapping[str, Any]] | None,
+    capture_geometry: str,
+    accepted: bool,
+    admission_handoff: Mapping[str, Any] | None,
+    inputs: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Invoke strict promotion only for fresh accepted fixed-axis evidence."""
+
+    if (
+        recorder is None
+        or capture_geometry != "reference_axis"
+        or accepted is not True
+    ):
+        return None
+    if admission_handoff is None:
+        raise ValueError(
+            "fixed-axis commissioning capture lacks admitted playback proof"
+        )
+    return dict(
+        recorder(
+            **dict(inputs),
+            admission_handoff=admission_handoff,
+        )
+    )
+
+
 def record_driver_capture(
     raw: Mapping[str, Any],
     wav_bytes: bytes | None = None,
@@ -927,6 +961,7 @@ def record_driver_capture(
     admission_handoff: Mapping[str, Any] | None = None,
     preset: Any = None,
     repeat_store: Any = None,
+    authoritative_recorder: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Analyze one browser WAV and record per-driver acoustic evidence.
 
@@ -1155,6 +1190,7 @@ def record_driver_capture(
             capture_geometry=str(analysis_kwargs["capture_geometry"]),
             ambient_duration_s=analysis_kwargs.get("ambient_duration_s"),
         )
+        authoritative_evidence: dict[str, Any] | None = None
         artifact_path = None
         if bundle_dir is not None:
             from jasper.active_speaker import bundles as active_speaker_bundles
@@ -1256,6 +1292,59 @@ def record_driver_capture(
             "above_validity_floor": latest_attempt.get("above_validity_floor"),
             "validity_floor_hz": gating_block.get("f_valid_floor_hz"),
         }
+        strict_isolated_required = bool(
+            authoritative_recorder is not None
+            and capture_geometry == "reference_axis"
+        )
+        if strict_isolated_required and latest_attempt.get("accepted") is True:
+            try:
+                authoritative_evidence = _record_authoritative_driver_capture(
+                    recorder=authoritative_recorder,
+                    capture_geometry=capture_geometry,
+                    accepted=True,
+                    admission_handoff=validated_admission,
+                    inputs={
+                        "topology": topology,
+                        "preset": preset,
+                        "comparison_set": comparison_set,
+                        "calibration_id": calibration_id,
+                        "calibration": calibration_curve,
+                        "speaker_group_id": group_id,
+                        "role": role,
+                        "capture_geometry": capture_geometry,
+                        "wav_bytes": (
+                            wav_bytes
+                            if wav_bytes is not None
+                            else wav_path.read_bytes()
+                        ),
+                        "sweep_meta": sweep_meta,
+                        "provisional": provisional,
+                    },
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                repeat_admission.finish(
+                    comparison_set,
+                    target_id=repeat_target_id,
+                    target_fingerprint=repeat_target_fingerprint,
+                    token=reservation_token,
+                    result={
+                        **admission_result,
+                        "accepted": False,
+                        "reject_reason": "authoritative_promotion_failed",
+                    },
+                    status="refused",
+                )
+                repeat_store.clear_driver_repeats(key)
+                repeat_store.record_repeat_failure(
+                    repeat_target_id,
+                    {
+                        "reason": "authoritative_promotion_failed",
+                        "attempts": reservation_attempt,
+                        "accepted": aggregate["accepted"],
+                        "target": DEFAULT_REPEAT_TARGET,
+                    },
+                )
+                raise
 
         attempt_budget_exhausted = (
             reservation_attempt >= repeat_admission.MAX_ATTEMPTS
@@ -1287,12 +1376,19 @@ def record_driver_capture(
                         else None
                     ),
                 },
+                "authoritative_evidence": authoritative_evidence,
             }
-        if aggregate["accepted"] < 2 or not isinstance(
+        minimum_accepted = DEFAULT_REPEAT_TARGET if strict_isolated_required else 2
+        if aggregate["accepted"] < minimum_accepted or not isinstance(
             aggregate.get("aggregate_repeat"), Mapping
         ):
+            failure_reason = (
+                "strict_isolated_repeats_incomplete"
+                if strict_isolated_required
+                else "insufficient_accepted_repeats"
+            )
             failure = {
-                "reason": "insufficient_accepted_repeats",
+                "reason": failure_reason,
                 "attempts": reservation_attempt,
                 "accepted": aggregate["accepted"],
                 "target": DEFAULT_REPEAT_TARGET,
@@ -1309,15 +1405,16 @@ def record_driver_capture(
                 status="refused",
             )
             persist_repeat_progress(
-                "refused", reason="insufficient_accepted_repeats"
+                "refused", reason=failure_reason
             )
             return {
                 "recorded": False,
                 "status": "refused",
                 "verdict": "insufficient_repeats",
                 "repeat_failure": failure,
+                "authoritative_evidence": authoritative_evidence,
             }
-        return _finalize_driver_repeat_set(
+        result = _finalize_driver_repeat_set(
             topology=topology,
             comparison_set=comparison_set,
             speaker_group_id=group_id,
@@ -1330,6 +1427,8 @@ def record_driver_capture(
             repeats=repeats,
             repeat_store=repeat_store,
         )
+        result["authoritative_evidence"] = authoritative_evidence
+        return result
     payload["measurement_mode"] = measurement_mode
     payload["calibration_id"] = calibration_id
     if bundle_dir is not None:

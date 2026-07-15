@@ -41,9 +41,15 @@
   restores a pending predecessor before new work or leaves the run durably
   `blocked_live_state_unknown`. The same exact run plan now has a strict
   run-scoped isolated-driver aggregate requiring three fresh admitted captures
-  per physical driver and deep child/admission verification. Current fail-soft
-  driver records are not migrated into it; its trusted population remains Wave
-  4 work. This is a software-only change; no sound or
+  per physical driver and deep child/admission verification. The current
+  production fixed-axis relay now populates that authority from its real WAV,
+  calibration, live graph, and one-shot generation/playback admissions. Each
+  physical driver keeps one resumable durable attempt; `/crossover/status`
+  projects accepted/required progress and the final aggregate fingerprint,
+  refuses a thin fixed-axis terminal set, and idempotently finishes derived
+  anchors after an interrupted typed-capture publication.
+  Current fail-soft driver records are not migrated into it. This is a
+  software-only change; no sound or
   hardware was exercised.
 - 🧱 **Wave 3 Active run authority is durable and visible; internal measured
   progression is hardware-free.** When crossover level finalization publishes a
