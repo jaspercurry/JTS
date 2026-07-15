@@ -316,7 +316,7 @@ def _route_live_state_for_current_route() -> _RouteLiveState:
                 direct = lane_status.get("direct")
                 if isinstance(direct, Mapping):
                     raw_buffer = direct.get("buffer_frames")
-                    if not isinstance(raw_buffer, bool):
+                    if raw_buffer is not None and not isinstance(raw_buffer, bool):
                         try:
                             parsed_buffer = int(raw_buffer)
                         except (TypeError, ValueError):

@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 import urllib.parse
+from collections.abc import Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -288,7 +289,7 @@ def _apply_name(name: str) -> bool:
     # A start can join a source oneshot that was already activating before the
     # rename refresh. The first bounded call drains that snapshot; the second
     # guarantees a pass began after the Bluetooth/control-plane mutations above.
-    source_result = {"ok": False, "error": "not run"}
+    source_result: Mapping[str, Any] = {"ok": False, "error": "not run"}
     for _ in range(2):
         source_result = kick_source_reconcile(reason="speaker rename")
     if not source_result.get("ok"):

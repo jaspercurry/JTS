@@ -248,6 +248,7 @@ def _apply_adapter_service(
     restart_active: bool,
 ) -> tuple[str, ...]:
     failures: list[str] = []
+    commands: tuple[tuple[str, ...], ...]
     if active:
         verb = "restart" if restart_active else "start"
         commands = (("enable", service), (verb, service))

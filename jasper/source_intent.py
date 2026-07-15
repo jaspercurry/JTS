@@ -38,6 +38,7 @@ import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -1056,13 +1057,14 @@ def _reconcile_systemd_source(
             _attempt_teardown(
                 teardown_errors,
                 f"set {unit} enabled={desired}",
-                lambda unit=unit: _ensure_enabled(ops, unit, desired),
+                partial(_ensure_enabled, ops, unit, desired),
             )
         for unit in lifecycle.runtime_units:
             _attempt_teardown(
                 teardown_errors,
                 f"stop {unit}",
-                lambda unit=unit: _ensure_active(
+                partial(
+                    _ensure_active,
                     ops,
                     unit,
                     False,
@@ -1414,7 +1416,7 @@ def _reconcile_bluetooth(
             _attempt_teardown(
                 teardown_errors,
                 f"set {unit} enabled={desired}",
-                lambda unit=unit: _ensure_enabled(ops, unit, desired),
+                partial(_ensure_enabled, ops, unit, desired),
             )
 
     def reconcile_accessories() -> None:
@@ -1443,7 +1445,8 @@ def _reconcile_bluetooth(
             _attempt_teardown(
                 teardown_errors,
                 f"stop {unit}",
-                lambda unit=unit: _ensure_active(
+                partial(
+                    _ensure_active,
                     ops,
                     unit,
                     False,
@@ -1476,7 +1479,8 @@ def _reconcile_bluetooth(
         _attempt_teardown(
             teardown_errors,
             f"stop {unit}",
-            lambda unit=unit: _ensure_active(
+            partial(
+                _ensure_active,
                 ops,
                 unit,
                 False,
@@ -1562,7 +1566,7 @@ def _reconcile_once(
             error=str(exc),
             level=logging.WARNING,
         )
-        outcomes = {
+        failure_outcomes = {
             source.value: {
                 "desired": "unknown",
                 "effective": "degraded",
@@ -1574,7 +1578,7 @@ def _reconcile_once(
         _publish_reconcile_status(
             path=status_path,
             intent_fingerprint="",
-            outcomes=outcomes,
+            outcomes=failure_outcomes,
             writer=status_writer,
         )
         return 1

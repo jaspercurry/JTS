@@ -419,9 +419,9 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
         in {DIRECT_HEALTH_IDLE, DIRECT_HEALTH_CAPTURING}
     )
     usbsink_desired = intents[Source.USBSINK]
-    # jasper-usbsink is the lifecycle/standby owner in combo mode; fan-in is the
-    # real PCM consumer. Desired-On therefore requires all three boundaries:
-    # standby owner, advertised UAC2 card, and a healthy direct fan-in lane.
+    # jasper-usbsink is the process-free lifecycle-readiness marker; fan-in is
+    # the real PCM consumer. Desired-On therefore requires all three boundaries:
+    # readiness proof, advertised UAC2 card, and a healthy direct fan-in lane.
     # Desired-Off treats any surviving boundary as drift.
     usbsink_effectively_on = (
         (usbsink_main_active or usbsink_starting)
@@ -458,7 +458,7 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
                 "USB Audio Input is advertised, but fan-in has no direct USB "
                 "capture lane. Check jasper-doctor or toggle the source again."
             )
-        elif not usbsink_direct_healthy:
+        elif usbsink_direct_sample is not None and not usbsink_direct_healthy:
             usbsink_degraded_reason = (
                 "USB Audio Input's direct fan-in capture lane is not healthy "
                 f"({usbsink_direct_sample.health or 'unknown'})."
