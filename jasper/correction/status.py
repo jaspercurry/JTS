@@ -17,7 +17,10 @@ _CORRECTION_FILENAME_RE = re.compile(
 _MEASUREMENT_FILENAME_RE = re.compile(
     r"^correction_measurement_(?P<id>[A-Za-z0-9]+)_(?P<ts>\d+)\.yml$"
 )
-_SOUND_FILENAME_RE = re.compile(r"^sound_(?:current|audition)\.yml$")
+_SOUND_FILENAME_RE = re.compile(
+    r"^sound_(?:current|audition|snapshot_[A-Za-z0-9]+_\d+"
+    r"|reset_[A-Za-z0-9]+_\d+)\.yml$"
+)
 _ACTIVE_SPEAKER_FILENAME_RE = re.compile(r"^active_speaker_.*\.yml$")
 _PEQ_KEY_RE = re.compile(r"^\s+(?:peq|room_peq)_\d+:", re.MULTILINE)
 

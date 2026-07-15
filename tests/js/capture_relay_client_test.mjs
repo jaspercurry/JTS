@@ -10,7 +10,11 @@
 
 import assert from "node:assert/strict";
 
-import { RelayClient, RelayError } from "../../capture-page/js/relay-client.js";
+import {
+  RELAY_CONTROL_TIMEOUT_MS,
+  RelayClient,
+  RelayError,
+} from "../../capture-page/js/relay-client.js";
 
 let passed = 0;
 function ok() {
@@ -120,6 +124,49 @@ async function testFetchPhoneStatus() {
   assert.equal(call.url, "https://relay.test/sessions/sess-1/phone-status");
   assert.equal(call.init.method, "GET");
   assert.equal(call.init.headers.Authorization, "Bearer up-token");
+  assert.ok(call.init.signal instanceof AbortSignal);
+  ok();
+}
+
+async function testControlFetchAbortsBeforePiFeedLossWindow() {
+  const f = mockFetch((_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener("abort", () => {
+      const error = new Error("control request timed out");
+      error.name = "AbortError";
+      reject(error);
+    }, { once: true });
+  }));
+  const client = makeClient(f);
+  await assert.rejects(
+    () => client.fetchPhoneStatus({ timeoutMs: 1 }),
+    (error) => error && error.name === "AbortError",
+  );
+  assert.ok(RELAY_CONTROL_TIMEOUT_MS < 8000);
+  assert.equal(f.calls.length, 1);
+  ok();
+}
+
+async function testControlFetchAbortsAStalledResponseBody() {
+  const f = mockFetch((_url, init) => ({
+    ok: true,
+    status: 200,
+    json() {
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const error = new Error("control response body timed out");
+          error.name = "AbortError";
+          reject(error);
+        }, { once: true });
+      });
+    },
+  }));
+  const client = makeClient(f);
+
+  await assert.rejects(
+    () => client.fetchPhoneStatus({ timeoutMs: 1 }),
+    (error) => error && error.name === "AbortError",
+  );
+  assert.equal(f.calls.length, 1);
   ok();
 }
 
@@ -175,6 +222,8 @@ const tests = [
   testPostEvent,
   testProtocolTwoPostEventUsesAuthenticatedEnvelope,
   testFetchPhoneStatus,
+  testControlFetchAbortsBeforePiFeedLossWindow,
+  testControlFetchAbortsAStalledResponseBody,
   testPutBlob,
   testErrorThrowsRelayError,
   testConstructorValidates,

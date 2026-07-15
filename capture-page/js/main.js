@@ -17,7 +17,7 @@ import {
   acceptedAcknowledgement,
   renderScreen,
 } from "./render.js?v=20260711-1";
-import { RelayClient } from "./relay-client.js?v=20260711-3";
+import { RelayClient } from "./relay-client.js?v=20260715-3";
 import { importContentKey, encryptWav } from "./crypto.js";
 import {
   constraintDecision,
@@ -25,7 +25,7 @@ import {
 } from "./constraints.js?v=20260711-4";
 import { safeReturnUrl } from "./return-url.js";
 import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
-import { runLevelRampProtocol } from "./level-events.js";
+import { runLevelRampProtocol } from "./level-events.js?v=20260715-3";
 import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
   assertCaptureProtocolCompatible,

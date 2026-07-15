@@ -26,6 +26,7 @@ from jasper.active_speaker.baseline_profile import (
     PROVENANCE_RECOMMENDED_START,
     _derive_corrections,
     _GAIN_SOURCE_TO_PROVENANCE,
+    active_layer_a_fingerprint,
     apply_baseline_profile,
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
@@ -2122,6 +2123,195 @@ def test_recompose_baseline_yaml_inserts_room_peqs_and_folds_headroom(
     graph = classify_camilla_graph(topology=topology, text=room_yaml)
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert graph.allowed is True, graph.issues
+
+
+def test_applied_room_and_reset_only_mutate_program_domain(tmp_path: Path) -> None:
+    """Room apply/reset preserve the exact immutable Layer-A suffix.
+
+    The production carrier calls ``recompose_applied_baseline_yaml`` for both
+    Room apply and the shared Reset/automatic-revert no-room target.  Compare
+    the parsed driver-domain graph, not just filter counts: routing, crossover
+    filters, polarity, delay, gain, and protection must remain identical while
+    Room PEQs and their headroom live only before the split mixer.
+    """
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    applied = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    applied["status"] = "applied"
+
+    flat_yaml, flat_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+    )
+    room_yaml, room_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        room_peqs=[
+            PeqFilter(freq=45.0, q=5.0, gain=2.0),
+            PeqFilter(freq=80.0, q=6.0, gain=-4.0),
+        ],
+    )
+    reset_yaml, reset_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        room_peqs=[],
+    )
+
+    assert flat_issues == room_issues == reset_issues == []
+    assert flat_yaml is not None and room_yaml is not None
+    assert reset_yaml == flat_yaml
+    flat = yaml_lib.safe_load(flat_yaml)
+    room = yaml_lib.safe_load(room_yaml)
+
+    def driver_domain(document: dict) -> dict:
+        pipeline = document["pipeline"]
+        split_index = next(
+            index
+            for index, step in enumerate(pipeline)
+            if step.get("type") == "Mixer"
+        )
+        suffix = pipeline[split_index:]
+        driver_filter_names = {
+            name
+            for step in suffix
+            if step.get("type") == "Filter"
+            for name in step.get("names", [])
+        }
+        return {
+            "devices": document["devices"],
+            "mixers": document["mixers"],
+            "pipeline_suffix": suffix,
+            "filters": {
+                name: document["filters"][name]
+                for name in sorted(driver_filter_names)
+            },
+        }
+
+    assert driver_domain(room) == driver_domain(flat)
+    room_split_index = next(
+        index
+        for index, step in enumerate(room["pipeline"])
+        if step.get("type") == "Mixer"
+    )
+    assert any(
+        name.startswith("room_peq_")
+        for step in room["pipeline"][:room_split_index]
+        for name in step.get("names", [])
+    )
+    assert not any(
+        name.startswith("room_peq_")
+        for step in room["pipeline"][room_split_index:]
+        for name in step.get("names", [])
+    )
+
+
+def _applied_layer_a_yaml(tmp_path: Path) -> str:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    applied = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=_measurements(topology, tmp_path),
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    applied["status"] = "applied"
+    text, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+    )
+    assert issues == []
+    assert text is not None
+    return text
+
+
+@pytest.mark.parametrize("mutation", ["playback", "mixer", "pipeline_suffix"])
+def test_layer_a_fingerprint_rejects_every_bound_domain_mutation(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    baseline_yaml = _applied_layer_a_yaml(tmp_path)
+    changed = yaml_lib.safe_load(baseline_yaml)
+    split_index = next(
+        index
+        for index, step in enumerate(changed["pipeline"])
+        if step.get("type") == "Mixer"
+    )
+    split_name = changed["pipeline"][split_index]["name"]
+    if mutation == "playback":
+        changed["devices"]["playback"]["device"] = "unexpected_output"
+    elif mutation == "mixer":
+        source = changed["mixers"][split_name]["mapping"][0]["sources"][0]
+        source["gain"] = float(source.get("gain", 0.0)) - 0.25
+    else:
+        driver_step = changed["pipeline"][split_index + 1]
+        driver_step["channels"] = [int(driver_step["channels"][0]) + 1]
+
+    assert active_layer_a_fingerprint(yaml_lib.safe_dump(changed)) != (
+        active_layer_a_fingerprint(baseline_yaml)
+    )
+
+
+def test_layer_a_fingerprint_ignores_capture_only_mutation(tmp_path: Path) -> None:
+    baseline_yaml = _applied_layer_a_yaml(tmp_path)
+    changed = yaml_lib.safe_load(baseline_yaml)
+    changed["devices"]["capture"] = {
+        "type": "Alsa",
+        "channels": 2,
+        "device": "alternate_program_capture",
+        "format": "S32_LE",
+    }
+
+    assert active_layer_a_fingerprint(yaml_lib.safe_dump(changed)) == (
+        active_layer_a_fingerprint(baseline_yaml)
+    )
+
+
+def test_layer_a_fingerprint_ignores_camilla_readback_null_defaults(
+    tmp_path: Path,
+) -> None:
+    baseline_yaml = _applied_layer_a_yaml(tmp_path)
+    readback = yaml_lib.safe_load(baseline_yaml)
+    readback["devices"].update({
+        "adjust_period": None,
+        "multithreaded": None,
+        "volume_ramp_time": None,
+    })
+    split_index = next(
+        index
+        for index, step in enumerate(readback["pipeline"])
+        if step.get("type") == "Mixer"
+    )
+    split_name = readback["pipeline"][split_index]["name"]
+    for step in readback["pipeline"][split_index:]:
+        step.update({"bypassed": None, "description": None})
+    for route in readback["mixers"][split_name]["mapping"]:
+        route["mute"] = None
+        for source in route["sources"]:
+            source.update({"mute": None, "scale": None})
+    for step in readback["pipeline"][split_index:]:
+        for name in step.get("names", []):
+            readback["filters"][name]["description"] = None
+            readback["filters"][name]["parameters"]["scale"] = None
+
+    assert active_layer_a_fingerprint(yaml_lib.safe_dump(readback)) == (
+        active_layer_a_fingerprint(baseline_yaml)
+    )
 
 
 def test_recompose_baseline_yaml_refuses_when_preview_not_ready() -> None:

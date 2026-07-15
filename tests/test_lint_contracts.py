@@ -111,7 +111,7 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # MeasurementSession._evaluate_acceptance deliberately carries NO such
 # suppression — it catches the named RECOVERABLE_ERRORS family from
 # jasper.audio_measurement.ramp (P2's precedent). The relocated catch in
-# _resolve_reset_target moved verbatim out of _handle_reset (net-zero). Net
+# _resolve_reset_target_async moved verbatim out of _handle_reset (net-zero). Net
 # effect on the ceilings: suppression-marker count +0, blind-except count +1.
 # (Marker strings spelled out, not literal, so this comment does not inflate
 # the counts it documents.)

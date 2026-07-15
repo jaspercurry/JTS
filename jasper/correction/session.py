@@ -104,6 +104,17 @@ DEFAULT_ROOM_POSITION_COUNT = 6
 ROOM_POSITION_COUNT_CHOICES = (1, 3, DEFAULT_ROOM_POSITION_COUNT)
 DEFAULT_REPEAT_MAIN_POSITION = True
 
+# Room's full-band ESS needs more acoustic headroom than the continuous
+# level-check tone.  Two JTS3 UMIK-2 runs (2026-07-15) reached full scale after
+# locking first in the shared [-20, -12] dBFS window and then in Room's initial
+# 3 dB-lower window.  The second sweep measured -15.86 dBFS RMS with 0.1856%
+# clipped samples while retaining 25.49 dB estimated SNR.  Keep the shared
+# kernel and Active near-field policy unchanged; Room alone targets the
+# same-width window 6 dB lower, covering the observed 3.24 dB tone-to-sweep RMS
+# rise with additional peak reserve.
+ROOM_LEVEL_WINDOW_LOW_DBFS = -26.0
+ROOM_LEVEL_WINDOW_HIGH_DBFS = -18.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -359,7 +370,16 @@ class MeasurementSession:
         # until apply() runs with a config getter.
         self.pre_apply_config_path: str | None = None
         self.pre_measurement_config_path: Path | None = None
+        # Immutable, session-unique copy of CamillaDSP's running graph at
+        # Start. The public predecessor path above remains provenance only: a
+        # later Active candidate build may legally rewrite that durable name
+        # without loading it, so rollback must never treat the name as content.
+        self.pre_measurement_restore_path: Path | None = None
         self.measurement_config_path: Path | None = None
+        # Active-owned admission sampled at /start. The web owner carries this
+        # opaque tuple and revalidates it at each DSP-writer boundary; the
+        # session never interprets or reconstructs Layer-A evidence.
+        self.room_authority_binding: tuple[bool, str, str | None] | None = None
 
         # Sweep cache.
         self.sweep_meta: sweep.SweepMeta | None = None
@@ -1888,6 +1908,8 @@ class MeasurementSession:
         self,
         camilla_set_config: Callable[[str], Awaitable[bool]],
         camilla_get_config: Callable[[], Awaitable[str | None]] | None = None,
+        *,
+        prepare_guard: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         async with self._lock:
             if self.state != SessionState.READY:
@@ -1913,6 +1935,12 @@ class MeasurementSession:
             raise
 
         async def _prepare_config() -> dict[str, Any]:
+            # apply_dsp_config invokes prepare only after acquiring the shared
+            # DSP-writer lock. The web owner injects its Active-owned authority
+            # check here so no legal writer can change Layer A between the
+            # decision and carrier re-emission.
+            if prepare_guard is not None:
+                await prepare_guard()
             profile = load_profile()
             prior_config_path: str | None = None
             if camilla_get_config is not None:
@@ -2610,6 +2638,8 @@ class MeasurementSession:
                     allow_bounded_low_level=True,
                     cap_bump_db=LISTENING_POSITION_CAP_BUMP_DB,
                     cap_ceil_db=LISTENING_POSITION_CAP_CEIL_DB,
+                    window_low_dbfs=ROOM_LEVEL_WINDOW_LOW_DBFS,
+                    window_high_dbfs=ROOM_LEVEL_WINDOW_HIGH_DBFS,
                 ),
             )
             self._level_match_session = session

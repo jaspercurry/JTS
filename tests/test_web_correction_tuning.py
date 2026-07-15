@@ -505,6 +505,14 @@ def test_propose_apply_reports_honest_failure_when_reload_rejected(
     cam = _RejectingCam()
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
+    async def admitted_authority(_cam, _expected):
+        return None
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_assert_room_authority_current",
+        admitted_authority,
+    )
 
     body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
     out = correction_setup._handle_propose_apply(_FakeHandler(body))

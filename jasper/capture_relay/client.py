@@ -105,10 +105,26 @@ class RelayClient:
             raise ValueError(f"relay base_url must be https://, got {base_url!r}")
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._custom_transport = transport
         token = (registration_token or "").strip()
         self._registration_token = token or None
         self._transport: Transport = transport or (
             lambda m, u, h, b: _urllib_transport(m, u, h, b, timeout=timeout)
+        )
+
+    def with_timeout(self, timeout: float) -> "RelayClient":
+        """Clone credentials/transport with a narrower request timeout.
+
+        Registration and capture control have different latency budgets. The
+        production urllib transport is rebuilt with the requested timeout;
+        injected test transports remain the same deterministic fake.
+        """
+
+        return RelayClient(
+            self.base_url,
+            transport=self._custom_transport,
+            timeout=timeout,
+            registration_token=self._registration_token,
         )
 
     def _session_url(self, session_id: str, suffix: str = "") -> str:

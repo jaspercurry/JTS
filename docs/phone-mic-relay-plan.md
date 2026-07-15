@@ -762,17 +762,44 @@ pairing proof, not a guess based on the Pages dashboard.
 
 ---
 
-Last updated: 2026-07-14 — Room defaults are speaker-owned (six positions,
+Last updated: 2026-07-15 — Room defaults are speaker-owned (six positions,
 flat target, balanced strategy, and an automatic main-seat trust repeat). The
 Room level check no longer collects a phone-owned position count; later Room
 links carry signed position/total metadata and authenticate the realized
 microphone against the Pi-retained level identity before playback. The trust
 repeat uses the same Room relay handler and state machine; its generic
 `presentation_variant` changes phone copy only and cannot own sequencing,
-timeout, or admission. Repo-pinned capture page build 20260714.1 adds the
+timeout, or admission. Repo-pinned capture page build 20260715.3 adds the
 repeat-specific phone copy and renders host sweep cancellation as expected
-control flow; external publication is intentionally pending coordinator
-release. Active-crossover capture uses
+control flow; the page entry and relay-client import carry the matching
+`20260715-3` cache key. A transient phone-side status-poll failure no longer aborts a
+bounded level walk; small page-side control requests abort after three seconds
+through response-body parsing, so returned headers with a stalled body cannot
+freeze mic batches. The Pi uses a separate 1.5-second level-control socket
+timeout plus an async wall-clock deadline,
+publishes at most one queued host event before the next status refresh, and
+bounds one retry plus that status read to 4.75 seconds inside the default
+eight-second feed-loss guard. Those bounded requests share one FIFO worker, and
+a write that outlives the awaiting deadline stays ordered ahead of newer
+writes; an older progress event therefore cannot complete after and replace a
+newer terminal event in the relay's last-write-wins slot. The Pi gives
+idempotent host-progress writes one retry after a timeout, 429, or relay 5xx.
+The level pump still refreshes status after an unconfirmed host-event response;
+slow acknowledgements cannot starve fresh microphone samples and manufacture
+the eight-second feed-loss condition. Delivery degradation and recovery are
+latched in the journal rather than logged on every poll.
+Room sweep-start/complete events use the same narrow, ordered path. An
+unconfirmed response does not discard the capture because the write may already
+have committed; the authenticated ready blob is the completion proof and the
+ordinary upload deadline still detects a truly undelivered terminal event. A
+final relay 4xx, including 429 after the bounded retry, is different: the Worker
+rejects it before commit, so Room aborts before sweep playback instead of
+mislabeling it as ambiguous. Transport timeouts/OSErrors and relay 5xx remain
+the ambiguity-tolerant cases.
+A 2026-07-15 JTS3 UMIK-2 trust repeat exercised that exact case: the
+`sweep_complete` response timed out while the capture page uploaded the WAV.
+External publication is intentionally pending coordinator release.
+Active-crossover capture uses
 role-sized sweeps,
 a signal-bounded controlled quiet crop, paired-window deconvolved per-band SNR,
 and the server-owned three-repeat admission loop; selecting a UMIK-2 preselects

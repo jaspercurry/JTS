@@ -113,17 +113,26 @@ existing layering):
     (`environment.CAMILLA_CLASS_PROGRAM_BAKE`) → **program-bake carrier**.
     This is a flat 2-channel program graph, but it is not DAC-bound: camilla#1
     writes `File` → Snapcast FIFO and camilla#2 owns Layer A driver protection.
+    The carrier seam remains implemented, but Active's v1 manual Room authority
+    is deliberately solo-only: primary `active_raw` here cannot prove the Layer
+    A running on camilla#2. Active therefore projects
+    `active_grouped_room_correction_not_supported` instead of a misleading
+    crossover mismatch. A later Active-owned distributed identity must bind
+    both daemons before Room can reach this carrier through ordinary Start.
     The carrier therefore bypasses the DAC-bound protected-tweeter flat-graph
     refusal only after grouping state resolves back to a pipe sink with
     `enable_rate_adjust=false`; otherwise it refuses
     `program_bake_pipe_unavailable`. This is the JTS5 class where
-    `/correction/start` must strip Layer B/C for measurement without calling the
-    graph "custom". The resolver also treats a JTS-generated
+    the retained carrier can strip Layer B/C without calling the graph
+    "custom" once distributed Active authority lands. The resolver also treats a JTS-generated
     `sound_current.yml` as this carrier when it is the one-time stale-marker
     recovery shape: readable protected-tweeter topology plus content proving
     `File` → Snapcast FIFO. Other generic pipe configs, such as passive
     multiroom `grouping_leader.yml`, stay in the ordinary sound/correction
-    carrier and are never re-stamped as active program bakes.
+    carrier and are never re-stamped as active program bakes. Room resolves
+    this compatibility shape while the original filename is still available
+    and stamps its collision-free running-graph snapshot with the program-bake
+    source, preserving the same carrier for measurement and rollback.
   - `is_jts_generated_config` (name) → **sound/correction carrier**
     (`extract_room_peqs_from_config` → `emit_sound_config`) — today's two arms
     relocated **verbatim**, including the `member_camilla_kwargs()` splat
@@ -474,4 +483,5 @@ boundary:
 
 Last verified: 2026-07-15 (graph-carrier ownership rechecked against bounded,
 cancellation-safe shared DSP-writer admission and the measured-candidate
-baseline promotion boundary; carrier dispatch is unchanged)
+baseline promotion boundary plus Room's locked Active-authority prepare guard;
+carrier dispatch is unchanged)

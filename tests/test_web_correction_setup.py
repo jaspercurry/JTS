@@ -684,8 +684,9 @@ class _FakeSession:
     """Minimal stand-in for the auto-revert helper: it exposes just the
     verdict accessor and an async auto_revert that records the target."""
 
-    def __init__(self, verdict: str | None) -> None:
+    def __init__(self, verdict: str | None, config_dir: Path) -> None:
         self._verdict = verdict
+        self.cfg = SimpleNamespace(config_dir=config_dir)
         self.revert_calls: list[str | None] = []
 
     @property
@@ -708,14 +709,13 @@ def _patch_no_op_camilla(monkeypatch) -> None:
 
     monkeypatch.setattr(correction_setup, "_camilla", lambda: _FakeCam())
     # Resolve target without touching the topology-aware carrier.
-    monkeypatch.setattr(
-        correction_setup,
-        "_resolve_reset_target",
-        lambda sess, cam: "/etc/camilladsp/no-room.yml",
-    )
+    async def resolve(_sess, _cam):
+        return Path("/etc/camilladsp/no-room.yml")
+
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
 
 
-def test_maybe_auto_revert_acts_only_on_confirmed_revert(monkeypatch):
+def test_maybe_auto_revert_acts_only_on_confirmed_revert(monkeypatch, tmp_path):
     import asyncio
 
     _patch_no_op_camilla(monkeypatch)
@@ -729,16 +729,16 @@ def test_maybe_auto_revert_acts_only_on_confirmed_revert(monkeypatch):
     )
 
     for verdict in ("accept", "surface", "revert_pending_confirm", None):
-        sess = _FakeSession(verdict)
+        sess = _FakeSession(verdict, tmp_path)
         assert correction_setup._maybe_auto_revert(sess) is False
         assert sess.revert_calls == []  # never touched CamillaDSP
 
-    sess = _FakeSession("revert")
+    sess = _FakeSession("revert", tmp_path)
     assert correction_setup._maybe_auto_revert(sess) is True
-    assert sess.revert_calls == ["/etc/camilladsp/no-room.yml"]
+    assert sess.revert_calls == [Path("/etc/camilladsp/no-room.yml")]
 
 
-def test_maybe_auto_revert_swallows_errors(monkeypatch):
+def test_maybe_auto_revert_swallows_errors(monkeypatch, tmp_path):
     """A revert failure is logged and returns False — it never 500s the verify
     upload (the correction is left applied for manual undo)."""
     import asyncio
@@ -756,7 +756,7 @@ def test_maybe_auto_revert_swallows_errors(monkeypatch):
             coro
         ),
     )
-    sess = _FailSession("revert")
+    sess = _FailSession("revert", tmp_path)
     assert correction_setup._maybe_auto_revert(sess) is False
 
 
@@ -851,11 +851,10 @@ def test_upload_handler_runs_auto_revert_on_confirmed_regression(
         correction_setup, "_read_wav_body", lambda handler: wav_bytes,
     )
     monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
-    monkeypatch.setattr(
-        correction_setup,
-        "_resolve_reset_target",
-        lambda s, c: "/tmp/no-room-test.yml",
-    )
+    async def resolve(_sess, _cam):
+        return Path("/tmp/no-room-test.yml")
+
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
 
     resp = correction_setup._handle_upload_capture(object())
 
@@ -888,10 +887,10 @@ def test_upload_handler_auto_revert_failure_still_returns_ok(
     )
     monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
 
-    def _boom(s, c):
+    async def _boom(s, c):
         raise RuntimeError("target resolution exploded")
 
-    monkeypatch.setattr(correction_setup, "_resolve_reset_target", _boom)
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", _boom)
 
     resp = correction_setup._handle_upload_capture(object())
 

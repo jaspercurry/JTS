@@ -44,12 +44,19 @@
 > capture-only sweeps authenticate the level-check microphone before sound.
 > Returning-user preferences, one persistent phone handoff,
 > and mandatory proof remain Wave 3 target behavior. Wave 1 added inert evidence
-> identities, excitation admission, and an exact Active eligibility-receipt
-> contract; it did not make that receipt a live Room authority. The R1b adapter
-> therefore rejects active topologies even when the older setup status calls an
-> applied-recomposition snapshot ready. It does not inspect historical evidence
-> or reconstruct receipt authority; Active must issue and expose the exact
-> receipt-backed decision before Room can admit that path.
+> identities, excitation admission, and an exact automatic Active
+> eligibility-receipt contract; it did not make that receipt a live authority.
+> Active now also exposes a versioned Room decision that distinguishes an
+> explicitly applied manual profile from automatic commissioning. Room consumes
+> that one decision: a topology-current manual applied-profile snapshot is
+> eligible on the **solo active** runtime, while automatic tuning remains
+> blocked until Active issues and exposes the exact receipt-backed authority.
+> Room never inspects historical
+> evidence or reconstructs either decision. A grouped active member is an
+> explicit unsupported v1 decision: the leader's program-bake Camilla graph is
+> not the driver-domain Layer A, so the household must turn grouping off before
+> measuring. Distributed-active support requires a later Active-owned identity
+> that binds both Camilla daemons; Room must not infer it.
 
 ## Product goal
 
@@ -310,11 +317,35 @@ required for the requested action. Missing or malformed readiness fails closed.
 
 The existing `/start` readiness check remains defense in depth even after the
 idle envelope withholds Start. A browser bug or stale tab must not bypass it.
-Until Active integrates the exact verified eligibility receipt, the shipped
-Room adapter admits the explicit passive/not-required result and rejects every
-active topology even when the older setup-status boolean says ready. It must
-not claim receipt-backed or freshly verified crossover authority, and the
-validated crossover setup link remains the only active-path recovery action.
+The shipped Room adapter admits three explicit versioned authority values from
+Active: passive/not-required, an operator-applied manual profile, and (once the
+producer exists) the exact verified automatic commissioning receipt. Current
+automatic applied snapshots do not have that receipt and remain blocked. Room
+must not relabel an automatic snapshot as manual, claim receipt-backed or
+freshly verified authority, inspect measurement artifacts, or derive a second
+rule; the validated crossover setup link remains the active-path recovery
+action. Active issues manual authority only after its semantic Layer-A
+fingerprint of CamillaDSP's fresh running `active_raw` readback matches
+snapshot-derived recomposition. That
+identity covers output-device settings plus the complete driver-domain
+mixer/pipeline/filter suffix and excludes only the mutable pre-split
+Room/preference prefix. Room consumes the resulting decision; it does not
+perform this comparison itself. It carries Active's opaque identity from Start
+and asks Active for the same decision again inside both the locked measurement
+baseline preparation and Apply writer boundary. A changed authority or identity
+refuses the mutation. Reset and automatic revert do not depend on new Room
+authority; they acquire the same writer boundary and resolve their restoration
+target after admission, preserving whichever Layer A a preceding legal Active
+apply actually loaded. Start stores a unique validated copy of CamillaDSP's
+running `active_raw`; its reported durable filename is provenance, not rollback
+content. Reversal restores that immutable copy while Room's measurement graph
+still owns the runtime, or when a fresh running-graph comparison proves the
+same-name predecessor has not actually changed. If a legal writer loaded a new
+graph, reversal snapshots that fresh runtime and emits Layer B removal into a
+different unique candidate. A failed or post-write-rejected re-emit cannot
+mutate the running filename or become its own fallback; only the immutable
+pre-emit snapshot may be retained, and only when it is managed and already has
+no Room filters.
 
 Historical B2b evidence is forensic only: it cannot supply modern candidate or
 receipt authority. Automatic crossover readiness must come from Active's fresh,
@@ -592,9 +623,9 @@ The intended Room product is complete only when:
     crossover no-boost band, and volume/graph safety have guard tests.
 11. Room continues to use reverberant cross-position evidence and does not adopt
     Active reflection gating or same-target repeat state.
-12. Room apply on an active topology consumes the exact current eligibility
-    result without inference; passive topology behavior remains explicitly
-    tested.
+12. Room apply on a solo active topology consumes the exact current eligibility
+    result without inference; grouped active is an explicit unsupported v1
+    decision, and passive topology behavior remains explicitly tested.
 13. IIR-only design and the existing latency gate remain intact; FIR phase/group
     delay appears only with proven applied-bundle metadata.
 14. First-run decisions do not exceed five before the first sweep, and the relay
@@ -614,7 +645,7 @@ The serialized hardware track must still perform:
 - H1 settle-cadence tuning, AGC-freeze confirmation, and measured retuning of
   placeholder `JASPER_ACCEPT_*` / `JASPER_RAMP_*` thresholds;
 - audible apply/verify/restore evidence on the production chain;
-- exact Active receipt issuance/consumption on an active topology; and
+- exact automatic Active receipt issuance/consumption on an active topology;
 - capture-page artifact publication/version coordination.
 
 No Pi deployment, microphone use, phone publication, or audible acceptance is

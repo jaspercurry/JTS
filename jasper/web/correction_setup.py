@@ -152,6 +152,30 @@ _RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {
 # Bound the foreground relay registration so a slow/unreachable relay fails fast
 # rather than hanging the request thread for RelayClient's 15 s default.
 _RELAY_REGISTER_TIMEOUT_S = 10.0
+# Repeating one host event is safe, but distinct progress and terminal events
+# must preserve order in the relay's last-write-wins slot. One transient relay
+# 5xx or socket timeout must not abort a guarded level walk, while retries stay
+# tightly bounded so a dead relay still reaches the existing restore/Stop path.
+_RELAY_HOST_EVENT_ATTEMPTS = 2
+_RELAY_HOST_EVENT_RETRY_DELAY_S = 0.25
+# Keep bounded level-control calls in submission order even after the awaiting
+# coroutine reaches its wall-clock deadline.  A timed-out write stays in this
+# single-worker queue, so an older progress event cannot complete after a newer
+# terminal event and replace it in the relay's last-write-wins slot.
+_RELAY_LEVEL_CONTROL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="correction-relay-control",
+)
+# Level-ramp status and Room host events share one serialized pump. Give those
+# small control requests a separate WAN timeout: one retried level event plus
+# the next status read can then block for at most 4.75 s, comfortably inside
+# the ramp's default 8 s feed-loss guard. Registration retains its wider 10 s
+# budget.
+_RELAY_CONTROL_TIMEOUT_S = 1.5
+_RELAY_LEVEL_PUMP_MAX_BLOCK_S = (
+    (_RELAY_HOST_EVENT_ATTEMPTS + 1) * _RELAY_CONTROL_TIMEOUT_S
+    + _RELAY_HOST_EVENT_RETRY_DELAY_S
+)
 # Exact set/readback plus the emergency set/readback each use Camilla's bounded
 # reconnect contract. Keep the HTTP owner alive for the complete sequence.
 _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
@@ -164,6 +188,134 @@ _SUMMED_CAPTURE_UNAVAILABLE_REASON = "active_summed_persisted_admission_unavaila
 # bounded and well inside the relay's rolling three-second sample window.
 _RELAY_LEVEL_AMBIENT_MIN_SAMPLES = 10
 _ROOM_SWEEP_PHONE_FAILURE = "the speaker could not complete this measurement"
+
+
+async def _run_relay_control_request(
+    call: Callable[..., Any],
+    *args: Any,
+    hard_timeout_s: float | None = None,
+    preserve_write_order: bool = False,
+) -> Any:
+    """Run one blocking relay request with an optional wall-clock deadline."""
+
+    executor = _RELAY_LEVEL_CONTROL_EXECUTOR if hard_timeout_s is not None else None
+    request = asyncio.get_running_loop().run_in_executor(executor, call, *args)
+    if hard_timeout_s is None:
+        return await request
+    done, _pending = await asyncio.wait(
+        {request},
+        timeout=hard_timeout_s,
+    )
+    if not done:
+        # A running thread cannot be killed safely, but the level-control pump
+        # must not wait for it.  Preserve writes in the FIFO executor so every
+        # newer event runs after this one; queued status reads are safe to drop.
+        if preserve_write_order:
+            request.add_done_callback(_consume_relay_control_result)
+        else:
+            request.cancel()
+        raise asyncio.TimeoutError
+    return request.result()
+
+
+def _consume_relay_control_result(request: asyncio.Future[Any]) -> None:
+    """Retrieve a detached ordered write result after its caller timed out."""
+
+    if request.cancelled():
+        return
+    request.exception()
+
+
+async def _post_relay_host_event(
+    client: Any,
+    pi_session: Any,
+    payload: Mapping[str, Any],
+    *,
+    hard_timeout_s: float | None = None,
+) -> None:
+    """Publish one idempotent host event with one bounded transient retry."""
+
+    from jasper.capture_relay.client import RelayError
+
+    for attempt in range(1, _RELAY_HOST_EVENT_ATTEMPTS + 1):
+        try:
+            await _run_relay_control_request(
+                client.post_host_event,
+                pi_session.session_id,
+                pi_session.pull_token,
+                payload,
+                hard_timeout_s=hard_timeout_s,
+                preserve_write_order=hard_timeout_s is not None,
+            )
+            return
+        except RelayError as exc:
+            retryable = exc.status == 429 or exc.status >= 500
+            if not retryable or attempt >= _RELAY_HOST_EVENT_ATTEMPTS:
+                raise
+        except OSError:
+            if attempt >= _RELAY_HOST_EVENT_ATTEMPTS:
+                raise
+        log_event(
+            logger,
+            "capture_relay.host_event_retry",
+            level=logging.WARNING,
+            session_id=pi_session.session_id,
+            attempt=attempt,
+        )
+        await asyncio.sleep(_RELAY_HOST_EVENT_RETRY_DELAY_S)
+
+
+def _bounded_relay_control_client(client: Any) -> Any:
+    """Clone the production relay client onto the narrow control deadline."""
+
+    from jasper.capture_relay.client import RelayClient
+
+    return (
+        client.with_timeout(_RELAY_CONTROL_TIMEOUT_S)
+        if isinstance(client, RelayClient)
+        else client  # injected deterministic test double
+    )
+
+
+async def _post_room_sweep_host_event(
+    control_client: Any,
+    pi_session: Any,
+    payload: Mapping[str, Any],
+) -> None:
+    """Publish ordered Room progress without discarding ambiguous captures."""
+
+    from jasper.capture_relay.client import RelayError
+
+    try:
+        await _post_relay_host_event(
+            control_client,
+            pi_session,
+            payload,
+            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
+        )
+        return
+    except RelayError as exc:
+        # The Worker rejects 4xx before committing the event. A final 4xx
+        # (including 429 after the bounded retry) is therefore definitive:
+        # do not play a sweep whose recorder session is gone or unauthorized.
+        if exc.status < 500:
+            raise
+        reason = f"RelayError:{exc.status}"
+    except (asyncio.TimeoutError, OSError) as exc:
+        # The request may have committed before its response timed out. Its
+        # detached write remains ordered, and run_capture's ready blob is the
+        # authoritative completion signal. Do not discard a valid WAV merely
+        # because this progress acknowledgement is unconfirmed.
+        reason = type(exc).__name__
+    log_event(
+        logger,
+        "capture_relay.room_sweep_host_event",
+        level=logging.WARNING,
+        session_id=pi_session.session_id,
+        phase=payload.get("phase"),
+        result="unconfirmed",
+        reason=reason,
+    )
 
 
 def _summed_capture_unavailable(*, ingress: str) -> dict[str, Any]:
@@ -802,7 +954,7 @@ def _replace_session(
 
 _PAGE_BODY = """
 __HEADER__
-<main class="page correction-stack" data-required-sr="__REQUIRED_SR__" data-capture-relay-enabled="__CAPTURE_RELAY_ENABLED__">
+<main class="page correction-stack" data-required-sr="__REQUIRED_SR__" data-capture-relay-enabled="__CAPTURE_RELAY_ENABLED__" data-level-trust-margin-db="__LEVEL_TRUST_MARGIN_DB__">
 __TABS__
 <p class="page-sub">Measure your room with a phone and apply the result to the speaker.</p>
 
@@ -1082,6 +1234,7 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         DEFAULT_ROOM_POSITION_COUNT,
         ROOM_POSITION_COUNT_CHOICES,
     )
+    from jasper.audio_measurement.ramp import MeasurementRamp
 
     # data-aliases carries the registry's label tokens to the wizard so it can
     # infer the model from a device label without a hardcoded client-side map.
@@ -1171,6 +1324,10 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         .replace(
             "__CAPTURE_RELAY_ENABLED__",
             "1" if capture_relay_enabled else "0",
+        )
+        .replace(
+            "__LEVEL_TRUST_MARGIN_DB__",
+            format(MeasurementRamp.from_env().trust_margin_db, ".6g"),
         )
         .replace("__MIC_MODEL_OPTIONS__", mic_model_options)
         .replace("__TARGET_PROFILE_OPTIONS__", target_profile_options_html)
@@ -1329,7 +1486,9 @@ def _run_relay_measurement_sweep(
     """
     from jasper.correction import coordinator, playback
 
-    def _host_event(phase: str, **extra: Any) -> None:
+    control_client = _bounded_relay_control_client(client)
+
+    async def _host_event(phase: str, **extra: Any) -> None:
         payload = {
             "phase": phase,
             "position": (
@@ -1341,7 +1500,11 @@ def _run_relay_measurement_sweep(
             "capture_kind": "repeat" if repeat else "measurement",
             **extra,
         }
-        client.post_host_event(pi_session.session_id, pi_session.pull_token, payload)
+        await _post_room_sweep_host_event(
+            control_client,
+            pi_session,
+            payload,
+        )
 
     async def _run_sweep() -> None:
         async def _runtime_probe() -> dict[str, Any] | None:
@@ -1356,7 +1519,7 @@ def _run_relay_measurement_sweep(
                     "check again"
                 )
             try:
-                await asyncio.to_thread(_host_event, "sweep_started")
+                await _host_event("sweep_started")
                 prepare = (
                     sess.prepare_and_play_repeat_sweep
                     if repeat
@@ -1366,7 +1529,7 @@ def _run_relay_measurement_sweep(
                     playback.play_sweep,
                     runtime_probe_async=_runtime_probe,
                 )
-                await asyncio.to_thread(_host_event, "sweep_complete")
+                await _host_event("sweep_complete")
             finally:
                 # The renderers resume when measurement_window exits. Restore
                 # the household listening volume before that boundary, on every
@@ -1382,12 +1545,20 @@ def _run_relay_measurement_sweep(
         )
     except (concurrent.futures.TimeoutError, RuntimeError, OSError, ValueError):
         try:
-            _host_event(
-                "sweep_failed",
-                error=_ROOM_SWEEP_PHONE_FAILURE,
-                error_code="room_sweep_unavailable",
+            _run_async(
+                _host_event(
+                    "sweep_failed",
+                    error=_ROOM_SWEEP_PHONE_FAILURE,
+                    error_code="room_sweep_unavailable",
+                ),
+                timeout=_RELAY_LEVEL_PUMP_MAX_BLOCK_S + 1.0,
             )
-        except (RuntimeError, OSError, ValueError):
+        except (
+            concurrent.futures.TimeoutError,
+            RuntimeError,
+            OSError,
+            ValueError,
+        ):
             logger.debug("could not publish relay sweep failure", exc_info=True)
         raise
 
@@ -1675,11 +1846,27 @@ def _assert_relay_level_identity(
         )
 
 
-def _room_correction_readiness() -> dict[str, Any]:
-    """Read the speaker-owned prerequisite; never derive a second rule here."""
+async def _read_room_correction_readiness(cam: Any) -> dict[str, Any]:
+    """Read Active's decision against CamillaDSP's fresh running graph."""
     from jasper.active_speaker.setup_status import read_active_speaker_setup_status
+    from jasper.camilla import CamillaUnavailable
 
-    return read_active_speaker_setup_status()
+    try:
+        running_raw = await cam.get_active_config_raw(best_effort=False)
+    except CamillaUnavailable as exc:
+        raise RuntimeError("the running CamillaDSP graph is unavailable") from exc
+    if not isinstance(running_raw, str) or not running_raw.strip():
+        raise RuntimeError("the running CamillaDSP graph is unavailable")
+    return read_active_speaker_setup_status(active_config_text=running_raw)
+
+
+def _room_correction_readiness() -> dict[str, Any]:
+    """Synchronous web-handler bridge for Active's fresh decision."""
+
+    return _run_async(
+        _read_room_correction_readiness(_camilla()),
+        timeout=2.0,
+    )
 
 
 @dataclass(frozen=True)
@@ -1688,37 +1875,36 @@ class _RoomReadiness:
     blocker: dict[str, Any] | None
     reason: str
     detail: str
+    active: bool | None = None
+    authority: str | None = None
+    layer_a_identity: str | None = None
+
+    @property
+    def authority_binding(self) -> tuple[bool, str, str | None] | None:
+        """Opaque Active decision that Room may carry and compare only."""
+
+        if not self.allowed or self.active is None or self.authority is None:
+            return None
+        return (self.active, self.authority, self.layer_a_identity)
 
 
-def _room_readiness() -> _RoomReadiness:
-    """Normalize Active's one readiness decision for envelope and `/start`.
+def _normalize_room_readiness(raw: Any) -> _RoomReadiness:
+    """Normalize one Active-owned decision without reading its evidence.
 
     Room does not inspect measurement artifacts or reconstruct crossover
-    authority. It validates the small public response, admits only its explicit
-    passive/not-required result, and temporarily rejects every active topology
-    until Active exposes the exact receipt-backed decision. Only Active's safe
-    local recovery href crosses this adapter.
+    authority. It validates the versioned Active-owned decision and consumes
+    that one result. Manual applied-profile authority and automatic
+    receipt-backed authority are deliberately distinct; an older unversioned
+    active result remains rejected. Only Active's safe local recovery href
+    crosses this adapter.
     """
     from jasper.correction import failures
-
-    try:
-        raw = _room_correction_readiness()
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
-        log_event(
-            logger,
-            "correction_readiness_unavailable",
-            error_type=type(exc).__name__,
-            level=logging.WARNING,
-        )
-        return _RoomReadiness(
-            allowed=False,
-            blocker=failures.public_failure(
-                failures.SPEAKER_READINESS_UNAVAILABLE,
-                recovery_action=failures.ROOM_RETRY_ACTION,
-            ),
-            reason="speaker_readiness_unavailable",
-            detail="speaker readiness could not be read",
-        )
+    from jasper.active_speaker.setup_status import (
+        ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT,
+        ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE,
+        ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED,
+        ROOM_ELIGIBILITY_SCHEMA_VERSION,
+    )
 
     setup = raw if isinstance(raw, Mapping) else {}
     acoustic_raw = setup.get("acoustic_commissioning")
@@ -1727,25 +1913,43 @@ def _room_readiness() -> _RoomReadiness:
     allowed = setup.get("room_correction_allowed")
     acoustic_allowed = acoustic.get("allowed")
     acoustic_status = acoustic.get("status")
+    decision_schema_version = acoustic.get("decision_schema_version")
+    authority = acoustic.get("authority")
+    layer_a_identity = acoustic.get("layer_a_identity")
     well_formed = (
         isinstance(active, bool)
         and isinstance(allowed, bool)
         and isinstance(acoustic_raw, Mapping)
         and isinstance(acoustic_allowed, bool)
         and acoustic_allowed is allowed
+        and type(decision_schema_version) is int
+        and decision_schema_version == ROOM_ELIGIBILITY_SCHEMA_VERSION
         and (
             (
                 active is False
                 and allowed is True
                 and acoustic_status == "not_required"
+                and authority == ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED
+                and layer_a_identity is None
             )
             or (
                 active is True
                 and (
-                    (allowed is True and acoustic_status == "ready")
+                    (
+                        allowed is True
+                        and acoustic_status == "ready"
+                        and authority in {
+                            ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE,
+                            ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT,
+                        }
+                        and isinstance(layer_a_identity, str)
+                        and bool(layer_a_identity)
+                    )
                     or (
                         allowed is False
                         and acoustic_status in {"incomplete", "unknown"}
+                        and authority is None
+                        and layer_a_identity is None
                     )
                 )
             )
@@ -1767,41 +1971,33 @@ def _room_readiness() -> _RoomReadiness:
     ):
         action = {"label": "Open speaker setup", "href": href}
 
-    if well_formed and allowed is True and active is False:
+    if well_formed and allowed is True:
         return _RoomReadiness(
             allowed=True,
             blocker=None,
             reason="speaker_readiness_allowed",
             detail="speaker readiness allows room correction",
+            active=active,
+            authority=authority,
+            layer_a_identity=(
+                layer_a_identity if isinstance(layer_a_identity, str) else None
+            ),
         )
 
-    legacy_active_authority = (
-        well_formed and active is True and allowed is True
+    reason = str(
+        acoustic.get("reason")
+        or setup.get("reason")
+        or (
+            "speaker_readiness_malformed"
+            if not well_formed
+            else "speaker_room_correction_not_ready"
+        )
     )
-    if legacy_active_authority:
-        # Wave 1's Active setup status can call an applied recomposition
-        # snapshot ready even when its mutable measurement set is missing.
-        # That snapshot is playback ownership, not the modern positive
-        # eligibility receipt. Until Active exposes its exact receipt-backed
-        # decision, Room rejects active topologies without inspecting or
-        # reconstructing crossover evidence itself.
-        reason = "active_receipt_authority_unavailable"
-        detail = "active crossover receipt-backed readiness is unavailable"
-    else:
-        reason = str(
-            acoustic.get("reason")
-            or setup.get("reason")
-            or (
-                "speaker_readiness_malformed"
-                if not well_formed
-                else "speaker_room_correction_not_ready"
-            )
-        )
-        detail = str(
-            acoustic.get("detail")
-            or setup.get("detail")
-            or "speaker setup is not ready for room correction"
-        )
+    detail = str(
+        acoustic.get("detail")
+        or setup.get("detail")
+        or "speaker setup is not ready for room correction"
+    )
     unavailable = not well_formed or acoustic_status == "unknown"
     public_code = (
         failures.SPEAKER_READINESS_UNAVAILABLE
@@ -1817,6 +2013,59 @@ def _room_readiness() -> _RoomReadiness:
         blocker=blocker,
         reason=reason,
         detail=detail,
+    )
+
+
+def _room_readiness() -> _RoomReadiness:
+    """Read and normalize Active's one decision for envelope and `/start`."""
+
+    from jasper.correction import failures
+
+    try:
+        return _normalize_room_readiness(_room_correction_readiness())
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+        log_event(
+            logger,
+            "correction_readiness_unavailable",
+            error_type=type(exc).__name__,
+            level=logging.WARNING,
+        )
+        return _RoomReadiness(
+            allowed=False,
+            blocker=failures.public_failure(
+                failures.SPEAKER_READINESS_UNAVAILABLE,
+                recovery_action=failures.ROOM_RETRY_ACTION,
+            ),
+            reason="speaker_readiness_unavailable",
+            detail="speaker readiness could not be read",
+        )
+
+
+async def _assert_room_authority_current(
+    cam: Any,
+    expected: tuple[bool, str, str | None] | None,
+) -> None:
+    """Revalidate the accepted Active identity at a DSP-writer boundary."""
+
+    if expected is None:
+        raise RuntimeError("room correction authority binding is missing")
+    current = _normalize_room_readiness(
+        await _read_room_correction_readiness(cam),
+    )
+    if current.authority_binding == expected:
+        return
+    log_event(
+        logger,
+        "correction.layer_a_authority_changed",
+        level=logging.WARNING,
+        expected_active=expected[0],
+        current_active=current.active,
+        expected_authority=expected[1],
+        current_authority=current.authority,
+    )
+    raise RuntimeError(
+        "speaker crossover authority changed during this Room run; "
+        "reset or start a new measurement"
     )
 
 
@@ -1875,6 +2124,9 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             readiness.blocker,
             status=status,
         )
+    authority_binding = readiness.authority_binding
+    if authority_binding is None:
+        raise RuntimeError("speaker readiness omitted its authority binding")
 
     body = _read_json_body(handler)
     blocking_state = _reserve_start_slot()
@@ -2012,6 +2264,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
         sess.capture_transport = capture_transport
         sess.noise_floor_db = noise_floor_db
+        sess.room_authority_binding = authority_binding
 
         if sess.browser_audio_report.get("failed") is True:
             issue_codes = [
@@ -2035,7 +2288,11 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         try:
             baseline_payload = _run_graph_mutation(
-                _load_measurement_baseline(sess, cam),
+                _load_measurement_baseline(
+                    sess,
+                    cam,
+                    expected_authority_binding=authority_binding,
+                ),
             )
         except CarrierCannotHostEq:
             logger.warning("/start: measurement baseline rejected by graph carrier")
@@ -2102,7 +2359,138 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         raise
 
 
-async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
+def _room_graph_artifact_path(sess: Any, label: str) -> Path:
+    """Return a collision-free managed config path for one Room transaction."""
+
+    cfg = getattr(sess, "cfg", None)
+    config_dir = Path(
+        getattr(cfg, "config_dir", None)
+        or "/var/lib/camilladsp/configs"
+    )
+    token = re.sub(
+        r"[^A-Za-z0-9]",
+        "",
+        str(getattr(sess, "session_id", "session")),
+    ) or "session"
+    return config_dir / f"sound_{label}_{token}_{time.time_ns()}.yml"
+
+
+def _running_graph_snapshot_text(
+    raw: str,
+    current_path: str | Path,
+    *,
+    carrier: Any | None = None,
+) -> str:
+    """Make Camilla's comment-free active_raw reloadable with provenance.
+
+    CamillaDSP's active_raw is the graph-content authority but drops YAML
+    comments. Preserve only the bounded JTS ``# Source:`` marker from the
+    durable path so the graph carrier can distinguish a safe Active baseline
+    from transient commissioning graphs. All executable graph content remains
+    the fresh Camilla readback.
+    """
+
+    source_line = None
+    try:
+        for line in Path(current_path).read_text(encoding="utf-8").splitlines():
+            if line.startswith("# Source: ") and len(line) <= 256:
+                source_line = line
+                break
+    except OSError:
+        pass
+    # PR #1009's one-time recovery shape is a protected active-leader pipe
+    # graph stamped with the generic sound marker. Resolve it while the
+    # original durable name is still available; the collision-free snapshot
+    # name intentionally cannot trigger that filename-scoped compatibility
+    # rule later.
+    if carrier is None:
+        from jasper.sound.graph_carrier import carrier_for_loaded_config
+
+        carrier = carrier_for_loaded_config(
+            current_path,
+            config_dir=Path(current_path).parent,
+        )
+    if carrier.kind == "active_leader_program_bake":
+        from jasper.active_speaker.camilla_yaml import ACTIVE_PROGRAM_BAKE_SOURCE
+
+        source_line = f"# Source: {ACTIVE_PROGRAM_BAKE_SOURCE}"
+    text = raw.rstrip() + "\n"
+    if source_line:
+        body = "\n".join(
+            line for line in text.splitlines()
+            if not line.startswith("# Source: ")
+        )
+        return f"{source_line}\n{body.rstrip()}\n"
+    return text
+
+
+def _running_graph_body(text: str) -> str:
+    """Executable snapshot body, excluding the one JTS provenance comment."""
+
+    return "\n".join(
+        line for line in text.splitlines()
+        if not line.startswith("# Source: ")
+    ).strip()
+
+
+async def _snapshot_running_room_graph(
+    sess: Any,
+    cam: Any,
+    *,
+    current_path: str | Path | None = None,
+) -> tuple[Path, Path]:
+    """Persist one validated, content-stable copy of Camilla's running graph."""
+
+    from jasper.atomic_io import atomic_write_text
+    from jasper.correction.runtime_safety import assert_correction_graph_safe
+    from jasper.dsp_apply import validate_camilla_config
+    from jasper.sound.graph_carrier import (
+        CarrierCannotHostEq,
+        carrier_for_loaded_config,
+    )
+
+    current = current_path or await cam.get_config_file_path(best_effort=False)
+    if not current:
+        raise RuntimeError("CamillaDSP did not report a loaded config path")
+    carrier = carrier_for_loaded_config(
+        current,
+        config_dir=Path(current).parent,
+    )
+    if carrier.kind == "unknown":
+        raise CarrierCannotHostEq(
+            "unknown_config",
+            "CamillaDSP is running a configuration JTS didn't generate, so "
+            "Room cannot preserve it for exact restoration.",
+        )
+    raw = await cam.get_active_config_raw(best_effort=False)
+    if not isinstance(raw, str) or not raw.strip():
+        raise RuntimeError("CamillaDSP did not report a running graph")
+    text = _running_graph_snapshot_text(raw, current, carrier=carrier)
+    assert_correction_graph_safe(text)
+    snapshot = _room_graph_artifact_path(sess, "snapshot")
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        snapshot,
+        text,
+        mode=0o640,
+        group_from_parent=True,
+    )
+    validation = validate_camilla_config(snapshot)
+    if not validation.ok_to_apply:
+        snapshot.unlink(missing_ok=True)
+        raise RuntimeError(
+            "CamillaDSP's running graph could not be validated for exact "
+            f"restoration: {validation.error or validation.status.value}"
+        )
+    return Path(current), snapshot
+
+
+async def _load_measurement_baseline(
+    sess: Any,
+    cam: Any,
+    *,
+    expected_authority_binding: tuple[bool, str, str | None],
+) -> dict[str, Any]:
     """Load a topology-preserving measurement graph for this correction run.
 
     The graph carrier is the single bridge between "whatever CamillaDSP is
@@ -2124,10 +2512,6 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
     )
     from jasper.sound.profile import SoundProfile
 
-    current_path = await cam.get_config_file_path(best_effort=False)
-    if not current_path:
-        raise RuntimeError("CamillaDSP did not report a loaded config path")
-    sess.pre_measurement_config_path = Path(current_path)
     sess.cfg.config_dir.mkdir(parents=True, exist_ok=True)
     out_path = sess.cfg.config_dir / (
         f"correction_measurement_{sess.session_id}_{int(sess.started_at)}.yml"
@@ -2137,10 +2521,22 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
     coupling_capture_kwargs = coupling_capture_kwargs_from_env()
 
     async def _prepare_config() -> dict[str, Any]:
+        # apply_dsp_config invokes prepare while /start owns the shared
+        # DSP-writer lock. Re-read Active's decision here so the graph being
+        # re-emitted cannot rely on a Layer-A sample taken before reservation.
+        await _assert_room_authority_current(cam, expected_authority_binding)
         anchor = await cam.get_config_file_path(best_effort=False)
         if not anchor:
             raise RuntimeError("CamillaDSP did not report a loaded config path")
-        carrier = carrier_for_loaded_config(anchor, config_dir=sess.cfg.config_dir)
+        _, restore_path = await _snapshot_running_room_graph(
+            sess,
+            cam,
+            current_path=anchor,
+        )
+        carrier = carrier_for_loaded_config(
+            restore_path,
+            config_dir=sess.cfg.config_dir,
+        )
         result = carrier.reemit(
             SoundProfile(enabled=False),
             room_peqs=[],
@@ -2150,8 +2546,11 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
         )
         assert_correction_graph_safe(result.yaml)
         sess.pre_measurement_config_path = Path(anchor)
+        sess.pre_measurement_restore_path = restore_path
         return {
-            "prior_config_path": anchor,
+            # apply_dsp_config must roll back to immutable graph content, not
+            # the mutable durable filename Camilla happened to report.
+            "prior_config_path": str(restore_path),
             "room_peq_count": result.room_peq_count,
             "sound_filter_count": 0,
         }
@@ -2179,10 +2578,8 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
             raise exc.__cause__ from exc
         raise
     sess.measurement_config_path = out_path
-    if state.prior_config_path:
-        sess.pre_measurement_config_path = Path(state.prior_config_path)
     descriptor = describe_current_config(
-        sess.pre_measurement_config_path,
+        sess.pre_measurement_restore_path,
         config_dir=sess.cfg.config_dir,
         base_config_path=sess.cfg.base_config_path,
     )
@@ -2191,6 +2588,7 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
         "correction.measurement_baseline_loaded",
         session=sess.session_id,
         prior=str(sess.pre_measurement_config_path),
+        restore=str(sess.pre_measurement_restore_path),
         candidate=str(out_path),
         op_id=state.op_id,
     )
@@ -2198,6 +2596,7 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
         "current_correction_at_start": descriptor,
         "measurement_config_path": str(out_path),
         "prior_config_path": str(sess.pre_measurement_config_path),
+        "restore_config_path": str(sess.pre_measurement_restore_path),
         "last_dsp_apply": state.to_dict(),
     }
 
@@ -3216,6 +3615,7 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         cam = _camilla()
         capture_path = sess.verify_capture_path()
+        control_client = _bounded_relay_control_client(client)
 
         async def _play_verify() -> None:
             async def _runtime_probe() -> dict[str, Any] | None:
@@ -3230,21 +3630,29 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                         "level check again"
                     )
                 try:
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        {"phase": "sweep_started", "position": 1, "total_positions": 1},
+                    await _post_room_sweep_host_event(
+                        control_client,
+                        pi_session,
+                        {
+                            "phase": "sweep_started",
+                            "position": 1,
+                            "total_positions": 1,
+                            "capture_kind": "verify",
+                        },
                     )
                     await sess.start_verify_sweep(
                         playback.play_sweep,
                         runtime_probe_async=_runtime_probe,
                     )
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        {"phase": "sweep_complete", "position": 1, "total_positions": 1},
+                    await _post_room_sweep_host_event(
+                        control_client,
+                        pi_session,
+                        {
+                            "phase": "sweep_complete",
+                            "position": 1,
+                            "total_positions": 1,
+                            "capture_kind": "verify",
+                        },
                     )
                 finally:
                     await sess.restore_level_match_volume(
@@ -3368,6 +3776,13 @@ async def _run_relay_level_match(
     level_task: asyncio.Task[Any] | None = None
     stop_lock = stop_lock or threading.Lock()
     event_verifier = PhoneEventVerifier(pi_session)
+    from jasper.capture_relay.client import RelayClient
+
+    control_client = (
+        client.with_timeout(_RELAY_CONTROL_TIMEOUT_S)
+        if isinstance(client, RelayClient)
+        else client  # injected deterministic test double
+    )
 
     def _read_status() -> dict[str, Any]:
         return dict(cached_status)
@@ -3377,6 +3792,7 @@ async def _run_relay_level_match(
 
     async def _pump() -> None:
         unhealthy = False
+        host_event_unconfirmed = False
         while not stop_pump.is_set():
             if stop_requested is not None and stop_requested():
                 cancel_level_match = getattr(sess, "cancel_level_match", None)
@@ -3393,18 +3809,48 @@ async def _run_relay_level_match(
                 stop_pump.set()
                 return
             try:
-                while outbound:
+                # Publish at most one queued event before refreshing status.
+                # Together with the narrow control client this keeps the real
+                # elapsed retry+status budget below feed_timeout_s.
+                if outbound:
                     payload = outbound.pop(0)
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        payload,
-                    )
-                fresh = await asyncio.to_thread(
-                    client.status,
+                    try:
+                        await _post_relay_host_event(
+                            control_client,
+                            pi_session,
+                            payload,
+                            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
+                        )
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        # A response timeout is ambiguous: the ordered write may
+                        # already have committed. Status is the live microphone
+                        # feed, so it must still get its turn this iteration;
+                        # otherwise repeated slow acknowledgements alone can
+                        # manufacture an eight-second feed-loss failure.
+                        if not host_event_unconfirmed:
+                            log_event(
+                                logger,
+                                "capture_relay.level_host_event",
+                                level=logging.WARNING,
+                                session_id=pi_session.session_id,
+                                result="unconfirmed",
+                                reason=type(exc).__name__,
+                            )
+                        host_event_unconfirmed = True
+                    else:
+                        if host_event_unconfirmed:
+                            log_event(
+                                logger,
+                                "capture_relay.level_host_event",
+                                session_id=pi_session.session_id,
+                                result="recovered",
+                            )
+                        host_event_unconfirmed = False
+                fresh = await _run_relay_control_request(
+                    control_client.status,
                     pi_session.session_id,
                     pi_session.pull_token,
+                    hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
                 )
                 if isinstance(fresh, dict):
                     verified_event = event_verifier.verify(fresh.get("event"))
@@ -3424,14 +3870,14 @@ async def _run_relay_level_match(
                     reason=str(exc),
                 )
                 try:
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
+                    await _post_relay_host_event(
+                        control_client,
+                        pi_session,
                         {
                             "phase": "capture_incompatible",
                             "error": "capture control integrity check failed",
                         },
+                        hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
                     )
                 except (OSError, RuntimeError, ValueError):
                     logger.warning(
@@ -3570,11 +4016,11 @@ async def _run_relay_level_match(
                                 "phase": "setup_validated",
                                 "setup_token": setup_token,
                             }
-                        await asyncio.to_thread(
-                            client.post_host_event,
-                            pi_session.session_id,
-                            pi_session.pull_token,
+                        await _post_relay_host_event(
+                            control_client,
+                            pi_session,
                             response,
+                            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
                         )
                         if response["phase"] == "setup_validation_failed":
                             raise ValueError(str(response["error"]))
@@ -3788,10 +4234,9 @@ async def _run_relay_level_match(
             terminal_state = (
                 "cancelled" if isinstance(exc, CaptureStopped) else "error"
             )
-            await asyncio.to_thread(
-                client.post_host_event,
-                pi_session.session_id,
-                pi_session.pull_token,
+            await _post_relay_host_event(
+                control_client,
+                pi_session,
                 {
                     "ramp": {
                         "state": terminal_state,
@@ -3800,6 +4245,7 @@ async def _run_relay_level_match(
                         "error": str(exc),
                     }
                 },
+                hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
             )
             await asyncio.sleep(0.75)
         except (OSError, RuntimeError, ValueError):
@@ -5376,7 +5822,16 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return await cam.get_config_file_path(best_effort=True)
 
     try:
-        _run_graph_mutation(sess.apply(_set, camilla_get_config=_get))
+        _run_graph_mutation(
+            sess.apply(
+                _set,
+                camilla_get_config=_get,
+                prepare_guard=lambda: _assert_room_authority_current(
+                    cam,
+                    sess.room_authority_binding,
+                ),
+            )
+        )
     finally:
         # Audio-safety: autolevel may have ramped main_volume well above the
         # listening level for measurement SNR. Restore it even if apply()
@@ -5674,19 +6129,10 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         if autolevel_active:
             _run_async(sess.cancel_autolevel_and_wait(), timeout=7.0)
 
-    async def _set(path: str) -> bool:
-        return await cam.set_config_file_path(path, best_effort=False)
-
     try:
         if hasattr(sess, "stop_background_audio_for_reset"):
             _run_async(sess.stop_background_audio_for_reset(), timeout=45.0)
-        target = _resolve_reset_target(sess, cam)
-        reset_kwargs = (
-            {"target_config_path": target}
-            if _accepts_target_config_path(sess.reset)
-            else {}
-        )
-        _run_graph_mutation(sess.reset(_set, **reset_kwargs))
+        _run_graph_mutation(_run_locked_room_reset(sess, cam))
     finally:
         # Audio-safety: restore the pre-autolevel listening level even if
         # reset() raised (see _handle_apply).
@@ -5698,48 +6144,175 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return {"session_id": sess.session_id, "state": sess.state.value}
 
 
-def _pre_measurement_restore_target(sess: Any) -> Path | None:
-    """Prior graph to restore when reset is cancelling this measurement."""
+async def _pre_measurement_restore_target(sess: Any, cam: Any) -> Path | None:
+    """Prior graph to restore only while this measurement still owns Camilla."""
     state_value = getattr(getattr(sess, "state", None), "value", None)
     if state_value in {"idle", "applied", "verified"}:
         return None
     prior = getattr(sess, "pre_measurement_config_path", None)
-    return Path(prior) if prior else None
+    restore = getattr(sess, "pre_measurement_restore_path", None)
+    if not prior or not restore:
+        return None
+
+    current = await cam.get_config_file_path(best_effort=False)
+    if not current:
+        raise RuntimeError("CamillaDSP did not report a loaded config path")
+    measurement = getattr(sess, "measurement_config_path", None)
+    owned_path = Path(measurement) if measurement else Path(prior)
+    prior_path = Path(prior)
+    restore_path = Path(restore)
+    if Path(current) in {owned_path, restore_path}:
+        return restore_path
+    if Path(current) == prior_path:
+        # A durable Active filename can be overwritten by a blocked candidate
+        # without CamillaDSP loading those new bytes. Compare the daemon's
+        # running graph with Start's immutable snapshot; filename equality by
+        # itself is not evidence that either the old or new content is active.
+        raw = await cam.get_active_config_raw(best_effort=False)
+        try:
+            saved = restore_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(
+                "Room's immutable predecessor snapshot is unavailable"
+            ) from exc
+        if _running_graph_body(raw) == _running_graph_body(saved):
+            return restore_path
+
+    # A legal DSP writer may publish a newer Active graph after Room Start.
+    # The shared lock makes this read stable; never use Room's saved predecessor
+    # once Camilla has moved away from Room's own measurement graph. The caller
+    # will instead strip Room from the fresh current graph, preserving new A.
+    log_event(
+        logger,
+        "correction.pre_measurement_predecessor_superseded",
+        session=getattr(sess, "session_id", None),
+        current=str(current),
+        room_owned=str(owned_path),
+        saved_predecessor=str(prior),
+        immutable_restore=str(restore_path),
+        level=logging.WARNING,
+    )
+    return None
 
 
-def _resolve_reset_target(sess: Any, cam: Any) -> Path:
+async def _resolve_reset_target_async(sess: Any, cam: Any) -> Path:
     """Resolve the graph to restore for a reset / auto-revert.
 
     The single source of truth for "what should the speaker load when we undo
     room correction," shared by ``POST /reset`` (user-driven) and the P4
     confirmed-regression auto-revert (deterministic). If a measurement is
-    mid-flight, restore the pre-``/start`` graph; once a correction is applied
-    or verified, re-emit the current topology with room PEQs cleared (Layer B
-    removed, speaker DSP + preference EQ preserved). A re-emit failure falls
-    back to the safe base graph so an undo never strands the speaker.
+    mid-flight and Camilla still runs Room's measurement graph, restore the
+    pre-``/start`` graph. If another legal writer has since published a graph,
+    or once a correction is applied/verified, re-emit that current topology
+    with room PEQs cleared (Layer B removed, speaker DSP + preference EQ
+    preserved). A re-emit failure may retain only the observably managed,
+    no-Room graph captured from Camilla's active_raw before re-emit; otherwise
+    reversal fails loudly without claiming that Layer B was removed.
     """
-    from jasper.correction.runtime_safety import reset_config_path
-
     cfg = getattr(sess, "cfg", None)
     base_config_path = getattr(
         cfg,
         "base_config_path",
         Path("/etc/camilladsp/outputd-cutover.yml"),
     )
-    target = _pre_measurement_restore_target(sess)
+    target = await _pre_measurement_restore_target(sess, cam)
     if target is None:
+        _current, current_snapshot = await _snapshot_running_room_graph(sess, cam)
         try:
-            target = _run_async(
-                _write_no_room_correction_config(sess, cam),
-                timeout=5.0,
+            target = await _write_no_room_correction_config(
+                sess,
+                cam,
+                current_snapshot_path=current_snapshot,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.exception(
-                "reset/auto-revert: no-room re-emit failed; falling back "
-                "to safe graph",
+                "reset/auto-revert: no-room re-emit failed; checking the "
+                "fresh current graph",
             )
-            target = reset_config_path(base_config_path)
+            from jasper.correction.status import describe_current_config
+
+            config_dir = Path(
+                getattr(cfg, "config_dir", None)
+                or "/var/lib/camilladsp/configs"
+            )
+            # This immutable snapshot was captured and safety-validated before
+            # the failed re-emit wrote its separate candidate. Never re-read a
+            # mutable current filename here: it may be the rejected output.
+            target = current_snapshot
+            descriptor = describe_current_config(
+                str(target),
+                config_dir=config_dir,
+                base_config_path=Path(base_config_path),
+            )
+            fallback_kind = descriptor.get("kind")
+            fallback_is_no_room = (
+                descriptor.get("managed") is True
+                and descriptor.get("current_correction") is None
+                and fallback_kind
+                in {"base", "active_speaker", "sound_preference"}
+            )
+            if not fallback_is_no_room:
+                log_event(
+                    logger,
+                    "correction.reset_fallback_rejected",
+                    session=getattr(sess, "session_id", None),
+                    target=str(target),
+                    kind=fallback_kind,
+                    managed=descriptor.get("managed"),
+                    room_correction_present=isinstance(
+                        descriptor.get("current_correction"),
+                        dict,
+                    ),
+                    level=logging.ERROR,
+                )
+                raise RuntimeError(
+                    "Room correction could not be removed because no verified "
+                    "no-Room graph is available; the current graph remains "
+                    "loaded"
+                ) from exc
+            log_event(
+                logger,
+                "correction.reset_fallback_selected",
+                session=getattr(sess, "session_id", None),
+                target=str(target),
+                kind=fallback_kind,
+                level=logging.WARNING,
+            )
     return target
+
+
+async def _run_locked_room_reset(
+    sess: Any,
+    cam: Any,
+    *,
+    automatic: bool = False,
+) -> Any:
+    """Resolve and load one Room reversal under the shared DSP-writer lock."""
+
+    from jasper.dsp_apply import dsp_writer_lock
+
+    cfg = getattr(sess, "cfg", None)
+    config_dir = getattr(cfg, "config_dir", None)
+    if config_dir is None:
+        raise RuntimeError("Room session has no CamillaDSP config directory")
+
+    async def _set(path: str) -> bool:
+        return await cam.set_config_file_path(path, best_effort=False)
+
+    operation = sess.auto_revert if automatic else sess.reset
+    source = "correction_auto_revert" if automatic else "correction_reset"
+    async with dsp_writer_lock(config_dir, source=source):
+        # Restoration must not depend on fresh Room authority: its purpose is
+        # to recover from a stale/failed Room session.  It does need to resolve
+        # the no-Room carrier after admission so a legal Active writer cannot
+        # swap Layer A between target construction and load.
+        target = await _resolve_reset_target_async(sess, cam)
+        kwargs = (
+            {"target_config_path": target}
+            if _accepts_target_config_path(operation)
+            else {}
+        )
+        return await operation(_set, **kwargs)
 
 
 def _maybe_auto_revert(sess: Any) -> bool:
@@ -5765,18 +6338,11 @@ def _maybe_auto_revert(sess: Any) -> bool:
         return False
     cam = _camilla()
 
-    async def _set(path: str) -> bool:
-        return await cam.set_config_file_path(path, best_effort=False)
-
     try:
-        target = _resolve_reset_target(sess, cam)
-        revert_kwargs = (
-            {"target_config_path": target}
-            if _accepts_target_config_path(sess.auto_revert)
-            else {}
-        )
         return bool(
-            _run_graph_mutation(sess.auto_revert(_set, **revert_kwargs))
+            _run_graph_mutation(
+                _run_locked_room_reset(sess, cam, automatic=True)
+            )
         )
     except Exception:  # noqa: BLE001
         logger.exception(
@@ -5787,17 +6353,22 @@ def _maybe_auto_revert(sess: Any) -> bool:
         return False
 
 
-async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
+async def _write_no_room_correction_config(
+    sess: Any,
+    cam: Any,
+    *,
+    current_snapshot_path: str | Path | None = None,
+) -> Path:
     """Emit the current graph with room correction cleared.
 
-    For passive/full-range graphs this is the ordinary sound config. For active
-    baselines it is still an active graph; content-based status/carrier checks
-    keep that safe even though the durable filename is `sound_current.yml`.
+    For passive/full-range graphs this is an ordinary sound config. For active
+    baselines it remains an active graph. The candidate is session-unique so a
+    validation failure cannot alter the durable filename Camilla is running.
     """
 
     from jasper.correction.runtime_safety import assert_correction_graph_safe
+    from jasper.dsp_apply import validate_camilla_config
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
-    from jasper.sound.camilla_yaml import sound_config_path
     from jasper.sound.graph_carrier import carrier_for_loaded_config
     from jasper.sound.profile import load_profile
 
@@ -5806,11 +6377,15 @@ async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
         getattr(cfg, "config_dir", Path("/var/lib/camilladsp/configs"))
     )
     config_dir.mkdir(parents=True, exist_ok=True)
-    current_path = await cam.get_config_file_path(best_effort=False)
-    if not current_path:
-        raise RuntimeError("CamillaDSP did not report a loaded config path")
-    out_path = sound_config_path(config_dir)
-    carrier = carrier_for_loaded_config(current_path, config_dir=config_dir)
+    if current_snapshot_path is None:
+        _current, snapshot_path = await _snapshot_running_room_graph(sess, cam)
+    else:
+        snapshot_path = Path(current_snapshot_path)
+    # Never emit over Camilla's reported current filename. Some JTS writers use
+    # durable names such as sound_current.yml; post-write validation failure
+    # must leave that live predecessor's bytes untouched.
+    out_path = _room_graph_artifact_path(sess, "reset")
+    carrier = carrier_for_loaded_config(snapshot_path, config_dir=config_dir)
     profile = load_profile()
     result = carrier.reemit(
         profile,
@@ -5820,10 +6395,16 @@ async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
         fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
     )
     assert_correction_graph_safe(result.yaml)
+    validation = validate_camilla_config(out_path)
+    if not validation.ok_to_apply:
+        raise RuntimeError(
+            "the generated no-Room graph failed CamillaDSP validation: "
+            f"{validation.error or validation.status.value}"
+        )
     log_event(
         logger,
         "correction.reset_no_room_config",
-        current=str(current_path),
+        current_snapshot=str(snapshot_path),
         candidate=str(out_path),
         room_peqs=result.room_peq_count,
     )

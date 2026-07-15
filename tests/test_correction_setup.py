@@ -510,6 +510,277 @@ async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeyp
     assert purged == ["cap-stop"]
 
 
+@pytest.mark.asyncio
+async def test_level_pump_refreshes_status_after_host_event_timeout(monkeypatch):
+    """A slow acknowledgement cannot manufacture microphone feed loss."""
+    from contextlib import asynccontextmanager
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator, level_match, playback
+
+    status_reads = []
+    host_events = []
+    purged = []
+
+    class Session:
+        session_id = "room-level"
+        noise_floor_db = -40.0
+        input_device = None
+        mic_calibration = None
+
+        async def run_level_match(
+            self,
+            _geometry,
+            *,
+            read_status,
+            post_host_event,
+            **_ports,
+        ):
+            post_host_event({"phase": "ramp_progress"})
+            for _attempt in range(50):
+                if read_status().get("event"):
+                    return SimpleNamespace(
+                        locked=True,
+                        ramp=SimpleNamespace(error=None),
+                    )
+                await asyncio.sleep(0.01)
+            pytest.fail("status was never refreshed after the host-event timeout")
+
+    class Client:
+        def post_host_event(self, _session_id, _pull_token, payload):
+            host_events.append(dict(payload))
+            raise TimeoutError("response timed out after the write")
+
+        def status(self, _session_id, _pull_token):
+            status_reads.append(True)
+            return {"event": {"level_batch": {"samples": []}}}
+
+        def delete(self, session_id, _pull_token):
+            purged.append(session_id)
+
+    class Camilla:
+        async def get_volume_db(self, *, best_effort):
+            return -30.0
+
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+    class TonePlayer:
+        def __init__(self, _path):
+            pass
+
+        async def play(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    class EventVerifier:
+        def __init__(self, _pi_session):
+            pass
+
+        def verify(self, event):
+            return event
+
+    @asynccontextmanager
+    async def measurement_window():
+        yield
+
+    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: Camilla())
+    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: "tone.wav")
+    monkeypatch.setattr(playback, "TonePlayer", TonePlayer)
+    monkeypatch.setattr(
+        level_match,
+        "parse_level_batch",
+        lambda *_args, **_kwargs: [
+            SimpleNamespace(rms_dbfs=-40.0, seq=1, t_client_ms=1)
+        ],
+    )
+    monkeypatch.setattr(relay_session, "PhoneEventVerifier", EventVerifier)
+    monkeypatch.setattr(relay_session, "validate_capture_page", lambda *_args: None)
+    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
+
+    await correction_setup._run_relay_level_match(
+        Session(),
+        Client(),
+        SimpleNamespace(
+            session_id="cap-level",
+            pull_token="pull",
+            spec=SimpleNamespace(capture_protocol_version=1, kind="level_ramp"),
+        ),
+        geometry="listening_position",
+        run_token="run-level",
+    )
+
+    assert host_events == [
+        {"phase": "ramp_progress"},
+        {"phase": "ramp_progress"},
+    ]
+    assert status_reads
+    assert purged == ["cap-level"]
+
+
+@pytest.mark.asyncio
+async def test_relay_host_event_retries_one_transient_timeout(monkeypatch):
+    attempts = []
+
+    class Client:
+        def post_host_event(self, _session_id, _pull_token, payload):
+            attempts.append(payload)
+            if len(attempts) == 1:
+                raise TimeoutError("relay response timed out")
+
+    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
+    await correction_setup._post_relay_host_event(
+        Client(),
+        SimpleNamespace(session_id="cap-retry", pull_token="pull"),
+        {"phase": "setup_validated"},
+    )
+
+    assert attempts == [
+        {"phase": "setup_validated"},
+        {"phase": "setup_validated"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_relay_host_event_does_not_retry_nontransient_4xx(monkeypatch):
+    from jasper.capture_relay.client import RelayError
+
+    attempts = []
+
+    class Client:
+        def post_host_event(self, _session_id, _pull_token, payload):
+            attempts.append(payload)
+            raise RelayError("host event failed: 404", 404)
+
+    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
+    with pytest.raises(RelayError, match="404"):
+        await correction_setup._post_relay_host_event(
+            Client(),
+            SimpleNamespace(session_id="cap-gone", pull_token="pull"),
+            {"phase": "setup_validated"},
+        )
+
+    assert attempts == [{"phase": "setup_validated"}]
+
+
+@pytest.mark.asyncio
+async def test_room_host_event_exhausted_429_is_definitive(monkeypatch):
+    """The bounded retry does not turn a final rate limit into ambiguity."""
+    from jasper.capture_relay.client import RelayError
+
+    attempts = []
+
+    class Client:
+        def post_host_event(self, _session_id, _pull_token, payload):
+            attempts.append(payload)
+            raise RelayError("host event failed: 429", 429)
+
+    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
+    with pytest.raises(RelayError, match="429"):
+        await correction_setup._post_room_sweep_host_event(
+            Client(),
+            SimpleNamespace(session_id="cap-rate-limit", pull_token="pull"),
+            {"phase": "sweep_started"},
+        )
+
+    assert attempts == [
+        {"phase": "sweep_started"},
+        {"phase": "sweep_started"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_relay_control_request_enforces_wall_clock_deadline():
+    started = threading.Event()
+    release = threading.Event()
+
+    def stalled_body():
+        started.set()
+        release.wait(timeout=1.0)
+
+    began = time.monotonic()
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await correction_setup._run_relay_control_request(
+                stalled_body,
+                hard_timeout_s=0.02,
+            )
+    finally:
+        release.set()
+
+    assert started.is_set()
+    assert time.monotonic() - began < 0.25
+
+
+@pytest.mark.asyncio
+async def test_timed_out_relay_write_cannot_finish_after_newer_terminal_event(
+    monkeypatch,
+):
+    started = threading.Event()
+    release = threading.Event()
+    history = []
+
+    class Client:
+        def post_host_event(self, _session_id, _pull_token, payload):
+            if payload["phase"] == "old":
+                started.set()
+                release.wait(timeout=1.0)
+            history.append(payload["phase"])
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(
+        correction_setup,
+        "_RELAY_LEVEL_CONTROL_EXECUTOR",
+        executor,
+    )
+    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_ATTEMPTS", 1)
+    client = Client()
+    pi_session = SimpleNamespace(session_id="cap-ordered", pull_token="pull")
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await correction_setup._post_relay_host_event(
+                client,
+                pi_session,
+                {"phase": "old"},
+                hard_timeout_s=0.02,
+            )
+        assert started.is_set()
+
+        terminal = asyncio.create_task(
+            correction_setup._post_relay_host_event(
+                client,
+                pi_session,
+                {"phase": "terminal"},
+                hard_timeout_s=0.5,
+            )
+        )
+        await asyncio.sleep(0.02)
+        assert history == []
+
+        release.set()
+        await terminal
+    finally:
+        release.set()
+        executor.shutdown(wait=True)
+
+    assert history == ["old", "terminal"]
+
+
+def test_relay_level_control_budget_stays_inside_default_feed_guard():
+    from jasper.audio_measurement.ramp import MeasurementRamp
+
+    assert correction_setup._RELAY_CONTROL_TIMEOUT_S < (
+        correction_setup._RELAY_REGISTER_TIMEOUT_S
+    )
+    assert correction_setup._RELAY_LEVEL_PUMP_MAX_BLOCK_S == pytest.approx(4.75)
+    assert correction_setup._RELAY_LEVEL_PUMP_MAX_BLOCK_S < (
+        MeasurementRamp().feed_timeout_s
+    )
+
+
 def test_relay_capture_return_url_uses_request_host(monkeypatch):
     monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
     handler = SimpleNamespace(headers={"Host": "jts5.local"})
@@ -729,6 +1000,187 @@ def test_room_relay_repeat_consumes_repeat_capture_only(monkeypatch, tmp_path):
     }
     assert playback == [True]
     assert consumed == [("repeat", tmp_path / "repeat.wav")]
+
+
+@pytest.mark.parametrize("repeat", [False, True], ids=["measurement", "repeat"])
+@pytest.mark.parametrize(
+    "failure",
+    ["complete_timeout", "start_oserror", "start_503"],
+    ids=["ambiguous-complete", "ambiguous-network", "ambiguous-server"],
+)
+def test_room_relay_sweep_keeps_capture_alive_when_event_is_unconfirmed(
+    monkeypatch,
+    repeat,
+    failure,
+):
+    """Measurement and repeat preserve every ambiguous relay event outcome."""
+    from contextlib import asynccontextmanager
+
+    from jasper.capture_relay.client import RelayError
+    from jasper.correction import coordinator
+
+    events = []
+    playback = []
+    restored = []
+
+    @asynccontextmanager
+    async def measurement_window():
+        yield
+
+    async def post_host_event(_client, _pi_session, payload, *, hard_timeout_s):
+        events.append((dict(payload), hard_timeout_s))
+        if failure == "complete_timeout" and payload["phase"] == "sweep_complete":
+            raise asyncio.TimeoutError
+        if failure == "start_oserror" and payload["phase"] == "sweep_started":
+            raise OSError("response lost")
+        if failure == "start_503" and payload["phase"] == "sweep_started":
+            raise RelayError("relay response unavailable", 503)
+
+    class Session:
+        current_position = 1
+        total_positions = 6
+
+        async def ensure_level_match_volume(self, _setter):
+            return True
+
+        async def prepare_and_play_sweep(
+            self,
+            _play_sweep,
+            *,
+            runtime_probe_async,
+        ):
+            playback.append("measurement")
+
+        async def prepare_and_play_repeat_sweep(
+            self,
+            _play_sweep,
+            *,
+            runtime_probe_async,
+        ):
+            playback.append("repeat")
+
+        async def restore_level_match_volume(self, _setter):
+            restored.append(True)
+            return True
+
+    class Camilla:
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+        async def get_runtime_status(self, *, best_effort):
+            return {}
+
+    client = SimpleNamespace(
+        post_host_event=lambda *_args, **_kwargs: pytest.fail(
+            "Room sweep events must use the bounded async relay path"
+        )
+    )
+    pi_session = SimpleNamespace(session_id="cap-repeat", pull_token="pull")
+    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
+    monkeypatch.setattr(correction_setup, "_post_relay_host_event", post_host_event)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda awaitable, *, timeout: asyncio.run(awaitable),
+    )
+
+    correction_setup._run_relay_measurement_sweep(
+        Session(),
+        Camilla(),
+        client=client,
+        pi_session=pi_session,
+        repeat=repeat,
+    )
+
+    assert playback == ["repeat" if repeat else "measurement"]
+    assert restored == [True]
+    assert [event[0]["phase"] for event in events] == [
+        "sweep_started",
+        "sweep_complete",
+    ]
+    assert all(
+        timeout == correction_setup._RELAY_CONTROL_TIMEOUT_S
+        for _payload, timeout in events
+    )
+
+
+@pytest.mark.parametrize("repeat", [False, True], ids=["measurement", "repeat"])
+@pytest.mark.parametrize("status", [404, 429], ids=["gone", "rate-limited"])
+def test_room_relay_sweep_stops_before_playback_on_definitive_4xx(
+    monkeypatch,
+    repeat,
+    status,
+):
+    """A rejected recorder session must never trigger Room sweep audio."""
+    from contextlib import asynccontextmanager
+
+    from jasper.capture_relay.client import RelayError
+    from jasper.correction import coordinator
+
+    events = []
+    playback = []
+    restored = []
+
+    @asynccontextmanager
+    async def measurement_window():
+        yield
+
+    async def post_host_event(_client, _pi_session, payload, *, hard_timeout_s):
+        events.append((dict(payload), hard_timeout_s))
+        raise RelayError("relay event was refused", status)
+
+    class Session:
+        current_position = 1 if repeat else 0
+        total_positions = 6
+
+        async def ensure_level_match_volume(self, _setter):
+            return True
+
+        async def prepare_and_play_sweep(self, _play_sweep, *, runtime_probe_async):
+            playback.append("measurement")
+
+        async def prepare_and_play_repeat_sweep(
+            self,
+            _play_sweep,
+            *,
+            runtime_probe_async,
+        ):
+            playback.append("repeat")
+
+        async def restore_level_match_volume(self, _setter):
+            restored.append(True)
+            return True
+
+    class Camilla:
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+        async def get_runtime_status(self, *, best_effort):
+            return {}
+
+    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
+    monkeypatch.setattr(correction_setup, "_post_relay_host_event", post_host_event)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda awaitable, *, timeout: asyncio.run(awaitable),
+    )
+
+    with pytest.raises(RelayError, match="event was refused"):
+        correction_setup._run_relay_measurement_sweep(
+            Session(),
+            Camilla(),
+            client=SimpleNamespace(),
+            pi_session=SimpleNamespace(session_id="relay-gone", pull_token="pull"),
+            repeat=repeat,
+        )
+
+    assert playback == []
+    assert restored == [True]
+    assert [event[0]["phase"] for event in events] == [
+        "sweep_started",
+        "sweep_failed",
+    ]
 
 
 def test_room_relay_capture_refuses_changed_mic_before_playback(
@@ -1038,6 +1490,171 @@ def test_room_verify_checks_level_microphone_before_playback(monkeypatch, tmp_pa
     assert registered["return_url"] == "http://jts3.local/correction/room/"
     assert uploaded == [b"RIFFverify"]
     assert restored == [True]
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_upload", "expected_phases"),
+    [
+        pytest.param(
+            "complete_timeout",
+            [b"RIFFfresh-verify"],
+            ["sweep_started", "sweep_complete"],
+            id="ambiguous-complete",
+        ),
+        pytest.param(
+            "start_oserror",
+            [b"RIFFfresh-verify"],
+            ["sweep_started", "sweep_complete"],
+            id="ambiguous-network",
+        ),
+        pytest.param(
+            "start_503",
+            [b"RIFFfresh-verify"],
+            ["sweep_started", "sweep_complete"],
+            id="ambiguous-server",
+        ),
+        pytest.param(
+            "start_404",
+            [],
+            ["sweep_started"],
+            id="definitive-start-refusal",
+        ),
+        pytest.param(
+            "start_429",
+            [],
+            ["sweep_started"],
+            id="exhausted-rate-limit-refusal",
+        ),
+    ],
+)
+def test_room_relay_verify_host_event_failure_contract(
+    monkeypatch,
+    tmp_path,
+    failure,
+    expected_upload,
+    expected_phases,
+):
+    """Verify preserves ambiguity but aborts on a definitive relay refusal."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from jasper.capture_relay.client import RelayError
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator
+    from jasper.correction.session import SessionState
+
+    events = []
+    uploaded = []
+    registered = {}
+
+    @asynccontextmanager
+    async def measurement_window():
+        yield
+
+    async def post_host_event(
+        _client,
+        _pi_session,
+        payload,
+        *,
+        hard_timeout_s,
+    ):
+        events.append((dict(payload), hard_timeout_s))
+        if failure == "complete_timeout" and payload["phase"] == "sweep_complete":
+            raise asyncio.TimeoutError
+        if failure == "start_oserror" and payload["phase"] == "sweep_started":
+            raise OSError("response lost")
+        if failure == "start_503" and payload["phase"] == "sweep_started":
+            raise RelayError("relay response unavailable", 503)
+        if failure in {"start_404", "start_429"} and payload["phase"] == "sweep_started":
+            status = 404 if failure == "start_404" else 429
+            raise RelayError("relay event was refused", status)
+
+    class Session:
+        session_id = "room-verify-timeout"
+        state = SessionState.APPLIED
+        input_device = {"label": "UMIK-2"}
+        mic_calibration = None
+
+        def level_match_snapshot(self):
+            return {"last": {"ramp": {"state": "locked"}}}
+
+        def verify_capture_path(self):
+            return tmp_path / "verify.wav"
+
+        async def ensure_level_match_volume(self, _setter):
+            return True
+
+        async def start_verify_sweep(self, _play_sweep, *, runtime_probe_async):
+            return None
+
+        async def restore_level_match_volume(self, _setter):
+            return True
+
+        async def on_verify_capture_uploaded(self, path):
+            uploaded.append(path.read_bytes())
+
+    class Camilla:
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+        async def get_runtime_status(self, *, best_effort):
+            return {}
+
+    def fake_run(kind, _relay_base, *, return_url):
+        registered.update(kind=kind, return_url=return_url)
+        return {"tap_link": "https://capture.jasper.tech/#redacted"}
+
+    def fake_run_capture(_client, _pi_session, *, on_armed):
+        relay_session._call_state_callback(
+            on_armed,
+            SimpleNamespace(device={"label": "UMIK-2"}),
+        )
+        return SimpleNamespace(wav=b"RIFFfresh-verify", device={"label": "UMIK-2"})
+
+    direct_events = []
+
+    def direct_host_event(_session_id, _pull_token, payload):
+        # Progress events must use the bounded ordered helper patched above.
+        direct_events.append(dict(payload))
+
+    client = SimpleNamespace(post_host_event=direct_host_event)
+    pi_session = SimpleNamespace(session_id="relay-verify", pull_token="pull")
+    monkeypatch.setattr(
+        correction_setup,
+        "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", Session)
+    monkeypatch.setattr(correction_setup, "_camilla", Camilla)
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
+    monkeypatch.setattr(correction_setup, "_post_relay_host_event", post_host_event)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda awaitable, *, timeout: asyncio.run(awaitable),
+    )
+    monkeypatch.setattr(correction_setup, "_maybe_auto_revert", lambda _sess: None)
+    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    correction_setup._handle_relay_verify(
+        SimpleNamespace(headers={"Host": "jts3.local"})
+    )
+    if failure in {"start_404", "start_429"}:
+        with pytest.raises(RelayError, match="event was refused"):
+            asyncio.run(registered["kind"].run_and_consume(client, pi_session))
+    else:
+        asyncio.run(registered["kind"].run_and_consume(client, pi_session))
+
+    assert uploaded == expected_upload
+    assert [event[0]["phase"] for event in events] == expected_phases
+    assert direct_events == []
+    assert all(
+        event[0]["capture_kind"] == "verify"
+        and event[1] == correction_setup._RELAY_CONTROL_TIMEOUT_S
+        for event in events
+    )
 
 
 def test_render_page_delegates_correction_when_bonded_follower(monkeypatch):
@@ -1689,11 +2306,11 @@ def test_render_page_includes_autolevel_controls():
     assert "startAutolevel" in js
     assert "autolevel/start" in js
     assert "autolevel/lock" in js
-    # Adaptive target band — computed from measured noise floor at
-    # the start of autolevel rather than hard-coded.
+    # Local and relay paths share Room's fixed acoustic-headroom window;
+    # measured noise remains evidence rather than permission to lock hotter.
     assert "computeTargetBand" in js
-    assert "AUTOLEVEL_SNR_DESIRED_LOW" in js
-    assert "AUTOLEVEL_SNR_DESIRED_HIGH" in js
+    assert "ROOM_LEVEL_WINDOW_LOW_DBFS" in js
+    assert "ROOM_LEVEL_WINDOW_HIGH_DBFS" in js
     # Preflight noise-floor measurement step is present.
     assert "Measuring room noise" in js
     assert "You can measure now" not in js
@@ -1835,14 +2452,37 @@ def test_render_page_redraws_chart_on_resize():
 
 
 def test_render_page_autolevel_target_band_clamps():
-    """Pin the absolute clamps: -30 dBFS floor (don't lock super
-    quiet even in dead-silent rooms) and -10 dBFS ceiling (avoid
-    pushing the iPhone mic toward clipping). A regression here
-    would cause silent off-by-default-target failures we'd only
-    catch on hardware."""
+    """The preferred local UMIK path reserves the same ESS headroom as relay."""
     body = _module_js()  # behaviour relocated to the static ES module
-    assert "AUTOLEVEL_TARGET_DB_FLOOR = -30" in body
-    assert "AUTOLEVEL_TARGET_DB_CEILING = -10" in body
+    assert "ROOM_LEVEL_WINDOW_LOW_DBFS = -26" in body
+    assert "ROOM_LEVEL_WINDOW_HIGH_DBFS = -18" in body
+    target = body.split("function computeTargetBand", 1)[1].split(
+        "function autolevelAutoLockEligible", 1
+    )[0]
+    assert "low: ROOM_LEVEL_WINDOW_LOW_DBFS" in target
+    assert "high: ROOM_LEVEL_WINDOW_HIGH_DBFS" in target
+    assert "noiseFloorDb +" not in target
+
+
+def test_render_page_autolevel_requires_ambient_trust_after_tone_start(
+    monkeypatch,
+):
+    """Ambient in the fixed window cannot impersonate the level tone."""
+    monkeypatch.setenv("JASPER_RAMP_TRUST_MARGIN_DB", "12.5")
+    page = correction_setup._render_page("jts.local").decode()
+    assert 'data-level-trust-margin-db="12.5"' in page
+
+    body = _module_js()
+    start = body.split("async function startAutolevel", 1)[1].split(
+        "async function cancelAutolevel", 1
+    )[0]
+    assert start.index("await postJson('autolevel/start', {})") < start.index(
+        "watcher = setInterval(watchAutolevelRms, 50)"
+    )
+    assert "autolevelAutoLockEligible(" in start
+    assert "noiseFloorDb + trustMarginDb" in body
+    assert "noiseFloorDb = -50" not in start
+    assert "noiseFloorDb = null" in start
 
 
 def test_render_page_amp_message_is_generic_not_tpa3255():
@@ -2608,7 +3248,12 @@ def test_render_page_emits_registry_model_aliases():
 # level for measurement SNR; if a failed apply/reset skipped the restore, the
 # next song would play back at the (loud) measurement level. The restore now
 # lives in a finally so the exception can't strand the speaker loud.
-def _locked_autolevel_session(raises_on, *, original=-20.0):
+def _locked_autolevel_session(
+    raises_on,
+    *,
+    original=-20.0,
+    config_dir: Path | None = None,
+):
     """Fake session whose apply/reset raises, with a LOCKED autolevel that
     ramped main_volume up to a measurement level above `original`."""
     from jasper.correction.session import AutolevelData, AutolevelStatus, SessionState
@@ -2617,15 +3262,26 @@ def _locked_autolevel_session(raises_on, *, original=-20.0):
         session_id = "vol-strand"
         state = SessionState.READY
         config_path = None
+        room_authority_binding = (False, "passive_not_required", None)
 
         def __init__(self):
+            if config_dir is not None:
+                self.cfg = SimpleNamespace(config_dir=config_dir)
             self.autolevel = AutolevelData(
                 status=AutolevelStatus.LOCKED,
                 original_main_volume_db=original,
                 locked_main_volume_db=-8.0,
             )
 
-        async def apply(self, set_cb, camilla_get_config=None):
+        async def apply(
+            self,
+            set_cb,
+            camilla_get_config=None,
+            *,
+            prepare_guard=None,
+        ):
+            if prepare_guard is not None:
+                await prepare_guard()
             if raises_on == "apply":
                 raise RuntimeError("CamillaDSP reload failed")
 
@@ -2650,16 +3306,439 @@ def _volume_recording_cam(restored):
     return _FakeCam()
 
 
-def test_ready_reset_restores_exact_pre_measurement_graph():
+@pytest.mark.asyncio
+async def test_ready_reset_restores_exact_pre_measurement_graph():
     from jasper.correction.session import SessionState
 
     predecessor = Path("/var/lib/camilladsp/configs/before-room.yml")
+    restore = Path(
+        "/var/lib/camilladsp/configs/sound_snapshot_smoke_123.yml"
+    )
+    measurement = Path(
+        "/var/lib/camilladsp/configs/correction_measurement_smoke.yml"
+    )
     sess = SimpleNamespace(
         state=SessionState.READY,
         pre_measurement_config_path=predecessor,
+        pre_measurement_restore_path=restore,
+        measurement_config_path=measurement,
     )
 
-    assert correction_setup._resolve_reset_target(sess, None) == predecessor
+    class Cam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(measurement)
+
+    assert (
+        await correction_setup._resolve_reset_target_async(sess, Cam())
+        == restore
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
+@pytest.mark.parametrize(
+    "running_path",
+    ["measurement", "predecessor"],
+    ids=["blocked-active-build", "failed-active-load-rollback"],
+)
+async def test_room_reversal_uses_immutable_running_graph_after_active_overwrite(
+    tmp_path,
+    automatic,
+    running_path,
+):
+    """A mutable Active candidate filename is provenance, never rollback data."""
+    from jasper.correction.session import SessionState
+
+    predecessor = tmp_path / "active_speaker_manual_current.yml"
+    restore = tmp_path / "sound_snapshot_roomrun_123.yml"
+    measurement = tmp_path / "correction_measurement_roomrun_123.yml"
+    running_graph = "# Source: old-active\nfilters:\n  crossover: {}\n"
+    refused_candidate = "# Source: refused-active\nfilters:\n  crossover_new: {}\n"
+    restore.write_text(running_graph, encoding="utf-8")
+    measurement.write_text("filters: {}\n", encoding="utf-8")
+    # Active's candidate builder legally rewrote its durable filename, but the
+    # candidate was blocked or failed and these bytes never became the graph
+    # CamillaDSP was running.
+    predecessor.write_text(refused_candidate, encoding="utf-8")
+    loaded = []
+
+    class Cam:
+        current = str(
+            measurement if running_path == "measurement" else predecessor
+        )
+
+        async def get_config_file_path(self, *, best_effort=False):
+            return self.current
+
+        async def get_active_config_raw(self, *, best_effort=False):
+            return running_graph
+
+        async def set_config_file_path(self, path, *, best_effort=False):
+            loaded.append(path)
+            self.current = path
+            return True
+
+    class Session:
+        session_id = "roomrun"
+        state = SessionState.FAILED
+        pre_measurement_config_path = predecessor
+        pre_measurement_restore_path = restore
+        measurement_config_path = measurement
+        cfg = SimpleNamespace(
+            config_dir=tmp_path,
+            base_config_path=tmp_path / "base.yml",
+        )
+
+        async def reset(self, set_cb, *, target_config_path=None):
+            return await set_cb(str(target_config_path))
+
+        async def auto_revert(self, set_cb, *, target_config_path=None):
+            return await set_cb(str(target_config_path))
+
+    assert await correction_setup._run_locked_room_reset(
+        Session(),
+        Cam(),
+        automatic=automatic,
+    )
+    assert loaded == [str(restore)]
+    assert restore.read_text(encoding="utf-8") == running_graph
+    assert predecessor.read_text(encoding="utf-8") == refused_candidate
+
+
+@pytest.mark.asyncio
+async def test_room_reversal_does_not_restore_over_new_graph_loaded_at_same_path(
+    tmp_path,
+):
+    """Fresh active_raw distinguishes a real same-name load from an overwrite."""
+    from jasper.correction.session import SessionState
+
+    predecessor = tmp_path / "active_speaker_manual_current.yml"
+    restore = tmp_path / "sound_snapshot_roomrun_123.yml"
+    measurement = tmp_path / "correction_measurement_roomrun_123.yml"
+    restore.write_text("filters:\n  old_crossover: {}\n", encoding="utf-8")
+    predecessor.write_text("filters:\n  new_crossover: {}\n", encoding="utf-8")
+    sess = SimpleNamespace(
+        session_id="samepath",
+        state=SessionState.FAILED,
+        pre_measurement_config_path=predecessor,
+        pre_measurement_restore_path=restore,
+        measurement_config_path=measurement,
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(predecessor)
+
+        async def get_active_config_raw(self, *, best_effort=False):
+            return predecessor.read_text(encoding="utf-8")
+
+    assert await correction_setup._pre_measurement_restore_target(
+        sess,
+        Cam(),
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_running_graph_snapshot_does_not_mint_authority_for_custom_config(
+    tmp_path,
+):
+    """A managed snapshot name must not turn an unknown graph into a carrier."""
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.graph_carrier import CarrierCannotHostEq
+    from jasper.sound.profile import SoundProfile
+
+    custom = tmp_path / "advanced-handwritten.yml"
+    raw = emit_sound_config(SoundProfile(enabled=False))
+    custom.write_text(raw, encoding="utf-8")
+    sess = SimpleNamespace(
+        session_id="custom",
+        cfg=SimpleNamespace(config_dir=tmp_path),
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(custom)
+
+        async def get_active_config_raw(self, *, best_effort=False):
+            return raw
+
+    with pytest.raises(CarrierCannotHostEq) as exc_info:
+        await correction_setup._snapshot_running_room_graph(sess, Cam())
+
+    assert exc_info.value.reason_code == "unknown_config"
+    assert list(tmp_path.glob("sound_snapshot_custom_*.yml")) == []
+
+
+@pytest.mark.asyncio
+async def test_reset_safety_failure_preserves_current_and_uses_preemit_snapshot(
+    monkeypatch,
+    tmp_path,
+):
+    """Rejected Reset output cannot overwrite or become its own fallback."""
+    from jasper.correction.session import SessionState
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+
+    current = tmp_path / "sound_current.yml"
+    original = emit_sound_config(SoundProfile(enabled=False))
+    current.write_text(original, encoding="utf-8")
+    monkeypatch.setenv(
+        "JASPER_SOUND_PROFILE_PATH",
+        str(tmp_path / "no-saved-profile.json"),
+    )
+    safety_calls = []
+
+    def fail_candidate_after_snapshot(text):
+        safety_calls.append(text)
+        if len(safety_calls) == 2:
+            raise RuntimeError("post-write safety refusal")
+
+    monkeypatch.setattr(
+        "jasper.correction.runtime_safety.assert_correction_graph_safe",
+        fail_candidate_after_snapshot,
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(current)
+
+        async def get_active_config_raw(self, *, best_effort=False):
+            return original
+
+    sess = SimpleNamespace(
+        session_id="resetguard",
+        state=SessionState.APPLIED,
+        cfg=SimpleNamespace(
+            config_dir=tmp_path,
+            base_config_path=tmp_path / "base.yml",
+        ),
+    )
+
+    target = await correction_setup._resolve_reset_target_async(sess, Cam())
+
+    assert target.name.startswith("sound_snapshot_resetguard_")
+    assert correction_setup._running_graph_body(
+        target.read_text(encoding="utf-8")
+    ) == correction_setup._running_graph_body(original)
+    assert current.read_text(encoding="utf-8") == original
+    rejected = list(tmp_path.glob("sound_reset_resetguard_*.yml"))
+    assert len(rejected) == 1
+    assert target != rejected[0]
+    assert len(safety_calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
+@pytest.mark.parametrize(
+    "fallback_shape",
+    ["corrected-active", "custom", "unreadable", "measurement-baseline"],
+)
+async def test_room_reversal_rejects_unverified_no_room_fallback(
+    monkeypatch,
+    tmp_path,
+    automatic,
+    fallback_shape,
+):
+    """Reset succeeds only for a readable, managed, allowlisted no-Room graph."""
+    from jasper.correction.session import SessionState
+
+    fallback = tmp_path / "sound_current.yml"
+    if fallback_shape == "corrected-active":
+        fallback.write_text(
+            "# Source: "
+            "jasper.active_speaker.camilla_yaml."
+            "emit_active_speaker_baseline_config\n"
+            "filters:\n"
+            "  room_peq_0:\n"
+            "    type: Biquad\n"
+        )
+    elif fallback_shape == "custom":
+        fallback = tmp_path / "advanced.yml"
+        fallback.write_text("pipeline: []\n")
+    elif fallback_shape == "measurement-baseline":
+        fallback = tmp_path / "correction_measurement_smoke_123.yml"
+        fallback.write_text("pipeline: []\n")
+    else:
+        assert fallback_shape == "unreadable"
+    operations = []
+
+    async def reemit_fails(_sess, _cam, **_kwargs):
+        raise RuntimeError("carrier re-emit failed")
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_write_no_room_correction_config",
+        reemit_fails,
+    )
+    async def snapshot_current(_sess, _cam):
+        return fallback, fallback
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_snapshot_running_room_graph",
+        snapshot_current,
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(fallback)
+
+    class Session:
+        session_id = "corrected-fallback"
+        state = SessionState.APPLIED
+        cfg = SimpleNamespace(
+            config_dir=tmp_path,
+            base_config_path=tmp_path / "base.yml",
+        )
+
+        async def reset(self, *_args, **_kwargs):
+            operations.append("reset")
+
+        async def auto_revert(self, *_args, **_kwargs):
+            operations.append("auto-revert")
+
+    with pytest.raises(RuntimeError, match="no verified no-Room graph"):
+        await correction_setup._run_locked_room_reset(
+            Session(),
+            Cam(),
+            automatic=automatic,
+        )
+
+    assert operations == []
+
+
+@pytest.mark.asyncio
+async def test_reset_accepts_verified_no_room_active_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    """A carrier failure may still use a managed, filter-free active graph."""
+    from jasper.correction.session import SessionState
+
+    no_room = tmp_path / "sound_current.yml"
+    no_room.write_text(
+        "# Source: "
+        "jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config\n"
+        "filters: {}\n"
+    )
+
+    async def reemit_fails(_sess, _cam, **_kwargs):
+        raise RuntimeError("carrier re-emit failed")
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_write_no_room_correction_config",
+        reemit_fails,
+    )
+    async def snapshot_current(_sess, _cam):
+        return no_room, no_room
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_snapshot_running_room_graph",
+        snapshot_current,
+    )
+    sess = SimpleNamespace(
+        session_id="no-room-fallback",
+        state=SessionState.APPLIED,
+        cfg=SimpleNamespace(
+            config_dir=tmp_path,
+            base_config_path=tmp_path / "base.yml",
+        ),
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(no_room)
+
+    assert (
+        await correction_setup._resolve_reset_target_async(sess, Cam())
+        == no_room
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
+async def test_failed_room_reversal_preserves_newer_active_graph(
+    monkeypatch,
+    tmp_path,
+    automatic,
+):
+    """Active Apply between Room Start and failed Apply supersedes predecessor."""
+    from jasper.correction.session import SessionState
+
+    old_active = tmp_path / "active-before-room.yml"
+    old_active_snapshot = tmp_path / "sound_snapshot_oldactive_123.yml"
+    measurement = tmp_path / "correction_measurement_smoke_123.yml"
+    new_active = tmp_path / "active-after-room-start.yml"
+    no_room_new_active = tmp_path / "sound_current.yml"
+    reemitted_from = []
+    loaded = []
+
+    class Cam:
+        current = str(new_active)
+
+        async def get_config_file_path(self, *, best_effort=False):
+            return self.current
+
+        async def set_config_file_path(self, path, *, best_effort=False):
+            loaded.append(path)
+            self.current = path
+            return True
+
+    cam = Cam()
+
+    async def snapshot_current(_sess, current_cam):
+        reemitted_from.append(
+            await current_cam.get_config_file_path(best_effort=False)
+        )
+        return new_active, old_active_snapshot
+
+    async def reemit_current(
+        _sess,
+        _current_cam,
+        *,
+        current_snapshot_path=None,
+    ):
+        assert current_snapshot_path == old_active_snapshot
+        return no_room_new_active
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_snapshot_running_room_graph",
+        snapshot_current,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_write_no_room_correction_config",
+        reemit_current,
+    )
+
+    class Session:
+        session_id = "active-superseded-room"
+        state = SessionState.FAILED
+        pre_measurement_config_path = old_active
+        pre_measurement_restore_path = tmp_path / "sound_snapshot_before_1.yml"
+        measurement_config_path = measurement
+        cfg = SimpleNamespace(
+            config_dir=tmp_path,
+            base_config_path=tmp_path / "base.yml",
+        )
+
+        async def reset(self, set_cb, *, target_config_path=None):
+            return await set_cb(str(target_config_path))
+
+        async def auto_revert(self, set_cb, *, target_config_path=None):
+            return await set_cb(str(target_config_path))
+
+    assert await correction_setup._run_locked_room_reset(
+        Session(),
+        cam,
+        automatic=automatic,
+    )
+    assert reemitted_from == [str(new_active)]
+    assert loaded == [str(no_room_new_active)]
+    assert str(old_active) not in loaded
 
 
 def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
@@ -2669,6 +3748,14 @@ def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
     monkeypatch.setattr(
         correction_setup, "_camilla", lambda: _volume_recording_cam(restored)
     )
+    async def authority_current(_cam, _expected):
+        return None
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_assert_room_authority_current",
+        authority_current,
+    )
 
     with pytest.raises(RuntimeError):
         correction_setup._handle_apply(None)
@@ -2677,9 +3764,66 @@ def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
     assert restored == [-20.0]
 
 
-def test_reset_restores_listening_volume_when_reset_raises(monkeypatch):
+def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
+    from jasper.correction.session import SessionState
+
+    applied = []
+
+    class Session:
+        session_id = "authority-race"
+        state = SessionState.READY
+        confidence_report = None
+        config_path = None
+        room_authority_binding = (
+            True,
+            "manual_applied_profile",
+            "layer-a-at-start",
+        )
+
+        async def apply(self, *_args, **kwargs):
+            await kwargs["prepare_guard"]()
+            applied.append(True)
+
+    async def changed_authority(_cam):
+        return {
+            "active": True,
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": "manual_applied_profile",
+                "layer_a_identity": "layer-a-before-apply",
+                "allowed": True,
+                "status": "ready",
+                "setup_href": "/correction/crossover/",
+            },
+        }
+
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", Session)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(
+        correction_setup,
+        "_read_room_correction_readiness",
+        changed_authority,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_maybe_restore_main_volume",
+        lambda _sess, _cam: None,
+    )
+
+    with pytest.raises(RuntimeError, match="authority changed"):
+        correction_setup._handle_apply(None)
+
+    assert applied == []
+
+
+def test_reset_restores_listening_volume_when_reset_raises(monkeypatch, tmp_path):
     restored: list[float] = []
-    sess = _locked_autolevel_session("reset", original=-18.0)
+    sess = _locked_autolevel_session(
+        "reset",
+        original=-18.0,
+        config_dir=tmp_path,
+    )
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
         correction_setup, "_camilla", lambda: _volume_recording_cam(restored)
@@ -2691,7 +3835,10 @@ def test_reset_restores_listening_volume_when_reset_raises(monkeypatch):
     assert restored == [-18.0]
 
 
-def test_reset_quiesces_audio_under_intent_before_resolving_graph(monkeypatch):
+def test_reset_quiesces_audio_under_intent_before_resolving_graph(
+    monkeypatch,
+    tmp_path,
+):
     """No ramp/sweep write may land after reset resolves or reloads its graph."""
     from jasper.correction.session import AutolevelData, AutolevelStatus, SessionState
 
@@ -2705,6 +3852,7 @@ def test_reset_quiesces_audio_under_intent_before_resolving_graph(monkeypatch):
         autolevel = AutolevelData(status=AutolevelStatus.LOCKED)
         autolevel_run_in_progress = True
         reset_intent = object()
+        cfg = SimpleNamespace(config_dir=tmp_path)
 
         async def begin_autolevel_reset(self):
             order.append("intent-and-ramp-quiesced")
@@ -2728,11 +3876,11 @@ def test_reset_quiesces_audio_under_intent_before_resolving_graph(monkeypatch):
     monkeypatch.setattr(
         correction_setup, "_camilla", lambda: _volume_recording_cam([])
     )
-    monkeypatch.setattr(
-        correction_setup,
-        "_resolve_reset_target",
-        lambda *_args: order.append("resolve") or Path("/tmp/reset.yml"),
-    )
+    async def resolve(*_args):
+        order.append("resolve")
+        return Path("/tmp/reset.yml")
+
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
 
     correction_setup._handle_reset(None)
 
@@ -2742,6 +3890,133 @@ def test_reset_quiesces_audio_under_intent_before_resolving_graph(monkeypatch):
         "resolve",
         "reset",
         "intent-released",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
+async def test_room_reversal_resolves_and_loads_after_concurrent_active_writer(
+    monkeypatch,
+    tmp_path,
+    automatic,
+):
+    """A legal Active writer must finish before Room chooses its reset graph."""
+    from jasper.dsp_apply import dsp_writer_lock
+
+    current = {"path": "active-old.yml"}
+    resolved_from = []
+    loaded = []
+
+    async def resolve(_sess, _cam):
+        resolved_from.append(current["path"])
+        return tmp_path / f"no-room-from-{current['path']}"
+
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
+
+    class Session:
+        cfg = SimpleNamespace(config_dir=tmp_path)
+
+        async def reset(self, set_cb, *, target_config_path=None):
+            return await set_cb(str(target_config_path))
+
+        async def auto_revert(self, set_cb, *, target_config_path=None):
+            return await set_cb(str(target_config_path))
+
+    class Cam:
+        async def set_config_file_path(self, path, *, best_effort=False):
+            loaded.append(path)
+            current["path"] = path
+            return True
+
+    async with dsp_writer_lock(tmp_path, source="active_apply"):
+        reversal = asyncio.create_task(
+            correction_setup._run_locked_room_reset(
+                Session(),
+                Cam(),
+                automatic=automatic,
+            )
+        )
+        await asyncio.sleep(0.1)
+        assert not reversal.done()
+        assert resolved_from == []
+        assert loaded == []
+        current["path"] = "active-new.yml"
+
+    assert await reversal is True
+    assert resolved_from == ["active-new.yml"]
+    assert loaded == [str(tmp_path / "no-room-from-active-new.yml")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
+async def test_concurrent_active_writer_cannot_publish_during_room_reversal(
+    monkeypatch,
+    tmp_path,
+    automatic,
+):
+    """Room must retain the writer lock from target derivation through load."""
+    from jasper.dsp_apply import dsp_writer_lock
+
+    resolution_started = asyncio.Event()
+    allow_resolution = asyncio.Event()
+    load_started = asyncio.Event()
+    allow_load = asyncio.Event()
+    order = []
+
+    async def resolve(_sess, _cam):
+        resolution_started.set()
+        await allow_resolution.wait()
+        return tmp_path / "room-no-room.yml"
+
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
+
+    class Session:
+        cfg = SimpleNamespace(config_dir=tmp_path)
+
+        async def _reverse(self, set_cb, target_config_path):
+            load_started.set()
+            await allow_load.wait()
+            return await set_cb(str(target_config_path))
+
+        async def reset(self, set_cb, *, target_config_path=None):
+            return await self._reverse(set_cb, target_config_path)
+
+        async def auto_revert(self, set_cb, *, target_config_path=None):
+            return await self._reverse(set_cb, target_config_path)
+
+    class Cam:
+        async def set_config_file_path(self, path, *, best_effort=False):
+            order.append(("room-load", path))
+            return True
+
+    async def active_apply():
+        async with dsp_writer_lock(tmp_path, source="active_apply"):
+            order.append(("active-publish", "active-new.yml"))
+
+    reversal = asyncio.create_task(
+        correction_setup._run_locked_room_reset(
+            Session(),
+            Cam(),
+            automatic=automatic,
+        )
+    )
+    await asyncio.wait_for(resolution_started.wait(), timeout=1.0)
+    active = asyncio.create_task(active_apply())
+    allow_resolution.set()
+    await asyncio.wait_for(load_started.wait(), timeout=1.0)
+
+    # If Room released the shared lock after deriving the target but before
+    # loading it, Active would acquire during this deliberately paused load.
+    await asyncio.sleep(0.1)
+    assert not active.done()
+    assert order == []
+
+    allow_load.set()
+    assert await reversal is True
+    await active
+    assert order == [
+        ("room-load", str(tmp_path / "room-no-room.yml")),
+        ("active-publish", "active-new.yml"),
     ]
 
 
@@ -2875,7 +4150,7 @@ def test_needs_noise_capture_offers_cancel_in_ui():
     assert "'Stop measurement'" in policy
 
 
-def test_e2e_reset_while_busy_returns_409(monkeypatch):
+def test_e2e_reset_while_busy_returns_409(monkeypatch, tmp_path):
     # A reset rejected because a sweep/analysis is in flight is a state
     # conflict, not a server error — the dispatch maps SessionBusyError to 409
     # (a stale/buggy client hitting /reset mid-sweep; the UI never does).
@@ -2884,11 +4159,15 @@ def test_e2e_reset_while_busy_returns_409(monkeypatch):
     class FakeSession:
         session_id = "busy-reset"
         state = SessionState.SWEEPING
+        cfg = SimpleNamespace(config_dir=tmp_path)
 
-        async def reset(self, set_cb):
+        async def stop_background_audio_for_reset(self):
             raise SessionBusyError(
                 "cannot reset while sweeping — analysis is in progress"
             )
+
+        async def reset(self, set_cb):
+            pytest.fail("busy reset must refuse before graph resolution")
 
     monkeypatch.setattr(
         correction_setup, "_get_or_create_session", lambda: FakeSession(),

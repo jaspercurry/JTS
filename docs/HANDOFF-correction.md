@@ -113,6 +113,12 @@
   the same per-tab identity, while relay, later-position, identity-changing,
   unsafe, and stale-run mutations fail before capture. The upload and
   autolevel routes enforce the completed local binding as an admission gate.
+  The local-browser auto-lock keeps Room's fixed −26…−18 dBFS ESS-headroom
+  window, starts watching only after the server confirms the bounded tone/ramp,
+  and additionally requires RMS at least the shared
+  `MeasurementRamp.from_env().trust_margin_db` above the measured ambient.
+  If room noise makes both conditions impossible, automatic lock stays off and
+  the visible manual Lock/retry controls remain available.
   The persistent shell also exposes **Stop measurement** throughout
   preparation/sweep/verification audio; the server cancels and reaps the exact
   playback task (including `aplay`) before restoring the graph. CPU-only
@@ -134,16 +140,51 @@
   `event=correction.async_cancel_drain_timeout` and remains fail-closed until
   cleanup exits. A terminal HTTP/relay result must not stand in for cleanup
   that is still running.
-  Idle envelopes consume the Active-owned setup status, admit its explicit
-  passive/not-required result, and withhold Start on incomplete, unknown,
-  missing, malformed, or active authority. The active case is intentionally
-  blocked even when the older producer calls an applied recomposition snapshot
-  ready: that snapshot is not the exact receipt-backed eligibility decision. A
-  valid Active recovery path is carried through; otherwise **Check again**
-  reloads the Room entry. `/start` repeats the same check before reading the
-  body or reserving a session. Measurement-baseline load, Apply, Reset, and
-  automatic revert wait for a terminal result after any shared writer
-  admission. Camilla transport attempts and shared writer-lock admission are
+  Idle envelopes consume the Active-owned, versioned setup decision. They admit
+  passive/not-required and an explicitly applied manual profile, while an
+  automatic applied snapshot remains blocked until Active supplies the exact
+  receipt-backed authority. Missing, malformed, incomplete, or unknown
+  authority withholds Start; Room never reconstructs graph or measurement
+  evidence and never relabels automatic tuning as manual. Manual authority is
+  positive only when Active's semantic Layer-A fingerprint of CamillaDSP's
+  fresh running `active_raw` readback matches a recomposition from the
+  immutable applied snapshot on the solo active runtime. Active derives the
+  grouped scope from fresh grouping membership, for both leaders and
+  followers; it does not depend on a `# Source:` comment that CamillaDSP's
+  `active_raw` readback removes. Grouped active is an explicit v1 unsupported
+  decision because the leader program bake is not the driver-domain Layer A;
+  `/rooms/` is the recovery path, and a later
+  Active-owned identity must bind both Camilla daemons before Room can support
+  that runtime. The
+  fingerprint includes output-device settings and the complete driver-domain
+  mixer/pipeline/filter suffix, while deliberately excluding the mutable
+  pre-split Room/preference prefix. A mismatch or unreadable graph withholds
+  Room Start and asks for an explicit crossover reapply; ordinary volume and
+  grouping readiness are not redefined by this Room-specific binding. A valid Active
+  recovery path is carried through; otherwise **Check again** reloads the Room
+  entry. `/start` repeats the same check before reading the body or reserving a
+  session, carries Active's opaque loaded Layer-A identity, and compares a fresh
+  Active decision again inside the locked measurement-baseline preparation.
+  Apply repeats that comparison inside its shared writer boundary, so a later
+  legal DSP writer cannot substitute a different crossover during a Room run.
+  Reset and automatic revert remain independently available exact restoration
+  paths and do not require fresh Room authority. At Start, Room snapshots
+  CamillaDSP's running `active_raw` into a unique, safety-checked, validated
+  artifact; the reported durable predecessor filename remains provenance only
+  because an Active candidate build may rewrite that name without loading it.
+  A mid-flight cancellation restores the immutable artifact while Camilla still
+  runs Room's measurement graph, or while fresh `active_raw` proves that the
+  same-name predecessor is still the graph captured at Start. If a legal Active
+  apply has replaced it, or for an applied/verified correction, reversal
+  snapshots the fresh running graph and emits Layer B removal into a separate
+  unique candidate. A failed or rejected re-emit cannot alter the running
+  filename or become its own fallback; it may retain only the pre-emit immutable
+  snapshot when that snapshot is managed and already contains no Room filters.
+  They resolve that target only after acquiring the shared
+  DSP-writer lock, so a concurrent legal Active apply cannot be overwritten by
+  a target built from stale Layer A. Measurement-baseline load, Apply, Reset,
+  and automatic revert wait for a terminal result after writer admission.
+  Camilla transport attempts and shared writer-lock admission are
   bounded; a cancelled or timed-out waiter cannot acquire later. Room does not
   apply an outer deadline after admission that could cancel between graph
   mutation and rollback/state persistence.
@@ -186,8 +227,8 @@
   `/interpret`, `/propose`, and `/propose/apply` routes are unchanged;
   deterministic acceptance, apply, verification, and automatic revert remain
   the authorities.
-- 🧱 **Wave 1 Active→Room receipt contract (types complete; active Room entry
-  blocked pending production authority).** Active now owns a strict positive
+- 🧱 **Wave 1 automatic Active→Room receipt contract (types complete; automatic
+  Room entry blocked pending production authority).** Active now owns a strict positive
   `CommissioningEligibilityReceipt` type whose required combined-speaker
   targets are derived only from a current, evaluated-`verified`
   `OutputTopology`; blocked or physically unverified output maps cannot create
@@ -201,13 +242,14 @@
   graph. An attempted/unknown mutation, a failed restore, or even a
   successful rollback cannot mint this positive receipt.
 
-  The receipt remains an inert contract. No Active production flow issues or
-  persists it; current Active bundles remain forensic/fail-soft, and
-  `active_speaker.setup_status` still derives its positive boolean from the
-  topology-current applied recomposition snapshot. Room no longer treats that
-  legacy positive boolean as modern authority: its R1b adapter admits passive
-  speakers and rejects active topologies before session reservation. It neither
-  parses the receipt nor inspects historical B2b evidence. The nine-state
+  The receipt remains an inert automatic-commissioning contract. No Active
+  production flow issues or persists it; current Active bundles remain
+  forensic/fail-soft. `active_speaker.setup_status` now projects a versioned
+  authority decision: passive/not-required and an explicitly applied manual
+  profile may enter Room, while an automatic applied snapshot without this
+  receipt remains incomplete. Room consumes that decision before session
+  reservation; it neither parses the receipt nor inspects historical B2b
+  evidence. The nine-state
   lifecycle now has a separate durable, bundle-backed current-run store and a
   fail-closed `commissioning_run` projection on `/crossover/status`; startup
   claims its owner generation so stale callbacks cannot commit. No browser route
@@ -244,7 +286,15 @@
   preferred-window shortfall. Room's listening-position owner allows a
   +15 dB rise up to the unchanged 0 dB hard ceiling because its measurement
   stimulus is already −12 dBFS; crossover/near-field keeps the shared +12/−3
-  cap. The owning flow surfaces the shortfall and
+  cap. Both relay and local-browser Room capture target the same-width −26 to
+  −18 dBFS microphone window, 6 dB below the shared continuous-tone window.
+  That Room-owned reserve was pinned after two 2026-07-15 JTS3 UMIK-2 runs: a
+  −17.15 dBFS level-tone lock let the following full-band ESS clip, and the
+  initial 3 dB-lower Room window still produced a −15.86 dBFS RMS sweep with
+  0.1856% clipped samples. Its 25.49 dB estimated SNR left room for the extra
+  attenuation, while the capture gate correctly refused both clipped inputs.
+  Active near-field commissioning keeps the shared window.
+  The owning flow surfaces the shortfall and
   downstream sweep-quality gates still decide whether the evidence is usable.
   The
   correction adapter
@@ -430,8 +480,36 @@
   calibration-file match), is `capture_page_build=20260712.3`, supporting
   protocols 1 and 2. The public
   `https://capture.jasper.tech/version.json` reported `20260712.3` on
-  2026-07-12. Repo build 20260714.1 adds the Room-specific trust-repeat copy and
-  renders host `sweep_cancelled` as expected Stop control flow; it is
+  2026-07-12. Repo build 20260715.3 adds the Room-specific trust-repeat copy,
+  renders host `sweep_cancelled` as expected Stop control flow, and keeps a
+  safely bounded level walk alive across a transient relay status-poll failure;
+  the page entry and relay-client import both use the matching `20260715-3`
+  cache key.
+  Page-side control requests abort after three seconds through response-body
+  parsing, so stalled headers cannot freeze mic batches. Pi-side level control
+  uses a separate 1.5-second socket timeout plus an async wall-clock deadline,
+  publishes at most one queued host event before refreshing status, and bounds
+  one retry plus that status read to 4.75 seconds inside the default
+  eight-second feed-loss guard. Those bounded control requests share one FIFO
+  worker. A write that outlives the awaiting deadline remains ahead of newer
+  writes, so a late progress event cannot replace a newer terminal event in the
+  relay's last-write-wins slot.
+  The level pump always performs its next status refresh even when the preceding
+  host-event response is unconfirmed; otherwise repeated slow acknowledgements
+  can starve fresh microphone samples and manufacture the eight-second feed-loss
+  condition. A latched warning/recovery pair keeps that degraded control path
+  observable without journal spam.
+  The Pi retries one idempotent host-progress write after a timeout, 429, or
+  relay 5xx. Room sweep-start/complete events use that same narrow, ordered
+  path. A timed-out response does not abort capture because the event may
+  already have committed; the relay's authenticated ready blob remains the
+  completion proof, and the ordinary upload deadline still fails a genuinely
+  undelivered event. A final 4xx (including 429 after the retry) is a definitive
+  Worker pre-commit refusal and aborts Room before sweep playback; only
+  transport ambiguity and relay 5xx are tolerated. The 2026-07-15 JTS3 UMIK-2
+  repeat smoke pinned the timeout case after a
+  `sweep_complete` response timed out while the capture page uploaded the valid
+  WAV. The repo build is
   intentionally not published by this hardware-free lane, so that external
   release artifact remains pending.
   Crossover level and sweep volume transitions now use one durable backend
@@ -752,9 +830,10 @@
   provenance, dependencies, sensitivity, and recomputability flags for
   raw captures and derived artifacts. They also write
   `runtime_integrity.json`: system load/memory snapshots,
-  capture sample-count sanity, fan-in xrun deltas, and CamillaDSP
-  runtime counters around each sweep/verify pass. Runtime warnings and
-  failures feed the same confidence report and bundle validator.
+  capture sample-count sanity, fan-in and outputd content/DAC xrun
+  deltas, and CamillaDSP runtime counters around each sweep/verify
+  pass. Runtime warnings and failures feed the same confidence report
+  and bundle validator.
   Treat `captures/p<N>.wav` and `verify.wav` as canonical private raw
   evidence; every curve, confidence report, PEQ, and future FIR/agent
   judgment should be reproducible from those recordings plus sweep
@@ -1353,9 +1432,11 @@ GET  /session-report?id=<id> read-only evidence report for one bundle
 GET  /calibration/models     supported calibrated mic providers/models
 POST /start                  first checks the setup-status active/passive flag,
                              room_correction_allowed, and matching acoustic status
-                             (passive/not-required is allowed; every active path
-                             gets typed 409 + the validated owner path until exact
-                             receipt authority lands; unknown/malformed authority
+                             plus its versioned authority (passive/not-required
+                             and solo manual-applied are allowed; grouped active
+                             is explicitly unsupported in v1; automatic remains
+                             typed 409 until exact receipt authority lands;
+                             unknown/malformed authority
                              gets retryable 503 before reservation),
                              then loads a topology-preserving measurement
                              baseline (Room/preference EQ removed; protected
@@ -2239,8 +2320,9 @@ These items can only be verified on real hardware. Deploy with
       CamillaDSP removes room PEQs cleanly while preserving the current sound
       profile. As a regression check with an already-corrected active graph,
       verify reset keeps the active speaker baseline and only clears room PEQs;
-      fresh active Room entry remains fail-closed pending modern receipt
-      authority.
+      a solo manual-applied profile may enter Room, grouped active is explicitly
+      unsupported in v1, and automatic entry remains fail-closed pending modern
+      receipt authority.
 - [ ] AEC bridge interaction (if enabled): routing resumes after measurement
       without permanent drift; allow the adaptive filter its normal convergence
       window described in [HANDOFF-aec.md](HANDOFF-aec.md).
@@ -2447,9 +2529,10 @@ than teaching browser routes to recompute DSP facts.
 Runtime health is lightweight and bounded, not a new monitoring daemon.
 `runtime_integrity.json` records a small per-measurement health packet:
 monotonic/wall-clock timing, CPU/load and memory snapshots, CamillaDSP
-config/status where available, fan-in xrun deltas, and capture
-sample-count sanity. This feeds a separate **runtime integrity**
-verdict, distinct from **capture quality** and **acoustic quality**.
+config/status where available, fan-in and outputd content/DAC xrun
+deltas, and capture sample-count sanity. This feeds a separate
+**runtime integrity** verdict, distinct from **capture quality** and
+**acoustic quality**.
 Hard capture failures such as clipping, sample-rate mismatch, or
 too-short WAV still block analysis; runtime warnings lower confidence
 unless they directly prove the recording is invalid.
@@ -2650,8 +2733,10 @@ summed evidence host, exact
 graph/capture/restore runtime, durable artifacts, and deterministic measured
 progression were also checked with synthetic admitted fixtures; Active's durable bundle-backed commissioning-run start,
 startup owner-generation claim, stale-callback refusal, and fail-closed
-crossover status were also checked; post-apply verification/receipt and Room
-authority remain unavailable, and no live crossover graph was changed. Wave 2 paid tuning backend extraction checked the
+crossover status were also checked; post-apply automatic verification/receipt
+authority remains unavailable. The versioned manual-applied Room decision is
+live and keeps that authority separate from automatic commissioning; no live
+crossover graph was changed in that pass. Wave 2 paid tuning backend extraction checked the
 shared cross-route throttle, fresh household spend gate, exact provider
 arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP
 error translation without moving proposal acceptance or live apply. Acoustic-
@@ -2663,7 +2748,8 @@ callers and deterministic tone bytes. Room envelope v9
 section/action/blocker/failure/default ownership,
 six/flat/balanced/automatic-repeat policy, relay-first transport resolution,
 capture-only positioned relay specs, and pre-playback level-microphone checks;
-passive-only readiness admission and `/start` defense pending exact Active
+passive/solo-manual-applied readiness admission and `/start` defense, with
+grouped active scoped out and automatic entry still pending exact Active
 receipt authority,
 typed Start/relay/tuning/session/apply failures, static-edge report discovery,
 local capture setup binding, and the
@@ -2671,9 +2757,10 @@ deleted legacy/certificate surfaces checked hardware-free against
 `jasper.correction.envelope`, `jasper.correction.failures`,
 `MeasurementSession.bind_local_capture_setup`, `correction_setup._POST_ROUTES`,
 and `deploy/assets/correction/js/main.js`; real-device browser behavior remains
-pending. Wave 1 Active eligibility-receipt shape and the temporary fail-closed
-Room rejection of applied-snapshot active authority checked contract-only; no
-hardware behavior revalidated. Full GET/POST route inventory rechecked against
+pending. Wave 1 automatic eligibility-receipt shape and the fail-closed
+rejection of unversioned/automatic applied-snapshot authority were checked
+alongside the explicit manual-applied decision; no hardware behavior was
+revalidated in that pass. Full GET/POST route inventory rechecked against
 `correction_setup._POST_ROUTES` and `Handler.do_GET`; durable crossover-volume
 recovery and route gating; per-driver fixed-reference-axis orchestration;
 geometry-scoped repeats/apply gate; summed fixed-axis placement and relay metadata

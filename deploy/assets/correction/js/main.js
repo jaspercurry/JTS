@@ -26,6 +26,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var REQUIRED_SR = 48000;  // REQUIRED_SAMPLE_RATE — see jasper/web/correction_setup.py
 
   var pageRoot = document.querySelector('main.correction-stack');
+  // The shared measurement kernel owns this trust margin. If the server ever
+  // omits or corrupts it, suppress automatic lock and leave the bounded manual
+  // Lock/cancel path available instead of treating ambient sound as the tone.
+  var autolevelTrustMarginDb = Number(
+    pageRoot ? pageRoot.dataset.levelTrustMarginDb : NaN
+  );
+  if (!Number.isFinite(autolevelTrustMarginDb) || autolevelTrustMarginDb < 0) {
+    autolevelTrustMarginDb = Infinity;
+  }
   var relayConfigured = !!(
     pageRoot && pageRoot.dataset.captureRelayEnabled === '1'
   );
@@ -2721,40 +2730,31 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     pollState();
   }
 
-  // Auto-level: how much SNR (dB) above the measured room noise
-  // floor we want the tone to sit at when we lock. 20-30 dB above
-  // noise gives 15-25 dB SNR on the sweep (which is 6 dB quieter
-  // than the tone source). Clamped on both ends:
-  //   - lower clamp -30 dBFS: don't lock at very quiet absolute
-  //     levels even in dead-silent rooms (capture would still work
-  //     but the user wouldn't believe a measurement happened).
-  //   - upper clamp -10 dBFS: avoid pushing the iPhone mic near
-  //     its clipping ceiling.
-  //
-  // Previous hard-coded -20..-10 target was unreachable in normal
-  // rooms (user's "decently loud voice at 10 cm" peaked at -25 dBFS
-  // — a speaker tone at couch distance would land around -25 to
-  // -35 dBFS at best). Adaptive band picks a target that's
-  // physically achievable for whatever noise floor you've got.
-  var AUTOLEVEL_SNR_DESIRED_LOW = 20;   // 20 dB above noise = minimum
-  var AUTOLEVEL_SNR_DESIRED_HIGH = 30;  // 30 dB above noise = ideal
-  var AUTOLEVEL_TARGET_DB_FLOOR = -30;  // lower clamp (absolute)
-  var AUTOLEVEL_TARGET_DB_CEILING = -10; // upper clamp (absolute)
+  // Keep the local-browser UMIK path on the same Room-owned acoustic
+  // window as the relay path. The 2026-07-15 JTS3 smoke showed that even
+  // Room's initial 3 dB reserve could let the following ESS clip: its RMS
+  // rose 3.24 dB above the locked tone and its peak reached full scale.
+  // Noise is measured and reported for the downstream SNR gates, but it
+  // must not raise this bounded level target.
+  var ROOM_LEVEL_WINDOW_LOW_DBFS = -26;
+  var ROOM_LEVEL_WINDOW_HIGH_DBFS = -18;
 
-  function computeTargetBand(noiseFloorDb) {
-    var high = Math.min(
-      noiseFloorDb + AUTOLEVEL_SNR_DESIRED_HIGH,
-      AUTOLEVEL_TARGET_DB_CEILING,
-    );
-    var low = Math.max(
-      noiseFloorDb + AUTOLEVEL_SNR_DESIRED_LOW,
-      AUTOLEVEL_TARGET_DB_FLOOR,
-    );
-    // In very noisy rooms the clamps can collide. Force a minimum
-    // 5 dB window so a momentary RMS spike can satisfy the lock
-    // condition.
-    if (low > high - 5) low = high - 5;
-    return { low: low, high: high };
+  function computeTargetBand(_noiseFloorDb) {
+    return {
+      low: ROOM_LEVEL_WINDOW_LOW_DBFS,
+      high: ROOM_LEVEL_WINDOW_HIGH_DBFS,
+    };
+  }
+
+  function autolevelAutoLockEligible(
+    averageDb, targetBand, noiseFloorDb, trustMarginDb
+  ) {
+    return Number.isFinite(averageDb) &&
+      Number.isFinite(noiseFloorDb) &&
+      Number.isFinite(trustMarginDb) &&
+      averageDb >= targetBand.low &&
+      averageDb <= targetBand.high &&
+      averageDb >= noiseFloorDb + trustMarginDb;
   }
 
   async function startAutolevel() {
@@ -2766,10 +2766,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // Step 1: measure ambient noise floor for ~500 ms BEFORE the
     // tone starts. This gives us a real number for "what counts as
     // quiet in this room right now", which we then use to pick a
-    // target SNR band that's actually achievable. Hard-coded bands
-    // from the previous version were unreachable in rooms where
-    // the speaker-to-listener path attenuated more than I'd
-    // assumed (real complaint from first-user test).
+    // target readout and downstream capture-quality evidence. The lock
+    // window itself is fixed above so local and relay captures reserve the
+    // same ESS headroom.
     autolevelLine.textContent = 'Measuring room noise…';
     autolevelDetail.textContent = '';
     var noiseSamples = [];
@@ -2784,16 +2783,20 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       for (var ni = 0; ni < noiseSamples.length; ni++) nsum += noiseSamples[ni];
       noiseFloorDb = nsum / noiseSamples.length;
     } else {
-      // Couldn't measure (mic stream not ready?). Fall back to a
-      // reasonable assumption.
-      noiseFloorDb = -50;
+      // No measured ambient means no automatic-lock authority. Keep the
+      // visible manual Lock/cancel path, but never invent a quiet floor that
+      // could let ordinary room sound impersonate the calibration tone.
+      noiseFloorDb = null;
     }
     lastNoiseFloorDb = noiseFloorDb;
     var targetBand = computeTargetBand(noiseFloorDb);
-    autolevelDetail.textContent =
-      'Noise floor ' + noiseFloorDb.toFixed(0) + ' dBFS — target ' +
-      targetBand.low.toFixed(0) + ' to ' + targetBand.high.toFixed(0) +
-      ' dBFS. Tap Lock now if the tone sounds like a comfortable measurement level.';
+    autolevelDetail.textContent = Number.isFinite(noiseFloorDb)
+      ? 'Noise floor ' + noiseFloorDb.toFixed(0) + ' dBFS — target ' +
+        targetBand.low.toFixed(0) + ' to ' + targetBand.high.toFixed(0) +
+        ' dBFS. Tap Lock now if the tone sounds like a comfortable measurement level.'
+      : 'Room noise could not be measured, so automatic lock is off. ' +
+        'Tap Lock now only after the tone starts at a comfortable measurement level, ' +
+        'or cancel and retry.';
 
     var lockSent = false;
     var sendLock = function (reason) {
@@ -2812,10 +2815,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     var prevCancelHandler = autolevelCancelBtn.onclick;
     autolevelCancelBtn.onclick = function () { cancelAutolevel(); };
 
-    // Watch the latest mic RMS at 50 ms granularity. As soon as the
-    // smoothed (last ~250 ms) RMS lands in the target range, send
-    // auto-lock. Target band is the adaptive one computed above.
-    var watcher = setInterval(function () {
+    // Watch the latest mic RMS at 50 ms granularity after the server confirms
+    // the bounded tone/ramp has started. Automatic lock requires both the
+    // fixed Room headroom window and the shared ambient trust margin; a noisy
+    // room that cannot satisfy both keeps the manual/retry path instead of
+    // mistaking ambient sound for the calibration tone.
+    var watcher = null;
+    var watchAutolevelRms = function () {
       if (lockSent) return;
       var db = latestMicRmsDb;
       if (db <= -100) return;
@@ -2825,12 +2831,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       for (var i = 0; i < autolevelRmsBuffer.length; i++) sum += autolevelRmsBuffer[i];
       var avg = sum / autolevelRmsBuffer.length;
       if (autolevelRmsBuffer.length >= 3 &&
-          avg >= targetBand.low &&
-          avg <= targetBand.high) {
+          autolevelAutoLockEligible(
+            avg, targetBand, noiseFloorDb, autolevelTrustMarginDb
+          )) {
         sendLock('mic ' + avg.toFixed(1) + ' dBFS in band ' +
           targetBand.low.toFixed(0) + '..' + targetBand.high.toFixed(0));
       }
-    }, 50);
+    };
 
     try {
       await postJson('autolevel/start', {});
@@ -2843,6 +2850,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       autolevelCancelBtn.classList.add('hidden');
       return;
     }
+    watcher = setInterval(watchAutolevelRms, 50);
 
     // Poll /status every 200 ms until autolevel reaches terminal.
     var pollOnce = async function () {

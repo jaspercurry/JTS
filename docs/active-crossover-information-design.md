@@ -19,11 +19,15 @@
 > safety profiles, exact excitation admission, neutral measurement identities,
 > an Active-owned commissioning lifecycle, and an exact positive eligibility
 > receipt. These types have no live playback, CamillaDSP mutation, persistence,
-> or `/state` producer. The existing Active commissioning gate remains live,
-> but Room R1b now admits only passive/not-required and rejects every active
-> topology until the later integration lane explicitly issues, persists, and
-> exposes receipt-backed authority. No hardware behavior was changed or
-> revalidated by these hardware-free slices.
+> or automatic-receipt producer. The existing Active setup projection now emits
+> a versioned Room authority that keeps manual applied-profile authority
+> separate from automatic commissioning: an explicitly applied manual profile
+> is eligible on the solo active runtime, while an automatic profile remains
+> blocked until the later integration lane issues, persists, and exposes the
+> strict receipt. Room
+> consumes that one Active decision and does not inspect the underlying graph or
+> evidence. Grouped active is explicitly outside this v1 authority: the leader
+> program bake does not expose the driver-domain Layer A carried by Camilla #2.
 
 > **Wave 3 lifecycle boundary (2026-07-14; hardware-free).** A
 > fresh authoritative comparison set that carries a production bundle session
@@ -828,7 +832,9 @@ browser scheduling or DSP authority. Historical B2b captures remain
 permanently non-admitted. Current projections expose only the exact measured
 candidate review and the apply/recovery states described below; verification,
 receipt, and Room authority remain unavailable until their later Wave 3 gates
-are satisfied.
+are satisfied for automatic commissioning. That unavailable automatic authority
+is separate from the operator-owned, explicitly applied manual-profile Room path
+described below.
 
 The production measured-candidate apply boundary is now wired hardware-free.
 The review's explicit Apply action posts the exact candidate fingerprint; the
@@ -1180,14 +1186,32 @@ reconstruct progress; the host alone advances `protected` to `measured` after
 exact evidence.
 
 Current Active bundles remain forensic and fail-soft, and no production code
-issues or persists an eligibility receipt. Room's current
-`active_speaker.setup_status` producer still derives readiness from the legacy
-topology-current applied-recomposition snapshot, but the R1b Room adapter no
-longer accepts that positive result for active topologies. It admits only
-passive/not-required and blocks active entry until the integration lane changes
-the producer and consumer together. Room neither parses the receipt nor derives
-authority from historical B2b evidence; fresh excitation-admitted captures and
-the measured delay walk remain Active-owned prerequisites.
+issues or persists an automatic eligibility receipt. The
+`active_speaker.setup_status` producer owns one versioned Room decision. A
+topology-current immutable snapshot whose explicit apply owner is `manual`
+projects `manual_applied_profile` only when CamillaDSP's fresh running
+`active_raw` readback has the same semantic Layer-A fingerprint as a
+recomposition from that snapshot **and the speaker is on its solo active
+runtime**. Solo/grouped scope comes from fresh grouping membership for both
+leader and follower roles, not from source comments that `active_raw` removes.
+A grouped active leader instead projects
+`active_grouped_room_correction_not_supported` and links to `/rooms/`; turning
+grouping off restores the solo proof boundary. A later distributed decision
+must be Active-owned and bind the program-bake Camilla instance plus the
+driver-domain crossover instance. The identity
+covers output-device settings and the complete driver-domain
+mixer/pipeline/filter suffix while excluding the mutable pre-split
+Room/preference prefix. A mismatch asks for an explicit crossover reapply. An
+`automatic` snapshot without the strict receipt projects an incomplete
+decision. Room validates and consumes that projection without parsing the
+receipt or deriving authority from historical B2b evidence. An allowed
+projection includes Active's opaque loaded Layer-A identity so Room can carry
+it from Start and compare a freshly reissued decision inside its locked
+measurement-baseline and Apply boundaries; Room still does not fingerprint the
+graph itself. Fresh
+excitation-admitted captures and the measured delay walk remain prerequisites
+for automatic receipt authority, not for operator-accepted manual crossover
+authority.
 
 ### DRY invariants
 
@@ -1487,11 +1511,11 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   compiles and applies through the existing bounded writer/readback/restore path,
   with exact predecessor recovery and a retained proof before
   `applied_unverified`. There is still no post-apply verification, receipt
-  issuer, or Room authority path. Room's
-  temporary R1b adapter admits passive/not-required and
-  blocks every active topology rather than trusting the applied-snapshot
-  positive. Live receipt production/consumption and on-device proof remain later
-  slices.
+  issuer, or automatic Room authority path. Active's
+  versioned Room projection admits passive/not-required and an explicitly
+  applied manual snapshot, while an automatic snapshot remains blocked instead
+  of being trusted as receipt authority. Live automatic receipt
+  production/consumption and on-device proof remain later slices.
 
 - Manual setup exposes frequency, filter family/slope, and trim. ~~There is
   still no `/sound/` UI for polarity/delay authoring~~ Closed (P2a): the
@@ -1677,7 +1701,9 @@ projection, explicit reviewed apply, compiler-ready measured corrections,
 writer-locked graph/path/volume readback, exact failure/cancellation/restart
 restore, retained-proof finalization, complete-plan replay
 guards, receipt schema-v2 one-shot roles,
-and Room's temporary passive-only admission boundary checked against the current
+and Room's versioned passive/solo-manual-applied admission boundary, explicit
+grouped-active unsupported result, and strict automatic-receipt separation
+checked against the current
 implementation and cited measurement literature; the apply path was validated
 with injected runtime seams only, and no live audio/DSP/hardware operation was
 performed or hardware-validated.)

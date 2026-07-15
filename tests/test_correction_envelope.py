@@ -64,7 +64,9 @@ READY_SPEAKER_SETUP = {
     "active": False,
     "room_correction_allowed": True,
     "acoustic_commissioning": {
+        "decision_schema_version": 1,
         "allowed": True,
+        "authority": "passive_not_required",
         "status": "not_required",
     },
 }

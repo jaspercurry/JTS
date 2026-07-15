@@ -646,6 +646,66 @@ async def test_correction_apply_replaces_existing_room_peqs(
 
 
 @pytest.mark.asyncio
+async def test_correction_apply_runs_authority_guard_inside_dsp_lock(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from contextlib import asynccontextmanager
+    from jasper import dsp_apply
+    from jasper.correction.session import PEQJSON
+
+    sess = _make_session(tmp_path)
+    sess.state = SessionState.READY
+    sess.peqs = [PEQJSON(freq_hz=80.0, q=4.0, gain_db=-3.0)]
+    sess.cfg.config_dir.mkdir()
+    current = sess.cfg.config_dir / "sound_current.yml"
+    current.write_text(
+        emit_sound_config(SoundProfile(enabled=False)),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing.json"))
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+
+    lock_held = False
+    guard_observations = []
+
+    @asynccontextmanager
+    async def observed_lock(*_args, **_kwargs):
+        nonlocal lock_held
+        lock_held = True
+        try:
+            yield
+        finally:
+            lock_held = False
+
+    async def prepare_guard():
+        guard_observations.append(lock_held)
+
+    loaded = {"path": str(current)}
+
+    async def fake_set_config(path: str) -> bool:
+        loaded["path"] = path
+        return True
+
+    async def fake_get_config() -> str:
+        return loaded["path"]
+
+    monkeypatch.setattr(dsp_apply, "_maybe_dsp_apply_lock", observed_lock)
+
+    await sess.apply(
+        fake_set_config,
+        camilla_get_config=fake_get_config,
+        prepare_guard=prepare_guard,
+    )
+
+    assert guard_observations == [True]
+    assert lock_held is False
+
+
+@pytest.mark.asyncio
 async def test_reset_no_room_config_preserves_preference_and_strips_room(
     tmp_path: Path,
     monkeypatch,
@@ -678,8 +738,11 @@ async def test_reset_no_room_config_preserves_preference_and_strips_room(
     out_path = await correction_setup._write_no_room_correction_config(sess, fake_cam)
 
     yaml = out_path.read_text(encoding="utf-8")
-    assert safety_checks == [yaml]
-    assert out_path.name == "sound_current.yml"
+    assert len(safety_checks) == 2
+    assert safety_checks[-1] == yaml
+    assert out_path.name.startswith(f"sound_reset_{sess.session_id}_")
+    assert out_path.name.endswith(".yml")
+    assert current.read_text(encoding="utf-8") != yaml
     assert "room_peq_1:" not in yaml
     assert "sound_curve_harman_bass:" in yaml
     assert "sound_simple_treble:" in yaml
@@ -833,6 +896,9 @@ class _FakeCamilla:
     async def get_config_file_path(self, *, best_effort: bool = False):
         return self.current_path
 
+    async def get_active_config_raw(self, *, best_effort: bool = False):
+        return Path(self.current_path).read_text(encoding="utf-8")
+
     async def set_config_file_path(
         self, path: str, *, best_effort: bool = False,
     ) -> bool:
@@ -894,10 +960,43 @@ _READY_ROOM_CORRECTION_SETUP = {
     "active": False,
     "room_correction_allowed": True,
     "acoustic_commissioning": {
+        "decision_schema_version": 1,
+        "authority": "passive_not_required",
         "allowed": True,
         "status": "not_required",
     },
 }
+
+
+def test_room_readiness_producer_binds_fresh_camilla_active_raw(monkeypatch):
+    from jasper.active_speaker import setup_status
+    from jasper.web import correction_setup
+
+    captured = {}
+
+    class FakeCamilla:
+        async def get_active_config_raw(self, *, best_effort=False):
+            assert best_effort is False
+            return "pipeline: [{type: Mixer, name: split}]\n"
+
+    def fake_status(**kwargs):
+        captured.update(kwargs)
+        return _READY_ROOM_CORRECTION_SETUP
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: FakeCamilla())
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda awaitable, *, timeout: asyncio.run(awaitable),
+    )
+    monkeypatch.setattr(setup_status, "read_active_speaker_setup_status", fake_status)
+
+    result = correction_setup._room_correction_readiness()
+
+    assert result is _READY_ROOM_CORRECTION_SETUP
+    assert captured == {
+        "active_config_text": "pipeline: [{type: Mixer, name: split}]\n",
+    }
 
 
 def test_room_readiness_accepts_consistent_passive_authority(monkeypatch):
@@ -915,7 +1014,7 @@ def test_room_readiness_accepts_consistent_passive_authority(monkeypatch):
     assert readiness.blocker is None
 
 
-def test_room_readiness_rejects_legacy_active_snapshot_authority(monkeypatch):
+def test_room_readiness_rejects_unversioned_active_snapshot_authority(monkeypatch):
     from jasper.web import correction_setup
 
     monkeypatch.setattr(
@@ -942,21 +1041,114 @@ def test_room_readiness_rejects_legacy_active_snapshot_authority(monkeypatch):
     readiness = correction_setup._room_readiness()
 
     assert readiness.allowed is False
-    assert readiness.reason == "active_receipt_authority_unavailable"
+    assert readiness.reason == "speaker_readiness_malformed"
     assert readiness.blocker == {
-        "code": "speaker_setup_incomplete",
-        "text": "Finish speaker setup first.",
-        "retryable": False,
+        "code": "speaker_readiness_unavailable",
+        "text": "Speaker setup could not be checked. Try again.",
+        "retryable": True,
         "recovery_action": {
-            "label": "Open speaker setup",
-            "href": "/correction/crossover/",
+            "label": "Check again",
+            "href": "/correction/room/",
         },
     }
     assert "historical B2b" not in str(readiness.blocker)
 
     with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
         correction_setup._handle_start(_DummyJsonHandler())
-    assert exc_info.value.status == HTTPStatus.CONFLICT
+    assert exc_info.value.status == HTTPStatus.SERVICE_UNAVAILABLE
+
+
+def test_room_readiness_accepts_versioned_manual_active_authority(monkeypatch):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {
+            "active": True,
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": "manual_applied_profile",
+                "layer_a_identity": "layer-a-manual",
+                "allowed": True,
+                "status": "ready",
+                "setup_href": "/correction/crossover/",
+            },
+        },
+    )
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.allowed is True
+    assert readiness.blocker is None
+    assert readiness.authority_binding == (
+        True,
+        "manual_applied_profile",
+        "layer-a-manual",
+    )
+
+
+def test_room_readiness_consumes_active_owned_grouped_scope(monkeypatch):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {
+            "active": True,
+            "room_correction_allowed": False,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
+                "layer_a_identity": None,
+                "allowed": False,
+                "status": "incomplete",
+                "reason": "active_grouped_room_correction_not_supported",
+                "detail": "Active owns this unsupported scope decision.",
+                "setup_href": "/rooms/",
+            },
+        },
+    )
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.allowed is False
+    assert readiness.reason == "active_grouped_room_correction_not_supported"
+    assert readiness.blocker["code"] == "speaker_setup_incomplete"
+    assert readiness.blocker["recovery_action"] == {
+        "label": "Open speaker setup",
+        "href": "/rooms/",
+    }
+    assert "unsupported scope" not in str(readiness.blocker)
+
+
+def test_room_readiness_accepts_only_explicit_automatic_receipt_authority(
+    monkeypatch,
+):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {
+            "active": True,
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": "automatic_commissioning_receipt",
+                "layer_a_identity": "layer-a-automatic",
+                "allowed": True,
+                "status": "ready",
+                "setup_href": "/correction/crossover/",
+            },
+        },
+    )
+
+    readiness = correction_setup._room_readiness()
+
+    assert readiness.allowed is True
+    assert readiness.blocker is None
 
 
 @pytest.mark.parametrize(
@@ -1021,6 +1213,8 @@ def test_room_readiness_unknown_authority_is_retryable_unavailable(monkeypatch):
             "active": True,
             "room_correction_allowed": False,
             "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
                 "required": True,
                 "allowed": False,
                 "status": "unknown",
@@ -1084,6 +1278,8 @@ def test_room_readiness_rejects_unsafe_owner_recovery_links(monkeypatch, href):
             "active": True,
             "room_correction_allowed": False,
             "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
                 "allowed": False,
                 "status": "incomplete",
                 "reason": "active_speaker_setup_not_ready",
@@ -1118,14 +1314,31 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
+    authority_checks = []
+
+    async def authority_current(_cam, expected):
+        authority_checks.append(expected)
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_assert_room_authority_current",
+        authority_current,
+    )
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
     )
     monkeypatch.setattr(correction_setup, "_session", None)
-    fake_cam = _FakeCamilla(
-        current_path=str(tmp_path / "configs" / "correction_xyz_1700.yml"),
+    prior_path = tmp_path / "configs" / "correction_xyz_1700.yml"
+    prior_path.parent.mkdir()
+    prior_path.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            room_peqs=[PeqFilter(freq=45.0, q=3.0, gain=-6.0)],
+        ),
+        encoding="utf-8",
     )
+    fake_cam = _FakeCamilla(current_path=str(prior_path))
     monkeypatch.setattr(correction_setup, "_camilla", lambda: fake_cam)
 
     # Hold the sweep entirely — we just want to observe the reset
@@ -1182,12 +1395,12 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     generated = Path(fake_cam.set_calls[0]).read_text(encoding="utf-8")
     assert "room_peq_1" not in generated
     assert "sound_curve_" not in generated
-    # And snapshot the prior correction descriptor in the response so
-    # the UI can render "was: correction_xyz" if it wants.
+    # The descriptor is derived from immutable graph content rather than the
+    # mutable predecessor filename.
     prior = body["current_correction_at_start"]
     assert prior is not None
-    assert prior["kind"] == "correction"
-    assert prior["current_correction"]["session_id"] == "xyz"
+    assert prior["kind"] == "sound_with_correction"
+    assert prior["current_correction"]["session_id"] == "sound"
     assert body["strategy_choice"] == "balanced"
     assert body["correction_strategy"]["strategy_id"] == "balanced"
     assert sess.total_positions == 6
@@ -1197,10 +1410,14 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     assert sess.pre_measurement_config_path == Path(
         tmp_path / "configs" / "correction_xyz_1700.yml"
     )
+    assert sess.pre_measurement_restore_path is not None
+    assert sess.pre_measurement_restore_path != sess.pre_measurement_config_path
+    assert sess.pre_measurement_restore_path.exists()
     # Local browser permission/device selection is human-paced. /start must
     # suspend the automatic upload watchdog until setup is bound; otherwise a
     # household can time out while still responding to the permission prompt.
     assert sess._state_guard._capture_timeout_task is None
+    assert authority_checks == [(False, "passive_not_required", None)]
 
 
 @pytest.mark.asyncio
@@ -1224,6 +1441,14 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
     monkeypatch.setattr(
         "jasper.correction.runtime_safety.assert_correction_graph_safe",
         lambda text: None,
+    )
+    async def authority_current(_cam, _expected):
+        return None
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_assert_room_authority_current",
+        authority_current,
     )
     sess = _make_session(tmp_path)
     sess.cfg.config_dir.mkdir()
@@ -1253,8 +1478,6 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
         async def get_config_file_path(self, *, best_effort: bool = False):
             self.get_calls += 1
             if self.get_calls == 1:
-                return str(old_path)
-            if self.get_calls == 2:
                 self.current_path = str(new_path)
                 return str(new_path)
             return self.current_path
@@ -1266,16 +1489,83 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
             self.current_path = path
             return True
 
+        async def get_active_config_raw(self, *, best_effort: bool = False):
+            return Path(self.current_path).read_text(encoding="utf-8")
+
     payload = await correction_setup._load_measurement_baseline(
         sess,
         SwappingCamilla(),
+        expected_authority_binding=(False, "passive_not_required", None),
     )
 
     assert payload["prior_config_path"] == str(new_path)
     assert sess.pre_measurement_config_path == new_path
+    assert sess.pre_measurement_restore_path is not None
+    assert sess.pre_measurement_restore_path != new_path
+    assert payload["restore_config_path"] == str(
+        sess.pre_measurement_restore_path
+    )
     assert payload["current_correction_at_start"]["current_correction"][
         "session_id"
-    ] == "new"
+    ] == "sound"
+
+
+@pytest.mark.asyncio
+async def test_measurement_baseline_rejects_layer_a_change_inside_prepare(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The graph admitted before reservation must still be current in prepare."""
+    from jasper.dsp_apply import DspApplyError
+    from jasper.web import correction_setup
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+    sess = _make_session(tmp_path)
+    sess.cfg.config_dir.mkdir()
+    current = sess.cfg.config_dir / "sound_current.yml"
+    current.write_text(
+        emit_sound_config(SoundProfile(enabled=False)),
+        encoding="utf-8",
+    )
+    fake_cam = _FakeCamilla(current_path=str(current))
+
+    async def changed_authority(_cam):
+        return {
+            "active": True,
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": "manual_applied_profile",
+                "layer_a_identity": "layer-a-after-reservation",
+                "allowed": True,
+                "status": "ready",
+                "setup_href": "/correction/crossover/",
+            },
+        }
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_read_room_correction_readiness",
+        changed_authority,
+    )
+
+    with pytest.raises(DspApplyError) as exc_info:
+        await correction_setup._load_measurement_baseline(
+            sess,
+            fake_cam,
+            expected_authority_binding=(
+                True,
+                "manual_applied_profile",
+                "layer-a-before-reservation",
+            ),
+        )
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert "authority changed" in str(exc_info.value.__cause__)
+    assert fake_cam.set_calls == []
 
 
 @pytest.mark.asyncio
@@ -1283,8 +1573,11 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     tmp_path: Path,
     monkeypatch,
 ):
-    """JTS5 regression: /start must treat the active-leader program bake as
-    hostable when it still resolves to the Snapcast pipe sink.
+    """Retain the carrier seam for future distributed Active authority.
+
+    The v1 Active eligibility projection explicitly scopes grouped active out;
+    once Active can bind both Camilla daemons, Room's lower-level carrier must
+    still host the leader program bake when it resolves to the Snapcast pipe.
     """
     from jasper.multiroom.reconcile import SNAPFIFO
     from jasper.web import correction_setup
@@ -1308,6 +1601,14 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
             "playback_pipe_path": "/run/jasper-snapserver/snapfifo",
         },
     )
+    async def authority_current(_cam, _expected):
+        return None
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_assert_room_authority_current",
+        authority_current,
+    )
     sess = _make_session(tmp_path)
     sess.cfg.config_dir.mkdir()
     current = sess.cfg.config_dir / "sound_current.yml"
@@ -1321,7 +1622,11 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     )
     fake_cam = _FakeCamilla(current_path=str(current))
 
-    payload = await correction_setup._load_measurement_baseline(sess, fake_cam)
+    payload = await correction_setup._load_measurement_baseline(
+        sess,
+        fake_cam,
+        expected_authority_binding=(True, "manual_applied_profile", "layer-a"),
+    )
 
     assert len(fake_cam.set_calls) == 1
     measurement_path = Path(fake_cam.set_calls[0])
@@ -1338,6 +1643,8 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     assert payload["measurement_config_path"] == str(measurement_path)
     assert payload["prior_config_path"] == str(current)
     assert sess.pre_measurement_config_path == current
+    assert sess.pre_measurement_restore_path is not None
+    assert sess.pre_measurement_restore_path != current
 
 
 def test_start_handler_aborts_if_measurement_baseline_load_fails(
@@ -1351,16 +1658,27 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
+    async def authority_current(_cam, _expected):
+        return None
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_assert_room_authority_current",
+        authority_current,
+    )
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
     )
     monkeypatch.setattr(correction_setup, "_session", None)
 
-    fake_cam = _FakeCamilla(
-        current_path=str(tmp_path / "configs" / "correction_xyz_1700.yml"),
-        reset_ok=False,
+    prior_path = tmp_path / "configs" / "correction_xyz_1700.yml"
+    prior_path.parent.mkdir()
+    prior_path.write_text(
+        emit_sound_config(SoundProfile(enabled=False)),
+        encoding="utf-8",
     )
+    fake_cam = _FakeCamilla(current_path=str(prior_path), reset_ok=False)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: fake_cam)
     captured: dict = {}
     monkeypatch.setattr(
@@ -1639,6 +1957,8 @@ def test_start_handler_rejects_uncommissioned_active_speaker_before_reservation(
             "active": True,
             "room_correction_allowed": False,
             "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": None,
                 "allowed": False,
                 "status": "incomplete",
                 "reason": "active_summed_acoustic_evidence_incomplete",
