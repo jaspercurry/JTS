@@ -375,6 +375,9 @@ def test_active_speaker_allows_room_correction_only_after_acoustic_commissioning
     assert status["acoustic_commissioning"]["authority"] == (
         "manual_applied_profile"
     )
+    assert status["acoustic_commissioning"]["layer_a_identity"] == (
+        status["protected_profile"]["layer_a_binding"]["loaded_fingerprint"]
+    )
     assert status["acoustic_commissioning"]["drivers"] == {
         "required_groups": 1,
         "usable_groups": 1,

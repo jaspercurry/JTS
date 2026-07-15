@@ -369,6 +369,10 @@ class MeasurementSession:
         self.pre_apply_config_path: str | None = None
         self.pre_measurement_config_path: Path | None = None
         self.measurement_config_path: Path | None = None
+        # Active-owned admission sampled at /start. The web owner carries this
+        # opaque tuple and revalidates it at each DSP-writer boundary; the
+        # session never interprets or reconstructs Layer-A evidence.
+        self.room_authority_binding: tuple[bool, str, str | None] | None = None
 
         # Sweep cache.
         self.sweep_meta: sweep.SweepMeta | None = None

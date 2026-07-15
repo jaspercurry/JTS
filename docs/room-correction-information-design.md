@@ -325,7 +325,11 @@ snapshot-derived recomposition. That
 identity covers output-device settings plus the complete driver-domain
 mixer/pipeline/filter suffix and excludes only the mutable pre-split
 Room/preference prefix. Room consumes the resulting decision; it does not
-perform this comparison itself.
+perform this comparison itself. It carries Active's opaque identity from Start
+and asks Active for the same decision again inside both the locked measurement
+baseline preparation and Apply writer boundary. A changed authority or identity
+refuses the mutation; Reset and automatic revert still restore the exact saved
+predecessor without depending on new Room authority.
 
 Historical B2b evidence is forensic only: it cannot supply modern candidate or
 receipt authority. Automatic crossover readiness must come from Active's fresh,

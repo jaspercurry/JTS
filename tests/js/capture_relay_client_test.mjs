@@ -146,6 +146,30 @@ async function testControlFetchAbortsBeforePiFeedLossWindow() {
   ok();
 }
 
+async function testControlFetchAbortsAStalledResponseBody() {
+  const f = mockFetch((_url, init) => ({
+    ok: true,
+    status: 200,
+    json() {
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const error = new Error("control response body timed out");
+          error.name = "AbortError";
+          reject(error);
+        }, { once: true });
+      });
+    },
+  }));
+  const client = makeClient(f);
+
+  await assert.rejects(
+    () => client.fetchPhoneStatus({ timeoutMs: 1 }),
+    (error) => error && error.name === "AbortError",
+  );
+  assert.equal(f.calls.length, 1);
+  ok();
+}
+
 async function testPutBlob() {
   const f = mockFetch(() => res(200, { ok: true, state: "ready" }));
   const client = makeClient(f);
@@ -199,6 +223,7 @@ const tests = [
   testProtocolTwoPostEventUsesAuthenticatedEnvelope,
   testFetchPhoneStatus,
   testControlFetchAbortsBeforePiFeedLossWindow,
+  testControlFetchAbortsAStalledResponseBody,
   testPutBlob,
   testErrorThrowsRelayError,
   testConstructorValidates,

@@ -150,7 +150,12 @@
   grouping readiness are not redefined by this Room-specific binding. A valid Active
   recovery path is carried through; otherwise **Check again** reloads the Room
   entry. `/start` repeats the same check before reading the body or reserving a
-  session. Measurement-baseline load, Apply, Reset, and
+  session, carries Active's opaque loaded Layer-A identity, and compares a fresh
+  Active decision again inside the locked measurement-baseline preparation.
+  Apply repeats that comparison inside its shared writer boundary, so a later
+  legal DSP writer cannot substitute a different crossover during a Room run.
+  Reset and automatic revert remain independently available exact-predecessor
+  restoration paths. Measurement-baseline load, Apply, Reset, and
   automatic revert wait for a terminal result after any shared writer
   admission. Camilla transport attempts and shared writer-lock admission are
   bounded; a cancelled or timed-out waiter cannot acquire later. Room does not
@@ -446,11 +451,14 @@
   calibration-file match), is `capture_page_build=20260712.3`, supporting
   protocols 1 and 2. The public
   `https://capture.jasper.tech/version.json` reported `20260712.3` on
-  2026-07-12. Repo build 20260715.2 adds the Room-specific trust-repeat copy,
+  2026-07-12. Repo build 20260715.3 adds the Room-specific trust-repeat copy,
   renders host `sweep_cancelled` as expected Stop control flow, and keeps a
   safely bounded level walk alive across a transient relay status-poll failure.
-  Page-side control requests abort after three seconds, inside the Pi's
-  eight-second feed-loss guard, so a pending fetch cannot freeze mic batches.
+  Page-side control requests abort after three seconds through response-body
+  parsing, so stalled headers cannot freeze mic batches. Pi-side level control
+  uses a separate 1.5-second request timeout, publishes at most one queued host
+  event before refreshing status, and bounds one retry plus that status read to
+  4.75 seconds inside the default eight-second feed-loss guard.
   The Pi retries one idempotent host-progress write after a timeout, 429, or
   relay 5xx. The repo build is
   intentionally not published by this hardware-free lane, so that external

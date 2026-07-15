@@ -555,6 +555,18 @@ async def test_relay_host_event_does_not_retry_nontransient_4xx(monkeypatch):
     assert attempts == [{"phase": "setup_validated"}]
 
 
+def test_relay_level_control_budget_stays_inside_default_feed_guard():
+    from jasper.audio_measurement.ramp import MeasurementRamp
+
+    assert correction_setup._RELAY_LEVEL_CONTROL_TIMEOUT_S < (
+        correction_setup._RELAY_REGISTER_TIMEOUT_S
+    )
+    assert correction_setup._RELAY_LEVEL_PUMP_MAX_BLOCK_S == pytest.approx(4.75)
+    assert correction_setup._RELAY_LEVEL_PUMP_MAX_BLOCK_S < (
+        MeasurementRamp().feed_timeout_s
+    )
+
+
 def test_relay_capture_return_url_uses_request_host(monkeypatch):
     monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
     handler = SimpleNamespace(headers={"Host": "jts5.local"})
@@ -2664,6 +2676,7 @@ def _locked_autolevel_session(raises_on, *, original=-20.0):
         session_id = "vol-strand"
         state = SessionState.READY
         config_path = None
+        room_authority_binding = (False, "passive_not_required", None)
 
         def __init__(self):
             self.autolevel = AutolevelData(
@@ -2716,12 +2729,72 @@ def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
     monkeypatch.setattr(
         correction_setup, "_camilla", lambda: _volume_recording_cam(restored)
     )
+    async def authority_current(_cam, _expected):
+        return None
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_assert_room_authority_current",
+        authority_current,
+    )
 
     with pytest.raises(RuntimeError):
         correction_setup._handle_apply(None)
 
     # The apply exception propagated, but the finally still restored volume.
     assert restored == [-20.0]
+
+
+def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
+    from jasper.correction.session import SessionState
+
+    applied = []
+
+    class Session:
+        session_id = "authority-race"
+        state = SessionState.READY
+        confidence_report = None
+        config_path = None
+        room_authority_binding = (
+            True,
+            "manual_applied_profile",
+            "layer-a-at-start",
+        )
+
+        async def apply(self, *_args, **_kwargs):
+            applied.append(True)
+
+    async def changed_authority(_cam):
+        return {
+            "active": True,
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": "manual_applied_profile",
+                "layer_a_identity": "layer-a-before-apply",
+                "allowed": True,
+                "status": "ready",
+                "setup_href": "/correction/crossover/",
+            },
+        }
+
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", Session)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(
+        correction_setup,
+        "_read_room_correction_readiness",
+        changed_authority,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_maybe_restore_main_volume",
+        lambda _sess, _cam: None,
+    )
+
+    with pytest.raises(RuntimeError, match="authority changed"):
+        correction_setup._handle_apply(None)
+
+    assert applied == []
 
 
 def test_reset_restores_listening_volume_when_reset_raises(monkeypatch):

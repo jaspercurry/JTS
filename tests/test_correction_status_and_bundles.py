@@ -1004,6 +1004,7 @@ def test_room_readiness_accepts_versioned_manual_active_authority(monkeypatch):
             "acoustic_commissioning": {
                 "decision_schema_version": 1,
                 "authority": "manual_applied_profile",
+                "layer_a_identity": "layer-a-manual",
                 "allowed": True,
                 "status": "ready",
                 "setup_href": "/correction/crossover/",
@@ -1015,6 +1016,11 @@ def test_room_readiness_accepts_versioned_manual_active_authority(monkeypatch):
 
     assert readiness.allowed is True
     assert readiness.blocker is None
+    assert readiness.authority_binding == (
+        True,
+        "manual_applied_profile",
+        "layer-a-manual",
+    )
 
 
 def test_room_readiness_accepts_only_explicit_automatic_receipt_authority(
@@ -1031,6 +1037,7 @@ def test_room_readiness_accepts_only_explicit_automatic_receipt_authority(
             "acoustic_commissioning": {
                 "decision_schema_version": 1,
                 "authority": "automatic_commissioning_receipt",
+                "layer_a_identity": "layer-a-automatic",
                 "allowed": True,
                 "status": "ready",
                 "setup_href": "/correction/crossover/",
@@ -1207,6 +1214,16 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
+    authority_checks = []
+
+    async def authority_current(_cam, expected):
+        authority_checks.append(expected)
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_assert_room_authority_current",
+        authority_current,
+    )
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
@@ -1290,6 +1307,7 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     # suspend the automatic upload watchdog until setup is bound; otherwise a
     # household can time out while still responding to the permission prompt.
     assert sess._state_guard._capture_timeout_task is None
+    assert authority_checks == [(False, "passive_not_required", None)]
 
 
 @pytest.mark.asyncio
@@ -1313,6 +1331,14 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
     monkeypatch.setattr(
         "jasper.correction.runtime_safety.assert_correction_graph_safe",
         lambda text: None,
+    )
+    async def authority_current(_cam, _expected):
+        return None
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_assert_room_authority_current",
+        authority_current,
     )
     sess = _make_session(tmp_path)
     sess.cfg.config_dir.mkdir()
@@ -1358,6 +1384,7 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
     payload = await correction_setup._load_measurement_baseline(
         sess,
         SwappingCamilla(),
+        expected_authority_binding=(False, "passive_not_required", None),
     )
 
     assert payload["prior_config_path"] == str(new_path)
@@ -1365,6 +1392,64 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
     assert payload["current_correction_at_start"]["current_correction"][
         "session_id"
     ] == "new"
+
+
+@pytest.mark.asyncio
+async def test_measurement_baseline_rejects_layer_a_change_inside_prepare(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The graph admitted before reservation must still be current in prepare."""
+    from jasper.dsp_apply import DspApplyError
+    from jasper.web import correction_setup
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+    sess = _make_session(tmp_path)
+    sess.cfg.config_dir.mkdir()
+    current = sess.cfg.config_dir / "sound_current.yml"
+    current.write_text(
+        emit_sound_config(SoundProfile(enabled=False)),
+        encoding="utf-8",
+    )
+    fake_cam = _FakeCamilla(current_path=str(current))
+
+    async def changed_authority(_cam):
+        return {
+            "active": True,
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": "manual_applied_profile",
+                "layer_a_identity": "layer-a-after-reservation",
+                "allowed": True,
+                "status": "ready",
+                "setup_href": "/correction/crossover/",
+            },
+        }
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_read_room_correction_readiness",
+        changed_authority,
+    )
+
+    with pytest.raises(DspApplyError) as exc_info:
+        await correction_setup._load_measurement_baseline(
+            sess,
+            fake_cam,
+            expected_authority_binding=(
+                True,
+                "manual_applied_profile",
+                "layer-a-before-reservation",
+            ),
+        )
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert "authority changed" in str(exc_info.value.__cause__)
+    assert fake_cam.set_calls == []
 
 
 @pytest.mark.asyncio
@@ -1397,6 +1482,14 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
             "playback_pipe_path": "/run/jasper-snapserver/snapfifo",
         },
     )
+    async def authority_current(_cam, _expected):
+        return None
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_assert_room_authority_current",
+        authority_current,
+    )
     sess = _make_session(tmp_path)
     sess.cfg.config_dir.mkdir()
     current = sess.cfg.config_dir / "sound_current.yml"
@@ -1410,7 +1503,11 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     )
     fake_cam = _FakeCamilla(current_path=str(current))
 
-    payload = await correction_setup._load_measurement_baseline(sess, fake_cam)
+    payload = await correction_setup._load_measurement_baseline(
+        sess,
+        fake_cam,
+        expected_authority_binding=(True, "manual_applied_profile", "layer-a"),
+    )
 
     assert len(fake_cam.set_calls) == 1
     measurement_path = Path(fake_cam.set_calls[0])
@@ -1439,6 +1536,14 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
         correction_setup,
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
+    )
+    async def authority_current(_cam, _expected):
+        return None
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_assert_room_authority_current",
+        authority_current,
     )
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",

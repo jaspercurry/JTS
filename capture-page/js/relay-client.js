@@ -73,15 +73,21 @@ export class RelayClient {
     return { Authorization: `Bearer ${this.uploadToken}`, ...(extra || {}) };
   }
 
-  async _controlFetch(suffix, init, timeoutMs = RELAY_CONTROL_TIMEOUT_MS) {
+  async _controlFetch(
+    suffix,
+    init,
+    consume,
+    timeoutMs = RELAY_CONTROL_TIMEOUT_MS,
+  ) {
     const controller = new AbortController();
     const timeout = Math.max(250, Number(timeoutMs) || RELAY_CONTROL_TIMEOUT_MS);
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
-      return await this._fetch(this._url(suffix), {
+      const res = await this._fetch(this._url(suffix), {
         ...(init || {}),
         signal: controller.signal,
       });
+      return await consume(res);
     } finally {
       clearTimeout(timer);
     }
@@ -133,25 +139,27 @@ export class RelayClient {
         this._eventSequence,
       );
     }
-    const res = await this._controlFetch("/event", {
+    return this._controlFetch("/event", {
       method: "POST",
       headers: this._authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
+    }, async (res) => {
+      if (!res.ok) throw await this._failure(res);
+      return res.json();
     }, timeoutMs);
-    if (!res.ok) throw await this._failure(res);
-    return res.json();
   }
 
   // Poll Pi-side progress for this capture. This uses the upload token, so the
   // Worker returns only phone-safe progress state, never the Pi pull-token
   // integrity/blob details.
   async fetchPhoneStatus({ timeoutMs = RELAY_CONTROL_TIMEOUT_MS } = {}) {
-    const res = await this._controlFetch("/phone-status", {
+    return this._controlFetch("/phone-status", {
       method: "GET",
       headers: this._authHeaders(),
+    }, async (res) => {
+      if (!res.ok) throw await this._failure(res);
+      return res.json();
     }, timeoutMs);
-    if (!res.ok) throw await this._failure(res);
-    return res.json();
   }
 
   // Upload IV‖ciphertext with the plaintext integrity the Pi verifies.

@@ -204,6 +204,14 @@ def _acoustic_commissioning_status(
     return {
         "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
         "authority": authority,
+        # Opaque Active-owned identity for the exact loaded driver-domain
+        # graph admitted by this decision. Room may compare this value at its
+        # writer boundaries; it must not reconstruct Layer A itself.
+        "layer_a_identity": (
+            str(layer_a_binding.get("loaded_fingerprint"))
+            if allowed and layer_a_binding.get("loaded_fingerprint")
+            else None
+        ),
         "required": True,
         "status": "ready" if allowed else "incomplete",
         "allowed": allowed,

@@ -713,7 +713,10 @@
 > semantic Layer-A fingerprint. Output-device
 > settings and the full driver-domain mixer/pipeline/filter suffix are bound;
 > the mutable pre-split Room/preference prefix is excluded. A mismatch blocks
-> Room and requires explicit crossover reapply. An automatic applied snapshot stays
+> Room and requires explicit crossover reapply. The allowed decision exposes
+> only the opaque loaded Layer-A identity; Room carries and compares that value
+> when it re-asks Active inside its measurement-baseline and Apply writer
+> boundaries, without parsing the graph. An automatic applied snapshot stays
 > incomplete until Active issues and exposes the exact receipt-backed result.
 > Room consumes that one decision and neither inspects the graph nor historical
 > B2b evidence. Automatic authority still requires fresh excitation-admitted

@@ -1195,7 +1195,11 @@ mixer/pipeline/filter suffix while excluding the mutable pre-split
 Room/preference prefix. A mismatch asks for an explicit crossover reapply. An
 `automatic` snapshot without the strict receipt projects an incomplete
 decision. Room validates and consumes that projection without parsing the
-receipt or deriving authority from historical B2b evidence. Fresh
+receipt or deriving authority from historical B2b evidence. An allowed
+projection includes Active's opaque loaded Layer-A identity so Room can carry
+it from Start and compare a freshly reissued decision inside its locked
+measurement-baseline and Apply boundaries; Room still does not fingerprint the
+graph itself. Fresh
 excitation-admitted captures and the measured delay walk remain prerequisites
 for automatic receipt authority, not for operator-accepted manual crossover
 authority.

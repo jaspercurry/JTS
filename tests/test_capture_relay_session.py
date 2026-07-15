@@ -1063,6 +1063,27 @@ def test_client_requires_https_base_without_custom_transport():
     RelayClient("http://relay.test", transport=lambda *_a: RelayResponse(200, {}, b"{}"))
 
 
+def test_client_with_timeout_clones_the_control_transport():
+    calls = []
+
+    def transport(method, url, headers, body):
+        calls.append((method, url))
+        return RelayResponse(200, {}, b"{}")
+
+    client = RelayClient(
+        "https://relay.test",
+        transport=transport,
+        timeout=10.0,
+        registration_token="registration",
+    )
+    control = client.with_timeout(1.5)
+
+    assert control is not client
+    assert control._timeout == 1.5
+    control.status("cap_1", "pull")
+    assert calls == [("GET", "https://relay.test/sessions/cap_1/status")]
+
+
 # --- observability (event= logs) ---------------------------------------------
 
 
