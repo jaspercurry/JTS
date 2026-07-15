@@ -39,6 +39,10 @@ from jasper.correction.level_match import (
     phone_reported_abort,
     phone_reported_armed,
 )
+from jasper.correction.session import (
+    ROOM_LEVEL_WINDOW_HIGH_DBFS,
+    ROOM_LEVEL_WINDOW_LOW_DBFS,
+)
 from .correction_session_fixtures import (
     make_measurement_session as _make_session,
 )
@@ -731,6 +735,36 @@ async def test_session_run_level_match_stores_geometry_lock(tmp_path):
     assert snap["last"]["geometry"] == MicGeometry.LISTENING_POSITION.value
     assert snap["last"]["ramp"]["state"] == "locked"
     assert snap["last"]["ramp"]["restored"] is True
+    assert chain._vol == pytest.approx(-30.0)
+
+
+@pytest.mark.asyncio
+async def test_room_session_uses_sweep_headroom_window(tmp_path):
+    """Room keeps 3 dB beyond the shared tone window for the full-band ESS."""
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
+    clock = Clock()
+
+    outcome = await sess.run_level_match(
+        MicGeometry.LISTENING_POSITION.value,
+        get_main_volume_db=chain.get_vol,
+        set_main_volume_db=chain.set_vol,
+        play_continuous_tone=chain.tone,
+        cancel_tone=chain.cancel_tone,
+        read_status=chain.read_status,
+        post_host_event=chain.post_host_event,
+        noise_floor_dbfs=chain.nf,
+        clock=clock.now,
+        sleep=clock.sleep,
+    )
+
+    assert outcome.ramp.state is RampState.LOCKED
+    assert outcome.ramp.locked_main_volume_db is not None
+    locked_mic_dbfs = outcome.ramp.locked_main_volume_db + chain.gain_db
+    assert locked_mic_dbfs == pytest.approx(-19.0)
+    assert ROOM_LEVEL_WINDOW_LOW_DBFS <= locked_mic_dbfs
+    assert locked_mic_dbfs <= ROOM_LEVEL_WINDOW_HIGH_DBFS
+    assert outcome.ramp.restored is True
     assert chain._vol == pytest.approx(-30.0)
 
 

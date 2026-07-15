@@ -246,7 +246,12 @@
   preferred-window shortfall. Room's listening-position owner allows a
   +15 dB rise up to the unchanged 0 dB hard ceiling because its measurement
   stimulus is already −12 dBFS; crossover/near-field keeps the shared +12/−3
-  cap. The owning flow surfaces the shortfall and
+  cap. Room also targets a same-width −23 to −15 dBFS microphone window,
+  3 dB below the shared continuous-tone window. That Room-owned reserve was
+  pinned after the 2026-07-15 JTS3 UMIK-2 smoke: a −17.15 dBFS level-tone lock
+  still let the following full-band ESS clip, while the capture gate correctly
+  refused analysis. Active near-field commissioning keeps the shared window.
+  The owning flow surfaces the shortfall and
   downstream sweep-quality gates still decide whether the evidence is usable.
   The
   correction adapter

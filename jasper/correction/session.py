@@ -104,6 +104,15 @@ DEFAULT_ROOM_POSITION_COUNT = 6
 ROOM_POSITION_COUNT_CHOICES = (1, 3, DEFAULT_ROOM_POSITION_COUNT)
 DEFAULT_REPEAT_MAIN_POSITION = True
 
+# Room's full-band ESS needs more acoustic headroom than the continuous
+# level-check tone.  On JTS3 with the UMIK-2 (2026-07-15), the shared
+# [-20, -12] dBFS window locked the tone at -17.15 dBFS RMS / -12.7 dBFS peak,
+# but the following sweep still reached full scale and failed the existing
+# capture-clipping gate.  Keep the shared kernel and Active near-field policy
+# unchanged; Room alone targets the same-width window 3 dB lower.
+ROOM_LEVEL_WINDOW_LOW_DBFS = -23.0
+ROOM_LEVEL_WINDOW_HIGH_DBFS = -15.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -2610,6 +2619,8 @@ class MeasurementSession:
                     allow_bounded_low_level=True,
                     cap_bump_db=LISTENING_POSITION_CAP_BUMP_DB,
                     cap_ceil_db=LISTENING_POSITION_CAP_CEIL_DB,
+                    window_low_dbfs=ROOM_LEVEL_WINDOW_LOW_DBFS,
+                    window_high_dbfs=ROOM_LEVEL_WINDOW_HIGH_DBFS,
                 ),
             )
             self._level_match_session = session
