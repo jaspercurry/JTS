@@ -1734,11 +1734,11 @@ def test_render_page_includes_autolevel_controls():
     assert "startAutolevel" in js
     assert "autolevel/start" in js
     assert "autolevel/lock" in js
-    # Adaptive target band — computed from measured noise floor at
-    # the start of autolevel rather than hard-coded.
+    # Local and relay paths share Room's fixed acoustic-headroom window;
+    # measured noise remains evidence rather than permission to lock hotter.
     assert "computeTargetBand" in js
-    assert "AUTOLEVEL_SNR_DESIRED_LOW" in js
-    assert "AUTOLEVEL_SNR_DESIRED_HIGH" in js
+    assert "ROOM_LEVEL_WINDOW_LOW_DBFS" in js
+    assert "ROOM_LEVEL_WINDOW_HIGH_DBFS" in js
     # Preflight noise-floor measurement step is present.
     assert "Measuring room noise" in js
     assert "You can measure now" not in js
@@ -1880,14 +1880,16 @@ def test_render_page_redraws_chart_on_resize():
 
 
 def test_render_page_autolevel_target_band_clamps():
-    """Pin the absolute clamps: -30 dBFS floor (don't lock super
-    quiet even in dead-silent rooms) and -10 dBFS ceiling (avoid
-    pushing the iPhone mic toward clipping). A regression here
-    would cause silent off-by-default-target failures we'd only
-    catch on hardware."""
+    """The preferred local UMIK path reserves the same ESS headroom as relay."""
     body = _module_js()  # behaviour relocated to the static ES module
-    assert "AUTOLEVEL_TARGET_DB_FLOOR = -30" in body
-    assert "AUTOLEVEL_TARGET_DB_CEILING = -10" in body
+    assert "ROOM_LEVEL_WINDOW_LOW_DBFS = -23" in body
+    assert "ROOM_LEVEL_WINDOW_HIGH_DBFS = -15" in body
+    target = body.split("function computeTargetBand", 1)[1].split(
+        "async function startAutolevel", 1
+    )[0]
+    assert "low: ROOM_LEVEL_WINDOW_LOW_DBFS" in target
+    assert "high: ROOM_LEVEL_WINDOW_HIGH_DBFS" in target
+    assert "noiseFloorDb +" not in target
 
 
 def test_render_page_amp_message_is_generic_not_tpa3255():

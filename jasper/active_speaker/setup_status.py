@@ -20,9 +20,11 @@ from typing import Any, Mapping
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 from .baseline_profile import (
+    active_layer_a_fingerprint,
     baseline_profile_state_path,
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
+    recompose_applied_baseline_yaml,
 )
 from .capture_geometry import comparison_set_valid
 from .crossover_preview import load_crossover_preview
@@ -100,6 +102,7 @@ def _acoustic_commissioning_status(
     profile: Mapping[str, Any] | None,
     applied_profile: Mapping[str, Any] | None,
     measurements: Mapping[str, Any],
+    layer_a_binding: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Room-correction prerequisite for an active Layer-A graph.
 
@@ -167,6 +170,20 @@ def _acoustic_commissioning_status(
             if reason == "active_applied_profile_snapshot_missing"
             else str(applied_state["detail"])
         )
+    elif layer_a_binding.get("matches") is not True:
+        reason = (
+            "active_applied_profile_graph_mismatch"
+            if layer_a_binding.get("status") == "mismatch"
+            else "active_applied_profile_graph_unverifiable"
+        )
+        detail = (
+            "The crossover currently loaded on this speaker does not match the "
+            "applied manual profile. Apply that crossover again before Room "
+            "correction."
+            if reason == "active_applied_profile_graph_mismatch"
+            else "JTS could not verify the loaded crossover against the applied "
+            "profile. Apply the crossover again before Room correction."
+        )
     elif tuning_owner == "manual":
         reason = None
         authority = ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE
@@ -198,6 +215,7 @@ def _acoustic_commissioning_status(
             "measured_level_match_applied": applied_measured,
             "tuning_owner": tuning_owner or None,
             "snapshot_valid": bool(applied_state["valid"]),
+            "graph_matches_loaded": layer_a_binding.get("matches") is True,
         },
         "drivers": {
             "required_groups": required_active_groups,
@@ -400,9 +418,54 @@ def active_config_path_from_statefile(
     return match.group(1).strip().strip("'\"")
 
 
+def _applied_layer_a_binding(
+    topology: Any,
+    *,
+    applied_profile: Mapping[str, Any] | None,
+    active_config_path: str | None,
+    active_config_text: str | None,
+) -> dict[str, Any]:
+    """Bind Active's immutable applied snapshot to the loaded Layer-A graph."""
+
+    unavailable = {
+        "status": "unverifiable",
+        "matches": False,
+        "expected_fingerprint": None,
+        "loaded_fingerprint": None,
+    }
+    if not isinstance(applied_profile, Mapping) or (
+        active_config_text is None and not active_config_path
+    ):
+        return unavailable
+    try:
+        expected_yaml, expected_issues = recompose_applied_baseline_yaml(
+            topology,
+            applied_profile=applied_profile,
+        )
+        if expected_yaml is None or expected_issues:
+            return unavailable
+        loaded_yaml = (
+            active_config_text
+            if active_config_text is not None
+            else Path(str(active_config_path)).read_text(encoding="utf-8")
+        )
+        expected = active_layer_a_fingerprint(expected_yaml)
+        loaded = active_layer_a_fingerprint(loaded_yaml)
+    except _READINESS_DERIVATION_ERRORS:
+        return unavailable
+    matches = expected == loaded
+    return {
+        "status": "current" if matches else "mismatch",
+        "matches": matches,
+        "expected_fingerprint": expected,
+        "loaded_fingerprint": loaded,
+    }
+
+
 def read_active_speaker_setup_status(
     *,
     active_config_path: str | None = None,
+    active_config_text: str | None = None,
     baseline_state_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Return the authoritative active-speaker setup readiness snapshot.
@@ -410,7 +473,9 @@ def read_active_speaker_setup_status(
     For a passive/ordinary speaker, active setup is not required and both
     ``volume_allowed`` and ``grouping_allowed`` are true. For an active speaker,
     the durable baseline profile must be applied and the active CamillaDSP config
-    must not be one of the commissioning/staged safety graphs.
+    must not be one of the commissioning/staged safety graphs. Room supplies a
+    fresh CamillaDSP ``active_raw`` readback as ``active_config_text``; other
+    callers retain the durable statefile-path fallback.
 
     Total + fail-closed for active-output safety: an unreadable topology or
     unreadable baseline profile returns a blocked snapshot instead of silently
@@ -716,6 +781,14 @@ def read_active_speaker_setup_status(
             current_source.get("topology_fingerprint") or ""
         ) or None,
     )
+    layer_a_binding = _applied_layer_a_binding(
+        topology,
+        applied_profile=applied_profile,
+        active_config_path=config_path,
+        active_config_text=active_config_text,
+    )
+    if protected_profile_summary is not None:
+        protected_profile_summary["layer_a_binding"] = layer_a_binding
     manual_preservation = legacy_manual_preservation_state(
         applied_profile,
         current_source_fingerprint=str(current_source.get("fingerprint") or "") or None,
@@ -762,6 +835,7 @@ def read_active_speaker_setup_status(
         profile=profile,
         applied_profile=applied_profile,
         measurements=measurements,
+        layer_a_binding=layer_a_binding,
     )
     commissioning = commissioning_summary(
         topology,

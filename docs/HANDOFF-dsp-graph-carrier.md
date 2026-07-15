@@ -113,6 +113,12 @@ existing layering):
     (`environment.CAMILLA_CLASS_PROGRAM_BAKE`) → **program-bake carrier**.
     This is a flat 2-channel program graph, but it is not DAC-bound: camilla#1
     writes `File` → Snapcast FIFO and camilla#2 owns Layer A driver protection.
+    Before Room can use a manual applied-profile authority, Active's setup
+    projection compares CamillaDSP's fresh running `active_raw` output-device
+    settings and complete driver-domain mixer/pipeline/filter suffix with
+    snapshot-derived recomposition. Program-domain Room/preference filters
+    before the split do not affect that identity; any Layer-A mismatch requires
+    crossover reapply.
     The carrier therefore bypasses the DAC-bound protected-tweeter flat-graph
     refusal only after grouping state resolves back to a pipe sink with
     `enable_rate_adjust=false`; otherwise it refuses

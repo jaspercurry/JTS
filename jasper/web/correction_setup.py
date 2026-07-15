@@ -1716,10 +1716,20 @@ def _assert_relay_level_identity(
 
 
 def _room_correction_readiness() -> dict[str, Any]:
-    """Read the speaker-owned prerequisite; never derive a second rule here."""
+    """Read Active's decision against CamillaDSP's fresh running graph."""
     from jasper.active_speaker.setup_status import read_active_speaker_setup_status
+    from jasper.camilla import CamillaUnavailable
 
-    return read_active_speaker_setup_status()
+    try:
+        running_raw = _run_async(
+            _camilla().get_active_config_raw(best_effort=False),
+            timeout=2.0,
+        )
+    except CamillaUnavailable as exc:
+        raise RuntimeError("the running CamillaDSP graph is unavailable") from exc
+    if not isinstance(running_raw, str) or not running_raw.strip():
+        raise RuntimeError("the running CamillaDSP graph is unavailable")
+    return read_active_speaker_setup_status(active_config_text=running_raw)
 
 
 @dataclass(frozen=True)

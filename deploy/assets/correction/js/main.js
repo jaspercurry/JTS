@@ -2721,40 +2721,19 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     pollState();
   }
 
-  // Auto-level: how much SNR (dB) above the measured room noise
-  // floor we want the tone to sit at when we lock. 20-30 dB above
-  // noise gives 15-25 dB SNR on the sweep (which is 6 dB quieter
-  // than the tone source). Clamped on both ends:
-  //   - lower clamp -30 dBFS: don't lock at very quiet absolute
-  //     levels even in dead-silent rooms (capture would still work
-  //     but the user wouldn't believe a measurement happened).
-  //   - upper clamp -10 dBFS: avoid pushing the iPhone mic near
-  //     its clipping ceiling.
-  //
-  // Previous hard-coded -20..-10 target was unreachable in normal
-  // rooms (user's "decently loud voice at 10 cm" peaked at -25 dBFS
-  // — a speaker tone at couch distance would land around -25 to
-  // -35 dBFS at best). Adaptive band picks a target that's
-  // physically achievable for whatever noise floor you've got.
-  var AUTOLEVEL_SNR_DESIRED_LOW = 20;   // 20 dB above noise = minimum
-  var AUTOLEVEL_SNR_DESIRED_HIGH = 30;  // 30 dB above noise = ideal
-  var AUTOLEVEL_TARGET_DB_FLOOR = -30;  // lower clamp (absolute)
-  var AUTOLEVEL_TARGET_DB_CEILING = -10; // upper clamp (absolute)
+  // Keep the local-browser UMIK path on the same Room-owned acoustic
+  // window as the relay path. The 2026-07-15 JTS3 smoke showed that a
+  // -17.15 dBFS continuous-tone lock could still let the following ESS
+  // clip. Noise is measured and reported for the downstream SNR gates,
+  // but it must not raise this bounded level target.
+  var ROOM_LEVEL_WINDOW_LOW_DBFS = -23;
+  var ROOM_LEVEL_WINDOW_HIGH_DBFS = -15;
 
-  function computeTargetBand(noiseFloorDb) {
-    var high = Math.min(
-      noiseFloorDb + AUTOLEVEL_SNR_DESIRED_HIGH,
-      AUTOLEVEL_TARGET_DB_CEILING,
-    );
-    var low = Math.max(
-      noiseFloorDb + AUTOLEVEL_SNR_DESIRED_LOW,
-      AUTOLEVEL_TARGET_DB_FLOOR,
-    );
-    // In very noisy rooms the clamps can collide. Force a minimum
-    // 5 dB window so a momentary RMS spike can satisfy the lock
-    // condition.
-    if (low > high - 5) low = high - 5;
-    return { low: low, high: high };
+  function computeTargetBand(_noiseFloorDb) {
+    return {
+      low: ROOM_LEVEL_WINDOW_LOW_DBFS,
+      high: ROOM_LEVEL_WINDOW_HIGH_DBFS,
+    };
   }
 
   async function startAutolevel() {
@@ -2766,10 +2745,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // Step 1: measure ambient noise floor for ~500 ms BEFORE the
     // tone starts. This gives us a real number for "what counts as
     // quiet in this room right now", which we then use to pick a
-    // target SNR band that's actually achievable. Hard-coded bands
-    // from the previous version were unreachable in rooms where
-    // the speaker-to-listener path attenuated more than I'd
-    // assumed (real complaint from first-user test).
+    // target readout and downstream capture-quality evidence. The lock
+    // window itself is fixed above so local and relay captures reserve the
+    // same ESS headroom.
     autolevelLine.textContent = 'Measuring room noise…';
     autolevelDetail.textContent = '';
     var noiseSamples = [];

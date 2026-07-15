@@ -139,7 +139,15 @@
   automatic applied snapshot remains blocked until Active supplies the exact
   receipt-backed authority. Missing, malformed, incomplete, or unknown
   authority withholds Start; Room never reconstructs graph or measurement
-  evidence and never relabels automatic tuning as manual. A valid Active
+  evidence and never relabels automatic tuning as manual. Manual authority is
+  positive only when Active's semantic Layer-A fingerprint of CamillaDSP's
+  fresh running `active_raw` readback matches a recomposition from the
+  immutable applied snapshot. The
+  fingerprint includes output-device settings and the complete driver-domain
+  mixer/pipeline/filter suffix, while deliberately excluding the mutable
+  pre-split Room/preference prefix. A mismatch or unreadable graph withholds
+  Room Start and asks for an explicit crossover reapply; ordinary volume and
+  grouping readiness are not redefined by this Room-specific binding. A valid Active
   recovery path is carried through; otherwise **Check again** reloads the Room
   entry. `/start` repeats the same check before reading the body or reserving a
   session. Measurement-baseline load, Apply, Reset, and
@@ -246,7 +254,8 @@
   preferred-window shortfall. Room's listening-position owner allows a
   +15 dB rise up to the unchanged 0 dB hard ceiling because its measurement
   stimulus is already −12 dBFS; crossover/near-field keeps the shared +12/−3
-  cap. Room also targets a same-width −23 to −15 dBFS microphone window,
+  cap. Both relay and local-browser Room capture target the same-width −23 to
+  −15 dBFS microphone window,
   3 dB below the shared continuous-tone window. That Room-owned reserve was
   pinned after the 2026-07-15 JTS3 UMIK-2 smoke: a −17.15 dBFS level-tone lock
   still let the following full-band ESS clip, while the capture gate correctly

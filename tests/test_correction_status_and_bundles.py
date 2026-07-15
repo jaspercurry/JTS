@@ -902,6 +902,37 @@ _READY_ROOM_CORRECTION_SETUP = {
 }
 
 
+def test_room_readiness_producer_binds_fresh_camilla_active_raw(monkeypatch):
+    from jasper.active_speaker import setup_status
+    from jasper.web import correction_setup
+
+    captured = {}
+
+    class FakeCamilla:
+        async def get_active_config_raw(self, *, best_effort=False):
+            assert best_effort is False
+            return "pipeline: [{type: Mixer, name: split}]\n"
+
+    def fake_status(**kwargs):
+        captured.update(kwargs)
+        return _READY_ROOM_CORRECTION_SETUP
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: FakeCamilla())
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda awaitable, *, timeout: asyncio.run(awaitable),
+    )
+    monkeypatch.setattr(setup_status, "read_active_speaker_setup_status", fake_status)
+
+    result = correction_setup._room_correction_readiness()
+
+    assert result is _READY_ROOM_CORRECTION_SETUP
+    assert captured == {
+        "active_config_text": "pipeline: [{type: Mixer, name: split}]\n",
+    }
+
+
 def test_room_readiness_accepts_consistent_passive_authority(monkeypatch):
     from jasper.web import correction_setup
 

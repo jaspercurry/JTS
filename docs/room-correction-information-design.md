@@ -319,7 +319,13 @@ automatic applied snapshots do not have that receipt and remain blocked. Room
 must not relabel an automatic snapshot as manual, claim receipt-backed or
 freshly verified authority, inspect measurement artifacts, or derive a second
 rule; the validated crossover setup link remains the active-path recovery
-action.
+action. Active issues manual authority only after its semantic Layer-A
+fingerprint of CamillaDSP's fresh running `active_raw` readback matches
+snapshot-derived recomposition. That
+identity covers output-device settings plus the complete driver-domain
+mixer/pipeline/filter suffix and excludes only the mutable pre-split
+Room/preference prefix. Room consumes the resulting decision; it does not
+perform this comparison itself.
 
 Historical B2b evidence is forensic only: it cannot supply modern candidate or
 receipt authority. Automatic crossover readiness must come from Active's fresh,

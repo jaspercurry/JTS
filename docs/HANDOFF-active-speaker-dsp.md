@@ -708,7 +708,12 @@
 > new lifecycle is not current `/state`, while `active_speaker.setup_status`
 > now owns a versioned Room eligibility projection. A topology-current immutable
 > snapshot with explicit manual apply ownership is
-> `manual_applied_profile` authority; an automatic applied snapshot stays
+> `manual_applied_profile` authority only after CamillaDSP's fresh running
+> `active_raw` readback matches snapshot-derived recomposition under Active's
+> semantic Layer-A fingerprint. Output-device
+> settings and the full driver-domain mixer/pipeline/filter suffix are bound;
+> the mutable pre-split Room/preference prefix is excluded. A mismatch blocks
+> Room and requires explicit crossover reapply. An automatic applied snapshot stays
 > incomplete until Active issues and exposes the exact receipt-backed result.
 > Room consumes that one decision and neither inspects the graph nor historical
 > B2b evidence. Automatic authority still requires fresh excitation-admitted

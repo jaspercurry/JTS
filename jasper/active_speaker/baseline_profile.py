@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
+import yaml as yaml_parser
+
 from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
@@ -155,6 +157,93 @@ def topology_config_fingerprint(topology: OutputTopology) -> str:
         key: value
         for key, value in topology.to_dict().items()
         if key != "pairing_intent"
+    })
+
+
+def active_layer_a_fingerprint(config_text: str) -> str:
+    """Fingerprint the exact driver-domain suffix of one active graph.
+
+    Room and preference EQ are allowed to change the program-domain filter
+    prefix before the active split.  Everything from the split onward, plus
+    the output-side device contract, is Layer A: routing, crossover filters,
+    polarity, delay, gain, and protection.  This projection lets Active bind
+    its immutable applied snapshot to the graph Room is about to preserve
+    without making Room reconstruct crossover evidence.
+    """
+
+    try:
+        raw = yaml_parser.safe_load(config_text)
+    except yaml_parser.YAMLError as exc:
+        raise ActiveSpeakerConfigError(
+            "active Layer-A graph must be parseable YAML"
+        ) from exc
+    if not isinstance(raw, Mapping):
+        raise ActiveSpeakerConfigError("active Layer-A graph must be an object")
+
+    pipeline = raw.get("pipeline")
+    if not isinstance(pipeline, list):
+        raise ActiveSpeakerConfigError("active Layer-A graph pipeline is missing")
+    split_index = next(
+        (
+            index
+            for index, step in enumerate(pipeline)
+            if isinstance(step, Mapping) and step.get("type") == "Mixer"
+        ),
+        None,
+    )
+    if split_index is None:
+        raise ActiveSpeakerConfigError("active Layer-A driver split is missing")
+    suffix = pipeline[split_index:]
+
+    filters = raw.get("filters")
+    filter_map = filters if isinstance(filters, Mapping) else {}
+    referenced_filters: dict[str, Any] = {}
+    for step in suffix:
+        if not isinstance(step, Mapping) or step.get("type") != "Filter":
+            continue
+        names = step.get("names")
+        if not isinstance(names, list) or any(
+            not isinstance(name, str) or not name for name in names
+        ):
+            raise ActiveSpeakerConfigError(
+                "active Layer-A filter step has invalid names"
+            )
+        for name in names:
+            definition = filter_map.get(name)
+            if not isinstance(definition, Mapping):
+                raise ActiveSpeakerConfigError(
+                    f"active Layer-A filter {name!r} is missing"
+                )
+            referenced_filters[name] = definition
+
+    devices = raw.get("devices")
+    if not isinstance(devices, Mapping):
+        raise ActiveSpeakerConfigError("active Layer-A devices are missing")
+    output_devices = {
+        str(key): value
+        for key, value in devices.items()
+        if key != "capture"
+    }
+    mixers = raw.get("mixers")
+    if not isinstance(mixers, Mapping):
+        raise ActiveSpeakerConfigError("active Layer-A mixers are missing")
+    referenced_mixers: dict[str, Any] = {}
+    for step in suffix:
+        if not isinstance(step, Mapping) or step.get("type") != "Mixer":
+            continue
+        name = step.get("name")
+        definition = mixers.get(name) if isinstance(name, str) else None
+        if not name or not isinstance(definition, Mapping):
+            raise ActiveSpeakerConfigError("active Layer-A mixer is missing")
+        referenced_mixers[name] = definition
+
+    return _fingerprint({
+        "schema_version": 1,
+        "domain": "jts_active_layer_a_v1",
+        "output_devices": output_devices,
+        "mixers": referenced_mixers,
+        "pipeline_suffix": suffix,
+        "filters": referenced_filters,
     })
 
 

@@ -1187,12 +1187,18 @@ Current Active bundles remain forensic and fail-soft, and no production code
 issues or persists an automatic eligibility receipt. The
 `active_speaker.setup_status` producer owns one versioned Room decision. A
 topology-current immutable snapshot whose explicit apply owner is `manual`
-projects `manual_applied_profile`; an `automatic` snapshot without the strict
-receipt projects an incomplete decision. Room validates and consumes that
-projection without parsing the receipt or deriving authority from historical
-B2b evidence. Fresh excitation-admitted captures and the measured delay walk
-remain prerequisites for automatic receipt authority, not for operator-accepted
-manual crossover authority.
+projects `manual_applied_profile` only when CamillaDSP's fresh running
+`active_raw` readback has the same semantic Layer-A fingerprint as a
+recomposition from that snapshot. The identity
+covers output-device settings and the complete driver-domain
+mixer/pipeline/filter suffix while excluding the mutable pre-split
+Room/preference prefix. A mismatch asks for an explicit crossover reapply. An
+`automatic` snapshot without the strict receipt projects an incomplete
+decision. Room validates and consumes that projection without parsing the
+receipt or deriving authority from historical B2b evidence. Fresh
+excitation-admitted captures and the measured delay walk remain prerequisites
+for automatic receipt authority, not for operator-accepted manual crossover
+authority.
 
 ### DRY invariants
 
