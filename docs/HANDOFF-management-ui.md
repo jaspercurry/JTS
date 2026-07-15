@@ -1479,7 +1479,7 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-07-14 (source-switch desired/effective/parked/unavailable
+Last verified: 2026-07-15 (source-switch desired/effective/parked/unavailable
 presentation and follower mutation guard rechecked against `sources_setup.py`,
 `bluetooth_setup.py`, and their static ES modules; lifecycle behavior linked
 to HANDOFF-source-lifecycle.md. Also

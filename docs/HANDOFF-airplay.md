@@ -1831,7 +1831,7 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-07-14 (Tier-3 recovery final mutation rechecked as an
+Last verified: 2026-07-15 (Tier-3 recovery final mutation rechecked as an
 inactive-capable `restart` guarded by the unit's final source-intent
 ExecCondition so concurrent Off/role parking wins;
 `/system/audio/` normalized AirPlay projection,

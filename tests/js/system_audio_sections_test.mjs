@@ -67,6 +67,7 @@ const ongoing = {
   recurrence: { summary: "3 occurrences in 30 minutes" },
   impact: "Audio continues with higher latency.",
   observed: "USB clocking moved to fallback.",
+  evidence: [{ label: "Clock mode", value: "l2_fallback" }],
 };
 const recovered = Array.from({ length: 6 }, (_, index) => ({
   id: `recovered-${index}`, status: "recovered", severity: "warn",
@@ -111,6 +112,26 @@ const issueText = strings(api.currentIncidentBody(health)).join(" | ");
 assert.match(issueText, /USB latency increased/);
 assert.match(issueText, /3 occurrences in 30 minutes/);
 assert.match(issueText, /Audio continues with higher latency/);
+assert.match(issueText, /Clock mode \| Stable fallback/);
+assert.doesNotMatch(issueText, /l2_fallback/,
+  "primary incident evidence translates internal clock modes for households");
+for (const [rawMode, householdLabel] of [
+  ["l0_locked", "Low latency stable"],
+  ["l1_warn", "Clock adjusting"],
+  ["l2_fallback", "Stable fallback"],
+  ["probing", "Timing check in progress"],
+  ["disabled", "Standard buffering"],
+]) {
+  const translated = strings(api.currentIncidentBody({
+    ...health,
+    current_incident: {
+      ...ongoing,
+      evidence: [{ label: "Clock mode", value: rawMode }],
+    },
+  })).join(" | ");
+  assert.match(translated, new RegExp(`Clock mode \\| ${householdLabel}`));
+  assert.doesNotMatch(translated, new RegExp(rawMode));
+}
 assert.doesNotMatch(issueText, /50s so far/,
   "current issue age is stated once by its live Started timestamp");
 

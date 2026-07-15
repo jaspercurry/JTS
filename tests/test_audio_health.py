@@ -18,6 +18,7 @@ from jasper.control.audio_health import (
 )
 from jasper.control.audio_incidents import (
     INCIDENT_HISTORY_MAX_BYTES,
+    ISSUE_RING_SIZE,
     IncidentStore,
     IssueTracker,
     SessionRollup,
@@ -1219,6 +1220,45 @@ def test_incident_store_round_trips_bounded_allowlisted_freeze_frames(tmp_path) 
     assert path.stat().st_mode & 0o777 == 0o660
 
 
+def test_incident_store_drops_oldest_records_to_stay_readable(tmp_path) -> None:
+    path = tmp_path / "incidents.json"
+    store = IncidentStore(str(path))
+    escape_heavy = '\\"' * 500
+    records = [
+        {
+            "key": f"path.escape_heavy_{index}",
+            "scope": escape_heavy,
+            "source_id": escape_heavy,
+            "impact": escape_heavy,
+            "severity": escape_heavy,
+            "title": escape_heavy,
+            "detail": escape_heavy,
+            "status": "recovered",
+            "started_at": float(index),
+            "last_seen_at": float(index),
+            "recovered_at": float(index),
+            "count": 1,
+        }
+        for index in range(ISSUE_RING_SIZE)
+    ]
+    untrimmed = {
+        "schema_version": 1,
+        "incidents": records,
+    }
+    assert len(json.dumps(untrimmed, separators=(",", ":")).encode()) > (
+        INCIDENT_HISTORY_MAX_BYTES
+    )
+
+    assert store.save(records) is True
+
+    loaded = store.load()
+    assert path.stat().st_size <= INCIDENT_HISTORY_MAX_BYTES
+    assert 0 < len(loaded) < ISSUE_RING_SIZE
+    assert [record["key"] for record in loaded] == [
+        record["key"] for record in records[:len(loaded)]
+    ]
+
+
 def test_incident_store_rejects_bad_version_symlink_and_oversize(tmp_path) -> None:
     path = tmp_path / "incidents.json"
     path.write_text('{"schema_version":99,"incidents":[]}', encoding="utf-8")
@@ -1635,6 +1675,122 @@ def test_mux_outage_is_unknown_and_preserves_the_observed_session() -> None:
     assert idle["current_stream"] is None
 
 
+def test_mux_outage_preserves_ongoing_source_incident_identity() -> None:
+    now = [1000.0]
+    snapshots = [
+        _airplay(selected="usbsink", ladder="l2_fallback")
+        for _ in range(3)
+    ]
+    snapshots[1].pop("mux_status")
+    mux = [
+        {"sources": {"usbsink": {"playing": True}}},
+        None,
+        {"sources": {"usbsink": {"playing": True}}},
+    ]
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay(snapshots),
+        outputd_probe=_outputd,
+        mux_probe=lambda: mux.pop(0),
+        route_probe=_route,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    original = next(
+        issue for issue in sampler.snapshot()["issues"]
+        if issue["key"] == "usbsink.latency_fallback"
+    )
+
+    now[0] += 5.0
+    sampler._tick()
+    during_gap = next(
+        issue for issue in sampler.snapshot()["issues"]
+        if issue["key"] == "usbsink.latency_fallback"
+    )
+    assert during_gap["status"] == "ongoing"
+    assert during_gap["started_at"] == original["started_at"]
+    assert during_gap["last_seen_at"] == original["last_seen_at"]
+    assert during_gap["observed_seconds"] == 0.0
+
+    now[0] += 5.0
+    sampler._tick()
+    resumed = next(
+        issue for issue in sampler.snapshot()["issues"]
+        if issue["key"] == "usbsink.latency_fallback"
+    )
+    assert resumed["status"] == "ongoing"
+    assert resumed["started_at"] == original["started_at"]
+    assert resumed["observed_seconds"] == 0.0
+    assert sampler.snapshot()["current_stream"]["session"]["latency_events"] == 1
+    assert sampler.snapshot()["current_stream"]["session"]["degraded_seconds"] == 0.0
+    assert sum(
+        issue["key"] == "usbsink.latency_fallback"
+        for issue in sampler.snapshot()["issues"]
+    ) == 1
+
+
+def test_confirmed_output_failure_outranks_mux_observability_gap() -> None:
+    snapshot = _airplay(selected="usbsink", ladder="l0_locked")
+    snapshot.pop("mux_status")
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([snapshot]),
+        outputd_probe=lambda: None,
+        mux_probe=lambda: None,
+        route_probe=_route,
+        time_fn=lambda: 1000.0,
+    )
+
+    sampler._tick()
+    health = sampler.snapshot()
+
+    assert health["signal_path"]["headline"] == "Final output unavailable"
+    assert health["current_incident"]["key"] == "path.outputd_unavailable"
+    assert any(
+        issue["key"] == "monitor.mux_status_unavailable"
+        and issue["status"] == "ongoing"
+        for issue in health["issues"]
+    )
+
+
+def test_inactive_airplay_xrun_is_not_household_history() -> None:
+    event = {
+        "ts": 1000.0,
+        "type": "fanin_airplay_xrun",
+        "severity": "issue",
+        "title": "AirPlay fan-in xrun",
+        "detail": "input recovered 1 xrun(s)",
+        "count": 1,
+    }
+    idle = _airplay(selected="spotify", events=[event])
+    active = _airplay(selected="airplay", events=[event])
+
+    idle_sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([idle]),
+        outputd_probe=_outputd,
+        mux_probe=lambda: idle["mux_status"],
+        route_probe=_route,
+        time_fn=lambda: 1000.0,
+    )
+    idle_sampler._tick()
+    assert all(
+        issue["key"] != "airplay.fanin_airplay_xrun"
+        for issue in idle_sampler.snapshot()["issues"]
+    )
+
+    active_sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([active]),
+        outputd_probe=_outputd,
+        mux_probe=lambda: active["mux_status"],
+        route_probe=_route,
+        time_fn=lambda: 1000.0,
+    )
+    active_sampler._tick()
+    assert any(
+        issue["key"] == "airplay.fanin_airplay_xrun"
+        for issue in active_sampler.snapshot()["issues"]
+    )
+
+
 def test_sampler_persists_multiple_incidents_once_per_tick() -> None:
     class Store:
         def __init__(self) -> None:
@@ -1869,6 +2025,106 @@ def test_sampler_records_output_clipping_delta_and_ignores_counter_reset() -> No
         for issue in health["issues"]
     ) == 1
     assert health["technical"]["outputd"]["mix"]["clipped_samples"] == 1
+
+
+def test_clipping_episode_survives_output_gap_rebaseline_and_counter_reset() -> None:
+    now = [1000.0]
+    outputd = [
+        _outputd(clipped_samples=0),
+        _outputd(clipped_samples=5),
+        None,
+        _outputd(clipped_samples=5),
+        _outputd(clipped_samples=1),
+        _outputd(clipped_samples=1),
+    ]
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([_airplay()] * len(outputd)),
+        outputd_probe=lambda: outputd.pop(0),
+        route_probe=_route,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    original = next(
+        issue for issue in sampler.snapshot()["issues"]
+        if issue["key"] == "path.outputd_clipping"
+    )
+
+    for _ in range(3):
+        now[0] += 5.0
+        sampler._tick()
+        preserved = next(
+            issue for issue in sampler.snapshot()["issues"]
+            if issue["key"] == "path.outputd_clipping"
+        )
+        assert preserved["status"] == "ongoing"
+        assert preserved["started_at"] == original["started_at"]
+        assert preserved["last_seen_at"] == original["last_seen_at"]
+        assert preserved["observed_seconds"] == 0.0
+
+    now[0] += 5.0
+    sampler._tick()
+    recovered = next(
+        issue for issue in sampler.snapshot()["issues"]
+        if issue["key"] == "path.outputd_clipping"
+    )
+    assert recovered["status"] == "recovered"
+    assert recovered["started_at"] == original["started_at"]
+
+
+def test_clipping_episode_survives_sampler_restart_until_clean_interval(
+    tmp_path,
+) -> None:
+    now = [1000.0]
+    store = IncidentStore(str(tmp_path / "incidents.json"))
+    first_outputd = [
+        _outputd(clipped_samples=0),
+        _outputd(clipped_samples=5),
+    ]
+    first = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([_airplay(), _airplay()]),
+        outputd_probe=lambda: first_outputd.pop(0),
+        route_probe=_route,
+        incident_store=store,
+        time_fn=lambda: now[0],
+    )
+    first._tick()
+    now[0] += 5.0
+    first._tick()
+    original = next(
+        issue for issue in first.snapshot()["issues"]
+        if issue["key"] == "path.outputd_clipping"
+    )
+
+    second_outputd = [
+        _outputd(clipped_samples=5),
+        _outputd(clipped_samples=5),
+    ]
+    restored = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([_airplay(), _airplay()]),
+        outputd_probe=lambda: second_outputd.pop(0),
+        route_probe=_route,
+        incident_store=store,
+        time_fn=lambda: now[0],
+    )
+    restored._tick()
+    preserved = next(
+        issue for issue in restored.snapshot()["issues"]
+        if issue["key"] == "path.outputd_clipping"
+    )
+    assert preserved["status"] == "ongoing"
+    assert preserved["started_at"] == original["started_at"]
+
+    now[0] += 5.0
+    restored._tick()
+    recovered = next(
+        issue for issue in restored.snapshot()["issues"]
+        if issue["key"] == "path.outputd_clipping"
+    )
+    assert recovered["status"] == "recovered"
+    assert recovered["started_at"] == original["started_at"]
 
 
 def test_cumulative_watchdog_skip_is_a_recovered_blip_not_current_failure() -> None:

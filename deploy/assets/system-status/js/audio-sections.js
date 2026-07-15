@@ -24,6 +24,14 @@ const STATUS_TONE = {
   idle: "idle",
 };
 
+const CLOCK_MODE_LABEL = {
+  l0_locked: "Low latency stable",
+  l1_warn: "Clock adjusting",
+  l2_fallback: "Stable fallback",
+  probing: "Timing check in progress",
+  disabled: "Standard buffering",
+};
+
 function tone(status) {
   return STATUS_TONE[status] || "idle";
 }
@@ -237,7 +245,11 @@ function incidentEvidence(issue) {
   push("Impact", issue.impact);
   push("Observed", issue.observed);
   push("Likely area", issue.likely_area);
-  rows.push(...detailRows({ details: issue.evidence }));
+  rows.push(...detailRows({ details: issue.evidence }).map(([label, value]) => [
+    label,
+    label.toLowerCase() === "clock mode" && Object.hasOwn(CLOCK_MODE_LABEL, value)
+      ? CLOCK_MODE_LABEL[value] : value,
+  ]));
   return rows;
 }
 

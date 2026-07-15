@@ -349,7 +349,7 @@ article.incident-row .incident-row__summary {
   row-gap: 6px;
   font-size: 12px;
 }
-@media (max-width: 559px) {
+@media (max-width: 619px) {
   .incident-row__summary,
   article.incident-row .incident-row__summary {
     grid-template-columns: minmax(0, 1fr) auto 12px;

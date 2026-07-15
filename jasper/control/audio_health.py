@@ -92,6 +92,12 @@ def _as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _nonnegative_counter(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
@@ -576,17 +582,19 @@ def _state_issues(
     active_source: str | None,
     service_states: Mapping[str, Any] | None = None,
     source_intents: Mapping[str, bool] | None = None,
+    *,
+    activity_unknown: bool = False,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     warmup = bool(airplay.get("warmup_active"))
     current = _mapping(airplay.get("current"))
     fanin = current.get("fanin")
-    if signal_path.get("headline") == "Playback activity unavailable":
+    if activity_unknown:
         issues.append(_issue(
             "monitor.mux_status_unavailable",
             scope="monitor",
             impact="observability",
-            severity="issue",
+            severity="warn",
             title="Playback activity unavailable",
             detail="JTS could not read the mux's canonical source state.",
         ))
@@ -1278,7 +1286,7 @@ def compose_audio_health(
     active_source = _active_source(ap, mux)
     activity_unknown = _activity_truth_unknown(ap, mux)
     signal_path = _signal_path(ap, outputd, active_source)
-    if activity_unknown:
+    if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
         signal_path = _activity_unavailable_signal()
     current = _mapping(ap.get("current"))
     fanin = _mapping(current.get("fanin"))
@@ -1655,7 +1663,7 @@ class AudioHealthSampler:
             logger.debug("audio health source-intent probe failed", exc_info=True)
             intents = None
         signal_path = _signal_path(airplay, outputd, active_source)
-        if activity_unknown:
+        if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
             signal_path = _activity_unavailable_signal()
         current = _mapping(airplay.get("current"))
         fanin = _mapping(current.get("fanin"))
@@ -1672,6 +1680,7 @@ class AudioHealthSampler:
             active_source,
             self._service_states,
             intents,
+            activity_unknown=activity_unknown,
         )
         tracked_state_issues = [
             issue for issue in state_issues
@@ -1681,8 +1690,12 @@ class AudioHealthSampler:
             )
         ]
         with self._issues.batch(now):
-            self._record_raw_events(airplay, now=now)
-            clipping_issue = self._record_counter_events(
+            self._record_raw_events(
+                airplay,
+                active_source=active_source,
+                now=now,
+            )
+            clipping_issue, preserve_clipping = self._record_counter_events(
                 airplay,
                 outputd,
                 now,
@@ -1690,12 +1703,31 @@ class AudioHealthSampler:
             )
             if clipping_issue is not None:
                 tracked_state_issues.append(clipping_issue)
+            preserve_unseen_keys: set[str] = set()
+            if preserve_clipping:
+                preserve_unseen_keys.add("path.outputd_clipping")
+            if (
+                activity_unknown
+                and self._session.source_id is not None
+                and selected_source == self._session.source_id
+            ):
+                preserve_unseen_keys.update(
+                    str(issue["key"])
+                    for issue in self._issues.snapshot()
+                    if issue.get("status") == "ongoing"
+                    and issue.get("source_id") == self._session.source_id
+                )
             self._issues.update(
                 tracked_state_issues,
                 now,
                 context=context,
+                preserve_unseen_keys=preserve_unseen_keys,
             )
-        self._session.observe_state(tracked_state_issues, now)
+        self._session.observe_state(
+            tracked_state_issues,
+            now,
+            preserve_unseen_keys=preserve_unseen_keys,
+        )
         with self._lock:
             previous_overall = (
                 self._snapshot.get("overall")
@@ -1738,6 +1770,7 @@ class AudioHealthSampler:
         self,
         airplay: Mapping[str, Any],
         *,
+        active_source: str | None,
         now: float,
     ) -> None:
         for raw in airplay.get("events") or []:
@@ -1757,6 +1790,11 @@ class AudioHealthSampler:
             if event_type == "camilla_short_read":
                 # Documented inaudible recovered partials are technical evidence,
                 # not a household issue. A playback underrun is surfaced below.
+                continue
+            if (
+                event_type == "fanin_airplay_xrun"
+                and active_source != Source.AIRPLAY.value
+            ):
                 continue
             if event_type in {"fanin_output_xrun", "camilla_playback_underrun"}:
                 candidate = _issue(
@@ -1805,7 +1843,7 @@ class AudioHealthSampler:
         now: float,
         *,
         context: Mapping[str, Any],
-    ) -> dict[str, Any] | None:
+    ) -> tuple[dict[str, Any] | None, bool]:
         current = _mapping(airplay.get("current"))
         fanin = _mapping(current.get("fanin"))
         watchdog = _mapping(fanin.get("watchdog"))
@@ -1866,13 +1904,20 @@ class AudioHealthSampler:
         if outputd is None:
             self._previous_outputd_xruns = None
             self._previous_outputd_clipped = None
-            return None
+            return None, True
         outputd_map = _mapping(outputd)
         clipping_issue: dict[str, Any] | None = None
-        clipped_samples = _as_int(
+        clipped_samples = _nonnegative_counter(
             _mapping(outputd_map.get("mix")).get("clipped_samples"),
         )
-        if self._previous_outputd_clipped is not None:
+        preserve_clipping = False
+        if clipped_samples is None:
+            self._previous_outputd_clipped = None
+            preserve_clipping = True
+        elif self._previous_outputd_clipped is None:
+            self._previous_outputd_clipped = clipped_samples
+            preserve_clipping = True
+        else:
             clipped_delta = clipped_samples - self._previous_outputd_clipped
             if clipped_delta > 0:
                 clipping_issue = _issue(
@@ -1886,7 +1931,11 @@ class AudioHealthSampler:
                         "in the latest output interval."
                     ),
                 )
-        self._previous_outputd_clipped = clipped_samples
+            elif clipped_delta < 0:
+                # A daemon restart/reset establishes a new baseline; it does
+                # not prove that an already-observed episode recovered.
+                preserve_clipping = True
+            self._previous_outputd_clipped = clipped_samples
         outputd_counts = {
             "content": _as_int(_mapping(outputd_map.get("content")).get("xrun_count")),
             "dac": _as_int(_mapping(outputd_map.get("dac")).get("xrun_count")),
@@ -1914,4 +1963,4 @@ class AudioHealthSampler:
                         context=context,
                     )
         self._previous_outputd_xruns = outputd_counts
-        return clipping_issue
+        return clipping_issue, preserve_clipping

@@ -588,7 +588,7 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-07-14 (normalized audio-health ownership, cadence,
+Last verified: 2026-07-15 (normalized audio-health ownership, cadence,
 current-stream/session projection, continuity-vs-timing semantics, bounded
 persistent incident lifecycle, and legacy AirPlay compatibility rechecked
 against `jasper/control/audio_health.py`,

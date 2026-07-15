@@ -15,7 +15,7 @@ import copy
 import json
 import logging
 from collections import deque
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
@@ -190,9 +190,18 @@ class IncidentStore:
             ],
         }
         try:
+            encoded = json.dumps(payload, separators=(",", ":")) + "\n"
+            while (
+                len(encoded.encode("utf-8")) > INCIDENT_HISTORY_MAX_BYTES
+                and len(payload["incidents"]) > 1
+            ):
+                payload["incidents"].pop()
+                encoded = json.dumps(payload, separators=(",", ":")) + "\n"
+            if len(encoded.encode("utf-8")) > INCIDENT_HISTORY_MAX_BYTES:
+                raise ValueError("incident history exceeds read limit")
             self._writer(
                 self.path,
-                json.dumps(payload, separators=(",", ":")) + "\n",
+                encoded,
                 mode=0o660,
                 group_from_parent=True,
             )
@@ -299,10 +308,12 @@ class IssueTracker:
         now: float,
         *,
         context: Mapping[str, Any] | None = None,
+        preserve_unseen_keys: Collection[str] = (),
     ) -> None:
-        """Observe current conditions; only absence closes an incident."""
+        """Observe current conditions; only known absence closes an incident."""
         changed = False
         seen = {str(candidate["key"]) for candidate in candidates}
+        preserved = set(preserve_unseen_keys)
         for candidate in candidates:
             key = str(candidate["key"])
             active = self._active.get(key)
@@ -335,6 +346,12 @@ class IssueTracker:
 
         for key in tuple(self._active):
             if key in seen:
+                continue
+            if key in preserved:
+                # The condition is temporarily unobservable. Retain its stable
+                # identity, but clear the duration anchor so the next valid
+                # observation cannot count this gap as time degraded.
+                self._observed_at.pop(key, None)
                 continue
             record = self._active.pop(key)
             self._observed_at.pop(key, None)
@@ -436,7 +453,7 @@ class SessionRollup:
         self._sync_events = 0
         self._degraded_seconds = 0.0
         self._last_incident_at: float | None = None
-        self._active_degradation: dict[str, float] = {}
+        self._active_degradation: dict[str, float | None] = {}
 
     def reset(self, source_id: str | None, now: float) -> None:
         self.source_id = source_id
@@ -485,7 +502,10 @@ class SessionRollup:
         self,
         candidates: list[dict[str, Any]],
         now: float,
+        *,
+        preserve_unseen_keys: Collection[str] = (),
     ) -> None:
+        preserved = set(preserve_unseen_keys)
         relevant = {
             str(issue["key"]): issue
             for issue in candidates
@@ -494,9 +514,9 @@ class SessionRollup:
         }
         for key, issue in relevant.items():
             previous = self._active_degradation.get(key)
-            if previous is None:
+            if key not in self._active_degradation:
                 self._count(issue, 1, now)
-            else:
+            elif previous is not None:
                 gap = now - previous
                 if (
                     issue.get("impact") in {"latency", "sync"}
@@ -506,7 +526,10 @@ class SessionRollup:
             self._active_degradation[key] = now
         for key in tuple(self._active_degradation):
             if key not in relevant:
-                self._active_degradation.pop(key)
+                if key in preserved:
+                    self._active_degradation[key] = None
+                else:
+                    self._active_degradation.pop(key)
 
     def snapshot(self, now: float) -> dict[str, Any] | None:
         if self.source_id is None or self.started_at is None:

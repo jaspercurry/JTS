@@ -608,6 +608,7 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
     ).read_text()
     assert "audio_quality: quality" in main_js
     css = _SYSTEM_CSS.read_text()
+    assert "@media (max-width: 619px) {\n  .incident-row__summary," in css
     assert ".incident-row__recurrence { display: none; }" in css
     assert ".incident-row__recovered { display: none; }" not in css
     assert '.current-incident__meta > [aria-hidden="true"]' in css
