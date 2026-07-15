@@ -251,6 +251,7 @@ source = source.replace(
   `  globalThis.__testProbe = {
     renderCurrentCorrection,
     drawChart,
+    drawEnvelopeCurves,
     // P3b stepped-wizard router surfaces (all IIFE-local).
     renderEnvelope,
     renderRunDefaults,
@@ -497,6 +498,7 @@ runner(
 const {
   renderCurrentCorrection,
   drawChart,
+  drawEnvelopeCurves,
   renderEnvelope,
   renderRunDefaults,
   validateRunDefaults,
@@ -755,6 +757,34 @@ function curveOf(fn) {
     magnitude_db: gridFreqs.map(fn),
   };
 }
+
+// A newly revealed canvas can report 0×0 for one frame on mobile Safari.
+// The presentation layer retries exactly once after layout becomes visible.
+await (async () => {
+  const chart = canvasEl();
+  const originalRect = chart.getBoundingClientRect;
+  chart.width = 0;
+  let layoutReads = 0;
+  chart.getBoundingClientRect = () => {
+    layoutReads += 1;
+    if (layoutReads === 1) {
+      return { width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
+    }
+    return { width: 600, height: 200, top: 0, left: 0, right: 600, bottom: 200 };
+  };
+  drawEnvelopeCurves({
+    curves: { measured: curveOf(() => 0) },
+    fill_segments: [],
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert(layoutReads === 2,
+    "chart retries exactly once when first-paint geometry is 0×0",
+    { got: layoutReads });
+  assert(chart.width === 600,
+    "bounded retry draws after the chart becomes visible",
+    { got: chart.width });
+  chart.getBoundingClientRect = originalRect;
+})();
 
 // 16. drawBeforeAfterFill: tone→colour mapping + per-segment polygon
 //     vertex counts. A segment spanning n grid points draws 1 moveTo +
@@ -2352,4 +2382,4 @@ if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 50 }));
+console.log(JSON.stringify({ ok: true, tests: 51 }));

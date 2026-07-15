@@ -869,6 +869,13 @@ def _crossover_region_note(session: Any) -> str:
     )
 
 
+def _has_correction_to_apply(session: Any) -> bool:
+    """Whether the deterministic design produced at least one PEQ."""
+
+    peqs = getattr(session, "peqs", None)
+    return isinstance(peqs, (list, tuple)) and bool(peqs)
+
+
 def _verdict_text(
     session: Any,
     screen: str,
@@ -920,6 +927,11 @@ def _verdict_text(
             "your main seat."
         )
     if screen == SCREEN_REVIEW:
+        if not _has_correction_to_apply(session):
+            return (
+                "This measurement produced no safe room-correction filters "
+                "to apply. You can measure again if you want to double-check."
+            )
         base = "Here's what your room is doing and the fix we'd apply."
         note = _crossover_region_note(session)
         return f"{base} {note}" if note else base
@@ -1099,6 +1111,11 @@ def _next_action_for(
                 "label": "Measure again to confirm",
                 "endpoint": "/verify",
             }
+    if screen == SCREEN_REVIEW and not _has_correction_to_apply(session):
+        return {
+            "label": "Measure again",
+            "endpoint": "/start",
+        }
     return _NEXT_ACTION.get(screen)
 
 

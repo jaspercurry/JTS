@@ -1816,9 +1816,11 @@ def test_upload_capture_ack_refreshes_envelope_for_presentation():
     upload = js[start:end]
 
     ack = upload.index("await resp.json()")
-    status = upload.index("await pollState({skipEnvelopeRefresh: true})")
-    envelope = upload.index("await refreshEnvelope()")
-    assert ack < status < envelope
+    concurrent = upload.index("await Promise.all([")
+    status = upload.index("pollState({skipEnvelopeRefresh: true})", concurrent)
+    envelope = upload.index("refreshEnvelope()", concurrent)
+    assert ack < concurrent < status
+    assert ack < concurrent < envelope
     assert "data.measured" not in upload
     assert "drawChart(data" not in upload
 

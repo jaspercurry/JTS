@@ -1839,7 +1839,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // these same envelope curves), which renderEnvelope ran just before
     // this — the canvas is already laid out; no second un-hide here.
     void canvas.offsetWidth;   // force layout so getBoundingClientRect is real
-    drawChart(curves, env.fill_segments || []);
+    if (!drawChart(curves, env.fill_segments || [])) {
+      // Mobile Safari can report 0×0 for one frame after revealing the
+      // result section. Retry once, bounded, after layout catches up.
+      window.requestAnimationFrame(function () {
+        if (lastChartEnvelope === env) {
+          drawChart(curves, env.fill_segments || []);
+        }
+      });
+    }
   }
 
   // Fetch the screen envelope once and render it. Increments a probe-visible
@@ -2394,6 +2402,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
     // Phase 2: post-correction verify pass overlay (purple dashed).
     drawCurve(verify, '#a050d0', true, 2);
+    return true;
   }
 
   function redrawLatestChart() {
@@ -3130,9 +3139,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       // The upload response is only an acknowledgement. Presentation comes
       // from the envelope after the server has committed the new state.
       await resp.json();
-      await pollState({skipEnvelopeRefresh: true});
+      pendingHomeownerFailure = null;
       envelopeRetryArmed = true;
-      await refreshEnvelope();
+      await Promise.all([
+        pollState({skipEnvelopeRefresh: true}),
+        refreshEnvelope(),
+      ]);
     } catch (e) {
       setStateBadge('failed', e.message);
       showHomeownerFailure(e);

@@ -107,6 +107,9 @@ class _FakeSession:
         self.confidence_report: dict[str, object] | None = None
         self.design_report: dict[str, object] | None = None
         self.config_path: str | None = None
+        self.peqs: list[object] = [
+            {"freq_hz": 80.0, "q": 2.0, "gain_db": -3.0},
+        ]
 
 
 def _relay_session(
@@ -870,6 +873,23 @@ def test_review_screen_next_action_is_apply():
     }
 
 
+def test_review_with_no_filters_is_truthful_and_cannot_apply():
+    sess = _FakeSession(SessionState.READY)
+    sess.peqs = []
+
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "review"
+    assert env["verdict_text"] == (
+        "This measurement produced no safe room-correction filters to apply. "
+        "You can measure again if you want to double-check."
+    )
+    assert env["next_action"] == {
+        "label": "Measure again",
+        "endpoint": "/start",
+    }
+
+
 def test_apply_screen_next_action_is_verify():
     sess = _FakeSession(SessionState.APPLIED)
     env = envelope.build_envelope(sess)
@@ -1228,6 +1248,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
     from jasper.web import correction_setup
     from jasper.correction.session import (
         MeasurementSession,
+        PEQJSON,
         SessionConfig,
         SessionState,
     )
@@ -1242,6 +1263,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         ),
     )
     sess.state = SessionState.READY
+    sess.peqs = [PEQJSON(freq_hz=80.0, q=2.0, gain_db=-3.0)]
     sess.confidence_report = {
         "findings": [
             {"code": "uncalibrated_mic", "severity": "warn",
