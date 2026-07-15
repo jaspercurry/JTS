@@ -804,9 +804,10 @@
   provenance, dependencies, sensitivity, and recomputability flags for
   raw captures and derived artifacts. They also write
   `runtime_integrity.json`: system load/memory snapshots,
-  capture sample-count sanity, fan-in xrun deltas, and CamillaDSP
-  runtime counters around each sweep/verify pass. Runtime warnings and
-  failures feed the same confidence report and bundle validator.
+  capture sample-count sanity, fan-in and outputd content/DAC xrun
+  deltas, and CamillaDSP runtime counters around each sweep/verify
+  pass. Runtime warnings and failures feed the same confidence report
+  and bundle validator.
   Treat `captures/p<N>.wav` and `verify.wav` as canonical private raw
   evidence; every curve, confidence report, PEQ, and future FIR/agent
   judgment should be reproducible from those recordings plus sweep
@@ -2500,9 +2501,10 @@ than teaching browser routes to recompute DSP facts.
 Runtime health is lightweight and bounded, not a new monitoring daemon.
 `runtime_integrity.json` records a small per-measurement health packet:
 monotonic/wall-clock timing, CPU/load and memory snapshots, CamillaDSP
-config/status where available, fan-in xrun deltas, and capture
-sample-count sanity. This feeds a separate **runtime integrity**
-verdict, distinct from **capture quality** and **acoustic quality**.
+config/status where available, fan-in and outputd content/DAC xrun
+deltas, and capture sample-count sanity. This feeds a separate
+**runtime integrity** verdict, distinct from **capture quality** and
+**acoustic quality**.
 Hard capture failures such as clipping, sample-rate mismatch, or
 too-short WAV still block analysis; runtime warnings lower confidence
 unless they directly prove the recording is invalid.

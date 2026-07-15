@@ -85,6 +85,50 @@ def test_runtime_integrity_flags_camilla_clipping_delta(monkeypatch):
     assert issues[0]["details"]["delta"] == 6
 
 
+def test_runtime_integrity_flags_outputd_xrun_delta(monkeypatch):
+    from jasper.correction import runtime_integrity
+
+    outputd_statuses = iter([
+        {
+            "content": {"pcm": "content", "frames_read": 1_000, "xrun_count": 2},
+            "dac": {"pcm": "dac", "frames_written": 1_000, "xrun_count": 0},
+        },
+        {
+            "content": {"pcm": "content", "frames_read": 2_000, "xrun_count": 3},
+            "dac": {"pcm": "dac", "frames_written": 2_000, "xrun_count": 0},
+        },
+    ])
+    monkeypatch.setattr(runtime_integrity, "_read_fanin_status", lambda: None)
+    monkeypatch.setattr(
+        runtime_integrity,
+        "_read_outputd_status",
+        lambda: next(outputd_statuses),
+    )
+    monkeypatch.setattr(runtime_integrity, "_read_loadavg_1m", lambda: None)
+    report = RuntimeIntegrityReport("abc123")
+    report.record_snapshot(
+        "sweep_start",
+        capture_kind="measurement",
+        position_index=0,
+        camilla_status=None,
+    )
+
+    issues = report.record_snapshot(
+        "sweep_complete",
+        capture_kind="measurement",
+        position_index=0,
+        camilla_status=None,
+    )
+
+    assert issues[0]["code"] == "outputd_xruns_increased"
+    assert issues[0]["details"]["deltas"] == {"content": 1}
+    assert report.snapshots[-1]["outputd"]["dac"] == {
+        "pcm": "dac",
+        "frames_written": 2_000,
+        "xrun_count": 0,
+    }
+
+
 def test_runtime_snapshot_omits_wizard_process_rss(monkeypatch):
     """The snapshot no longer carries the wizard process's RSS/threads:
     /proc/self/status measured the web worker, not the audio chain, so it
@@ -95,6 +139,7 @@ def test_runtime_snapshot_omits_wizard_process_rss(monkeypatch):
     assert not hasattr(runtime_integrity, "_read_proc_status")
 
     monkeypatch.setattr(runtime_integrity, "_read_fanin_status", lambda: None)
+    monkeypatch.setattr(runtime_integrity, "_read_outputd_status", lambda: None)
     report = RuntimeIntegrityReport("abc123")
     report.record_snapshot(
         "sweep_start",
