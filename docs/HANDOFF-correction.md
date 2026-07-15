@@ -50,7 +50,9 @@
   physical driver keeps one resumable durable attempt; `/crossover/status`
   projects accepted/required progress and the final aggregate fingerprint,
   refuses a thin fixed-axis terminal set, and idempotently finishes derived
-  anchors after an interrupted typed-capture publication.
+  anchors after an interrupted typed-capture publication. Repeated presentation
+  polls read typed complete anchors only; live geometry/capture/evaluator
+  boundaries still verify every child byte and admission.
   Current fail-soft driver records are not migrated into it. This is a
   software-only change; no sound or
   hardware was exercised.

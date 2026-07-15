@@ -112,7 +112,15 @@ def test_geometry_is_write_once_and_status_does_not_issue_host_progress(
     target = harness.plan.targets[0]
     attempts_before = harness.run_store.attempts(harness.plan.authority.run)
 
-    initial = harness.service.status()
+    with monkeypatch.context() as status_patch:
+        status_patch.setattr(
+            CommissioningEvidenceStore,
+            "reopen_complete_isolated_driver_evidence",
+            lambda _store, **_kwargs: pytest.fail(
+                "status must not deep-reopen isolated child WAV evidence"
+            ),
+        )
+        initial = harness.service.status()
 
     assert initial["status"] == "needs_geometry"
     assert initial["next_geometry"]["target_fingerprint"] == target.fingerprint

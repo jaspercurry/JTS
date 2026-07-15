@@ -324,7 +324,10 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     )
     commissioning_run = _mapping(status.get("commissioning_run"))
     isolated_evidence = _mapping(commissioning_run.get("isolated_evidence"))
-    strict_isolated_complete = isolated_evidence.get("status") == "complete"
+    strict_isolated_complete = bool(
+        commissioning_run.get("status") == "current"
+        and isolated_evidence.get("status") == "complete"
+    )
     region_commissioning = _mapping(status.get("region_commissioning"))
     legacy_reapply = _legacy_applied_profile_needs_reapply(status)
     active_comparison_set_id = str(
@@ -373,11 +376,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         done.add("drivers")
     if region_commissioning.get("status") == "measured":
         done.add("alignment")
-    if (
-        applied_ready
-        and not automatic_remeasure
-        and (not strict_isolated_complete or automatic_applied)
-    ):
+    if applied_ready and not automatic_remeasure and not strict_isolated_complete:
         done.add("apply")
     if automatic_applied and not automatic_remeasure:
         done.update({"microphone", "drivers"})
@@ -580,7 +579,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "href": "/sound/",
         }
         active_step = "speaker_setup"
-    elif level_run_unavailable:
+    elif level_run_unavailable and not strict_isolated_complete:
         screen = "microphone"
         verdict = (
             "The level-check safety record cannot be read, so JTS is refusing "
@@ -589,7 +588,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         )
         action = None
         active_step = "microphone"
-    elif blocked_controller_targets:
+    elif blocked_controller_targets and not strict_isolated_complete:
         screen = "microphone"
         verdict = (
             "The repeat sequence ended and cannot be resumed. Run the driver "
@@ -608,7 +607,11 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "body": {},
         }
         active_step = "microphone"
-    elif legacy_reapply and not (measurement_flow_active or level_ready):
+    elif (
+        not strict_isolated_complete
+        and legacy_reapply
+        and not (measurement_flow_active or level_ready)
+    ):
         screen = "choose_tuning"
         if manual_preservation.get("ready") is True:
             verdict = (
@@ -651,8 +654,11 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "body": {},
             }]
         active_step = "apply"
-    elif applied_ready and applied_owner == "manual" and not (
-        measurement_flow_active or level_ready
+    elif (
+        not strict_isolated_complete
+        and applied_ready
+        and applied_owner == "manual"
+        and not (measurement_flow_active or level_ready)
     ):
         screen = "done_manual"
         verdict = "Your manual crossover is applied and ready for room correction."
@@ -675,7 +681,11 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             },
         ]
         active_step = "apply"
-    elif automatic_applied and not automatic_remeasure:
+    elif (
+        not strict_isolated_complete
+        and automatic_applied
+        and not automatic_remeasure
+    ):
         screen = "done"
         verdict = (
             "The automatic driver trims are applied with your crossover frequency "

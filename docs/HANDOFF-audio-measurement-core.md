@@ -316,7 +316,10 @@ Correction-web now persists signed per-region geometry and supplies the real
 relay transport. It reopens calibration and recorder identity from the durable
 comparison set; status does not duplicate the host schedule. Production entry
 is currently limited to a two-way preset on the registry-declared DAC8x
-commissioning profile. Candidate,
+commissioning profile. Polling reopens the typed complete anchors and checks
+their current program/lifecycle fingerprints without rereading every child WAV;
+geometry mutation, capture, candidate evaluation, and commit boundaries retain
+full child-byte and admission verification. Candidate,
 receipt, and Room-gate authority are unchanged.
 
 ### Wave 3 Active run identity (2026-07-14)

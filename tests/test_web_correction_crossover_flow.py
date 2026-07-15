@@ -2198,6 +2198,7 @@ def test_capture_context_revalidates_topology_profile_level_set_and_target():
         "owner": "manual",
         "reason": None,
     }
+    status["level_match"]["run"] = {"terminal_reason": "state_unavailable"}
     status["targets"]["drivers"][0]["target_fingerprint"] = "target-woofer"
     kwargs = {
         "current_topology_id": _COMPARISON_SET["topology_id"],
@@ -2948,6 +2949,66 @@ def test_crossover_envelope_projects_active_owned_alignment_actions():
     assert next(
         step for step in measured["steps"] if step["id"] == "apply"
     )["status"] == "active"
+
+
+def test_strict_alignment_precedes_prior_automatic_applied_profile():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["commissioning_run"] = {
+        "status": "current",
+        "isolated_evidence": {"status": "complete"},
+    }
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "automatic",
+        "reason": None,
+    }
+    status["applied_profile"] = {
+        "status": "applied",
+        "tuning_owner": "automatic",
+        "recomposition_snapshot": {
+            "level_match": {
+                "active_comparison_set_id": _COMPARISON_SET["comparison_set_id"],
+            },
+        },
+    }
+    cases = (
+        (
+            {
+                "status": "needs_geometry",
+                "next_geometry": {
+                    "target_fingerprint": "f" * 64,
+                    "lower_role": "woofer",
+                    "upper_role": "tweeter",
+                    "fc_hz": 2_100.0,
+                },
+            },
+            "alignment_geometry",
+            "attest_region_geometry",
+        ),
+        (
+            {
+                "status": "collecting",
+                "next_capture": {"evidence_kind": "server_selected"},
+            },
+            "alignment",
+            "measure_region_alignment",
+        ),
+        ({"status": "measured"}, "review", None),
+    )
+
+    for region_status, expected_screen, expected_action in cases:
+        status["region_commissioning"] = region_status
+        envelope = crossover_envelope.build_crossover_envelope(status)
+        action = envelope["next_action"]
+
+        assert envelope["screen"] == expected_screen
+        assert (action["id"] if action is not None else None) == expected_action
+        assert next(
+            step for step in envelope["steps"] if step["id"] == "apply"
+        )["status"] == ("active" if expected_screen == "review" else "pending")
 
 
 def test_driver_capture_geometry_must_match_server_owned_next_step():

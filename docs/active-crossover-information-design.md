@@ -97,7 +97,10 @@
 > Internal host status reports whether a capture transport is configured,
 > `hardware_capture_status=hardware_validation_required`, the current live-mutation
 > state, and whether exact recovery is required; it does not imply hardware
-> readiness from synthetic evidence.
+> readiness from synthetic evidence. The polling projection reopens typed
+> complete anchors and proves current program/lifecycle fingerprints without
+> rehashing every child WAV; mutation, evaluator, and commit boundaries retain
+> the strict full-child reopen.
 > Incomplete prior owner generations are abandoned; a run-scoped complete
 > artifact written before its lifecycle transition is recoverable on restart.
 > **Production region-capture boundary (2026-07-15; hardware-free).** The

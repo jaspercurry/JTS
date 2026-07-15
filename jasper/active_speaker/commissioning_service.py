@@ -158,7 +158,11 @@ class CommissioningCaptureService:
         self.evidence_store = evidence_store
         self.load_current_authority = load_current_authority
 
-    def _current(self) -> _CurrentComposition:
+    def _current(
+        self,
+        *,
+        verify_child_evidence: bool = True,
+    ) -> _CurrentComposition:
         if not self.run_store.callback_is_current(self.run):
             raise CommissioningServiceError(
                 "run_generation_stale", "commissioning run ownership changed"
@@ -197,9 +201,12 @@ class CommissioningCaptureService:
                 run=self.run,
                 evidence_store=self.evidence_store,
             )
-            isolated = self.evidence_store.reopen_complete_isolated_driver_evidence(
-                run_id=self.run.run_id
+            reopen_isolated = (
+                self.evidence_store.reopen_complete_isolated_driver_evidence
+                if verify_child_evidence
+                else self.evidence_store.reopen_complete_isolated_driver_evidence_anchor
             )
+            isolated = reopen_isolated(run_id=self.run.run_id)
         except CommissioningEvidenceStoreError as exc:
             if _missing(exc):
                 raise CommissioningServiceError(
@@ -415,7 +422,7 @@ class CommissioningCaptureService:
     def status(self) -> dict[str, Any]:
         """Return one current state without reserving attempts or live mutations."""
 
-        current = self._current()
+        current = self._current(verify_child_evidence=False)
         geometry_rows: list[dict[str, Any]] = []
         for target in current.plan.targets:
             reopened = self._reopen_geometry(current.plan, target)

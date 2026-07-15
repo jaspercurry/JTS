@@ -1162,6 +1162,29 @@ class CommissioningEvidenceHost:
             if self._missing(exc):
                 return None
             raise
+        self._require_complete_program(complete)
+        return complete
+
+    def _recover_complete_anchor(self) -> CompleteCommissioningEvidence | None:
+        """Reopen the typed status anchor without hashing every child WAV."""
+
+        try:
+            complete = (
+                self.evidence_store.reopen_complete_commissioning_evidence_anchor(
+                    run_id=self.run.run_id
+                )
+            )
+        except CommissioningEvidenceStoreError as exc:
+            if self._missing(exc):
+                return None
+            raise
+        self._require_complete_program(complete)
+        return complete
+
+    def _require_complete_program(
+        self,
+        complete: CompleteCommissioningEvidence,
+    ) -> None:
         if commissioning_program_key(complete.plan) != commissioning_program_key(
             self.plan
         ):
@@ -1169,7 +1192,6 @@ class CommissioningEvidenceHost:
                 "complete_evidence_stale",
                 "durable complete evidence does not equal the current program",
             )
-        return complete
 
     def _require_measured_transition(self, artifact_fingerprint: str) -> None:
         transition = self.run_store.lifecycle_transition(self.run)
@@ -2113,8 +2135,9 @@ class CommissioningEvidenceHost:
         with self._lock:
             self._require_current()
             state = self.run_store.lifecycle_state(self.run)
+            complete_available = self._complete is not None
             if state == "measured":
-                complete = self._complete or self._recover_complete()
+                complete = self._complete or self._recover_complete_anchor()
                 if complete is None:
                     raise CommissioningHostError(
                         "complete_evidence_missing",
@@ -2124,7 +2147,7 @@ class CommissioningEvidenceHost:
                     complete_relative_path(self.run.run_id)
                 )
                 self._require_measured_transition(artifact.fingerprint)
-                self._complete = complete
+                complete_available = True
             attempts = self.run_store.attempts(self.run)
             live_mutation = self._current_live_mutation()
             return {
@@ -2136,7 +2159,7 @@ class CommissioningEvidenceHost:
                 "lifecycle_state": state,
                 "plan_fingerprint": self.plan.fingerprint,
                 "attempt_count": len(attempts),
-                "complete": self._complete is not None,
+                "complete": complete_available,
                 "capture_transport_configured": (
                     self._raw_capture_transport is not None
                 ),
