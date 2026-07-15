@@ -12,27 +12,21 @@ uses the production admitted recorder path for three fixed-axis repeats.
 
 from __future__ import annotations
 
-import math
 import logging
+import math
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from jasper.audio_measurement.evidence_identity import (
+    ArtifactIdentity,
     NormalizedActiveRawIdentity,
     json_fingerprint,
 )
-from jasper.audio_measurement.null_walk import NullWalkSpec
 from jasper.dsp_apply import dsp_writer_lock
 from jasper.log_event import log_event
 
-from .commissioning_capture_producer import (
-    CurrentCaptureAuthority,
-    RawCaptureTransport,
-    SummedCaptureProducer,
-)
-from .commissioning_evidence import RegionEvidencePlan, RegionEvidenceTarget
 from .commissioning_evidence_store import (
     EVIDENCE_ROOT,
     CommissioningEvidenceStore,
@@ -68,10 +62,19 @@ from .commissioning_runtime import (
     CommissioningRuntimePort,
     snapshot_exact_dsp_state,
 )
-from .measurement import active_driver_targets
-from .test_signal_plan import CROSSOVER_CAPTURE_PLAY_DEADLINE_S
+
+if TYPE_CHECKING:
+    from jasper.audio_measurement.null_walk import NullWalkSpec
+
+    from .commissioning_capture_producer import (
+        RawCaptureTransport,
+        SummedCaptureProducer,
+    )
+    from .commissioning_evidence import RegionEvidencePlan, RegionEvidenceTarget
 
 POST_APPLY_CAPTURE_SOURCE = "active_speaker_post_apply_verification"
+_PASS_VERDICT = "blend_ok"
+_FAIL_VERDICT = "polarity_or_delay_problem"
 logger = logging.getLogger(__name__)
 
 
@@ -102,6 +105,17 @@ def _target_source_path(
     return (
         f"runs/{run.run_id}/generations/{run.owner_generation}/post-apply/"
         f"{target.target_fingerprint}/verification.json"
+    )
+
+
+def _verification_failure_source_path(
+    run: CommissioningRunHandle,
+    mutation: CommissioningLiveMutation,
+) -> str:
+    return (
+        f"runs/{run.run_id}/generations/{mutation.started_owner_generation}/"
+        f"candidate-apply/{mutation.issuance_id}/"
+        "post-apply-verification-failed.json"
     )
 
 
@@ -340,12 +354,191 @@ class CommissioningVerificationService:
                 values.append(proof)
         return tuple(values)
 
+    def _capture_verdict(self, proof: AdmittedCaptureProof) -> str:
+        capture = proof.capture
+        analysis = self.evidence_store.reopen_json_artifact(
+            capture.analysis_input_artifact
+        )
+        quality = self.evidence_store.reopen_json_artifact(capture.quality_artifact)
+        acoustic = analysis.get("acoustic")
+        if (
+            analysis.get("kind") != "jts_active_summed_capture_analysis"
+            or analysis.get("target_fingerprint") != capture.target_fingerprint
+            or analysis.get("context_fingerprint") != capture.context_fingerprint
+            or not isinstance(analysis.get("raw_artifact"), Mapping)
+            or analysis["raw_artifact"].get("fingerprint")
+            != capture.raw_artifact.fingerprint
+            or not isinstance(acoustic, Mapping)
+            or quality.get("kind") != "jts_active_summed_capture_quality"
+            or quality.get("accepted") is not True
+            or quality.get("issues") != []
+            or quality.get("analysis_artifact_fingerprint")
+            != capture.analysis_input_artifact.fingerprint
+            or quality.get("raw_artifact_fingerprint")
+            != capture.raw_artifact.fingerprint
+        ):
+            raise CommissioningVerificationError(
+                "verification_capture_stale",
+                "stored post-apply analysis does not equal its admitted capture",
+            )
+        verdict = acoustic.get("verdict")
+        if verdict not in {_PASS_VERDICT, _FAIL_VERDICT}:
+            raise CommissioningVerificationError(
+                "verification_capture_stale",
+                "stored post-apply analysis has no supported acoustic verdict",
+            )
+        return str(verdict)
+
+    def _verification_failure(
+        self,
+        target: RequiredVerificationTarget,
+        captures: tuple[AdmittedCaptureProof, ...],
+        verdicts: tuple[str, ...],
+    ) -> tuple[dict[str, Any], ArtifactIdentity]:
+        core = {
+            "schema_version": 1,
+            "kind": "jts_active_post_apply_verification_failure",
+            "failure_code": "post_apply_verification_failed",
+            "session_id": self.run.session_id,
+            "run_id": self.run.run_id,
+            "target_plan_fingerprint": self.target_plan.fingerprint,
+            "target_fingerprint": target.target_fingerprint,
+            "commissioning_context_fingerprint": self.context_fingerprint,
+            "applied_candidate_proof_fingerprint": self.applied_candidate.fingerprint,
+            "operation_id": self.retained_mutation.issuance_id,
+            "mutation_operation_fingerprint": (
+                self.retained_mutation.operation_fingerprint
+            ),
+            "capture_fingerprints": [proof.fingerprint for proof in captures],
+            "acoustic_verdicts": list(verdicts),
+        }
+        expected = {**core, "fingerprint": json_fingerprint(core)}
+        artifact = self.evidence_store.publish_json_artifact(
+            _verification_failure_source_path(self.run, self.retained_mutation),
+            expected,
+        )
+        if self.evidence_store.reopen_json_artifact(artifact) != expected:
+            raise CommissioningVerificationError(
+                "verification_readback_mismatch",
+                "post-apply failure changed on exact reopen",
+            )
+        return expected, artifact
+
+    def _reopen_verification_failure(
+        self,
+    ) -> tuple[dict[str, Any], ArtifactIdentity] | None:
+        try:
+            artifact = self.evidence_store.identify_artifact(
+                _artifact_relative_path(
+                    _verification_failure_source_path(self.run, self.retained_mutation)
+                )
+            )
+        except CommissioningEvidenceStoreError as exc:
+            if self._missing(exc):
+                return None
+            raise
+        raw = self.evidence_store.reopen_json_artifact(artifact)
+        expected_fields = {
+            "schema_version",
+            "kind",
+            "failure_code",
+            "session_id",
+            "run_id",
+            "target_plan_fingerprint",
+            "target_fingerprint",
+            "commissioning_context_fingerprint",
+            "applied_candidate_proof_fingerprint",
+            "operation_id",
+            "mutation_operation_fingerprint",
+            "capture_fingerprints",
+            "acoustic_verdicts",
+            "fingerprint",
+        }
+        capture_fingerprints = raw.get("capture_fingerprints")
+        declared_verdicts = raw.get("acoustic_verdicts")
+        if (
+            set(raw) != expected_fields
+            or raw.get("schema_version") != 1
+            or raw.get("kind") != "jts_active_post_apply_verification_failure"
+            or raw.get("failure_code") != "post_apply_verification_failed"
+            or raw.get("session_id") != self.run.session_id
+            or raw.get("run_id") != self.run.run_id
+            or raw.get("target_plan_fingerprint") != self.target_plan.fingerprint
+            or raw.get("commissioning_context_fingerprint") != self.context_fingerprint
+            or raw.get("applied_candidate_proof_fingerprint")
+            != self.applied_candidate.fingerprint
+            or raw.get("operation_id") != self.retained_mutation.issuance_id
+            or raw.get("mutation_operation_fingerprint")
+            != self.retained_mutation.operation_fingerprint
+            or raw.get("target_fingerprint")
+            not in {target.target_fingerprint for target in self.target_plan.targets}
+            or not isinstance(capture_fingerprints, list)
+            or len(capture_fingerprints) != POST_APPLY_REQUIRED_REPEATS
+            or len(set(capture_fingerprints)) != POST_APPLY_REQUIRED_REPEATS
+            or any(
+                not isinstance(value, str) or len(value) != 64
+                for value in capture_fingerprints
+            )
+            or not isinstance(declared_verdicts, list)
+            or len(declared_verdicts) != POST_APPLY_REQUIRED_REPEATS
+            or any(
+                value not in {_PASS_VERDICT, _FAIL_VERDICT}
+                for value in declared_verdicts
+            )
+            or _FAIL_VERDICT not in declared_verdicts
+            or raw.get("fingerprint")
+            != json_fingerprint(
+                {key: value for key, value in raw.items() if key != "fingerprint"}
+            )
+        ):
+            raise CommissioningVerificationError(
+                "verification_capture_stale",
+                "stored post-apply failure does not equal the retained authority",
+            )
+        return raw, artifact
+
+    def _reopen_receipt(
+        self,
+    ) -> tuple[CommissioningEligibilityReceipt, ArtifactIdentity] | None:
+        try:
+            artifact = self.evidence_store.identify_artifact(
+                _artifact_relative_path(receipt_source_path(self.run))
+            )
+        except CommissioningEvidenceStoreError as exc:
+            if self._missing(exc):
+                return None
+            raise
+        receipt = CommissioningEligibilityReceipt.from_mapping(
+            self.evidence_store.reopen_json_artifact(artifact)
+        )
+        if (
+            receipt.target_plan != self.target_plan
+            or receipt.applied_candidate != self.applied_candidate
+            or receipt.commissioning_context_fingerprint != self.context_fingerprint
+            or any(
+                self._capture_verdict(proof) != _PASS_VERDICT
+                for target in receipt.post_apply_targets
+                for proof in target.admitted_captures
+            )
+        ):
+            raise CommissioningVerificationError(
+                "receipt_readback_mismatch",
+                "stored commissioning receipt does not equal the retained authority",
+            )
+        return receipt, artifact
+
     def _target_verification(
         self, target: RequiredVerificationTarget
-    ) -> PostApplyTargetVerification | None:
+    ) -> tuple[
+        PostApplyTargetVerification | None,
+        tuple[dict[str, Any], ArtifactIdentity] | None,
+    ]:
         captures = self._captures(target)
         if len(captures) != POST_APPLY_REQUIRED_REPEATS:
-            return None
+            return None, None
+        verdicts = tuple(self._capture_verdict(proof) for proof in captures)
+        if any(verdict != _PASS_VERDICT for verdict in verdicts):
+            return None, self._verification_failure(target, captures, verdicts)
         expected = PostApplyTargetVerification(
             speaker_group_id=target.speaker_group_id,
             target_id=target.target_id,
@@ -373,7 +566,7 @@ class CommissioningVerificationService:
                 "verification_readback_mismatch",
                 "post-apply target verification changed on exact reopen",
             )
-        return reopened
+        return reopened, None
 
     def _receipt(
         self, targets: tuple[PostApplyTargetVerification, ...]
@@ -410,13 +603,106 @@ class CommissioningVerificationService:
         return reopened, artifact
 
     def status(self) -> dict[str, Any]:
-        target_rows = []
+        reopened_receipt = self._reopen_receipt()
+        if reopened_receipt is not None:
+            receipt, artifact = reopened_receipt
+            lifecycle = self.run_store.lifecycle_state(self.run)
+            expected_transition = CommissioningTransition(
+                from_state="applied_unverified",
+                to_state="verified",
+                evidence_kind="commissioning_eligibility_receipt",
+                evidence_fingerprint=artifact.fingerprint,
+            )
+            committed = False
+            if lifecycle == "applied_unverified":
+                try:
+                    committed = self.run_store.transition(self.run, expected_transition)
+                except CommissioningRunConflict:
+                    pass
+            if self.run_store.lifecycle_state(self.run) != "verified" or (
+                self.run_store.lifecycle_transition(self.run) != expected_transition
+            ):
+                raise CommissioningVerificationError(
+                    "run_generation_stale", "receipt lost current run ownership"
+                    )
+                if committed:
+                    log_event(
+                        logger,
+                        "correction.active_commissioning_verified",
+                        session=self.run.session_id,
+                    run_id=self.run.run_id,
+                    owner_generation=self.run.owner_generation,
+                    receipt_fingerprint=receipt.fingerprint,
+                    receipt_artifact_fingerprint=artifact.fingerprint,
+                )
+            return {
+                "status": "verified",
+                "targets": [
+                    {
+                        "speaker_group_id": target.speaker_group_id,
+                        "target_fingerprint": target.target_fingerprint,
+                        "captured_repeats": POST_APPLY_REQUIRED_REPEATS,
+                        "required_repeats": POST_APPLY_REQUIRED_REPEATS,
+                        "verified": True,
+                        "failed": False,
+                    }
+                    for target in self.target_plan.targets
+                ],
+                "next_target": None,
+                "failure": None,
+                "receipt": {
+                    "fingerprint": receipt.fingerprint,
+                    "artifact_fingerprint": artifact.fingerprint,
+                    "target_plan_fingerprint": receipt.target_plan.fingerprint,
+                    "applied_candidate_fingerprint": (
+                        receipt.applied_candidate.fingerprint
+                    ),
+                },
+            }
+
+        persisted_failure = self._reopen_verification_failure()
+        if persisted_failure is not None:
+            failure_payload, artifact = persisted_failure
+            return {
+                "status": "verification_failed",
+                "targets": [
+                    {
+                        "speaker_group_id": target.speaker_group_id,
+                        "target_fingerprint": target.target_fingerprint,
+                        "captured_repeats": (
+                            POST_APPLY_REQUIRED_REPEATS
+                            if target.target_fingerprint
+                            == failure_payload["target_fingerprint"]
+                            else 0
+                        ),
+                        "required_repeats": POST_APPLY_REQUIRED_REPEATS,
+                        "verified": False,
+                        "failed": (
+                            target.target_fingerprint
+                            == failure_payload["target_fingerprint"]
+                        ),
+                    }
+                    for target in self.target_plan.targets
+                ],
+                "next_target": None,
+                "failure": {
+                    "failure_code": failure_payload["failure_code"],
+                    "fingerprint": failure_payload["fingerprint"],
+                    "artifact_fingerprint": artifact.fingerprint,
+                },
+                "receipt": None,
+            }
+
+        target_rows: list[dict[str, Any]] = []
         verified_targets: list[PostApplyTargetVerification] = []
+        failed: tuple[dict[str, Any], ArtifactIdentity] | None = None
         for target in self.target_plan.targets:
             captures = self._captures(target)
-            verification = self._target_verification(target)
+            verification, target_failure = self._target_verification(target)
             if verification is not None:
                 verified_targets.append(verification)
+            if target_failure is not None:
+                failed = target_failure
             target_rows.append(
                 {
                     "speaker_group_id": target.speaker_group_id,
@@ -424,72 +710,29 @@ class CommissioningVerificationService:
                     "captured_repeats": len(captures),
                     "required_repeats": POST_APPLY_REQUIRED_REPEATS,
                     "verified": verification is not None,
+                    "failed": target_failure is not None,
                 }
             )
-        receipt = None
-        receipt_artifact = None
+        if failed is not None:
+            return self.status()
         if len(verified_targets) == len(self.target_plan.targets):
-            receipt, receipt_artifact = self._receipt(tuple(verified_targets))
-            lifecycle = self.run_store.lifecycle_state(self.run)
-            if lifecycle == "applied_unverified":
-                expected_transition = CommissioningTransition(
-                    from_state="applied_unverified",
-                    to_state="verified",
-                    evidence_kind="commissioning_eligibility_receipt",
-                    evidence_fingerprint=receipt_artifact.fingerprint,
-                )
-                try:
-                    committed = self.run_store.transition(
-                        self.run,
-                        expected_transition,
-                    )
-                except CommissioningRunConflict:
-                    # The threaded status surface and the final capture response
-                    # may finalize the same exact receipt concurrently. Accept
-                    # only the identical transition committed by that peer.
-                    committed = False
-                if not committed and (
-                    self.run_store.lifecycle_state(self.run) != "verified"
-                    or self.run_store.lifecycle_transition(self.run)
-                    != expected_transition
-                ):
-                    raise CommissioningVerificationError(
-                        "run_generation_stale", "receipt lost current run ownership"
-                    )
-                if committed:
-                    log_event(
-                        logger,
-                        "correction.active_commissioning_verified",
-                        session=self.run.session_id,
-                        run_id=self.run.run_id,
-                        owner_generation=self.run.owner_generation,
-                        receipt_fingerprint=receipt.fingerprint,
-                        receipt_artifact_fingerprint=receipt_artifact.fingerprint,
-                    )
-        next_target = next(
-            (row for row in target_rows if row["verified"] is not True), None
-        )
+            self._receipt(tuple(verified_targets))
+            return self.status()
         return {
-            "status": "verified" if receipt is not None else "applied_unverified",
+            "status": "applied_unverified",
             "targets": target_rows,
-            "next_target": next_target,
-            "receipt": (
-                {
-                    "fingerprint": receipt.fingerprint,
-                    "artifact_fingerprint": receipt_artifact.fingerprint,
-                    "target_plan_fingerprint": receipt.target_plan.fingerprint,
-                    "applied_candidate_fingerprint": (
-                        receipt.applied_candidate.fingerprint
-                    ),
-                }
-                if receipt is not None and receipt_artifact is not None
-                else None
+            "next_target": next(
+                (row for row in target_rows if row["verified"] is not True), None
             ),
+            "failure": None,
+            "receipt": None,
         }
 
     def _operation(
         self, target: RequiredVerificationTarget, ordinal: int
     ) -> PostApplyCaptureOperation:
+        from .measurement import active_driver_targets
+
         regions = tuple(
             item
             for item in self.plan.targets
@@ -541,11 +784,20 @@ class CommissioningVerificationService:
         raw_capture_transport: RawCaptureTransport,
         config_dir: str | Path,
     ) -> dict[str, Any]:
+        from .commissioning_capture_producer import (
+            CurrentCaptureAuthority,
+            SummedCaptureProducer,
+        )
+        from .test_signal_plan import CROSSOVER_CAPTURE_PLAY_DEADLINE_S
+
         if self.run_store.lifecycle_state(self.run) != "applied_unverified":
             raise CommissioningVerificationError(
                 "verification_not_ready",
                 "post-apply capture requires an applied unverified candidate",
             )
+        current_status = self.status()
+        if current_status["status"] != "applied_unverified":
+            return current_status
         selected = next(
             (
                 (target, len(captures) + 1)

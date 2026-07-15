@@ -387,6 +387,8 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         done.add("drivers")
     if region_commissioning.get("status") in {"measured", "candidate_ready"}:
         done.add("alignment")
+    if region_commissioning.get("status") == "verified":
+        done.update(_STEP_IDS)
     if applied_ready and not automatic_remeasure and not strict_isolated_complete:
         done.add("apply")
     if automatic_applied and not automatic_remeasure:
@@ -1110,6 +1112,27 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         active_step = "apply"
     elif (
         strict_isolated_complete
+        and region_commissioning.get("status") == "verification_failed"
+    ):
+        screen = "review"
+        verdict = (
+            "The applied crossover did not pass the three fixed-axis combined-response "
+            "captures. Room correction remains locked. Return to speaker setup to "
+            "edit the crossover or begin a fresh measurement sequence."
+        )
+        action = {
+            "id": "edit_after_verification_failure",
+            "label": "Back to speaker setup",
+            "href": "/sound/",
+        }
+        active_step = "alignment"
+        nudges.append({
+            "code": "post_apply_verification_failed",
+            "severity": "warn",
+            "text": "The retained graph is known, but it has no verified Room authority.",
+        })
+    elif (
+        strict_isolated_complete
         and region_commissioning.get("status") == "applied_unverified"
     ):
         verification = _mapping(region_commissioning.get("verification"))
@@ -1135,13 +1158,17 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     ):
         verification = _mapping(region_commissioning.get("verification"))
         receipt = _mapping(verification.get("receipt"))
-        screen = "review"
+        screen = "done"
         verdict = (
             "The applied crossover passed all fixed-axis combined-response "
             "captures. Room correction is now available."
         )
-        action = None
-        active_step = "apply"
+        action = {
+            "id": "room",
+            "label": "Continue to Room correction",
+            "href": "/correction/room/",
+        }
+        active_step = "complete"
         if receipt.get("fingerprint"):
             nudges.append({
                 "code": "active_commissioning_verified",

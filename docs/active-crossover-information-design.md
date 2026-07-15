@@ -805,7 +805,7 @@ The later Wave 3 control-plane integration now starts and exposes a durable
 set, claims its process owner at correction-web startup, and classifies a
 different active comparison as stale. The isolated-driver browser route now
 owns exact per-driver attempts and the first `protected` transition; summed
-collection and later lifecycle transitions remain internal-only. The typed internal
+   collection now uses that same host through a recorder-only relay. The typed internal
 evidence host now reserves deterministic region attempts, persists and reopens
 exact admitted normal/reverse/delay sets, evaluates the bounded measured delay
 schedule, and advances the exact run from `unconfigured` through `protected`
@@ -830,9 +830,9 @@ relay's recorder-only `kind=summed` branch now supplies real WAVs and explicit
 signed/fixed-axis geometry to the typed internal host without granting the
 browser scheduling or DSP authority. Historical B2b captures remain
 permanently non-admitted. Current projections expose only the exact measured
-candidate review and the apply/recovery states described below; verification,
-receipt, and Room authority remain unavailable until their later Wave 3 gates
-are satisfied for automatic commissioning. That unavailable automatic authority
+   candidate review and the apply/recovery states described below. Automatic Room
+   authority remains unavailable until the retained graph passes three admitted
+   post-apply fixed-axis captures and Active persists the exact receipt. That gate
 is separate from the operator-owned, explicitly applied manual-profile Room path
 described below.
 
@@ -1515,7 +1515,9 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   with exact predecessor recovery and a retained proof before
   `applied_unverified`. Post-apply verification now proves the retained current
   graph without another mutation, persists three admitted fixed-axis repeats,
-  issues the exact receipt, and lets Room consume Active's decision. On-device
+  issues the exact receipt, and lets Room consume Active's decision. Three usable
+  failing acoustic verdicts instead persist one exact failure, stop capture, and
+  keep Room locked. On-device
   proof remains outstanding.
 
 - Manual setup exposes frequency, filter family/slope, and trim. ~~There is
@@ -1587,8 +1589,8 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   never consumes a capture-carried delay. The production wizard now exposes one
   server-selected combined-capture action; the internal host—not browser
   metadata—runs the per-region normal/reverse loop, transient reverse graph, and
-  bounded measured delay *walk*. Candidate persistence/review and post-apply
-  verification remain later slices.
+  bounded measured delay *walk*. Candidate persistence/review, exact apply, and
+  three-repeat post-apply verification now continue from that same authority.
 - The shared delay-walk substrate includes a pure candidate graph-content
   proof (`jasper.audio_measurement.delay_graph`). Active-crossover and bass
   hosts share one typed lane proof while retaining their own authoritative

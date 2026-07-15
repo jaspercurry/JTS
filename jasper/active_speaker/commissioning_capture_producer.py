@@ -813,8 +813,6 @@ class SummedCaptureProducer:
         self,
         operation: RegionCaptureOperation,
         result: SummedAcousticResult,
-        *,
-        post_apply: bool = False,
     ) -> list[str]:
         issues: list[str] = []
         quality = result.quality
@@ -823,11 +821,10 @@ class SummedCaptureProducer:
         expected_null = operation.evidence_kind in {"reverse", "delay_null"}
         if quality.get("failed") is not False:
             issues.append("capture_quality_failed")
-        accepted_verdicts = (
-            {SUMMED_BLEND_OK}
-            if post_apply
-            else {SUMMED_BLEND_OK, SUMMED_POLARITY_OR_DELAY_PROBLEM}
-        )
+        # A polarity/delay problem is a usable admitted measurement. The
+        # post-apply host classifies three exact repeats; this recorder layer
+        # rejects only captures that cannot support that decision.
+        accepted_verdicts = {SUMMED_BLEND_OK, SUMMED_POLARITY_OR_DELAY_PROBLEM}
         if result.verdict not in accepted_verdicts:
             issues.append("summed_capture_unusable")
         if result.mic_clipping:
@@ -1088,9 +1085,7 @@ class SummedCaptureProducer:
             capture_geometry=REFERENCE_AXIS_GEOMETRY_ID,
             ambient_duration_s=CROSSOVER_AMBIENT_DURATION_S,
         )
-        quality_issues = self._quality_issues(
-            operation, acoustic, post_apply=post_apply
-        )
+        quality_issues = self._quality_issues(operation, acoustic)
         calibration_payload = analysis_authority.calibration.to_dict()
         analysis_payload = {
             "schema_version": 1,

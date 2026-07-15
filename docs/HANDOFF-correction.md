@@ -597,8 +597,10 @@
   fresh protected graph/path/volume readback before `applied_unverified`.
   Cancellation, mutation/readback failure, or an unproved retained write
   restores the exact predecessor; `/status` exposes retry/finalize/restore as
-  one server-owned next action. Post-apply fixed-axis capture and Room unlock
-  are still withheld until the receipt slice lands.
+  one server-owned next action. Post-apply fixed-axis capture now admits three
+  exact current-graph repeats: all-pass evidence issues the receipt and unlocks
+  Room, while a usable acoustic failure is persisted, stops capture, and keeps
+  Room locked.
   `jasper.active_speaker.web_measurement`
   owns bounded browser WAV evidence plus acoustic-analysis recording.
   This page is also the ownership boundary between manual and automatic

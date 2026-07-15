@@ -50,6 +50,7 @@ from jasper.active_speaker.commissioning_verification import (
 from jasper.active_speaker.commissioning_run import CommissioningRunStore
 from jasper.active_speaker.driver_acoustics import (
     SUMMED_BLEND_OK,
+    SUMMED_POLARITY_OR_DELAY_PROBLEM,
     SummedAcousticResult,
 )
 from jasper.active_speaker.driver_safety import (
@@ -630,6 +631,21 @@ async def test_post_apply_capture_uses_current_protected_graph_and_receipt_ident
     assert result.payload.capture.measurement_kind == "active_crossover_post_apply"
     assert result.payload.capture.target_fingerprint == required.target_fingerprint
     assert result.payload.capture.context_fingerprint == _hash("applied-context")
+
+    monkeypatch.setattr(
+        producer_module,
+        "analyze_summed_crossover",
+        lambda *args, **kwargs: replace(
+            _refused_acoustic(),
+            verdict=SUMMED_POLARITY_OR_DELAY_PROBLEM,
+            quality={"failed": False, "issues": []},
+        ),
+    )
+    usable_failure = await harness.producer(transport).capture_post_apply(
+        replace(operation, capture_ordinal=2, issuance_id="4" * 32),
+        _context(harness.baseline_raw),
+    )
+    assert isinstance(usable_failure.payload, AdmittedCaptureProof)
 
 
 @pytest.mark.asyncio

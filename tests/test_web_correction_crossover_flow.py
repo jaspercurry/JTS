@@ -3126,6 +3126,30 @@ def test_crossover_envelope_projects_active_owned_alignment_actions():
     assert ready["candidate_review"] == review
     assert "Frequency, filter family, and order stay" in ready["verdict_text"]
 
+    status["region_commissioning"] = {"status": "verification_failed"}
+    failed = crossover_envelope.build_crossover_envelope(status)
+    assert failed["screen"] == "review"
+    assert failed["next_action"] == {
+        "id": "edit_after_verification_failure",
+        "label": "Back to speaker setup",
+        "href": "/sound/",
+    }
+    assert "Room correction remains locked" in failed["verdict_text"]
+
+    status["region_commissioning"] = {
+        "status": "verified",
+        "verification": {"receipt": {"fingerprint": "a" * 64}},
+    }
+    verified = crossover_envelope.build_crossover_envelope(status)
+    assert verified["screen"] == "done"
+    assert verified["next_action"] == {
+        "id": "room",
+        "label": "Continue to Room correction",
+        "href": "/correction/room/",
+    }
+    assert all(step["status"] == "done" for step in verified["steps"])
+    assert verified["progress"] == {"position": 5, "total": 5}
+
     status["region_commissioning"] = {
         "status": "restore_finalization_required",
         "detail": "The exact previous crossover is already restored.",

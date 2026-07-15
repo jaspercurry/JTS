@@ -381,8 +381,9 @@ adjacent-pair graph under the writer lock, admit generation and playback,
 persist/reopen strict values only after exact restoration, and consume the
 bounded schedule and evaluator. Legacy direct/browser summed ingress remains
 pre-audio refused; the production `kind=summed` relay supplies recorder bytes
-and generation-specific signed geometry to that host. Candidate/receipt/Room
-authority remains unavailable.
+and generation-specific signed geometry to that host. Active, not this shared
+module, now publishes the candidate, performs exact apply/readback, evaluates
+three post-apply repeats, and exposes the receipt-backed Room decision.
 The shipped 350 Hz lower crossover exceeds the shared 25-point exhaustive-walk
 budget at the allowed 100 µs maximum step. Shared now represents it with a
 deterministic schedule of 15 symmetric coarse coordinates plus at most two

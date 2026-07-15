@@ -1281,6 +1281,10 @@ class CommissioningCaptureService:
                 )
                 if status == "candidate_refused"
                 else (
+                    "The applied crossover failed its combined-response check; "
+                    "Room correction remains locked."
+                    if status == "verification_failed"
+                    else (
                     (
                         "The candidate graph is applied and read back; retry to "
                         "finish its durable state."
@@ -1301,6 +1305,7 @@ class CommissioningCaptureService:
                     else (
                         "commissioning cannot collect from lifecycle "
                         f"{lifecycle_state}"
+                    )
                     )
                 )
             ),

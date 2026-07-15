@@ -204,8 +204,8 @@
 > driver → each driver's stationary near-field repeat sequence → keep the mic
 > fixed on the tweeter reference axis while each driver gets a separate safe
 > level and a target of three gated repeats → attest signed path geometry → run
-> server-selected normal/reverse/bounded-delay combined captures → evidence
-> complete. Candidate apply/verification remain later slices. One bounded
+> server-selected normal/reverse/bounded-delay combined captures → candidate
+> review/apply → three current-graph verification captures → Room handoff. One bounded
 > fourth attempt may
 > replace a rejected capture, but automatic
 > apply still requires three accepted repeats for both geometries. The lower
@@ -1792,8 +1792,9 @@ Delay alignment is measured, not guessed.
 > itself is unchanged — this is wiring persisted paired evidence around the
 > already-shipped proposer, per
 > [active-crossover-information-design.md](active-crossover-information-design.md)
-> "Slice 2: automatic alignment". The delay *walk* (a measured value) and
-> post-apply verification remain separate, not-yet-built pieces of Slice 2.
+> "Slice 2: automatic alignment". The delay *walk* and post-apply verification
+> are now production-wired through the server-owned summed and verification
+> relay kinds described above.
 
 ## CamillaDSP Profile Architecture
 

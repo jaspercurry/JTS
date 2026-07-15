@@ -719,6 +719,8 @@ def test_verified_automatic_receipt_allows_room_with_loaded_layer_a(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    from jasper.active_speaker import commissioning_verification
+
     topology = _active_topology()
     _save_topology(monkeypatch, tmp_path, topology)
     config_path = tmp_path / "active_speaker_baseline.yml"
@@ -742,7 +744,7 @@ def test_verified_automatic_receipt_allows_room_with_loaded_layer_a(
         lambda _path=None: automatic,
     )
     monkeypatch.setattr(
-        setup_mod,
+        commissioning_verification,
         "read_commissioning_room_authority",
         lambda _topology: {
             "allowed": True,

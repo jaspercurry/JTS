@@ -27,7 +27,6 @@ from .baseline_profile import (
     recompose_applied_baseline_yaml,
 )
 from .capture_geometry import comparison_set_valid
-from .commissioning_verification import read_commissioning_room_authority
 from .crossover_preview import load_crossover_preview
 from .crossover_contract import (
     automatic_candidate_readiness,
@@ -889,7 +888,17 @@ def read_active_speaker_setup_status(
         if issues
         else "active speaker baseline is applied and output control is ready"
     )
-    receipt_authority = read_commissioning_room_authority(topology)
+    receipt_authority = {
+        "allowed": False,
+        "authority": "automatic_verified_receipt",
+        "reason": "active_commissioning_receipt_unavailable",
+        "receipt_fingerprint": None,
+    }
+    if applied_crossover.get("owner") == "automatic":
+        # Manual/passive status stays free of the recorder/analyzer stack.
+        from .commissioning_verification import read_commissioning_room_authority
+
+        receipt_authority = read_commissioning_room_authority(topology)
     acoustic_commissioning = _acoustic_commissioning_status(
         topology,
         setup_ready=not blocked,
