@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 from jasper.audio_hardware.dac import by_id as dac_profile_by_id
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.null_walk import NullWalkError
 from jasper.log_event import log_event
 from .alignment_walk import driver_delay_walk_spec
 from .commissioning_capture_producer import RawCaptureTransport
@@ -226,6 +227,17 @@ class CommissioningCaptureService:
             negative_delay_target_role=target.lower_role,
             signed_acoustic_path_difference_m=signed_path_difference_m,
         )
+        try:
+            # The write-once attestation must be runnable before it becomes
+            # durable.  The coarse schedule contains both fine-grid endpoints,
+            # so materializing it proves every later coordinate stays inside
+            # the existing CamillaDSP 20 ms delay ceiling.
+            spec.coarse_candidate_delays_us()
+        except NullWalkError as exc:
+            raise CommissioningServiceError(
+                "geometry_out_of_bounds",
+                "signed geometry exceeds the bounded crossover delay range",
+            ) from exc
         payload = {
             "schema_version": 1,
             "kind": GEOMETRY_ATTESTATION_KIND,
@@ -426,6 +438,18 @@ class CommissioningCaptureService:
         )
         lifecycle_state = self.run_store.lifecycle_state(self.run)
         if lifecycle_state == "measured":
+            # Lifecycle is not a second evidence authority.  Reuse the host's
+            # exact complete-artifact reopen + transition-fingerprint check
+            # before presenting this run as measured at the Active boundary.
+            host_status = self._host(
+                current,
+                raw_capture_transport=None,
+            ).status()
+            if host_status.get("complete") is not True:
+                raise CommissioningServiceError(
+                    "complete_evidence_unavailable",
+                    "measured lifecycle has no exact complete evidence",
+                )
             status = "measured"
         elif missing_geometry is not None:
             status = "needs_geometry"

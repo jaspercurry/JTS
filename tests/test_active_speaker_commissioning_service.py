@@ -14,9 +14,13 @@ from jasper.active_speaker import commissioning_service as service_module
 from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
+    CommissioningEvidenceStoreError,
 )
 from jasper.active_speaker.commissioning_evidence import derive_region_evidence_plan
-from jasper.active_speaker.commissioning_host import RegionCaptureOperation
+from jasper.active_speaker.commissioning_host import (
+    CommissioningHostError,
+    RegionCaptureOperation,
+)
 from jasper.active_speaker.commissioning_lifecycle import CommissioningTransition
 from jasper.active_speaker.commissioning_run import CommissioningRunStore
 from jasper.active_speaker.commissioning_service import (
@@ -168,6 +172,31 @@ def test_geometry_is_write_once_and_status_does_not_issue_host_progress(
         )
 
 
+def test_out_of_bounds_geometry_is_refused_before_write_once_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _service_harness(tmp_path, monkeypatch)
+    target = harness.plan.targets[0]
+    artifact_path = service_module._geometry_artifact_relative_path(
+        harness.plan.authority.run,
+        target,
+    )
+
+    with pytest.raises(
+        CommissioningServiceError,
+        match="exceeds the bounded crossover delay range",
+    ) as captured:
+        harness.service.attest_geometry(
+            expected_target_fingerprint=target.fingerprint,
+            signed_acoustic_path_difference_mm=100_000.0,
+        )
+
+    assert captured.value.code == "geometry_out_of_bounds"
+    with pytest.raises(CommissioningEvidenceStoreError):
+        harness.evidence_store.identify_artifact(artifact_path)
+
+
 def test_service_composes_geometry_into_the_existing_host_operation_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -190,6 +219,33 @@ def test_service_composes_geometry_into_the_existing_host_operation_order(
     assert operation.required_capture_count == 3
     assert operation.issuance_id is not None
     assert host.next_operation() == operation
+
+
+def test_measured_status_requires_exact_complete_evidence_readback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _service_harness(tmp_path, monkeypatch)
+    target = harness.plan.targets[0]
+    harness.service.attest_geometry(
+        expected_target_fingerprint=target.fingerprint,
+        signed_acoustic_path_difference_mm=0.0,
+    )
+    assert harness.run_store.transition(
+        harness.plan.authority.run,
+        CommissioningTransition(
+            from_state="protected",
+            to_state="measured",
+            evidence_kind="admitted_measurement_set",
+            evidence_fingerprint=_hash("missing-complete-evidence"),
+        ),
+    )
+
+    with pytest.raises(
+        CommissioningHostError,
+        match="measured lifecycle has no durable complete evidence",
+    ):
+        harness.service.status()
 
 
 @pytest.mark.asyncio
