@@ -769,10 +769,12 @@ links carry signed position/total metadata and authenticate the realized
 microphone against the Pi-retained level identity before playback. The trust
 repeat uses the same Room relay handler and state machine; its generic
 `presentation_variant` changes phone copy only and cannot own sequencing,
-timeout, or admission. Repo-pinned capture page build 20260715.1 adds the
+timeout, or admission. Repo-pinned capture page build 20260715.2 adds the
 repeat-specific phone copy and renders host sweep cancellation as expected
 control flow. A transient phone-side status-poll failure no longer aborts a
-bounded level walk, and the Pi gives idempotent host-progress writes one retry
+bounded level walk; small page-side control requests abort after three seconds,
+inside the Pi's eight-second feed-loss guard, so a pending fetch cannot freeze
+mic batches. The Pi gives idempotent host-progress writes one retry
 after a timeout, 429, or relay 5xx. External publication is intentionally
 pending coordinator release. Active-crossover capture uses
 role-sized sweeps,

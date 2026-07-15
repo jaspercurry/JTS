@@ -529,6 +529,7 @@ function setupBinding(id = "flow-123456789012") {
   assert.equal(statusReads, 2);
   assert.equal(retryableRelayStatusError({ status: 503 }), true);
   assert.equal(retryableRelayStatusError({ status: 429 }), true);
+  assert.equal(retryableRelayStatusError({ name: "AbortError" }), true);
   assert.equal(retryableRelayStatusError({ status: 404 }), false);
   ok();
 }

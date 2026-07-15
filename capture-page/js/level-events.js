@@ -64,7 +64,7 @@ const RAMP_TERMINAL_STATE_SET = new Set(RAMP_TERMINAL_STATES);
 export function retryableRelayStatusError(error) {
   const status = Number(error && error.status);
   if (Number.isFinite(status)) return status === 429 || status >= 500;
-  return error instanceof TypeError;
+  return error instanceof TypeError || (error && error.name === "AbortError");
 }
 
 // Compute one {rms_dbfs, peak_dbfs, clip} verdict for a block of mono samples.

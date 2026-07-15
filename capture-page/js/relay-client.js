@@ -19,6 +19,12 @@ export class RelayError extends Error {
   }
 }
 
+// The Pi refuses a level feed after eight seconds without a fresh batch.  Keep
+// each small control request well inside that safety window so a stalled fetch
+// cannot freeze the page's serialized meter loop. Blob uploads are intentionally
+// excluded; their bounded size and transfer time are a different contract.
+export const RELAY_CONTROL_TIMEOUT_MS = 3000;
+
 export class RelayClient {
   constructor({ baseUrl, sessionId, uploadToken, fetchImpl } = {}) {
     if (!baseUrl) throw new Error("baseUrl required");
@@ -67,6 +73,20 @@ export class RelayClient {
     return { Authorization: `Bearer ${this.uploadToken}`, ...(extra || {}) };
   }
 
+  async _controlFetch(suffix, init, timeoutMs = RELAY_CONTROL_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timeout = Math.max(250, Number(timeoutMs) || RELAY_CONTROL_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      return await this._fetch(this._url(suffix), {
+        ...(init || {}),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async _failure(res) {
     let body = null;
     try {
@@ -97,7 +117,7 @@ export class RelayClient {
   }
 
   // Drop a relay-control event (e.g. {armed:true}) the Pi polls for.
-  async postEvent(event) {
+  async postEvent(event, { timeoutMs = RELAY_CONTROL_TIMEOUT_MS } = {}) {
     if (!this.capturePageIdentity) {
       throw new Error("capture page compatibility was not established");
     }
@@ -113,11 +133,11 @@ export class RelayClient {
         this._eventSequence,
       );
     }
-    const res = await this._fetch(this._url("/event"), {
+    const res = await this._controlFetch("/event", {
       method: "POST",
       headers: this._authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
-    });
+    }, timeoutMs);
     if (!res.ok) throw await this._failure(res);
     return res.json();
   }
@@ -125,11 +145,11 @@ export class RelayClient {
   // Poll Pi-side progress for this capture. This uses the upload token, so the
   // Worker returns only phone-safe progress state, never the Pi pull-token
   // integrity/blob details.
-  async fetchPhoneStatus() {
-    const res = await this._fetch(this._url("/phone-status"), {
+  async fetchPhoneStatus({ timeoutMs = RELAY_CONTROL_TIMEOUT_MS } = {}) {
+    const res = await this._controlFetch("/phone-status", {
       method: "GET",
       headers: this._authHeaders(),
-    });
+    }, timeoutMs);
     if (!res.ok) throw await this._failure(res);
     return res.json();
   }
