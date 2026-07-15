@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, Mapping, TypeAlias
 
 from jasper.audio_measurement.evidence_identity import (
@@ -38,6 +38,7 @@ from jasper.audio_measurement.null_walk import (
     NullWalkError,
     NullWalkSpec,
 )
+from jasper.audio_measurement.quality_model import DRIVER
 from jasper.output_topology import OutputTopology
 
 from .baseline_profile import topology_config_fingerprint
@@ -61,6 +62,8 @@ ACTIVE_REGION_DELAY_NULL_MEASUREMENT_KIND = "active_crossover_region_delay_null"
 STATIONARY_CAPTURE_COUNT = 3
 DELAY_WALK_ALGORITHM_ID = "jts_active_crossover_delay_null_walk"
 DELAY_WALK_ALGORITHM_VERSION = "2"
+ACTIVE_REGION_SUMMED_ANALYZER_POLICY_ID = "jts_active_summed_crossover_capture"
+ACTIVE_REGION_SUMMED_ANALYZER_POLICY_VERSION = "1"
 
 EvidenceKind: TypeAlias = Literal["normal", "reverse", "delay_null"]
 
@@ -75,6 +78,17 @@ _MEASUREMENT_KIND_BY_EVIDENCE: dict[str, str] = {
 
 class CommissioningEvidenceError(ValueError):
     """Commissioning evidence is malformed, stale, or self-contradictory."""
+
+
+def measurement_kind_for_evidence(evidence_kind: EvidenceKind) -> str:
+    """Return the canonical capture-identity kind for one region operation."""
+
+    try:
+        return _MEASUREMENT_KIND_BY_EVIDENCE[evidence_kind]
+    except KeyError as exc:
+        raise CommissioningEvidenceError(
+            "capture evidence_kind is unsupported"
+        ) from exc
 
 
 def _text(value: Any, *, field_name: str) -> str:
@@ -131,6 +145,22 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
         return json_fingerprint(payload, field_name="commissioning evidence payload")
     except EvidenceIdentityError as exc:
         raise CommissioningEvidenceError(str(exc)) from exc
+
+
+def active_region_threshold_profile_fingerprint() -> str:
+    """Fingerprint the one code-owned quality model used by region capture."""
+
+    return _fingerprint(
+        {
+            "schema_version": 1,
+            "kind": "jts_active_region_threshold_profile",
+            "quality_model": asdict(DRIVER),
+            "summed_analyzer": {
+                "policy_id": ACTIVE_REGION_SUMMED_ANALYZER_POLICY_ID,
+                "policy_version": ACTIVE_REGION_SUMMED_ANALYZER_POLICY_VERSION,
+            },
+        }
+    )
 
 
 def _strict_object(
@@ -600,6 +630,24 @@ def _mode_identity(
     )
 
 
+def region_evidence_preset_fingerprint(preset: ActiveSpeakerPreset) -> str:
+    """Fingerprint the exact typed preset bound into every region plan."""
+
+    if not isinstance(preset, ActiveSpeakerPreset):
+        raise CommissioningEvidenceError("preset must be ActiveSpeakerPreset")
+    try:
+        preset.validate()
+    except ActiveSpeakerConfigError as exc:
+        raise CommissioningEvidenceError(f"capture preset is invalid: {exc}") from exc
+    return _fingerprint(
+        {
+            "schema_version": 1,
+            "kind": "jts_active_region_evidence_preset",
+            "preset": preset.to_dict(),
+        }
+    )
+
+
 def derive_region_evidence_plan(
     preset: ActiveSpeakerPreset,
     topology: OutputTopology,
@@ -636,13 +684,7 @@ def derive_region_evidence_plan(
         threshold_profile_fingerprint=threshold_profile_fingerprint,
         context_fingerprint=context_fingerprint,
     )
-    preset_fingerprint = _fingerprint(
-        {
-            "schema_version": 1,
-            "kind": "jts_active_region_evidence_preset",
-            "preset": preset.to_dict(),
-        }
-    )
+    preset_fingerprint = region_evidence_preset_fingerprint(preset)
     expected_mode = f"active_{preset.way_count}_way"
     active_groups = [
         group for group in topology.speaker_groups if group.mode.startswith("active_")

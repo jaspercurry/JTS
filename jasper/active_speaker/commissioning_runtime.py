@@ -61,8 +61,13 @@ from jasper.dsp_apply import DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S, dsp_writer_lock
 from jasper.output_topology import OutputTopology
 
 from .baseline_profile import topology_config_fingerprint
+from .camilla_yaml import STARTUP_MUTE_GAIN_DB
 from .driver_safety import evaluate_driver_safety_profile
-from .graph_evidence import driver_baseline_gain_name, driver_delay_name
+from .graph_evidence import (
+    driver_baseline_gain_name,
+    driver_delay_name,
+    output_commission_mute_name,
+)
 from .measurement import active_driver_targets
 from .profile import ADJACENT_PAIRS_BY_WAY
 from .runtime_contract import classify_camilla_graph
@@ -161,9 +166,9 @@ class SummedGraphRequest:
     """One exact adjacent-region graph audition requested by the evidence host.
 
     ``normal_active_raw`` is emitted/composed by the Active host.  This adapter
-    never invents a second graph emitter: normal uses it exactly, reverse adds
-    one target-scoped zero-gain inversion lane, and delay adds two target-scoped
-    bounded relative-delay lanes without changing sibling-group channels.
+    never invents a second graph emitter: it adds only canonical per-output
+    isolation mutes, plus one target-scoped zero-gain inversion lane for reverse
+    or two target-scoped bounded relative-delay lanes for delay.
     """
 
     kind: SummedGraphKind
@@ -252,14 +257,35 @@ class SummedGraphRequest:
 
 
 @dataclass(frozen=True)
-class CommissioningLiveContext:
-    """Fresh candidate readback supplied to the admitted capture callback."""
+class CommissioningFreshReadback:
+    """One immutable, fresh observation of the still-live candidate."""
 
     graph: NormalizedActiveRawIdentity
     active_raw: str
     config_path: str
     listening_volume_db: float
     delay_confirmation: DelayCandidateConfirmation | None
+
+
+FreshCommissioningReadback: TypeAlias = Callable[
+    [], Awaitable[CommissioningFreshReadback]
+]
+
+
+@dataclass(frozen=True)
+class CommissioningLiveContext:
+    """Candidate plus a read-only fresh-observation seam under the writer lock."""
+
+    graph: NormalizedActiveRawIdentity
+    active_raw: str
+    config_path: str
+    listening_volume_db: float
+    delay_confirmation: DelayCandidateConfirmation | None
+    fresh_readback: FreshCommissioningReadback
+
+    def __post_init__(self) -> None:
+        if not callable(self.fresh_readback):
+            raise CommissioningRuntimeError("fresh_readback must be callable")
 
 
 @dataclass(frozen=True)
@@ -435,6 +461,7 @@ class _SummedTopologyBinding:
     lower_all_channels: tuple[int, ...]
     upper_all_channels: tuple[int, ...]
     all_role_channels: tuple[tuple[str, tuple[int, ...]], ...]
+    output_channels: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -491,6 +518,11 @@ def _topology_binding(
             "summed roles and channels must bind one exact current adjacent region"
         )
     group = matches[0]
+    target_channels = request.lower_channels + request.upper_channels
+    if len(target_channels) != 2:
+        raise CommissioningRuntimeError(
+            "summed region must bind exactly two adjacent physical channels"
+        )
     lower_all = role_channels(active_groups, request.lower_role)
     upper_all = role_channels(active_groups, request.upper_role)
     all_roles = sorted(
@@ -499,11 +531,27 @@ def _topology_binding(
     all_role_channels = tuple(
         (role, role_channels(active_groups, role)) for role in all_roles
     )
+    assigned_outputs = [
+        channel.physical_output_index
+        for item in topology.speaker_groups
+        for channel in item.channels
+    ]
+    if (
+        not assigned_outputs
+        or any(type(value) is not int or value < 0 for value in assigned_outputs)
+        or len(set(assigned_outputs)) != len(assigned_outputs)
+    ):
+        raise CommissioningRuntimeError(
+            "summed topology must have unique physical output assignments"
+        )
+    assigned = cast(list[int], assigned_outputs)
+    output_channels = tuple(range(max(assigned) + 1))
     return _SummedTopologyBinding(
         group.id,
         lower_all,
         upper_all,
         all_role_channels,
+        output_channels,
     )
 
 
@@ -590,11 +638,18 @@ def _normal_graph(
         )
     filters = graph.get("filters")
     if isinstance(filters, Mapping) and any(
-        isinstance(name, str) and name.startswith("as_commission_")
+        isinstance(name, str)
+        and (
+            name.startswith("as_commission_")
+            or (
+                name.startswith("as_out")
+                and name.endswith("_commission_mute")
+            )
+        )
         for name in filters
     ):
         raise CommissioningRuntimeError(
-            "server-derived normal graph must not predeclare runtime lane names"
+            "server-derived normal graph must not predeclare runtime lanes or mutes"
         )
     maximum_delay_ms = MAX_DSP_DELAY_US / 1000.0
     for role, all_channels in (
@@ -677,7 +732,46 @@ def _stationary_candidate(
             channels=request.upper_channels,
             inverted=True,
         )
+    _append_output_isolation(request, binding, candidate)
     return candidate
+
+
+def _append_output_isolation(
+    request: SummedGraphRequest,
+    binding: _SummedTopologyBinding,
+    graph: dict[str, Any],
+) -> None:
+    """Append the one canonical final mute tail derived from current topology."""
+
+    filters = graph.get("filters")
+    pipeline = graph.get("pipeline")
+    if not isinstance(filters, dict) or not isinstance(pipeline, list):
+        raise CommissioningRuntimeError(
+            "server-derived graph has no mutable filters and pipeline"
+        )
+    audible = set(request.lower_channels) | set(request.upper_channels)
+    if len(audible) != 2 or not audible <= set(binding.output_channels):
+        raise CommissioningRuntimeError(
+            "summed target must be two exact current physical outputs"
+        )
+    for channel in binding.output_channels:
+        name = output_commission_mute_name(channel)
+        if name in filters:
+            raise CommissioningRuntimeError(
+                "server-derived graph collides with commissioning output mutes"
+            )
+        is_audible = channel in audible
+        filters[name] = {
+            "type": "Gain",
+            "parameters": {
+                "gain": 0.0 if is_audible else STARTUP_MUTE_GAIN_DB,
+                "inverted": False,
+                "mute": not is_audible,
+            },
+        }
+        pipeline.append(
+            {"type": "Filter", "channels": [channel], "names": [name]}
+        )
 
 
 def _scoped_lane_names(
@@ -786,6 +880,7 @@ def _zero_relative_graph(
             offset_delay_ms=common_baseline_ms - upper_baseline_ms,
         ),
     }
+    _append_output_isolation(request, binding, graph)
     return graph, lanes
 
 
@@ -881,9 +976,11 @@ async def _confirm_candidate_still_live(
     *,
     expected_path: str,
     expected_volume_db: float,
-) -> None:
+    delay_confirmation: DelayCandidateConfirmation | None,
+) -> CommissioningFreshReadback:
+    raw = await port.read_active_raw()
     observed = _active_identity(
-        await port.read_active_raw(),
+        raw,
         field="post-capture active_raw readback",
     )
     if observed.active_raw_fingerprint != candidate.active_raw_fingerprint:
@@ -891,7 +988,8 @@ async def _confirm_candidate_still_live(
             "post_capture_graph_drift",
             "active_raw changed while the admitted capture callback was running",
         )
-    if await port.read_config_path() != expected_path:
+    path = await port.read_config_path()
+    if path != expected_path:
         raise _OperationFailure(
             "post_capture_config_path_drift",
             "config path changed while the admitted capture callback was running",
@@ -905,6 +1003,15 @@ async def _confirm_candidate_still_live(
             "post_capture_volume_drift",
             "listening volume changed while the admitted capture callback was running",
         )
+    assert isinstance(raw, str)
+    assert isinstance(path, str)
+    return CommissioningFreshReadback(
+        graph=observed,
+        active_raw=raw,
+        config_path=path,
+        listening_volume_db=volume,
+        delay_confirmation=delay_confirmation,
+    )
 
 
 def _delay_snapshot(
@@ -1249,16 +1356,41 @@ async def _run_locked(
                 expected_volume_db=request.listening_volume_db,
                 set_volume=True,
             )
-        callback_started = True
-        capture = await capture_callback(
-            CommissioningLiveContext(
-                graph=candidate_identity,
-                active_raw=candidate_raw,
-                config_path=predecessor.path,
-                listening_volume_db=candidate_volume,
+        readback_open = True
+
+        async def fresh_readback() -> CommissioningFreshReadback:
+            if not readback_open:
+                raise CommissioningRuntimeError(
+                    "fresh_readback is available only during the live callback"
+                )
+            assert candidate_identity is not None
+            observation = await _confirm_candidate_still_live(
+                port,
+                candidate_identity,
+                expected_path=predecessor.path,
+                expected_volume_db=request.listening_volume_db,
                 delay_confirmation=delay_confirmation,
             )
-        )
+            if not readback_open:
+                raise CommissioningRuntimeError(
+                    "fresh_readback callback ended before observation completed"
+                )
+            return observation
+
+        callback_started = True
+        try:
+            capture = await capture_callback(
+                CommissioningLiveContext(
+                    graph=candidate_identity,
+                    active_raw=candidate_raw,
+                    config_path=predecessor.path,
+                    listening_volume_db=candidate_volume,
+                    delay_confirmation=delay_confirmation,
+                    fresh_readback=fresh_readback,
+                )
+            )
+        finally:
+            readback_open = False
         if not isinstance(capture, AdmittedCaptureCallbackResult):
             raise _OperationFailure(
                 "capture_result_invalid",
@@ -1270,6 +1402,7 @@ async def _run_locked(
             candidate_identity,
             expected_path=predecessor.path,
             expected_volume_db=request.listening_volume_db,
+            delay_confirmation=delay_confirmation,
         )
 
     transaction = await _capture_awaitable(_execute_live_transaction())

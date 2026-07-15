@@ -17,6 +17,7 @@ from jasper.active_speaker import (
     emit_active_speaker_driver_domain_config,
     emit_active_speaker_program_bake_config,
 )
+from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
 from jasper.active_speaker.runtime_contract import (
     ACTIVE_DRIVER_DOMAIN_SOURCE,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -396,6 +397,125 @@ def _classify_baseline(text: str):
 def _dump_baseline(base: str, payload: dict) -> str:
     source = next(line for line in base.splitlines() if line.startswith("# Source:"))
     return f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+
+
+def _isolated_baseline_yaml(
+    layout: str,
+    way: int,
+    audible_outputs: set[int],
+) -> str:
+    base = _active_baseline_yaml(layout, way)
+    payload = yaml.safe_load(base)
+    output_count = way if layout == "mono" else way * 2
+    for index in range(output_count):
+        name = f"as_out{index}_commission_mute"
+        is_audible = index in audible_outputs
+        payload["filters"][name] = {
+            "type": "Gain",
+            "parameters": {
+                "gain": 0.0 if is_audible else STARTUP_MUTE_GAIN_DB,
+                "inverted": False,
+                "mute": not is_audible,
+            },
+        }
+        payload["pipeline"].append(
+            {"type": "Filter", "channels": [index], "names": [name]}
+        )
+    return _dump_baseline(base, payload)
+
+
+def test_baseline_commissioning_allows_one_exact_adjacent_pair() -> None:
+    topology = _active_topology("stereo", "active_3_way")
+
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=_isolated_baseline_yaml("stereo", 3, {1, 2}),
+    )
+
+    assert graph.allowed is True
+    assert graph.classification == GRAPH_GUARDED_COMMISSIONING
+    assert graph.details["baseline_candidate"] is False
+    assert graph.details["baseline_commissioning_candidate"] is True
+    assert graph.details["baseline_commissioning_group"] == "left"
+    assert graph.details["baseline_commissioning_roles"] == ["mid", "tweeter"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "extra",
+        "channel_drift",
+        "parameter_drift",
+        "tail_reorder",
+        "tail_not_final",
+    ],
+)
+def test_baseline_commissioning_refuses_mute_definition_or_tail_drift(
+    mutation: str,
+) -> None:
+    topology = _active_topology("stereo", "active_3_way")
+    base = _isolated_baseline_yaml("stereo", 3, {1, 2})
+    payload = yaml.safe_load(base)
+    if mutation == "missing":
+        del payload["filters"]["as_out5_commission_mute"]
+        payload["pipeline"] = payload["pipeline"][:-1]
+    elif mutation == "extra":
+        payload["filters"]["as_out6_commission_mute"] = {
+            "type": "Gain",
+            "parameters": {
+                "gain": STARTUP_MUTE_GAIN_DB,
+                "inverted": False,
+                "mute": True,
+            },
+        }
+        payload["pipeline"].append(
+            {
+                "type": "Filter",
+                "channels": [6],
+                "names": ["as_out6_commission_mute"],
+            }
+        )
+    elif mutation == "channel_drift":
+        payload["pipeline"][-3]["channels"] = [2]
+    elif mutation == "parameter_drift":
+        payload["filters"]["as_out0_commission_mute"]["parameters"][
+            "gain"
+        ] = STARTUP_MUTE_GAIN_DB + 1.0
+    elif mutation == "tail_reorder":
+        payload["pipeline"][-2:] = reversed(payload["pipeline"][-2:])
+    else:
+        payload["pipeline"].append(
+            {
+                "type": "Filter",
+                "channels": [0],
+                "names": ["as_woofer_limiter"],
+            }
+        )
+
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=_dump_baseline(base, payload),
+    )
+
+    assert graph.allowed is False
+    assert any(
+        code.startswith("active_baseline_commissioning_mute")
+        for code in _baseline_codes(graph)
+    )
+
+
+@pytest.mark.parametrize("audible_outputs", [{0, 2}, {1, 5}])
+def test_baseline_commissioning_refuses_nonadjacent_or_cross_group_pair(
+    audible_outputs: set[int],
+) -> None:
+    graph = classify_camilla_graph(
+        topology=_active_topology("stereo", "active_3_way"),
+        text=_isolated_baseline_yaml("stereo", 3, audible_outputs),
+    )
+
+    assert graph.allowed is False
+    assert "active_baseline_commissioning_target_invalid" in _baseline_codes(graph)
 
 
 def test_baseline_headroom_unwired_is_blocked() -> None:

@@ -478,6 +478,35 @@ def driver_level_lock(
     return value if _driver_level_lock_valid(target_id, value) else None
 
 
+def quietest_locked_main_volume(
+    locked_volume_by_role: Mapping[str, Any],
+    required_roles: set[str] | frozenset[str],
+) -> tuple[str, float] | None:
+    """Return the deterministic quietest complete role lock.
+
+    This is the one reduction shared by the live level lease and the internal
+    commissioning host.  Callers still own where their locks came from; this
+    helper only proves a complete, finite, non-positive role set and chooses
+    the most attenuated value.
+    """
+
+    roles = frozenset(str(role).strip().lower() for role in required_roles)
+    if not roles or set(locked_volume_by_role) != roles:
+        return None
+    normalized: dict[str, float] = {}
+    for role in roles:
+        value = locked_volume_by_role.get(role)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) > 0.0
+        ):
+            return None
+        normalized[role] = float(value)
+    return min(normalized.items(), key=lambda item: (item[1], item[0]))
+
+
 def normalized_placement_proof(
     *,
     policy_id: str,

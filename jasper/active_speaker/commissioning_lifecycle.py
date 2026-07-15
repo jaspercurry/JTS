@@ -68,6 +68,7 @@ COMMISSIONING_FAILURE_CODES = frozenset(
     {
         "protection_missing",
         "measurement_failed",
+        "measurement_restore_failed",
         "candidate_scoring_failed",
         "writer_lock_unavailable",
         "candidate_apply_failed_before_mutation",
@@ -105,8 +106,12 @@ _PRE_MUTATION_FAILURES_BY_STATE: Mapping[str, frozenset[str]] = {
 }
 
 _ALLOWED_TRANSITIONS: Mapping[str, frozenset[str]] = {
-    "unconfigured": frozenset({"protected", "blocked"}),
-    "protected": frozenset({"unconfigured", "measured", "blocked"}),
+    "unconfigured": frozenset(
+        {"protected", "blocked", "blocked_live_state_unknown"}
+    ),
+    "protected": frozenset(
+        {"unconfigured", "measured", "blocked", "blocked_live_state_unknown"}
+    ),
     "measured": frozenset({"protected", "candidate_ready", "blocked"}),
     "candidate_ready": frozenset(
         {
@@ -255,6 +260,14 @@ class CommissioningTransition:
         ):
             raise CommissioningLifecycleError(
                 "blocked_live_state_unknown requires a post-mutation failure code"
+            )
+        measurement_state = from_state in {"unconfigured", "protected"}
+        if to_state == "blocked_live_state_unknown" and (
+            (measurement_state and failure != "measurement_restore_failed")
+            or (not measurement_state and failure == "measurement_restore_failed")
+        ):
+            raise CommissioningLifecycleError(
+                "measurement restore failure is incompatible with source state"
             )
         object.__setattr__(self, "from_state", from_state)
         object.__setattr__(self, "to_state", to_state)

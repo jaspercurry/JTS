@@ -132,10 +132,11 @@ ACTIVE_DRIVER_DOMAIN_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_driver_domain_config"
 )
 _DRIVER_DOMAIN_PAIR_TRIM = "pair_balance_trim"
-# Both baseline-shaped sources run every output live (no per-output commission
-# mute) through a protective per-driver chain; they differ only in the
-# pre-split prefix (program-domain headroom + preference EQ vs the inter-speaker
-# channel-select). The mute/role-isolation checks below skip for both.
+# Both emitted baseline-shaped sources run every output live through a
+# protective per-driver chain; they differ only in the pre-split prefix
+# (program-domain headroom + preference EQ vs inter-speaker channel-select).
+# Summed commissioning may derive a narrowly verified final mute tail from the
+# primary baseline source; the driver-domain source never may.
 _BASELINE_LIKE_SOURCES = (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE)
 
 CONTRACT_UNCONFIGURED = "unconfigured"
@@ -888,7 +889,17 @@ def _unsafe_post_split_gains(payload: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _safe_commissioning_tail_filter(payload: dict[str, Any], name: str) -> bool:
-    if not name.startswith("as_commission_"):
+    runtime_lane = name.startswith("as_commission_")
+    output_mute = False
+    if name.startswith("as_out") and name.endswith("_commission_mute"):
+        index_s = name.removeprefix("as_out").removesuffix("_commission_mute")
+        try:
+            index = int(index_s)
+        except ValueError:
+            pass
+        else:
+            output_mute = name == _commission_mute_name(index)
+    if not runtime_lane and not output_mute:
         return False
     filter_type = _filter_type(payload, name)
     params = _filter_params(payload, name)
@@ -1376,6 +1387,128 @@ def _commission_mute_states(view: GraphView) -> dict[int, bool]:
     return out
 
 
+def _baseline_commissioning_pair(
+    contract: OutputContract,
+    unmuted_outputs: set[int],
+) -> tuple[str, tuple[str, str]] | None:
+    """Infer one exact adjacent pair in one active speaker group."""
+
+    if len(unmuted_outputs) != 2:
+        return None
+    by_output = _assignment_by_output(contract)
+    assignments = [by_output.get(index) for index in sorted(unmuted_outputs)]
+    if any(item is None for item in assignments):
+        return None
+    exact = [item for item in assignments if item is not None]
+    group_ids = {item.speaker_group_id for item in exact}
+    modes = {item.speaker_mode for item in exact}
+    if len(group_ids) != 1 or len(modes) != 1:
+        return None
+    mode = next(iter(modes))
+    way_count = _WAY_COUNT_BY_MAIN_MODE.get(mode)
+    if way_count not in {2, 3}:
+        return None
+    roles = {item.role for item in exact}
+    pair = next(
+        (
+            candidate
+            for candidate in ADJACENT_PAIRS_BY_WAY[way_count]
+            if set(candidate) == roles
+        ),
+        None,
+    )
+    if pair is None:
+        return None
+    return next(iter(group_ids)), pair
+
+
+def _baseline_commissioning_isolation_issues(
+    payload: dict[str, Any],
+    contract: OutputContract,
+    *,
+    graph_indexes: set[int],
+    mutes: dict[int, bool],
+    unmuted_outputs: set[int],
+) -> tuple[list[dict[str, str]], tuple[str, tuple[str, str]] | None]:
+    """Independently prove the runtime-owned final per-output mute tail."""
+
+    issues: list[dict[str, str]] = []
+    if set(mutes) != graph_indexes:
+        issues.append(_issue(
+            "blocker",
+            "active_baseline_commissioning_mute_set_invalid",
+            (
+                "summed commissioning baseline must define exactly one mute "
+                "filter for every graph output"
+            ),
+        ))
+    filters = payload.get("filters")
+    pipeline = payload.get("pipeline")
+    expected_steps: list[dict[str, Any]] = []
+    for index in sorted(graph_indexes):
+        name = _commission_mute_name(index)
+        is_audible = index in unmuted_outputs
+        expected_filter = {
+            "type": "Gain",
+            "parameters": {
+                "gain": 0.0 if is_audible else STARTUP_MUTE_GAIN_DB,
+                "inverted": False,
+                "mute": not is_audible,
+            },
+        }
+        definition = filters.get(name) if isinstance(filters, dict) else None
+        if definition != expected_filter:
+            issues.append(_issue(
+                "blocker",
+                "active_baseline_commissioning_mute_invalid",
+                (
+                    "summed commissioning output mute is not the exact canonical "
+                    f"state for DAC output {index + 1}"
+                ),
+            ))
+        expected_steps.append(
+            {"type": "Filter", "channels": [index], "names": [name]}
+        )
+        if not _canonical_chain_grouped(
+            payload,
+            expected_channels={index},
+            expected_names=(name,),
+        ):
+            issues.append(_issue(
+                "blocker",
+                "active_baseline_commissioning_mute_step_invalid",
+                (
+                    "summed commissioning must wire one exact output mute step "
+                    f"for DAC output {index + 1}"
+                ),
+            ))
+    tail = (
+        pipeline[-len(expected_steps):]
+        if isinstance(pipeline, list) and expected_steps
+        else []
+    )
+    if tail != expected_steps:
+        issues.append(_issue(
+            "blocker",
+            "active_baseline_commissioning_mute_tail_invalid",
+            (
+                "summed commissioning output mutes must be the final ordered "
+                "pipeline tail"
+            ),
+        ))
+    pair = _baseline_commissioning_pair(contract, unmuted_outputs)
+    if pair is None:
+        issues.append(_issue(
+            "blocker",
+            "active_baseline_commissioning_target_invalid",
+            (
+                "summed commissioning may unmute exactly two adjacent roles "
+                "within one active speaker group"
+            ),
+        ))
+    return issues, pair
+
+
 def _assignment_by_output(contract: OutputContract) -> dict[int, OutputAssignment]:
     out: dict[int, OutputAssignment] = {}
     for item in contract.assignments:
@@ -1548,9 +1681,16 @@ def _active_graph_evidence(
     source = str(summary.get("source") or "")
     is_baseline = source == ACTIVE_BASELINE_SOURCE
     is_driver_domain = source == ACTIVE_DRIVER_DOMAIN_SOURCE
-    # Both baseline-shaped graphs run every output live through a protective
-    # per-driver chain (no per-output commission mute); the per-driver gain /
-    # limiter / tweeter-HP checks below are identical. They differ only in the
+    is_baseline_commissioning = is_baseline and bool(mutes)
+    if is_driver_domain and mutes:
+        issues.append(_issue(
+            "blocker",
+            "active_driver_domain_commission_mutes_present",
+            "driver-domain baseline must not carry runtime commissioning mutes",
+        ))
+    # Both baseline-shaped graphs retain the same protective per-driver chain;
+    # the primary baseline may additionally carry the exact runtime-owned
+    # summed-isolation tail proved below. They otherwise differ only in the
     # pre-split prefix, branched inside the `is_baseline_like` block.
     is_baseline_like = is_baseline or is_driver_domain
     mixer_names = _pipeline_mixer_names(payload)
@@ -1580,7 +1720,7 @@ def _active_graph_evidence(
         ))
     unmuted_outputs = (
         set(graph_indexes)
-        if is_baseline_like
+        if is_baseline_like and not is_baseline_commissioning
         else {
             index for index in graph_indexes
             if index in mutes and mutes[index] is False
@@ -1591,6 +1731,18 @@ def _active_graph_evidence(
         if index in mutes and mutes[index] is True
     }
     all_muted = bool(required_indexes) and muted_outputs == required_indexes
+    baseline_commissioning_pair: tuple[str, tuple[str, str]] | None = None
+    if is_baseline_commissioning:
+        isolation_issues, baseline_commissioning_pair = (
+            _baseline_commissioning_isolation_issues(
+                payload,
+                contract,
+                graph_indexes=graph_indexes,
+                mutes=mutes,
+                unmuted_outputs=unmuted_outputs,
+            )
+        )
+        issues.extend(isolation_issues)
 
     tweeter_outputs = {
         int(item.physical_output_index)
@@ -2139,7 +2291,18 @@ def _active_graph_evidence(
         "unmuted_outputs": sorted(unmuted_outputs),
         "muted_outputs": sorted(muted_outputs),
         "all_muted": all_muted,
-        "baseline_candidate": is_baseline,
+        "baseline_candidate": is_baseline and not is_baseline_commissioning,
+        "baseline_commissioning_candidate": is_baseline_commissioning,
+        "baseline_commissioning_group": (
+            baseline_commissioning_pair[0]
+            if baseline_commissioning_pair is not None
+            else None
+        ),
+        "baseline_commissioning_roles": (
+            list(baseline_commissioning_pair[1])
+            if baseline_commissioning_pair is not None
+            else []
+        ),
         "driver_domain_candidate": is_driver_domain,
         "unmuted_roles": sorted(unmuted_roles),
         "tweeter_outputs": sorted(tweeter_outputs),

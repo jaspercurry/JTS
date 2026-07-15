@@ -27,7 +27,10 @@ from jasper.active_speaker.commissioning_run import (
     CommissioningRunHandle,
     CommissioningRunStore,
 )
-from jasper.active_speaker.capture_geometry import comparison_set_valid
+from jasper.active_speaker.capture_geometry import (
+    comparison_set_valid,
+    quietest_locked_main_volume,
+)
 from jasper.active_speaker.crossover_level_run import (
     CrossoverLevelRunError,
     CrossoverLevelRunPhase,
@@ -774,6 +777,7 @@ class CrossoverLevelLease:
         if not required_roles:
             return False
         outcomes_by_role: dict[str, Any] = {}
+        locked_volume_by_role: dict[str, float] = {}
         for geometry, outcome in self._outcomes.items():
             try:
                 capture_geometry, outcome_group, role = parse_driver_level_geometry(
@@ -791,13 +795,14 @@ class CrossoverLevelLease:
                 and float(locked) <= 0
             ):
                 outcomes_by_role[role] = outcome
-        if set(outcomes_by_role) != required_roles:
-            return False
-        outcomes = list(outcomes_by_role.values())
-        safest = min(
-            outcomes,
-            key=lambda outcome: float(outcome.ramp.locked_main_volume_db or 0.0),
+                locked_volume_by_role[role] = float(locked)
+        quietest = quietest_locked_main_volume(
+            locked_volume_by_role,
+            frozenset(required_roles),
         )
+        if quietest is None:
+            return False
+        safest = outcomes_by_role[quietest[0]]
         return await self._acquire_sweep_volume(
             safest,
             get_main_volume_db,

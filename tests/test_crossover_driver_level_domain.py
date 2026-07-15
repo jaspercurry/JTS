@@ -82,6 +82,32 @@ def test_comparison_set_requires_all_drivers_and_recomputes_fingerprint(tmp_path
     assert comparison_set_valid(malformed) is False
 
 
+def test_quietest_locked_volume_is_exact_deterministic_and_fail_closed():
+    from jasper.active_speaker.capture_geometry import quietest_locked_main_volume
+
+    roles = frozenset({"woofer", "tweeter"})
+    assert quietest_locked_main_volume(
+        {"tweeter": -4.0, "woofer": -10.0}, roles
+    ) == ("woofer", -10.0)
+    assert quietest_locked_main_volume(
+        {"woofer": -10.0, "tweeter": -10.0}, roles
+    ) == ("tweeter", -10.0)
+    assert quietest_locked_main_volume({"woofer": -10.0}, roles) is None
+    assert (
+        quietest_locked_main_volume(
+            {"woofer": -10.0, "tweeter": -4.0, "mid": -6.0}, roles
+        )
+        is None
+    )
+    for invalid in (True, float("nan"), 0.1):
+        assert (
+            quietest_locked_main_volume(
+                {"woofer": -10.0, "tweeter": invalid}, roles
+            )
+            is None
+        )
+
+
 @pytest.mark.asyncio
 async def test_lease_requires_each_driver_and_summed_uses_quietest_lock():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease

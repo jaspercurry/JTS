@@ -134,9 +134,9 @@
 > explicit operator-selected actions.
 > `/sound/active-speaker/driver-measurement` and
 > `/sound/active-speaker/summed-validation` (by-ear confirmations), plus the
-> HTTPS browser mic-capture path `/correction/crossover/` driver-capture /
-> summed-capture (`correction_crossover_backend` →
-> `web_measurement.record_driver_capture` / `record_summed_capture`), persist
+> HTTPS browser mic-capture path `/correction/crossover/` driver-capture
+> (`correction_crossover_backend` →
+> `web_measurement.record_driver_capture`), persist
 > the first product-grade measurement evidence through
 > `jasper.active_speaker.measurement` at
 > `/var/lib/jasper/active_speaker_measurements.json` with kind
@@ -145,11 +145,11 @@
 > `web_measurement` capture path that nothing reached after the move to
 > `/correction/`; they were deleted — Codex-week review C4a-1. `/sound/` is plain
 > HTTP and cannot `getUserMedia`.) As of P7 (2026-07-03), extended by the
-> repeat/SNR controller on 2026-07-12, those same driver/summed
-> captures can also ride the **phone-mic relay transport**:
+> repeat/SNR controller on 2026-07-12, driver captures can also ride the
+> **phone-mic relay transport**:
 > `POST /correction/crossover/relay-capture` (the third `RelayCaptureKind`
 > caller) plays the same capture sweep on `armed` and feeds the verified WAV into
-> the same `record_*_capture` analysis. The Jasper relay is the normal product
+> `record_driver_capture` analysis. The Jasper relay is the normal product
 > transport; explicitly disabling `JASPER_CAPTURE_RELAY_BASE` retains the local
 > fallback. It reads the
 > play payload's real shape (`status` + nested `playback.audio_emitted`,
@@ -176,10 +176,12 @@
 > [phone-mic-relay-plan.md](phone-mic-relay-plan.md).
 > The returned playback-role handoff is a server-only argument to capture
 > persistence; browser JSON cannot mint it. Existing bundles without a Shared
-> authority marker remain historical. Combined/summed capture is temporarily
+> authority marker remain historical. Legacy browser/direct combined capture is
 > refused before graph load with
-> `active_summed_persisted_admission_unavailable` until the group-level
-> delay/protection authority lands; its legacy evidence cannot be promoted. The
+> `active_summed_persisted_admission_unavailable`; its legacy evidence cannot be
+> promoted. A typed internal host now owns group-level delay/protection authority
+> for synthetic-admitted raw-WAV evidence, while real capture transport and
+> attested geometry remain Wave 4. The
 > `crossover_sweep` capture spec's stimulus length derives from the protected
 > per-driver signal plan (12 s woofer/subwoofer, 8 s midrange, 4 s tweeter;
 > one sweep definition; the deconv
@@ -719,8 +721,9 @@
 > `stale`, or fail-closed `unavailable`; `current` additionally requires the
 > comparison's complete schema/fingerprint and current topology/protected-
 > profile binding. It never exposes the process owner id.
-> Production currently creates only the `unconfigured` run. No live adapter yet
-> reserves the store's attempts or advances its transition journal.
+> The web-created run starts `unconfigured`; no browser route reserves attempts.
+> The typed internal host reserves generation-bound region attempts and advances
+> an exact synthetic-admitted composition through `protected` to `measured`.
 
 > **Update, 2026-07-14 (Wave 3 per-region evidence contract;
 > hardware-free):** `jasper.active_speaker.commissioning_evidence` now owns the
@@ -817,11 +820,14 @@ For JTS, that means:
   graph/path/listening-volume readback, the supplied admitted capture callback,
   and exact predecessor restoration. It requires host-owned mutation-journal
   callbacks around the live mutation and exposes a locked exact-predecessor
-  recovery operation for a future host to invoke before issuing new work. This
-  slice has no production caller and does not itself persist that journal or wire
-  restart recovery. Its future host must freshly re-emit and bind the exact preset
-  graph identity (including crossover IDs, Fc, and order) before making it
-  reachable. Cancellation drains
+  recovery operation. The typed internal host supplies the production caller,
+  freshly re-emits and binds the exact preset graph identity (including
+  crossover IDs, Fc, and order), and persists a cross-process issuance CAS plus
+  issuance-scoped predecessor/restore/commit artifacts. A crash-released
+  execution mutex spans runtime through canonical capture commit. Restart either completes
+  the exact restored capture commit, aborts a restored no-capture issuance, or
+  blocks the run as `blocked_live_state_unknown` when restoration is uncertain.
+  Cancellation drains
   the transaction; cleanup failure outranks cancellation, and possible mutation/
   audio is never reported as pre-audio certainty. The adapter schedules nothing
   and grants no evidence or candidate authority by itself.
@@ -830,7 +836,7 @@ For JTS, that means:
   coordinates plus at most two adjacent fine refinements around an explicit
   coarse anchor. The exhaustive runner remains capped at 25. A separate final
   evaluator requires that exact schedule and applies the same winner policy.
-  A production host must consume both; this runtime never selects a delay.
+  The internal host consumes both; this runtime never selects a delay.
 
 The existing deployed audio topology now has the runtime substrate for
 the constrained dual Apple active-output profile, but commissioning
@@ -954,10 +960,12 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    complete. The server/core path above is covered with synthetic capture fixtures;
    the implemented hardware-free slice is the bounded WAV submit/analyze/record
    and gate progression, not proof that JTS3 has emitted and captured the sweep.
-   The later Wave 3 control-plane slice adds a durable bundle-backed run identity,
-   startup owner-generation claim, and fail-closed status projection, but the
-   production flow currently leaves that run `unconfigured`; it does not yet
-   reserve region-scoped attempts or commit lifecycle transitions.
+   The Wave 3 control plane adds a durable bundle-backed run identity, startup
+   owner-generation claim, fail-closed status projection, cross-process issuance
+   CAS, and a typed internal host that can reserve exact region attempts and
+   advance synthetic-admitted evidence to `measured` after exact restoration.
+   Legacy browser summed ingress remains refused; a real raw capture transport
+   and attested geometry remain Wave 4.
    The live playback window, browser mic timing, and actual speaker acoustics
    still need on-device validation. Per-driver isolation is the CamillaDSP
    **mute mask**, not a channel-targeted WAV — so

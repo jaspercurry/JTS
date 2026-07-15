@@ -15,7 +15,10 @@ import yaml
 
 from jasper.active_speaker import commissioning_runtime as runtime
 from jasper.active_speaker.baseline_profile import topology_config_fingerprint
-from jasper.active_speaker.runtime_contract import classify_camilla_graph
+from jasper.active_speaker.runtime_contract import (
+    GRAPH_GUARDED_COMMISSIONING,
+    classify_camilla_graph,
+)
 from jasper.audio_measurement.admitted_playback import GeneratedExcitationWav
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.excitation_admission import (
@@ -334,7 +337,18 @@ async def test_normal_capture_holds_candidate_and_restores_exact_predecessor(
 
     async def capture(context: runtime.CommissioningLiveContext):
         observed.append(context)
-        assert yaml.safe_load(fake.raw) == yaml.safe_load(_request().normal_active_raw)
+        candidate = yaml.safe_load(fake.raw)
+        assert candidate == context.graph.normalized_active_raw
+        assert candidate["filters"]["as_out0_commission_mute"]["parameters"] == {
+            "gain": 0.0,
+            "inverted": False,
+            "mute": False,
+        }
+        assert candidate["filters"]["as_out1_commission_mute"]["parameters"] == {
+            "gain": 0.0,
+            "inverted": False,
+            "mute": False,
+        }
         return _admitted({"null_depth_db": 8.0})
 
     result = await runtime.run_summed_capture(
@@ -355,6 +369,138 @@ async def test_normal_capture_holds_candidate_and_restores_exact_predecessor(
     assert fake.events[:2] == ["volume", "graph"]
     assert intents == [result.predecessor]
     assert restores == [result.restore]
+
+
+@pytest.mark.asyncio
+async def test_fresh_readback_rereads_every_live_value_on_every_call(
+    tmp_path: Path,
+) -> None:
+    fake = FakePort()
+    base = fake.port()
+    reads = {"graph": 0, "path": 0, "volume": 0}
+    retained: list[runtime.FreshCommissioningReadback] = []
+
+    async def read_graph() -> str | None:
+        reads["graph"] += 1
+        return await base.read_active_raw()
+
+    async def read_path() -> str | None:
+        reads["path"] += 1
+        return await base.read_config_path()
+
+    async def read_volume() -> float | None:
+        reads["volume"] += 1
+        return await base.read_listening_volume_db()
+
+    port = runtime.CommissioningRuntimePort(
+        read_active_raw=read_graph,
+        apply_active_raw=base.apply_active_raw,
+        read_config_path=read_path,
+        read_listening_volume_db=read_volume,
+        set_listening_volume_db=base.set_listening_volume_db,
+    )
+
+    async def capture(context: runtime.CommissioningLiveContext):
+        retained.append(context.fresh_readback)
+        before = dict(reads)
+        first = await context.fresh_readback()
+        assert reads == {name: count + 1 for name, count in before.items()}
+        second = await context.fresh_readback()
+        assert reads == {name: count + 2 for name, count in before.items()}
+        for observation in (first, second):
+            assert observation.graph == context.graph
+            assert observation.active_raw == context.active_raw
+            assert observation.config_path == context.config_path
+            assert observation.listening_volume_db == context.listening_volume_db
+            assert observation.delay_confirmation is None
+        return _admitted()
+
+    await runtime.run_summed_capture(
+        port,
+        _request(),
+        capture,
+        topology=_TOPOLOGY,
+        mutation_journal=_journal(),
+        config_dir=tmp_path,
+    )
+
+    with pytest.raises(runtime.CommissioningRuntimeError, match="live callback"):
+        await retained[0]()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("drift", "code"),
+    [
+        ("graph", "post_capture_graph_drift"),
+        ("path", "post_capture_config_path_drift"),
+        ("volume", "post_capture_volume_drift"),
+    ],
+)
+async def test_fresh_readback_refuses_drift_before_low_level_play(
+    tmp_path: Path,
+    drift: str,
+    code: str,
+) -> None:
+    fake = FakePort()
+    base = fake.port()
+    drift_next = False
+    low_level_play_calls = 0
+
+    async def read_graph() -> str | None:
+        nonlocal drift_next
+        raw = await base.read_active_raw()
+        if drift_next and drift == "graph":
+            drift_next = False
+            graph = yaml.safe_load(raw)
+            graph["filters"]["as_woofer_baseline_gain"]["parameters"]["gain"] = -9.0
+            return _raw(graph)
+        return raw
+
+    async def read_path() -> str | None:
+        nonlocal drift_next
+        if drift_next and drift == "path":
+            drift_next = False
+            return "/tmp/drift.yml"
+        return await base.read_config_path()
+
+    async def read_volume() -> float | None:
+        nonlocal drift_next
+        value = await base.read_listening_volume_db()
+        if drift_next and drift == "volume":
+            drift_next = False
+            assert value is not None
+            return value + 1.0
+        return value
+
+    port = runtime.CommissioningRuntimePort(
+        read_active_raw=read_graph,
+        apply_active_raw=base.apply_active_raw,
+        read_config_path=read_path,
+        read_listening_volume_db=read_volume,
+        set_listening_volume_db=base.set_listening_volume_db,
+    )
+
+    async def capture(context: runtime.CommissioningLiveContext):
+        nonlocal drift_next, low_level_play_calls
+        drift_next = True
+        await context.fresh_readback()
+        low_level_play_calls += 1
+        return _admitted()
+
+    with pytest.raises(runtime.CommissioningRuntimeFailure) as raised:
+        await runtime.run_summed_capture(
+            port,
+            _request(),
+            capture,
+            topology=_TOPOLOGY,
+            mutation_journal=_journal(),
+            config_dir=tmp_path,
+        )
+
+    assert raised.value.code == code
+    assert low_level_play_calls == 0
+    assert raised.value.side_effects.restore_succeeded is True
 
 
 @pytest.mark.asyncio
@@ -592,6 +738,9 @@ async def test_delay_uses_zero_relative_snapshot_and_exact_confirmation(
     async def capture(context: runtime.CommissioningLiveContext):
         assert context.delay_confirmation is not None
         assert context.delay_confirmation.relative_delay_us == 100.0
+        fresh = await context.fresh_readback()
+        assert fresh.delay_confirmation == context.delay_confirmation
+        assert fresh.graph == context.graph
         graph = context.graph.normalized_active_raw
         lanes = {tuple(step["channels"]): (delay, identity) for step, delay, identity in _commissioning_lanes(graph)}
         assert lanes[(0,)][0]["delay"] == 0.1
@@ -754,6 +903,63 @@ async def test_stereo_delay_lanes_are_scoped_to_one_adjacent_group(
         assert by_channel[(lower_channel,)][0]["delay"] == 0.1
         assert by_channel[(upper_channel,)][0]["delay"] == 0.0
         assert by_channel[(upper_channel,)][1]["inverted"] is True
+        return _admitted()
+
+    await runtime.run_summed_capture(
+        fake.port(),
+        request,
+        capture,
+        topology=topology,
+        mutation_journal=_journal(),
+        config_dir=tmp_path,
+    )
+
+
+@pytest.mark.asyncio
+async def test_three_way_capture_mutes_sibling_and_other_speaker_outputs(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("stereo", "active_3_way")
+    request = _request(
+        topology=topology,
+        normal_active_raw=_active_baseline_yaml("stereo", 3),
+        lower_role="mid",
+        upper_role="tweeter",
+        lower_channels=(1,),
+        upper_channels=(2,),
+    )
+    fake = FakePort()
+    fake.raw = request.normal_active_raw
+
+    async def capture(context: runtime.CommissioningLiveContext):
+        graph = context.graph.normalized_active_raw
+        mute_states = {
+            index: graph["filters"][f"as_out{index}_commission_mute"][
+                "parameters"
+            ]["mute"]
+            for index in range(6)
+        }
+        assert mute_states == {
+            0: True,
+            1: False,
+            2: False,
+            3: True,
+            4: True,
+            5: True,
+        }
+        assert graph["pipeline"][-6:] == [
+            {
+                "type": "Filter",
+                "channels": [index],
+                "names": [f"as_out{index}_commission_mute"],
+            }
+            for index in range(6)
+        ]
+        safety = classify_camilla_graph(topology=topology, text=context.active_raw)
+        assert safety.allowed is True
+        assert safety.classification == GRAPH_GUARDED_COMMISSIONING
+        assert safety.details["baseline_commissioning_group"] == "left"
+        assert safety.details["baseline_commissioning_roles"] == ["mid", "tweeter"]
         return _admitted()
 
     await runtime.run_summed_capture(
@@ -1365,6 +1571,45 @@ async def test_normal_graph_cannot_predeclare_reserved_runtime_lane(
 
     async def capture(_context: runtime.CommissioningLiveContext):
         pytest.fail("caller-supplied runtime lane must not reach capture")
+
+    with pytest.raises(runtime.CommissioningRuntimeFailure) as raised:
+        await runtime.run_summed_capture(
+            fake.port(),
+            request,
+            capture,
+            topology=_TOPOLOGY,
+            mutation_journal=_journal(),
+            config_dir=tmp_path,
+        )
+
+    assert raised.value.code == "normal_graph_invalid"
+    assert raised.value.side_effects.graph_may_have_mutated is False
+    assert fake.apply_calls == []
+
+
+@pytest.mark.asyncio
+async def test_normal_graph_cannot_supply_output_isolation_mutes(
+    tmp_path: Path,
+) -> None:
+    fake = FakePort()
+    base = _request().normal_active_raw
+    graph = yaml.safe_load(base)
+    graph["filters"]["as_out0_commission_mute"] = {
+        "type": "Gain",
+        "parameters": {"gain": 0.0, "inverted": False, "mute": False},
+    }
+    graph["pipeline"].append(
+        {
+            "type": "Filter",
+            "channels": [0],
+            "names": ["as_out0_commission_mute"],
+        }
+    )
+    source = next(line for line in base.splitlines() if line.startswith("# Source:"))
+    request = replace(_request(), normal_active_raw=f"{source}\n{_raw(graph)}")
+
+    async def capture(_context: runtime.CommissioningLiveContext):
+        pytest.fail("caller-supplied isolation mute must not reach capture")
 
     with pytest.raises(runtime.CommissioningRuntimeFailure) as raised:
         await runtime.run_summed_capture(

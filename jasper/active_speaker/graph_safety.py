@@ -432,6 +432,60 @@ def pipeline_contains_chain(
     return False
 
 
+def protection_requirement_present(
+    view: GraphView,
+    *,
+    output_index: int,
+    requirement: Any,
+) -> bool:
+    """Whether one output proves a confirmed driver band-limit requirement.
+
+    Driver and summed excitation share this exact fail-closed interpretation of
+    the safety profile: a high-pass must be at or above its confirmed corner, a
+    low-pass at or below it, and either must meet the confirmed minimum slope.
+    """
+
+    if not isinstance(requirement, dict):
+        return False
+    kind = str(requirement.get("kind") or "")
+    expected_type = {
+        "highpass": "LinkwitzRileyHighpass",
+        "lowpass": "LinkwitzRileyLowpass",
+    }.get(kind)
+    cutoff = requirement.get("cutoff_hz")
+    slope = requirement.get("minimum_slope_db_per_octave")
+    if (
+        expected_type is None
+        or isinstance(cutoff, bool)
+        or not isinstance(cutoff, (int, float))
+        or isinstance(slope, bool)
+        or not isinstance(slope, (int, float))
+        or requirement.get("family_or_equivalent") != "equivalent_or_steeper"
+    ):
+        return False
+    for step in view.pipeline_steps:
+        if step.channels != frozenset({output_index}):
+            continue
+        for name in step.names:
+            definition = view.filters.get(name)
+            if definition is None or definition.type != "BiquadCombo":
+                continue
+            if definition.params.get("type") != expected_type:
+                continue
+            actual_cutoff = float_value(definition.params.get("freq"))
+            actual_order = float_value(definition.params.get("order"))
+            if actual_cutoff is None or actual_order is None:
+                continue
+            cutoff_ok = (
+                actual_cutoff >= float(cutoff)
+                if kind == "highpass"
+                else actual_cutoff <= float(cutoff)
+            )
+            if cutoff_ok and actual_order * 6.0 >= float(slope):
+                return True
+    return False
+
+
 # Absolute lower bound (Hz) on a tweeter-role protective high-pass corner. A
 # compression driver is ~25 dB more sensitive than the woofer, so the L0 gate
 # proves not just that a high-pass EXISTS on the tweeter output but that its
