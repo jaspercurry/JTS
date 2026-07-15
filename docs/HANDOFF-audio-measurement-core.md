@@ -68,10 +68,10 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   The strict SHA-256 values are content identities, not signatures, trusted
   issuers, or transferable playback capabilities. The original Wave 1 slice had
   no producer; Active's isolated-driver production adapter now supplies the
-  trusted live consumer. A strict pure per-region evidence shape now exists,
-  but its summed playback/capture/persistence host, candidate evaluator, and
-  receipt producer remain blocked; the separate lifecycle control plane is only
-  partially integrated as the bundle-backed run identity described below.
+  trusted live consumer. The strict pure per-region evidence shape now has a
+  typed internal host and raw-WAV producer that can collect synthetic-admitted
+  evidence and advance an exact run to `measured`. Candidate evaluation,
+  apply/verification, receipt production, and Room consumption remain blocked.
 - `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
   `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
   replay inputs, admission artifacts, algorithm id/version, geometry, placement,
@@ -275,11 +275,28 @@ Active's isolated-driver
 production path has adopted these APIs. It holds the bounded Shared writer lock
 across transient load, fresh generation/playback proofs, exact playback, and
 restoration, and threads the verified playback-role handoff through the
-server-owned capture call. Summed capture is intentionally refused before graph
-load until its production group-level host exists; candidate, receipt, and
-Room-gate authority are still unchanged. Lifecycle identity now has the narrow
-production start/status integration below, but no production evidence
-transition consumer.
+server-owned capture call. Direct/browser summed capture remains intentionally
+refused before graph load. The typed internal `CommissioningEvidenceHost` and
+`SummedCaptureProducer` now own the server-derived region schedule, exact
+adjacent-output isolation, fresh generation/playback admission, bounded raw-WAV
+ingress, analysis/quality persistence, exact restoration, and lifecycle
+progression to `measured`. The complete normal/reverse/delay program stays bound
+to one normalized applied baseline and microphone-calibration context, and every
+normal, reverse, and delay coordinate requires a distinct live-graph identity.
+Cleanup freshly proves the predecessor graph and path before restoring its
+potentially louder listening volume; an unproved graph restore retains the
+attenuated measurement volume and blocks as unknown.
+Every transient summed graph also lowers `devices.volume_limit` to the quieter
+of the inherited ceiling and the admitted measurement volume, and playback
+admission freshly proves that ceiling. The raw transport's play closure expires
+as soon as transport returns, raises, or is cancelled, so it cannot retain an
+audio capability beyond the guarded writer transaction.
+Protection proof accepts canonical stereo pipeline steps only when every covered
+output shares the target driver role; isolated-driver admission remains
+singleton-only, and mixed-role groups fail closed. A zero-delay coordinate
+reuses the freshly proved zero-relative graph rather than applying it twice.
+Real capture transport and attested geometry remain
+Wave 4; candidate, receipt, and Room-gate authority are unchanged.
 
 ### Wave 3 Active run identity (2026-07-14)
 
@@ -295,8 +312,12 @@ safe `commissioning_run` projection on crossover status. A comparison must pass
 its complete schema/fingerprint and match the current topology and protected
 profile before status can call the run current. Absent state is
 `not_started`; an exact active comparison is `current`; comparison drift is
-`stale`; corrupt/unreadable state is `unavailable`. Production currently starts
-only `unconfigured`; no live consumer reserves attempts or advances the journal.
+`stale`; corrupt/unreadable state is `unavailable`. The web-created run starts
+`unconfigured`; no browser route reserves attempts. The typed internal host
+uses generation-bound attempt reservations plus a cross-process issuance CAS,
+a crash-released execution mutex spanning runtime through capture commit, and
+advances exact synthetic-admitted compositions through `protected` to `measured`
+only after strict write/reopen and exact predecessor restoration.
 
 ### Wave 3 Active per-region evidence authority (2026-07-14)
 
@@ -327,11 +348,13 @@ every post-apply raw, analysis-input, quality, generation-admission, and
 playback-admission identity and path across all required groups.
 
 The module performs no I/O, persistence, playback, scoring, graph mutation, or
-lifecycle transition. Production must still retain a run handle, reserve the
-bounded attempts, build and freshly confirm each adjacent-pair graph under the
-writer lock, persist the strict values only after exact restoration, and supply
-an operator-attested signed geometry seed. Therefore summed playback remains
-pre-audio refused and candidate/receipt/Room authority remains unavailable.
+lifecycle transition. The separate typed internal host and producer now retain
+the run handle, reserve bounded attempts, build and freshly confirm each exact
+adjacent-pair graph under the writer lock, admit generation and playback,
+persist/reopen strict values only after exact restoration, and consume the
+bounded schedule and evaluator. Direct/browser summed ingress remains pre-audio
+refused; a real raw capture transport and attested geometry remain Wave 4, and
+candidate/receipt/Room authority remains unavailable.
 The shipped 350 Hz lower crossover exceeds the shared 25-point exhaustive-walk
 budget at the allowed 100 µs maximum step. Shared now represents it with a
 deterministic schedule of 15 symmetric coarse coordinates plus at most two
@@ -339,9 +362,9 @@ adjacent fine refinements around an explicit coarse anchor; the exhaustive
 runner remains capped at 25 and the complete schedule at 27. The separate
 `select_scheduled_delay()` evaluator requires evidence for that exact schedule
 and reuses `select_delay()`'s repeatability, plateau, and tie policy; the
-scheduler itself still chooses only where to refine. The production host must
-consume the exact schedule and evaluator before it can issue evidence. This
-pure slice does not play or capture and does not weaken either bound.
+scheduler itself still chooses only where to refine. The internal host consumes
+the exact schedule and evaluator; the pure evidence module still does not play
+or capture and neither integration weakens either bound.
 
 `jasper.active_speaker.commissioning_evidence_store` is the separate strict I/O
 boundary for these values. It reopens one exact bundle admission authority,
@@ -604,11 +627,12 @@ create a second retention system.
   The measurement loop *is* wired. The live browser mic-capture surface is the
   HTTPS `/correction/crossover/` page through the Jasper relay:
   `/crossover/relay-capture` → `correction_crossover_backend` →
-  `web_measurement.record_driver_capture` /
-  `record_summed_capture`, which run `driver_acoustics`
-  (`record_driver_acoustic_capture` / `record_summed_acoustic_capture`) and
+  `web_measurement.record_driver_capture`, which runs `driver_acoustics`
+  (`record_driver_acoustic_capture`) and
   persist the real acoustic verdict block into measurement state (the 2026-06-19
-  audit inspected a pre-wiring snapshot — the wiring landed 2026-06-18). **L1
+  audit inspected a pre-wiring snapshot — the wiring landed 2026-06-18).
+  `kind=summed` now performs only its bounded discriminator parse and refuses
+  before relay session, level/graph mutation, playback, or analysis. **L1
   then closed the level-match loop (2026-06-20):** each per-driver capture also
   records an **overlap-band level** at the crossover Fc, and
   `baseline_profile._measured_level_trims` chains the driver-to-driver overlap

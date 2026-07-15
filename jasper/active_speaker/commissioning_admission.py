@@ -556,52 +556,6 @@ def prepare_capture_plan(
     return prepared, meta
 
 
-def _filter_requirement_passed(
-    view: gs.GraphView,
-    *,
-    output_index: int,
-    requirement: Mapping[str, Any],
-) -> bool:
-    kind = str(requirement.get("kind") or "")
-    expected_type = {
-        "highpass": "LinkwitzRileyHighpass",
-        "lowpass": "LinkwitzRileyLowpass",
-    }.get(kind)
-    if expected_type is None:
-        return False
-    cutoff = requirement.get("cutoff_hz")
-    slope = requirement.get("minimum_slope_db_per_octave")
-    if (
-        isinstance(cutoff, bool)
-        or not isinstance(cutoff, (int, float))
-        or isinstance(slope, bool)
-        or not isinstance(slope, (int, float))
-        or requirement.get("family_or_equivalent") != "equivalent_or_steeper"
-    ):
-        return False
-    for step in view.pipeline_steps:
-        if step.channels != frozenset({output_index}):
-            continue
-        for name in step.names:
-            definition = view.filters.get(name)
-            if definition is None or definition.type != "BiquadCombo":
-                continue
-            if definition.params.get("type") != expected_type:
-                continue
-            actual_cutoff = gs.float_value(definition.params.get("freq"))
-            actual_order = gs.float_value(definition.params.get("order"))
-            if actual_cutoff is None or actual_order is None:
-                continue
-            cutoff_ok = (
-                actual_cutoff >= float(cutoff)
-                if kind == "highpass"
-                else actual_cutoff <= float(cutoff)
-            )
-            if cutoff_ok and actual_order * 6.0 >= float(slope):
-                return True
-    return False
-
-
 def _main_volume_matches(observed: float | None, expected: float) -> bool:
     return bool(
         observed is not None
@@ -661,10 +615,11 @@ def issue_protection_evidence(
     ]
     filter_checks = (
         [
-            _filter_requirement_passed(
+            gs.protection_requirement_present(
                 view,
                 output_index=output_index,
-                requirement=requirement,
+                allowed_channels={output_index},
+                requirement=dict(requirement),
             )
             for requirement in filter_requirements
         ]
@@ -780,7 +735,7 @@ def issue_protection_evidence(
     )
 
 
-def _write_stimulus_once(
+def persist_synchronized_stimulus_once(
     authority_dir: Path,
     *,
     generation: GenerationAdmissionArtifact,
@@ -917,7 +872,7 @@ async def play_admitted_driver_capture(
         admission_id=admission_id,
         admission=decision,
     )
-    stimulus = _write_stimulus_once(
+    stimulus = persist_synchronized_stimulus_once(
         authority.directory,
         generation=generation,
         meta=meta,

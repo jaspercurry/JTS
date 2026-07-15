@@ -13,6 +13,8 @@ agree on a graph regardless of which dialect it arrived in.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import yaml
 
 from jasper.active_speaker import graph_safety as gs
@@ -200,6 +202,68 @@ def test_pipeline_contains_chain_requires_exact_channels():
     # superset of channels must not match an exact-{1} step
     assert not gs.pipeline_contains_chain(
         view, channels={0, 1}, required_names=("as_tweeter_protective_hp",)
+    )
+
+
+def test_protection_requirement_allows_only_same_role_grouped_channels():
+    requirement = {
+        "kind": "highpass",
+        "cutoff_hz": 1_200.0,
+        "minimum_slope_db_per_octave": 24.0,
+        "family_or_equivalent": "equivalent_or_steeper",
+    }
+    grouped = gs.view_from_camilla_dict(
+        {
+            "filters": {
+                "stereo_tweeter_hp": {
+                    "type": "BiquadCombo",
+                    "parameters": {
+                        "type": "LinkwitzRileyHighpass",
+                        "freq": 1_600.0,
+                        "order": 4,
+                    },
+                }
+            },
+            "pipeline": [
+                {
+                    "type": "Filter",
+                    "channels": [1, 3],
+                    "names": ["stereo_tweeter_hp"],
+                }
+            ],
+        }
+    )
+
+    assert gs.protection_requirement_present(
+        grouped,
+        output_index=1,
+        allowed_channels={1, 3},
+        requirement=requirement,
+    )
+    assert gs.protection_requirement_present(
+        grouped,
+        output_index=3,
+        allowed_channels={1, 3},
+        requirement=requirement,
+    )
+    assert not gs.protection_requirement_present(
+        grouped,
+        output_index=1,
+        allowed_channels={1},
+        requirement=requirement,
+    )
+
+    cross_role = replace(
+        grouped,
+        pipeline_steps=(
+            replace(grouped.pipeline_steps[0], channels=frozenset({0, 1})),
+        ),
+    )
+    assert not gs.protection_requirement_present(
+        cross_role,
+        output_index=1,
+        allowed_channels={1, 3},
+        requirement=requirement,
     )
 
 

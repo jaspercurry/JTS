@@ -157,12 +157,55 @@ _RELAY_REGISTER_TIMEOUT_S = 10.0
 _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
 _RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S = _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S
 _ROOM_RELAY_RETURN_PATH = "/correction/room/"
+_SUMMED_CAPTURE_UNAVAILABLE_REASON = "active_summed_persisted_admission_unavailable"
 # Require a short rolling ambient window before the Pi starts the level tone.
 # A single USB-mic startup block is too noisy to become the trust-floor SSOT;
 # ten 200 ms samples gives a stable two-second median while keeping setup
 # bounded and well inside the relay's rolling three-second sample window.
 _RELAY_LEVEL_AMBIENT_MIN_SAMPLES = 10
 _ROOM_SWEEP_PHONE_FAILURE = "the speaker could not complete this measurement"
+
+
+def _summed_capture_unavailable(*, ingress: str) -> dict[str, Any]:
+    """Refuse legacy browser/raw summed capture before it can touch audio."""
+
+    log_event(
+        logger,
+        "active_speaker.web_summed_capture_ingress_refused",
+        status="refused",
+        reason=_SUMMED_CAPTURE_UNAVAILABLE_REASON,
+        ingress=ingress,
+        audio_emitted=False,
+    )
+    return {
+        "status": "refused",
+        "reason": _SUMMED_CAPTURE_UNAVAILABLE_REASON,
+        "audio_emitted": False,
+        "issues": [
+            {
+                "code": _SUMMED_CAPTURE_UNAVAILABLE_REASON,
+                "message": (
+                    "combined crossover capture is available only through "
+                    "the trusted internal commissioning host"
+                ),
+            }
+        ],
+        "next_step": (
+            "Continue with isolated-driver commissioning; summed capture "
+            "remains internal-host-only."
+        ),
+    }
+
+
+def _crossover_volume_safety_refusal() -> dict[str, str]:
+    return {
+        "status": "refused",
+        "reason": "crossover_volume_safety_unresolved",
+        "next_step": (
+            "Use Recover safe listening volume before another crossover action."
+        ),
+    }
+
 
 # Mutating routes this handler accepts. Module-scoped so route membership is
 # pinnable by a test (deleting a line would otherwise 404 a route silently).
@@ -4549,9 +4592,11 @@ def _assert_crossover_driver_action(
 def _handle_crossover_relay_capture(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """POST /crossover/relay-capture: capture one active-crossover driver/summed
-    sweep via the cloud relay (the phone runs the capture page on jasper.tech)
-    instead of a same-origin upload.
+    """POST /crossover/relay-capture: capture one active-crossover driver sweep.
+
+    Legacy summed requests are refused after their bounded discriminator decode,
+    before the cloud relay (the phone runs the capture page on jasper.tech),
+    level authority, or any audio path is touched.
 
     The third
     real caller of the RelayCaptureKind seam — a new kind is a descriptor, not a
@@ -4567,13 +4612,28 @@ def _handle_crossover_relay_capture(
     (mirrors sync's `relay_precheck`), and re-checked at armed time inside the
     run-and-consume (the phone can arm minutes later — a sweep played over
     another measurement silently corrupts both captures)."""
+    # The discriminator is the only browser input trusted far enough to select
+    # an ingress. Summed capture has no production transport in this wave, so
+    # refuse it immediately after the shared bounded JSON decode. In particular,
+    # do not inspect relay state, claim a session, acquire a level lease, or load
+    # graph/evidence authority on this legacy surface.
+    raw = _read_json_body(handler)
+
+    from . import correction_crossover_flow
+
+    kind_id = correction_crossover_flow.relay_kind_from_raw(raw)
+    if kind_id == "summed":
+        return _summed_capture_unavailable(ingress="relay")
+
     from jasper.capture_relay import correction_adapter
     from jasper.capture_relay.spec import build_crossover_sweep_spec
     from jasper.output_topology import load_output_topology
 
-    from . import correction_crossover_flow
     from . import correction_crossover_backend
 
+    lease = correction_crossover_backend.level_lease()
+    if lease.unresolved_volume_safety is not None:
+        return _crossover_volume_safety_refusal()
     relay_base = _require_relay_base()  # gated off until configured; inert otherwise
     blocking = _crossover_blocking_phase()
     if blocking is not None:
@@ -4581,12 +4641,9 @@ def _handle_crossover_relay_capture(
             f"another measurement is in progress ({blocking}) — finish it "
             "before starting a crossover relay capture"
         )
-    raw = _read_json_body(handler)
-    kind_id = correction_crossover_flow.relay_kind_from_raw(raw)
     requested_geometry_hint = str(
         raw.get("capture_geometry") or "near_field"
     ).lower()
-    lease = correction_crossover_backend.level_lease()
     status = correction_crossover_backend.status_payload()
     applied_profile = status.get("applied_profile")
     if not isinstance(applied_profile, dict):
@@ -5714,18 +5771,53 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def _dispatch_crossover(self, path: str) -> None:
             """POST /crossover/* — secure active-crossover measurement."""
+
+            if path in {
+                "/crossover/summed-capture",
+                "/crossover/summed-capture-sweep",
+            }:
+                # These legacy raw surfaces have no production summed-capture
+                # authority. Refuse before importing the backend, obtaining its
+                # level lease, or reading attacker-controlled JSON/WAV bytes.
+                self._send_json(
+                    _summed_capture_unavailable(ingress=path),
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
+
+            if path == "/crossover/relay-capture":
+                # The relay handler performs one bounded JSON decode to select
+                # driver vs summed. Summed returns a refusal before any relay,
+                # level, graph, playback, or analysis authority is consulted.
+                try:
+                    payload = _handle_crossover_relay_capture(self)
+                    self._send_json(
+                        payload,
+                        status=(
+                            HTTPStatus.CONFLICT
+                            if payload.get("status") == "refused"
+                            else HTTPStatus.OK
+                        ),
+                    )
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
             from . import correction_crossover_flow
             from . import correction_crossover_backend as crossover_backend
 
             volume_sensitive_routes = {
                 "/crossover/level-match",
-                "/crossover/relay-capture",
                 "/crossover/apply",
                 "/crossover/driver-test",
                 "/crossover/summed-test",
                 "/crossover/driver-capture-sweep",
-                "/crossover/summed-capture-sweep",
-                "/crossover/summed-capture",
             }
             lease = crossover_backend.level_lease()
             if (
@@ -5733,14 +5825,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 and lease.unresolved_volume_safety is not None
             ):
                 self._send_json(
-                    {
-                        "status": "refused",
-                        "reason": "crossover_volume_safety_unresolved",
-                        "next_step": (
-                            "Use Recover safe listening volume before another "
-                            "crossover action."
-                        ),
-                    },
+                    _crossover_volume_safety_refusal(),
                     status=HTTPStatus.CONFLICT,
                 )
                 return
@@ -5817,33 +5902,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     )
                     return
 
-                if path in {
-                    "/crossover/summed-capture",
-                }:
-                    try:
-                        body = _read_wav_body(
-                            self,
-                            max_bytes=MAX_CROSSOVER_WAV_BODY_BYTES,
-                        )
-                    except BadRequest as e:
-                        self._send_json(
-                            {"ok": False, "error": str(e)},
-                            status=HTTPStatus.BAD_REQUEST,
-                        )
-                        return
-                    payload, status = correction_crossover_flow.handle_summed_capture(
-                        self,
-                        body,
-                    )
-                    self._send_json(payload, status=int(status))
-                    return
-
-                if path == "/crossover/relay-capture":
-                    # The relay handler reads its own JSON body (mirrors the room
-                    # /relay/capture and /sync/relay-capture handlers).
-                    self._send_json(_handle_crossover_relay_capture(self))
-                    return
-
                 if path == "/crossover/relay-cancel":
                     self._send_json(_handle_crossover_relay_cancel())
                     return
@@ -5897,12 +5955,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         blocking_phase=_crossover_direct_audio_blocking_phase(),
                     )
                 else:
-                    payload, status = correction_crossover_flow.handle_summed_capture_sweep(
-                        raw,
-                        _run_async,
-                        _camilla,
-                        blocking_phase=_crossover_direct_audio_blocking_phase(),
-                    )
+                    raise ValueError(f"unknown crossover route: {path}")
                 self._send_json(payload, status=int(status))
             except BadRequest as e:
                 self._send_json(

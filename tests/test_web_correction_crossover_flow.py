@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import subprocess
@@ -23,6 +24,14 @@ from tests.active_speaker_fixtures import mono_output_topology
 
 def _topology(**kwargs):
     return mono_output_topology(topology_name="Bench mono", **kwargs)
+
+
+def _json_handler(payload):
+    body = json.dumps(payload).encode("utf-8")
+    return SimpleNamespace(
+        headers={"Content-Length": str(len(body))},
+        rfile=io.BytesIO(body),
+    )
 
 
 def test_request_payload_parses_capture_query():
@@ -6572,7 +6581,9 @@ def test_crossover_relay_endpoint_refuses_while_other_measurement_active(
     )
     correction_setup._set_relay_capture(None)
     with pytest.raises(ValueError, match="another measurement is in progress"):
-        correction_setup._handle_crossover_relay_capture(None)
+        correction_setup._handle_crossover_relay_capture(
+            _json_handler({"kind": "driver"})
+        )
     assert correction_setup._get_relay_capture() is None  # slot not claimed
 
 
@@ -6581,7 +6592,139 @@ def test_crossover_relay_endpoint_inert_when_unconfigured(monkeypatch):
 
     monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
     with pytest.raises(ValueError, match="not configured"):
-        correction_setup._handle_crossover_relay_capture(None)
+        correction_setup._handle_crossover_relay_capture(
+            _json_handler({"kind": "driver"})
+        )
+
+
+@pytest.mark.parametrize(
+    "route",
+    (
+        "/crossover/summed-capture",
+        "/crossover/summed-capture-sweep",
+    ),
+)
+def test_legacy_raw_summed_routes_refuse_before_body_or_side_effects(
+    monkeypatch, route
+):
+    from jasper.web import correction_setup
+
+    def unexpected(label):
+        return lambda *_args, **_kwargs: pytest.fail(
+            f"legacy summed route reached {label}"
+        )
+
+    monkeypatch.setattr(backend, "level_lease", unexpected("level lease"))
+    monkeypatch.setattr(
+        correction_setup, "_read_json_body", unexpected("JSON body read")
+    )
+    monkeypatch.setattr(
+        correction_setup, "_read_wav_body", unexpected("WAV body read")
+    )
+    monkeypatch.setattr(correction_setup, "_camilla", unexpected("CamillaDSP"))
+    monkeypatch.setattr(
+        correction_setup, "_run_async", unexpected("async playback")
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_get_or_create_session",
+        unexpected("session allocation"),
+    )
+    monkeypatch.setattr(
+        flow,
+        "handle_summed_capture",
+        unexpected("summed analysis"),
+    )
+    monkeypatch.setattr(
+        flow,
+        "handle_summed_capture_sweep",
+        unexpected("summed playback"),
+    )
+
+    class PoisonBody:
+        def read(self, *_args, **_kwargs):
+            pytest.fail("legacy summed route read its poison body")
+
+    handler_type = correction_setup._make_handler({"hostname": "jts.local"})
+    handler = handler_type.__new__(handler_type)
+    handler.headers = {"Content-Length": str(1024 * 1024)}
+    handler.rfile = PoisonBody()
+    sent = []
+    handler._send_json = lambda payload, status=200: sent.append((payload, status))
+
+    handler._dispatch_crossover(route)
+
+    assert len(sent) == 1
+    payload, status = sent[0]
+    assert status == 409
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "active_summed_persisted_admission_unavailable"
+    assert payload["audio_emitted"] is False
+
+
+def test_summed_relay_refuses_after_one_bounded_decode_before_side_effects(
+    monkeypatch,
+):
+    from jasper import output_topology
+    from jasper.web import correction_setup
+
+    body = json.dumps({"kind": "summed", "speaker_group_id": "mono"}).encode()
+
+    class ReadOnce:
+        calls = 0
+
+        def read(self, size):
+            assert self.calls == 0, "summed relay body must be decoded only once"
+            assert size == len(body)
+            self.calls += 1
+            return body
+
+    def unexpected(label):
+        return lambda *_args, **_kwargs: pytest.fail(
+            f"summed relay reached {label}"
+        )
+
+    reader = ReadOnce()
+    monkeypatch.setattr(backend, "level_lease", unexpected("level lease"))
+    monkeypatch.setattr(backend, "status_payload", unexpected("status/graph"))
+    monkeypatch.setattr(
+        output_topology, "load_output_topology", unexpected("topology load")
+    )
+    monkeypatch.setattr(
+        correction_setup, "_require_relay_base", unexpected("relay config")
+    )
+    monkeypatch.setattr(
+        correction_setup, "_crossover_blocking_phase", unexpected("relay state")
+    )
+    monkeypatch.setattr(
+        correction_setup, "_begin_relay_capture", unexpected("session allocation")
+    )
+    monkeypatch.setattr(
+        correction_setup, "_run_relay_capture", unexpected("relay registration")
+    )
+    monkeypatch.setattr(correction_setup, "_camilla", unexpected("CamillaDSP"))
+    monkeypatch.setattr(
+        flow,
+        "build_crossover_relay_run_and_consume",
+        unexpected("playback/analysis"),
+    )
+
+    handler_type = correction_setup._make_handler({"hostname": "jts.local"})
+    handler = handler_type.__new__(handler_type)
+    handler.headers = {"Content-Length": str(len(body))}
+    handler.rfile = reader
+    sent = []
+    handler._send_json = lambda payload, status=200: sent.append((payload, status))
+
+    handler._dispatch_crossover("/crossover/relay-capture")
+
+    assert reader.calls == 1
+    assert len(sent) == 1
+    payload, status = sent[0]
+    assert status == 409
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "active_summed_persisted_admission_unavailable"
+    assert payload["audio_emitted"] is False
 
 
 def test_crossover_relay_route_is_registered():
@@ -6595,16 +6738,13 @@ def test_crossover_relay_route_is_registered():
     "route",
     (
         "/crossover/level-match",
-        "/crossover/relay-capture",
         "/crossover/apply",
         "/crossover/driver-test",
         "/crossover/summed-test",
         "/crossover/driver-capture-sweep",
-        "/crossover/summed-capture-sweep",
-        "/crossover/summed-capture",
     ),
 )
-def test_unresolved_volume_refuses_every_crossover_action_route(
+def test_unresolved_volume_refuses_every_live_crossover_action_route(
     monkeypatch, tmp_path, route
 ):
     from jasper.web import correction_setup
@@ -6620,6 +6760,45 @@ def test_unresolved_volume_refuses_every_crossover_action_route(
     handler._send_json = lambda payload, status=200: sent.append((payload, status))
 
     handler._dispatch_crossover(route)
+
+    assert sent == [
+        (
+            {
+                "status": "refused",
+                "reason": "crossover_volume_safety_unresolved",
+                "next_step": (
+                    "Use Recover safe listening volume before another crossover action."
+                ),
+            },
+            409,
+        )
+    ]
+
+
+def test_unresolved_volume_refuses_driver_relay_after_bounded_decode(
+    monkeypatch, tmp_path
+):
+    from jasper.web import correction_setup
+
+    lease = backend.CrossoverLevelLease(
+        volume_safety_state_path=tmp_path / "volume-safety.json"
+    )
+    _latch_volume_safety(lease)
+    monkeypatch.setattr(backend, "_LEVEL_LEASE", lease)
+    monkeypatch.setattr(
+        correction_setup,
+        "_require_relay_base",
+        lambda: pytest.fail("volume safety must precede relay setup"),
+    )
+    body_handler = _json_handler({"kind": "driver"})
+    handler_type = correction_setup._make_handler({"hostname": "jts.local"})
+    handler = handler_type.__new__(handler_type)
+    handler.headers = body_handler.headers
+    handler.rfile = body_handler.rfile
+    sent = []
+    handler._send_json = lambda payload, status=200: sent.append((payload, status))
+
+    handler._dispatch_crossover("/crossover/relay-capture")
 
     assert sent == [
         (

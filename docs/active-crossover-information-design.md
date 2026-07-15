@@ -35,9 +35,10 @@
 > `/correction/crossover/status` reports its `commissioning_run` block as
 > `not_started`, exact
 > `current`, comparison-`stale`, or fail-closed `unavailable` state. This is
-> lifecycle identity, not acoustic or apply authority: production currently
-> starts the run at `unconfigured`; no production caller yet reserves its
-> region-scoped measurement attempts or advances its transition journal.
+> lifecycle identity, not acoustic or apply authority. Correction-web still
+> starts the run at `unconfigured`; only the typed internal evidence host below
+> may reserve region-scoped attempts and advance through `protected` to
+> `measured` after exact persisted evidence exists.
 
 > **Wave 3 region-evidence boundary (2026-07-14; hardware-free).**
 > `jasper.active_speaker.commissioning_evidence` now derives an immutable
@@ -62,11 +63,48 @@
 > generation and playback protection proofs. An explicit per-region operator
 > attestation supplies the signed geometry seed; even `0.0` cannot be assumed.
 > A complete aggregate requires exactly one region value per plan target and
-> makes artifact paths, admissions, and attempts globally unique. This is an
-> authority *shape*, not a production authority issuer: no live host yet
-> reserves those attempts, applies the
-> normal/reverse/delay graphs, captures or persists the sets, evaluates a
-> candidate, or advances the lifecycle.
+> makes artifact paths, admissions, and attempts globally unique.
+>
+> The Active-owned `CommissioningEvidenceHost` now makes this evidence path
+> reachable behind a typed internal server boundary. It authors one deterministic
+> next operation, reuses that operation's durable attempt for same-process
+> retries while requiring new one-shot capture/admission identities, persists
+> and reopens every capture and aggregate before progress, captures coarse
+> delay evidence before deriving refinement coordinates, and runs the separate
+> schedule-aware selector only after the exact schedule is complete. The joined
+> runtime holds the existing writer lock through server-derived graph apply,
+> admitted playback/capture, and exact graph/path/listening-volume restoration.
+> Each transient graph hard-caps `devices.volume_limit` at the quieter of its
+> inherited ceiling and the admitted measurement volume; playback re-admission
+> freshly proves that ceiling. The capture transport's play closure expires
+> when transport returns, raises, or is cancelled, so no retained callback can
+> emit audio after the guarded transaction.
+> The plan fingerprints the normalized applied baseline plus microphone
+> calibration once for the complete program; every fresh operation must still
+> match it. Normal, reverse, and every delay coordinate—including zero—must
+> retain distinct live-graph identities.
+> Cleanup restores the potentially louder predecessor listening volume only
+> after fresh graph and path readback prove the exact predecessor; otherwise the
+> attenuated measurement volume remains and recovery fails closed.
+> One crash-released run-store execution mutex spans that transaction through
+> canonical capture commit, so a concurrent caller cannot reinterpret a live
+> restored window as restart recovery.
+> Before apply, a bounded run-store sidecar points at an exact immutable
+> predecessor artifact; fresh restore readback gets its own terminal artifact.
+> A process restart restores a still-pending predecessor before issuing another
+> operation, or durably enters `blocked_live_state_unknown` and requires an
+> exact-restore transition before collection can resume.
+> Internal host status reports whether a capture transport is configured,
+> `hardware_capture_status=wave4_hardware_required`, the current live-mutation
+> state, and whether exact recovery is required; it does not imply hardware
+> readiness from synthetic evidence.
+> Incomplete prior owner generations are abandoned; a run-scoped complete
+> artifact written before its lifecycle transition is recoverable on restart.
+> The raw/browser summed endpoint remains pre-audio refused: it cannot choose a
+> region, graph, delay, attempt, or admission. Real geometry attestation and
+> authoritative microphone captures remain Wave 4 inputs, so this hardware-free
+> path is proven with synthetic admitted fixtures and does not make a candidate,
+> receipt, or Room eligibility decision.
 >
 > **Wave 3 relay Stop boundary (2026-07-14; hardware-free).** The Crossover
 > page exposes one Stop action for active relay level and sweep work through
@@ -735,12 +773,15 @@ The later Wave 3 control-plane integration now starts and exposes a durable
 `unconfigured` commissioning run only from the fresh bundle-backed comparison
 set, claims its process owner at correction-web startup, and classifies a
 different active comparison as stale. It still has no production measurement
-attempt/transition orchestrator. The pure per-region evidence contract now
-pins the exact normal/reverse/delay capture sets that orchestrator must issue,
-but does not play, capture, persist, or score them. Combined/summed
-capture remains pre-audio refused with
-`active_summed_persisted_admission_unavailable` until the group-level protection
-host and persisted per-region authority land. Historical B2b captures remain
+attempt/transition orchestrator on the browser route. The typed internal
+evidence host now reserves deterministic region attempts, persists and reopens
+exact admitted normal/reverse/delay sets, evaluates the bounded measured delay
+schedule, and advances the exact run from `unconfigured` through `protected`
+to `measured`. It does not create candidate, apply, receipt, or Room authority.
+The direct browser/raw combined-capture route remains permanently pre-audio
+refused with `active_summed_persisted_admission_unavailable`. Real Wave 4
+geometry and capture inputs must still enter through the typed internal host;
+they do not reopen browser authority. Historical B2b captures remain
 permanently non-admitted, and current projections still expose no candidate,
 apply, verification, receipt, or Room authority until the later Wave 3 gates
 are satisfied.
@@ -1019,8 +1060,10 @@ must intersect code-owned, profile-owned, and plan-owned limits; bind the plan
 to normalized generator/effective-peak inputs; derive protection evidence from
 fresh readback; and rerun admission immediately before playback. The current
 isolated-driver producer performs that integration through
-`active_speaker.commissioning_admission`; summed capture and the full lifecycle
-remain blocked pending their distinct group-level authority. Shared's
+`active_speaker.commissioning_admission`; the summed runtime exposes the same
+typed generation/playback proof seam under the exact adjacent-region graph and
+writer transaction. Its callback remains server-owned; the browser cannot
+supply admission, graph, schedule, or capture authority. Shared's
 `play_admitted_wav()` performs the independent playback-side recheck and
 persistence once that trusted Active callback supplies the fresh values.
 
@@ -1068,8 +1111,10 @@ persists the lifecycle's exact current-run identity in
 created only with a fresh bundle-backed comparison set; owner generation is
 claimed at correction-web startup, and stale run/attempt callbacks cannot
 commit. The store can persist bounded target-attempt reservations and a
-hash-chained transition journal, but no production measurement orchestrator
-uses those two mutation APIs yet, so the live run remains `unconfigured`.
+hash-chained transition journal. The internal evidence host uses both, but
+correction-web does not manufacture the Wave 4 geometry/capture inputs needed
+to construct it. The ordinary hardware-free web surface therefore remains
+`unconfigured` unless a trusted server composition supplies those exact inputs.
 
 Current Active bundles remain forensic and fail-soft, and no production code
 issues or persists an eligibility receipt. Room's current
@@ -1543,12 +1588,14 @@ Last verified: 2026-07-14 (Wave 2 reconstruction, measured-candidate input,
 preparation-only safety, level-run correlation contracts and terminal-result
 liveness, permanent historical refusal, the reachable isolated-driver
 Shared-admission/playback adapter and bounded writer transaction,
-summed pre-audio refusal, durable bundle-backed commissioning-run identity,
+direct summed-endpoint pre-audio refusal, the typed internal summed evidence
+host, strict write-once evidence store, exact graph/capture/restore transaction,
+deterministic coarse-then-refinement progression, restart recovery, and durable bundle-backed commissioning-run identity,
 startup owner-generation claim, fail-closed crossover status, strict pure
 group-by-region evidence sets with typed run/attempt and geometry authority,
 the bounded low-frequency coarse-plus-refinement schedule and schedule-aware
 final evaluator, complete-plan replay
 guards, receipt schema-v2 one-shot roles,
 and Room's temporary passive-only admission boundary checked against the current
-implementation and cited measurement literature; no live audio, DSP mutation,
-or hardware behavior was changed or revalidated.)
+implementation and cited measurement literature; no live audio/DSP/hardware
+operation was performed or hardware-validated.)

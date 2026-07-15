@@ -24,7 +24,7 @@
   explicit device, timeout, and cache; they do not choose an excitation or prove
   current admission. No browser/Active flow changed, and no hardware behavior
   was revalidated.
-- 🧱 **Wave 3 isolated-driver admission reachable; summed capture paused.**
+- 🧱 **Wave 3 isolated-driver admission reachable; raw summed browser ingress closed.**
   The correction relay's driver leg now receives a unique, persisted
   playback-role handoff from Active's Shared-admission adapter and passes it to
   capture persistence as an explicit server-owned argument. One bounded DSP
@@ -32,11 +32,17 @@
   playback, and restoration; cancellation cannot release the boundary before
   restore finishes. Historical bundles without the authority marker are never
   upgraded. The summed relay/capture route currently refuses before graph load
-  with `active_summed_persisted_admission_unavailable`; it must not record new
-  authoritative summed evidence until the group-level delay/protection adapter
-  lands. This is a software-only change; no sound or hardware was exercised.
-- 🧱 **Wave 3 Active run authority is durable and visible; the measured
-  lifecycle is not yet driven.** When crossover level finalization publishes a
+  with `active_summed_persisted_admission_unavailable`; browser payloads cannot
+  select a region, graph, delay, attempt, or admission. Active's typed internal
+  summed host now owns the deterministic operation/store/runtime join, but real
+  geometry and capture inputs remain Wave 4 work. Each transient live mutation
+  has a durable exact predecessor pointer and terminal restore marker. A
+  crash-released execution mutex spans runtime through canonical commit; restart
+  restores a pending predecessor before new work or leaves the run durably
+  `blocked_live_state_unknown`. This is a software-only change; no sound or
+  hardware was exercised.
+- 🧱 **Wave 3 Active run authority is durable and visible; internal measured
+  progression is hardware-free.** When crossover level finalization publishes a
   fresh authoritative comparison set with a production bundle session id,
   correction-web now starts one Active commissioning run bound to that exact
   session and comparison fingerprint. The bounded atomic store retains the run
@@ -50,10 +56,14 @@
   additionally requires the comparison's complete schema/fingerprint and exact
   current topology/protected-profile binding. A failure to start the durable
   run revokes the just-published comparison/repeat authority. Production
-  currently leaves the new run `unconfigured`; no route reserves its region-
-  scoped attempts or commits lifecycle transitions.
+  currently leaves the web-created run `unconfigured`; no browser route
+  reserves its region-scoped attempts or commits lifecycle transitions. The
+  typed internal host can progress an exact trusted composition to `measured`
+  only while the program's normalized applied baseline and microphone
+  calibration remain exact; normal, reverse, and delay graph identities cannot
+  be reused.
 
-  Candidate/delay-walk/apply/verification, receipt issuance, and Room
+  Candidate/apply/verification, receipt issuance, and Room
   consumption remain unavailable. No sound, live graph mutation, or hardware
   was exercised.
 - ✅ **Room R1 — envelope v9 owns whole-page visibility, truthful entry
@@ -176,11 +186,13 @@
   parses the receipt nor inspects historical B2b evidence. The nine-state
   lifecycle now has a separate durable, bundle-backed current-run store and a
   fail-closed `commissioning_run` projection on `/crossover/status`; startup
-  claims its owner generation so stale callbacks cannot commit. Production does
-  not yet reserve evidence attempts or advance that run from `unconfigured`, and
-  this status is not Room authority. The Active integration lane must still add
-  region-scoped admitted evidence, writer-locked candidate
-  apply/readback/restore, post-apply verification, receipt
+  claims its owner generation so stale callbacks cannot commit. No browser route
+  reserves evidence attempts, and this status is not Room authority. The typed
+  internal host can reserve generation-bound region attempts and advance an
+  exact synthetic-admitted composition through `protected` to `measured`, with
+  cross-process issuance CAS and exact restore/restart recovery. The Active
+  integration lane must still add candidate apply/readback, post-apply
+  verification, receipt
   issuance/persistence, and the Room consumer together before this becomes
   authority. No generic graph
   transaction landed; exact rollback state reuses
@@ -313,8 +325,10 @@
   obsolete raw-WAV `POST /crossover/driver-capture` route was deleted when
   the repeat controller landed: it had no product caller and could provide
   neither the relay's controlled pre-sweep quiet interval nor its server-owned repeat
-  sequence. Driver evidence has one production ingress; the direct summed
-  diagnostic route remains separate.
+  sequence. Driver evidence has one production ingress. Both legacy direct
+  summed routes now return 409 before reading a body, creating a backend, or
+  touching volume/graph/audio; the summed relay leg parses only its bounded JSON
+  discriminator before the same pre-session refusal.
   `crossover_sweep` capture spec's stimulus length derives from the
   kernel-side per-driver signal plan (12 s woofer/subwoofer, 8 s midrange,
   4 s tweeter; one sweep definition — the phone copy matches the sweep the Pi plays; the
@@ -466,8 +480,10 @@
   is a correction-native active-crossover microphone surface: correction
   web modules own HTTPS/browser routing, while
   `jasper.active_speaker.web_commissioning` owns safe admitted driver playback
-  and the current fail-closed summed gate; future optional summed
-  playback orchestration and `jasper.active_speaker.web_measurement`
+  and the current fail-closed summed web gate; the typed internal Active host
+  owns summed playback orchestration for synthetic-admitted evidence, while a
+  real capture transport and attested geometry remain Wave 4 work.
+  `jasper.active_speaker.web_measurement`
   owns bounded browser WAV evidence plus acoustic-analysis recording.
   This page is also the ownership boundary between manual and automatic
   crossover tuning. A safe applied manual crossover is a valid Layer-A
@@ -1367,18 +1383,21 @@ POST /crossover/driver-confirm record the protected driver-test result
 POST /crossover/driver-abort stop the driver test and restore the graph
 POST /crossover/summed-test  run the protected combined-driver listening test
 POST /crossover/driver-capture-sweep start a bounded per-driver capture stimulus
-POST /crossover/summed-capture-sweep start a bounded combined-driver stimulus
-POST /crossover/summed-capture body = WAV (audio/wav); analyze + record
-                             active-speaker summed-crossover evidence
+POST /crossover/summed-capture-sweep legacy direct summed route; always 409
+                             before body/backend/volume/graph/audio
+POST /crossover/summed-capture legacy direct raw-WAV route; always 409 before
+                             body/backend/volume/graph/audio
 POST /crossover/relay-capture body: {kind: driver|summed, speaker_group_id,
                              role?, capture_geometry?}; phone-mic relay transport for one
                              crossover sweep and the only production driver
-                             evidence ingress (same record_*_capture analysis;
+                             evidence ingress (`record_driver_capture` analysis;
                              driver geometry must equal the server envelope's
                              next action at POST and armed time;
                              refuses while room/balance/sync
                              is active — server-computed at POST and
-                             re-checked when the phone arms). ON-DEVICE:
+                             re-checked when the phone arms). `kind=summed`
+                             performs one bounded discriminator parse, then
+                             refuses before session/level/graph/playback/analysis. ON-DEVICE:
                              not exercised hardware-free — H2.
 POST /crossover/relay-cancel cooperatively stop the active crossover level/sweep
                              relay; reports `stopping` until exact cleanup drains
@@ -2558,9 +2577,11 @@ closed owner vocabulary, transactional release acknowledgement, response-loss
 rollback, monotonic crash lease, and no source-process mutation; shared DSP-writer admission deadline/cancellation
 semantics checked against Room's terminal mutation policy; Active isolated-driver
 persisted admission, server-owned capture handoff, and summed pre-audio refusal
-checked hardware-free; Active's durable bundle-backed commissioning-run start,
+checked hardware-free; Active's typed internal summed evidence host, exact
+graph/capture/restore runtime, durable artifacts, and deterministic measured
+progression were also checked with synthetic admitted fixtures; Active's durable bundle-backed commissioning-run start,
 startup owner-generation claim, stale-callback refusal, and fail-closed
-crossover status were also checked; candidate/delay-walk/verification/receipt
+crossover status were also checked; candidate/verification/receipt
 and Room authority remain unavailable. Wave 2 paid tuning backend extraction checked the
 shared cross-route throttle, fresh household spend gate, exact provider
 arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP

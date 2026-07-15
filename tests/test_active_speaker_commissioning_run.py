@@ -104,6 +104,23 @@ def _reserve_in_process(path: str, handle, start, queue) -> None:
         queue.put(("error", type(exc).__name__, str(exc)))
 
 
+def _claim_live_execution_in_process(path: str, handle, start, queue) -> None:
+    store = CommissioningRunStore(path=path, owner_id=handle.owner_id)
+    start.wait(timeout=10)
+    try:
+        with store.claim_live_execution(handle):
+            queue.put(("entered",))
+    except CommissioningRunError as exc:
+        queue.put(("error", type(exc).__name__, str(exc)))
+
+
+def _hold_live_execution_in_process(path: str, handle, ready, release) -> None:
+    store = CommissioningRunStore(path=path, owner_id=handle.owner_id)
+    with store.claim_live_execution(handle):
+        ready.set()
+        release.wait(timeout=30)
+
+
 def test_start_persists_exact_identity_and_atomic_private_mode(tmp_path: Path) -> None:
     path = tmp_path / "run.json"
     store = CommissioningRunStore(path=path, owner_id="3" * 32)
@@ -381,6 +398,96 @@ def test_advisory_lock_serializes_multiprocess_attempt_reservations(
     assert len({outcome[1] for outcome in outcomes}) == 2
     attempts = store.snapshot()["current"]["attempts"]
     assert [attempt["attempt_number"] for attempt in attempts] == [1, 2]
+
+
+def test_live_execution_claim_is_fail_fast_and_released_by_scope(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "run.json"
+    store = CommissioningRunStore(path=path, owner_id="3" * 32)
+    handle = _start(store)
+    peer = CommissioningRunStore(path=path, owner_id=handle.owner_id)
+
+    with store.claim_live_execution(handle):
+        with pytest.raises(CommissioningRunConflict, match="owns execution"):
+            with peer.claim_live_execution(handle):
+                pytest.fail("a second execution claim must never enter")
+        assert oct(store.live_execution_lock_path.stat().st_mode & 0o777) == "0o640"
+
+    with peer.claim_live_execution(handle):
+        assert peer.callback_is_current(handle)
+
+
+def test_live_execution_claim_is_exclusive_across_processes(tmp_path: Path) -> None:
+    path = tmp_path / "run.json"
+    store = CommissioningRunStore(path=path, owner_id="3" * 32)
+    handle = _start(store)
+    context = multiprocessing.get_context("spawn")
+    start = context.Event()
+    queue = context.Queue()
+    process = context.Process(
+        target=_claim_live_execution_in_process,
+        args=(str(path), handle, start, queue),
+    )
+
+    with store.claim_live_execution(handle):
+        process.start()
+        start.set()
+        outcome = queue.get(timeout=10)
+    process.join(timeout=10)
+
+    assert process.exitcode == 0
+    assert outcome[0:2] == ("error", "CommissioningRunConflict")
+    assert "owns execution" in outcome[2]
+
+
+def test_live_execution_claim_is_released_when_holder_process_dies(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "run.json"
+    store = CommissioningRunStore(path=path, owner_id="3" * 32)
+    handle = _start(store)
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    process = context.Process(
+        target=_hold_live_execution_in_process,
+        args=(str(path), handle, ready, release),
+    )
+    process.start()
+    try:
+        assert ready.wait(timeout=10)
+        with pytest.raises(CommissioningRunConflict, match="owns execution"):
+            with store.claim_live_execution(handle):
+                pytest.fail("the live holder must retain execution")
+        process.terminate()
+        process.join(timeout=10)
+        assert process.exitcode is not None and process.exitcode != 0
+
+        with store.claim_live_execution(handle):
+            assert store.callback_is_current(handle)
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=10)
+
+
+def test_live_execution_claim_refuses_stale_owner_generation(tmp_path: Path) -> None:
+    store = CommissioningRunStore(
+        path=tmp_path / "run.json",
+        owner_id="3" * 32,
+    )
+    stale = _start(store)
+    restarted = CommissioningRunStore(
+        path=tmp_path / "run.json",
+        owner_id="4" * 32,
+    )
+    fresh = restarted.claim_owner()
+    assert fresh is not None
+
+    with pytest.raises(CommissioningRunStale, match="stale run generation"):
+        with store.claim_live_execution(stale):
+            pytest.fail("a stale owner must never hold live execution")
 
 
 def test_threaded_attempt_reservations_remain_unique_and_contiguous(
@@ -997,3 +1104,333 @@ def test_lock_and_state_are_not_world_readable(tmp_path: Path) -> None:
     lock = path.with_name(f".{path.name}.lock")
     assert oct(os.stat(lock).st_mode & 0o777) == "0o640"
     assert oct(os.stat(path).st_mode & 0o777) == "0o640"
+
+
+def test_typed_attempt_and_lifecycle_reads_reject_stale_generation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "run.json"
+    original = CommissioningRunStore(path=path, owner_id="3" * 32)
+    handle = _start(original)
+    attempt = original.reserve_attempt(
+        handle,
+        target_id=TARGET_ID,
+        target_fingerprint=TARGET_FINGERPRINT,
+    )
+
+    assert original.attempts(handle) == (attempt,)
+    assert original.lifecycle_state(handle) == "unconfigured"
+
+    restarted = CommissioningRunStore(path=path, owner_id="4" * 32)
+    fresh = restarted.claim_owner()
+    assert fresh is not None
+    with pytest.raises(CommissioningRunStale):
+        restarted.attempts(handle)
+    with pytest.raises(CommissioningRunStale):
+        restarted.lifecycle_state(handle)
+    assert restarted.attempts(fresh) == ()
+    assert restarted.lifecycle_state(fresh) == "unconfigured"
+
+
+def test_reserve_attempt_can_reuse_one_exact_target_for_host_retries(
+    tmp_path: Path,
+) -> None:
+    store = CommissioningRunStore(
+        path=tmp_path / "run.json",
+        owner_id="5" * 32,
+    )
+    handle = _start(store)
+
+    first = store.reserve_attempt(
+        handle,
+        target_id=TARGET_ID,
+        target_fingerprint=TARGET_FINGERPRINT,
+        reuse_existing=True,
+    )
+    retried = store.reserve_attempt(
+        handle,
+        target_id=TARGET_ID,
+        target_fingerprint=TARGET_FINGERPRINT,
+        reuse_existing=True,
+    )
+
+    assert retried == first
+    assert store.attempts(handle) == (first,)
+
+
+def test_live_mutation_issue_is_cross_store_idempotent_and_exclusive(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "run.json"
+    first = CommissioningRunStore(path=path, owner_id="5" * 32)
+    second = CommissioningRunStore(path=path, owner_id="5" * 32)
+    handle = _start(first)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(
+                store.issue_live_mutation,
+                handle,
+                purpose="summed_measurement",
+                operation_fingerprint="6" * 64,
+            )
+            for store in (first, second)
+        ]
+    one, two = (future.result() for future in futures)
+
+    assert one == two
+    assert one.status == "issued"
+    assert len(one.issuance_id) == 32
+    assert first.current_live_mutation(handle) == one
+    assert second.current_live_mutation(handle) == one
+    with pytest.raises(CommissioningRunConflict, match="owns execution"):
+        second.issue_live_mutation(
+            handle,
+            purpose="summed_measurement",
+            operation_fingerprint="8" * 64,
+        )
+
+
+def test_live_mutation_phases_reopen_and_same_operation_retry_is_unique(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "run.json"
+    store = CommissioningRunStore(path=path, owner_id="5" * 32)
+    handle = _start(store)
+    issued = store.issue_live_mutation(
+        handle,
+        purpose="summed_measurement",
+        operation_fingerprint="6" * 64,
+    )
+
+    reopened = CommissioningRunStore(path=path, owner_id="5" * 32)
+    assert reopened.current_live_mutation(handle) == issued
+    assert reopened.pending_live_mutation(handle) is None
+    with pytest.raises(CommissioningRunConflict, match="exact issuance"):
+        reopened.record_live_mutation_intent(
+            handle,
+            issued,
+            rollback_artifact_path="runtime-rollback/reused/predecessor.json",
+            rollback_artifact_fingerprint="7" * 64,
+        )
+    first_path = f"runtime-rollback/{issued.issuance_id}/predecessor.json"
+    pending = reopened.record_live_mutation_intent(
+        handle,
+        issued,
+        rollback_artifact_path=first_path,
+        rollback_artifact_fingerprint="7" * 64,
+    )
+    assert pending.status == "mutation_pending"
+    reopened = CommissioningRunStore(path=path, owner_id="5" * 32)
+    assert reopened.current_live_mutation(handle) == pending
+    assert reopened.pending_live_mutation(handle) == pending
+    with pytest.raises(CommissioningRunConflict, match="requires exact restored"):
+        reopened.record_live_mutation_committed(
+            handle,
+            pending,
+            commit_evidence_fingerprint="8" * 64,
+        )
+    restored = reopened.record_live_mutation_restored(
+        handle,
+        pending,
+        restoration_evidence_fingerprint="8" * 64,
+    )
+    reopened = CommissioningRunStore(path=path, owner_id="5" * 32)
+    assert reopened.current_live_mutation(handle) == restored
+    assert reopened.pending_live_mutation(handle) is None
+    committed = reopened.record_live_mutation_committed(
+        handle,
+        restored,
+        commit_evidence_fingerprint="9" * 64,
+    )
+    reopened = CommissioningRunStore(path=path, owner_id="5" * 32)
+    assert reopened.current_live_mutation(handle) == committed
+
+    retried = reopened.issue_live_mutation(
+        handle,
+        purpose="summed_measurement",
+        operation_fingerprint="6" * 64,
+    )
+    assert retried.status == "issued"
+    assert retried.issuance_id != issued.issuance_id
+    with pytest.raises(CommissioningRunConflict, match="exact issuance"):
+        reopened.record_live_mutation_intent(
+            handle,
+            retried,
+            rollback_artifact_path=first_path,
+            rollback_artifact_fingerprint="a" * 64,
+        )
+    second_path = f"runtime-rollback/{retried.issuance_id}/predecessor.json"
+    retried_pending = reopened.record_live_mutation_intent(
+        handle,
+        retried,
+        rollback_artifact_path=second_path,
+        rollback_artifact_fingerprint="a" * 64,
+    )
+    assert retried_pending.rollback_artifact_path != pending.rollback_artifact_path
+    with pytest.raises(CommissioningRunConflict, match="does not equal"):
+        reopened.record_live_mutation_committed(
+            handle,
+            restored,
+            commit_evidence_fingerprint="b" * 64,
+        )
+
+
+def test_restart_distinguishes_safe_issued_work_from_pending_recovery(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "run.json"
+    original = CommissioningRunStore(path=path, owner_id="5" * 32)
+    handle = _start(original)
+    issued = original.issue_live_mutation(
+        handle,
+        purpose="summed_measurement",
+        operation_fingerprint="6" * 64,
+    )
+
+    restarted = CommissioningRunStore(path=path, owner_id="6" * 32)
+    fresh = restarted.claim_owner()
+    assert fresh is not None
+    assert restarted.current_live_mutation(fresh) == issued
+    assert restarted.pending_live_mutation(fresh) is None
+    with pytest.raises(CommissioningRunStale, match="must be released"):
+        restarted.record_live_mutation_intent(
+            fresh,
+            issued,
+            rollback_artifact_path=(
+                f"runtime-rollback/{issued.issuance_id}/predecessor.json"
+            ),
+            rollback_artifact_fingerprint="7" * 64,
+        )
+    released = restarted.release_live_mutation(fresh, issued)
+    assert released.status == "released"
+    assert released.terminal_owner_generation == 2
+    reopened_released = CommissioningRunStore(path=path, owner_id="6" * 32)
+    assert reopened_released.current_live_mutation(fresh) == released
+
+    retried = reopened_released.issue_live_mutation(
+        fresh,
+        purpose="summed_measurement",
+        operation_fingerprint="6" * 64,
+    )
+    pending = reopened_released.record_live_mutation_intent(
+        fresh,
+        retried,
+        rollback_artifact_path=(
+            f"runtime-rollback/{retried.issuance_id}/predecessor.json"
+        ),
+        rollback_artifact_fingerprint="7" * 64,
+    )
+    recovered_store = CommissioningRunStore(path=path, owner_id="7" * 32)
+    recovered_handle = recovered_store.claim_owner()
+    assert recovered_handle is not None
+    assert recovered_store.current_live_mutation(recovered_handle) == pending
+    assert recovered_store.pending_live_mutation(recovered_handle) == pending
+    restored = recovered_store.record_live_mutation_restored(
+        recovered_handle,
+        pending,
+        restoration_evidence_fingerprint="b" * 64,
+    )
+    assert restored.status == "restored"
+    assert restored.started_owner_generation == 2
+    assert restored.resolved_owner_generation == 3
+    assert recovered_store.pending_live_mutation(recovered_handle) is None
+    with pytest.raises(CommissioningRunStale):
+        original.pending_live_mutation(handle)
+    assert (
+        oct(os.stat(recovered_store.live_mutation_path).st_mode & 0o777)
+        == "0o640"
+    )
+
+
+def test_clean_abort_requires_exact_restore_and_is_a_retryable_terminal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "run.json"
+    store = CommissioningRunStore(path=path, owner_id="5" * 32)
+    handle = _start(store)
+    issued = store.issue_live_mutation(
+        handle,
+        purpose="summed_measurement",
+        operation_fingerprint="6" * 64,
+    )
+    pending = store.record_live_mutation_intent(
+        handle,
+        issued,
+        rollback_artifact_path=(
+            f"runtime-rollback/{issued.issuance_id}/predecessor.json"
+        ),
+        rollback_artifact_fingerprint="7" * 64,
+    )
+    with pytest.raises(CommissioningRunConflict, match="requires exact restored"):
+        store.record_live_mutation_aborted(
+            handle,
+            pending,
+            failure_evidence_fingerprint="8" * 64,
+        )
+
+    restored = store.record_live_mutation_restored(
+        handle,
+        pending,
+        restoration_evidence_fingerprint="8" * 64,
+    )
+    aborted = store.record_live_mutation_aborted(
+        handle,
+        restored,
+        failure_evidence_fingerprint="9" * 64,
+    )
+    assert aborted.status == "aborted"
+    assert aborted.issuance_id == issued.issuance_id
+    assert aborted.restoration_evidence_fingerprint == "8" * 64
+    assert aborted.terminal_evidence_fingerprint == "9" * 64
+    assert aborted.terminal_owner_generation == handle.owner_generation
+
+    reopened = CommissioningRunStore(path=path, owner_id="5" * 32)
+    assert reopened.current_live_mutation(handle) == aborted
+    assert reopened.pending_live_mutation(handle) is None
+    with pytest.raises(CommissioningRunConflict, match="requires exact restored"):
+        reopened.record_live_mutation_committed(
+            handle,
+            aborted,
+            commit_evidence_fingerprint="a" * 64,
+        )
+    retried = reopened.issue_live_mutation(
+        handle,
+        purpose="summed_measurement",
+        operation_fingerprint="6" * 64,
+    )
+    assert retried.status == "issued"
+    assert retried.issuance_id != aborted.issuance_id
+    with pytest.raises(CommissioningRunConflict, match="does not equal"):
+        reopened.record_live_mutation_aborted(
+            handle,
+            restored,
+            failure_evidence_fingerprint="b" * 64,
+        )
+
+
+def test_live_mutation_sidecar_is_strictly_fingerprinted(tmp_path: Path) -> None:
+    store = CommissioningRunStore(
+        path=tmp_path / "run.json",
+        owner_id="5" * 32,
+    )
+    handle = _start(store)
+    issued = store.issue_live_mutation(
+        handle,
+        purpose="summed_measurement",
+        operation_fingerprint="6" * 64,
+    )
+    store.record_live_mutation_intent(
+        handle,
+        issued,
+        rollback_artifact_path=(
+            f"runtime-rollback/{issued.issuance_id}/predecessor.json"
+        ),
+        rollback_artifact_fingerprint="7" * 64,
+    )
+    payload = json.loads(store.live_mutation_path.read_text())
+    payload["operation_fingerprint"] = "8" * 64
+    store.live_mutation_path.write_text(json.dumps(payload))
+
+    with pytest.raises(CommissioningRunError, match="fingerprint"):
+        store.pending_live_mutation(handle)

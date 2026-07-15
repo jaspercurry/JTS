@@ -155,6 +155,29 @@ def test_post_mutation_failure_retains_uncertain_live_state_until_exact_restore(
         )
 
 
+@pytest.mark.parametrize("from_state", ["unconfigured", "protected"])
+def test_measurement_restore_failure_has_a_narrow_uncertain_state_path(
+    from_state: str,
+) -> None:
+    transition = _transition(
+        from_state,
+        "blocked_live_state_unknown",
+        "uncertain_mutation_evidence",
+        "a",
+        failure_code="measurement_restore_failed",
+    )
+    assert transition.to_state == "blocked_live_state_unknown"
+
+    with pytest.raises(CommissioningLifecycleError, match="incompatible"):
+        _transition(
+            from_state,
+            "blocked_live_state_unknown",
+            "uncertain_mutation_evidence",
+            "b",
+            failure_code="mutation_outcome_unknown",
+        )
+
+
 def test_candidate_apply_uncertainty_cannot_use_recoverable_blocked_state():
     uncertain = _transition(
         "candidate_ready",
