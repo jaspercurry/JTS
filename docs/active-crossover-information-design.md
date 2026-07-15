@@ -1408,11 +1408,17 @@ As of 2026-07-14, JTS has much of the substrate but not the full product:
   comparison to exact session/run/owner-generation identity, attempt slots, and
   a hash-chained transition journal. Correction-web claims the owner at startup
   and exposes a fail-closed `commissioning_run` status; comparison drift is
-  reported stale and prior-generation callbacks cannot commit. The production
-  integration currently only begins an `unconfigured` run—there is no live
-  attempt/transition or evidence producer—so the strict evidence values are not
-  current acoustic authority and this does not yet replace the candidate,
-  graph mutation, verification, receipt, or Room authority paths. Room's
+  reported stale and prior-generation callbacks cannot commit. The typed
+  internal summed host now owns durable attempts, the bounded graph/capture/
+  restore transaction, deep artifact reopen, and the exact `measured`
+  transition when a trusted raw transport is composed. A separate strict
+  isolated-driver aggregate requires exactly three admitted captures for every
+  physical driver in the same plan and persists one canonical run-scoped
+  complete artifact with deep child/admission verification. Existing mutable
+  and fail-soft driver records cannot be promoted or backfilled into it; fresh
+  production population remains Wave 4 work. There is still no measured
+  candidate, candidate graph mutation, verification, receipt issuer, or Room
+  authority path. Room's
   temporary R1b adapter admits passive/not-required and
   blocks every active topology rather than trusting the applied-snapshot
   positive. Live receipt production/consumption and on-device proof remain later
@@ -1592,7 +1598,8 @@ direct summed-endpoint pre-audio refusal, the typed internal summed evidence
 host, strict write-once evidence store, exact graph/capture/restore transaction,
 deterministic coarse-then-refinement progression, restart recovery, and durable bundle-backed commissioning-run identity,
 startup owner-generation claim, fail-closed crossover status, strict pure
-group-by-region evidence sets with typed run/attempt and geometry authority,
+group-by-region and isolated-driver evidence sets with typed run/attempt,
+physical-target, graph, admission, and geometry authority,
 the bounded low-frequency coarse-plus-refinement schedule and schedule-aware
 final evaluator, complete-plan replay
 guards, receipt schema-v2 one-shot roles,

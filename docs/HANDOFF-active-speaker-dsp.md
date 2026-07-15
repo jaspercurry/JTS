@@ -741,6 +741,13 @@
 > typed operator attestation binds the signed geometry seed, and a complete-plan
 > aggregate enforces one region per target plus global artifact, admission, and
 > attempt uniqueness.
+> The same plan now owns a distinct strict isolated-driver aggregate: exactly
+> three admitted fixed-axis captures per physical driver, one semantic durable
+> attempt per driver, globally unique capture/admission/artifact identities,
+> and one canonical run-scoped complete artifact whose store reopens every
+> child byte and both admission decisions. Historical and current fail-soft
+> driver records cannot satisfy or be migrated into this contract; the trusted
+> production population is still Wave 4 work.
 > The positive receipt now likewise requires a unique one-shot generation and
 > playback pair for each of its three post-apply captures, with raw,
 > analysis-input, quality, generation, and playback identities and paths unique
@@ -748,10 +755,10 @@
 > post-apply-target, and receipt containers are explicitly schema version 2.
 > Shared also exposes a pure `select_scheduled_delay()` final evaluator that
 > requires the exact schedule and reuses the exhaustive selector's
-> repeatability, plateau, and tie policy. These remain pure contracts only: no
-> live summed host, persistence adapter, measured-candidate producer,
-> graph mutation, lifecycle transition, verification producer, receipt issuer,
-> or Room consumer is added by this slice.
+> repeatability, plateau, and tie policy. The typed internal summed host and
+> strict persistence adapter are now present, but no measured-candidate
+> producer, candidate graph mutation, verification producer, receipt issuer,
+> Room consumer, or hardware capture composition is present yet.
 
 ## Current Operational Truth
 

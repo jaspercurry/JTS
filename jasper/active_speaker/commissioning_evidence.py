@@ -65,6 +65,10 @@ DELAY_WALK_ALGORITHM_ID = "jts_active_crossover_delay_null_walk"
 DELAY_WALK_ALGORITHM_VERSION = "2"
 ACTIVE_REGION_SUMMED_ANALYZER_POLICY_ID = "jts_active_summed_crossover_capture"
 ACTIVE_REGION_SUMMED_ANALYZER_POLICY_VERSION = "1"
+ACTIVE_ISOLATED_DRIVER_EVIDENCE_CONSUMER_ID = (
+    "jts.active_speaker.isolated_driver_evidence"
+)
+ACTIVE_ISOLATED_DRIVER_MEASUREMENT_KIND = "active_crossover_isolated_driver"
 
 EvidenceKind: TypeAlias = Literal["normal", "reverse", "delay_null"]
 
@@ -895,6 +899,122 @@ def evidence_attempt_target_id(
     return f"active:{evidence_kind}:{target}"
 
 
+def isolated_driver_evidence_target_fingerprint(
+    authority: CommissioningEvidenceAuthority,
+    *,
+    plan_fingerprint: str,
+    speaker_group_id: str,
+    role: str,
+    driver_target_id: str,
+    driver_target_fingerprint: str,
+) -> str:
+    """Bind one physical driver target to this exact run plan and role."""
+
+    if not isinstance(authority, CommissioningEvidenceAuthority):
+        raise CommissioningEvidenceError(
+            "authority must be CommissioningEvidenceAuthority"
+        )
+    plan = _sha256(plan_fingerprint, field_name="plan_fingerprint")
+    group = _identifier(speaker_group_id, field_name="speaker_group_id")
+    driver_role = _identifier(role, field_name="role")
+    target_id = _identifier(driver_target_id, field_name="driver_target_id")
+    target = _sha256(
+        driver_target_fingerprint,
+        field_name="driver_target_fingerprint",
+    )
+    return _fingerprint(
+        {
+            "schema_version": 1,
+            "kind": "jts_active_isolated_driver_evidence_target",
+            "authority_fingerprint": authority.fingerprint,
+            "plan_fingerprint": plan,
+            "speaker_group_id": group,
+            "role": driver_role,
+            "driver_target_id": target_id,
+            "driver_target_fingerprint": target,
+        }
+    )
+
+
+def isolated_driver_attempt_target_id(
+    evidence_target_fingerprint: str,
+) -> str:
+    """Return the durable attempt reservation id for one isolated driver."""
+
+    target = _sha256(
+        evidence_target_fingerprint,
+        field_name="evidence_target_fingerprint",
+    )
+    return f"active:isolated_driver:{target}"
+
+
+def isolated_capture_context_fingerprint(
+    authority: CommissioningEvidenceAuthority,
+    *,
+    plan_fingerprint: str,
+    attempt: CommissioningAttemptHandle,
+    evidence_target_fingerprint: str,
+    driver_target_id: str,
+    driver_target_fingerprint: str,
+    placement_fingerprint: str,
+    graph_fingerprint: str,
+    generation_protection_evidence_fingerprint: str,
+    playback_protection_evidence_fingerprint: str,
+) -> str:
+    """Bind isolated capture context to graph, protections, and run attempt."""
+
+    if not isinstance(authority, CommissioningEvidenceAuthority):
+        raise CommissioningEvidenceError(
+            "authority must be CommissioningEvidenceAuthority"
+        )
+    if not isinstance(attempt, CommissioningAttemptHandle):
+        raise CommissioningEvidenceError("attempt must be CommissioningAttemptHandle")
+    if attempt.run != authority.run:
+        raise CommissioningEvidenceError(
+            "attempt does not belong to the exact durable run authority"
+        )
+    return _fingerprint(
+        {
+            "schema_version": 1,
+            "kind": "jts_active_isolated_driver_capture_context",
+            "authority_fingerprint": authority.fingerprint,
+            "plan_fingerprint": _sha256(
+                plan_fingerprint,
+                field_name="plan_fingerprint",
+            ),
+            "attempt": _attempt_handle_to_dict(attempt),
+            "evidence_target_fingerprint": _sha256(
+                evidence_target_fingerprint,
+                field_name="evidence_target_fingerprint",
+            ),
+            "driver_target_id": _identifier(
+                driver_target_id,
+                field_name="driver_target_id",
+            ),
+            "driver_target_fingerprint": _sha256(
+                driver_target_fingerprint,
+                field_name="driver_target_fingerprint",
+            ),
+            "placement_fingerprint": _sha256(
+                placement_fingerprint,
+                field_name="placement_fingerprint",
+            ),
+            "graph_fingerprint": _sha256(
+                graph_fingerprint,
+                field_name="graph_fingerprint",
+            ),
+            "generation_protection_evidence_fingerprint": _sha256(
+                generation_protection_evidence_fingerprint,
+                field_name="generation_protection_evidence_fingerprint",
+            ),
+            "playback_protection_evidence_fingerprint": _sha256(
+                playback_protection_evidence_fingerprint,
+                field_name="playback_protection_evidence_fingerprint",
+            ),
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AdmittedRegionCapture:
     """One fresh, one-shot, graph-confirmed region capture."""
@@ -1240,6 +1360,355 @@ class AdmittedRegionCapture:
         return result
 
 
+@dataclass(frozen=True, slots=True)
+class AdmittedIsolatedDriverCapture:
+    """One admitted, graph-confirmed capture of one physical driver."""
+
+    authority: CommissioningEvidenceAuthority
+    plan_fingerprint: str
+    attempt: CommissioningAttemptHandle
+    speaker_group_id: str
+    role: str
+    evidence_target_fingerprint: str
+    driver_target_id: str
+    driver_target_fingerprint: str
+    context_fingerprint: str
+    placement_fingerprint: str
+    graph_fingerprint: str
+    generation_protection_evidence_fingerprint: str
+    playback_protection_evidence_fingerprint: str
+    admission_id: str
+    capture: CaptureIdentity
+    stimulus: GeneratedExcitationWav
+    generation_artifact: ArtifactIdentity
+    playback_artifact: ArtifactIdentity
+    generation_admission: ExcitationAdmission
+    playback_admission: ExcitationAdmission
+    fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.authority, CommissioningEvidenceAuthority):
+            raise CommissioningEvidenceError(
+                "isolated capture authority must be CommissioningEvidenceAuthority"
+            )
+        object.__setattr__(
+            self,
+            "plan_fingerprint",
+            _sha256(self.plan_fingerprint, field_name="plan_fingerprint"),
+        )
+        for name in ("speaker_group_id", "role", "driver_target_id"):
+            object.__setattr__(
+                self,
+                name,
+                _identifier(getattr(self, name), field_name=name),
+            )
+        for name in (
+            "evidence_target_fingerprint",
+            "driver_target_fingerprint",
+            "context_fingerprint",
+            "placement_fingerprint",
+            "graph_fingerprint",
+            "generation_protection_evidence_fingerprint",
+            "playback_protection_evidence_fingerprint",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _sha256(getattr(self, name), field_name=name),
+            )
+        try:
+            expected_generation_path = admission_artifact_relative_path(
+                "generation", self.admission_id
+            )
+            expected_playback_path = admission_artifact_relative_path(
+                "playback", self.admission_id
+            )
+        except ValueError as exc:
+            raise CommissioningEvidenceError(str(exc)) from exc
+        if not isinstance(self.attempt, CommissioningAttemptHandle):
+            raise CommissioningEvidenceError(
+                "isolated capture attempt must be CommissioningAttemptHandle"
+            )
+        if self.attempt.run != self.authority.run:
+            raise CommissioningEvidenceError(
+                "isolated capture attempt does not belong to the exact run authority"
+            )
+        if (
+            self.attempt.target_id
+            != isolated_driver_attempt_target_id(self.evidence_target_fingerprint)
+            or self.attempt.target_fingerprint != self.evidence_target_fingerprint
+        ):
+            raise CommissioningEvidenceError(
+                "isolated capture does not equal its reserved semantic target"
+            )
+        expected_evidence_target = isolated_driver_evidence_target_fingerprint(
+            self.authority,
+            plan_fingerprint=self.plan_fingerprint,
+            speaker_group_id=self.speaker_group_id,
+            role=self.role,
+            driver_target_id=self.driver_target_id,
+            driver_target_fingerprint=self.driver_target_fingerprint,
+        )
+        if self.evidence_target_fingerprint != expected_evidence_target:
+            raise CommissioningEvidenceError(
+                "isolated evidence target is not bound to its physical driver"
+            )
+        expected_context = isolated_capture_context_fingerprint(
+            self.authority,
+            plan_fingerprint=self.plan_fingerprint,
+            attempt=self.attempt,
+            evidence_target_fingerprint=self.evidence_target_fingerprint,
+            driver_target_id=self.driver_target_id,
+            driver_target_fingerprint=self.driver_target_fingerprint,
+            placement_fingerprint=self.placement_fingerprint,
+            graph_fingerprint=self.graph_fingerprint,
+            generation_protection_evidence_fingerprint=(
+                self.generation_protection_evidence_fingerprint
+            ),
+            playback_protection_evidence_fingerprint=(
+                self.playback_protection_evidence_fingerprint
+            ),
+        )
+        if self.context_fingerprint != expected_context:
+            raise CommissioningEvidenceError(
+                "isolated capture context is not bound to its exact graph and attempt"
+            )
+        if not isinstance(self.capture, CaptureIdentity):
+            raise CommissioningEvidenceError("capture must be CaptureIdentity")
+        if not isinstance(self.stimulus, GeneratedExcitationWav):
+            raise CommissioningEvidenceError("stimulus must be GeneratedExcitationWav")
+        for name in ("generation_artifact", "playback_artifact"):
+            _assert_authority_artifact(
+                getattr(self, name),
+                self.authority,
+                field_name=name,
+            )
+        _assert_authority_artifact(
+            self.stimulus.artifact,
+            self.authority,
+            field_name="stimulus.artifact",
+        )
+        for artifact_name, artifact in (
+            ("raw_artifact", self.capture.raw_artifact),
+            ("analysis_input_artifact", self.capture.analysis_input_artifact),
+            ("quality_artifact", self.capture.quality_artifact),
+            ("capture.admission_artifact", self.capture.admission_artifact),
+        ):
+            _assert_authority_artifact(
+                artifact,
+                self.authority,
+                field_name=artifact_name,
+            )
+        if (
+            self.capture.consumer_id != ACTIVE_ISOLATED_DRIVER_EVIDENCE_CONSUMER_ID
+            or self.capture.measurement_kind
+            != ACTIVE_ISOLATED_DRIVER_MEASUREMENT_KIND
+            or self.capture.target_fingerprint != self.driver_target_fingerprint
+            or self.capture.context_fingerprint != self.context_fingerprint
+            or self.capture.geometry_id != self.authority.expected_geometry_id
+            or self.capture.placement_fingerprint != self.placement_fingerprint
+        ):
+            raise CommissioningEvidenceError(
+                "isolated capture consumer, physical target, context, geometry, or placement is stale"
+            )
+        if self.generation_artifact.relative_path != expected_generation_path:
+            raise CommissioningEvidenceError(
+                "generation artifact does not occupy its canonical admission role"
+            )
+        if self.playback_artifact.relative_path != expected_playback_path:
+            raise CommissioningEvidenceError(
+                "playback artifact does not occupy its canonical admission role"
+            )
+        if self.capture.admission_artifact != self.playback_artifact:
+            raise CommissioningEvidenceError(
+                "capture admission artifact must be the exact playback decision"
+            )
+        if not isinstance(
+            self.generation_admission, ExcitationAdmission
+        ) or not isinstance(self.playback_admission, ExcitationAdmission):
+            raise CommissioningEvidenceError(
+                "generation and playback admissions must be typed decisions"
+            )
+        if not self.generation_admission.allowed or not self.playback_admission.allowed:
+            raise CommissioningEvidenceError(
+                "isolated capture requires allowed generation and playback admissions"
+            )
+        for admission in (self.generation_admission, self.playback_admission):
+            if (
+                admission.request.repeat_count != 1
+                or admission.request.target_fingerprint
+                != self.driver_target_fingerprint
+                or admission.limits.target_fingerprint
+                != self.driver_target_fingerprint
+                or admission.limits.safety_profile_fingerprint
+                != self.authority.protected_safety_profile_fingerprint
+            ):
+                raise CommissioningEvidenceError(
+                    "isolated capture admission is not a one-shot for this physical driver/profile"
+                )
+        generation_proof = self.generation_admission.protection_evidence
+        playback_proof = self.playback_admission.protection_evidence
+        if (
+            generation_proof is None
+            or playback_proof is None
+            or generation_proof.evidence_fingerprint
+            != self.generation_protection_evidence_fingerprint
+            or playback_proof.evidence_fingerprint
+            != self.playback_protection_evidence_fingerprint
+        ):
+            raise CommissioningEvidenceError(
+                "isolated capture protection identities must equal both admitted proofs"
+            )
+        if (
+            self.generation_admission.request != self.playback_admission.request
+            or self.generation_admission.limits != self.playback_admission.limits
+        ):
+            raise CommissioningEvidenceError(
+                "playback admission must retain the generation request and limits"
+            )
+        if not _artifact_matches_canonical_admission(
+            self.generation_artifact, self.generation_admission
+        ) or not _artifact_matches_canonical_admission(
+            self.playback_artifact, self.playback_admission
+        ):
+            raise CommissioningEvidenceError(
+                "admission artifacts must equal canonical typed admission bytes"
+            )
+        if (
+            self.stimulus.generation_artifact_fingerprint
+            != self.generation_artifact.fingerprint
+            or self.stimulus.excitation_plan_fingerprint
+            != self.generation_admission.limits.excitation_plan_fingerprint
+            or self.stimulus.excitation_plan_fingerprint
+            != self.playback_admission.limits.excitation_plan_fingerprint
+        ):
+            raise CommissioningEvidenceError(
+                "generated stimulus is not bound to the exact admissions"
+            )
+        artifacts = (
+            self.capture.raw_artifact,
+            self.capture.analysis_input_artifact,
+            self.capture.quality_artifact,
+            self.playback_artifact,
+            self.stimulus.artifact,
+            self.generation_artifact,
+        )
+        if len({item.fingerprint for item in artifacts}) != len(artifacts) or len(
+            {item.relative_path for item in artifacts}
+        ) != len(artifacts):
+            raise CommissioningEvidenceError(
+                "isolated capture artifact roles must be distinct"
+            )
+        object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
+
+    @property
+    def canonical_key(self) -> tuple[str, str]:
+        return self.capture.capture_id, self.admission_id
+
+    def _core(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "kind": "jts_active_admitted_isolated_driver_capture",
+            "authority": self.authority.to_dict(),
+            "plan_fingerprint": self.plan_fingerprint,
+            "attempt": _attempt_handle_to_dict(self.attempt),
+            "speaker_group_id": self.speaker_group_id,
+            "role": self.role,
+            "evidence_target_fingerprint": self.evidence_target_fingerprint,
+            "driver_target_id": self.driver_target_id,
+            "driver_target_fingerprint": self.driver_target_fingerprint,
+            "context_fingerprint": self.context_fingerprint,
+            "placement_fingerprint": self.placement_fingerprint,
+            "graph_fingerprint": self.graph_fingerprint,
+            "generation_protection_evidence_fingerprint": (
+                self.generation_protection_evidence_fingerprint
+            ),
+            "playback_protection_evidence_fingerprint": (
+                self.playback_protection_evidence_fingerprint
+            ),
+            "admission_id": self.admission_id,
+            "capture": self.capture.to_dict(),
+            "stimulus": self.stimulus.to_dict(),
+            "generation_artifact": self.generation_artifact.to_dict(),
+            "playback_artifact": self.playback_artifact.to_dict(),
+            "generation_admission": self.generation_admission.to_dict(),
+            "playback_admission": self.playback_admission.to_dict(),
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._core(), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "AdmittedIsolatedDriverCapture":
+        fields = frozenset(
+            {
+                "authority",
+                "plan_fingerprint",
+                "attempt",
+                "speaker_group_id",
+                "role",
+                "evidence_target_fingerprint",
+                "driver_target_id",
+                "driver_target_fingerprint",
+                "context_fingerprint",
+                "placement_fingerprint",
+                "graph_fingerprint",
+                "generation_protection_evidence_fingerprint",
+                "playback_protection_evidence_fingerprint",
+                "admission_id",
+                "capture",
+                "stimulus",
+                "generation_artifact",
+                "playback_artifact",
+                "generation_admission",
+                "playback_admission",
+            }
+        )
+        value = _strict_object(
+            raw,
+            kind="jts_active_admitted_isolated_driver_capture",
+            fields=fields,
+        )
+        try:
+            generation_admission = ExcitationAdmission.from_dict(
+                value["generation_admission"]
+            )
+            playback_admission = ExcitationAdmission.from_dict(
+                value["playback_admission"]
+            )
+            stimulus = GeneratedExcitationWav.from_mapping(value["stimulus"])
+        except (EvidenceIdentityError, ValueError) as exc:
+            raise CommissioningEvidenceError(str(exc)) from exc
+        result = cls(
+            authority=CommissioningEvidenceAuthority.from_mapping(value["authority"]),
+            plan_fingerprint=value["plan_fingerprint"],
+            attempt=_attempt_handle_from_mapping(value["attempt"]),
+            speaker_group_id=value["speaker_group_id"],
+            role=value["role"],
+            evidence_target_fingerprint=value["evidence_target_fingerprint"],
+            driver_target_id=value["driver_target_id"],
+            driver_target_fingerprint=value["driver_target_fingerprint"],
+            context_fingerprint=value["context_fingerprint"],
+            placement_fingerprint=value["placement_fingerprint"],
+            graph_fingerprint=value["graph_fingerprint"],
+            generation_protection_evidence_fingerprint=value[
+                "generation_protection_evidence_fingerprint"
+            ],
+            playback_protection_evidence_fingerprint=value[
+                "playback_protection_evidence_fingerprint"
+            ],
+            admission_id=value["admission_id"],
+            capture=_capture_from_mapping(value["capture"]),
+            stimulus=stimulus,
+            generation_artifact=_artifact_from_mapping(value["generation_artifact"]),
+            playback_artifact=_artifact_from_mapping(value["playback_artifact"]),
+            generation_admission=generation_admission,
+            playback_admission=playback_admission,
+        )
+        _declared_fingerprint(value, result.fingerprint)
+        return result
+
+
 def _assert_fresh_capture_set(
     captures: tuple[AdmittedRegionCapture, ...],
     *,
@@ -1315,6 +1784,393 @@ def _assert_fresh_capture_set(
             raise CommissioningEvidenceError(
                 f"fresh one-shot evidence requires unique {label}"
             )
+
+
+def _isolated_capture_artifacts(
+    capture: AdmittedIsolatedDriverCapture,
+) -> tuple[ArtifactIdentity, ...]:
+    return (
+        capture.capture.raw_artifact,
+        capture.capture.analysis_input_artifact,
+        capture.capture.quality_artifact,
+        capture.playback_artifact,
+        capture.stimulus.artifact,
+        capture.generation_artifact,
+    )
+
+
+def _assert_fresh_isolated_capture_set(
+    captures: tuple[AdmittedIsolatedDriverCapture, ...],
+) -> None:
+    if type(captures) is not tuple or len(captures) != STATIONARY_CAPTURE_COUNT:
+        raise CommissioningEvidenceError(
+            f"isolated driver evidence requires exactly {STATIONARY_CAPTURE_COUNT} captures"
+        )
+    if any(not isinstance(item, AdmittedIsolatedDriverCapture) for item in captures):
+        raise CommissioningEvidenceError(
+            "isolated captures must be AdmittedIsolatedDriverCapture values"
+        )
+    keys = tuple(item.canonical_key for item in captures)
+    if keys != tuple(sorted(keys)):
+        raise CommissioningEvidenceError(
+            "isolated captures must be in canonical order"
+        )
+    unique_fields = {
+        "capture ids": [item.capture.capture_id for item in captures],
+        "capture identities": [item.capture.fingerprint for item in captures],
+        "raw bytes": [item.capture.raw_artifact.sha256 for item in captures],
+        "admission ids": [item.admission_id for item in captures],
+        "artifact fingerprints": [
+            artifact.fingerprint
+            for item in captures
+            for artifact in _isolated_capture_artifacts(item)
+        ],
+        "artifact paths": [
+            artifact.relative_path
+            for item in captures
+            for artifact in _isolated_capture_artifacts(item)
+        ],
+    }
+    for label, values in unique_fields.items():
+        if len(set(values)) != len(values):
+            raise CommissioningEvidenceError(
+                f"fresh isolated evidence requires unique {label}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class IsolatedDriverEvidence:
+    """Exactly three admitted captures for one physical driver target."""
+
+    authority: CommissioningEvidenceAuthority
+    plan_fingerprint: str
+    speaker_group_id: str
+    role: str
+    evidence_target_fingerprint: str
+    driver_target_id: str
+    driver_target_fingerprint: str
+    attempt: CommissioningAttemptHandle
+    placement_fingerprint: str
+    context_fingerprint: str
+    graph_fingerprint: str
+    captures: tuple[AdmittedIsolatedDriverCapture, ...]
+    repeatability_artifact: ArtifactIdentity
+    fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.authority, CommissioningEvidenceAuthority):
+            raise CommissioningEvidenceError(
+                "isolated authority must be CommissioningEvidenceAuthority"
+            )
+        object.__setattr__(
+            self,
+            "plan_fingerprint",
+            _sha256(self.plan_fingerprint, field_name="plan_fingerprint"),
+        )
+        for name in ("speaker_group_id", "role", "driver_target_id"):
+            object.__setattr__(
+                self,
+                name,
+                _identifier(getattr(self, name), field_name=name),
+            )
+        for name in (
+            "evidence_target_fingerprint",
+            "driver_target_fingerprint",
+            "placement_fingerprint",
+            "context_fingerprint",
+            "graph_fingerprint",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _sha256(getattr(self, name), field_name=name),
+            )
+        expected_target = isolated_driver_evidence_target_fingerprint(
+            self.authority,
+            plan_fingerprint=self.plan_fingerprint,
+            speaker_group_id=self.speaker_group_id,
+            role=self.role,
+            driver_target_id=self.driver_target_id,
+            driver_target_fingerprint=self.driver_target_fingerprint,
+        )
+        if self.evidence_target_fingerprint != expected_target:
+            raise CommissioningEvidenceError(
+                "isolated evidence target does not equal its driver binding"
+            )
+        if not isinstance(self.attempt, CommissioningAttemptHandle):
+            raise CommissioningEvidenceError(
+                "isolated attempt must be CommissioningAttemptHandle"
+            )
+        if self.attempt.run != self.authority.run:
+            raise CommissioningEvidenceError(
+                "isolated attempt does not belong to the exact run authority"
+            )
+        if (
+            self.attempt.target_id
+            != isolated_driver_attempt_target_id(self.evidence_target_fingerprint)
+            or self.attempt.target_fingerprint != self.evidence_target_fingerprint
+        ):
+            raise CommissioningEvidenceError(
+                "isolated evidence does not equal its reserved semantic target"
+            )
+        _assert_fresh_isolated_capture_set(self.captures)
+        if any(
+            capture.authority != self.authority
+            or capture.plan_fingerprint != self.plan_fingerprint
+            or capture.attempt != self.attempt
+            or capture.speaker_group_id != self.speaker_group_id
+            or capture.role != self.role
+            or capture.evidence_target_fingerprint
+            != self.evidence_target_fingerprint
+            or capture.driver_target_id != self.driver_target_id
+            or capture.driver_target_fingerprint != self.driver_target_fingerprint
+            or capture.placement_fingerprint != self.placement_fingerprint
+            or capture.context_fingerprint != self.context_fingerprint
+            or capture.graph_fingerprint != self.graph_fingerprint
+            for capture in self.captures
+        ):
+            raise CommissioningEvidenceError(
+                "isolated captures do not share one exact target, placement, context, and graph"
+            )
+        _assert_authority_artifact(
+            self.repeatability_artifact,
+            self.authority,
+            field_name="repeatability_artifact",
+        )
+        child_artifacts = tuple(
+            artifact
+            for capture in self.captures
+            for artifact in _isolated_capture_artifacts(capture)
+        )
+        if (
+            self.repeatability_artifact.fingerprint
+            in {artifact.fingerprint for artifact in child_artifacts}
+            or self.repeatability_artifact.relative_path
+            in {artifact.relative_path for artifact in child_artifacts}
+        ):
+            raise CommissioningEvidenceError(
+                "isolated repeatability evidence must occupy a distinct artifact role"
+            )
+        object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
+
+    @property
+    def canonical_key(self) -> tuple[str, str]:
+        return self.speaker_group_id, self.role
+
+    def _core(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "kind": "jts_active_isolated_driver_evidence",
+            "authority": self.authority.to_dict(),
+            "plan_fingerprint": self.plan_fingerprint,
+            "speaker_group_id": self.speaker_group_id,
+            "role": self.role,
+            "evidence_target_fingerprint": self.evidence_target_fingerprint,
+            "driver_target_id": self.driver_target_id,
+            "driver_target_fingerprint": self.driver_target_fingerprint,
+            "attempt": _attempt_handle_to_dict(self.attempt),
+            "placement_fingerprint": self.placement_fingerprint,
+            "context_fingerprint": self.context_fingerprint,
+            "graph_fingerprint": self.graph_fingerprint,
+            "required_capture_count": STATIONARY_CAPTURE_COUNT,
+            "captures": [capture.to_dict() for capture in self.captures],
+            "repeatability_artifact": self.repeatability_artifact.to_dict(),
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._core(), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "IsolatedDriverEvidence":
+        fields = frozenset(
+            {
+                "authority",
+                "plan_fingerprint",
+                "speaker_group_id",
+                "role",
+                "evidence_target_fingerprint",
+                "driver_target_id",
+                "driver_target_fingerprint",
+                "attempt",
+                "placement_fingerprint",
+                "context_fingerprint",
+                "graph_fingerprint",
+                "required_capture_count",
+                "captures",
+                "repeatability_artifact",
+            }
+        )
+        value = _strict_object(
+            raw,
+            kind="jts_active_isolated_driver_evidence",
+            fields=fields,
+        )
+        if (
+            type(value["required_capture_count"]) is not int
+            or value["required_capture_count"] != STATIONARY_CAPTURE_COUNT
+        ):
+            raise CommissioningEvidenceError(
+                "isolated evidence required capture count is invalid"
+            )
+        raw_captures = value["captures"]
+        if type(raw_captures) is not list:
+            raise CommissioningEvidenceError("isolated captures must be a list")
+        result = cls(
+            authority=CommissioningEvidenceAuthority.from_mapping(value["authority"]),
+            plan_fingerprint=value["plan_fingerprint"],
+            speaker_group_id=value["speaker_group_id"],
+            role=value["role"],
+            evidence_target_fingerprint=value["evidence_target_fingerprint"],
+            driver_target_id=value["driver_target_id"],
+            driver_target_fingerprint=value["driver_target_fingerprint"],
+            attempt=_attempt_handle_from_mapping(value["attempt"]),
+            placement_fingerprint=value["placement_fingerprint"],
+            context_fingerprint=value["context_fingerprint"],
+            graph_fingerprint=value["graph_fingerprint"],
+            captures=tuple(
+                AdmittedIsolatedDriverCapture.from_mapping(item)
+                for item in raw_captures
+            ),
+            repeatability_artifact=_artifact_from_mapping(
+                value["repeatability_artifact"]
+            ),
+        )
+        _declared_fingerprint(value, result.fingerprint)
+        return result
+
+
+def _required_isolated_driver_keys(
+    plan: RegionEvidencePlan,
+) -> tuple[tuple[str, str], ...]:
+    keys: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for target in sorted(
+        plan.targets,
+        key=lambda item: (
+            item.speaker_group_id,
+            item.electrical_fc_hz,
+            item.region_id,
+        ),
+    ):
+        for role in (target.lower_role, target.upper_role):
+            key = (target.speaker_group_id, role)
+            if key not in seen:
+                seen.add(key)
+                keys.append(key)
+    return tuple(keys)
+
+
+@dataclass(frozen=True, slots=True)
+class CompleteIsolatedDriverEvidence:
+    """The exact isolated-driver evidence set required by one region plan."""
+
+    plan: RegionEvidencePlan
+    drivers: tuple[IsolatedDriverEvidence, ...]
+    fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, RegionEvidencePlan):
+            raise CommissioningEvidenceError(
+                "isolated evidence plan must be RegionEvidencePlan"
+            )
+        if type(self.drivers) is not tuple or not self.drivers:
+            raise CommissioningEvidenceError(
+                "complete isolated evidence drivers must be non-empty"
+            )
+        if any(not isinstance(item, IsolatedDriverEvidence) for item in self.drivers):
+            raise CommissioningEvidenceError(
+                "complete isolated evidence requires IsolatedDriverEvidence values"
+            )
+        keys = tuple(item.canonical_key for item in self.drivers)
+        if keys != _required_isolated_driver_keys(self.plan):
+            raise CommissioningEvidenceError(
+                "complete isolated evidence must exactly cover canonical plan driver roles"
+            )
+        if any(
+            item.authority != self.plan.authority
+            or item.plan_fingerprint != self.plan.fingerprint
+            for item in self.drivers
+        ):
+            raise CommissioningEvidenceError(
+                "complete isolated evidence does not share its exact plan authority"
+            )
+        captures = tuple(
+            capture for driver in self.drivers for capture in driver.captures
+        )
+        artifacts = tuple(
+            artifact
+            for driver in self.drivers
+            for artifact in (
+                driver.repeatability_artifact,
+                *(
+                    child
+                    for capture in driver.captures
+                    for child in _isolated_capture_artifacts(capture)
+                ),
+            )
+        )
+        unique_fields: dict[str, list[Any]] = {
+            "driver target ids": [item.driver_target_id for item in self.drivers],
+            "driver target fingerprints": [
+                item.driver_target_fingerprint for item in self.drivers
+            ],
+            "evidence target fingerprints": [
+                item.evidence_target_fingerprint for item in self.drivers
+            ],
+            "graph fingerprints": [
+                item.graph_fingerprint for item in self.drivers
+            ],
+            "attempt ids": [item.attempt.attempt_id for item in self.drivers],
+            "attempt numbers": [item.attempt.attempt_number for item in self.drivers],
+            "capture ids": [item.capture.capture_id for item in captures],
+            "capture identities": [item.capture.fingerprint for item in captures],
+            "raw bytes": [item.capture.raw_artifact.sha256 for item in captures],
+            "admission ids": [item.admission_id for item in captures],
+            "artifact fingerprints": [item.fingerprint for item in artifacts],
+            "artifact paths": [item.relative_path for item in artifacts],
+        }
+        for label, values in unique_fields.items():
+            if len(set(values)) != len(values):
+                raise CommissioningEvidenceError(
+                    f"complete isolated evidence requires globally unique {label}"
+                )
+        object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
+
+    @property
+    def authority(self) -> CommissioningEvidenceAuthority:
+        return self.plan.authority
+
+    def _core(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "kind": "jts_active_complete_isolated_driver_evidence",
+            "plan": self.plan.to_dict(),
+            "drivers": [driver.to_dict() for driver in self.drivers],
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._core(), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "CompleteIsolatedDriverEvidence":
+        value = _strict_object(
+            raw,
+            kind="jts_active_complete_isolated_driver_evidence",
+            fields=frozenset({"plan", "drivers"}),
+        )
+        raw_drivers = value["drivers"]
+        if type(raw_drivers) is not list:
+            raise CommissioningEvidenceError(
+                "complete isolated evidence drivers must be a list"
+            )
+        result = cls(
+            plan=RegionEvidencePlan.from_mapping(value["plan"]),
+            drivers=tuple(
+                IsolatedDriverEvidence.from_mapping(item) for item in raw_drivers
+            ),
+        )
+        _declared_fingerprint(value, result.fingerprint)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
