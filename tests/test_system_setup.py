@@ -27,9 +27,14 @@ from jasper.web import system_setup
 
 _NODE = shutil.which("node")
 _NAV_HARNESS = Path(__file__).resolve().parent / "js" / "system_status_navigation_test.mjs"
+_AUDIO_HARNESS = Path(__file__).resolve().parent / "js" / "system_audio_sections_test.mjs"
 _MAIN_JS = (
     Path(__file__).resolve().parents[1]
     / "deploy" / "assets" / "system-status" / "js" / "main.js"
+)
+_AUDIO_SECTIONS_JS = (
+    Path(__file__).resolve().parents[1]
+    / "deploy" / "assets" / "system-status" / "js" / "audio-sections.js"
 )
 
 
@@ -46,6 +51,17 @@ def test_status_navigation_runtime_contract() -> None:
         pytest.skip("node not on PATH")
     proc = subprocess.run(
         [_NODE, str(_NAV_HARNESS), str(_MAIN_JS)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == {"ok": True}
+
+
+def test_audio_sections_runtime_contract() -> None:
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [_NODE, str(_AUDIO_HARNESS), str(_AUDIO_SECTIONS_JS)],
         capture_output=True, text=True, timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
@@ -552,19 +568,27 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
     components = (_MODULE_DIR / "components.js").read_text()
 
     assert "snap.audio_health" in audio_view
-    assert "Audio health unavailable" in audio_sections
-    assert 'kind === "route_latency"' in audio_view
-    assert 'timing.kind === "sync"' in audio_sections
-    assert 'timing.applicable === false' in audio_sections
-    assert "issue.started_at" in audio_sections
-    assert 'source.status === "ok"' in audio_sections
+    assert "Waiting for audio diagnostics" in audio_sections
+    assert "current_stream" in audio_view
+    assert "current_incident" in audio_sections
+    assert "recent_incidents" in audio_sections
+    assert "slice(0, 5)" in audio_sections
+    assert "refreshRelativeTimes" in audio_sections
+    assert "relativeEpoch" in audio_sections
+    assert "incidentEvidence" in audio_sections
+    assert "duration_seconds" in audio_sections
+    assert 'h("span.incident-row__summary"' in audio_sections
+    assert 'h("div.incident-row__summary"' not in audio_sections
+    assert "stream.quality || stream.media" in audio_sections
+    assert "stream.session || health.session_summary" in audio_sections
     assert '"--tone"' in audio_sections
     assert "Array.isArray(health.sources)" in audio_view
-    assert "ageBucket" in audio_view
+    assert "ageBucket" not in audio_view
     main_js = (_MODULE_DIR / "main.js").read_text()
     assert "finally" in main_js
     assert "Dashboard data was incomplete" in main_js
-    assert 'title: "Technical details", open: false' in audio_view
+    assert 'title: "Technical evidence", open: false' in audio_view
+    assert 'title: "Audio conversion", open: false' in audio_view
     assert "raw_mode" not in audio_sections
     assert "p95_budget_ms" not in audio_sections
     assert "snap.airplay_health" not in views
@@ -583,6 +607,10 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
         _MODULE_DIR / "actions.js"
     ).read_text()
     assert "audio_quality: quality" in main_js
+    css = _SYSTEM_CSS.read_text()
+    assert ".incident-row__recurrence { display: none; }" in css
+    assert ".incident-row__recovered { display: none; }" not in css
+    assert '.current-incident__meta > [aria-hidden="true"]' in css
 
 
 def test_system_mobile_actions_and_tables_are_intentional() -> None:

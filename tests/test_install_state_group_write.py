@@ -72,6 +72,7 @@ def test_heal_makes_shared_dbs_group_writable(tmp_path):
     timers = _mk(tmp_path / "timers.db", 0o644)
     wake = _mk(tmp_path / "wake-events" / "wake-events.sqlite3", 0o644)
     vol = _mk(tmp_path / "speaker_volume.json", 0o644)
+    audio_incidents = _mk(tmp_path / "audio_health_incidents.json", 0o644)
     topology = _mk(tmp_path / "output_topology.json", 0o640)
     # Grouping config + its write-lock: a pre-UMask=0007 lock (0644, non-owner)
     # blocks /grouping/set and /rooms bonding (the 2026-06-23 sub bring-up).
@@ -91,6 +92,7 @@ def test_heal_makes_shared_dbs_group_writable(tmp_path):
     assert _mode(timers) == 0o660
     assert _mode(wake) == 0o660
     assert _mode(vol) == 0o660
+    assert _mode(audio_incidents) == 0o660
     assert _mode(topology) == 0o640
     assert _mode(grouping) == 0o660
     assert _mode(grouping_lock) == 0o660  # the lock /grouping/set opens a+

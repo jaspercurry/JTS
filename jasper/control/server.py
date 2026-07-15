@@ -3379,10 +3379,12 @@ def main(argv: list[str] | None = None) -> int:
     # cheap outputd state + slow route certification reads. It is the only
     # resident audio-monitor thread.
     from .audio_health import AudioHealthSampler
+    from .audio_incidents import IncidentStore
     audio_health_sampler = AudioHealthSampler(
         camilla_host=args.camilla_host,
         camilla_port=args.camilla_port,
         service_probe=sampler.service_states_snapshot,
+        incident_store=IncidentStore(),
     )
     audio_health_sampler.start()
 

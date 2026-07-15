@@ -78,6 +78,7 @@ heal_shared_state_modes() {
     done
     heal_specs+=(
         "f:0660:${STATE_DIR}/speaker_volume.json"
+        "f:0660:${STATE_DIR}/audio_health_incidents.json"
         "f:0660:${STATE_DIR}/mux_mode.json"
         "f:0640:${STATE_DIR}/output_topology.json"
         "f:0660:${STATE_DIR}/grouping.env"

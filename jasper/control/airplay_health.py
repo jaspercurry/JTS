@@ -911,6 +911,8 @@ class AirPlayHealthSampler:
                 "sample_rate": _as_int(output.get("sample_rate")),
                 "period_frames": _as_int(output.get("period_frames")),
                 "buffer_frames": _as_int(output.get("buffer_frames")),
+                "snd_pcm_delay_frames": output.get("snd_pcm_delay_frames"),
+                "snd_pcm_delay_ms": output.get("snd_pcm_delay_ms"),
             },
             "watchdog": {
                 "last_progress_age_ms": _as_int(

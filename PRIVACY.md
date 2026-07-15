@@ -43,6 +43,11 @@ Spend accounting lives in `/var/lib/jasper/usage.db` by default
 and time-billed connection intervals. It does not store speech audio or
 transcripts.
 
+Audio troubleshooting history lives in
+`/var/lib/jasper/audio_health_incidents.json`. It is a local-only ring capped
+at 20 incident records. Its allowlisted health evidence contains no audio,
+speech transcripts, or track metadata.
+
 Conversation history is separate from spend accounting. When
 `JASPER_CONVERSATION_CAPTURE=1` (or the matching wizard-owned
 conversation-history env file enables capture), JTS stores text-only turns in

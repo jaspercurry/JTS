@@ -302,17 +302,35 @@ atomic, route-specific latest pointer rather than scanning accumulated history
 Source readiness reuses the System sampler's cached 30-second systemd snapshot
 and the local-source registry's explicit health-unit set to distinguish Ready,
 Not running, and failed without treating pairing/advertising helpers as the
-renderer. Audio health does not spawn a second `systemctl` cadence.
+renderer. The selected lane becomes a current stream only when
+`jasper-mux STATUS.sources[<id>].playing` agrees. Mux is the single owner of
+AirPlay, USB, Spotify, and Bluetooth activity predicates, so free-running
+silent lanes do not become fake sessions and audio health adds no duplicate
+per-source probe cadence. Missing or unreadable mux state fails closed as
+"Playback activity unavailable" and preserves an already-observed session;
+it is never presented as healthy idle. Audio health does not spawn a second
+`systemctl` cadence.
 
 The contract separates playback continuity from timing. A USB `l2_fallback`
 is a latency warning while playback remains protected; `l0_locked` is runtime
-clock state and never substitutes for a matching measured route artifact.
-AirPlay synchronization remains source-specific rather than becoming a USB
-low-latency claim. Recent issues are a bounded in-memory lifecycle: ongoing
-conditions cannot be evicted by recovered blips, recovered entries coalesce,
-and known-inaudible Camilla short reads remain collapsed technical evidence
-unless an audible boundary also fails. The legacy `airplay_health` block is
-retained for existing consumers and deeper AirPlay forensics.
+clock state, not an end-to-end measurement. Stale, missing, mismatched, or
+historical route artifacts remain technical evidence instead of creating a
+household warning. AirPlay synchronization remains source-specific rather than
+becoming a USB low-latency claim.
+
+`AudioHealthSampler` owns the current-stream projection and feeds observations
+to [`jasper/control/audio_incidents.py`](../jasper/control/audio_incidents.py),
+which owns the incident lifecycle, current-session rollup, and bounded store.
+Ongoing conditions cannot be evicted by recovered blips, recovered entries
+coalesce, and the browser shows at most five recent rows. A normalized,
+allowlisted freeze frame is captured only at an incident transition and
+persisted atomically in the bounded
+`/var/lib/jasper/audio_health_incidents.json` ring (20 records, 128 KiB read
+cap); corrupt, oversized, symlinked, or newer-schema input fails soft. The
+sampler does not write on ordinary 5-second observations. Known-inaudible
+Camilla short reads remain collapsed technical evidence unless an audible
+boundary also fails. The legacy `airplay_health` block is retained for existing
+consumers and deeper AirPlay forensics.
 
 ---
 
@@ -571,8 +589,10 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 ---
 
 Last verified: 2026-07-14 (normalized audio-health ownership, cadence,
-continuity-vs-timing semantics, bounded issue lifecycle, and legacy AirPlay
-compatibility rechecked against `jasper/control/audio_health.py`,
+current-stream/session projection, continuity-vs-timing semantics, bounded
+persistent incident lifecycle, and legacy AirPlay compatibility rechecked
+against `jasper/control/audio_health.py`,
+`jasper/control/audio_incidents.py`,
 `jasper/control/airplay_health.py`, `jasper/control/server.py`, and their
 contract tests). Prior full operational pass 2026-07-12 (structured event values with
 backslashes, every ASCII control, NEL, and Unicode line/paragraph separators
