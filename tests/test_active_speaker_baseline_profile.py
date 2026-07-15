@@ -2282,6 +2282,38 @@ def test_layer_a_fingerprint_ignores_capture_only_mutation(tmp_path: Path) -> No
     )
 
 
+def test_layer_a_fingerprint_ignores_camilla_readback_null_defaults(
+    tmp_path: Path,
+) -> None:
+    baseline_yaml = _applied_layer_a_yaml(tmp_path)
+    readback = yaml_lib.safe_load(baseline_yaml)
+    readback["devices"].update({
+        "adjust_period": None,
+        "multithreaded": None,
+        "volume_ramp_time": None,
+    })
+    split_index = next(
+        index
+        for index, step in enumerate(readback["pipeline"])
+        if step.get("type") == "Mixer"
+    )
+    split_name = readback["pipeline"][split_index]["name"]
+    for step in readback["pipeline"][split_index:]:
+        step.update({"bypassed": None, "description": None})
+    for route in readback["mixers"][split_name]["mapping"]:
+        route["mute"] = None
+        for source in route["sources"]:
+            source.update({"mute": None, "scale": None})
+    for step in readback["pipeline"][split_index:]:
+        for name in step.get("names", []):
+            readback["filters"][name]["description"] = None
+            readback["filters"][name]["parameters"]["scale"] = None
+
+    assert active_layer_a_fingerprint(yaml_lib.safe_dump(readback)) == (
+        active_layer_a_fingerprint(baseline_yaml)
+    )
+
+
 def test_recompose_baseline_yaml_refuses_when_preview_not_ready() -> None:
     # When the saved evidence can no longer produce a baseline, recompose returns
     # (None, issues) so the carrier refuses instead of emitting a partial graph.

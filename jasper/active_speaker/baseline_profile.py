@@ -160,6 +160,27 @@ def topology_config_fingerprint(topology: OutputTopology) -> str:
     })
 
 
+def _canonicalize_camilla_defaults(value: Any) -> Any:
+    """Remove representation-only null defaults from Camilla readback.
+
+    CamillaDSP's ``active_raw`` re-serialization writes omitted optional
+    mapping fields back as explicit YAML nulls.  Omitted and null mean the same
+    default to Camilla, so they must not make a safely loaded Layer-A graph
+    appear different from the immutable YAML that produced it.  Non-null
+    values and list positions remain exact and therefore hardware-bound.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            key: _canonicalize_camilla_defaults(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [_canonicalize_camilla_defaults(item) for item in value]
+    return value
+
+
 def active_layer_a_fingerprint(config_text: str) -> str:
     """Fingerprint the exact driver-domain suffix of one active graph.
 
@@ -237,14 +258,14 @@ def active_layer_a_fingerprint(config_text: str) -> str:
             raise ActiveSpeakerConfigError("active Layer-A mixer is missing")
         referenced_mixers[name] = definition
 
-    return _fingerprint({
+    return _fingerprint(_canonicalize_camilla_defaults({
         "schema_version": 1,
         "domain": "jts_active_layer_a_v1",
         "output_devices": output_devices,
         "mixers": referenced_mixers,
         "pipeline_suffix": suffix,
         "filters": referenced_filters,
-    })
+    }))
 
 
 def _source_payload(
