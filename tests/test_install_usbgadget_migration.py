@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
+NM_DEVICE_POLICY = ROOT / "deploy" / "usb-network" / "90-jasper-usbnet.conf"
 
 
 def _harness(
@@ -231,3 +232,33 @@ def test_enable_usbgadget_does_not_interpret_or_restore_canonical_on():
     assert "source_intent_enabled" not in body
     assert "systemctl enable jasper-usbsink.service" not in body
     assert "systemctl start jasper-usbsink.service" not in body
+
+
+def test_usbnet_networkmanager_policy_owns_only_usb0_without_carrier():
+    """Override the OS gadget default narrowly; keep carrierless static IP up."""
+
+    policy = NM_DEVICE_POLICY.read_text(encoding="utf-8")
+
+    assert "[device-jts-usb]" in policy
+    assert "match-device=interface-name:usb0" in policy
+    assert "managed=1" in policy
+    assert "ignore-carrier=yes" in policy
+    assert "match-device=*" not in policy
+
+
+def test_usbnet_install_reloads_policy_and_bounds_existing_device_activation():
+    """Upgrades converge an existing usb0; later recreation is NM-owned."""
+
+    source = FRAGMENT.read_text(encoding="utf-8")
+    body = source.split("install_usb_network_files() {", 1)[1].split("\n}\n", 1)[0]
+
+    assert 'deploy/usb-network/90-jasper-usbnet.conf"' in body
+    assert "/etc/NetworkManager/conf.d/90-jasper-usbnet.conf" in body
+    assert "nmcli --wait 10 general reload conf" in body
+    assert "nmcli --wait 10 connection load" in body
+    assert "/etc/NetworkManager/system-connections/jts-usb.nmconnection" in body
+    assert "nmcli --wait 10 connection reload" not in body
+    assert "nmcli --wait 10 device set usb0 managed yes" in body
+    assert "nmcli --wait 10 -t -f NAME,DEVICE connection show --active" in body
+    assert "nmcli --wait 10 connection up jts-usb ifname usb0" in body
+    assert "event=install.usb_network_converged" in body

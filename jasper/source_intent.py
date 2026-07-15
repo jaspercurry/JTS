@@ -81,6 +81,7 @@ _MAX_INTENT_BYTES = 64 * 1024
 _MAX_STATUS_BYTES = 64 * 1024
 _REQUEST_LOCK_TIMEOUT_SEC = 2.0
 SOURCE_RECONCILE_LOCK_TIMEOUT_SECONDS = 5.0
+_INVALIDATING_RECONCILE_LOCK_TIMEOUT_SECONDS = 788.0
 _RESET_FAILED_ACTION_TIMEOUT_SEC = 5.0
 _USB_DIRECT_SETTLE_ATTEMPTS = 20
 _USB_DIRECT_SETTLE_SECONDS = 0.25
@@ -1758,12 +1759,30 @@ def _reconcile_once(
     return 1 if failures else 0
 
 
+def _invalidate_reconcile_status(path: str) -> bool:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        log_event(
+            logger,
+            "source_intent.status_invalidation_failed",
+            path=path,
+            error=str(exc),
+            level=logging.ERROR,
+        )
+        return False
+    return True
+
+
 def reconcile(
     *,
     env_path: str = SOURCE_INTENT_ENV,
     ops: ReconcileOps | None = None,
     status_path: str | None = None,
     status_writer: StatusWriter | None = None,
+    invalidate_status_before: bool = False,
 ) -> int:
     """Serialize and converge every source to the latest persisted intent.
 
@@ -1773,7 +1792,20 @@ def reconcile(
     """
 
     try:
-        with source_reconcile_lock(env_path=env_path):
+        with source_reconcile_lock(
+            env_path=env_path,
+            timeout_sec=(
+                _INVALIDATING_RECONCILE_LOCK_TIMEOUT_SECONDS
+                if invalidate_status_before
+                else SOURCE_RECONCILE_LOCK_TIMEOUT_SECONDS
+            ),
+        ):
+            if (
+                invalidate_status_before
+                and status_path is not None
+                and not _invalidate_reconcile_status(status_path)
+            ):
+                return 1
             return _reconcile_once(
                 env_path=env_path,
                 ops=ops,
@@ -1781,6 +1813,8 @@ def reconcile(
                 status_writer=status_writer,
             )
     except TimeoutError as exc:
+        if invalidate_status_before and status_path is not None:
+            _invalidate_reconcile_status(status_path)
         log_event(
             logger,
             "source_intent.lock_timeout",
@@ -1819,6 +1853,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-path", default=SOURCE_INTENT_ENV)
     parser.add_argument("--status-path", default=SOURCE_STATUS_PATH)
     parser.add_argument("--reason", default="")
+    parser.add_argument(
+        "--invalidate-status-before",
+        action="store_true",
+        help="remove the prior acknowledgement after acquiring the reconcile lock",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
@@ -1837,7 +1876,11 @@ def main(argv: list[str] | None = None) -> int:
             level=logging.ERROR,
         )
         return 1
-    return reconcile(env_path=args.env_path, status_path=args.status_path)
+    return reconcile(
+        env_path=args.env_path,
+        status_path=args.status_path,
+        invalidate_status_before=args.invalidate_status_before,
+    )
 
 
 if __name__ == "__main__":

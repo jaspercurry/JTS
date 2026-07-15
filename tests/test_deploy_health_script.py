@@ -254,6 +254,7 @@ def _fanin_status(
 
 def _outputd_status(
     *,
+    uptime_seconds: Any = 100.0,
     backend: Any = "alsa",
     content_xruns: Any = 0,
     dac_xruns: Any = 0,
@@ -262,6 +263,7 @@ def _outputd_status(
     progress_age_ms: Any = 100,
 ) -> dict[str, Any]:
     return {
+        "uptime_seconds": uptime_seconds,
         "backend": backend,
         "content": {
             "xrun_count": content_xruns,
@@ -283,6 +285,7 @@ def _run_main(
     radio_issues: list[str] | None = None,
     fanin_payloads: list[Any] | None = None,
     outputd_payload: Any | None = None,
+    outputd_payloads: list[Any] | None = None,
     usb_runtime_matches_intent: bool = True,
     usb_card_present: bool | None = None,
     usb_effective: str | None = None,
@@ -310,7 +313,9 @@ def _run_main(
     monkeypatch.setattr(health.time, "sleep", lambda _seconds: None)
 
     try:
-        saved_usb_desired = health._source_expectations(source_intent_file)["usbsink"]
+        saved_usb_desired = health._source_expectations_with_fingerprint(
+            source_intent_file
+        )[0]["usbsink"]
     except RuntimeError:
         saved_usb_desired = False
     if usb_effective is None:
@@ -321,8 +326,14 @@ def _run_main(
     usb_runtime_on = usb_effective == "on"
     source_status_file = short_socket_dir / "source-status.json"
     if usb_status_text is None:
+        intent_bytes = (
+            source_intent_file.read_bytes() if source_intent_file.exists() else b""
+        )
+        intent_fingerprint = health.hashlib.sha256(intent_bytes).hexdigest()
         usb_status_text = json.dumps(
             {
+                "completed_monotonic_ns": time.monotonic_ns(),
+                "intent_fingerprint": intent_fingerprint,
                 "sources": {
                     "usbsink": {
                         "desired": "enabled" if saved_usb_desired else "disabled",
@@ -366,16 +377,27 @@ def _run_main(
         _fanin_status(usb_direct=usb_runtime_on),
         _fanin_status(usb_direct=usb_runtime_on),
     ]
-    outputd_payload = _outputd_status() if outputd_payload is None else outputd_payload
+    if outputd_payloads is None:
+        outputd_payload = (
+            _outputd_status() if outputd_payload is None else outputd_payload
+        )
+        outputd_later = dict(outputd_payload)
+        first_uptime = outputd_payload.get("uptime_seconds")
+        if (
+            not isinstance(first_uptime, bool)
+            and isinstance(first_uptime, (int, float))
+        ):
+            outputd_later["uptime_seconds"] = first_uptime + 1
+        outputd_payloads = [outputd_payload, outputd_later]
 
     if in_process_status:
-        payloads = iter([*fanin_payloads, outputd_payload])
+        payloads = iter([*fanin_payloads, *outputd_payloads])
         monkeypatch.setattr(health, "_status_json", lambda _path: next(payloads))
         return health.main()
 
     with (
         _SplitJsonStatusServer(fanin_path, fanin_payloads),
-        _SplitJsonStatusServer(outputd_path, [outputd_payload]),
+        _SplitJsonStatusServer(outputd_path, outputd_payloads),
     ):
         return health.main()
 
@@ -407,12 +429,29 @@ def test_read_install_profile_uses_canonical_fallbacks_and_legacy_aliases(
 def test_source_intent_reader_uses_each_fixed_source_default_when_absent(
     tmp_path: Path,
 ) -> None:
-    assert health._source_expectations(tmp_path / "missing.env") == {
+    expectations, _ = health._source_expectations_with_fingerprint(
+        tmp_path / "missing.env"
+    )
+    assert expectations == {
         "airplay": True,
         "spotify": True,
         "bluetooth": True,
         "usbsink": False,
     }
+
+
+def test_source_intent_fingerprint_matches_coordinator_owner(tmp_path: Path) -> None:
+    from jasper.source_intent import _intent_fingerprint
+
+    text = (
+        f"{health.AIRPLAY_INTENT_KEY}=disabled\n"
+        f"{health.USBSINK_INTENT_KEY}=enabled\n"
+    )
+    intent = tmp_path / "source_intent.env"
+    intent.write_text(text, encoding="utf-8")
+
+    _, fingerprint = health._source_expectations_with_fingerprint(intent)
+    assert fingerprint == _intent_fingerprint(text)
 
 
 def test_usb_effective_status_accepts_unavailable_and_rejects_malformed(
@@ -422,6 +461,8 @@ def test_usb_effective_status_accepts_unavailable_and_rejects_malformed(
     status.write_text(
         json.dumps(
             {
+                "completed_monotonic_ns": 1,
+                "intent_fingerprint": "0" * 64,
                 "sources": {
                     "usbsink": {
                         "desired": "enabled",
@@ -464,6 +505,8 @@ def test_usb_effective_status_rejects_impossible_or_stale_intent(
     status.write_text(
         json.dumps(
             {
+                "completed_monotonic_ns": 1,
+                "intent_fingerprint": "0" * 64,
                 "sources": {
                     "usbsink": {
                         "desired": desired,
@@ -499,7 +542,8 @@ def test_source_intent_reader_matches_last_wins_quoted_env_format(
         encoding="utf-8",
     )
 
-    assert health._source_expectations(intent) == {
+    expectations, _ = health._source_expectations_with_fingerprint(intent)
+    assert expectations == {
         "airplay": True,
         "spotify": False,
         "bluetooth": False,
@@ -517,11 +561,11 @@ def test_source_intent_reader_enforces_byte_cap_and_strict_utf8(
         "é".encode("utf-8") * (health.MAX_SOURCE_INTENT_BYTES // 2 + 1)
     )
     with pytest.raises(RuntimeError, match="exceeds.*byte cap"):
-        health._source_expectations(intent)
+        health._source_expectations_with_fingerprint(intent)
 
     intent.write_bytes(b"\xff")
     with pytest.raises(RuntimeError, match="cannot decode.*UTF-8"):
-        health._source_expectations(intent)
+        health._source_expectations_with_fingerprint(intent)
 
 
 def test_source_intent_reader_refuses_symlink_and_fifo_without_blocking(
@@ -532,13 +576,13 @@ def test_source_intent_reader_refuses_symlink_and_fifo_without_blocking(
     intent = tmp_path / "source_intent.env"
     intent.symlink_to(target)
     with pytest.raises(RuntimeError, match="cannot read"):
-        health._source_expectations(intent)
+        health._source_expectations_with_fingerprint(intent)
     assert target.read_text(encoding="utf-8").endswith("=enabled\n")
 
     intent.unlink()
     os.mkfifo(intent)
     with pytest.raises(RuntimeError, match="not a regular file"):
-        health._source_expectations(intent)
+        health._source_expectations_with_fingerprint(intent)
 
 
 @pytest.mark.parametrize(
@@ -558,7 +602,7 @@ def test_source_intent_reader_rejects_malformed_recognized_values(
     intent.write_text(f"{key}=maybe\n", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="expected enabled or disabled"):
-        health._source_expectations(intent)
+        health._source_expectations_with_fingerprint(intent)
 
 
 def test_source_intent_reader_rejects_unknown_owned_key(tmp_path: Path) -> None:
@@ -569,7 +613,7 @@ def test_source_intent_reader_rejects_unknown_owned_key(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="unrecognized source intent key"):
-        health._source_expectations(intent)
+        health._source_expectations_with_fingerprint(intent)
 
 
 def test_usb_source_health_matches_card_and_direct_lane(tmp_path: Path) -> None:
@@ -830,8 +874,13 @@ def test_stale_usb_reconcile_desired_fails_deploy_health(
     stub_systemctl: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    source_intent = f"{health.USBSINK_INTENT_KEY}=disabled\n"
     status = json.dumps(
         {
+            "completed_monotonic_ns": 1,
+            "intent_fingerprint": health.hashlib.sha256(
+                source_intent.encode("utf-8")
+            ).hexdigest(),
             "sources": {
                 "usbsink": {
                     "desired": "enabled",
@@ -846,13 +895,125 @@ def test_stale_usb_reconcile_desired_fails_deploy_health(
     assert _run_main(
         monkeypatch,
         short_socket_dir,
-        source_intent=f"{health.USBSINK_INTENT_KEY}=disabled\n",
+        source_intent=source_intent,
         usb_status_text=status,
     ) == 1
 
     output = capsys.readouterr().out
     assert "FAIL USB Audio Input status" in output
     assert "status is stale" in output
+
+
+def test_stale_same_desired_usb_reconcile_fingerprint_fails_deploy_health(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status = json.dumps(
+        {
+            "completed_monotonic_ns": 1,
+            # This is a valid acknowledgement for the prior empty intent file.
+            "intent_fingerprint": health.hashlib.sha256(b"").hexdigest(),
+            "sources": {
+                "usbsink": {
+                    "desired": "disabled",
+                    "effective": "off",
+                    "result": "ok",
+                    "reason": "",
+                }
+            },
+        }
+    )
+
+    assert _run_main(
+        monkeypatch,
+        short_socket_dir,
+        # USB remains disabled, but another persisted source changed.
+        source_intent=f"{health.AIRPLAY_INTENT_KEY}=disabled\n",
+        usb_status_text=status,
+    ) == 1
+
+    output = capsys.readouterr().out
+    assert "FAIL USB Audio Input status" in output
+    assert "status is stale: intent does not match" in output
+
+
+def test_source_intent_change_during_health_probe_fails_final_stability_check(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    original = health._source_expectations_with_fingerprint
+    calls = 0
+
+    def changing_fingerprint(path=None):
+        nonlocal calls
+        expectations, fingerprint = original(path)
+        calls += 1
+        if calls == 3:
+            return expectations, "f" * 64
+        return expectations, fingerprint
+
+    monkeypatch.setattr(
+        health,
+        "_source_expectations_with_fingerprint",
+        changing_fingerprint,
+    )
+
+    assert _run_main(monkeypatch, short_socket_dir) == 1
+
+    output = capsys.readouterr().out
+    assert "FAIL source intent stability" in output
+    assert "changed during health verification" in output
+
+
+def test_invalid_source_intent_on_final_reread_fails_stability_check(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    original = health._source_expectations_with_fingerprint
+    calls = 0
+
+    def invalid_final_read(path=None):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("source intent became unreadable")
+        return original(path)
+
+    monkeypatch.setattr(
+        health,
+        "_source_expectations_with_fingerprint",
+        invalid_final_read,
+    )
+
+    assert _run_main(monkeypatch, short_socket_dir) == 1
+
+    output = capsys.readouterr().out
+    assert "FAIL source intent stability" in output
+    assert "source intent became unreadable" in output
+
+
+def test_install_replay_invalidates_previous_source_acknowledgement() -> None:
+    installer = (
+        ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
+    ).read_text(encoding="utf-8")
+    function = installer.split("reapply_source_intent() {", maxsplit=1)[1].split(
+        "\n}\n", maxsplit=1
+    )[0]
+
+    invalidation = "rm -f /run/jasper-source-intent/status.json"
+    assert function.count(invalidation) == 2
+    assert "--reason install --invalidate-status-before" in function
+    assert "if ! /usr/bin/timeout --foreground --kill-after=5s 793s" in function
+    first_unlink = function.index(invalidation)
+    reconcile = function.index("jasper-source-intent-reconcile")
+    second_unlink = function.index(invalidation, first_unlink + 1)
+    assert first_unlink < reconcile < second_unlink
 
 
 @pytest.mark.parametrize("profile", ["streambox", "endpoint", "satellite"])
@@ -1171,8 +1332,6 @@ def test_inactive_bluetooth_agent_fails_when_bluetooth_is_desired_on(
         (None, _outputd_status(backend="pipewire"), "backend='pipewire'"),
         (None, _outputd_status(content_xruns=1), "xruns=1/0"),
         (None, _outputd_status(dac_xruns=1), "xruns=0/1"),
-        (None, _outputd_status(empty_periods=1), "empty=1"),
-        (None, _outputd_status(eagain_count=1), "eagain=1"),
         (None, _outputd_status(progress_age_ms=2001), "progress_age_ms=2001"),
     ],
 )
@@ -1196,6 +1355,115 @@ def test_main_fails_on_xrun_progress_or_outputd_health_regression(
     )
 
     assert detail in capsys.readouterr().out
+
+
+def test_outputd_stable_startup_starvation_counters_are_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    first = _outputd_status(
+        uptime_seconds=100.0,
+        empty_periods=2,
+        eagain_count=2,
+    )
+    later = _outputd_status(
+        uptime_seconds=101.0,
+        empty_periods=2,
+        eagain_count=2,
+    )
+
+    assert _run_main(
+        monkeypatch,
+        short_socket_dir,
+        outputd_payloads=[first, later],
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert "empty=2 eagain=2 empty_delta=0 eagain_delta=0" in output
+    assert "deploy health passed" in output
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        _outputd_status(uptime_seconds=100.0, backend="pipewire"),
+        _outputd_status(uptime_seconds=100.0, content_xruns=1),
+        _outputd_status(uptime_seconds=100.0, progress_age_ms=2001),
+    ],
+)
+def test_outputd_first_bad_snapshot_cannot_be_erased_by_clean_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+    first: dict[str, Any],
+) -> None:
+    later = _outputd_status(uptime_seconds=101.0)
+
+    assert _run_main(
+        monkeypatch,
+        short_socket_dir,
+        outputd_payloads=[first, later],
+    ) == 1
+
+    assert "FAIL jasper-outputd STATUS" in capsys.readouterr().out
+
+
+def test_outputd_uptime_reset_fails_even_when_both_snapshots_are_clean(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert _run_main(
+        monkeypatch,
+        short_socket_dir,
+        outputd_payloads=[
+            _outputd_status(uptime_seconds=100.0),
+            _outputd_status(uptime_seconds=1.0),
+        ],
+    ) == 1
+
+    output = capsys.readouterr().out
+    assert "FAIL jasper-outputd STATUS" in output
+    assert "uptime_seconds=100->1" in output
+
+
+@pytest.mark.parametrize(
+    ("first", "later", "detail"),
+    [
+        (
+            _outputd_status(empty_periods=2, eagain_count=2),
+            _outputd_status(empty_periods=3, eagain_count=2),
+            "empty_delta=1",
+        ),
+        (
+            _outputd_status(empty_periods=2, eagain_count=2),
+            _outputd_status(empty_periods=2, eagain_count=3),
+            "eagain_delta=1",
+        ),
+    ],
+)
+def test_outputd_growing_starvation_counters_fail(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+    first: dict[str, Any],
+    later: dict[str, Any],
+    detail: str,
+) -> None:
+    assert _run_main(
+        monkeypatch,
+        short_socket_dir,
+        outputd_payloads=[first, later],
+    ) == 1
+
+    output = capsys.readouterr().out
+    assert "FAIL jasper-outputd STATUS" in output
+    assert detail in output
 
 
 @pytest.mark.parametrize(
@@ -1224,6 +1492,18 @@ def test_nested_progress_requires_nonnegative_integer(value: Any) -> None:
     payload = {"watchdog": {"last_progress_age_ms": value}}
     with pytest.raises(RuntimeError, match="not a nonnegative int"):
         health._progress_age_ms(payload)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, True, False, "1", -1, float("nan"), float("inf")],
+)
+def test_outputd_uptime_requires_finite_nonnegative_number(value: Any) -> None:
+    with pytest.raises(RuntimeError, match="finite nonnegative number"):
+        health._uptime_seconds({"uptime_seconds": value})
+
+    assert health._uptime_seconds({"uptime_seconds": 0}) == 0.0
+    assert health._uptime_seconds({"uptime_seconds": 1.25}) == 1.25
 
 
 @pytest.mark.parametrize(

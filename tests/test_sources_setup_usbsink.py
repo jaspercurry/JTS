@@ -117,15 +117,16 @@ def test_index_html_uses_shared_toggle_markup_and_csrf_meta():
     assert '<script type="module" src="/assets/sources/js/main.js">' in html
 
 
-def test_gather_state_includes_unavailable_usbsink(monkeypatch):
+def test_gather_state_reports_desired_off_when_usbsink_is_unavailable(monkeypatch):
     _patch_state_dependencies(monkeypatch, usb_ready=False)
 
     state = sources_setup._gather_state()["usbsink"]
 
     assert state["enabled"] is False
     assert state["desired"] is False
-    assert state["effective"] == "unavailable"
+    assert state["effective"] == "off"
     assert state["available"] is False
+    assert "USB hardware unavailable" in str(state["unavailableReason"])
 
 
 def test_gather_state_preserves_desired_on_while_usb_hardware_unavailable(
@@ -211,7 +212,7 @@ def test_gather_state_usbsink_unavailable_when_gadget_unit_missing(monkeypatch):
     state = sources_setup._gather_state()["usbsink"]
 
     assert state["available"] is False
-    assert state["effective"] == "unavailable"
+    assert state["effective"] == "off"
     assert "composite gadget unit" in str(state["unavailableReason"])
 
 

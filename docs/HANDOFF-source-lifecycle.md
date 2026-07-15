@@ -35,12 +35,15 @@ per-source `source_intent_enabled(source)` reader raises only for that source's
 malformed value, so an invalid AirPlay value cannot park valid Spotify or
 Bluetooth resources.
 
-The user-facing state keeps two truths separate:
+The user-facing state keeps intent, effective state, and capability separate:
 
 - **desired** is the persisted household choice. The compatibility field
   `enabled` on `/sources/state` means the same thing.
 - **effective** is what the speaker can currently provide: `on`, `off`,
   `degraded`, `parked`, or `unavailable`.
+- **available** says whether the current hardware/install can provide a future
+  On transition. It is independent of effective state: desired Off with every
+  resource withdrawn is `effective=off` even when `available=false`.
 
 An apply failure does not roll desired state back. The POST returns an error,
 but the UI reads the saved choice back and shows it checked with a degraded
@@ -49,11 +52,14 @@ Bluetooth radio is not ready” instead of snapping back to Off.
 
 `parked` and `unavailable` are deliberately different. `parked` means grouping
 temporarily denies an otherwise-supported local source and retains derived
-enablement for restore. USB `unavailable` means the hardware resolver assigned
-the data controller to output-DAC host mode (or a role change awaits reboot):
-the coordinator preserves household intent but disables/stops every derived
-USB audio resource and reports the stable hardware reason without treating the
-expected state as a failed apply.
+enablement for restore. `unavailable` means desired On cannot currently be
+provided. For USB, that happens when the hardware resolver assigns the data
+controller to output-DAC host mode (or a role change awaits reboot): the
+coordinator preserves household intent but disables/stops every derived USB
+audio resource and reports the stable hardware reason without treating the
+expected state as a failed apply. If the saved choice is already Off and those
+resources are withdrawn, effective remains `off`; the independent availability
+field and reason still explain why On cannot be selected.
 
 ## The final start boundary
 
@@ -237,17 +243,19 @@ last-resort fail-closed state if UAC2 cannot be withdrawn.
 
 Before either ordinary On/Off sequence, the USB applier reads the reconciled
 hardware role. When USB audio hardware is unavailable it disables/stops the
-readiness marker, withdraws UAC2, disarms direct capture, and returns
-`effective=unavailable` with the resolver reason. In a stable host or
-unsupported role, it also stops the entire composite gadget. There is one
-bounded deployment grace: while a Zero-class controller is still actively
-peripheral but a host-role change is pending reboot, management transport
-remains available. The applier keeps or restores NCM-only composition so a
-deployment using that link can finish, but strict audio availability remains
-false and UAC2 stays withdrawn. After reboot activates host mode, the next
-reconcile stops the gadget normally. The applier never changes saved source
-intent or the USB controller role; only the hardware installer/reconciler owns
-that boot decision.
+readiness marker, withdraws UAC2, and disarms direct capture. Desired On
+returns `effective=unavailable` with the resolver reason; desired Off returns
+`effective=off` once that withdrawal is proven. In both cases the Sources
+surface independently reports `available=false` and the hardware reason. In a
+stable host or unsupported role, the applier also stops the entire composite
+gadget. There is one bounded deployment grace: while a Zero-class controller
+is still actively peripheral but a host-role change is pending reboot,
+management transport remains available. The applier keeps or restores NCM-only
+composition so a deployment using that link can finish, but strict audio
+availability remains false and UAC2 stays withdrawn. After reboot activates
+host mode, the next reconcile stops the gadget normally. The applier never
+changes saved source intent or the USB controller role; only the hardware
+installer/reconciler owns that boot decision.
 
 The runtime combo-health fallback uses the same ownership boundary. After it
 records the fallback marker, it calls the source coordinator's narrow USB
@@ -344,9 +352,15 @@ grouped-playback order and UI contract remain in
   requires it.
 - **Deploy:** both profile installers refresh only renderers that were already
   active, then invoke the same coordinator directly as root with `--reason
-  install`. Install never starts or enables an Off source as a temporary
-  baseline. A failed source warns and install continues so the web UI and
-  diagnostics remain available; boot or the next toggle retries.
+  install --invalidate-status-before`. Install removes the prior completion
+  fact before waiting, drains the canonical reconcile lock for at most 788
+  seconds, and removes the fact again under that lock before applying. The
+  outer 793-second process ceiling deliberately leaves little room for a fresh
+  pass after a worst-case older pass: timeout warns and leaves no acceptable
+  acknowledgement, so deploy health fails closed rather than certifying stale
+  state. Install never starts or enables an Off source as a temporary baseline.
+  A failed source warns and install continues so the web UI and diagnostics
+  remain available; boot or the next toggle retries.
 - **Role change:** grouping changes no source state itself and never changes the
   intent file. After its role plan, it drains any older source pass without
   interrupting it, runs a provably fresh canonical source pass, and waits for
@@ -427,14 +441,15 @@ primary result and the shell only to explain a mismatch.
 5. With JTS4's USB output DAC selected, confirm USB Audio Input reports
    `available=false`, the reason says the shared port is reserved for output,
    no UAC2/NCM gadget is composed, and the saved desired value is not silently
-   rewritten. A Zero configured with a registered I²S DAC is the separate
-   positive gadget-mode validation target.
+   rewritten. Saved Off must report `effective=off`; saved On must report
+   `effective=unavailable`. A Zero configured with a registered I²S DAC is the
+   separate positive gadget-mode validation target.
 6. Redeploy once with Bluetooth Off and once with it On. Run
    `sudo deploy/bin/jasper-deploy-health` from the deployed checkout and
    confirm the persisted state is accepted in both cases rather than repaired
    back to a package default.
 
-### Hardware evidence — JTS4, 2026-07-14
+### Historical hardware evidence — JTS4, 2026-07-14 (pre-role reboot)
 
 The streambox-profile JTS4 passed the Bluetooth portion of this checklist
 through the real CSRF-protected `/sources/set`, `/bluetooth/power`, and
@@ -450,13 +465,27 @@ still needs a final JTS4 replay. On restored RF-kill,
 shared intent and three lock files landed `root:jasper 0660`, and both web
 service owners wrote successfully. Supported deploys in both On and Off states
 preserved the saved intent; the low-memory probe certified the Bluetooth radio
-and units in both states. JTS4 has no configured output DAC, so its unrelated
-outputd fake-backend advisory remained. No physical pairing target or USB UAC2
-host was available; pairing and USB re-enumeration remain explicit gaps.
+and units in both states. At that pre-role-reboot snapshot JTS4 had no
+observable configured output DAC, so its unrelated outputd fake-backend
+advisory remained. No physical pairing target or USB UAC2 host was available;
+pairing and USB re-enumeration remained explicit gaps at that point.
 
-Last verified: 2026-07-14 (USB hardware-unavailable state and final guard
-rechecked separately from follower parking; fingerprinted per-source completion acknowledgement,
-source-aware final start boundary, desired-Off failed-unit reset and timeout budget, declared accessory coverage,
-correction/claim restore races, and USB authorization-plus-readiness composition
-gate rechecked hardware-free; prior JTS4 validation evidence below remains
-current.)
+### Current USB/output evidence — JTS4, 2026-07-15
+
+After the role reboot, JTS4 (Zero 2 W) resolved an active `host` data role and
+detected its Apple USB-C output DAC. The output-hardware artifact reported the
+registered Apple profile ready, outputd used the ALSA backend, Bluetooth was
+enabled, USB Audio Input was intentionally unavailable, and strict deploy
+health completed with 0 failures / 0 warnings. This validates the Zero
+USB-output negative gadget path and output recovery; it does **not** validate
+UAC2 or positive gadget mode, which still requires a registered I²S-output
+Zero or a board with separate host ports.
+
+Last verified: 2026-07-15 (desired-Off/effective-Off semantics with independent
+USB availability, JTS4 active-host Apple-DAC recovery, and the final guard
+rechecked separately from follower parking; fingerprinted per-source
+completion acknowledgement, source-aware final start boundary, desired-Off
+failed-unit reset and timeout budget, declared accessory coverage,
+correction/claim restore races, and USB authorization-plus-readiness
+composition gate rechecked; the dated 2026-07-14 pre-reboot evidence is
+retained above as history.)

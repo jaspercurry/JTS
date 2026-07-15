@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 import json
 import os
@@ -307,6 +308,78 @@ def test_source_request_and_reconcile_locks_are_shared_group_writable(tmp_path):
     host = _FakeHost()
     assert source_intent.reconcile(env_path=path, ops=host.ops()) == 0
     assert os.stat(f"{path}.reconcile.lock").st_mode & 0o777 == 0o660
+
+
+def test_status_invalidation_happens_under_lock_before_apply(tmp_path, monkeypatch):
+    env = str(tmp_path / "intent.env")
+    status = tmp_path / "status.json"
+    status.write_text("old", encoding="utf-8")
+    events = []
+
+    @contextmanager
+    def fake_lock(*, env_path, timeout_sec):
+        assert env_path == env
+        assert timeout_sec == 788
+        events.append("lock")
+        yield
+        events.append("unlock")
+
+    def fake_reconcile_once(**kwargs):
+        assert kwargs["env_path"] == env
+        assert kwargs["status_path"] == str(status)
+        assert not status.exists()
+        events.append("apply")
+        return 0
+
+    monkeypatch.setattr(source_intent, "source_reconcile_lock", fake_lock)
+    monkeypatch.setattr(source_intent, "_reconcile_once", fake_reconcile_once)
+
+    assert source_intent.reconcile(
+        env_path=env,
+        status_path=str(status),
+        invalidate_status_before=True,
+    ) == 0
+    assert events == ["lock", "apply", "unlock"]
+
+
+def test_status_invalidation_failure_prevents_apply(tmp_path, monkeypatch, caplog):
+    env = str(tmp_path / "intent.env")
+    status = tmp_path / "status.json"
+    status.mkdir()
+    monkeypatch.setattr(
+        source_intent,
+        "_reconcile_once",
+        lambda **_kwargs: pytest.fail("must not apply without invalidating status"),
+    )
+
+    with caplog.at_level("ERROR"):
+        assert source_intent.reconcile(
+            env_path=env,
+            status_path=str(status),
+            invalidate_status_before=True,
+        ) == 1
+
+    assert "event=source_intent.status_invalidation_failed" in caplog.text
+
+
+def test_lock_timeout_invalidates_old_status(tmp_path, monkeypatch):
+    env = str(tmp_path / "intent.env")
+    status = tmp_path / "status.json"
+    status.write_text("old", encoding="utf-8")
+
+    @contextmanager
+    def timeout_lock(**_kwargs):
+        raise TimeoutError("busy")
+        yield
+
+    monkeypatch.setattr(source_intent, "source_reconcile_lock", timeout_lock)
+
+    assert source_intent.reconcile(
+        env_path=env,
+        status_path=str(status),
+        invalidate_status_before=True,
+    ) == 1
+    assert not status.exists()
 
 
 def test_default_writer_publishes_env_and_inner_lock_for_both_web_owners(
@@ -1532,3 +1605,26 @@ def test_main_returns_reconcile_exit_code(tmp_path, monkeypatch):
         )
         == 1
     )
+
+
+def test_main_passes_install_status_invalidation_to_reconcile(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_reconcile(**kwargs):
+        seen.update(kwargs)
+        return 0
+
+    status = tmp_path / "source-intent" / "status.json"
+    monkeypatch.setattr(source_intent, "reconcile", fake_reconcile)
+
+    assert source_intent.main(
+        [
+            "--status-path",
+            str(status),
+            "--invalidate-status-before",
+            "--reason",
+            "install",
+        ]
+    ) == 0
+    assert seen["status_path"] == str(status)
+    assert seen["invalidate_status_before"] is True

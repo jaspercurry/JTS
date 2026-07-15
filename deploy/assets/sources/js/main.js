@@ -65,14 +65,14 @@ function applyState(state) {
       const degraded =
         typeof s.degradedReason === "string" && !!s.degradedReason;
       note.style.display = unavailable || degraded ? "" : "none";
-      if (
+      if (degraded) {
+        note.textContent = s.degradedReason;
+      } else if (
         unavailable &&
         typeof s.unavailableReason === "string" &&
         s.unavailableReason
       ) {
         note.textContent = s.unavailableReason;
-      } else if (degraded) {
-        note.textContent = s.degradedReason;
       }
     }
   }
@@ -82,14 +82,14 @@ function applyState(state) {
     typeof bt.degradedReason === "string" && !!bt.degradedReason;
   if (el("bt-note")) {
     el("bt-note").style.display = btUnavailable || btDegraded ? "" : "none";
-    if (
+    if (btDegraded) {
+      el("bt-note").textContent = bt.degradedReason;
+    } else if (
       btUnavailable &&
       typeof bt.unavailableReason === "string" &&
       bt.unavailableReason
     ) {
       el("bt-note").textContent = bt.unavailableReason;
-    } else if (btDegraded) {
-      el("bt-note").textContent = bt.degradedReason;
     }
   }
   // USB sink has two warning shapes: unavailable means the toggle cannot

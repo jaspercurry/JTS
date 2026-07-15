@@ -326,21 +326,49 @@ install_usbsink_unit_files() {
 
 install_usb_network_files() {
     # NetworkManager keyfile owning usb0 (10.12.194.1/24, no default route) +
-    # the scoped dnsmasq conf the device-activated jasper-usbnet-dhcp.service
-    # reads. NM stays the box's single network owner. See
+    # a device policy overriding Raspberry Pi OS's blanket "USB gadgets are
+    # unmanaged" udev default + the scoped dnsmasq conf the device-activated
+    # jasper-usbnet-dhcp.service reads. NM stays the box's single network owner. See
     # docs/HANDOFF-usb-gadget.md.
     install -d -m 0755 /etc/NetworkManager/system-connections
+    install -d -m 0755 /etc/NetworkManager/conf.d
     install -m 0600 \
         "${REPO_DIR}/deploy/usb-network/jts-usb.nmconnection" \
         /etc/NetworkManager/system-connections/jts-usb.nmconnection
     install -m 0644 \
+        "${REPO_DIR}/deploy/usb-network/90-jasper-usbnet.conf" \
+        /etc/NetworkManager/conf.d/90-jasper-usbnet.conf
+    install -m 0644 \
         "${REPO_DIR}/deploy/usb-network/usbnet-dnsmasq.conf" \
         /etc/jasper/usbnet-dnsmasq.conf
-    # Best-effort reload so NM picks up the new/updated keyfile without a
-    # reboot. A failure (nmcli absent on a non-Pi CI box, NM not running) must
-    # not fail the install — the profile is picked up on the next NM start.
+    # Reload both policy and profile. On an upgrade usb0 may already exist, so
+    # also make NM reconsider that device and activate the static profile once.
+    # Bounds keep the install path finite. Load only JTS's keyfile: a global
+    # connection reload invokes slow netplan regeneration and can take about
+    # 20 seconds on a loaded Pi Zero 2. Future usb0 recreation is handled by
+    # NM's normal autoconnect lifecycle with no poller or resident helper.
+    # Failures remain non-fatal (nmcli is absent on non-Pi CI boxes and NM may
+    # not be running yet), but are loud so a real speaker is diagnosable.
     if command -v nmcli >/dev/null 2>&1; then
-        nmcli connection reload >/dev/null 2>&1 || true
+        nmcli --wait 10 general reload conf >/dev/null 2>&1 || \
+            echo "  WARN: NetworkManager did not reload USB network device policy"
+        nmcli --wait 10 connection load \
+            /etc/NetworkManager/system-connections/jts-usb.nmconnection \
+            >/dev/null 2>&1 || \
+            echo "  WARN: NetworkManager did not reload jts-usb profile"
+        if [[ -e /sys/class/net/usb0 ]]; then
+            nmcli --wait 10 device set usb0 managed yes >/dev/null 2>&1 || \
+                echo "  WARN: NetworkManager did not take ownership of usb0"
+            if ! nmcli --wait 10 -t -f NAME,DEVICE connection show --active 2>/dev/null | \
+                    grep -Fxq 'jts-usb:usb0'; then
+                if nmcli --wait 10 connection up jts-usb ifname usb0 \
+                        >/dev/null 2>&1; then
+                    echo "  event=install.usb_network_converged profile=jts-usb interface=usb0"
+                else
+                    echo "  WARN: NetworkManager did not activate jts-usb on usb0; jasper-doctor reports the actionable state"
+                fi
+            fi
+        fi
     fi
 }
 
@@ -724,9 +752,17 @@ locked_transform_env_file(
 )
 PY
     fi
-    /usr/bin/timeout --foreground --kill-after=5s 793s \
-        /opt/jasper/.venv/bin/jasper-source-intent-reconcile --reason install || \
+    # Remove the old acknowledgement immediately, then again under the
+    # coordinator lock. The long lock wait drains any legitimate in-flight
+    # pass (bounded by the unit's 783 s ceiling); a failed/timeout path removes
+    # the file once more so deploy health cannot accept an older generation.
+    rm -f /run/jasper-source-intent/status.json
+    if ! /usr/bin/timeout --foreground --kill-after=5s 793s \
+        /opt/jasper/.venv/bin/jasper-source-intent-reconcile \
+            --reason install --invalidate-status-before; then
+        rm -f /run/jasper-source-intent/status.json
         echo "  WARN: source intent reconcile failed. Check logs with: journalctl -u jasper-source-intent-reconcile -e"
+    fi
 }
 
 start_streambox_runtime_units() {
