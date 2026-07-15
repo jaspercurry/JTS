@@ -1372,6 +1372,21 @@ class CommissioningEvidenceStore:
         run_id: str,
         artifact: ArtifactIdentity | None = None,
     ) -> CompleteCommissioningEvidence:
+        result = self.reopen_complete_commissioning_evidence_anchor(
+            run_id=run_id,
+            artifact=artifact,
+        )
+        self._verify_complete(result, _ReadBudget())
+        return result
+
+    def reopen_complete_commissioning_evidence_anchor(
+        self,
+        *,
+        run_id: str,
+        artifact: ArtifactIdentity | None = None,
+    ) -> CompleteCommissioningEvidence:
+        """Reopen the typed complete anchor without rereading child WAVs."""
+
         expected_path = complete_relative_path(run_id)
         identity = artifact or self._identity_for_path(expected_path)
         _require_identity_path(identity, expected_path)
@@ -1385,7 +1400,6 @@ class CommissioningEvidenceStore:
                 CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
                 "complete evidence path does not match its exact durable run",
             )
-        self._verify_complete(result, _ReadBudget())
         return result
 
     def publish_complete_isolated_driver_evidence(
@@ -1412,6 +1426,21 @@ class CommissioningEvidenceStore:
     ) -> CompleteIsolatedDriverEvidence:
         """Reopen one exact run-scoped set and every child artifact."""
 
+        result = self.reopen_complete_isolated_driver_evidence_anchor(
+            run_id=run_id,
+            artifact=artifact,
+        )
+        self._verify_complete_isolated_driver_evidence(result, _ReadBudget())
+        return result
+
+    def reopen_complete_isolated_driver_evidence_anchor(
+        self,
+        *,
+        run_id: str,
+        artifact: ArtifactIdentity | None = None,
+    ) -> CompleteIsolatedDriverEvidence:
+        """Reopen the typed isolated anchor without rereading child WAVs."""
+
         expected_path = isolated_driver_evidence_relative_path(run_id)
         identity = artifact or self._identity_for_path(expected_path)
         _require_identity_path(identity, expected_path)
@@ -1425,7 +1454,6 @@ class CommissioningEvidenceStore:
                 CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
                 "isolated evidence path does not match its exact durable run",
             )
-        self._verify_complete_isolated_driver_evidence(result, _ReadBudget())
         return result
 
     def complete_isolated_driver_evidence_fingerprint(
@@ -1435,20 +1463,9 @@ class CommissioningEvidenceStore:
     ) -> str:
         """Read the typed status anchor without rereading every child WAV."""
 
-        expected_path = isolated_driver_evidence_relative_path(run_id)
-        identity = self._identity_for_path(expected_path)
-        _require_identity_path(identity, expected_path)
-        result = self._reopen_typed(
-            identity,
-            CompleteIsolatedDriverEvidence.from_mapping,
-        )
-        self._assert_session(result)
-        if result.plan.authority.run.run_id != run_id:
-            raise CommissioningEvidenceStoreError(
-                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "isolated status anchor does not match its exact durable run",
-            )
-        return result.fingerprint
+        return self.reopen_complete_isolated_driver_evidence_anchor(
+            run_id=run_id
+        ).fingerprint
 
     def _verify_capture(
         self,

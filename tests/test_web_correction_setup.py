@@ -468,6 +468,7 @@ def test_known_post_routes_reach_csrf_guard():
         "/sync/start", "/sync/play", "/sync/analyze",
         "/sync/relay-capture", "/sync/apply", "/sync/stop", "/sync/reset",
         "/crossover/level-match", "/crossover/recover-volume",
+        "/crossover/region-geometry",
         "/crossover/apply",
         "/crossover/relay-capture", "/crossover/relay-cancel",
         "/crossover/driver-test",

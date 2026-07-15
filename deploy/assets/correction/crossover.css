@@ -58,6 +58,14 @@
   flex-wrap: wrap;
 }
 
+.action-form {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+  width: min(100%, 34rem);
+}
+
 .capture-status {
   min-height: 1.25rem;
   margin: 0;
@@ -86,5 +94,10 @@
 
   .measurement-row__actions {
     justify-content: stretch;
+  }
+
+  .action-form {
+    grid-template-columns: 1fr;
+    width: 100%;
   }
 }

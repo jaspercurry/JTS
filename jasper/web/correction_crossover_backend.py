@@ -1427,6 +1427,166 @@ def commissioning_run_status(
     return result
 
 
+def _commissioning_authority_snapshot() -> Any:
+    """Load the exact current product state consumed by the Active host."""
+
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+    )
+    from jasper.active_speaker.commissioning_host import (
+        CommissioningHostAuthoritySnapshot,
+    )
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
+    from jasper.output_topology import load_output_topology
+
+    topology = load_output_topology()
+    applied_profile_raw = load_applied_baseline_profile_state()
+    if not isinstance(applied_profile_raw, Mapping):
+        raise ValueError("the protected applied crossover profile is unavailable")
+    applied_profile = dict(applied_profile_raw)
+    snapshot = applied_profile.get("recomposition_snapshot")
+    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+    preset_raw = snapshot.get("preset")
+    if not isinstance(preset_raw, Mapping):
+        raise ValueError("the protected applied crossover preset is unavailable")
+    preset = ActiveSpeakerPreset.from_mapping(dict(preset_raw))
+    draft = load_design_draft(topology=topology)
+    safety_profile = draft.get("driver_safety_profile")
+    if not isinstance(safety_profile, Mapping):
+        raise ValueError("the confirmed driver safety profile is unavailable")
+    measurements = load_measurement_state(topology)
+    comparison_set = measurements.get("active_comparison_set")
+    if not isinstance(comparison_set, Mapping) or not comparison_set_valid(
+        comparison_set
+    ):
+        raise ValueError("the active crossover comparison set is unavailable")
+    calibration_id = str(comparison_set.get("calibration_id") or "")
+    if not calibration_id:
+        raise ValueError("a calibrated measurement microphone is required")
+    from jasper.audio_measurement.calibration import (
+        CalibrationCurve,
+        load_calibration_record,
+    )
+
+    calibration = load_calibration_record(calibration_id)
+    calibration_curve = calibration.curve
+    if not isinstance(calibration_curve, CalibrationCurve):
+        raise ValueError("the selected microphone calibration is unavailable")
+    return CommissioningHostAuthoritySnapshot(
+        topology=topology,
+        preset=preset,
+        safety_profile=dict(safety_profile),
+        comparison_set=dict(comparison_set),
+        applied_profile=dict(applied_profile),
+        calibration_id=calibration_id,
+        calibration=calibration_curve,
+    )
+
+
+def commissioning_recorder_binding() -> tuple[Any, str]:
+    """Return the exact persisted calibration and recorder identity for capture."""
+
+    from jasper.audio_measurement.calibration import load_calibration_record
+
+    authority = _commissioning_authority_snapshot()
+    device_sha256 = str(authority.comparison_set.get("device_sha256") or "")
+    if len(device_sha256) != 64:
+        raise ValueError("the commissioning recorder identity is unavailable")
+    return load_calibration_record(authority.calibration_id), device_sha256
+
+
+def _commissioning_capture_service() -> Any:
+    from jasper.active_speaker.bundles import sessions_dir
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStore,
+    )
+    from jasper.active_speaker.commissioning_service import (
+        CommissioningCaptureService,
+    )
+
+    run = _COMMISSIONING_RUN_STORE.current_handle()
+    if run is None:
+        raise ValueError("the active crossover commissioning run is not started")
+    evidence_store = CommissioningEvidenceStore.open(
+        sessions_dir() / run.session_id,
+        expected_session_id=run.session_id,
+    )
+    return CommissioningCaptureService(
+        run=run,
+        run_store=_COMMISSIONING_RUN_STORE,
+        evidence_store=evidence_store,
+        load_current_authority=_commissioning_authority_snapshot,
+    )
+
+
+def commissioning_region_status() -> dict[str, Any]:
+    """Project strict summed-region progress from the one Active authority."""
+
+    try:
+        return _commissioning_capture_service().status()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        code = getattr(exc, "code", "region_commissioning_unavailable")
+        return {
+            "schema_version": 1,
+            "kind": "jts_active_region_commissioning_status",
+            "status": "unavailable",
+            "reason": str(code),
+            "detail": str(exc),
+        }
+
+
+def attest_commissioning_region_geometry(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Persist the operator's signed path difference for the current region."""
+
+    expected = str(raw.get("expected_target_fingerprint") or "")
+    if not expected:
+        raise ValueError("the current crossover region identity is required")
+    return _commissioning_capture_service().attest_geometry(
+        expected_target_fingerprint=expected,
+        signed_acoustic_path_difference_mm=raw.get(
+            "signed_acoustic_path_difference_mm"
+        ),
+    )
+
+
+async def capture_next_commissioning_region(
+    raw_capture_transport: Any,
+    *,
+    camilla_factory: CamillaFactory,
+) -> dict[str, Any]:
+    """Execute one server-selected normal/reverse/delay recorder capture."""
+
+    from jasper.active_speaker.commissioning_service import (
+        commissioning_runtime_port,
+    )
+    from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
+
+    _LEVEL_LEASE.assert_volume_safety_resolved()
+    service = _commissioning_capture_service()
+    before = service.status()
+    if before.get("status") != "collecting":
+        raise ValueError("the commissioning run has no recorder capture ready")
+    camilla = camilla_factory()
+    capture = await service.capture_next(
+        commissioning_runtime_port(camilla),
+        raw_capture_transport=raw_capture_transport,
+        config_dir=str(DEFAULT_CAMILLA_CONFIG_DIR),
+    )
+    if capture is None:
+        raise RuntimeError("the server did not issue the expected recorder capture")
+    after = service.status()
+    return {
+        "status": "recorded",
+        "capture_fingerprint": capture.fingerprint,
+        "evidence_kind": capture.evidence_kind,
+        "speaker_group_id": capture.speaker_group_id,
+        "region_id": capture.region_id,
+        "next": after,
+    }
+
+
 def status_payload() -> dict[str, Any]:
     """Return active-crossover targets and saved measurement evidence."""
 
@@ -1469,6 +1629,7 @@ def status_payload() -> dict[str, Any]:
         expected_topology_id=(payload.get("topology") or {}).get("topology_id"),
         expected_profile_context_id=current_context_id,
     )
+    payload["region_commissioning"] = commissioning_region_status()
     try:
         durable_repeats = repeat_admission.snapshot(
             comparison_set if isinstance(comparison_set, Mapping) else None

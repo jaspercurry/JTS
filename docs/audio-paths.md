@@ -556,6 +556,10 @@ at width 8, and the dual-Apple USB-C composite at width 4. Protected startup
 staging follows the durable-outputd boundary: supported DACs resolve to the
 active outputd lane instead of opening `hw:<card>,0` directly, so normal
 `jasper-outputd` ownership is not bypassed.
+The production automatic measurement flow is intentionally narrower than this
+transport capability: it requires a two-way preset and a DAC profile with
+`supports_active_crossover_commissioning=True`, currently only the base DAC8x.
+Other active-lane devices remain modeled but cannot enter that flow.
 Do not infer active-speaker runtime width from physical DAC output count. The
 diagnostic route can use the saved single-DAC physical width, but product apply
 width is declared by the active DAC profile; an eight-output DAC can still lack
@@ -621,7 +625,8 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-07-14 (source-lifecycle ownership and add-a-source
+Last verified: 2026-07-15 (DAC8x/two-way automatic crossover-commissioning
+launch gate rechecked; source-lifecycle ownership and add-a-source
 integration points rechecked against `jasper.source_intent` and
 `jasper.local_sources`; prior 2026-07-07 ring/default path text rechecked against
 `jasper.fanin_coupling`, `jasper.fanin.coupling_auto`, and

@@ -910,6 +910,7 @@ def test_plan_persistence_does_not_invent_live_protection_evidence(
 
 def test_host_progresses_only_exact_operations_to_durable_measured(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = _host_harness(tmp_path)
     observed: list[RegionCaptureOperation] = []
@@ -928,7 +929,26 @@ def test_host_progresses_only_exact_operations_to_durable_measured(
     assert harness.run_store.lifecycle_state(harness.evidence.plan.authority.run) == (
         "measured"
     )
-    assert harness.host.status()["complete"] is True
+    host_status = harness.host.status()
+    assert host_status["complete"] is True
+    assert host_status["hardware_capture_status"] == "hardware_validation_required"
+    fresh_host = CommissioningEvidenceHost(
+        plan=harness.evidence.plan,
+        topology=harness.topology,
+        run_store=harness.run_store,
+        evidence_store=harness.evidence_store,
+        region_inputs=harness.inputs,
+        load_current_authority=lambda: harness.authority,
+    )
+    with monkeypatch.context() as status_patch:
+        status_patch.setattr(
+            CommissioningEvidenceStore,
+            "reopen_complete_commissioning_evidence",
+            lambda _store, **_kwargs: pytest.fail(
+                "status must not deep-reopen summed child WAV evidence"
+            ),
+        )
+        assert fresh_host.status()["complete"] is True
     assert [item.evidence_kind for item in observed[:6]] == [
         "normal",
         "normal",

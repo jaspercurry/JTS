@@ -106,16 +106,15 @@
 > race the phone deadline; the room and sync relay floors remain 30 s. The
 > preceding near-field level step owns microphone
 > and calibration setup; its identity is bound to the protected applied speaker
-> profile. Driver/summed capture reuses that Pi-side calibration and validates
-> the phone-reported realized device before recording acoustic evidence. The
-> relay preserves summed-capture `expect_null`, region Fc, polarity, and delay
-> candidate metadata through both playback and record adapters. That is
-> transport fidelity only: the current crossover envelope exposes one combined
-> capture and the playback backend still loads the immutable applied graph; it
-> does not yet offer per-region normal/reverse actions or a transient reverse-
-> polarity graph. The playback boundary refuses reverse/delay candidates before
-> audio rather than persist unchanged playback under the requested label. The
-> bounded alignment lane owns that graph mutation.
+> profile. Driver capture reuses that in-memory binding. The production summed
+> branch reopens the same calibration id and recorder SHA-256 from the durable
+> comparison set, validates the phone-reported realized device, and records the
+> authenticated `summed_reference_axis_v1` acknowledgement. Its browser body is
+> exactly `{kind:"summed"}`: region, polarity, graph, delay, attempt, ordinal,
+> and admission remain server-owned. The shared crossover relay transport owns
+> phone liveness, Stop/drain/purge, and finishing/commit phases; the existing
+> Active commissioning host owns the normal/reverse/bounded-delay sequence and
+> transient graphs. Legacy direct summed routes remain pre-audio refused.
 > The
 > acoustic proof (real-driver sweep + phone `getUserMedia`/CSP) is parked as
 > H2. **Sync relay fixed in the same pass (pre-existing):**

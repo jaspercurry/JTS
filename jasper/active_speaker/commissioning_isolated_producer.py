@@ -91,7 +91,7 @@ def _missing(error: CommissioningEvidenceStoreError) -> bool:
     return error.code == CommissioningEvidenceStoreErrorCode.MISSING
 
 
-def _current_plan(
+def current_region_evidence_plan(
     *,
     topology: OutputTopology,
     preset: ActiveSpeakerPreset,
@@ -588,7 +588,7 @@ def promote_isolated_driver_capture(
         raise IsolatedCapturePromotionError(
             "capture admissions do not retain current exact protection proof"
         )
-    plan = _current_plan(
+    plan = current_region_evidence_plan(
         topology=topology,
         preset=preset,
         comparison_set=comparison_set,
