@@ -280,7 +280,10 @@ refused before graph load. The typed internal `CommissioningEvidenceHost` and
 `SummedCaptureProducer` now own the server-derived region schedule, exact
 adjacent-output isolation, fresh generation/playback admission, bounded raw-WAV
 ingress, analysis/quality persistence, exact restoration, and lifecycle
-progression to `measured`. Real capture transport and attested geometry remain
+progression to `measured`. The complete normal/reverse/delay program stays bound
+to one normalized applied baseline and microphone-calibration context, and every
+normal, reverse, and delay coordinate requires a distinct live-graph identity.
+Real capture transport and attested geometry remain
 Wave 4; candidate, receipt, and Room-gate authority are unchanged.
 
 ### Wave 3 Active run identity (2026-07-14)

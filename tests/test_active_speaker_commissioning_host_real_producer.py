@@ -9,12 +9,17 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import yaml
 
 from jasper.active_speaker.bundles import open_bundle
-from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+from jasper.active_speaker.baseline_profile import (
+    recompose_applied_baseline_yaml,
+    topology_config_fingerprint,
+)
 from jasper.active_speaker.commissioning_capture_producer import RawCaptureResult
 from jasper.active_speaker.commissioning_evidence import (
     AdmittedRegionCapture,
+    active_region_context_fingerprint,
     active_region_threshold_profile_fingerprint,
     derive_region_evidence_plan,
 )
@@ -38,6 +43,7 @@ from jasper.active_speaker.measurement import (
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement import admitted_playback
 from jasper.audio_measurement.calibration import CalibrationCurve
+from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_commissioning_capture_producer import (
     _fake_playback,
@@ -123,15 +129,6 @@ async def test_real_producer_commits_synthetic_capture_through_host(
         session_id=evidence_store.session_id,
         session_fingerprint=str(comparison_set["fingerprint"]),
     )
-    plan = derive_region_evidence_plan(
-        preset,
-        topology,
-        run=run,
-        protected_safety_profile_fingerprint=safety.profile_fingerprint,
-        comparison_set_fingerprint=str(comparison_set["fingerprint"]),
-        threshold_profile_fingerprint=active_region_threshold_profile_fingerprint(),
-        context_fingerprint=_hash("context"),
-    )
     applied_profile = {
         "artifact_schema_version": 1,
         "kind": "jts_active_speaker_baseline_profile_candidate",
@@ -161,6 +158,26 @@ async def test_real_producer_commits_synthetic_capture_through_host(
         applied_profile=applied_profile,
         calibration_id="host-producer-calibration",
         calibration=calibration,
+    )
+    normal_active_raw, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=authority.applied_profile,
+    )
+    assert normal_active_raw is not None and issues == []
+    plan = derive_region_evidence_plan(
+        preset,
+        topology,
+        run=run,
+        protected_safety_profile_fingerprint=safety.profile_fingerprint,
+        comparison_set_fingerprint=str(comparison_set["fingerprint"]),
+        threshold_profile_fingerprint=active_region_threshold_profile_fingerprint(),
+        context_fingerprint=active_region_context_fingerprint(
+            baseline_active_raw_fingerprint=NormalizedActiveRawIdentity(
+                yaml.safe_load(normal_active_raw)
+            ).active_raw_fingerprint,
+            calibration_id=authority.calibration_id,
+            calibration=authority.calibration,
+        ),
     )
 
     async def transport(play):

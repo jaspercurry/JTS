@@ -822,7 +822,10 @@ For JTS, that means:
   callbacks around the live mutation and exposes a locked exact-predecessor
   recovery operation. The typed internal host supplies the production caller,
   freshly re-emits and binds the exact preset graph identity (including
-  crossover IDs, Fc, and order), and persists a cross-process issuance CAS plus
+  crossover IDs, Fc, and order), pins one normalized applied-baseline and
+  microphone-calibration context across the complete evidence program, rejects
+  graph-identity reuse across normal, reverse, and every delay coordinate, and
+  persists a cross-process issuance CAS plus
   issuance-scoped predecessor/restore/commit artifacts. A crash-released
   execution mutex spans runtime through canonical capture commit. Restart either completes
   the exact restored capture commit, aborts a restored no-capture issuance, or

@@ -58,7 +58,10 @@
   run revokes the just-published comparison/repeat authority. Production
   currently leaves the web-created run `unconfigured`; no browser route
   reserves its region-scoped attempts or commits lifecycle transitions. The
-  typed internal host can progress an exact trusted composition to `measured`.
+  typed internal host can progress an exact trusted composition to `measured`
+  only while the program's normalized applied baseline and microphone
+  calibration remain exact; normal, reverse, and delay graph identities cannot
+  be reused.
 
   Candidate/apply/verification, receipt issuance, and Room
   consumption remain unavailable. No sound, live graph mutation, or hardware

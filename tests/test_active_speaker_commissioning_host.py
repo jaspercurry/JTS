@@ -20,6 +20,7 @@ from jasper.active_speaker.commissioning_evidence import (
     AdmittedRegionCapture,
     CompleteCommissioningEvidence,
     RegionGeometryAttestation,
+    active_region_context_fingerprint,
     delay_point_context_base_fingerprint,
     derive_region_evidence_plan,
 )
@@ -36,7 +37,10 @@ from jasper.active_speaker.commissioning_host import (
 )
 from jasper.active_speaker.commissioning_lifecycle import CommissioningTransition
 from jasper.active_speaker.commissioning_run import CommissioningRunStore
-from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+from jasper.active_speaker.baseline_profile import (
+    recompose_applied_baseline_yaml,
+    topology_config_fingerprint,
+)
 from jasper.active_speaker.capture_geometry import comparison_set_fingerprint
 from jasper.active_speaker.driver_safety import (
     build_driver_safety_profile,
@@ -246,6 +250,18 @@ def _plan(
         session_fingerprint=str(authority.comparison_set["fingerprint"]),
     )
     assert run is not None
+    normal_active_raw, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=authority.applied_profile,
+    )
+    assert normal_active_raw is not None and issues == []
+    context_fingerprint = active_region_context_fingerprint(
+        baseline_active_raw_fingerprint=NormalizedActiveRawIdentity(
+            yaml.safe_load(normal_active_raw)
+        ).active_raw_fingerprint,
+        calibration_id=authority.calibration_id,
+        calibration=authority.calibration,
+    )
     plan = derive_region_evidence_plan(
         preset,
         topology,
@@ -253,7 +269,7 @@ def _plan(
         protected_safety_profile_fingerprint=safety.profile_fingerprint,
         comparison_set_fingerprint=str(authority.comparison_set["fingerprint"]),
         threshold_profile_fingerprint=_hash("thresholds"),
-        context_fingerprint=_hash("context"),
+        context_fingerprint=context_fingerprint,
     )
     return store, topology, plan, authority
 
@@ -777,6 +793,56 @@ async def test_production_join_refuses_stale_authority_before_mutation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "context_kind", ["applied_baseline", "profile_context", "calibration"]
+)
+async def test_production_join_refuses_program_context_drift_between_captures(
+    tmp_path: Path,
+    context_kind: str,
+) -> None:
+    harness = _host_harness(tmp_path)
+    fake = FakePort()
+    committed = await harness.host.capture_next_with_runtime(
+        fake.port(),
+        config_dir=str(tmp_path),
+    )
+    assert committed is not None
+    apply_count = len(fake.apply_calls)
+
+    if context_kind == "applied_baseline":
+        applied: dict[str, Any] = deepcopy(dict(harness.authority.applied_profile))
+        applied["recomposition_snapshot"]["corrections"]["tweeter"]["gain_db"] = -5.0
+        stale = replace(harness.authority, applied_profile=applied)
+    elif context_kind == "profile_context":
+        comparison: dict[str, Any] = deepcopy(dict(harness.authority.comparison_set))
+        comparison["profile_context_id"] = _hash("changed-profile-context")
+        comparison["fingerprint"] = comparison_set_fingerprint(comparison)
+        stale = replace(harness.authority, comparison_set=comparison)
+    else:
+        stale = replace(
+            harness.authority,
+            calibration=CalibrationCurve(
+                freqs_hz=[20.0, 20_000.0],
+                correction_db=[0.0, 1.0],
+            ),
+        )
+    stale_host = _host_from(harness, authority=stale)
+
+    with pytest.raises(CommissioningHostError) as raised:
+        await stale_host.capture_next_with_runtime(
+            fake.port(),
+            config_dir=str(tmp_path),
+        )
+
+    assert raised.value.code == "fresh_authority_stale"
+    assert len(fake.apply_calls) == apply_count
+    terminal = harness.run_store.current_live_mutation(
+        harness.evidence.plan.authority.run
+    )
+    assert terminal is not None and terminal.status == "released"
+
+
+@pytest.mark.asyncio
 async def test_restored_failure_aborts_exact_issuance_and_retry_is_fresh(
     tmp_path: Path,
 ) -> None:
@@ -896,31 +962,25 @@ def test_host_progresses_only_exact_operations_to_durable_measured(
     )
 
 
-def test_zero_delay_may_share_the_reverse_baseline_graph(tmp_path: Path) -> None:
+def test_zero_delay_cannot_reuse_the_reverse_baseline_graph(tmp_path: Path) -> None:
     harness = _host_harness(tmp_path)
 
-    while (operation := harness.host.next_operation()) is not None:
-        _commit_synthetic_capture(
-            harness,
-            operation,
-            _admitted_capture(
+    with pytest.raises(CommissioningHostError) as raised:
+        while (operation := harness.host.next_operation()) is not None:
+            _commit_synthetic_capture(
                 harness,
                 operation,
-                zero_delay_uses_reverse_graph=True,
-            ),
-        )
+                _admitted_capture(
+                    harness,
+                    operation,
+                    zero_delay_uses_reverse_graph=True,
+                ),
+            )
 
-    complete = harness.evidence_store.reopen_complete_commissioning_evidence(
-        run_id=harness.evidence.plan.authority.run.run_id
+    assert raised.value.code == "graph_identity_replayed"
+    assert harness.run_store.lifecycle_state(harness.evidence.plan.authority.run) == (
+        "protected"
     )
-    region = complete.regions[0]
-    zero = next(
-        point
-        for point in region.delay_walk.points
-        if point.relative_delay_us == 0.0
-    )
-    assert zero.graph_fingerprint == region.reverse.graph_fingerprint
-    assert zero.context_base_fingerprint != region.reverse.context_base_fingerprint
 
 
 def test_same_process_retry_reuses_attempt_and_replayed_capture_is_refused(
@@ -1251,9 +1311,21 @@ def test_restart_recovers_complete_persisted_before_measured_transition(
         run_store=restarted_store,
         evidence_store=original.evidence_store,
         region_inputs=_region_inputs(original.evidence_store, fresh_plan),
-        load_current_authority=lambda: authority,
+        load_current_authority=lambda: replace(
+            authority,
+            calibration=CalibrationCurve(
+                freqs_hz=[20.0, 20_000.0],
+                correction_db=[0.0, 1.0],
+            ),
+        ),
     )
 
+    with pytest.raises(CommissioningHostError) as drifted:
+        fresh.prepare()
+    assert drifted.value.code == "fresh_authority_stale"
+    assert restarted_store.lifecycle_state(fresh_plan.authority.run) == "protected"
+
+    fresh._load_current_authority = lambda: authority
     assert fresh.prepare() == complete
     assert restarted_store.lifecycle_state(fresh_plan.authority.run) == "measured"
     assert fresh.next_operation() is None

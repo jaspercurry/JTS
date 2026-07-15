@@ -61,6 +61,7 @@ from .commissioning_evidence import (
     RegionEvidenceTarget,
     RegionGeometryAttestation,
     StationaryRegionEvidence,
+    active_region_context_fingerprint,
     delay_point_context_base_fingerprint,
     delay_point_target_fingerprint,
     evidence_attempt_target_id,
@@ -647,6 +648,24 @@ class CommissioningEvidenceHost:
                 "fresh_authority_stale",
                 f"applied profile cannot be freshly re-emitted: {reason}",
             )
+        try:
+            context_fingerprint = active_region_context_fingerprint(
+                baseline_active_raw_fingerprint=NormalizedActiveRawIdentity(
+                    yaml.safe_load(normal_active_raw)
+                ).active_raw_fingerprint,
+                calibration_id=snapshot.calibration_id,
+                calibration=snapshot.calibration,
+            )
+        except (TypeError, ValueError, yaml.YAMLError) as exc:
+            raise CommissioningHostError(
+                "fresh_authority_stale",
+                "fresh baseline or calibration context is invalid",
+            ) from exc
+        if context_fingerprint != self.plan.authority.context_fingerprint:
+            raise CommissioningHostError(
+                "fresh_authority_stale",
+                "fresh baseline or calibration changed since planning",
+            )
         return snapshot, normal_active_raw
 
     def _runtime_request(
@@ -1186,6 +1205,7 @@ class CommissioningEvidenceHost:
             recovered = self._recover_complete()
             state = self.run_store.lifecycle_state(self.run)
             if recovered is not None:
+                self._current_authority_snapshot()
                 artifact = self.evidence_store.identify_artifact(
                     complete_relative_path(self.run.run_id)
                 )
@@ -1610,17 +1630,11 @@ class CommissioningEvidenceHost:
         if (
             len(set(delay_graphs)) != len(delay_graphs)
             or normal.graph_fingerprint in delay_graphs
-            or any(
-                point.graph_fingerprint == reverse.graph_fingerprint
-                and not math.isclose(
-                    point.relative_delay_us, 0.0, rel_tol=0.0, abs_tol=1e-9
-                )
-                for point in walk.points
-            )
+            or reverse.graph_fingerprint in delay_graphs
         ):
             raise CommissioningHostError(
                 "graph_identity_replayed",
-                "delay evidence reused a graph outside the zero-delay reverse baseline",
+                "normal, reverse, and delay evidence require distinct live graphs",
             )
         region = RegionCommissioningEvidence(
             plan=self.plan,
@@ -1820,6 +1834,9 @@ class CommissioningEvidenceHost:
                     "lifecycle_not_collecting",
                     f"commissioning evidence cannot progress from {state}",
                 )
+            # Re-prove the whole-program authority after runtime restoration and
+            # immediately before any capture or aggregate can become durable.
+            self._current_authority_snapshot()
             if not self.run_store.callback_is_current(operation.attempt):
                 raise CommissioningHostError(
                     "run_generation_stale", "capture attempt is no longer current"

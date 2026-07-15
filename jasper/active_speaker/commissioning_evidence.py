@@ -27,6 +27,7 @@ from jasper.audio_measurement.evidence_identity import (
     json_fingerprint,
 )
 from jasper.audio_measurement.admitted_playback import GeneratedExcitationWav
+from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.excitation_admission import ExcitationAdmission
 from jasper.audio_measurement.excitation_artifacts import (
     admission_artifact_relative_path,
@@ -159,6 +160,32 @@ def active_region_threshold_profile_fingerprint() -> str:
                 "policy_id": ACTIVE_REGION_SUMMED_ANALYZER_POLICY_ID,
                 "policy_version": ACTIVE_REGION_SUMMED_ANALYZER_POLICY_VERSION,
             },
+        }
+    )
+
+
+def active_region_context_fingerprint(
+    *,
+    baseline_active_raw_fingerprint: str,
+    calibration_id: str,
+    calibration: CalibrationCurve,
+) -> str:
+    """Bind one region program to its exact baseline and mic calibration."""
+
+    baseline = _sha256(
+        baseline_active_raw_fingerprint,
+        field_name="baseline_active_raw_fingerprint",
+    )
+    calibration_name = _text(calibration_id, field_name="calibration_id")
+    if not isinstance(calibration, CalibrationCurve):
+        raise CommissioningEvidenceError("calibration must be CalibrationCurve")
+    return _fingerprint(
+        {
+            "schema_version": 1,
+            "kind": "jts_active_region_evidence_context",
+            "baseline_active_raw_fingerprint": baseline,
+            "calibration_id": calibration_name,
+            "calibration": calibration.to_dict(),
         }
     )
 

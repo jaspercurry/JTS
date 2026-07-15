@@ -74,6 +74,10 @@
 > schedule-aware selector only after the exact schedule is complete. The joined
 > runtime holds the existing writer lock through server-derived graph apply,
 > admitted playback/capture, and exact graph/path/listening-volume restoration.
+> The plan fingerprints the normalized applied baseline plus microphone
+> calibration once for the complete program; every fresh operation must still
+> match it. Normal, reverse, and every delay coordinate—including zero—must
+> retain distinct live-graph identities.
 > One crash-released run-store execution mutex spans that transaction through
 > canonical capture commit, so a concurrent caller cannot reinterpret a live
 > restored window as restart recovery.
