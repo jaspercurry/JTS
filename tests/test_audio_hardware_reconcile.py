@@ -91,6 +91,15 @@ def _run_reconcile(
             initial_template,
             encoding="utf-8",
         )
+    model = tmp_path / "model"
+    boot_config = tmp_path / "config.txt"
+    udc = tmp_path / "udc"
+    model.write_text("Raspberry Pi 5 Model B Rev 1.0", encoding="utf-8")
+    boot_config.write_text(
+        "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n",
+        encoding="utf-8",
+    )
+    (udc / "3f980000.usb").mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
     env.update(
@@ -113,6 +122,9 @@ def _run_reconcile(
                 tmp_path / "output_hardware.json"
             ),
             "JASPER_OUTPUT_HARDWARE_PYTHON": sys.executable,
+            "JASPER_PI_MODEL_FILE": str(model),
+            "JTS_BOOT_CONFIG_FILE": str(boot_config),
+            "JASPER_UDC_CLASS_DIR": str(udc),
             # Hermetic active-graph gate inputs: point the cutover gate's
             # statefile + topology at tmp paths that are ABSENT unless a test
             # explicitly stages them via _active_graph_env(). Without this the
@@ -637,6 +649,9 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     state_text = (tmp_path / "output_hardware.json").read_text(encoding="utf-8")
     assert '"profile_id": "dual_apple_usb_c_dac_4ch"' in state_text
     assert '"apple_dac_count": 2' in state_text
+    usb_role = json.loads(state_text)["usb_data_role"]
+    assert usb_role["desired_role"] == "peripheral"
+    assert usb_role["gadget_available"] is True
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     _assert_parked_outputd_dac_template(template)
     assert _render_log(tmp_path) == "render\n"
@@ -644,6 +659,11 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     assert "enable jasper-dac-init.service jasper-headphone-monitor.service" in commands
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
     assert "event=audio_hardware_reconcile.dual_apple_detected" in result.stderr
+    assert (
+        "event=hardware.usb_role_resolved topology=separate_host_ports "
+        "desired=peripheral active=peripheral gadget_available=true "
+        "management_transport_available=true reason=available"
+    ) in result.stderr
 
 
 def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(

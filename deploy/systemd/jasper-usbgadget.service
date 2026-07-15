@@ -2,12 +2,13 @@
 Description=Jasper composite USB gadget (management network + optional audio)
 # The single owner of the ConfigFS composite gadget. It composes up to two
 # functions onto the one dwc2 UDC:
-#   - ncm.usb0  — always-on USB management network (a laptop plugged into the
-#     USB-C port reaches http://<hostname>/ even with Wi-Fi off);
+#   - ncm.usb0  — default-on USB management network where the resolved
+#     hardware transport is available (a laptop plugged into the USB-C port
+#     reaches http://<hostname>/ even with Wi-Fi off);
 #   - uac2.usb0 — the wizard-toggled USB audio input (jasper-usbsink source).
 #
 # This is the FIRST gadget unit install.sh enables (systemctl enable --now),
-# deliberately — it carries the always-on network. jasper-usbsink.service is a
+# deliberately — it carries the management network. jasper-usbsink.service is a
 # process-free readiness marker that orders After= this unit and does not own the
 # gadget.
 #
@@ -21,8 +22,8 @@ Description=Jasper composite USB gadget (management network + optional audio)
 # NAMING DEBT: the ConfigFS gadget dir name stays `jts-usb-audio` (the doctor's
 # low-latency contract reads that exact path). Accepted debt — see
 # docs/HANDOFF-usb-gadget.md.
-After=systemd-modules-load.service sys-kernel-config.mount jasper-fanin.service
-Wants=jasper-fanin.service
+After=systemd-modules-load.service sys-kernel-config.mount jasper-audio-hardware-reconcile.service jasper-fanin.service
+Wants=jasper-audio-hardware-reconcile.service jasper-fanin.service
 Before=jasper-usbsink.service
 ConditionPathExists=/sys/kernel/config
 
@@ -39,9 +40,9 @@ EnvironmentFile=-/etc/jasper/jasper.env
 # by gadget-up; never inject it into this root process. Test-only path/command
 # seams are also stripped from the production unit environment.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PYTHONPATH PYTHONHOME JASPER_CONFIGFS_ROOT JASPER_UDC_CLASS_DIR JASPER_CPUINFO_FILE JASPER_MODULES_ROOT JASPER_SPEAKER_NAME_FILE JASPER_SPEAKER_NAME_READER JASPER_USBGADGET_AUDIO_ALLOWED_CMD JASPER_USBGADGET_AUDIO_READY_CMD JASPER_USBGADGET_AUDIO_DATA_READY_CMD
-# Skip (NOT fail) when there is no UDC yet (fresh install pre-reboot) or when
-# no function is wanted (network kill-switched AND audio off/parked). The
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PYTHONPATH PYTHONHOME JASPER_CONFIGFS_ROOT JASPER_PI_MODEL_FILE JTS_BOOT_CONFIG_FILE JASPER_UDC_CLASS_DIR JASPER_CPUINFO_FILE JASPER_MODULES_ROOT JASPER_SPEAKER_NAME_FILE JASPER_SPEAKER_NAME_READER JASPER_USBGADGET_AUDIO_ALLOWED_CMD JASPER_USBGADGET_AUDIO_READY_CMD JASPER_USBGADGET_AUDIO_DATA_READY_CMD JASPER_USBGADGET_HARDWARE_ALLOWED_CMD
+# Skip (NOT fail) when hardware transport is unavailable, there is no UDC yet,
+# or no function is wanted (network kill-switched AND audio off/parked). The
 # zero-function case restores the historic zero-RAM contract: libcomposite
 # never loads. Exit 1 from an ExecCondition is systemd's "condition not met".
 ExecCondition=/usr/local/sbin/jasper-usbgadget-wanted

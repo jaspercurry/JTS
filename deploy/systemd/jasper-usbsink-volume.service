@@ -6,7 +6,7 @@ Description=Jasper USB sink host-volume observer
 #
 # It tracks the process-free readiness marker's lifecycle: the UAC2 mixer exists
 # only while the uac2 function is composed. The composite gadget outlives audio
-# because it also carries the always-on network.
+# because it can also carry the hardware-conditional management network.
 After=jasper-usbsink.service jasper-control.service
 Requires=jasper-usbsink.service
 PartOf=jasper-usbsink.service

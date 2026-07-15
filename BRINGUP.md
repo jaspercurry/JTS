@@ -480,15 +480,15 @@ the audio output for a laptop.
 Full design + RAM analysis + failure-mode matrix:
 [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md).
 
-**Same USB-C port, always-on management network.** Independent of this
-phase, the Pi's USB-C port already carries a USB NCM network link
-(`ncm.usb0`) as soon as `install.sh` has run — plugging a laptop in
-gets you `http://<JASPER_HOSTNAME>/` (or the documented fallback
-`http://10.12.194.1/`) even with the Pi's Wi-Fi off, whether or not you
-ever enable USB Audio Input below. The two functions share one ConfigFS
-gadget; see [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for
-the composite design, the always-on network, and the USB-C side effect
-noted just below.
+**Same USB-C port, hardware-conditional management network.** On a Pi 5,
+the USB-C port carries an NCM network link (`ncm.usb0`) after install — plugging
+a laptop in gets you `http://<JASPER_HOSTNAME>/` (or the documented fallback
+`http://10.12.194.1/`) even with Wi-Fi off, whether or not USB Audio Input is
+enabled. On a Zero-class speaker with a USB output DAC, its one OTG data port is
+reserved for that DAC, so both the management link and USB Audio Input are
+unavailable. A registered I²S DAC leaves the Zero port free. The Sources page
+shows the resolved availability; see
+[docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for the policy.
 
 ### Hardware prerequisite
 
@@ -533,24 +533,25 @@ mode unchanged.
 
 #### 1. Set the dtoverlay (one-time, requires reboot)
 
-`install.sh`'s `set_usb_gadget_mode` step ran during Phase 2 and added
-`dtoverlay=dwc2,dr_mode=peripheral` to `/boot/firmware/config.txt`. The
-flag is set, but takes effect on the next reboot. Verify and reboot:
+`install.sh`'s `reconcile_usb_data_role` step ran during Phase 2 and selected
+peripheral mode for the Pi 5. A role change takes effect on the next reboot.
+Verify and reboot only when the Sources page or doctor reports one is needed:
 
 ```sh
 ssh pi@jts.local 'grep dwc2,dr_mode=peripheral /boot/firmware/config.txt'
 # Expect: dtoverlay=dwc2,dr_mode=peripheral
 
-# Reboot. Pi will boot with the BCM2712's DWC2 controller in
-# peripheral mode (no gadget loaded yet — descriptor only loads when
-# the wizard toggle is on).
+# Reboot. Pi will boot with the BCM2712's DWC2 controller in peripheral mode.
+# The hardware-gated composite gadget may load immediately for the default-on
+# NCM management link; the Sources toggle controls only its UAC2 audio function.
 ssh pi@jts.local 'sudo reboot'
 
 # Wait ~30 s, then verify:
 ssh pi@jts.local 'lsmod | grep dwc2'
 # Expect: dwc2 ... (loaded)
 ssh pi@jts.local 'lsmod | grep libcomposite'
-# Expect: (empty — libcomposite stays UNloaded until the toggle is on)
+# Expect: loaded when the USB management network is enabled (the default), or
+# empty only when both the network kill switch and USB Audio Input are Off.
 ```
 
 #### 2. Wire up the splitter
@@ -567,8 +568,8 @@ The Pi should power up normally. SSH still works (Wi-Fi unchanged).
 Open `http://jts.local/sources/` on any device on the LAN. Find the
 **USB Audio Input** row, flip the toggle on. Within ~3 s:
 - `jasper-usbgadget.service` restarts and recomposes the ConfigFS
-  descriptor to add the `uac2.usb0` audio function (the always-on
-  `ncm.usb0` network function was already there)
+  descriptor to add the `uac2.usb0` audio function (on this gadget-capable
+  Pi 5, the default-on `ncm.usb0` network function was already there)
 - `jasper-fanin.service` opens the gadget capture endpoint; the process-free
   `jasper-usbsink.service` readiness marker becomes active (exited)
 
@@ -613,7 +614,7 @@ speakers within a few hundred milliseconds.
 ```sh
 ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep -i usbsink
 # Expect OK lines including:
-#   usbsink dtoverlay: ok
+#   USB data role: ok
 #   usbsink state: ok playing=... host_connected=...
 #   usbsink card: ok UAC2Gadget present
 #   usbsink name: ok device name patched to track Speaker Name '...'
@@ -623,7 +624,8 @@ ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep -i usbsink
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Toggle greyed out, "needs dtoverlay + reboot" note | Phase 2's `install.sh` ran before the source had `set_usb_gadget_mode`, OR you've edited `/boot/firmware/config.txt` since | Re-run `bash scripts/deploy-to-pi.sh` from the laptop, reboot |
+| Toggle unavailable with a reboot note | The installer resolved a different role than the one active in this boot | Re-run `bash scripts/deploy-to-pi.sh` if needed, then reboot |
+| Toggle unavailable because the output DAC owns the port | This is a Zero-class speaker using its shared OTG port as a USB host | Use the USB DAC normally, or configure a supported I²S DAC if USB gadget input is required |
 | Host doesn't see the speaker in its audio device picker | Splitter not wired (forgot the USB-A cable to host), or `jasper-usbgadget` didn't recompose with the audio function | `journalctl -u jasper-usbgadget` for ConfigFS errors |
 | Mac says "Playback Inactive" instead of the Speaker Name | Name patch didn't apply (kernel renamed the string, or override stale). Cosmetic — audio still plays | `journalctl -u jasper-usbgadget \| grep event=usbsink_name`; `sudo systemctl restart jasper-usbgadget`; check `jasper-doctor` `usbsink name` |
 | Volume slider on Mac doesn't move JTS | `amixer -c UAC2Gadget controls` should show `PCM Capture Volume`; if missing, gadget descriptor wasn't built with `c_volume_present=1` | `journalctl -u jasper-usbsink-volume \| grep volume_bridge` |
@@ -634,10 +636,10 @@ ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep -i usbsink
 Flip the toggle off in `/sources/`. The daemon stops, and
 `jasper-usbgadget.service` restarts and recomposes **without**
 `uac2.usb0` — the host loses JTS from its audio device list within
-~3 s, but the always-on `ncm.usb0` management network function stays
+~3 s, but the `ncm.usb0` management network function stays
 up (plugging a laptop in still gets you `http://<JASPER_HOSTNAME>/`).
 See [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for the
-full function truth table. The dtoverlay stays in place either way
+full function truth table. The hardware-resolved role stays in place either way
 (harmless on its own — DWC2 in peripheral mode with no gadget
 descriptor at all is a no-op from the host's perspective).
 
@@ -647,15 +649,6 @@ dtoverlay rollback):
 ```sh
 ssh pi@jts.local "echo JASPER_USB_NETWORK=disabled | sudo tee -a /etc/jasper/jasper.env"
 ssh pi@jts.local 'sudo systemctl restart jasper-usbgadget'
-```
-
-To roll back the dtoverlay too (USB-C port becomes a host port
-again — this also removes the management network, since nothing can
-enter peripheral mode without it):
-
-```sh
-ssh pi@jts.local 'sudo sed -i "/^dtoverlay=dwc2,dr_mode=peripheral$/d" /boot/firmware/config.txt'
-ssh pi@jts.local 'sudo reboot'
 ```
 
 ---

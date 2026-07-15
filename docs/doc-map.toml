@@ -168,6 +168,7 @@ code = [
 docs = [
   "docs/PROPOSAL-dac-profile-registry.md",
   "docs/audio-paths.md",
+  "docs/HANDOFF-audio-capability-platform.md",
   "docs/HANDOFF-speaker-output-reference.md",
   "docs/HANDOFF-active-speaker-dsp.md",
 ]
@@ -622,12 +623,16 @@ id = "usb-audio-input"
 title = "USB Audio Input"
 safety = "boot-risk"
 code = [
+  "jasper/audio_hardware/usb_port_role.py",
+  "jasper/output_hardware.py",
   "jasper/usbsink/**",
   "jasper/usbgadget.py",
   "jasper/fanin/status.py",
   "jasper/local_sources/**",
   "jasper/web/sources_setup.py",
   "deploy/usbsink/**",
+  "deploy/bin/jasper-audio-hardware-reconcile",
+  "deploy/lib/install/renderers.sh",
   "deploy/systemd/jasper-usbsink*.service",
   "deploy/systemd/bluealsa*.service.d/**",
 ]
@@ -653,6 +658,10 @@ id = "usb-management-network"
 title = "USB management network (composite gadget)"
 safety = "boot-risk"
 code = [
+  "jasper/audio_hardware/usb_port_role.py",
+  "jasper/output_hardware.py",
+  "deploy/bin/jasper-audio-hardware-reconcile",
+  "deploy/lib/install/renderers.sh",
   "deploy/usbsink/jasper-usbgadget-*",
   "deploy/systemd/jasper-usbgadget.service",
   "deploy/systemd/jasper-usbnet-dhcp.service",
@@ -675,7 +684,7 @@ docs = [
   "docs/HANDOFF-usbsink.md",
 ]
 requires_docs_when = [
-  "The always-on USB NCM network function, its NetworkManager keyfile or dnsmasq conf, the `10.12.194.1/24` address, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
+  "The hardware-conditional USB NCM network function, its NetworkManager keyfile or dnsmasq conf, the `10.12.194.1/24` address, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
 ]
 verification = [
   "pytest tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",

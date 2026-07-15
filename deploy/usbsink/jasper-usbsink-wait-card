@@ -7,7 +7,7 @@
 # direct capture device. Runs as jasper-usbsink.service's ExecStartPre so the
 # lifecycle readiness marker becomes active only after ALSA is genuinely ready.
 # (It moved here from the retired jasper-usbsink-init unit: the composite
-# gadget owner now also carries the always-on USB network and must not
+# gadget owner may also carry the hardware-permitted USB network and must not
 # block on a card that only exists when the uac2 audio function is composed.)
 #
 # Argument: timeout in seconds (default 30). Returns 0 if the card

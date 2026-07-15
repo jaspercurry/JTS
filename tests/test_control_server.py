@@ -4579,9 +4579,9 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
     assert "librespot.service" not in flat
     assert "shairport-sync.service" not in flat
     assert "jasper-usbsink.service" not in flat
-    # The composite USB gadget is infrastructure (it carries the always-on USB
-    # management network), never an audio-refresh renderer — a dashboard
-    # restart-audio must never recompose it (that would blip the network).
+    # The hardware-gated composite gadget may carry the USB management network;
+    # it is infrastructure, not an audio-refresh renderer. A dashboard audio
+    # restart must not recompose it and blip an available management link.
     assert "jasper-usbgadget.service" not in flat
 
 

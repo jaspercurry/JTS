@@ -70,6 +70,8 @@ class _FakeHost:
     active: dict[str, bool] = field(default_factory=dict)
     failed_units: set[str] = field(default_factory=set)
     allowed: bool = True
+    usb_gadget_available: bool = True
+    usb_role_pending_host: bool = False
     usb_audio: bool = False
     usb_direct: bool = False
     rfkill: source_intent.BluetoothRfkillState = field(
@@ -106,6 +108,7 @@ class _FakeHost:
             )
         elif unit == "jasper-usbgadget.service" and verb == "stop":
             self.usb_audio = False
+            self.active[unit] = False
         elif unit == source_intent._USB_COUPLING_UNIT:
             self.usb_direct = bool(
                 self.enabled.get("jasper-usbsink.service", False) and self.allowed
@@ -144,6 +147,40 @@ class _FakeHost:
         return 0, ""
 
     def ops(self) -> source_intent.ReconcileOps:
+        usb_role = source_intent.UsbPortRoleState(
+            board_model="test",
+            board_topology=(
+                "separate_host_ports"
+                if self.usb_gadget_available
+                else "shared_otg_port"
+            ),
+            desired_role="peripheral" if self.usb_gadget_available else "host",
+            configured_role="peripheral" if self.usb_gadget_available else "host",
+            active_role=(
+                "peripheral"
+                if self.usb_gadget_available or self.usb_role_pending_host
+                else "host"
+            ),
+            gadget_available=self.usb_gadget_available,
+            reboot_required=self.usb_role_pending_host,
+            reason=(
+                "available"
+                if self.usb_gadget_available
+                else (
+                    "role_change_pending_reboot"
+                    if self.usb_role_pending_host
+                    else "shared_otg_usb_output_requires_host"
+                )
+            ),
+            decision_reason=(
+                "dedicated_host_ports_leave_otg_available"
+                if self.usb_gadget_available
+                else "shared_otg_usb_output_requires_host"
+            ),
+            management_transport_available=(
+                self.usb_gadget_available or self.usb_role_pending_host
+            ),
+        )
         return source_intent.ReconcileOps(
             set_enabled=self.set_enabled,
             run_unit=self.run_unit,
@@ -152,6 +189,7 @@ class _FakeHost:
             unit_failed=self.unit_failed,
             unit_available=lambda unit: unit in self.available,
             local_sources_allowed=lambda: self.allowed,
+            usb_port_role=lambda: usb_role,
             usb_audio_present=lambda: self.usb_audio,
             usb_direct_present=lambda: self.usb_direct,
             usb_direct_ready=lambda: self.usb_direct and self.usb_audio,
@@ -1011,6 +1049,101 @@ def test_usb_disable_stops_then_recomposes_without_dropping_network(tmp_path):
     ]
     assert ("stop", "jasper-usbgadget.service") not in host.calls
     assert host.usb_audio is False
+
+
+def test_usb_desired_on_is_unavailable_when_output_owns_shared_port(tmp_path):
+    host = _FakeHost(
+        enabled={"jasper-usbsink.service": True},
+        active={
+            "jasper-usbsink.service": True,
+            "jasper-usbgadget.service": True,
+        },
+        usb_gadget_available=False,
+        usb_audio=True,
+        usb_direct=True,
+    )
+    env = _write(tmp_path, f"{_key(Source.USBSINK)}=enabled\n")
+    status = tmp_path / "status.json"
+
+    assert source_intent.reconcile(
+        env_path=env,
+        ops=host.ops(),
+        status_path=str(status),
+    ) == 0
+
+    assert source_intent.source_intent_enabled(Source.USBSINK, env_path=env) is True
+    assert host.enabled["jasper-usbsink.service"] is False
+    assert host.active["jasper-usbsink.service"] is False
+    assert host.usb_audio is False
+    assert host.usb_direct is False
+    payload = json.loads(status.read_text(encoding="utf-8"))
+    assert payload["sources"]["usbsink"] == {
+        "desired": "enabled",
+        "effective": "unavailable",
+        "result": "ok",
+        "reason": "shared_otg_usb_output_requires_host",
+    }
+
+
+def test_usb_desired_off_is_clean_when_shared_port_is_unavailable(tmp_path):
+    host = _FakeHost(usb_gadget_available=False)
+    env = _write(tmp_path, f"{_key(Source.USBSINK)}=disabled\n")
+    status = tmp_path / "status.json"
+
+    assert source_intent.reconcile(
+        env_path=env,
+        ops=host.ops(),
+        status_path=str(status),
+    ) == 0
+    assert host.enabled.get("jasper-usbsink.service", False) is False
+    assert host.usb_audio is False
+    assert host.usb_direct is False
+    assert json.loads(status.read_text())["sources"]["usbsink"]["effective"] == "off"
+
+
+def test_usb_follower_parking_remains_distinct_from_hardware_unavailable(
+    tmp_path,
+):
+    host = _FakeHost(
+        enabled={"jasper-usbsink.service": True},
+        allowed=False,
+        usb_gadget_available=False,
+    )
+    env = _write(tmp_path, f"{_key(Source.USBSINK)}=enabled\n")
+    status = tmp_path / "status.json"
+
+    assert source_intent.reconcile(
+        env_path=env,
+        ops=host.ops(),
+        status_path=str(status),
+    ) == 0
+
+    payload = json.loads(status.read_text(encoding="utf-8"))
+    assert payload["sources"]["usbsink"]["effective"] == "parked"
+
+
+def test_pending_host_reboot_withdraws_audio_but_retains_management_gadget(
+    tmp_path,
+):
+    host = _FakeHost(
+        enabled={"jasper-usbsink.service": True},
+        active={
+            "jasper-usbsink.service": True,
+            "jasper-usbgadget.service": True,
+        },
+        usb_gadget_available=False,
+        usb_role_pending_host=True,
+        usb_audio=True,
+        usb_direct=True,
+    )
+    env = _write(tmp_path, f"{_key(Source.USBSINK)}=enabled\n")
+
+    assert source_intent.reconcile(env_path=env, ops=host.ops()) == 0
+
+    assert host.active["jasper-usbgadget.service"] is True
+    assert host.usb_audio is False
+    assert host.usb_direct is False
+    assert ("restart", "jasper-usbgadget.service") in host.calls
 
 
 def test_usb_failed_to_off_resets_terminal_state(tmp_path):

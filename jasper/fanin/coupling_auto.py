@@ -18,16 +18,13 @@ is eligible":
   installed ring assets alone are not hardware validation.
 
 - **P3 (USB combo):** the default arms the certified USB-in low-latency path
-  ONLY on a box that BOTH (a) has the USB gadget stack available
-  (``dtoverlay=dwc2,dr_mode=peripheral`` in ``/boot/firmware/config.txt`` — the
-  precondition for the gadget) AND (b) has USB Audio Input turned ON by the
+  ONLY on a box that BOTH (a) has the resolved USB gadget capability available
+  and (b) has USB Audio Input turned ON by the
   household (canonical source intent is enabled), local sources are allowed
   for this speaker's current role, AND the coordinator-derived
   ``jasper-usbsink.service`` enablement confirms lifecycle readiness. The
-  dtoverlay alone is NOT enough: it
-  is added on every install to carry the always-on USB management network, so it
-  is present fleet-wide (jts3/jts5 included) even where USB audio is never used —
-  gating on it alone would arm the combo on the whole fleet. All signals present
+  boot overlay alone is NOT enough: the same data port may belong to a USB
+  output DAC on a Zero-class board. All signals present
   → arm the fan-in half: ``JASPER_FANIN_USB_DIRECT`` + ``JASPER_FANIN_HOST_CLOCK``
   + ``JASPER_FANIN_RESAMPLER_CUSHION_DECAY`` = ``enabled`` in fanin.env (fan-in owns
   the gadget capture). Off a combo box the three fan-in keys are written to their
@@ -70,7 +67,6 @@ prove is eligible, or it would arm→rollback churn every boot).
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -80,6 +76,7 @@ from jasper.fanin_coupling import (
     COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
 )
+from jasper.output_hardware import current_usb_data_role
 
 logger = logging.getLogger(__name__)
 
@@ -110,15 +107,6 @@ USB_COMBO_DISABLED_VALUE = "disabled"
 # emitted actions are stable across runs.
 USB_COMBO_ENV_VARS = (USB_DIRECT_ENV_VAR, HOST_CLOCK_ENV_VAR, CUSHION_DECAY_ENV_VAR)
 
-# The USB gadget-stack presence signal: the dtoverlay that puts the Pi's USB-C
-# port in peripheral (device) mode. SAME needle the /sources/ wizard
-# (``jasper.web.sources_setup``) and the doctor (``jasper.cli.doctor.usbsink``)
-# match — the single "this box can be a USB audio gadget" fact. Reused here rather
-# than re-derived so the three surfaces never drift on what "gadget enabled" means.
-BOOT_CONFIG_PATH = "/boot/firmware/config.txt"
-USB_GADGET_DTOVERLAY_LINE = "dtoverlay=dwc2,dr_mode=peripheral"
-
-
 def is_operator_choice(marker_raw: str | None) -> bool:
     """True iff the coupling-choice marker names an explicit operator choice.
 
@@ -130,27 +118,6 @@ def is_operator_choice(marker_raw: str | None) -> bool:
     if marker_raw is None:
         return False
     return marker_raw.strip().lower() == COUPLING_CHOICE_OPERATOR
-
-
-def usb_gadget_stack_present(boot_config_path: str = BOOT_CONFIG_PATH) -> bool:
-    """True iff the USB gadget dtoverlay is present in the boot config.
-
-    The SAME detection ``jasper.web.sources_setup._usbsink_available`` uses: the
-    ``dtoverlay=dwc2,dr_mode=peripheral`` line (tolerating leading whitespace and a
-    trailing comment) in ``/boot/firmware/config.txt``. Fail-soft to False on any
-    read error (a box we can't prove is gadget-capable is treated as not-a-gadget,
-    so the combo stays off — the fail-safe direction).
-    """
-    try:
-        with open(boot_config_path) as f:
-            content = f.read()
-    except OSError as e:
-        logger.debug("usb gadget dtoverlay probe failed: %s", e)
-        return False
-    for line in content.splitlines():
-        if line.strip().startswith(USB_GADGET_DTOVERLAY_LINE):
-            return True
-    return False
 
 
 @dataclass(frozen=True)
@@ -186,13 +153,14 @@ def combo_is_armed(*, gadget_present: bool, usb_intent_enabled: bool) -> bool:
     """The P3 combo arms iff BOTH the gadget stack is available AND USB audio is
     turned on by the household.
 
-    Gadget presence (the ``dtoverlay``) is fleet-wide (it also carries the always-on
-    USB management network), so it is a NECESSARY but not SUFFICIENT signal — the
-    combo also needs the household's persistent USB-audio intent from
+    The shared resolver's strict gadget availability is a NECESSARY but not
+    SUFFICIENT signal — a peripheral overlay or currently active management
+    transport alone does not authorize audio on a shared-port Zero. The combo
+    also needs the household's persistent USB-audio intent from
     ``/var/lib/jasper/source_intent.env``. The source coordinator resolves that
     preference before this function is called; ``jasper-usbsink.service``
     enablement is only the derived gadget-composition mirror. Gating on the
-    dtoverlay alone would arm the split-brain combo on every box.
+    controller state alone would arm a split-brain combo.
     """
     return gadget_present and usb_intent_enabled
 
@@ -368,19 +336,14 @@ def default_ring_gates() -> "tuple[tuple[str, RingGate], ...]":
     )
 
 
-def read_boot_config_gadget_present() -> bool:
-    """Live gadget-presence read (thin wrapper for the reconciler + tests).
+def read_usb_gadget_available() -> bool:
+    """Read the reconciler-owned capability used by every USB consumer."""
 
-    Honors both env override names: ``JTS_BOOT_CONFIG_FILE`` (install.sh's name,
-    used by ``set_usb_gadget_mode``) and ``JASPER_BOOT_CONFIG_PATH`` — so a test
-    harness or an operator that set either sees a consistent gadget read across the
-    installer and this probe (defect-Nit10). ``JTS_BOOT_CONFIG_FILE`` wins when both
-    are set (it is the installer-facing name); falls back to the default path.
-    """
-    override = os.environ.get("JTS_BOOT_CONFIG_FILE") or os.environ.get(
-        "JASPER_BOOT_CONFIG_PATH"
-    )
-    return usb_gadget_stack_present(override or BOOT_CONFIG_PATH)
+    try:
+        return current_usb_data_role().gadget_available
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.debug("USB data-role read failed: %s", exc)
+        return False
 
 
 def _usbsink_lifecycle_ready() -> bool:

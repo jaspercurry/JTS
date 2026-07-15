@@ -298,8 +298,9 @@ runs automatically only when the configured AEC mic is present with
   power/data splitter or hub and the host sees the configured speaker
   name as a USB audio output device while this speaker is solo or a pair
   leader. A bonded follower parks the USB audio function even if saved intent
-  is on, while the gadget's management network remains available, so it does
-  not advertise itself as an independent audio input. Off by default; toggle at
+  is on, while the gadget's management network remains available when the
+  resolved hardware role permits it, so the follower does not advertise itself
+  as an independent audio input. Off by default; toggle at
   `http://jts.local/sources/` enables it. The host's volume slider
   drives JTS's canonical `listening_level` (feels like spinning the
   dial). Joins the existing mux arbitration for latest-source-wins
@@ -308,12 +309,16 @@ runs automatically only when the configured AEC mic is present with
   helper remains bounded. See
   [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md) for the full
   design.
-- ✅ **USB management network** — the same USB-C port always carries a
-  USB NCM network link (`ncm.usb0`, on by default, independent of the
-  USB Audio Input toggle above): plug a laptop in and
+- ✅ **USB management network** — when the resolved hardware role permits
+  gadget mode, the same USB-C data port carries a USB NCM network link
+  (`ncm.usb0`, on by default and independent of the USB Audio Input toggle
+  above): plug a laptop in and
   `http://<JASPER_HOSTNAME>/` (or the documented fallback
   `http://10.12.194.1/`) works even with the Pi's Wi-Fi off. No IP
-  forwarding/NAT — the plugged-in laptop keeps its own default route.
+  forwarding/NAT — the plugged-in laptop keeps its own default route. A
+  Zero-class speaker using its shared OTG port for a USB output DAC
+  intentionally has no gadget network; a supported I²S DAC leaves that port
+  available.
   Kill switch: `JASPER_USB_NETWORK=disabled`. See
   [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for the
   composite-gadget design (both USB functions share one ConfigFS
@@ -894,7 +899,7 @@ reference. Currently:
   hash-checked model downloads, and accepted gaps for apt, Python,
   and PlatformIO transitive resolution.
 - [`HANDOFF-usb-gadget.md`](docs/HANDOFF-usb-gadget.md) — **Canonical**
-  for the composite USB gadget: the always-on USB management network
+  for the composite USB gadget: the hardware-conditional USB management network
   (`ncm.usb0`, NetworkManager keyfile, scoped dnsmasq, no IP
   forwarding/NAT), the function truth table shared with USB audio,
   OS-support verification (Windows/macOS NCM, dwc2 endpoint capacity),
@@ -1152,7 +1157,7 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-wiim-remote-mic` (WiiM Remote 2 BLE mic adapter) | Profile-gated; active only when paired WiiM Remote 2 is present | 0 MB off; ~15 MB on, bounded by MemoryMax=100M | ~0% idle; decode only while the remote mic streams |
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
 | `jasper-usbsink` (USB audio source lifecycle mirror) | **Disabled by default**; fan-in DIRECT data plane when on | process-free readiness marker; only the bounded host-volume observer is resident while on | low; fan-in owns ALSA capture while the host streams |
-| `jasper-usbgadget` (composite ConfigFS gadget: always-on USB network + optional audio) | **Active by default** (network function); audio function follows the usbsink toggle above | one-shot, ~0 own footprint; ~1 MB kernel modules once composed — see [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) "RAM contract" | ~0 |
+| `jasper-usbgadget` (composite ConfigFS gadget: USB network + optional audio) | **Active when gadget hardware is available** (network function); audio function follows the usbsink toggle above | one-shot, ~0 own footprint; ~1 MB kernel modules once composed — see [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) "RAM contract" | ~0 |
 | `jasper-usbnet-dhcp` (scoped dnsmasq for the USB management network) | **Device-activated** — active only while `usb0` exists | 0 MB when `usb0` absent; bounded ≤16 MB when active | ~0% idle |
 | `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Transit / Home Assistant / Weather / Sound / Wake-Corpus / Speaker / Rooms / Tools wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |

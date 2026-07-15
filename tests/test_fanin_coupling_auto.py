@@ -11,7 +11,7 @@ Pins the campaign brief's contracts + the review remediation:
     (jts.local eligible; jts3 roleful; jts5 composite; jts4 streambox loopback);
   - the USB combo arms ONLY on a gadget box that ALSO has canonical USB intent
     On, local sources allowed for the current role, and a ready derived
-    lifecycle mirror — B2 fleet-wide-arming + split-brain fix;
+    lifecycle mirror — B2 capability-gated arming + split-brain fix;
   - off a combo box the fan-in keys are EXPLICIT `disabled`, never unset — F5
     jasper.env-precedence fix;
   - a grouped box resolves loopback (not a route-blocked ok=False) — F3;
@@ -24,6 +24,7 @@ Pins the campaign brief's contracts + the review remediation:
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -201,8 +202,8 @@ def test_decision_eligible_gadget_box_with_intent_resolves_ring_and_combo_on():
 
 
 def test_decision_gadget_without_usb_intent_does_not_arm_combo():
-    """B2: the gadget dtoverlay is fleet-wide; without USB-audio intent the combo
-    stays OFF (fan-in keys explicit disabled)."""
+    """B2: gadget-capable hardware without USB-audio intent keeps the combo
+    off (fan-in keys explicitly disabled)."""
     d = ca.resolve_auto_decision(
         marker_raw=None,
         gadget_present=True,
@@ -291,47 +292,20 @@ def test_usb_combo_actions_explicit_disabled_when_not_armed():
     assert {a.key for a in acts} == set(ca.USB_COMBO_ENV_VARS)
 
 
-# --------------------------------------------------------------------------
-# usb_gadget_stack_present — the dtoverlay probe (reused /sources/ detection)
-# --------------------------------------------------------------------------
+def test_live_gadget_probe_reads_shared_resolved_capability(monkeypatch):
+    monkeypatch.setattr(
+        ca,
+        "current_usb_data_role",
+        lambda: SimpleNamespace(gadget_available=True),
+    )
+    assert ca.read_usb_gadget_available() is True
 
-
-def test_gadget_present_true_when_dtoverlay_line(tmp_path):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text("dtparam=audio=on\ndtoverlay=dwc2,dr_mode=peripheral\n")
-    assert ca.usb_gadget_stack_present(str(cfg)) is True
-
-
-def test_gadget_present_true_with_leading_whitespace(tmp_path):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text("  dtoverlay=dwc2,dr_mode=peripheral # gadget\n")
-    assert ca.usb_gadget_stack_present(str(cfg)) is True
-
-
-def test_gadget_present_false_when_absent(tmp_path):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text("dtparam=audio=on\n")
-    assert ca.usb_gadget_stack_present(str(cfg)) is False
-
-
-def test_gadget_present_false_when_config_missing(tmp_path):
-    assert ca.usb_gadget_stack_present(str(tmp_path / "nope.txt")) is False
-
-
-def test_live_gadget_probe_prefers_installer_boot_config_override(
-    tmp_path, monkeypatch,
-):
-    installer_cfg = tmp_path / "installer-config.txt"
-    installer_cfg.write_text("dtparam=audio=on\n")
-    legacy_cfg = tmp_path / "legacy-config.txt"
-    legacy_cfg.write_text("dtoverlay=dwc2,dr_mode=peripheral\n")
-    monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(installer_cfg))
-    monkeypatch.setenv("JASPER_BOOT_CONFIG_PATH", str(legacy_cfg))
-
-    assert ca.read_boot_config_gadget_present() is False
-
-    monkeypatch.delenv("JTS_BOOT_CONFIG_FILE")
-    assert ca.read_boot_config_gadget_present() is True
+    monkeypatch.setattr(
+        ca,
+        "current_usb_data_role",
+        lambda: SimpleNamespace(gadget_available=False),
+    )
+    assert ca.read_usb_gadget_available() is False
 
 
 def test_resolved_choice_label():
@@ -539,8 +513,8 @@ def test_auto_eligible_gadget_box_with_intent_arms_ring_and_combo(
 
 
 def test_auto_gadget_present_but_usb_audio_off_does_not_arm_combo(tmp_path, monkeypatch):
-    """B2: a box with the gadget dtoverlay (fleet-wide) but USB audio turned OFF must
-    NOT arm the combo — it writes explicit-off values, not enabled."""
+    """B2: a gadget-capable box with USB audio Off must not arm the combo; it
+    writes explicit-off values rather than enabled ones."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
     fanin.write_text("")

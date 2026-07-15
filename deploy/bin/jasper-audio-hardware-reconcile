@@ -163,7 +163,7 @@ find_card() {
 
 observe_output_hardware_state() {
     local should_write="${1:-0}"
-    local payload profile_id profile_status
+    local payload profile_id profile_status usb_topology usb_desired usb_active usb_available usb_management usb_reason
     local action="observed"
     local args=()
     if [[ "$should_write" == "1" ]]; then
@@ -187,8 +187,20 @@ observe_output_hardware_state() {
     profile_status="$(printf '%s' "$payload" | sed -n 's/.*"status": *"\([^"]*\)".*/\1/p')"
     OBSERVED_OUTPUT_PROFILE_ID="$profile_id"
     OBSERVED_OUTPUT_PROFILE_STATUS="$profile_status"
+    usb_topology="$(printf '%s' "$payload" | sed -n 's/.*"board_topology": *"\([^"]*\)".*/\1/p')"
+    usb_desired="$(printf '%s' "$payload" | sed -n 's/.*"desired_role": *"\([^"]*\)".*/\1/p')"
+    usb_active="$(printf '%s' "$payload" | sed -n 's/.*"active_role": *"\([^"]*\)".*/\1/p')"
+    usb_available="$(printf '%s' "$payload" | sed -n 's/.*"gadget_available": *\([[:alpha:]][[:alpha:]]*\).*/\1/p')"
+    usb_management="$(printf '%s' "$payload" | sed -n 's/.*"management_transport_available": *\([[:alpha:]][[:alpha:]]*\).*/\1/p')"
+    case "$usb_available" in true|false) ;; *) usb_available="" ;; esac
+    case "$usb_management" in true|false) ;; *) usb_management="" ;; esac
+    usb_reason="$(printf '%s' "$payload" | sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p')"
     log_event "state_${action}" \
         "path=${OUTPUT_HARDWARE_STATE_PATH} profile_id=${profile_id:-unknown} status=${profile_status:-unknown}"
+    printf 'event=hardware.usb_role_resolved topology=%s desired=%s active=%s gadget_available=%s management_transport_available=%s reason=%s\n' \
+        "${usb_topology:-unknown}" "${usb_desired:-unknown}" \
+        "${usb_active:-unknown}" "${usb_available:-false}" \
+        "${usb_management:-false}" "${usb_reason:-state_missing}" >&2
 }
 
 env_file_value() {

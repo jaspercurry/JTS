@@ -75,7 +75,11 @@ def _patch_state_dependencies(
         sources_setup, "probe_unit_snapshot", lambda _units: _Snapshot(),
     )
     monkeypatch.setattr(sources_setup, "_uac2_card_present", lambda: usb_card)
-    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: usb_ready)
+    monkeypatch.setattr(
+        sources_setup,
+        "_usbsink_capability",
+        lambda: (usb_ready, "" if usb_ready else "USB hardware unavailable"),
+    )
     monkeypatch.setattr(
         sources_setup.os.path,
         "isdir",
@@ -113,50 +117,6 @@ def test_index_html_uses_shared_toggle_markup_and_csrf_meta():
     assert '<script type="module" src="/assets/sources/js/main.js">' in html
 
 
-def test_usbsink_available_returns_true_when_dtoverlay_present(
-    monkeypatch, tmp_path,
-):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text(
-        "# JTS install\n"
-        "[pi5]\n"
-        "dtoverlay=dwc2,dr_mode=peripheral\n"
-        "country=US\n"
-    )
-    monkeypatch.setattr(sources_setup, "BOOT_CONFIG_PATH", str(cfg))
-    assert sources_setup._usbsink_available() is True
-
-
-def test_usbsink_available_tolerates_leading_whitespace(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text("    dtoverlay=dwc2,dr_mode=peripheral\n")
-    monkeypatch.setattr(sources_setup, "BOOT_CONFIG_PATH", str(cfg))
-    assert sources_setup._usbsink_available() is True
-
-
-def test_usbsink_available_returns_false_when_dtoverlay_missing(
-    monkeypatch, tmp_path,
-):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text("# JTS install\n[pi5]\ncountry=US\n")
-    monkeypatch.setattr(sources_setup, "BOOT_CONFIG_PATH", str(cfg))
-    assert sources_setup._usbsink_available() is False
-
-
-def test_usbsink_available_does_not_match_commented_line(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text("# dtoverlay=dwc2,dr_mode=peripheral\n")
-    monkeypatch.setattr(sources_setup, "BOOT_CONFIG_PATH", str(cfg))
-    assert sources_setup._usbsink_available() is False
-
-
-def test_usbsink_available_returns_false_on_missing_file(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        sources_setup, "BOOT_CONFIG_PATH", str(tmp_path / "missing.txt"),
-    )
-    assert sources_setup._usbsink_available() is False
-
-
 def test_gather_state_includes_unavailable_usbsink(monkeypatch):
     _patch_state_dependencies(monkeypatch, usb_ready=False)
 
@@ -168,7 +128,24 @@ def test_gather_state_includes_unavailable_usbsink(monkeypatch):
     assert state["available"] is False
 
 
-def test_gather_state_usbsink_available_when_dtoverlay_set(monkeypatch):
+def test_gather_state_preserves_desired_on_while_usb_hardware_unavailable(
+    monkeypatch,
+):
+    _patch_state_dependencies(
+        monkeypatch,
+        usb_ready=False,
+        intents={**DEFAULT_INTENTS, Source.USBSINK: True},
+    )
+
+    state = sources_setup._gather_state()["usbsink"]
+
+    assert state["desired"] is True
+    assert state["enabled"] is True
+    assert state["effective"] == "unavailable"
+    assert "USB hardware unavailable" in str(state["unavailableReason"])
+
+
+def test_gather_state_usbsink_available_when_hardware_role_allows(monkeypatch):
     _patch_state_dependencies(monkeypatch, usb_ready=True)
 
     state = sources_setup._gather_state()["usbsink"]
@@ -245,7 +222,7 @@ def test_apply_usbsink_delegates_once_to_shared_coordinator(
     calls = []
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda _unit: True)
-    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
+    monkeypatch.setattr(sources_setup, "_usbsink_capability", lambda: (True, ""))
     monkeypatch.setattr(
         sources_setup,
         "request_source_intent",
@@ -266,7 +243,7 @@ def test_apply_usbsink_rejects_missing_gadget_before_requesting_intent(
         "_unit_available",
         lambda unit: unit != sources_setup.USBSINK_GADGET_UNIT,
     )
-    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
+    monkeypatch.setattr(sources_setup, "_usbsink_capability", lambda: (True, ""))
     monkeypatch.setattr(
         sources_setup,
         "request_source_intent",
@@ -281,7 +258,11 @@ def test_apply_usbsink_off_persists_when_gadget_is_missing(monkeypatch):
     calls = []
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda _unit: False)
-    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: False)
+    monkeypatch.setattr(
+        sources_setup,
+        "_usbsink_capability",
+        lambda: (False, "USB output DAC uses the shared port"),
+    )
     monkeypatch.setattr(
         sources_setup,
         "request_source_intent",

@@ -44,6 +44,9 @@ from typing import Any
 
 from dbus_next.errors import DBusError  # type: ignore
 
+from jasper.audio_hardware.usb_port_role import (
+    UsbPortRoleState,
+)
 from jasper.atomic_io import (
     advisory_file_lock,
     atomic_write_text,
@@ -62,6 +65,7 @@ from jasper.local_sources import (
 )
 from jasper.log_event import log_event
 from jasper.music_sources import Source
+from jasper.output_hardware import current_usb_data_role
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +281,7 @@ class ReconcileOps:
     unit_failed: UnitProbe
     unit_available: UnitAvailableProbe
     local_sources_allowed: Callable[[], bool]
+    usb_port_role: Callable[[], UsbPortRoleState]
     usb_audio_present: Callable[[], bool]
     usb_direct_present: Callable[[], bool]
     usb_direct_ready: Callable[[], bool]
@@ -954,6 +959,7 @@ def default_reconcile_ops() -> ReconcileOps:
         unit_failed=_unit_failed,
         unit_available=_unit_available,
         local_sources_allowed=_local_sources_allowed,
+        usb_port_role=current_usb_data_role,
         usb_audio_present=_usb_audio_present,
         usb_direct_present=_usb_direct_present,
         usb_direct_ready=_usb_direct_ready,
@@ -1105,6 +1111,61 @@ def _reconcile_usbsink(
     if unit is None or len(lifecycle.advertise_units) != 1:
         raise RuntimeError("USB lifecycle declaration is incomplete")
     gadget = lifecycle.advertise_units[0]
+    usb_role = ops.usb_port_role()
+
+    # Hardware unavailability is orthogonal to follower parking. Preserve
+    # household intent, but withdraw every derived USB-audio resource in all
+    # roles. During a host-role change whose current controller is still
+    # peripheral, keep the management transport alive until reboot so a deploy
+    # running over NCM cannot sever itself. Stable host/unsupported states stop
+    # the composite owner completely.
+    if not usb_role.gadget_available:
+        hardware_teardown_errors: list[str] = []
+        _attempt_teardown(
+            hardware_teardown_errors,
+            f"disable {unit} while USB gadget unavailable",
+            lambda: _ensure_enabled(ops, unit, False),
+        )
+        _attempt_teardown(
+            hardware_teardown_errors,
+            f"stop {unit} while USB gadget unavailable",
+            lambda: _ensure_active(ops, unit, False, force=False),
+        )
+        if usb_role.management_transport_available:
+            if ops.usb_audio_present():
+                _attempt_teardown(
+                    hardware_teardown_errors,
+                    f"recompose {gadget} to management-only while role changes",
+                    lambda: _check_result(
+                        *ops.run_unit(gadget, "restart"),
+                        f"systemctl restart {gadget}",
+                    ),
+                )
+        else:
+            _attempt_teardown(
+                hardware_teardown_errors,
+                f"stop {gadget} while USB gadget unavailable",
+                lambda: _ensure_active(ops, gadget, False, force=False),
+            )
+        if ops.usb_audio_present():
+            hardware_teardown_errors.append(
+                "USB audio function remained after gadget withdrawal"
+            )
+        else:
+            _attempt_teardown(
+                hardware_teardown_errors,
+                f"start {_USB_COUPLING_UNIT}",
+                lambda: _check_result(
+                    *ops.run_unit(_USB_COUPLING_UNIT, "start"),
+                    f"systemctl start {_USB_COUPLING_UNIT}",
+                ),
+            )
+        if hardware_teardown_errors:
+            raise RuntimeError("; ".join(hardware_teardown_errors))
+        if not desired:
+            return "off"
+        return "unavailable" if allowed else "parked"
+
     effective_on = desired and allowed
 
     if effective_on:
@@ -1662,11 +1723,14 @@ def _reconcile_once(
                 level=logging.WARNING,
             )
         else:
+            success_reason = ""
+            if source == Source.USBSINK and effective == "unavailable":
+                success_reason = operations.usb_port_role().reason
             outcomes[source.value] = {
                 "desired": desired_label,
                 "effective": effective,
                 "result": "ok",
-                "reason": "",
+                "reason": success_reason,
             }
             log_event(
                 logger,
@@ -1675,6 +1739,7 @@ def _reconcile_once(
                 desired=desired_label,
                 effective=effective,
                 result="ok",
+                reason=success_reason,
             )
 
     if not _publish_reconcile_status(

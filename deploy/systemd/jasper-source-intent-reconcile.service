@@ -11,7 +11,8 @@ Documentation=file:/opt/jasper/docs/HANDOFF-source-lifecycle.md
 # shared prerequisites those units declare so child timeouts cover source work,
 # not concurrent core/network startup. These are ordering edges only: this
 # oneshot does not pull optional source dependencies or own the core graph.
-After=systemd-rfkill.service hciuart.service network.target network-online.target sound.target avahi-daemon.service jasper-control.service jasper-fanin.service jasper-outputd.service jasper-camilla.service jasper-usbgadget.service
+After=systemd-rfkill.service hciuart.service network.target network-online.target sound.target avahi-daemon.service jasper-control.service jasper-audio-hardware-reconcile.service jasper-fanin.service jasper-outputd.service jasper-camilla.service jasper-usbgadget.service
+Wants=jasper-audio-hardware-reconcile.service
 # No automatic Restart= loop exists below. Disable start-rate limiting because
 # a request may perform one bounded retry after joining a stale/non-exact
 # activation and several rows may be exercised quickly; the request lock

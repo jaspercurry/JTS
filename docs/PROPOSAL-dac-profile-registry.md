@@ -102,6 +102,7 @@ class DacProfile:
     ]
     outputd_sink: str
     supported_card_matches: tuple[str, ...]
+    connection: Literal["usb", "i2s"] = "usb"
     usb_ids: tuple[str, ...] = ()
     child_profile_ids: tuple[str, ...] = ()
     requires_same_usb_bus: bool = False
@@ -120,6 +121,11 @@ Initial profiles should include at least:
 - `HIFIBERRY_DAC8X`
 - `HIFIBERRY_DAC8X_STUDIO` if the runtime treats Studio distinctly
 - `DUAL_APPLE_USB_C_DAC_4CH`
+
+`connection` is consumed by the hardware USB-role resolver. An I²S profile
+must declare its registered `dtoverlay`; a USB profile cannot. That keeps the
+registry IO-free while letting a Zero reserve its single OTG port for USB
+output unless explicit, durable I²S configuration proves the port is free.
 
 The dual-Apple profile is not just "two dongles in a list." It needs explicit
 metadata:
@@ -246,6 +252,7 @@ Specific follow-up from review:
   observed and graph-ready, while still warning on bad physical topology or
   partial hardware states.
 
-Last verified: 2026-06-11 (registered single-device classification, registry
+Last verified: 2026-07-14 (`connection`/`dtoverlay` role contract rechecked;
+prior 2026-06-11 registered single-device classification, registry
 consumers, and remaining bash drift guards rechecked against the dual-Apple
 active-output architecture).

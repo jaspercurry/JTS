@@ -346,7 +346,11 @@ What exists:
   `/run/jasper-output-hardware/output_hardware.json`, a structured observed-hardware
   artifact with the current profile id, status, physical output count,
   Apple child-device facts, and selected card/PCM for single-device
-  profiles. `/state` exposes this artifact as `audio.output_hardware`,
+  profiles. Its additive `usb_data_role` block reports board topology,
+  configured registered I²S overlays, desired/configured/active controller
+  roles, strict audio-gadget availability, current management-transport
+  availability, reason, and pending-reboot state. `/state`
+  exposes this artifact as `audio.output_hardware`,
   `/sound/output-topology` returns it alongside the topology draft, and
   `jasper-doctor` has a first-line "Output hardware state" check for
   missing, partial, blocked, or ready hardware. Runtime selection remains
@@ -861,6 +865,10 @@ forced narrow speakers to pad to the DAC's full channel count with muted lanes;
 rejected — see the "Stage 2a landed" callout above.)
 
 **6. `DacProfile` additions (pure data, IO-free, fail-closed at import).**
+- `connection: "usb" | "i2s"` declares which host interface the final-output
+  DAC consumes. I²S profiles must declare their registered `dtoverlay`; USB
+  profiles cannot. The USB-role resolver consumes this data without growing a
+  per-DAC branch.
 - `dac_channel_map: tuple[ChannelMapEntry, ...] | None` — `(camilla_out_index,
   physical_dac_channel)` permutation. **No gain field** (CamillaDSP owns gain).
 - `is_coherent_single() -> bool` predicate (folds `kind=="single" and
@@ -1463,7 +1471,8 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-07-12 (outputd control-socket command cap/deadline and
+Last verified: 2026-07-14 (DAC connection declaration and output-hardware USB
+role artifact rechecked; prior 2026-07-12 outputd control-socket command cap/deadline and
 STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
 historical readiness entry marked superseded by the
 protected commission ramp; prior 2026-07-10 pass covered optional-reference failure isolation and full

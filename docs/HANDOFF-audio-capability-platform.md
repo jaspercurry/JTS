@@ -103,8 +103,11 @@ The foundation is partly built:
 - `jasper/audio_hardware/dac.py` is the static DAC profile registry.
   `jasper/output_hardware.py` is the output-side runtime classifier:
   `jasper-audio-hardware-reconcile` writes
-  `/run/jasper-output-hardware/output_hardware.json` with separate `active` runtime
-  hardware and best `observed` hardware shape. `/state`,
+  `/run/jasper-output-hardware/output_hardware.json` with the observed output
+  profile/card facts plus the resolved `usb_data_role` (board topology,
+  configured registered I²S overlays, desired/configured/active role,
+  strict gadget and active management-transport availability, reason, and
+  reboot requirement). `/state`,
   `/sound/output-topology`, and `jasper-doctor` consume that artifact
   instead of each reconstructing DAC semantics from raw env/card names.
 - `jasper/chip_aec_policy.py` is the shared chip-AEC gate: static DAC
@@ -663,7 +666,8 @@ against clear metrics.
 
 ---
 
-Last verified: 2026-06-26 (`/aec` applied-runtime status contract rechecked
+Last verified: 2026-07-14 (output hardware `usb_data_role` boundary rechecked;
+prior 2026-06-26 `/aec` applied-runtime status contract rechecked
 against `jasper/audio_profile_state.py`, `jasper/control/aec_endpoints.py`,
 and `tests/test_control_aec_state.py`. Prior pass 2026-06-25: chip-AEC gate
 vocabulary rechecked against `jasper/chip_aec_policy.py`, `/aec`, and

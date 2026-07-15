@@ -22,6 +22,7 @@ from ..multiroom.effective_role import (
     effective_local_sources_park_reason,
     read_effective_role_status,
 )
+from ..output_hardware import current_usb_data_role
 from ..source_intent import source_intent_enabled
 from .registry import local_source_lifecycles
 
@@ -82,6 +83,19 @@ def local_source_allowed(source: Source) -> tuple[bool, str | None]:
         return False, "source_intent_invalid"
     if not enabled:
         return False, "source_intent_disabled"
+    if source == Source.USBSINK:
+        try:
+            usb_role = current_usb_data_role()
+        except (OSError, RuntimeError, ValueError) as exc:
+            log_event(
+                logger,
+                "local_sources.guard_usb_role_failed",
+                error=exc,
+                level=logging.WARNING,
+            )
+            return False, "usb_role_unavailable"
+        if not usb_role.gadget_available:
+            return False, usb_role.reason
     return True, None
 
 

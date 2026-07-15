@@ -2,7 +2,8 @@
 # Bring up the Jasper composite USB gadget descriptor in ConfigFS.
 #
 # The gadget carries up to two functions:
-#   - ncm.usb0  — a USB management NETWORK link (always-on by default): a
+#   - ncm.usb0  — a USB management NETWORK link (default-on where the resolved
+#     hardware transport is available): a
 #     laptop plugged into the Pi's USB-C port gets an IP link to the Pi so
 #     http://<hostname>/ works even with Wi-Fi off. See
 #     docs/HANDOFF-usb-gadget.md.
@@ -54,6 +55,7 @@ SPEAKER_NAME_READER="${JASPER_SPEAKER_NAME_READER:-/opt/jasper/.venv/bin/python}
 AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}"
 AUDIO_READY_CMD="${JASPER_USBGADGET_AUDIO_READY_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
 AUDIO_DATA_READY_CMD="${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-/opt/jasper/.venv/bin/python -m jasper.fanin.status --usbsink-direct-armed}"
+HARDWARE_ALLOWED_CMD="${JASPER_USBGADGET_HARDWARE_ALLOWED_CMD:-/opt/jasper/.venv/bin/python -m jasper.audio_hardware.usb_port_role --require-management-transport}"
 
 log() {
     echo "jasper-usbgadget-up: $*"
@@ -68,6 +70,12 @@ emit() {
         printf 'event=usb_gadget.%s\n' "$1" >&2
     fi
 }
+
+if ! ${HARDWARE_ALLOWED_CMD}; then
+    emit skip "reason=hardware_unavailable where=up"
+    "$(dirname "$0")/jasper-usbgadget-down" || true
+    exit 0
+fi
 
 SPEAKER_NAME="JTS"
 

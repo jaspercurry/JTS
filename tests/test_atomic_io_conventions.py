@@ -37,8 +37,9 @@ _ALLOWLIST = {
     # Deliberately different — KEEP. Durability beyond os.replace:
     # fsyncs the tempfile AND the parent directory so the WiFi recovery
     # stash survives the exact power-yank incident it exists for.
-    # atomic_write_text has no fsync (by design — most callers don't
-    # want the latency); do not migrate this one.
+    # atomic_write_text supports opt-in durability, but this older writer also
+    # owns a specialized recovery-stash transaction; leave its proven path
+    # alone until that subsystem is touched deliberately.
     "jasper/wifi_guardian_persistence.py",
     # Plain burn-down candidates (no fsync; mostly text/YAML/JSON with
     # an explicit chmod) — exact fits for atomic_write_text(mode=...).

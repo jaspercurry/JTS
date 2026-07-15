@@ -346,7 +346,7 @@ install_usb_network_files() {
 
 migrate_usbsink_init_to_usbgadget() {
     # The old jasper-usbsink-init.service (oneshot ConfigFS gadget owner, ships
-    # disabled) is replaced by the always-on composite jasper-usbgadget.service.
+    # disabled) is replaced by the hardware-gated composite jasper-usbgadget.service.
     # Disable + stop the old unit on upgrade before enabling the new one, and
     # remove its stale unit file so systemd-analyze / doctor don't trip on a
     # deleted-from-repo file that lingers under /etc/systemd/system. Idempotent
@@ -367,10 +367,12 @@ migrate_usbsink_init_to_usbgadget() {
 
 enable_usbgadget() {
     # The composite gadget is the FIRST gadget unit we enable — it carries the
-    # always-on USB management network. `enable --now` arms it at boot and
-    # composes it right now (its ExecCondition skips cleanly pre-reboot when no
-    # UDC exists yet, so this never fails on a fresh install before the
-    # dtoverlay reboot). jasper-usbnet-dhcp is device-activated via its
+    # default-on USB management network where the resolved transport permits.
+    # `enable --now` arms it at boot; its ExecCondition skips cleanly when
+    # hardware is stable host/unsupported or no UDC exists yet. During the
+    # pending-host/current-peripheral migration it retains NCM so an install
+    # running over USB can finish before reboot. jasper-usbnet-dhcp is
+    # device-activated via its
     # [Install] WantedBy=sys-subsystem-net-devices-usb0.device, so `enable`
     # wires the pull without starting it until usb0 appears.
     #
@@ -746,8 +748,9 @@ start_streambox_runtime_units() {
     # against the 2-slot ring before the reconcile gets a chance to heal it.
     systemctl try-restart jasper-camilla.service 2>/dev/null || true
 
-    # Always-on USB management network (composite gadget + device-activated
-    # DHCP). Skips cleanly pre-reboot when no UDC exists.
+    # Hardware-gated USB management network (composite gadget +
+    # device-activated DHCP). Skips cleanly when the resolved role cannot
+    # provide management transport or no UDC exists yet.
     enable_usbgadget
     # Mux is core arbitration infrastructure, not a user-selectable source.
     # Keep it available (role guard still parks followers); its ~1 Hz idle loop
@@ -952,12 +955,12 @@ install_systemd_units() {
         /usr/local/sbin/jasper-bootloop-guard
 
     # jasper-usbgadget: composite ConfigFS gadget owner. It carries the
-    # always-on USB management network (ncm) AND the wizard-toggled USB audio
+    # USB management network (ncm) when gadget hardware is available AND the wizard-toggled USB audio
     # function (uac2). jasper-usbsink is the disabled-by-default /sources audio
     # lifecycle/readiness marker; jasper-fanin DIRECT-captures the gadget and
     # the marker orders After= the gadget owner. jasper-usbnet-dhcp is the scoped,
-    # device-activated dnsmasq for the USB network. The dtoverlay must be set +
-    # Pi rebooted first (handled by set_usb_gadget_mode above). See
+    # device-activated dnsmasq for the USB network. The resolved peripheral
+    # role must be active (handled by reconcile_usb_data_role above). See
     # docs/HANDOFF-usb-gadget.md.
     install_usbsink_unit_files
 
@@ -1181,9 +1184,10 @@ install_systemd_units() {
 
     systemctl daemon-reload
 
-    # Always-on USB management network: enable the composite gadget (first
-    # gadget unit we enable) and wire the device-activated DHCP. Skips cleanly
-    # pre-reboot (no UDC). See docs/HANDOFF-usb-gadget.md.
+    # Hardware-gated USB management network: enable the composite gadget (first
+    # gadget unit we enable) and wire the device-activated DHCP. Its condition
+    # skips cleanly when the resolved role cannot provide management transport
+    # or no UDC exists yet. See docs/HANDOFF-usb-gadget.md.
     enable_usbgadget
 
     # Legacy migration cleanup: an old endpoint-tier box (the removed third
