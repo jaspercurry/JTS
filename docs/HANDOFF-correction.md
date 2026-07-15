@@ -461,7 +461,10 @@
   uses a separate 1.5-second socket timeout plus an async wall-clock deadline,
   publishes at most one queued host event before refreshing status, and bounds
   one retry plus that status read to 4.75 seconds inside the default
-  eight-second feed-loss guard.
+  eight-second feed-loss guard. Those bounded control requests share one FIFO
+  worker. A write that outlives the awaiting deadline remains ahead of newer
+  writes, so a late progress event cannot replace a newer terminal event in the
+  relay's last-write-wins slot.
   The Pi retries one idempotent host-progress write after a timeout, 429, or
   relay 5xx. The repo build is
   intentionally not published by this hardware-free lane, so that external

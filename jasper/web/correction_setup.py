@@ -152,11 +152,20 @@ _RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {
 # Bound the foreground relay registration so a slow/unreachable relay fails fast
 # rather than hanging the request thread for RelayClient's 15 s default.
 _RELAY_REGISTER_TIMEOUT_S = 10.0
-# Host progress is last-write-wins and idempotent.  One transient relay 5xx or
-# socket timeout must not abort a guarded level walk, but retries stay tightly
-# bounded so a dead relay still reaches the existing restore/Stop path.
+# Repeating one host event is safe, but distinct progress and terminal events
+# must preserve order in the relay's last-write-wins slot. One transient relay
+# 5xx or socket timeout must not abort a guarded level walk, while retries stay
+# tightly bounded so a dead relay still reaches the existing restore/Stop path.
 _RELAY_HOST_EVENT_ATTEMPTS = 2
 _RELAY_HOST_EVENT_RETRY_DELAY_S = 0.25
+# Keep bounded level-control calls in submission order even after the awaiting
+# coroutine reaches its wall-clock deadline.  A timed-out write stays in this
+# single-worker queue, so an older progress event cannot complete after a newer
+# terminal event and replace it in the relay's last-write-wins slot.
+_RELAY_LEVEL_CONTROL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="correction-relay-control",
+)
 # Level-ramp status and host events share one serialized pump. Give those small
 # control requests a separate WAN timeout: one retried host event plus the next
 # status read can then block for at most 4.75 s, comfortably inside the ramp's
@@ -184,10 +193,12 @@ async def _run_relay_control_request(
     call: Callable[..., Any],
     *args: Any,
     hard_timeout_s: float | None = None,
+    preserve_write_order: bool = False,
 ) -> Any:
     """Run one blocking relay request with an optional wall-clock deadline."""
 
-    request = asyncio.get_running_loop().run_in_executor(None, call, *args)
+    executor = _RELAY_LEVEL_CONTROL_EXECUTOR if hard_timeout_s is not None else None
+    request = asyncio.get_running_loop().run_in_executor(executor, call, *args)
     if hard_timeout_s is None:
         return await request
     done, _pending = await asyncio.wait(
@@ -196,11 +207,22 @@ async def _run_relay_control_request(
     )
     if not done:
         # A running thread cannot be killed safely, but the level-control pump
-        # must not wait for it. The cloned RelayClient's socket timeout remains
-        # the transport backstop; idempotent host events tolerate a late result.
-        request.cancel()
+        # must not wait for it.  Preserve writes in the FIFO executor so every
+        # newer event runs after this one; queued status reads are safe to drop.
+        if preserve_write_order:
+            request.add_done_callback(_consume_relay_control_result)
+        else:
+            request.cancel()
         raise asyncio.TimeoutError
     return request.result()
+
+
+def _consume_relay_control_result(request: asyncio.Future[Any]) -> None:
+    """Retrieve a detached ordered write result after its caller timed out."""
+
+    if request.cancelled():
+        return
+    request.exception()
 
 
 async def _post_relay_host_event(
@@ -222,6 +244,7 @@ async def _post_relay_host_event(
                 pi_session.pull_token,
                 payload,
                 hard_timeout_s=hard_timeout_s,
+                preserve_write_order=hard_timeout_s is not None,
             )
             return
         except RelayError as exc:

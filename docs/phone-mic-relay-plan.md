@@ -779,9 +779,13 @@ freeze mic batches. The Pi uses a separate 1.5-second level-control socket
 timeout plus an async wall-clock deadline,
 publishes at most one queued host event before the next status refresh, and
 bounds one retry plus that status read to 4.75 seconds inside the default
-eight-second feed-loss guard. The Pi gives idempotent host-progress writes one retry
-after a timeout, 429, or relay 5xx. External publication is intentionally
-pending coordinator release. Active-crossover capture uses
+eight-second feed-loss guard. Those bounded requests share one FIFO worker, and
+a write that outlives the awaiting deadline stays ordered ahead of newer
+writes; an older progress event therefore cannot complete after and replace a
+newer terminal event in the relay's last-write-wins slot. The Pi gives
+idempotent host-progress writes one retry after a timeout, 429, or relay 5xx.
+External publication is intentionally pending coordinator release.
+Active-crossover capture uses
 role-sized sweeps,
 a signal-bounded controlled quiet crop, paired-window deconvolved per-band SNR,
 and the server-owned three-repeat admission loop; selecting a UMIK-2 preselects

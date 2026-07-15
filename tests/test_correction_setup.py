@@ -578,6 +578,60 @@ async def test_relay_control_request_enforces_wall_clock_deadline():
     assert time.monotonic() - began < 0.25
 
 
+@pytest.mark.asyncio
+async def test_timed_out_relay_write_cannot_finish_after_newer_terminal_event(
+    monkeypatch,
+):
+    started = threading.Event()
+    release = threading.Event()
+    history = []
+
+    class Client:
+        def post_host_event(self, _session_id, _pull_token, payload):
+            if payload["phase"] == "old":
+                started.set()
+                release.wait(timeout=1.0)
+            history.append(payload["phase"])
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(
+        correction_setup,
+        "_RELAY_LEVEL_CONTROL_EXECUTOR",
+        executor,
+    )
+    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_ATTEMPTS", 1)
+    client = Client()
+    pi_session = SimpleNamespace(session_id="cap-ordered", pull_token="pull")
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await correction_setup._post_relay_host_event(
+                client,
+                pi_session,
+                {"phase": "old"},
+                hard_timeout_s=0.02,
+            )
+        assert started.is_set()
+
+        terminal = asyncio.create_task(
+            correction_setup._post_relay_host_event(
+                client,
+                pi_session,
+                {"phase": "terminal"},
+                hard_timeout_s=0.5,
+            )
+        )
+        await asyncio.sleep(0.02)
+        assert history == []
+
+        release.set()
+        await terminal
+    finally:
+        release.set()
+        executor.shutdown(wait=True)
+
+    assert history == ["old", "terminal"]
+
+
 def test_relay_level_control_budget_stays_inside_default_feed_guard():
     from jasper.audio_measurement.ramp import MeasurementRamp
 
