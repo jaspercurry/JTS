@@ -11,8 +11,9 @@ and the fail-soft forensic manifest are deliberately not evidence authority.
 
 One raw artifact is capped at the existing 5 MiB crossover-capture ceiling.
 The total bound covers the proven maximum stereo three-way run: four regions,
-each with 3 normal + 3 reverse + (27 coordinates * 5 repeats), or 564 captures,
-at the full raw cap, plus 1 GiB for generated stimuli and canonical metadata.
+each with 3 normal + 3 reverse + (27 coordinates * 5 repeats), plus 3 isolated
+captures for each of six physical drivers, or 582 captures at the full raw cap,
+plus 1 GiB for generated stimuli and canonical metadata.
 This is a hard safety ceiling, not a retention target.  A capture WAV is
 published once at its authoritative path; this store creates no manifest or
 shadow WAV copy.
@@ -55,7 +56,9 @@ from .bundles import (
 )
 from .commissioning_evidence import (
     STATIONARY_CAPTURE_COUNT,
+    AdmittedIsolatedDriverCapture,
     AdmittedRegionCapture,
+    CompleteIsolatedDriverEvidence,
     CompleteCommissioningEvidence,
     DelayPointEvidence,
     DelayWalkEvidence,
@@ -64,7 +67,7 @@ from .commissioning_evidence import (
     StationaryRegionEvidence,
 )
 from .commissioning_run import CommissioningRunHandle
-from .profile import ADJACENT_PAIRS_BY_WAY, SIDES_BY_LAYOUT
+from .profile import ADJACENT_PAIRS_BY_WAY, DRIVER_ROLES_BY_WAY, SIDES_BY_LAYOUT
 from .test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 EVIDENCE_ROOT = "evidence/v1"
@@ -75,9 +78,20 @@ MAX_COMMISSIONING_REGIONS = max(
     for sides in SIDES_BY_LAYOUT.values()
     for regions in ADJACENT_PAIRS_BY_WAY.values()
 )
-MAX_CAPTURE_ARTIFACT_COUNT = MAX_COMMISSIONING_REGIONS * (
+MAX_SUMMED_CAPTURE_ARTIFACT_COUNT = MAX_COMMISSIONING_REGIONS * (
     (2 * STATIONARY_CAPTURE_COUNT)
     + (MAX_SCHEDULED_CANDIDATES * MIN_CAPTURE_COUNT)
+)
+MAX_ISOLATED_DRIVER_TARGETS = max(
+    len(sides) * len(roles)
+    for sides in SIDES_BY_LAYOUT.values()
+    for roles in DRIVER_ROLES_BY_WAY.values()
+)
+MAX_ISOLATED_CAPTURE_ARTIFACT_COUNT = (
+    MAX_ISOLATED_DRIVER_TARGETS * STATIONARY_CAPTURE_COUNT
+)
+MAX_CAPTURE_ARTIFACT_COUNT = (
+    MAX_SUMMED_CAPTURE_ARTIFACT_COUNT + MAX_ISOLATED_CAPTURE_ARTIFACT_COUNT
 )
 MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES = (
     MAX_CAPTURE_ARTIFACT_COUNT * MAX_EVIDENCE_ARTIFACT_BYTES
@@ -318,6 +332,10 @@ def region_relative_path(
 
 def complete_relative_path(run_id: str) -> str:
     return f"{_run_root(run_id)}/complete.json"
+
+
+def isolated_driver_evidence_relative_path(run_id: str) -> str:
+    return f"{_run_root(run_id)}/isolated-driver-evidence.json"
 
 
 def _max_bytes_for_path(relative_path: str) -> int:
@@ -1178,15 +1196,71 @@ class CommissioningEvidenceStore:
         self._verify_complete(result, _ReadBudget())
         return result
 
+    def publish_complete_isolated_driver_evidence(
+        self,
+        evidence: CompleteIsolatedDriverEvidence,
+    ) -> ArtifactIdentity:
+        """Publish the one write-once isolated-driver set for this exact run."""
+
+        self._assert_session(evidence)
+        return self._publish_typed(
+            isolated_driver_evidence_relative_path(
+                evidence.plan.authority.run.run_id
+            ),
+            evidence,
+            CompleteIsolatedDriverEvidence.from_mapping,
+            verify=self._verify_complete_isolated_driver_evidence,
+        )
+
+    def reopen_complete_isolated_driver_evidence(
+        self,
+        *,
+        run_id: str,
+        artifact: ArtifactIdentity | None = None,
+    ) -> CompleteIsolatedDriverEvidence:
+        """Reopen one exact run-scoped set and every child artifact."""
+
+        expected_path = isolated_driver_evidence_relative_path(run_id)
+        identity = artifact or self._identity_for_path(expected_path)
+        _require_identity_path(identity, expected_path)
+        result = self._reopen_typed(
+            identity,
+            CompleteIsolatedDriverEvidence.from_mapping,
+        )
+        self._assert_session(result)
+        if result.plan.authority.run.run_id != run_id:
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
+                "isolated evidence path does not match its exact durable run",
+            )
+        self._verify_complete_isolated_driver_evidence(result, _ReadBudget())
+        return result
+
     def _verify_capture(
         self,
         capture: AdmittedRegionCapture,
         budget: _ReadBudget,
     ) -> None:
+        self._verify_admitted_capture_bytes(capture, budget, label="region")
+
+    def _verify_isolated_capture(
+        self,
+        capture: AdmittedIsolatedDriverCapture,
+        budget: _ReadBudget,
+    ) -> None:
+        self._verify_admitted_capture_bytes(capture, budget, label="isolated")
+
+    def _verify_admitted_capture_bytes(
+        self,
+        capture: AdmittedRegionCapture | AdmittedIsolatedDriverCapture,
+        budget: _ReadBudget,
+        *,
+        label: str,
+    ) -> None:
         for role, artifact in (
-            ("raw capture", capture.capture.raw_artifact),
-            ("analysis input", capture.capture.analysis_input_artifact),
-            ("quality evidence", capture.capture.quality_artifact),
+            (f"raw {label} capture", capture.capture.raw_artifact),
+            (f"{label} analysis input", capture.capture.analysis_input_artifact),
+            (f"{label} quality evidence", capture.capture.quality_artifact),
         ):
             _require_evidence_artifact(artifact, role=role)
         _require_stimulus_path(
@@ -1211,7 +1285,7 @@ class CommissioningEvidenceStore:
         except AdmissionArtifactError as exc:
             raise CommissioningEvidenceStoreError(
                 CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                f"generation admission artifact is not authoritative: {exc}",
+                f"{label} generation admission is not authoritative: {exc}",
             ) from exc
         if (
             generation.admission_id != capture.admission_id
@@ -1219,7 +1293,7 @@ class CommissioningEvidenceStore:
         ):
             raise CommissioningEvidenceStoreError(
                 CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "generation admission artifact changed from typed capture evidence",
+                f"generation admission changed from {label} typed evidence",
             )
         try:
             playback = read_playback_admission(
@@ -1230,12 +1304,12 @@ class CommissioningEvidenceStore:
         except AdmissionArtifactError as exc:
             raise CommissioningEvidenceStoreError(
                 CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                f"playback admission artifact is not authoritative: {exc}",
+                f"{label} playback admission is not authoritative: {exc}",
             ) from exc
         if playback.admission != capture.playback_admission:
             raise CommissioningEvidenceStoreError(
                 CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH,
-                "playback admission artifact changed from typed capture evidence",
+                f"playback admission changed from {label} typed evidence",
             )
 
     def _verify_stationary(
@@ -1292,6 +1366,20 @@ class CommissioningEvidenceStore:
         for region in evidence.regions:
             self._verify_region(region, budget)
 
+    def _verify_complete_isolated_driver_evidence(
+        self,
+        evidence: CompleteIsolatedDriverEvidence,
+        budget: _ReadBudget,
+    ) -> None:
+        for driver in evidence.drivers:
+            _require_evidence_artifact(
+                driver.repeatability_artifact,
+                role="isolated repeatability evidence",
+            )
+            self._read_identity(driver.repeatability_artifact, budget=budget)
+            for capture in driver.captures:
+                self._verify_isolated_capture(capture, budget)
+
     def verify_complete(
         self,
         evidence: CompleteCommissioningEvidence,
@@ -1300,4 +1388,14 @@ class CommissioningEvidenceStore:
 
         self._assert_session(evidence)
         self._verify_complete(evidence, _ReadBudget())
+        return evidence
+
+    def verify_complete_isolated_driver_evidence(
+        self,
+        evidence: CompleteIsolatedDriverEvidence,
+    ) -> CompleteIsolatedDriverEvidence:
+        """Strictly verify the complete isolated set and every child byte."""
+
+        self._assert_session(evidence)
+        self._verify_complete_isolated_driver_evidence(evidence, _ReadBudget())
         return evidence

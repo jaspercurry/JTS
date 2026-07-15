@@ -39,7 +39,11 @@
   has a durable exact predecessor pointer and terminal restore marker. A
   crash-released execution mutex spans runtime through canonical commit; restart
   restores a pending predecessor before new work or leaves the run durably
-  `blocked_live_state_unknown`. This is a software-only change; no sound or
+  `blocked_live_state_unknown`. The same exact run plan now has a strict
+  run-scoped isolated-driver aggregate requiring three fresh admitted captures
+  per physical driver and deep child/admission verification. Current fail-soft
+  driver records are not migrated into it; its trusted population remains Wave
+  4 work. This is a software-only change; no sound or
   hardware was exercised.
 - 🧱 **Wave 3 Active run authority is durable and visible; internal measured
   progression is hardware-free.** When crossover level finalization publishes a

@@ -70,8 +70,14 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   no producer; Active's isolated-driver production adapter now supplies the
   trusted live consumer. The strict pure per-region evidence shape now has a
   typed internal host and raw-WAV producer that can collect synthetic-admitted
-  evidence and advance an exact run to `measured`. Candidate evaluation,
-  apply/verification, receipt production, and Room consumption remain blocked.
+  evidence and advance an exact run to `measured`. A separate strict
+  `CompleteIsolatedDriverEvidence` aggregate now binds exactly three fresh
+  admitted captures for every physical driver in that same plan, with one
+  canonical run-scoped artifact and deep child/admission verification on every
+  reopen. The existing fail-soft measurement records are not promoted into
+  that authority; fresh production population remains Wave 4 work. Candidate
+  evaluation, apply/verification, receipt production, and Room consumption
+  remain blocked.
 - `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
   `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
   replay inputs, admission artifacts, algorithm id/version, geometry, placement,

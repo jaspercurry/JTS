@@ -11,9 +11,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker.bundles import DEFAULT_SESSIONS_MAX_BYTES, open_bundle
+from jasper.active_speaker.bundles import (
+    BUNDLE_FILE_MODE,
+    DEFAULT_SESSIONS_MAX_BYTES,
+    open_bundle,
+)
 from jasper.active_speaker.commissioning_evidence import (
     STATIONARY_CAPTURE_COUNT,
+    CompleteIsolatedDriverEvidence,
     CompleteCommissioningEvidence,
     derive_region_evidence_plan,
 )
@@ -21,6 +26,9 @@ from jasper.active_speaker.commissioning_evidence_store import (
     MAX_CAPTURE_ARTIFACT_COUNT,
     MAX_COMMISSIONING_REGIONS,
     MAX_EVIDENCE_ARTIFACT_BYTES,
+    MAX_ISOLATED_CAPTURE_ARTIFACT_COUNT,
+    MAX_ISOLATED_DRIVER_TARGETS,
+    MAX_SUMMED_CAPTURE_ARTIFACT_COUNT,
     MIN_FREE_SPACE_AFTER_PUBLISH_BYTES,
     MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES,
     CommissioningEvidenceStore,
@@ -28,13 +36,18 @@ from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStoreErrorCode,
     attempt_capture_relative_path,
     complete_relative_path,
+    isolated_driver_evidence_relative_path,
     plan_relative_path,
 )
 from jasper.active_speaker.commissioning_run import (
     CommissioningRunHandle,
     CommissioningRunStore,
 )
-from jasper.active_speaker.profile import ADJACENT_PAIRS_BY_WAY, SIDES_BY_LAYOUT
+from jasper.active_speaker.profile import (
+    ADJACENT_PAIRS_BY_WAY,
+    DRIVER_ROLES_BY_WAY,
+    SIDES_BY_LAYOUT,
+)
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.excitation_artifacts import canonical_admission_bytes
 from jasper.audio_measurement.null_walk import (
@@ -46,6 +59,7 @@ from jasper.audio_measurement.null_walk import (
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_commissioning_evidence import (
     _Harness,
+    _complete_isolated,
     _hash,
     _preset,
     _region,
@@ -202,6 +216,219 @@ def _materialize_complete(
             )
         )
     return replace(complete, regions=tuple(regions))
+
+
+def _materialize_isolated(
+    store: CommissioningEvidenceStore,
+    complete: CompleteIsolatedDriverEvidence,
+) -> CompleteIsolatedDriverEvidence:
+    drivers = []
+    for driver in complete.drivers:
+        captures = []
+        for capture in driver.captures:
+            token = capture.capture.capture_id
+            raw_artifact = store.publish_raw_artifact(
+                f"isolated/{token}/raw.wav",
+                f"raw:{token}".encode(),
+            )
+            analysis_artifact = store.publish_raw_artifact(
+                f"isolated/{token}/analysis.json",
+                f"analysis:{token}".encode(),
+            )
+            quality_artifact = store.publish_raw_artifact(
+                f"isolated/{token}/quality.json",
+                f"quality:{token}".encode(),
+            )
+            stimulus_raw = f"stimulus:{token}".encode()
+            stimulus_artifact = ArtifactIdentity(
+                bundle_kind=capture.stimulus.artifact.bundle_kind,
+                bundle_id=capture.stimulus.artifact.bundle_id,
+                relative_path=f"stimuli/{capture.admission_id}.wav",
+                sha256=hashlib.sha256(stimulus_raw).hexdigest(),
+                byte_size=len(stimulus_raw),
+            )
+            _write_exact(store.bundle_dir, stimulus_artifact, stimulus_raw)
+            _write_exact(
+                store.bundle_dir,
+                capture.generation_artifact,
+                canonical_admission_bytes(capture.generation_admission),
+            )
+            _write_exact(
+                store.bundle_dir,
+                capture.playback_artifact,
+                canonical_admission_bytes(capture.playback_admission),
+            )
+            captures.append(
+                replace(
+                    capture,
+                    capture=replace(
+                        capture.capture,
+                        raw_artifact=raw_artifact,
+                        analysis_input_artifact=analysis_artifact,
+                        quality_artifact=quality_artifact,
+                    ),
+                    stimulus=replace(
+                        capture.stimulus,
+                        artifact=stimulus_artifact,
+                    ),
+                )
+            )
+        repeatability = store.publish_json_artifact(
+            f"isolated/{driver.speaker_group_id}/{driver.role}/repeatability.json",
+            {
+                "driver_target_fingerprint": driver.driver_target_fingerprint,
+                "repeat_count": len(captures),
+            },
+        )
+        drivers.append(
+            replace(
+                driver,
+                captures=tuple(captures),
+                repeatability_artifact=repeatability,
+            )
+        )
+    return replace(complete, drivers=tuple(drivers))
+
+
+def test_complete_isolated_driver_evidence_round_trips_at_run_scoped_path(
+    tmp_path: Path,
+) -> None:
+    store = _open_store(tmp_path)
+    harness = _harness_for_store(tmp_path, store)
+    complete = _materialize_isolated(store, _complete_isolated(harness))
+
+    artifact = store.publish_complete_isolated_driver_evidence(complete)
+
+    assert artifact.relative_path == isolated_driver_evidence_relative_path(
+        complete.plan.authority.run.run_id
+    )
+    assert "/generations/" not in artifact.relative_path
+    assert (store.bundle_dir / artifact.relative_path).stat().st_mode & 0o777 == (
+        BUNDLE_FILE_MODE
+    )
+    assert (
+        store.reopen_complete_isolated_driver_evidence(
+            run_id=complete.plan.authority.run.run_id
+        )
+        == complete
+    )
+    assert store.verify_complete_isolated_driver_evidence(complete) == complete
+
+    restarted = CommissioningRunStore(
+        path=tmp_path / "commissioning-run.json",
+        owner_id="b" * 32,
+    )
+    claimed = restarted.claim_owner()
+    assert claimed is not None and claimed.owner_generation == 2
+    assert (
+        store.reopen_complete_isolated_driver_evidence(run_id=claimed.run_id)
+        == complete
+    )
+
+
+@pytest.mark.parametrize(
+    "role",
+    (
+        "raw",
+        "analysis",
+        "quality",
+        "stimulus",
+        "generation",
+        "playback",
+        "repeatability",
+    ),
+)
+def test_complete_isolated_reopen_detects_every_child_role_tamper(
+    tmp_path: Path,
+    role: str,
+) -> None:
+    store = _open_store(tmp_path)
+    harness = _harness_for_store(tmp_path, store)
+    complete = _materialize_isolated(store, _complete_isolated(harness))
+    store.publish_complete_isolated_driver_evidence(complete)
+    driver = complete.drivers[0]
+    capture = driver.captures[0]
+    artifact = {
+        "raw": capture.capture.raw_artifact,
+        "analysis": capture.capture.analysis_input_artifact,
+        "quality": capture.capture.quality_artifact,
+        "stimulus": capture.stimulus.artifact,
+        "generation": capture.generation_artifact,
+        "playback": capture.playback_artifact,
+        "repeatability": driver.repeatability_artifact,
+    }[role]
+    (store.bundle_dir / artifact.relative_path).write_bytes(b"tampered")
+
+    with pytest.raises(CommissioningEvidenceStoreError) as raised:
+        store.reopen_complete_isolated_driver_evidence(
+            run_id=complete.plan.authority.run.run_id
+        )
+    assert raised.value.code is CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH
+
+
+def test_complete_isolated_store_refuses_wrong_run_session_and_stimulus_path(
+    tmp_path: Path,
+) -> None:
+    store = _open_store(tmp_path)
+    harness = _harness_for_store(tmp_path, store)
+    complete = _materialize_isolated(store, _complete_isolated(harness))
+    artifact = store.publish_complete_isolated_driver_evidence(complete)
+
+    with pytest.raises(CommissioningEvidenceStoreError) as raised:
+        store.reopen_complete_isolated_driver_evidence(
+            run_id="f" * 32,
+            artifact=artifact,
+        )
+    assert raised.value.code is CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH
+
+    other_store = _open_store(tmp_path / "other")
+    with pytest.raises(CommissioningEvidenceStoreError) as raised:
+        other_store.publish_complete_isolated_driver_evidence(complete)
+    assert raised.value.code is CommissioningEvidenceStoreErrorCode.WRONG_AUTHORITY
+
+    driver = complete.drivers[0]
+    capture = driver.captures[0]
+    wrong_stimulus = replace(
+        capture.stimulus.artifact,
+        relative_path="stimuli/wrong-admission.wav",
+    )
+    wrong_capture = replace(
+        capture,
+        stimulus=replace(capture.stimulus, artifact=wrong_stimulus),
+    )
+    wrong_driver = replace(
+        driver,
+        captures=(wrong_capture, *driver.captures[1:]),
+    )
+    wrong_complete = replace(
+        complete,
+        drivers=(wrong_driver, *complete.drivers[1:]),
+    )
+    with pytest.raises(CommissioningEvidenceStoreError) as raised:
+        store.verify_complete_isolated_driver_evidence(wrong_complete)
+    assert raised.value.code is CommissioningEvidenceStoreErrorCode.INTEGRITY_MISMATCH
+
+
+def test_complete_isolated_store_enforces_child_size_bound(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    harness = _harness_for_store(tmp_path, store)
+    complete = _materialize_isolated(store, _complete_isolated(harness))
+    driver = complete.drivers[0]
+    oversized = replace(
+        driver.repeatability_artifact,
+        byte_size=MAX_EVIDENCE_ARTIFACT_BYTES + 1,
+    )
+    oversized_complete = replace(
+        complete,
+        drivers=(
+            replace(driver, repeatability_artifact=oversized),
+            *complete.drivers[1:],
+        ),
+    )
+
+    with pytest.raises(CommissioningEvidenceStoreError) as raised:
+        store.verify_complete_isolated_driver_evidence(oversized_complete)
+    assert raised.value.code is CommissioningEvidenceStoreErrorCode.TOO_LARGE
 
 
 def test_raw_publish_is_write_once_idempotent_and_conflict_strict(
@@ -833,9 +1060,21 @@ def test_total_bound_covers_the_proven_max_capture_matrix() -> None:
         for sides in SIDES_BY_LAYOUT.values()
         for regions in ADJACENT_PAIRS_BY_WAY.values()
     )
-    assert MAX_CAPTURE_ARTIFACT_COUNT == MAX_COMMISSIONING_REGIONS * (
+    assert MAX_SUMMED_CAPTURE_ARTIFACT_COUNT == MAX_COMMISSIONING_REGIONS * (
         (2 * STATIONARY_CAPTURE_COUNT)
         + (MAX_SCHEDULED_CANDIDATES * MIN_CAPTURE_COUNT)
+    )
+    assert MAX_ISOLATED_DRIVER_TARGETS == max(
+        len(sides) * len(roles)
+        for sides in SIDES_BY_LAYOUT.values()
+        for roles in DRIVER_ROLES_BY_WAY.values()
+    )
+    assert MAX_ISOLATED_CAPTURE_ARTIFACT_COUNT == (
+        MAX_ISOLATED_DRIVER_TARGETS * STATIONARY_CAPTURE_COUNT
+    )
+    assert MAX_CAPTURE_ARTIFACT_COUNT == (
+        MAX_SUMMED_CAPTURE_ARTIFACT_COUNT
+        + MAX_ISOLATED_CAPTURE_ARTIFACT_COUNT
     )
     assert MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES >= (
         MAX_CAPTURE_ARTIFACT_COUNT * MAX_EVIDENCE_ARTIFACT_BYTES
