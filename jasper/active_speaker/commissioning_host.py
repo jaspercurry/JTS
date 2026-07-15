@@ -1656,6 +1656,7 @@ class CommissioningEvidenceHost:
             if isinstance(region, RegionCaptureOperation):
                 return region
             regions.append(region)
+        self._current_authority_snapshot()
         complete = CompleteCommissioningEvidence(
             plan=self.plan, regions=tuple(regions)
         )

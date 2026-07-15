@@ -27,6 +27,7 @@ from jasper.active_speaker.commissioning_evidence import (
 from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
     attempt_capture_relative_path,
+    complete_relative_path,
 )
 from jasper.active_speaker.commissioning_host import (
     CommissioningEvidenceHost,
@@ -1329,6 +1330,59 @@ def test_restart_recovers_complete_persisted_before_measured_transition(
     assert fresh.prepare() == complete
     assert restarted_store.lifecycle_state(fresh_plan.authority.run) == "measured"
     assert fresh.next_operation() is None
+
+
+def test_complete_is_not_assembled_from_regions_after_authority_drift(
+    tmp_path: Path,
+) -> None:
+    harness = _host_harness(tmp_path)
+    harness.host.prepare()
+    region = _region(
+        harness.evidence,
+        target_index=0,
+        placement_fingerprint=harness.inputs[0].placement_fingerprint,
+    )
+    complete = _materialize_complete(
+        harness.evidence_store,
+        CompleteCommissioningEvidence(
+            plan=harness.evidence.plan,
+            regions=(region,),
+        ),
+    )
+    harness.evidence_store.publish_region_commissioning_evidence(
+        complete.regions[0]
+    )
+    assert harness.run_store.transition(
+        harness.evidence.plan.authority.run,
+        CommissioningTransition(
+            from_state="unconfigured",
+            to_state="protected",
+            evidence_kind="protection_evidence",
+            evidence_fingerprint=(
+                complete.regions[0].normal.captures[0].generation_artifact.fingerprint
+            ),
+        ),
+    )
+    drifted = replace(
+        harness.authority,
+        calibration=CalibrationCurve(
+            freqs_hz=[20.0, 20_000.0],
+            correction_db=[0.0, 1.0],
+        ),
+    )
+    restarted = _host_from(harness, authority=drifted)
+
+    with pytest.raises(CommissioningHostError) as raised:
+        restarted.next_operation()
+
+    assert raised.value.code == "fresh_authority_stale"
+    assert harness.run_store.lifecycle_state(harness.evidence.plan.authority.run) == (
+        "protected"
+    )
+    assert not (
+        harness.evidence_store.bundle_dir
+        / complete_relative_path(harness.evidence.plan.authority.run.run_id)
+    ).exists()
 
 
 def test_measured_recovery_requires_journal_to_name_exact_complete(

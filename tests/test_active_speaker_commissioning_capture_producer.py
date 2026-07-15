@@ -57,7 +57,11 @@ from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdenti
 from jasper.audio_measurement.playback import PlaybackResult
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
-from tests.test_active_speaker_driver_safety import _manual_settings
+from tests.test_active_speaker_driver_safety import (
+    _manual_settings,
+    _stereo_manual_settings,
+    _stereo_topology,
+)
 from tests.test_active_speaker_profile import _two_way_preset
 
 
@@ -92,13 +96,19 @@ class _Harness:
         )
 
 
-def _harness(tmp_path: Path) -> _Harness:
-    topology = mono_output_topology(mode="active_2_way")
-    preset_raw = deepcopy(_two_way_preset())
+def _harness(tmp_path: Path, *, layout: str = "mono") -> _Harness:
+    topology = (
+        mono_output_topology(mode="active_2_way")
+        if layout == "mono"
+        else _stereo_topology()
+    )
+    preset_raw = deepcopy(_two_way_preset(layout=layout))
     preset_raw["crossover_regions"][0]["fc_hz"] = 6_000
     preset = ActiveSpeakerPreset.from_mapping(preset_raw)
 
-    manual = deepcopy(_manual_settings())
+    manual = deepcopy(
+        _manual_settings() if layout == "mono" else _stereo_manual_settings()
+    )
     for driver in manual["drivers"]:
         driver["hard_excitation_band_hz"] = [3_000, 12_000]
         driver["measurement_band_hz"] = [3_000, 12_000]
@@ -150,7 +160,12 @@ def _harness(tmp_path: Path) -> _Harness:
         target_id=evidence_attempt_target_id("normal", capture_target),
         target_fingerprint=capture_target,
     )
-    by_role = {item["role"]: item for item in active_driver_targets(topology)}
+    by_group_role = {
+        (item["speaker_group_id"], item["role"]): item
+        for item in active_driver_targets(topology)
+    }
+    lower = by_group_role[(target.speaker_group_id, target.lower_role)]
+    upper = by_group_role[(target.speaker_group_id, target.upper_role)]
     operation = RegionCaptureOperation(
         plan_fingerprint=plan.fingerprint,
         target=target,
@@ -158,11 +173,11 @@ def _harness(tmp_path: Path) -> _Harness:
         evidence_kind="normal",
         placement_fingerprint=_hash("placement"),
         driver_target_fingerprints=(
-            by_role["woofer"]["target_fingerprint"],
-            by_role["tweeter"]["target_fingerprint"],
+            lower["target_fingerprint"],
+            upper["target_fingerprint"],
         ),
-        lower_channels=(0,),
-        upper_channels=(1,),
+        lower_channels=(lower["output_index"],),
+        upper_channels=(upper["output_index"],),
         capture_ordinal=0,
         required_capture_count=3,
         issuance_id="2" * 32,
@@ -175,10 +190,10 @@ def _harness(tmp_path: Path) -> _Harness:
     request = runtime.SummedGraphRequest(
         kind="normal",
         normal_active_raw=baseline_raw,
-        lower_role="woofer",
-        upper_role="tweeter",
-        lower_channels=(0,),
-        upper_channels=(1,),
+        lower_role=target.lower_role,
+        upper_role=target.upper_role,
+        lower_channels=operation.lower_channels,
+        upper_channels=operation.upper_channels,
         listening_volume_db=-32.0,
         topology_id=topology.topology_id,
         topology_fingerprint=topology_config_fingerprint(topology),
@@ -348,6 +363,74 @@ async def test_guarded_graph_must_equal_operation_physical_outputs(
         await harness.producer(transport).capture(
             drifted,
             _context(harness.guarded_raw),
+        )
+
+    assert raised.value.code == "generation_refused"
+    assert transport_called is False
+
+
+@pytest.mark.asyncio
+async def test_canonical_stereo_grouped_role_filters_are_admitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _harness(tmp_path, layout="stereo")
+    monkeypatch.setattr(admitted_playback, "play_verified_wav", _fake_playback)
+
+    async def transport(play):
+        playback = await play()
+        return RawCaptureResult(
+            _synthetic_reference_axis_wav(playback),
+            {"fixture": "deterministic_stereo_reference_axis"},
+        )
+
+    admitted = await harness.producer(transport).capture(
+        harness.operation,
+        _context(harness.guarded_raw),
+    )
+
+    assert isinstance(admitted.payload, AdmittedRegionCapture)
+    assert admitted.payload.speaker_group_id == harness.operation.target.speaker_group_id
+
+
+@pytest.mark.asyncio
+async def test_stereo_cross_role_protection_group_is_refused_before_transport(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path, layout="stereo")
+    graph = yaml.safe_load(harness.guarded_raw)
+    highpass_names = {
+        name
+        for name, definition in graph["filters"].items()
+        if definition.get("type") == "BiquadCombo"
+        and definition.get("parameters", {}).get("type")
+        == "LinkwitzRileyHighpass"
+    }
+    upper_index = harness.operation.upper_channels[0]
+    step = next(
+        item
+        for item in graph["pipeline"]
+        if upper_index in item.get("channels", [])
+        and highpass_names.intersection(item.get("names", []))
+    )
+    step["channels"] = sorted(
+        {*step["channels"], harness.operation.lower_channels[0]}
+    )
+    drifted_raw = runtime._dump_graph(
+        graph,
+        source_header=runtime._source_header(harness.guarded_raw),
+    )
+    transport_called = False
+
+    async def transport(play):
+        nonlocal transport_called
+        transport_called = True
+        raise AssertionError("cross-role protection must refuse before transport")
+
+    with pytest.raises(SummedCaptureProducerError) as raised:
+        await harness.producer(transport).capture(
+            harness.operation,
+            _context(drifted_raw),
         )
 
     assert raised.value.code == "generation_refused"

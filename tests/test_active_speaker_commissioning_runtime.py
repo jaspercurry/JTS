@@ -763,6 +763,35 @@ async def test_delay_uses_zero_relative_snapshot_and_exact_confirmation(
 
 
 @pytest.mark.asyncio
+async def test_zero_delay_reuses_the_proven_zero_relative_graph(tmp_path: Path) -> None:
+    fake = FakePort()
+    request = _request("delay")
+    assert request.delay_spec is not None
+    request = replace(
+        request,
+        delay_candidate=request.delay_spec.dsp_candidate(0.0),
+    )
+
+    async def capture(context: runtime.CommissioningLiveContext):
+        assert context.delay_confirmation is not None
+        assert context.delay_confirmation.relative_delay_us == 0.0
+        assert context.delay_confirmation.readback_relative_delay_us == 0.0
+        return _admitted()
+
+    result = await runtime.run_summed_capture(
+        fake.port(),
+        request,
+        capture,
+        topology=_TOPOLOGY,
+        mutation_journal=_journal(),
+        config_dir=tmp_path,
+    )
+
+    assert result.delay_confirmation is not None
+    assert len(fake.apply_calls) == 2  # zero-relative plus exact restore
+
+
+@pytest.mark.asyncio
 async def test_delay_scoped_offsets_zero_unequal_emitter_baseline(
     tmp_path: Path,
 ) -> None:
@@ -1273,12 +1302,10 @@ async def test_restore_continues_after_one_adapter_raises(tmp_path: Path) -> Non
         )
 
     assert raised.value.code == "restore_failed"
-    assert fake.volume == -28.0
+    assert fake.volume == -32.0
     assert restore_events == [
-        "volume",
         "graph_readback",
         "path_readback",
-        "volume_readback",
     ]
 
 
@@ -1343,8 +1370,8 @@ async def test_cancellation_during_restore_continues_remaining_cleanup(
 
     assert raised.value.code == "restore_failed"
     assert raised.value.cancelled is True
-    assert fake.volume == -28.0
-    assert restore_events == ["volume", "path_readback", "volume_readback"]
+    assert fake.volume == -32.0
+    assert restore_events == ["path_readback"]
 
 
 @pytest.mark.asyncio

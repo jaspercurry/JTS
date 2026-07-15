@@ -78,6 +78,9 @@
 > calibration once for the complete program; every fresh operation must still
 > match it. Normal, reverse, and every delay coordinate—including zero—must
 > retain distinct live-graph identities.
+> Cleanup restores the potentially louder predecessor listening volume only
+> after fresh graph and path readback prove the exact predecessor; otherwise the
+> attenuated measurement volume remains and recovery fails closed.
 > One crash-released run-store execution mutex spans that transaction through
 > canonical capture commit, so a concurrent caller cannot reinterpret a live
 > restored window as restart recovery.

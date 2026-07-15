@@ -650,12 +650,21 @@ class SummedCaptureProducer:
             value["target_fingerprint"]: value
             for value in active_driver_targets(self.topology)
         }
+        channels_by_role: dict[str, set[int]] = {}
+        for value in current_targets.values():
+            role = value.get("role")
+            output_index = value.get("output_index")
+            if isinstance(role, str) and isinstance(output_index, int) and not isinstance(
+                output_index, bool
+            ):
+                channels_by_role.setdefault(role, set()).add(output_index)
         view = gs.view_from_camilla_dict(readback.graph.normalized_active_raw)
         requirement_checks: list[dict[str, Any]] = []
         for target_fingerprint in operation.driver_target_fingerprints:
             target = current_targets.get(target_fingerprint)
             profile_target = _profile_target(self.safety_profile, target_fingerprint)
             output_index = target.get("output_index") if target is not None else None
+            role = target.get("role") if target is not None else None
             requirements = (
                 profile_target.get("required_protection_filters")
                 if profile_target is not None
@@ -668,6 +677,9 @@ class SummedCaptureProducer:
                 gs.protection_requirement_present(
                     view,
                     output_index=output_index,
+                    allowed_channels=channels_by_role.get(
+                        role if isinstance(role, str) else "", set()
+                    ),
                     requirement=dict(requirement),
                 )
                 for requirement in requirement_values

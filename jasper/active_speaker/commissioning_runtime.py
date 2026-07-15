@@ -1095,16 +1095,6 @@ async def _restore(
     elif not graph_apply.value:
         issues.append("predecessor graph apply was rejected")
 
-    volume_apply = await _capture_awaitable(
-        port.set_listening_volume_db(predecessor.volume_db)
-    )
-    if volume_apply.error is not None:
-        issues.append(
-            f"predecessor volume apply raised {type(volume_apply.error).__name__}"
-        )
-    elif not volume_apply.value:
-        issues.append("predecessor volume apply was rejected")
-
     raw: str | None = None
     path: str | None = None
     volume: float | None = None
@@ -1137,6 +1127,27 @@ async def _restore(
         path = path_read.value
         if path != predecessor.path:
             issues.append("restored config path readback mismatch")
+
+    graph_and_path_restored = bool(
+        graph is not None
+        and graph.active_raw_fingerprint == predecessor.graph.active_raw_fingerprint
+        and path == predecessor.path
+    )
+    if not graph_and_path_restored:
+        return _RestoreResult(
+            None,
+            "; ".join(issues) or "predecessor graph/path restoration was not proved",
+        )
+
+    volume_apply = await _capture_awaitable(
+        port.set_listening_volume_db(predecessor.volume_db)
+    )
+    if volume_apply.error is not None:
+        issues.append(
+            f"predecessor volume apply raised {type(volume_apply.error).__name__}"
+        )
+    elif not volume_apply.value:
+        issues.append("predecessor volume apply was rejected")
 
     async def _read_volume() -> float:
         return _volume(
@@ -1305,7 +1316,7 @@ async def _run_locked(
         mutation_attempted = True
         if request.kind == "delay":
             zero_graph, lanes = _zero_relative_graph(request, normal, binding)
-            _zero_raw, zero_readback, _zero_volume = await _apply_graph(
+            zero_raw, zero_readback, zero_volume = await _apply_graph(
                 port,
                 zero_graph,
                 topology,
@@ -1325,16 +1336,21 @@ async def _run_locked(
             candidate_graph = _delay_candidate_graph(
                 snapshot, request.delay_candidate
             )
-            candidate_raw, candidate_identity, candidate_volume = await _apply_graph(
-                port,
-                candidate_graph,
-                topology,
-                tracker,
-                source_header=source_header,
-                expected_path=predecessor.path,
-                expected_volume_db=request.listening_volume_db,
-                set_volume=False,
-            )
+            if request.delay_candidate.delay_target is None:
+                candidate_raw = zero_raw
+                candidate_identity = zero_readback
+                candidate_volume = zero_volume
+            else:
+                candidate_raw, candidate_identity, candidate_volume = await _apply_graph(
+                    port,
+                    candidate_graph,
+                    topology,
+                    tracker,
+                    source_header=source_header,
+                    expected_path=predecessor.path,
+                    expected_volume_db=request.listening_volume_db,
+                    set_volume=False,
+                )
             delay_confirmation = confirm_delay_candidate(
                 snapshot,
                 request.delay_candidate,

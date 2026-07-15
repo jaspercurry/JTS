@@ -618,6 +618,7 @@ def issue_protection_evidence(
             gs.protection_requirement_present(
                 view,
                 output_index=output_index,
+                allowed_channels={output_index},
                 requirement=dict(requirement),
             )
             for requirement in filter_requirements

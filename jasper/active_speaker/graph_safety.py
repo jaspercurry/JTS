@@ -436,6 +436,7 @@ def protection_requirement_present(
     view: GraphView,
     *,
     output_index: int,
+    allowed_channels: set[int] | frozenset[int],
     requirement: Any,
 ) -> bool:
     """Whether one output proves a confirmed driver band-limit requirement.
@@ -443,6 +444,9 @@ def protection_requirement_present(
     Driver and summed excitation share this exact fail-closed interpretation of
     the safety profile: a high-pass must be at or above its confirmed corner, a
     low-pass at or below it, and either must meet the confirmed minimum slope.
+    A covering pipeline step may group outputs only inside the caller-supplied
+    same-role channel set. Isolated-driver admission supplies a singleton; summed
+    stereo admission supplies every physical output for that one driver role.
     """
 
     if not isinstance(requirement, dict):
@@ -463,8 +467,11 @@ def protection_requirement_present(
         or requirement.get("family_or_equivalent") != "equivalent_or_steeper"
     ):
         return False
+    allowed = frozenset(int(channel) for channel in allowed_channels)
+    if output_index not in allowed:
+        return False
     for step in view.pipeline_steps:
-        if step.channels != frozenset({output_index}):
+        if output_index not in step.channels or not step.channels <= allowed:
             continue
         for name in step.names:
             definition = view.filters.get(name)

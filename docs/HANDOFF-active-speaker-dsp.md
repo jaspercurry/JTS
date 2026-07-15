@@ -830,6 +830,13 @@ For JTS, that means:
   execution mutex spans runtime through canonical capture commit. Restart either completes
   the exact restored capture commit, aborts a restored no-capture issuance, or
   blocks the run as `blocked_live_state_unknown` when restoration is uncertain.
+  Predecessor cleanup re-proves the exact graph and path before restoring its
+  potentially louder listening volume; failed graph restoration retains the
+  attenuated measurement volume.
+  Canonical stereo filter steps may group only outputs sharing one driver role;
+  mixed-role groups fail closed, while isolated-driver admission stays
+  singleton-only. Zero-delay capture reuses its freshly proved zero-relative
+  graph instead of applying identical YAML twice.
   Cancellation drains
   the transaction; cleanup failure outranks cancellation, and possible mutation/
   audio is never reported as pre-audio certainty. The adapter schedules nothing

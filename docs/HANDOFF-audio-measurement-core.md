@@ -283,6 +283,13 @@ ingress, analysis/quality persistence, exact restoration, and lifecycle
 progression to `measured`. The complete normal/reverse/delay program stays bound
 to one normalized applied baseline and microphone-calibration context, and every
 normal, reverse, and delay coordinate requires a distinct live-graph identity.
+Cleanup freshly proves the predecessor graph and path before restoring its
+potentially louder listening volume; an unproved graph restore retains the
+attenuated measurement volume and blocks as unknown.
+Protection proof accepts canonical stereo pipeline steps only when every covered
+output shares the target driver role; isolated-driver admission remains
+singleton-only, and mixed-role groups fail closed. A zero-delay coordinate
+reuses the freshly proved zero-relative graph rather than applying it twice.
 Real capture transport and attested geometry remain
 Wave 4; candidate, receipt, and Room-gate authority are unchanged.
 
