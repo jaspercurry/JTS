@@ -306,12 +306,16 @@ def locked_update_env_file(
         except FileNotFoundError:
             state = {}
         state.update(dict(updates))
-        atomic_write_text(
-            fspath,
-            _format_env_text(state),
-            mode=mode,
-            group_from_parent=group_from_parent,
-        )
+        text = _format_env_text(state)
+        if group_from_parent:
+            atomic_write_text(
+                fspath,
+                text,
+                mode=mode,
+                group_from_parent=True,
+            )
+        else:
+            atomic_write_text(fspath, text, mode=mode)
         return dict(state)
 
 
@@ -359,10 +363,14 @@ def locked_transform_env_file(
             except FileNotFoundError:
                 pass
             return None
-        atomic_write_text(
-            fspath,
-            _format_env_text(new_state),
-            mode=mode,
-            group_from_parent=group_from_parent,
-        )
+        text = _format_env_text(new_state)
+        if group_from_parent:
+            atomic_write_text(
+                fspath,
+                text,
+                mode=mode,
+                group_from_parent=True,
+            )
+        else:
+            atomic_write_text(fspath, text, mode=mode)
         return dict(new_state)

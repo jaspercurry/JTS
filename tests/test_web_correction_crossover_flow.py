@@ -5725,6 +5725,7 @@ async def test_host_stop_drains_crossover_restore_before_returning(monkeypatch):
     from jasper.capture_relay import session as relay_session
     from jasper.web import correction_crossover_backend as be
 
+    _fake_relay_transport(monkeypatch)
     stop_event = threading.Event()
     play_started = threading.Event()
     restore_started = threading.Event()
@@ -5948,7 +5949,10 @@ async def test_finishing_gate_refusal_withholds_phone_release_and_evidence(monke
         await run_and_consume(object(), _relay_pi_session("driver"))
 
     assert host_events == ["sweep_started", "sweep_cancelled"]
-    assert purged == {"done": True}
+    assert purged == {
+        "gate": ["acquire", "release"],
+        "done": True,
+    }
     assert record_calls == []
 
 
@@ -5959,6 +5963,7 @@ async def test_host_stop_after_capture_prevents_late_evidence_write(monkeypatch)
     from jasper.capture_relay import session as relay_session
     from jasper.web import correction_crossover_backend as be
 
+    _fake_relay_transport(monkeypatch)
     stop_event = threading.Event()
     record_calls = []
 
