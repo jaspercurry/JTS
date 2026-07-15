@@ -2650,6 +2650,18 @@ def _volume_recording_cam(restored):
     return _FakeCam()
 
 
+def test_ready_reset_restores_exact_pre_measurement_graph():
+    from jasper.correction.session import SessionState
+
+    predecessor = Path("/var/lib/camilladsp/configs/before-room.yml")
+    sess = SimpleNamespace(
+        state=SessionState.READY,
+        pre_measurement_config_path=predecessor,
+    )
+
+    assert correction_setup._resolve_reset_target(sess, None) == predecessor
+
+
 def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
     restored: list[float] = []
     sess = _locked_autolevel_session("apply", original=-20.0)

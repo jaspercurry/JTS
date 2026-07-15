@@ -882,11 +882,11 @@ def test_review_with_no_filters_is_truthful_and_cannot_apply():
     assert env["screen"] == "review"
     assert env["verdict_text"] == (
         "This measurement produced no safe room-correction filters to apply. "
-        "You can measure again if you want to double-check."
+        "Restore your previous sound to finish."
     )
     assert env["next_action"] == {
-        "label": "Measure again",
-        "endpoint": "/start",
+        "label": "Restore previous sound",
+        "endpoint": "/reset",
     }
 
 

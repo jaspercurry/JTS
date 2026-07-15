@@ -1430,8 +1430,9 @@ seconds to refresh external speaker readiness and the current-correction
 banner together; it rebuilds the full envelope only when readiness or the
 logical screen changed, keeping report discovery off the steady-state cadence.
 After a local capture upload, the client reads the acknowledgement, refreshes
-mechanism state once without triggering a competing edge refresh, then fetches
-one envelope for all result presentation. The chart consumes the envelope's
+mechanism state once without triggering a competing edge refresh, and fetches
+one envelope concurrently for all result presentation. The chart consumes the
+envelope's
 already-smoothed curves directly; no client-side smoothing pass remains.
 SSE was considered but never landed because bounded polling is simpler in
 stdlib and the latency budget allows it.

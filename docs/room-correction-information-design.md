@@ -233,7 +233,7 @@ The ordered visibility contract is:
 | Microphone / handoff | `run-defaults`, `capture-handoff`, `placement`; local backup additionally gets `local-certificate-warning`, `capture-setup` | **Open phone capture** or **Allow microphone** |
 | Level | `capture-handoff`, `placement`, `level-check` | **Check measurement level**, **Retry level check**, or **Measure this position**, as authorized by the envelope |
 | Sweep | `capture-handoff`, `placement`, `position-capture` | **Measure this position** / **Measure next position** |
-| Review | `measurement-review`, optional `tuning` | **Apply room correction** |
+| Review | `measurement-review`, optional `tuning` | **Apply room correction**; **Restore previous sound** when the safe design contains no filters |
 | Apply | `apply-status`, optional `tuning` | **Verify correction** once application is confirmed |
 | Verify | `capture-handoff`, `placement`, `verification`, optional `tuning` | **Verify correction**, or **Check verification level** for relay capture |
 | Result | `current-correction`, `result-proof`, optional `tuning`, optional `reports` | **Measure again**; **Measure again to confirm** for `revert_pending_confirm`; restore is available when relevant |

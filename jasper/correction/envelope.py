@@ -930,7 +930,7 @@ def _verdict_text(
         if not _has_correction_to_apply(session):
             return (
                 "This measurement produced no safe room-correction filters "
-                "to apply. You can measure again if you want to double-check."
+                "to apply. Restore your previous sound to finish."
             )
         base = "Here's what your room is doing and the fix we'd apply."
         note = _crossover_region_note(session)
@@ -1113,8 +1113,8 @@ def _next_action_for(
             }
     if screen == SCREEN_REVIEW and not _has_correction_to_apply(session):
         return {
-            "label": "Measure again",
-            "endpoint": "/start",
+            "label": "Restore previous sound",
+            "endpoint": "/reset",
         }
     return _NEXT_ACTION.get(screen)
 
