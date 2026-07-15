@@ -6174,6 +6174,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(payload, status=int(status))
                     return
 
+                if path == "/crossover/restore":
+                    payload, status = correction_crossover_flow.handle_restore(
+                        _run_async,
+                        _camilla,
+                        blocking_phase=_active_relay_phase(),
+                    )
+                    self._send_json(payload, status=int(status))
+                    return
+
                 raw = _read_json_body(self)
                 if path == "/crossover/driver-test":
                     payload, status = correction_crossover_flow.handle_driver_test(

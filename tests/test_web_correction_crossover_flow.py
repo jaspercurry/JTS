@@ -2527,7 +2527,7 @@ def test_crossover_envelope_passive_speaker_is_gated():
     }
     assert env["nudges"] == []
     assert "crossover" in env["verdict_text"].lower()
-    assert env["schema_version"] == 4
+    assert env["schema_version"] == 5
 
 
 def test_crossover_envelope_requires_protected_setup_first():
@@ -2606,6 +2606,64 @@ def test_crossover_apply_refuses_while_relay_measurement_is_active(monkeypatch):
     assert status == 409
     assert payload["status"] == "refused"
     assert payload["reason"] == "measurement_in_progress"
+
+
+@pytest.mark.asyncio
+async def test_automatic_apply_does_not_fall_back_past_strict_candidate_authority(
+    monkeypatch,
+):
+    from jasper.web import correction_crossover_backend as backend
+
+    monkeypatch.setattr(
+        backend._LEVEL_LEASE,
+        "assert_volume_safety_resolved",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_commissioning_capture_service",
+        lambda: (_ for _ in ()).throw(ValueError("candidate artifact unreadable")),
+    )
+    monkeypatch.setattr(
+        backend._COMMISSIONING_RUN_STORE,
+        "snapshot",
+        lambda: {"current": {"lifecycle_state": "candidate_ready"}},
+    )
+
+    with pytest.raises(ValueError, match="strict commissioning candidate"):
+        await backend.apply_profile(
+            tuning_owner="automatic",
+            expected_candidate_fingerprint="reviewed-candidate",
+            camilla_factory=lambda: pytest.fail("DSP mutation must not start"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_automatic_apply_does_not_use_legacy_evidence_during_strict_run(
+    monkeypatch,
+):
+    from jasper.web import correction_crossover_backend as backend
+
+    monkeypatch.setattr(
+        backend._LEVEL_LEASE,
+        "assert_volume_safety_resolved",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_commissioning_capture_service",
+        lambda: SimpleNamespace(
+            run="strict-run",
+            run_store=SimpleNamespace(lifecycle_state=lambda _run: "measured"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="reviewed strict candidate"):
+        await backend.apply_profile(
+            tuning_owner="automatic",
+            expected_candidate_fingerprint="legacy-candidate",
+            camilla_factory=lambda: pytest.fail("DSP mutation must not start"),
+        )
 
 
 def test_direct_crossover_audio_actions_include_active_relay_blocker(monkeypatch):
@@ -2966,7 +3024,15 @@ def test_crossover_envelope_projects_active_owned_alignment_actions():
     }
     ready = crossover_envelope.build_crossover_envelope(status)
     assert ready["screen"] == "review"
-    assert ready["next_action"] is None
+    assert ready["next_action"] == {
+        "id": "apply_measured_candidate",
+        "label": "Apply reviewed crossover",
+        "endpoint": "/correction/crossover/apply",
+        "body": {
+            "tuning_owner": "automatic",
+            "expected_candidate_fingerprint": "candidate-1",
+        },
+    }
     assert ready["candidate_review"] == review
     assert "Frequency, filter family, and order stay" in ready["verdict_text"]
 
@@ -3039,7 +3105,11 @@ def test_strict_alignment_precedes_prior_automatic_applied_profile():
             "measure_region_alignment",
         ),
         ({"status": "measured"}, "review", "prepare_measured_candidate"),
-        ({"status": "candidate_ready", "candidate": {}}, "review", None),
+        (
+            {"status": "candidate_ready", "candidate": {}},
+            "review",
+            "apply_measured_candidate",
+        ),
     )
 
     for region_status, expected_screen, expected_action in cases:
@@ -4948,7 +5018,7 @@ def test_durable_level_run_keeps_waiting_without_volatile_relay_state():
 
     assert env["screen"] == "waiting"
     assert env["next_action"] is None
-    assert env["schema_version"] == 4
+    assert env["schema_version"] == 5
 
 
 def test_phone_timeout_keeps_exact_run_waiting_and_explains_correlation():

@@ -1573,6 +1573,26 @@ def prepare_commissioning_candidate() -> dict[str, Any]:
     return {"status": "candidate_ready", "candidate": candidate}
 
 
+async def restore_commissioning_candidate(
+    *, camilla_factory: CamillaFactory
+) -> dict[str, Any]:
+    """Restore a pending strict candidate apply from its exact predecessor."""
+
+    from jasper.active_speaker.commissioning_service import (
+        commissioning_runtime_port,
+    )
+
+    _LEVEL_LEASE.assert_volume_safety_resolved()
+    service = _commissioning_capture_service()
+    cam = camilla_factory()
+    return await service.restore_candidate(
+        runtime_port=commissioning_runtime_port(cam),
+        load_config_path=lambda path: cam.set_config_file_path(
+            path, best_effort=False
+        ),
+    )
+
+
 async def capture_next_commissioning_region(
     raw_capture_transport: Any,
     *,
@@ -1694,6 +1714,61 @@ async def apply_profile(
     _LEVEL_LEASE.assert_volume_safety_resolved()
     if tuning_owner not in {"manual", "automatic"}:
         raise ValueError("tuning_owner must be 'manual' or 'automatic'")
+    if tuning_owner == "automatic":
+        try:
+            commissioning_service = _commissioning_capture_service()
+            lifecycle = commissioning_service.run_store.lifecycle_state(
+                commissioning_service.run
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            commissioning_service = None
+            lifecycle = None
+            try:
+                current = _COMMISSIONING_RUN_STORE.snapshot().get("current")
+            except (OSError, RuntimeError, TypeError, ValueError) as state_exc:
+                raise ValueError(
+                    "automatic crossover apply requires readable commissioning authority"
+                ) from state_exc
+            if isinstance(current, Mapping):
+                raise ValueError(
+                    "the strict commissioning candidate authority is unavailable"
+                ) from exc
+        if lifecycle in {
+            "candidate_ready",
+            "applied_unverified",
+            "rolled_back",
+            "blocked_live_state_unknown",
+        }:
+            if lifecycle == "blocked_live_state_unknown":
+                raise ValueError(
+                    "the previous crossover must be restored before applying"
+                )
+            from jasper.active_speaker.commissioning_service import (
+                commissioning_runtime_port,
+            )
+
+            cam = camilla_factory()
+            payload = await commissioning_service.apply_candidate(
+                expected_candidate_fingerprint=expected_candidate_fingerprint,
+                runtime_port=commissioning_runtime_port(cam),
+                load_config_path=lambda path: cam.set_config_file_path(
+                    path, best_effort=False
+                ),
+            )
+            log_event(
+                logger,
+                "correction.crossover_profile_apply",
+                status=payload.get("status"),
+                tuning_owner=tuning_owner,
+                authority="strict_commissioning_candidate",
+                candidate_fingerprint=expected_candidate_fingerprint,
+            )
+            return payload
+        if lifecycle is not None:
+            raise ValueError(
+                "automatic crossover apply requires a reviewed strict candidate, "
+                f"not commissioning lifecycle {lifecycle}"
+            )
     from jasper.active_speaker.baseline_profile import apply_baseline_profile
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
     from jasper.active_speaker.crossover_preview import load_crossover_preview

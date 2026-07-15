@@ -59,7 +59,7 @@ ATTEMPT_KIND = "jts_active_commissioning_attempt"
 JOURNAL_ENTRY_KIND = "jts_active_commissioning_transition_entry"
 LIVE_MUTATION_KIND = "jts_active_commissioning_live_mutation"
 LIVE_MUTATION_TERMINAL_STATUSES = frozenset(
-    {"aborted", "committed", "released"}
+    {"aborted", "committed", "released", "retained"}
 )
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_commissioning_run.json")
 
@@ -241,6 +241,7 @@ class CommissioningLiveMutation:
             "aborted",
             "committed",
             "released",
+            "retained",
         }:
             raise CommissioningRunError("live mutation status is invalid")
         restoration = (
@@ -322,6 +323,18 @@ class CommissioningLiveMutation:
         ):
             raise CommissioningRunError(
                 "terminal restored mutation requires current terminal evidence"
+            )
+        if self.status == "retained" and (
+            rollback_path is None
+            or rollback_fingerprint is None
+            or restoration is not None
+            or resolved is not None
+            or terminal_evidence is None
+            or terminal_owner is None
+            or terminal_owner < started
+        ):
+            raise CommissioningRunError(
+                "retained live mutation requires predecessor and applied proof"
             )
         if self.status == "released" and (
             any(
@@ -1241,6 +1254,14 @@ class CommissioningRunStore:
             current_raw = state["current"]
             if isinstance(current_raw, Mapping):
                 replaced = dict(current_raw)
+                if (
+                    live_mutation is not None
+                    and live_mutation.status == "retained"
+                    and replaced["lifecycle_state"] == "candidate_ready"
+                ):
+                    raise CommissioningRunConflict(
+                        "retained candidate apply requires durable finalization"
+                    )
                 if replaced["lifecycle_state"] in {
                     "applied_unverified",
                     "blocked_live_state_unknown",
@@ -1855,6 +1876,63 @@ class CommissioningRunStore:
             terminal_status="committed",
             terminal_evidence_fingerprint=commit_evidence_fingerprint,
         )
+
+    def record_live_mutation_retained(
+        self,
+        handle: CommissioningRunHandle,
+        mutation: CommissioningLiveMutation,
+        *,
+        applied_proof_fingerprint: str,
+    ) -> CommissioningLiveMutation:
+        """Resolve one pending mutation as the freshly proved retained graph."""
+
+        if not isinstance(handle, CommissioningRunHandle):
+            raise TypeError("handle must be a CommissioningRunHandle")
+        if not isinstance(mutation, CommissioningLiveMutation):
+            raise TypeError("mutation must be CommissioningLiveMutation")
+        if mutation.status != "mutation_pending":
+            raise CommissioningRunConflict(
+                "retained apply requires the exact pending mutation"
+            )
+        retained = CommissioningLiveMutation(
+            session_id=mutation.session_id,
+            run_id=mutation.run_id,
+            started_owner_generation=mutation.started_owner_generation,
+            issuance_id=mutation.issuance_id,
+            purpose=mutation.purpose,
+            operation_fingerprint=mutation.operation_fingerprint,
+            rollback_artifact_path=mutation.rollback_artifact_path,
+            rollback_artifact_fingerprint=mutation.rollback_artifact_fingerprint,
+            status="retained",
+            terminal_evidence_fingerprint=applied_proof_fingerprint,
+            terminal_owner_generation=handle.owner_generation,
+        )
+        with self._locked():
+            current = self._read()["current"]
+            if not isinstance(current, Mapping) or not self._matches_handle(
+                current, handle
+            ):
+                raise CommissioningRunStale(
+                    "retained live mutation belongs to a stale run generation"
+                )
+            persisted = self._read_live_mutation()
+            if persisted != mutation or persisted.status != "mutation_pending":
+                raise CommissioningRunConflict(
+                    "retained apply does not equal the pending mutation"
+                )
+            self._write_live_mutation(retained)
+        log_event(
+            logger,
+            "correction.active_commissioning_live_mutation_retained",
+            session=handle.session_id,
+            run_id=handle.run_id,
+            owner_generation=handle.owner_generation,
+            issuance_id=retained.issuance_id,
+            operation_fingerprint=retained.operation_fingerprint,
+            applied_proof_fingerprint=retained.terminal_evidence_fingerprint,
+            mutation_fingerprint=retained.fingerprint,
+        )
+        return retained
 
     def record_live_mutation_aborted(
         self,

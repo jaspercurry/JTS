@@ -814,7 +814,7 @@ reopens one generation-scoped candidate, and advances the exact run to
 correction envelope projects one server-owned review containing retained
 Fc/family/order, measured per-role attenuation and absolute delay, retained
 polarity proof, and exact isolated/summed provenance. Graph mutation/apply,
-verification/receipt, and Room authority remain unavailable.
+verification/receipt, and Room authority were not part of that candidate slice.
 If the deterministic evaluator refuses otherwise complete evidence, Active
 persists a generation-scoped refusal artifact and binds it to the lifecycle's
 existing `candidate_scoring_failed` blocked transition. The browser offers one
@@ -826,8 +826,26 @@ relay's recorder-only `kind=summed` branch now supplies real WAVs and explicit
 signed/fixed-axis geometry to the typed internal host without granting the
 browser scheduling or DSP authority. Historical B2b captures remain
 permanently non-admitted. Current projections expose only the exact measured
-candidate review; apply, verification, receipt, and Room authority remain
-unavailable until their later Wave 3 gates are satisfied.
+candidate review and the apply/recovery states described below; verification,
+receipt, and Room authority remain unavailable until their later Wave 3 gates
+are satisfied.
+
+The production measured-candidate apply boundary is now wired hardware-free.
+The review's explicit Apply action posts the exact candidate fingerprint; the
+Active service reopens that candidate and its current target/safety authority,
+then rechecks all of it inside the existing DSP writer lock. The baseline
+compiler retains the reviewed preset exactly and emits only the candidate's
+attenuation, normal/reverse polarity result, and playback-clock delay. Apply
+uses the existing loader/readback/rollback path plus Active's exact
+graph/path/listening-volume snapshot. A freshly classified protected graph and
+write-once applied proof resolve the run sidecar as `retained`; only then may
+the applied Layer-A snapshot and `applied_unverified` transition finalize.
+Before that point any failure or cancellation restores the exact predecessor
+before writer-lock release. Crash windows resume from the same sidecar and
+artifacts as either pre-mutation release, exact restore, or bookkeeping-only
+retained finalization. The browser projects one current state and action; it
+does not reproduce the apply state machine. No live JTS3 graph was mutated by
+this implementation slice.
 
 ### Wave 2 level-run correlation and timeout boundary
 
@@ -1465,8 +1483,11 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   be promoted or backfilled. The store-backed pure evaluator
   derives the deterministic electrical candidate from exact admitted complete
   evidence, and the production Active service now persists, reopens, binds, and
-  projects that candidate through `candidate_ready`. There is still no candidate
-  graph mutation/apply, verification, receipt issuer, or Room authority path. Room's
+  projects that candidate through `candidate_ready`. The reviewed candidate now
+  compiles and applies through the existing bounded writer/readback/restore path,
+  with exact predecessor recovery and a retained proof before
+  `applied_unverified`. There is still no post-apply verification, receipt
+  issuer, or Room authority path. Room's
   temporary R1b adapter admits passive/not-required and
   blocks every active topology rather than trusting the applied-snapshot
   positive. Live receipt production/consumption and on-device proof remain later
@@ -1652,8 +1673,11 @@ physical-target, graph, admission, and geometry authority,
 the bounded low-frequency coarse-plus-refinement schedule and schedule-aware
 final evaluator, the store-backed pure deterministic electrical candidate
 evaluator, exact candidate persistence/readback and `candidate_ready` review
-projection, complete-plan replay
+projection, explicit reviewed apply, compiler-ready measured corrections,
+writer-locked graph/path/volume readback, exact failure/cancellation/restart
+restore, retained-proof finalization, complete-plan replay
 guards, receipt schema-v2 one-shot roles,
 and Room's temporary passive-only admission boundary checked against the current
-implementation and cited measurement literature; no live audio/DSP/hardware
-operation was performed or hardware-validated.)
+implementation and cited measurement literature; the apply path was validated
+with injected runtime seams only, and no live audio/DSP/hardware operation was
+performed or hardware-validated.)
