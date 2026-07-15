@@ -2481,6 +2481,8 @@ def test_render_page_autolevel_requires_ambient_trust_after_tone_start(
     )
     assert "autolevelAutoLockEligible(" in start
     assert "noiseFloorDb + trustMarginDb" in body
+    assert "noiseFloorDb = -50" not in start
+    assert "noiseFloorDb = null" in start
 
 
 def test_render_page_amp_message_is_generic_not_tpa3255():

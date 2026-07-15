@@ -2783,16 +2783,20 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       for (var ni = 0; ni < noiseSamples.length; ni++) nsum += noiseSamples[ni];
       noiseFloorDb = nsum / noiseSamples.length;
     } else {
-      // Couldn't measure (mic stream not ready?). Fall back to a
-      // reasonable assumption.
-      noiseFloorDb = -50;
+      // No measured ambient means no automatic-lock authority. Keep the
+      // visible manual Lock/cancel path, but never invent a quiet floor that
+      // could let ordinary room sound impersonate the calibration tone.
+      noiseFloorDb = null;
     }
     lastNoiseFloorDb = noiseFloorDb;
     var targetBand = computeTargetBand(noiseFloorDb);
-    autolevelDetail.textContent =
-      'Noise floor ' + noiseFloorDb.toFixed(0) + ' dBFS — target ' +
-      targetBand.low.toFixed(0) + ' to ' + targetBand.high.toFixed(0) +
-      ' dBFS. Tap Lock now if the tone sounds like a comfortable measurement level.';
+    autolevelDetail.textContent = Number.isFinite(noiseFloorDb)
+      ? 'Noise floor ' + noiseFloorDb.toFixed(0) + ' dBFS — target ' +
+        targetBand.low.toFixed(0) + ' to ' + targetBand.high.toFixed(0) +
+        ' dBFS. Tap Lock now if the tone sounds like a comfortable measurement level.'
+      : 'Room noise could not be measured, so automatic lock is off. ' +
+        'Tap Lock now only after the tone starts at a comfortable measurement level, ' +
+        'or cancel and retry.';
 
     var lockSent = false;
     var sendLock = function (reason) {

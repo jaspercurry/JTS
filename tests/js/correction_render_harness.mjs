@@ -2392,6 +2392,8 @@ await (async () => {
     "autolevel: trusted evidence below the headroom window cannot lock");
   assert(!autolevelAutoLockEligible(-20, band, -35, Infinity),
     "autolevel: missing server trust policy fails closed");
+  assert(!autolevelAutoLockEligible(-20, band, null, 10),
+    "autolevel: missing measured ambient fails closed");
 })();
 
 resetEnvelopeBookkeeping();
@@ -2399,4 +2401,4 @@ if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 55 }));
+console.log(JSON.stringify({ ok: true, tests: 56 }));
