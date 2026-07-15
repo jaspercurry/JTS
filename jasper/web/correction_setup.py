@@ -5982,8 +5982,10 @@ async def _resolve_reset_target_async(sess: Any, cam: Any) -> Path:
     confirmed-regression auto-revert (deterministic). If a measurement is
     mid-flight, restore the pre-``/start`` graph; once a correction is applied
     or verified, re-emit the current topology with room PEQs cleared (Layer B
-    removed, speaker DSP + preference EQ preserved). A re-emit failure falls
-    back to the safe base graph so an undo never strands the speaker.
+    removed, speaker DSP + preference EQ preserved). A re-emit failure may use
+    the topology-safe fallback only when that graph is observably managed and
+    contains no Room correction; otherwise the reversal fails loudly without
+    claiming that Layer B was removed.
     """
     from jasper.correction.runtime_safety import reset_config_path
 
@@ -5997,12 +5999,57 @@ async def _resolve_reset_target_async(sess: Any, cam: Any) -> Path:
     if target is None:
         try:
             target = await _write_no_room_correction_config(sess, cam)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.exception(
-                "reset/auto-revert: no-room re-emit failed; falling back "
-                "to safe graph",
+                "reset/auto-revert: no-room re-emit failed; checking "
+                "topology-safe fallback",
             )
             target = reset_config_path(base_config_path)
+            from jasper.correction.status import describe_current_config
+
+            config_dir = Path(
+                getattr(cfg, "config_dir", None)
+                or "/var/lib/camilladsp/configs"
+            )
+            descriptor = describe_current_config(
+                str(target),
+                config_dir=config_dir,
+                base_config_path=Path(base_config_path),
+            )
+            fallback_kind = descriptor.get("kind")
+            fallback_is_no_room = (
+                descriptor.get("managed") is True
+                and descriptor.get("current_correction") is None
+                and fallback_kind
+                in {"base", "active_speaker", "sound_preference"}
+            )
+            if not fallback_is_no_room:
+                log_event(
+                    logger,
+                    "correction.reset_fallback_rejected",
+                    session=getattr(sess, "session_id", None),
+                    target=str(target),
+                    kind=fallback_kind,
+                    managed=descriptor.get("managed"),
+                    room_correction_present=isinstance(
+                        descriptor.get("current_correction"),
+                        dict,
+                    ),
+                    level=logging.ERROR,
+                )
+                raise RuntimeError(
+                    "Room correction could not be removed because no verified "
+                    "no-Room graph is available; the current graph remains "
+                    "loaded"
+                ) from exc
+            log_event(
+                logger,
+                "correction.reset_fallback_selected",
+                session=getattr(sess, "session_id", None),
+                target=str(target),
+                kind=fallback_kind,
+                level=logging.WARNING,
+            )
     return target
 
 

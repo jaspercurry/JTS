@@ -3010,6 +3010,109 @@ async def test_ready_reset_restores_exact_pre_measurement_graph():
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
+async def test_room_reversal_rejects_corrected_active_fallback(
+    monkeypatch,
+    tmp_path,
+    automatic,
+):
+    """A failed no-Room re-emit must never report the same Room graph restored."""
+    from jasper.correction import runtime_safety
+    from jasper.correction.session import SessionState
+
+    corrected = tmp_path / "sound_current.yml"
+    corrected.write_text(
+        "# Source: "
+        "jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config\n"
+        "filters:\n"
+        "  room_peq_0:\n"
+        "    type: Biquad\n"
+    )
+    operations = []
+
+    async def reemit_fails(_sess, _cam):
+        raise RuntimeError("carrier re-emit failed")
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_write_no_room_correction_config",
+        reemit_fails,
+    )
+    monkeypatch.setattr(
+        runtime_safety,
+        "reset_config_path",
+        lambda _base: corrected,
+    )
+
+    class Session:
+        session_id = "corrected-fallback"
+        state = SessionState.APPLIED
+        cfg = SimpleNamespace(
+            config_dir=tmp_path,
+            base_config_path=tmp_path / "base.yml",
+        )
+
+        async def reset(self, *_args, **_kwargs):
+            operations.append("reset")
+
+        async def auto_revert(self, *_args, **_kwargs):
+            operations.append("auto-revert")
+
+    with pytest.raises(RuntimeError, match="no verified no-Room graph"):
+        await correction_setup._run_locked_room_reset(
+            Session(),
+            object(),
+            automatic=automatic,
+        )
+
+    assert operations == []
+
+
+@pytest.mark.asyncio
+async def test_reset_accepts_verified_no_room_active_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    """A carrier failure may still use a managed, filter-free active graph."""
+    from jasper.correction import runtime_safety
+    from jasper.correction.session import SessionState
+
+    no_room = tmp_path / "sound_current.yml"
+    no_room.write_text(
+        "# Source: "
+        "jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config\n"
+        "filters: {}\n"
+    )
+
+    async def reemit_fails(_sess, _cam):
+        raise RuntimeError("carrier re-emit failed")
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_write_no_room_correction_config",
+        reemit_fails,
+    )
+    monkeypatch.setattr(
+        runtime_safety,
+        "reset_config_path",
+        lambda _base: no_room,
+    )
+    sess = SimpleNamespace(
+        session_id="no-room-fallback",
+        state=SessionState.APPLIED,
+        cfg=SimpleNamespace(
+            config_dir=tmp_path,
+            base_config_path=tmp_path / "base.yml",
+        ),
+    )
+
+    assert (
+        await correction_setup._resolve_reset_target_async(sess, object())
+        == no_room
+    )
+
+
 def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
     restored: list[float] = []
     sess = _locked_autolevel_session("apply", original=-20.0)
