@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -239,9 +240,47 @@ async def test_three_current_graph_captures_issue_receipt_without_graph_mutation
 
 
 @pytest.mark.asyncio
+async def test_successful_verification_logs_transition_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    harness, _candidate, _apply_result, _state, _previous, port, _load = (
+        await _apply(tmp_path, monkeypatch)
+    )
+    store = harness.evidence_store
+    counter = 0
+    monkeypatch.setattr(
+        capture_module,
+        "active_region_threshold_profile_fingerprint",
+        lambda: harness.plan.authority.threshold_profile_fingerprint,
+    )
+
+    async def capture_post_apply(self, operation, context):
+        nonlocal counter
+        counter += 1
+        proof = _post_apply_proof(store, harness, operation, counter)
+        return type("CaptureResult", (), {"payload": proof})()
+
+    monkeypatch.setattr(SummedCaptureProducer, "capture_post_apply", capture_post_apply)
+    caplog.set_level(logging.INFO, logger="jasper.active_speaker.commissioning_verification")
+
+    for _index in range(3):
+        result = await harness.service.capture_post_apply(
+            port,
+            raw_capture_transport=lambda _play: None,
+            config_dir=str(tmp_path),
+        )
+
+    assert result["status"] == "verified"
+    assert caplog.text.count("event=correction.crossover_verification_passed") == 1
+
+
+@pytest.mark.asyncio
 async def test_usable_failed_repeats_persist_failure_and_keep_room_locked(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     harness, _candidate, apply_result, _state, _previous, port, _load = await _apply(
         tmp_path, monkeypatch
@@ -253,6 +292,7 @@ async def test_usable_failed_repeats_persist_failure_and_keep_room_locked(
         "active_region_threshold_profile_fingerprint",
         lambda: harness.plan.authority.threshold_profile_fingerprint,
     )
+    caplog.set_level(logging.INFO, logger="jasper.active_speaker.commissioning_verification")
 
     async def capture_post_apply(self, operation, context):
         nonlocal counter
@@ -326,3 +366,4 @@ async def test_usable_failed_repeats_persist_failure_and_keep_room_locked(
     ).status()
     assert restarted["status"] == "verification_failed"
     assert restarted["failure"] == results[-1]["failure"]
+    assert caplog.text.count("event=correction.crossover_verification_failed") == 1

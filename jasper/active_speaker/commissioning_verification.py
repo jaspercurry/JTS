@@ -422,6 +422,18 @@ class CommissioningVerificationService:
                 "verification_readback_mismatch",
                 "post-apply failure changed on exact reopen",
             )
+        log_event(
+            logger,
+            "correction.crossover_verification_failed",
+            session=self.run.session_id,
+            run_id=self.run.run_id,
+            owner_generation=self.run.owner_generation,
+            group=target.speaker_group_id,
+            target_fingerprint=target.target_fingerprint,
+            applied_candidate_fingerprint=self.applied_candidate.fingerprint,
+            failure_code=expected["failure_code"],
+            failure_artifact_fingerprint=artifact.fingerprint,
+        )
         return expected, artifact
 
     def _reopen_verification_failure(
@@ -623,13 +635,14 @@ class CommissioningVerificationService:
                 self.run_store.lifecycle_transition(self.run) != expected_transition
             ):
                 raise CommissioningVerificationError(
-                    "run_generation_stale", "receipt lost current run ownership"
-                    )
-                if committed:
-                    log_event(
-                        logger,
-                        "correction.active_commissioning_verified",
-                        session=self.run.session_id,
+                    "run_generation_stale",
+                    "receipt lost current run ownership",
+                )
+            if committed:
+                log_event(
+                    logger,
+                    "correction.crossover_verification_passed",
+                    session=self.run.session_id,
                     run_id=self.run.run_id,
                     owner_generation=self.run.owner_generation,
                     receipt_fingerprint=receipt.fingerprint,
