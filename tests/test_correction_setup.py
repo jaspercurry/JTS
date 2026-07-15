@@ -3024,6 +3024,79 @@ async def test_room_reversal_resolves_and_loads_after_concurrent_active_writer(
     assert loaded == [str(tmp_path / "no-room-from-active-new.yml")]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
+async def test_concurrent_active_writer_cannot_publish_during_room_reversal(
+    monkeypatch,
+    tmp_path,
+    automatic,
+):
+    """Room must retain the writer lock from target derivation through load."""
+    from jasper.dsp_apply import dsp_writer_lock
+
+    resolution_started = asyncio.Event()
+    allow_resolution = asyncio.Event()
+    load_started = asyncio.Event()
+    allow_load = asyncio.Event()
+    order = []
+
+    async def resolve(_sess, _cam):
+        resolution_started.set()
+        await allow_resolution.wait()
+        return tmp_path / "room-no-room.yml"
+
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
+
+    class Session:
+        cfg = SimpleNamespace(config_dir=tmp_path)
+
+        async def _reverse(self, set_cb, target_config_path):
+            load_started.set()
+            await allow_load.wait()
+            return await set_cb(str(target_config_path))
+
+        async def reset(self, set_cb, *, target_config_path=None):
+            return await self._reverse(set_cb, target_config_path)
+
+        async def auto_revert(self, set_cb, *, target_config_path=None):
+            return await self._reverse(set_cb, target_config_path)
+
+    class Cam:
+        async def set_config_file_path(self, path, *, best_effort=False):
+            order.append(("room-load", path))
+            return True
+
+    async def active_apply():
+        async with dsp_writer_lock(tmp_path, source="active_apply"):
+            order.append(("active-publish", "active-new.yml"))
+
+    reversal = asyncio.create_task(
+        correction_setup._run_locked_room_reset(
+            Session(),
+            Cam(),
+            automatic=automatic,
+        )
+    )
+    await asyncio.wait_for(resolution_started.wait(), timeout=1.0)
+    active = asyncio.create_task(active_apply())
+    allow_resolution.set()
+    await asyncio.wait_for(load_started.wait(), timeout=1.0)
+
+    # If Room released the shared lock after deriving the target but before
+    # loading it, Active would acquire during this deliberately paused load.
+    await asyncio.sleep(0.1)
+    assert not active.done()
+    assert order == []
+
+    allow_load.set()
+    assert await reversal is True
+    await active
+    assert order == [
+        ("room-load", str(tmp_path / "room-no-room.yml")),
+        ("active-publish", "active-new.yml"),
+    ]
+
+
 def test_reset_releases_intent_when_audio_quiescence_fails(monkeypatch):
     """A failed Stop never wedges every later reset behind a leaked intent."""
     from jasper.correction.session import SessionState
