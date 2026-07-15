@@ -20,6 +20,7 @@ const els = {
 
 let envelope = null;
 let busy = false;
+let stopInFlight = false;
 let refreshInFlight = null;
 let refreshQueued = false;
 let renderEpoch = 0;
@@ -203,7 +204,7 @@ function renderRelay(relay) {
   els.relay.classList.toggle('hidden', !active);
   els.relayLink.classList.add('hidden');
   els.relayStop.classList.toggle('hidden', !stoppable);
-  els.relayStop.disabled = busy;
+  els.relayStop.disabled = stopInFlight;
   if (!active) {
     if (relay && relay.status === 'failed') {
       setStatus(relay.error || 'Phone capture failed. Retry this step.', 'bad');
@@ -251,8 +252,9 @@ function render(env) {
 }
 
 async function stopRelay() {
-  if (busy) return;
+  if (stopInFlight) return;
   busy = true;
+  stopInFlight = true;
   renderEpoch += 1;
   els.relayStop.disabled = true;
   setStatus('Stopping safely…');
@@ -265,6 +267,7 @@ async function stopRelay() {
     setStatus(error && error.message ? error.message : String(error), 'bad');
   } finally {
     busy = false;
+    stopInFlight = false;
     if (envelope) {
       const relayActive = envelope.relay && RELAY_IN_FLIGHT.has(envelope.relay.status);
       renderActions(
