@@ -769,19 +769,28 @@ Cross-target reuse is refused even when a colliding raw path names different
 bytes.
 
 The isolated-driver playback slice does **not** make the candidate ready.
+The production fixed-axis relay does now populate the strict isolated-driver
+side of the plan: every accepted real recorder WAV retains its unique issued
+live-graph proof, generation/playback admissions, calibration, gated analysis,
+quality decision, and durable semantic attempt. Exactly three accepted repeats
+complete one driver; only exact coverage of every planned physical driver
+publishes `CompleteIsolatedDriverEvidence`. The bounded fourth attempt refuses
+below three accepted fixed-axis captures, and status idempotently finishes
+derived driver/run anchors left incomplete after typed capture publication.
+Historical and fail-soft records remain forensic and non-promotable.
 The later Wave 3 control-plane integration now starts and exposes a durable
 `unconfigured` commissioning run only from the fresh bundle-backed comparison
 set, claims its process owner at correction-web startup, and classifies a
-different active comparison as stale. It still has no production measurement
-attempt/transition orchestrator on the browser route. The typed internal
+different active comparison as stale. The isolated-driver browser route now
+owns exact per-driver attempts and the first `protected` transition; summed
+collection and later lifecycle transitions remain internal-only. The typed internal
 evidence host now reserves deterministic region attempts, persists and reopens
 exact admitted normal/reverse/delay sets, evaluates the bounded measured delay
 schedule, and advances the exact run from `unconfigured` through `protected`
 to `measured`. A store-backed pure deterministic evaluator can now reopen exact
 complete isolated and summed evidence and derive an
 attenuation/polarity/delay-only electrical candidate. The production host does
-not invoke it and no product route populates the required isolated set, so no
-candidate is persisted and `candidate_ready`, graph mutation/apply,
+not invoke it, so no candidate is persisted and `candidate_ready`, graph mutation/apply,
 verification/receipt, and Room authority remain unavailable.
 The direct browser/raw combined-capture route remains permanently pre-audio
 refused with `active_summed_persisted_admission_unavailable`. Real Wave 4
@@ -1395,7 +1404,7 @@ trim calculation is a complete automatic crossover.
 
 ## Current implementation gap summary
 
-As of 2026-07-14, JTS has much of the substrate but not the full product:
+As of 2026-07-15, JTS has much of the substrate but not the full product:
 
 - **Wave 1 contract foundation (2026-07-13) is landed; lifecycle identity is
   partially integrated in Wave 3.** `/sound/`
@@ -1419,9 +1428,10 @@ As of 2026-07-14, JTS has much of the substrate but not the full product:
   transition when a trusted raw transport is composed. A separate strict
   isolated-driver aggregate requires exactly three admitted captures for every
   physical driver in the same plan and persists one canonical run-scoped
-  complete artifact with deep child/admission verification. Existing mutable
-  and fail-soft driver records cannot be promoted or backfilled into it; fresh
-  production population remains Wave 4 work. The store-backed pure evaluator
+  complete artifact with deep child/admission verification. The production
+  fixed-axis relay now supplies those captures from its real WAV and one-shot
+  admission handoff, while existing mutable and fail-soft driver records cannot
+  be promoted or backfilled. The store-backed pure evaluator
   can derive a deterministic electrical candidate from exact synthetic-admitted
   complete evidence, but production does not invoke or persist it. There is
   still no `candidate_ready` transition, candidate graph mutation/apply,

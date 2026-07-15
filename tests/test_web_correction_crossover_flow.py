@@ -211,6 +211,126 @@ def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
     assert calls["kwargs"]["capture_geometry"] == "near_field"
 
 
+def test_backend_authoritative_adapter_requires_handoff_and_binds_current_run(
+    monkeypatch,
+):
+    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker import commissioning_isolated_producer
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStore,
+    )
+
+    run = SimpleNamespace(
+        session_id="session-1",
+        session_fingerprint="f" * 64,
+    )
+    run_store = SimpleNamespace(current_handle=lambda: run)
+    evidence_store = object()
+    applied = {"status": "applied"}
+    promoted = []
+    recorders = []
+    comparison = {
+        "bundle_session_id": run.session_id,
+        "fingerprint": run.session_fingerprint,
+    }
+
+    monkeypatch.setattr(backend, "_COMMISSIONING_RUN_STORE", run_store)
+    monkeypatch.setattr(
+        backend._LEVEL_LEASE,
+        "assert_volume_safety_resolved",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state",
+        lambda: applied,
+    )
+    monkeypatch.setattr(
+        CommissioningEvidenceStore,
+        "open",
+        classmethod(lambda _cls, *_args, **_kwargs: evidence_store),
+    )
+    monkeypatch.setattr(
+        commissioning_isolated_producer,
+        "promote_isolated_driver_capture",
+        lambda **kwargs: promoted.append(kwargs) or {"status": "collecting"},
+    )
+
+    def fake_record(*_args, authoritative_recorder=None, **_kwargs):
+        recorders.append(authoritative_recorder)
+        if authoritative_recorder is not None:
+            return {
+                "authoritative_evidence": authoritative_recorder(
+                    comparison_set=comparison,
+                    marker="relay-wav",
+                )
+            }
+        return {"authoritative_evidence": None}
+
+    monkeypatch.setattr(web_measurement, "record_driver_capture", fake_record)
+
+    without_handoff = backend.record_driver_capture({}, b"wav")
+    with_handoff = backend.record_driver_capture(
+        {},
+        b"wav",
+        admission_handoff={"server": "owned"},
+    )
+
+    assert without_handoff["authoritative_evidence"] is None
+    assert recorders[0] is None
+    assert callable(recorders[1])
+    assert with_handoff["authoritative_evidence"] == {"status": "collecting"}
+    assert promoted == [
+        {
+            "comparison_set": comparison,
+            "marker": "relay-wav",
+            "applied_profile": applied,
+            "run": run,
+            "run_store": run_store,
+            "evidence_store": evidence_store,
+        }
+    ]
+
+
+def test_authoritative_adapter_excludes_rejected_and_non_authoritative_records():
+    calls = []
+
+    def recorder(**kwargs):
+        calls.append(kwargs)
+        return {"status": "collecting"}
+
+    assert web_measurement._record_authoritative_driver_capture(
+        recorder=recorder,
+        capture_geometry="reference_axis",
+        accepted=False,
+        admission_handoff={"server": "owned"},
+        inputs={"marker": "rejected"},
+    ) is None
+    assert web_measurement._record_authoritative_driver_capture(
+        recorder=recorder,
+        capture_geometry="near_field",
+        accepted=True,
+        admission_handoff={"server": "owned"},
+        inputs={"marker": "near-field"},
+    ) is None
+    assert web_measurement._record_authoritative_driver_capture(
+        recorder=None,
+        capture_geometry="reference_axis",
+        accepted=True,
+        admission_handoff=None,
+        inputs={"marker": "historical"},
+    ) is None
+    with pytest.raises(ValueError, match="admitted playback proof"):
+        web_measurement._record_authoritative_driver_capture(
+            recorder=recorder,
+            capture_geometry="reference_axis",
+            accepted=True,
+            admission_handoff=None,
+            inputs={"marker": "admission-less"},
+        )
+    assert calls == []
+
+
 def test_driver_capture_rejects_post_play_topology_change_even_with_old_session(
     monkeypatch, tmp_path,
 ):
@@ -561,13 +681,19 @@ def test_summed_capture_geometry_rejects_fabricated_or_stale_proof(
 
 
 @pytest.mark.parametrize(
-    ("final_write_fails", "abort_write_fails", "complete_write_fails"),
+    (
+        "final_write_fails",
+        "abort_write_fails",
+        "complete_write_fails",
+        "promotion_fails",
+    ),
     [
-        (False, False, False),
-        (True, False, False),
-        (True, True, False),
-        (False, False, True),
-        (False, True, True),
+        (False, False, False, False),
+        (True, False, False, False),
+        (True, True, False, False),
+        (False, False, True, False),
+        (False, True, True, False),
+        (False, False, False, True),
     ],
 )
 @pytest.mark.parametrize("capture_geometry", ("near_field", "reference_axis"))
@@ -577,6 +703,7 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
     final_write_fails,
     abort_write_fails,
     complete_write_fails,
+    promotion_fails,
     capture_geometry,
 ):
     topology = object()
@@ -658,6 +785,7 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
 
     import jasper.active_speaker.calibration_level as calibration_level
     import jasper.active_speaker.bundles as active_speaker_bundles
+    import jasper.active_speaker.commissioning_admission as commissioning_admission
     import jasper.active_speaker.commissioning_capture as capture
     import jasper.active_speaker.measurement as measurement
     import jasper.active_speaker.repeat_admission as repeat_admission
@@ -685,6 +813,11 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
         )
 
     monkeypatch.setattr(calibration_level, "load_calibration_level_state", lambda: {})
+    monkeypatch.setattr(
+        commissioning_admission,
+        "validate_capture_admission_handoff",
+        lambda handoff, **_kwargs: dict(handoff),
+    )
     monkeypatch.setattr(
         measurement,
         "load_measurement_state",
@@ -778,6 +911,20 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
         "playback_id": "play",
         "ambient_duration_s": 12.0,
     }
+    authoritative_calls = []
+
+    def record_authoritative(**kwargs):
+        authoritative_calls.append(kwargs)
+        if promotion_fails:
+            raise OSError("strict promotion failed")
+        accepted = len(authoritative_calls)
+        return {
+            "status": "complete" if accepted == 3 else "collecting",
+            "accepted": accepted,
+            "required": 3,
+            "driver_complete": accepted == 3,
+            "complete": accepted == 3,
+        }
 
     def capture_attempt(attempt):
         reservation = repeat_admission.reserve(
@@ -787,7 +934,7 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
             path=admission_path,
         )
         assert reservation["attempt"] == attempt
-        return backend.record_driver_capture(
+        return web_measurement.record_driver_capture(
             {
                 **raw,
                 "repeat_reservation": reservation,
@@ -795,7 +942,27 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
             b"wav",
             placement_proof=placement_proof,
             repeat_store=store,
+            admission_handoff={"admission_id": f"admission-{attempt}"},
+            authoritative_recorder=record_authoritative,
         )
+
+    if promotion_fails and capture_geometry == "reference_axis":
+        with pytest.raises(OSError, match="strict promotion failed"):
+            capture_attempt(1)
+        assert store.driver_repeats(
+            store.repeat_session_key(
+                comparison_set["comparison_set_id"],
+                repeat_target_fingerprint,
+            )
+        ) == []
+        failure = store.repeat_failure(repeat_target_id)
+        assert failure is not None
+        assert failure["reason"] == "authoritative_promotion_failed"
+        assert repeat_admission.snapshot(
+            comparison_set, path=admission_path
+        )["targets"][repeat_target_id]["status"] == "refused"
+        assert len(authoritative_calls) == 1
+        return
 
     first = capture_attempt(1)
     second = capture_attempt(2)
@@ -891,6 +1058,9 @@ def test_driver_capture_wires_three_repeats_before_one_durable_record(
     assert all(entry["snr_db"] == 31.0 for entry in attempts)
     assert all(entry["clipping"] is False for entry in attempts)
     assert len(repeat_artifact_payloads) == 3
+    assert len(authoritative_calls) == (
+        3 if capture_geometry == "reference_axis" else 0
+    )
     for artifact in repeat_artifact_payloads:
         analysis_input = artifact["analysis_input"]
         assert analysis_input["schema_version"] == 1
@@ -1036,8 +1206,12 @@ def test_repeat_capture_refuses_without_controlled_quiet_interval(monkeypatch, t
         )
 
 
-def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("capture_geometry", "should_finalize"),
+    (("near_field", True), ("reference_axis", False)),
+)
+def test_terminal_transport_failure_never_completes_thin_fixed_axis_evidence(
+    monkeypatch, tmp_path, capture_geometry, should_finalize
 ):
     from jasper.active_speaker import (
         bundles as active_speaker_bundles,
@@ -1048,7 +1222,13 @@ def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
     comparison = dict(_COMPARISON_SET)
     target_fingerprint = "c" * 64
     placement_proof = _placement_proof(
-        "driver_same_distance_v1", "woofer", target_fingerprint
+        (
+            "driver_reference_axis_v1"
+            if capture_geometry == "reference_axis"
+            else "driver_same_distance_v1"
+        ),
+        "woofer",
+        target_fingerprint,
     )
     admission_path = tmp_path / "repeat-admission.json"
     monkeypatch.setenv(
@@ -1065,7 +1245,7 @@ def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
     bundle_dir.mkdir()
     acoustic = {
         "verdict": "present",
-        "capture_geometry": "near_field",
+        "capture_geometry": capture_geometry,
         "observed_mic_dbfs": -30.0,
         "mic_clipping": False,
         "snr": {
@@ -1188,11 +1368,29 @@ def test_terminal_transport_failure_finalizes_two_existing_accepted_repeats(
         speaker_group_id="mono",
         role="woofer",
         target_fingerprint=target_fingerprint,
-        capture_geometry="near_field",
+        capture_geometry=capture_geometry,
         reservation=fourth,
         failure_type="CaptureAborted",
         repeat_store=store,
     )
+    if not should_finalize:
+        assert payload is None
+        repeat_admission.finish(
+            comparison,
+            target_id="mono:woofer",
+            target_fingerprint=target_fingerprint,
+            token=fourth["token"],
+            result={"accepted": False, "reject_reason": "capture_failed"},
+            status=repeat_admission.failure_status(fourth["attempt"]),
+            path=admission_path,
+        )
+        assert repeat_admission.snapshot(
+            comparison, path=admission_path
+        )["targets"]["mono:woofer"]["status"] == "refused"
+        assert store.driver_repeats(key) != []
+        assert recorded == {}
+        assert appended == []
+        return
     assert payload is not None and payload["recorded"] is True
     assert recorded["accepted"] == 2
     assert recorded["confidence"] == "reduced"
@@ -1574,6 +1772,11 @@ def test_commissioning_run_status_is_current_only_for_exact_comparison(
         "last_transition": None,
         "updated_at": current["updated_at"],
         "state_fingerprint": store.snapshot()["fingerprint"],
+        "isolated_evidence": {
+            "status": "unavailable",
+            "reason": "isolated_evidence_state_unavailable",
+            "error_type": "CommissioningEvidenceStoreError",
+        },
     }
     assert stale["status"] == "stale"
     assert stale["reason"] == "commissioning_comparison_set_changed"

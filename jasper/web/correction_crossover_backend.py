@@ -1376,7 +1376,7 @@ def commissioning_run_status(
     journal = current.get("transition_journal")
     last_transition = journal[-1] if isinstance(journal, list) and journal else None
     attempts = current.get("attempts")
-    return {
+    result = {
         "status": "current" if comparison_current else "stale",
         "reason": (
             None if comparison_current else "commissioning_comparison_set_changed"
@@ -1390,6 +1390,41 @@ def commissioning_run_status(
         "updated_at": current.get("updated_at"),
         "state_fingerprint": snapshot.get("fingerprint"),
     }
+    if comparison_current:
+        try:
+            from jasper.active_speaker.bundles import sessions_dir
+            from jasper.active_speaker.commissioning_evidence_store import (
+                CommissioningEvidenceStore,
+            )
+            from jasper.active_speaker.commissioning_isolated_producer import (
+                isolated_evidence_status,
+                resume_isolated_evidence,
+            )
+
+            run = _COMMISSIONING_RUN_STORE.current_handle()
+            if run is None:
+                raise ValueError("current commissioning run disappeared")
+            evidence_store = CommissioningEvidenceStore.open(
+                sessions_dir() / run.session_id,
+                expected_session_id=run.session_id,
+            )
+            resume_isolated_evidence(
+                run=run,
+                run_store=_COMMISSIONING_RUN_STORE,
+                evidence_store=evidence_store,
+            )
+            result["isolated_evidence"] = isolated_evidence_status(
+                run=run,
+                run_store=_COMMISSIONING_RUN_STORE,
+                evidence_store=evidence_store,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            result["isolated_evidence"] = {
+                "status": "unavailable",
+                "reason": "isolated_evidence_state_unavailable",
+                "error_type": type(exc).__name__,
+            }
+    return result
 
 
 def status_payload() -> dict[str, Any]:
@@ -1745,6 +1780,47 @@ def record_driver_capture(
     """Analyze one secure browser WAV and record per-driver evidence."""
 
     _LEVEL_LEASE.assert_volume_safety_resolved()
+
+    def record_authoritative(**inputs: Any) -> Mapping[str, Any]:
+        from jasper.active_speaker.baseline_profile import (
+            load_applied_baseline_profile_state,
+        )
+        from jasper.active_speaker.bundles import sessions_dir
+        from jasper.active_speaker.commissioning_evidence_store import (
+            CommissioningEvidenceStore,
+        )
+        from jasper.active_speaker.commissioning_isolated_producer import (
+            promote_isolated_driver_capture,
+        )
+
+        run = _COMMISSIONING_RUN_STORE.current_handle()
+        comparison_set = inputs.get("comparison_set")
+        if (
+            run is None
+            or not isinstance(comparison_set, Mapping)
+            or run.session_id != comparison_set.get("bundle_session_id")
+            or run.session_fingerprint != comparison_set.get("fingerprint")
+        ):
+            raise ValueError(
+                "fixed-axis capture has no current exact commissioning run"
+            )
+        applied = load_applied_baseline_profile_state()
+        if not isinstance(applied, Mapping):
+            raise ValueError(
+                "fixed-axis capture has no protected applied profile authority"
+            )
+        evidence_store = CommissioningEvidenceStore.open(
+            sessions_dir() / run.session_id,
+            expected_session_id=run.session_id,
+        )
+        return promote_isolated_driver_capture(
+            **inputs,
+            applied_profile=applied,
+            run=run,
+            run_store=_COMMISSIONING_RUN_STORE,
+            evidence_store=evidence_store,
+        )
+
     transaction = getattr(repeat_store, "repeat_transaction", None)
     if callable(transaction):
         with transaction():
@@ -1755,6 +1831,9 @@ def record_driver_capture(
                 admission_handoff=admission_handoff,
                 preset=preset,
                 repeat_store=repeat_store,
+                authoritative_recorder=(
+                    record_authoritative if admission_handoff is not None else None
+                ),
             )
     else:
         payload = web_measurement.record_driver_capture(
@@ -1764,6 +1843,9 @@ def record_driver_capture(
             admission_handoff=admission_handoff,
             preset=preset,
             repeat_store=repeat_store,
+            authoritative_recorder=(
+                record_authoritative if admission_handoff is not None else None
+            ),
         )
     log_event(
         logger,
@@ -1772,6 +1854,9 @@ def record_driver_capture(
         group_id=raw.get("speaker_group_id"),
         role=raw.get("role"),
         placement_policy=(placement_proof or {}).get("policy_id"),
+        authoritative_status=(payload.get("authoritative_evidence") or {}).get(
+            "status"
+        ),
     )
     return payload
 

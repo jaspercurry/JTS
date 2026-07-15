@@ -51,7 +51,7 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the Wave 3 isolated-driver consumer, durable Active run and pure region-evidence boundaries, and the Shared manifest, playback, admission, and guarded-playback implementation, 2026-07-14)
+## Current state (verified against the production isolated-driver evidence producer, durable Active run and pure region-evidence boundaries, and the Shared manifest, playback, admission, and guarded-playback implementation, 2026-07-15)
 
 ### Wave 1 contract-only foundation (2026-07-13)
 
@@ -74,12 +74,16 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   `CompleteIsolatedDriverEvidence` aggregate now binds exactly three fresh
   admitted captures for every physical driver in that same plan, with one
   canonical run-scoped artifact and deep child/admission verification on every
-  reopen. The existing fail-soft measurement records are not promoted into
-  that authority; fresh production population remains Wave 4 work. A
+  reopen. The production fixed-axis driver relay now promotes each accepted,
+  freshly admitted capture into a resumable strict attempt and publishes the
+  complete aggregate only after all three repeats for every physical driver.
+  The bounded fourth attempt refuses rather than treating two fixed-axis
+  repeats as complete, and status idempotently finishes any derived
+  per-driver/run anchors interrupted after their typed captures were stored.
+  Existing fail-soft records are never read or promoted. A
   store-backed pure deterministic evaluator can now reopen the exact complete
   isolated and summed artifacts and derive an attenuation/polarity/delay-only
-  electrical candidate. No production host invokes it, and isolated evidence
-  is not yet populated by the product path; candidate persistence,
+  electrical candidate. No production host invokes it; candidate persistence,
   `candidate_ready`, graph mutation/apply, verification/receipt, and Room
   consumption remain blocked.
 - `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and

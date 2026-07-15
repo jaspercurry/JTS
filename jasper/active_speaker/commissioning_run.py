@@ -1437,6 +1437,20 @@ class CommissioningRunStore:
                 return self._matches_attempt(current, callback)
             return self._matches_handle(current, callback)
 
+    def current_handle(self) -> CommissioningRunHandle | None:
+        """Return this process owner's handle without claiming persisted state."""
+
+        if not self.path.exists():
+            return None
+        with self._locked():
+            current = self._read()["current"]
+            if (
+                not isinstance(current, Mapping)
+                or current.get("owner_id") != self.owner_id
+            ):
+                return None
+            return self._handle(current)
+
     def attempts(
         self,
         handle: CommissioningRunHandle,

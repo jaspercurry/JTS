@@ -85,7 +85,7 @@ from .test_signal_plan import (
     driver_sweep_duration_s,
 )
 
-ADMISSION_HANDOFF_SCHEMA_VERSION = 1
+ADMISSION_HANDOFF_SCHEMA_VERSION = 2
 ADMISSION_HANDOFF_KIND = "jts_active_driver_capture_admission_handoff"
 ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS = -12.0
 ACTIVE_DRIVER_CAPTURE_REPEAT_COUNT = 1
@@ -148,6 +148,7 @@ class ActiveCaptureAdmissionHandoff:
     playback_artifact: ArtifactIdentity
     stimulus: GeneratedExcitationWav
     admission: Mapping[str, Any]
+    graph_fingerprint: str
     graph_evidence_fingerprint: str
     fingerprint: str = field(init=False)
 
@@ -165,6 +166,7 @@ class ActiveCaptureAdmissionHandoff:
             "comparison_set_fingerprint",
             "target_fingerprint",
             "authority_fingerprint",
+            "graph_fingerprint",
             "graph_evidence_fingerprint",
         ):
             value = getattr(self, name)
@@ -200,6 +202,7 @@ class ActiveCaptureAdmissionHandoff:
             "playback_artifact": self.playback_artifact.to_dict(),
             "stimulus": self.stimulus.to_dict(),
             "admission": dict(self.admission),
+            "graph_fingerprint": self.graph_fingerprint,
             "graph_evidence_fingerprint": self.graph_evidence_fingerprint,
         }
 
@@ -224,6 +227,7 @@ class ActiveCaptureAdmissionHandoff:
             "playback_artifact",
             "stimulus",
             "admission",
+            "graph_fingerprint",
             "graph_evidence_fingerprint",
             "fingerprint",
         }
@@ -248,6 +252,7 @@ class ActiveCaptureAdmissionHandoff:
             playback_artifact=ArtifactIdentity.from_mapping(raw["playback_artifact"]),
             stimulus=GeneratedExcitationWav.from_mapping(raw["stimulus"]),
             admission=raw["admission"],
+            graph_fingerprint=raw["graph_fingerprint"],
             graph_evidence_fingerprint=raw["graph_evidence_fingerprint"],
         )
         if raw["fingerprint"] != result.fingerprint:
@@ -573,6 +578,7 @@ def issue_protection_evidence(
     running_config_raw: str | None,
     observed_main_volume_db: float | None,
     expected_main_volume_db: float,
+    issuance_id: str | None = None,
 ) -> tuple[ProtectionEvidence, Mapping[str, Any]]:
     """Reduce one fresh live readback to exact Active protection evidence."""
 
@@ -703,6 +709,7 @@ def issue_protection_evidence(
     report = {
         "schema_version": 1,
         "kind": "jts_active_driver_live_protection_report",
+        "issuance_id": issuance_id,
         "target_id": prepared.target_id,
         "target_fingerprint": prepared.requested_plan.target_fingerprint,
         "observed_main_volume_db": observed_main_volume_db,
@@ -846,6 +853,7 @@ async def play_admitted_driver_capture(
         sessions_dir() / session_id,
         expected_session_id=session_id,
     )
+    admission_id = uuid.uuid4().hex
     initial_volume = await read_main_volume_db()
     initial_evidence, _initial_report = issue_protection_evidence(
         topology=topology,
@@ -855,6 +863,7 @@ async def play_admitted_driver_capture(
         running_config_raw=initial_raw,
         observed_main_volume_db=initial_volume,
         expected_main_volume_db=expected_main_volume_db,
+        issuance_id=admission_id,
     )
     decision = admit_excitation(
         prepared.request,
@@ -866,7 +875,6 @@ async def play_admitted_driver_capture(
         raise ActiveCommissioningAdmissionError(
             f"driver excitation generation refused: {reasons}"
         )
-    admission_id = uuid.uuid4().hex
     generation = persist_generation_admission(
         authority,
         admission_id=admission_id,
@@ -878,7 +886,10 @@ async def play_admitted_driver_capture(
         meta=meta,
     )
 
+    playback_graph_fingerprint: str | None = None
+
     async def issue_current_inputs() -> CurrentPlaybackAdmissionInputs:
+        nonlocal playback_graph_fingerprint
         current_topology, current_profile, current_comparison, current_applied = (
             load_current_context()
         )
@@ -898,7 +909,7 @@ async def play_admitted_driver_capture(
             raise ActiveCommissioningAdmissionError(
                 "driver sweep plan changed before playback"
             )
-        evidence, _report = issue_protection_evidence(
+        evidence, report = issue_protection_evidence(
             topology=current_topology,
             safety_profile=current_profile,
             prepared=current_prepared,
@@ -906,7 +917,9 @@ async def play_admitted_driver_capture(
             running_config_raw=current_raw,
             observed_main_volume_db=await read_main_volume_db(),
             expected_main_volume_db=expected_main_volume_db,
+            issuance_id=admission_id,
         )
+        playback_graph_fingerprint = str(report["graph_fingerprint"])
         return CurrentPlaybackAdmissionInputs(
             limits=current_prepared.limits,
             protection_evidence=evidence,
@@ -959,6 +972,10 @@ async def play_admitted_driver_capture(
         raise ActiveCommissioningAdmissionError(
             "playback admission omitted its fresh protection evidence"
         )
+    if playback_graph_fingerprint is None:
+        raise ActiveCommissioningAdmissionError(
+            "playback admission omitted its exact running graph identity"
+        )
     handoff = ActiveCaptureAdmissionHandoff(
         session_id=session_id,
         comparison_set_id=str(comparison_set["comparison_set_id"]),
@@ -971,6 +988,7 @@ async def play_admitted_driver_capture(
         playback_artifact=admitted.admission.artifact,
         stimulus=stimulus,
         admission=admitted.admission.admission.to_dict(),
+        graph_fingerprint=playback_graph_fingerprint,
         graph_evidence_fingerprint=playback_evidence.evidence_fingerprint,
     )
     return ActiveDriverCapturePlayback(sweep_meta=meta, handoff=handoff)

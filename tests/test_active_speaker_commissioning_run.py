@@ -345,6 +345,20 @@ def test_same_owner_claim_is_idempotent_and_does_not_rewrite(tmp_path: Path) -> 
     assert path.read_bytes() == before
 
 
+def test_current_handle_never_claims_another_process_generation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "run.json"
+    owner = CommissioningRunStore(path=path, owner_id="3" * 32)
+    handle = _start(owner)
+    observer = CommissioningRunStore(path=path, owner_id="4" * 32)
+    before = path.read_bytes()
+
+    assert owner.current_handle() == handle
+    assert observer.current_handle() is None
+    assert path.read_bytes() == before
+
+
 def test_stale_attempt_cannot_annotate_a_current_transition(tmp_path: Path) -> None:
     path = tmp_path / "run.json"
     prior = CommissioningRunStore(path=path, owner_id="3" * 32)
