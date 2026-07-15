@@ -1638,6 +1638,28 @@ async def capture_next_commissioning_region(
     }
 
 
+async def capture_next_commissioning_verification(
+    raw_capture_transport: Any,
+    *,
+    camilla_factory: CamillaFactory,
+) -> dict[str, Any]:
+    """Capture one server-selected post-apply combined-response repeat."""
+
+    from jasper.active_speaker.commissioning_service import commissioning_runtime_port
+    from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
+
+    _LEVEL_LEASE.assert_volume_safety_resolved()
+    service = _commissioning_capture_service()
+    if service.status().get("status") != "applied_unverified":
+        raise ValueError("the commissioning run has no post-apply capture ready")
+    camilla = camilla_factory()
+    return await service.capture_post_apply(
+        commissioning_runtime_port(camilla),
+        raw_capture_transport=raw_capture_transport,
+        config_dir=str(DEFAULT_CAMILLA_CONFIG_DIR),
+    )
+
+
 def status_payload() -> dict[str, Any]:
     """Return active-crossover targets and saved measurement evidence."""
 

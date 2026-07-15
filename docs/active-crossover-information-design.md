@@ -1168,8 +1168,8 @@ graph. A failed, restored, attempted, or unknown mutation cannot mint the
 positive receipt.
 
 The admitted-capture, post-apply-target, and eligibility-receipt containers are
-schema version 2. There is no schema-v1 migration because no production issuer
-or persisted receipt exists yet; version 1 is rejected rather than guessed.
+schema version 2. There is no schema-v1 migration; version 1 is rejected rather
+than guessed.
 
 The Wave 1 transition and receipt values remain pure contracts. Wave 3 now
 persists the lifecycle's exact current-run identity in
@@ -1185,8 +1185,11 @@ hash, and passes relay WAV bytes to the host. It does not choose an operation or
 reconstruct progress; the host alone advances `protected` to `measured` after
 exact evidence.
 
-Current Active bundles remain forensic and fail-soft, and no production code
-issues or persists an automatic eligibility receipt. The
+Current Active bundles remain forensic and fail-soft. Production verification
+holds the existing writer lock without changing the already-applied graph,
+proves its exact graph/path/volume readback, and uses the summed recorder path
+for three admitted fixed-axis repeats per target. Active persists/reopens the
+receipt and transitions the run to `verified`. The
 `active_speaker.setup_status` producer owns one versioned Room decision. A
 topology-current immutable snapshot whose explicit apply owner is `manual`
 projects `manual_applied_profile` only when CamillaDSP's fresh running
@@ -1202,8 +1205,8 @@ driver-domain crossover instance. The identity
 covers output-device settings and the complete driver-domain
 mixer/pipeline/filter suffix while excluding the mutable pre-split
 Room/preference prefix. A mismatch asks for an explicit crossover reapply. An
-`automatic` snapshot without the strict receipt projects an incomplete
-decision. Room validates and consumes that projection without parsing the
+`automatic` snapshot projects ready only with the strict verified receipt;
+without it the decision remains incomplete. Room validates and consumes that projection without parsing the
 receipt or deriving authority from historical B2b evidence. An allowed
 projection includes Active's opaque loaded Layer-A identity so Room can carry
 it from Start and compare a freshly reissued decision inside its locked
@@ -1510,12 +1513,10 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   projects that candidate through `candidate_ready`. The reviewed candidate now
   compiles and applies through the existing bounded writer/readback/restore path,
   with exact predecessor recovery and a retained proof before
-  `applied_unverified`. There is still no post-apply verification, receipt
-  issuer, or automatic Room authority path. Active's
-  versioned Room projection admits passive/not-required and an explicitly
-  applied manual snapshot, while an automatic snapshot remains blocked instead
-  of being trusted as receipt authority. Live automatic receipt
-  production/consumption and on-device proof remain later slices.
+  `applied_unverified`. Post-apply verification now proves the retained current
+  graph without another mutation, persists three admitted fixed-axis repeats,
+  issues the exact receipt, and lets Room consume Active's decision. On-device
+  proof remains outstanding.
 
 - Manual setup exposes frequency, filter family/slope, and trim. ~~There is
   still no `/sound/` UI for polarity/delay authoring~~ Closed (P2a): the
@@ -1700,10 +1701,11 @@ evaluator, exact candidate persistence/readback and `candidate_ready` review
 projection, explicit reviewed apply, compiler-ready measured corrections,
 writer-locked graph/path/volume readback, exact failure/cancellation/restart
 restore, retained-proof finalization, complete-plan replay
-guards, receipt schema-v2 one-shot roles,
+guards, receipt schema-v2 one-shot roles, current-graph verification,
+receipt persistence, and Active-owned Room authority,
 and Room's versioned passive/solo-manual-applied admission boundary, explicit
 grouped-active unsupported result, and strict automatic-receipt separation
-checked against the current
-implementation and cited measurement literature; the apply path was validated
-with injected runtime seams only, and no live audio/DSP/hardware operation was
-performed or hardware-validated.)
+checked against the current implementation and cited measurement literature;
+the complete path was
+validated with injected runtime seams only, and no live audio/DSP/hardware
+operation was performed or hardware-validated.)

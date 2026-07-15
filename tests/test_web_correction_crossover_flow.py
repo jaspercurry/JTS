@@ -2215,7 +2215,12 @@ def test_applied_candidate_keeps_exact_run_current_through_status_and_envelope(
     ]
     assert live["region_commissioning"]["status"] == "applied_unverified"
     assert envelope["screen"] == "alignment"
-    assert envelope["next_action"] is None
+    assert envelope["next_action"] == {
+        "id": "measure_post_apply_verification",
+        "label": "Verify combined response — capture 1",
+        "endpoint": "/correction/crossover/relay-capture",
+        "body": {"kind": "verification"},
+    }
     assert "applied and freshly read back" in envelope["verdict_text"]
 
 
@@ -5319,6 +5324,7 @@ def test_crossover_envelope_surfaces_bounded_low_lock_without_blocking_sweeps():
 def test_relay_kind_validation():
     assert flow.relay_kind_from_raw({"kind": "driver"}) == "driver"
     assert flow.relay_kind_from_raw({"kind": "summed"}) == "summed"
+    assert flow.relay_kind_from_raw({"kind": "verification"}) == "verification"
     with pytest.raises(ValueError, match="crossover relay kind"):
         flow.relay_kind_from_raw({"kind": "bogus"})
     with pytest.raises(ValueError, match="crossover relay kind"):
@@ -7285,10 +7291,39 @@ def test_summed_relay_rejects_browser_owned_policy_before_side_effects(
     }
 
 
+@pytest.mark.parametrize(
+    ("relay_kind", "server_status", "backend_method", "label_fragment"),
+    (
+        (
+            "summed",
+            {
+                "status": "collecting",
+                "next_capture": {"evidence_kind": "server_selected"},
+            },
+            "capture_next_commissioning_region",
+            "server-selected",
+        ),
+        (
+            "verification",
+            {
+                "status": "applied_unverified",
+                "verification": {
+                    "next_target": {"speaker_group_id": "mono"},
+                },
+            },
+            "capture_next_commissioning_verification",
+            "post-apply",
+        ),
+    ),
+)
 @pytest.mark.asyncio
-async def test_summed_relay_is_recorder_only_for_the_server_owned_host(
+async def test_commissioning_relay_is_recorder_only_for_the_server_owned_host(
     monkeypatch,
     tmp_path,
+    relay_kind,
+    server_status,
+    backend_method,
+    label_fragment,
 ):
     from contextlib import asynccontextmanager
 
@@ -7306,11 +7341,10 @@ async def test_summed_relay_is_recorder_only_for_the_server_owned_host(
         input_device=None,
     )
     server_status = {
-        "status": "collecting",
+        **server_status,
         "run_id": "run-1",
         "owner_generation": 3,
         "plan_fingerprint": "a" * 64,
-        "next_capture": {"evidence_kind": "server_selected"},
     }
     monkeypatch.setattr(backend, "level_lease", lambda: lease)
     monkeypatch.setattr(backend, "commissioning_region_status", lambda: server_status)
@@ -7346,7 +7380,7 @@ async def test_summed_relay_is_recorder_only_for_the_server_owned_host(
 
     monkeypatch.setattr(correction_setup, "_run_relay_capture", run_relay)
     response = correction_setup._handle_crossover_relay_capture(
-        _json_handler({"kind": "summed"})
+        _json_handler({"kind": relay_kind})
     )
 
     assert response["relay"]["status"] == "awaiting_phone"
@@ -7374,7 +7408,7 @@ async def test_summed_relay_is_recorder_only_for_the_server_owned_host(
     assert spec.kind == "crossover_sweep"
     assert spec.acknowledgement is not None
     assert spec.acknowledgement.id == "summed_reference_axis_v1"
-    assert "server-selected" in spec.stimulus.label
+    assert label_fragment in spec.stimulus.label
 
     relay_result = CaptureResult(
         wav=b"real-recorder-wav",
@@ -7422,9 +7456,7 @@ async def test_summed_relay_is_recorder_only_for_the_server_owned_host(
             "capture_fingerprint": "b" * 64,
         }
 
-    monkeypatch.setattr(
-        backend, "capture_next_commissioning_region", capture_next
-    )
+    monkeypatch.setattr(backend, backend_method, capture_next)
     pi_session = SimpleNamespace(
         session_id="relay-session",
         pull_token="pull-token",

@@ -28,7 +28,7 @@ CamillaFactory = Callable[[], Any]
 # seam the room and sync flows use — so a phone can carry a driver or summed
 # crossover sweep in place of a same-origin `postWav`. Kind-specific behaviour is
 # only which play/record pair runs; the transport is identical.
-CROSSOVER_RELAY_KINDS = ("driver", "summed")
+CROSSOVER_RELAY_KINDS = ("driver", "summed", "verification")
 # The capture page polls host progress every 250 ms by default. Keep a stopped
 # session readable for several polls before deleting its one-time relay state.
 CROSSOVER_CANCEL_OBSERVATION_GRACE_S = 1.0
@@ -410,10 +410,10 @@ def handle_summed_capture(
 
 
 def relay_kind_from_raw(raw: dict[str, Any]) -> str:
-    """The crossover relay capture kind (``driver`` | ``summed``), validated.
+    """The crossover relay capture kind, validated at the thin HTTP boundary.
 
     Kept small + strict at the boundary (extensibility doctrine): an unknown
-    kind fails loud rather than silently defaulting to one of the two paths."""
+    kind fails loud rather than silently defaulting to a known path."""
     kind = str((raw or {}).get("kind") or "").strip().lower()
     if kind not in CROSSOVER_RELAY_KINDS:
         raise ValueError(

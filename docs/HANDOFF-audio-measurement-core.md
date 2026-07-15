@@ -88,8 +88,9 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   `candidate_ready`; Shared remains only the evidence/identity substrate and
   owns no candidate policy. Active now applies that reviewed candidate under
   the shared writer lock and uses Shared's exact DSP-state identity for fresh
-  readback and restoration; Shared still owns no candidate, apply, or receipt
-  policy. Verification/receipt and Room consumption remain blocked.
+  readback and restoration; Shared still owns no candidate, apply, receipt, or
+  Room policy. Active now uses the same admitted playback/capture primitives
+  for three current-graph post-apply repeats and persists its own receipt.
 - `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
   `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
   replay inputs, admission artifacts, algorithm id/version, geometry, placement,
@@ -127,23 +128,20 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   operation, mutation, and observed applied graph. The transition value remains
   pure, while Wave 3 now persists one exact current-run identity and provides
   bounded attempt/journal mutation APIs. Production isolated and summed
-  adapters now use that run/store authority; the eligibility receipt remains
-  inert.
+  adapters now use that run/store authority; Active's production verification
+  service constructs, persists, and strictly reopens the eligibility receipt
+  after all exact targets pass.
   The breaking admitted-capture shape and its post-apply/receipt containers are
   all schema version 2; schema version 1 is intentionally rejected because no
-  production receipt issuer or persisted receipt exists.
+  schema-v2 is the only production receipt format.
 
-The full automatic contract is not current Room `/state` authority. Existing
-Active bundles remain forensic/fail-soft. `active_speaker.setup_status` now
-projects a versioned decision that separates an explicitly applied manual
-profile from automatic commissioning: manual-applied and passive/not-required
-may enter Room, while automatic entry stays blocked until Active issues and
-exposes the exact receipt-backed result. Room does not parse the receipt or
-reconstruct it from historical B2b evidence; automatic authority requires
-Active's fresh excitation-admitted captures and measured delay walk. The
-crossover status has a separate fail-closed
+Existing fail-soft Active bundles remain forensic. Active setup status now
+exposes one explicit Room decision: manual applied snapshots retain their
+separate legacy authority, while automatic tuning requires the exact verified
+receipt. Room consumes that decision and does not parse the receipt or
+reconstruct it from historical B2b evidence. The crossover status has a separate fail-closed
 `commissioning_run` control-plane projection; it is not an eligibility receipt
-and Room does not consume it. No hardware behavior was changed or revalidated.
+and Room does not consume it. Live JTS3 behavior remains unvalidated.
 
 ### Wave 2 neutral artifact-manifest ownership (2026-07-13)
 
@@ -1291,8 +1289,7 @@ to de-risk Phase 3.
 Last verified: 2026-07-15 (bounded, cancellation-safe shared DSP-writer
 admission and contention observability checked hardware-free; Wave 2 neutral artifact-manifest, playback,
 admission-artifact, and guarded-playback ownership; exact Room byte/schema/path
-compatibility; Room playback shim; versioned passive/manual-applied Room
-admission with automatic entry pending exact Active receipt authority;
+compatibility; Room playback shim; Active receipt-backed Room admission;
 deterministic tone bytes; bounded
 diagnostic/cleanup behavior; canonical admission marker and
 generation/playback path roles; crash-durable no-replace persistence;
@@ -1319,7 +1316,7 @@ existing shared writer lock and exact graph/path/volume snapshot/restore seams;
 failure, cancellation, ambiguous retained-write, and restart recovery were
 checked with injected runtime ports. No hardware behavior was revalidated.
 Wave 1 excitation/evidence identities remain the shared substrate rather than
-feature policy. Production post-apply verification/receipt and automatic Room
-authority remain unavailable; manual-applied authority is live. Crossover adapter
+feature policy. Production post-apply verification/receipt and Room authority
+are Active-owned and hardware-free verified. Crossover adapter
 volume-lease participation and measurement-flow admission ownership rechecked
 against correction, balance, sync, and the coordinator mutex)

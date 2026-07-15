@@ -715,6 +715,56 @@ def test_applied_automatic_snapshot_requires_receipt_after_measurement_store_cle
     assert status["automatic_candidate"]["ready"] is False
 
 
+def test_verified_automatic_receipt_allows_room_with_loaded_layer_a(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology()
+    _save_topology(monkeypatch, tmp_path, topology)
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    automatic = _applied_acoustic_profile(config_path=config_path)
+    automatic["tuning_owner"] = "automatic"
+    automatic["recomposition_snapshot"]["tuning_owner"] = "automatic"
+    _write_applied_graph(topology, automatic, config_path)
+    monkeypatch.setattr(
+        setup_mod,
+        "build_baseline_profile_candidate",
+        lambda *a, **k: _candidate(status="applied", config_path=config_path),
+    )
+    monkeypatch.setattr(
+        setup_mod,
+        "load_measurement_state",
+        lambda _topology: {"summary": {}},
+    )
+    monkeypatch.setattr(
+        setup_mod,
+        "load_applied_baseline_profile_state",
+        lambda _path=None: automatic,
+    )
+    monkeypatch.setattr(
+        setup_mod,
+        "read_commissioning_room_authority",
+        lambda _topology: {
+            "allowed": True,
+            "authority": "automatic_verified_receipt",
+            "receipt_fingerprint": "9" * 64,
+        },
+    )
+
+    status = setup_mod.read_active_speaker_setup_status(
+        active_config_path=str(config_path),
+    )
+
+    assert status["room_correction_allowed"] is True
+    assert status["acoustic_commissioning"]["authority"] == (
+        setup_mod.ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT
+    )
+    assert status["acoustic_commissioning"]["receipt_fingerprint"] == "9" * 64
+    assert status["acoustic_commissioning"]["layer_a_identity"] == (
+        status["protected_profile"]["layer_a_binding"]["loaded_fingerprint"]
+    )
+
+
 def test_legacy_applied_profile_is_safe_but_requires_snapshot_reapply(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

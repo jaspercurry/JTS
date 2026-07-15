@@ -74,10 +74,9 @@
   Wave 3 slice stopped at an `unconfigured` web-created run and an internal
   synthetic host. That boundary is now superseded by the production isolated
   and summed relay, exact candidate publication/review, and reviewed
-  apply/readback/restore integration described in the current Active→Room
-  status below. Post-apply verification, receipt issuance, and Room consumption
-  remain unavailable. No sound, live graph mutation, or hardware was exercised
-  while wiring those software paths.
+  apply/readback/restore and post-apply receipt integration described in the
+  current Active→Room status below. No sound, live graph mutation, or hardware
+  was exercised while wiring those software paths.
 - ✅ **Room R1 — envelope v9 owns whole-page visibility, truthful entry
   failures, and disclosed run defaults (hardware-free;
   real-device browser pass pending).** `jasper.correction.envelope` now emits
@@ -141,9 +140,8 @@
   cleanup exits. A terminal HTTP/relay result must not stand in for cleanup
   that is still running.
   Idle envelopes consume the Active-owned, versioned setup decision. They admit
-  passive/not-required and an explicitly applied manual profile, while an
-  automatic applied snapshot remains blocked until Active supplies the exact
-  receipt-backed authority. Missing, malformed, incomplete, or unknown
+  passive/not-required, an explicitly applied manual profile, or automatic
+  verified-receipt authority. Missing, malformed, incomplete, or unknown
   authority withholds Start; Room never reconstructs graph or measurement
   evidence and never relabels automatic tuning as manual. Manual authority is
   positive only when Active's semantic Layer-A fingerprint of CamillaDSP's
@@ -227,8 +225,8 @@
   `/interpret`, `/propose`, and `/propose/apply` routes are unchanged;
   deterministic acceptance, apply, verification, and automatic revert remain
   the authorities.
-- 🧱 **Wave 1 automatic Active→Room receipt contract (types complete; automatic
-  Room entry blocked pending production authority).** Active now owns a strict positive
+- ✅ **Active→Room receipt authority is production-wired (hardware-free; live
+  JTS3 pass pending).** Active owns a strict positive
   `CommissioningEligibilityReceipt` type whose required combined-speaker
   targets are derived only from a current, evaluated-`verified`
   `OutputTopology`; blocked or physically unverified output maps cannot create
@@ -242,14 +240,13 @@
   graph. An attempted/unknown mutation, a failed restore, or even a
   successful rollback cannot mint this positive receipt.
 
-  The receipt remains an inert automatic-commissioning contract. No Active
-  production flow issues or persists it; current Active bundles remain
-  forensic/fail-soft. `active_speaker.setup_status` now projects a versioned
-  authority decision: passive/not-required and an explicitly applied manual
-  profile may enter Room, while an automatic applied snapshot without this
-  receipt remains incomplete. Room consumes that decision before session
-  reservation; it neither parses the receipt nor inspects historical B2b
-  evidence. The nine-state
+  Active's production flow now collects the required repeats from the retained
+  applied graph without another mutation, persists and reopens the receipt,
+  and transitions the exact run to `verified`. `active_speaker.setup_status`
+  exposes one explicit authority kind: `manual_applied_profile` for the manual
+  path or `automatic_commissioning_receipt` for this automatic path. Room
+  consumes that decision before session reservation; it neither parses the
+  receipt nor inspects historical B2b evidence. The nine-state
   lifecycle now has a separate durable, bundle-backed current-run store and a
   fail-closed `commissioning_run` projection on `/crossover/status`; startup
   claims its owner generation so stale callbacks cannot commit. No browser route
@@ -260,9 +257,7 @@
   integration now also compiles and applies the exact reviewed candidate under
   the existing DSP writer lock, persists fresh protected graph/path/volume
   readback proof, and either retains it as `applied_unverified` or restores the
-  exact predecessor before unlock. The remaining integration lane must still
-  add post-apply verification, receipt issuance/persistence, and the Room
-  consumer together before this becomes authority. No generic graph
+  exact predecessor before unlock. No generic graph
   transaction landed; exact rollback state reuses
   `audio_measurement.null_walk.DspPredecessor`. No hardware behavior was changed
   or revalidated by this slice.
@@ -2733,10 +2728,8 @@ summed evidence host, exact
 graph/capture/restore runtime, durable artifacts, and deterministic measured
 progression were also checked with synthetic admitted fixtures; Active's durable bundle-backed commissioning-run start,
 startup owner-generation claim, stale-callback refusal, and fail-closed
-crossover status were also checked; post-apply automatic verification/receipt
-authority remains unavailable. The versioned manual-applied Room decision is
-live and keeps that authority separate from automatic commissioning; no live
-crossover graph was changed in that pass. Wave 2 paid tuning backend extraction checked the
+crossover status, post-apply verification/receipt, and the Active-owned Room
+decision were also checked hardware-free; no live crossover graph was changed. Wave 2 paid tuning backend extraction checked the
 shared cross-route throttle, fresh household spend gate, exact provider
 arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP
 error translation without moving proposal acceptance or live apply. Acoustic-
@@ -2748,19 +2741,16 @@ callers and deterministic tone bytes. Room envelope v9
 section/action/blocker/failure/default ownership,
 six/flat/balanced/automatic-repeat policy, relay-first transport resolution,
 capture-only positioned relay specs, and pre-playback level-microphone checks;
-passive/solo-manual-applied readiness admission and `/start` defense, with
-grouped active scoped out and automatic entry still pending exact Active
-receipt authority,
+manual-applied and automatic verified-receipt readiness admission plus `/start`
+defense,
 typed Start/relay/tuning/session/apply failures, static-edge report discovery,
 local capture setup binding, and the
 deleted legacy/certificate surfaces checked hardware-free against
 `jasper.correction.envelope`, `jasper.correction.failures`,
 `MeasurementSession.bind_local_capture_setup`, `correction_setup._POST_ROUTES`,
 and `deploy/assets/correction/js/main.js`; real-device browser behavior remains
-pending. Wave 1 automatic eligibility-receipt shape and the fail-closed
-rejection of unversioned/automatic applied-snapshot authority were checked
-alongside the explicit manual-applied decision; no hardware behavior was
-revalidated in that pass. Full GET/POST route inventory rechecked against
+pending. Active eligibility-receipt production and Room consumption were
+checked hardware-free; no hardware behavior revalidated. Full GET/POST route inventory rechecked against
 `correction_setup._POST_ROUTES` and `Handler.do_GET`; durable crossover-volume
 recovery and route gating; per-driver fixed-reference-axis orchestration;
 geometry-scoped repeats/apply gate; summed fixed-axis placement and relay metadata

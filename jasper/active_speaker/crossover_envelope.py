@@ -1112,13 +1112,42 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         strict_isolated_complete
         and region_commissioning.get("status") == "applied_unverified"
     ):
+        verification = _mapping(region_commissioning.get("verification"))
+        next_target = _mapping(verification.get("next_target"))
+        captured = int(next_target.get("captured_repeats") or 0)
+        required = int(next_target.get("required_repeats") or 3)
         screen = "alignment"
         verdict = (
             "The reviewed crossover is applied and freshly read back. Keep the "
-            "microphone at the same fixed axis for combined-response verification."
+            "microphone at the same fixed axis for combined-response verification. "
+            f"{captured} of {required} verification captures are saved."
+        )
+        action = {
+            "id": "measure_post_apply_verification",
+            "label": f"Verify combined response — capture {captured + 1}",
+            "endpoint": "/correction/crossover/relay-capture",
+            "body": {"kind": "verification"},
+        }
+        active_step = "alignment"
+    elif (
+        strict_isolated_complete
+        and region_commissioning.get("status") == "verified"
+    ):
+        verification = _mapping(region_commissioning.get("verification"))
+        receipt = _mapping(verification.get("receipt"))
+        screen = "review"
+        verdict = (
+            "The applied crossover passed all fixed-axis combined-response "
+            "captures. Room correction is now available."
         )
         action = None
-        active_step = "alignment"
+        active_step = "apply"
+        if receipt.get("fingerprint"):
+            nudges.append({
+                "code": "active_commissioning_verified",
+                "severity": "ok",
+                "text": "Verified receipt: " + str(receipt["fingerprint"])[:12],
+            })
     elif (
         strict_isolated_complete
         and region_commissioning.get("status") == "restore_finalization_required"

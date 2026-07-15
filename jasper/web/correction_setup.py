@@ -5078,9 +5078,16 @@ def _handle_crossover_summed_commissioning_relay(
             f"another measurement is in progress ({blocking}) — finish it "
             "before measuring the combined crossover"
         )
+    verification = raw.get("kind") == "verification"
     expected = correction_crossover_backend.commissioning_region_status()
-    next_capture = expected.get("next_capture")
-    if expected.get("status") != "collecting" or not isinstance(
+    expected_verification = expected.get("verification")
+    next_capture = (
+        expected_verification.get("next_target")
+        if verification and isinstance(expected_verification, Mapping)
+        else expected.get("next_capture")
+    )
+    expected_status = "applied_unverified" if verification else "collecting"
+    if expected.get("status") != expected_status or not isinstance(
         next_capture, Mapping
     ):
         raise ValueError(
@@ -5094,7 +5101,11 @@ def _handle_crossover_summed_commissioning_relay(
         "owner_generation": expected.get("owner_generation"),
         "plan_fingerprint": expected.get("plan_fingerprint"),
     }
-    driver_label = "next server-selected crossover capture"
+    driver_label = (
+        "post-apply combined-response verification"
+        if verification
+        else "next server-selected crossover capture"
+    )
     acknowledgement_binding = secrets.token_urlsafe(24)
 
     def _open(
@@ -5141,7 +5152,17 @@ def _handle_crossover_summed_commissioning_relay(
                 "owner_generation": current.get("owner_generation"),
                 "plan_fingerprint": current.get("plan_fingerprint"),
             }
-            if current.get("status") != "collecting" or current_context != expected_context:
+            current_verification = current.get("verification")
+            current_next = (
+                current_verification.get("next_target")
+                if verification and isinstance(current_verification, Mapping)
+                else current.get("next_capture")
+            )
+            if (
+                current.get("status") != expected_status
+                or current_context != expected_context
+                or current_next != next_capture
+            ):
                 raise ValueError(
                     "the commissioning run or plan changed; create a new capture link"
                 )
@@ -5240,13 +5261,25 @@ def _handle_crossover_summed_commissioning_relay(
         from jasper.correction import coordinator
 
         async with coordinator.measurement_window():
-            recorded = await correction_crossover_backend.capture_next_commissioning_region(
-                _raw_transport,
-                camilla_factory=_camilla,
-            )
+            if verification:
+                recorded = (
+                    await correction_crossover_backend.capture_next_commissioning_verification(
+                        _raw_transport,
+                        camilla_factory=_camilla,
+                    )
+                )
+            else:
+                recorded = await correction_crossover_backend.capture_next_commissioning_region(
+                    _raw_transport,
+                    camilla_factory=_camilla,
+                )
         log_event(
             logger,
-            "correction.crossover_region_capture_recorded",
+            (
+                "correction.active_commissioning_verification_passed"
+                if verification and recorded.get("status") == "verified"
+                else "correction.crossover_region_capture_recorded"
+            ),
             run_id=expected_context["run_id"],
             plan_fingerprint=expected_context["plan_fingerprint"],
             group=recorded.get("speaker_group_id"),
@@ -5277,14 +5310,16 @@ def _handle_crossover_relay_capture(
 
     Driver requests retain the production isolated-driver path. Summed requests
     enter the strict Active-owned host, which chooses region, polarity, delay,
-    graph, attempt, and ordinal; the browser supplies recorder bytes only.
+    graph, attempt, and ordinal; post-apply verification reuses the summed
+    recorder path, and the browser supplies recorder bytes only.
 
     The third
     real caller of the RelayCaptureKind seam — a new kind is a descriptor, not a
     new orchestrator. The `crossover_sweep` spec + `correction_crossover_flow`'s
     relay run-and-consume own the stimulus + analysis; this bridges the relay
-    transport through the shared orchestrator. Body: `{kind: "driver"|"summed",
-    speaker_group_id, role (driver only), capture_geometry (server-envelope
+    transport through the shared orchestrator. Body:
+    `{kind: "driver"|"summed"|"verification", speaker_group_id, role (driver
+    only), capture_geometry (server-envelope
     driver action only)}`. ON-DEVICE: the acoustic capture is
     not exercised hardware-free (same status as the room/sync relay — H2).
 
@@ -5301,7 +5336,7 @@ def _handle_crossover_relay_capture(
     from . import correction_crossover_flow
 
     kind_id = correction_crossover_flow.relay_kind_from_raw(raw)
-    if kind_id == "summed":
+    if kind_id in {"summed", "verification"}:
         return _handle_crossover_summed_commissioning_relay(handler, raw)
 
     from jasper.capture_relay import correction_adapter
