@@ -566,6 +566,9 @@ async def test_applied_profile_change_keeps_preapply_plan_for_status_and_retry(
     status = harness.service.status()
     assert status["status"] == "apply_finalization_required"
     assert status["candidate"]["fingerprint"] == candidate.fingerprint
+    assert status["profile_context_id"] == harness.authority.comparison_set[
+        "profile_context_id"
+    ]
 
     current = harness.service._current()
     result = await apply_measured_candidate(
@@ -591,7 +594,11 @@ async def test_applied_profile_change_keeps_preapply_plan_for_status_and_retry(
 
     assert result["status"] == "applied_unverified"
     assert state["path"] == str(tmp_path / "candidate.yml")
-    assert harness.service.status()["status"] == "applied_unverified"
+    final_status = harness.service.status()
+    assert final_status["status"] == "applied_unverified"
+    assert final_status["profile_context_id"] == harness.authority.comparison_set[
+        "profile_context_id"
+    ]
 
 
 @pytest.mark.asyncio

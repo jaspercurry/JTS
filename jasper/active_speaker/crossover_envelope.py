@@ -278,7 +278,19 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     setup_ready = _setup_ready(status)
     setup_contract = _mapping(status.get("setup"))
     protected_profile = _mapping(setup_contract.get("protected_profile"))
-    profile_context_id = str(protected_profile.get("candidate_fingerprint") or "")
+    commissioning_run = _mapping(status.get("commissioning_run"))
+    protected_profile_context_id = str(
+        protected_profile.get("candidate_fingerprint") or ""
+    )
+    retained_profile_context_id = str(
+        commissioning_run.get("profile_context_id") or ""
+    )
+    profile_context_id = (
+        retained_profile_context_id
+        if commissioning_run.get("status") == "current"
+        and retained_profile_context_id
+        else protected_profile_context_id
+    )
     comparison_set_ready = bool(
         comparison_set_ready
         and profile_context_id
@@ -322,7 +334,6 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     automatic_candidate_fingerprint = str(
         automatic_candidate.get("candidate_fingerprint") or ""
     )
-    commissioning_run = _mapping(status.get("commissioning_run"))
     isolated_evidence = _mapping(commissioning_run.get("isolated_evidence"))
     strict_isolated_complete = bool(
         commissioning_run.get("status") == "current"

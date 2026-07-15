@@ -599,6 +599,9 @@ def test_new_owner_generation_reuses_only_same_program_isolated_evidence(
 
     assert status["status"] == "needs_geometry"
     assert status["owner_generation"] == claimed.owner_generation
+    assert status["profile_context_id"] == harness.authority.comparison_set[
+        "profile_context_id"
+    ]
     assert status["isolated_evidence_fingerprint"] == (
         harness.evidence_store.reopen_complete_isolated_driver_evidence(
             run_id=claimed.run_id

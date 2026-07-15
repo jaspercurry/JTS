@@ -1391,6 +1391,7 @@ def commissioning_run_status(
         "state_fingerprint": snapshot.get("fingerprint"),
     }
     if comparison_current:
+        result["profile_context_id"] = expected_profile_context_id
         try:
             from jasper.active_speaker.bundles import sessions_dir
             from jasper.active_speaker.commissioning_evidence_store import (
@@ -1674,12 +1675,25 @@ def status_payload() -> dict[str, Any]:
     comparison_set = (payload.get("measurements") or {}).get(
         "active_comparison_set"
     )
+    payload["region_commissioning"] = commissioning_region_status()
+    # A successful Active-owned region projection has already revalidated the
+    # durable comparison against the exact retained apply predecessor.  After
+    # apply, that is the evidence context; the newly installed profile is the
+    # verification subject, not a reason to stale the run that installed it.
+    region_context_id = str(
+        payload["region_commissioning"].get("profile_context_id") or ""
+    )
+    if (
+        isinstance(comparison_set, Mapping)
+        and region_context_id
+        and comparison_set.get("profile_context_id") == region_context_id
+    ):
+        current_context_id = region_context_id
     payload["commissioning_run"] = commissioning_run_status(
         comparison_set if isinstance(comparison_set, Mapping) else None,
         expected_topology_id=(payload.get("topology") or {}).get("topology_id"),
         expected_profile_context_id=current_context_id,
     )
-    payload["region_commissioning"] = commissioning_region_status()
     try:
         durable_repeats = repeat_admission.snapshot(
             comparison_set if isinstance(comparison_set, Mapping) else None

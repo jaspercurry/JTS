@@ -295,6 +295,7 @@ async function runAction(action, button) {
     setStatus(response && response.relay ? 'Phone capture is ready.' : 'Updated.', 'ok');
     await refresh();
   } catch (error) {
+    const failureMessage = error && error.message ? error.message : String(error);
     const issues = error && error.body && Array.isArray(error.body.issues)
       ? error.body.issues : [];
     const candidateChanged = error && error.status === 409 && issues.some(
@@ -302,18 +303,24 @@ async function runAction(action, button) {
     );
     if (candidateChanged) {
       setStatus('The crossover candidate changed. Refreshing the review…', 'bad');
-      try {
-        await refresh();
-        setStatus('Crossover review refreshed. Review the current candidate.', '');
-      } catch (refreshError) {
-        setStatus(
-          refreshError && refreshError.message
-            ? refreshError.message : String(refreshError),
-          'bad'
-        );
-      }
     } else {
-      setStatus(error && error.message ? error.message : String(error), 'bad');
+      setStatus(failureMessage, 'bad');
+    }
+    // A failed mutation may still have advanced durable authority: candidate
+    // apply can restore exactly or retain the graph pending finalization. Keep
+    // the failure visible, but always replace stale actions with the server's
+    // one current state.
+    try {
+      await refresh();
+      if (candidateChanged) {
+        setStatus('Crossover review refreshed. Review the current candidate.', '');
+      } else {
+        setStatus(failureMessage, 'bad');
+      }
+    } catch (refreshError) {
+      const refreshMessage = refreshError && refreshError.message
+        ? refreshError.message : String(refreshError);
+      setStatus(`${failureMessage} Latest state could not be refreshed: ${refreshMessage}`, 'bad');
     }
   } finally {
     busy = false;

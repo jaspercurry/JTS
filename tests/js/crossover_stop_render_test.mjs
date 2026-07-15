@@ -77,8 +77,12 @@ const terminalEnvelope = {
 };
 let nextEnvelope = terminalEnvelope;
 let postResponse = { relay: { status: "stopping" } };
+let postError = null;
 globalThis.__getJSON = async () => nextEnvelope;
-globalThis.__postJSON = async () => postResponse;
+globalThis.__postJSON = async () => {
+  if (postError) throw postError;
+  return postResponse;
+};
 
 const here = dirname(fileURLToPath(import.meta.url));
 let source = readFileSync(
@@ -167,4 +171,66 @@ assert.equal(
   "Restart driver and alignment measurements",
 );
 
-console.log(JSON.stringify({ ok: true, passed: 7 }));
+nextEnvelope = {
+  ...terminalEnvelope,
+  verdict_text: "The previous crossover was restored exactly.",
+  next_action: {
+    id: "retry_measured_candidate_apply",
+    label: "Retry reviewed crossover",
+    endpoint: "/correction/crossover/apply",
+    body: {},
+  },
+};
+postError = Object.assign(
+  new Error("Apply failed; the previous crossover was restored."),
+  { status: 409, body: { status: "rolled_back" } },
+);
+await runAction(
+  { endpoint: "/correction/crossover/apply", body: {} },
+  element("apply-candidate"),
+);
+assert.equal(
+  elements.get("crossover-verdict").textContent,
+  "The previous crossover was restored exactly.",
+);
+assert.equal(
+  elements.get("crossover-action").children[0].textContent,
+  "Retry reviewed crossover",
+);
+assert.equal(
+  elements.get("capture-status").textContent,
+  "Apply failed; the previous crossover was restored.",
+);
+
+nextEnvelope = {
+  ...terminalEnvelope,
+  verdict_text: "The graph is applied; finish its durable state.",
+  next_action: {
+    id: "finish_measured_candidate_apply",
+    label: "Finish apply",
+    endpoint: "/correction/crossover/apply",
+    body: {},
+  },
+};
+postError = Object.assign(
+  new Error("Candidate apply needs durable finalization."),
+  { status: 500, body: { code: "candidate_apply_finalization_required" } },
+);
+await runAction(
+  { endpoint: "/correction/crossover/apply", body: {} },
+  element("finish-candidate"),
+);
+assert.equal(
+  elements.get("crossover-verdict").textContent,
+  "The graph is applied; finish its durable state.",
+);
+assert.equal(
+  elements.get("crossover-action").children[0].textContent,
+  "Finish apply",
+);
+assert.equal(
+  elements.get("capture-status").textContent,
+  "Candidate apply needs durable finalization.",
+);
+
+console.log(JSON.stringify({ ok: true, passed: 13 }));

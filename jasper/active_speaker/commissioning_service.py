@@ -1235,6 +1235,14 @@ class CommissioningCaptureService:
             "run_id": self.run.run_id,
             "owner_generation": self.run.owner_generation,
             "lifecycle_state": lifecycle_state,
+            # ``_current`` has revalidated this comparison against either the
+            # current protected graph or the exact retained apply predecessor.
+            # Keep that pre-apply context visible after a reviewed candidate is
+            # installed so the outer status adapter does not stale the run by
+            # comparing its evidence with the newly applied profile.
+            "profile_context_id": current.authority.comparison_set.get(
+                "profile_context_id"
+            ),
             "plan_fingerprint": current.plan.fingerprint,
             "isolated_evidence_fingerprint": current.isolated.fingerprint,
             "geometry": geometry_rows,

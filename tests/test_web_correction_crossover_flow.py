@@ -1774,6 +1774,7 @@ def test_commissioning_run_status_is_current_only_for_exact_comparison(
     assert current == {
         "status": "current",
         "reason": None,
+        "profile_context_id": "protected-profile",
         "session_id": "session-1",
         "run_id": handle.run_id,
         "owner_generation": 1,
@@ -1913,6 +1914,7 @@ def test_crossover_module_is_a_thin_server_envelope_renderer():
     assert "env.alternate_actions" in source
     assert "baseline_candidate_fingerprint_mismatch" in source
     assert "candidateChanged" in source
+    assert "A failed mutation may still have advanced durable authority" in source
     assert "await refresh();" in source
 
 
@@ -1929,7 +1931,7 @@ def test_fast_terminal_stop_reenables_the_authoritative_next_action():
     )
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert result == {"ok": True, "passed": 7}
+    assert result == {"ok": True, "passed": 13}
 
 
 # --- passive-gating: Layer A hidden for a full-range passive speaker ----------
@@ -2132,6 +2134,89 @@ def _locked_level(status: dict) -> None:
         # listening volume between sweep windows.
         "last": {"ramp": {"state": "locked", "restored": True}},
     }
+
+
+def test_applied_candidate_keeps_exact_run_current_through_status_and_envelope(
+    monkeypatch, tmp_path
+):
+    from jasper.active_speaker import (
+        baseline_profile,
+        crossover_envelope,
+        repeat_admission,
+        setup_status,
+        web_commissioning,
+    )
+    from jasper.active_speaker.commissioning_run import CommissioningRunStore
+
+    comparison = _commissioning_comparison()
+    status = _envelope_status()
+    status["measurements"]["active_comparison_set"] = comparison
+    store = CommissioningRunStore(
+        path=tmp_path / "commissioning-run.json",
+        owner_id="1" * 32,
+    )
+    monkeypatch.setattr(backend, "_COMMISSIONING_RUN_STORE", store)
+    backend.begin_commissioning_run(comparison)
+    monkeypatch.setattr(
+        web_measurement,
+        "status_payload",
+        lambda: {
+            "ok": True,
+            "topology": status["topology"],
+            "targets": status["targets"],
+            "measurements": status["measurements"],
+        },
+    )
+    monkeypatch.setattr(web_commissioning, "commission_status_payload", lambda: {})
+    applied_setup = dict(status["setup"])
+    applied_setup["protected_profile"] = {
+        "status": "ready",
+        "candidate_fingerprint": "newly-applied-profile",
+    }
+    applied_setup["applied_crossover"] = {
+        "valid": True,
+        "owner": "automatic",
+        "reason": None,
+    }
+    monkeypatch.setattr(
+        setup_status, "read_active_speaker_setup_status", lambda: applied_setup
+    )
+    monkeypatch.setattr(
+        backend,
+        "commissioning_region_status",
+        lambda: {
+            "status": "applied_unverified",
+            "profile_context_id": comparison["profile_context_id"],
+        },
+    )
+    monkeypatch.setattr(repeat_admission, "snapshot", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        baseline_profile, "load_applied_baseline_profile_state", lambda: {}
+    )
+    monkeypatch.setattr(backend, "_LEVEL_LEASE", backend.CrossoverLevelLease())
+    run_status = backend.commissioning_run_status
+
+    def complete_isolated(*args, **kwargs):
+        result = run_status(*args, **kwargs)
+        result["isolated_evidence"] = {"status": "complete"}
+        return result
+
+    monkeypatch.setattr(backend, "commissioning_run_status", complete_isolated)
+
+    live = backend.status_payload()
+    envelope = crossover_envelope.build_crossover_envelope(live)
+
+    assert live["setup"]["protected_profile"]["candidate_fingerprint"] == (
+        "newly-applied-profile"
+    )
+    assert live["commissioning_run"]["status"] == "current"
+    assert live["commissioning_run"]["profile_context_id"] == comparison[
+        "profile_context_id"
+    ]
+    assert live["region_commissioning"]["status"] == "applied_unverified"
+    assert envelope["screen"] == "alignment"
+    assert envelope["next_action"] is None
+    assert "applied and freshly read back" in envelope["verdict_text"]
 
 
 def test_crossover_envelope_exposes_only_explicit_volume_recovery():
