@@ -5275,11 +5275,7 @@ def _handle_crossover_summed_commissioning_relay(
                 )
         log_event(
             logger,
-            (
-                "correction.active_commissioning_verification_passed"
-                if verification and recorded.get("status") == "verified"
-                else "correction.crossover_region_capture_recorded"
-            ),
+            "correction.crossover_region_capture_recorded",
             run_id=expected_context["run_id"],
             plan_fingerprint=expected_context["plan_fingerprint"],
             group=recorded.get("speaker_group_id"),

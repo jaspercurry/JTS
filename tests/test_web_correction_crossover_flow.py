@@ -7394,6 +7394,13 @@ async def test_commissioning_relay_is_recorder_only_for_the_server_owned_host(
 
     monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
 
+    events = []
+    monkeypatch.setattr(
+        correction_setup,
+        "log_event",
+        lambda _logger, event, **_fields: events.append(event),
+    )
+
     registered = {}
 
     def run_relay(kind, relay_base, *, return_url):
@@ -7474,6 +7481,7 @@ async def test_commissioning_relay_is_recorder_only_for_the_server_owned_host(
         assert raw.wav_bytes == b"real-recorder-wav"
         transport_metadata.update(raw.metadata)
         return {
+            "status": "verified" if relay_kind == "verification" else "collecting",
             "speaker_group_id": "mono",
             "region_id": "woofer-tweeter",
             "evidence_kind": "normal",
@@ -7496,6 +7504,7 @@ async def test_commissioning_relay_is_recorder_only_for_the_server_owned_host(
     assert transport_metadata["fixed_axis_acknowledgement"][
         "acknowledgement_binding"
     ] == spec.acknowledgement.binding_id
+    assert events == ["correction.crossover_region_capture_recorded"]
 
 
 def test_crossover_relay_route_is_registered():
