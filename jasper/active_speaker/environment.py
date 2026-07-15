@@ -19,6 +19,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+import yaml
+
 from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_VOLUME_LIMIT_DB,
@@ -238,17 +240,40 @@ def _forbidden_playback_token(playback_device: str | None) -> str | None:
 
 def _active_split_summary(text: str) -> dict[str, Any]:
     split = _ACTIVE_SPLIT_RE.search(text)
-    out: re.Match[str] | None = None
+    mixer_output_channels: int | None = None
     if split:
         # Generated active templates put the mixer channel declaration
         # immediately under the split mixer. Keep this precise enough that
         # some other mixer cannot satisfy the active-output count by accident.
         remaining = text[split.end() :]
         out = _ACTIVE_OUT_RE.search("\n".join(remaining.splitlines()[:20]))
+        if out:
+            mixer_output_channels = int(out.group("out"))
+        else:
+            try:
+                payload = yaml.safe_load(text)
+            except yaml.YAMLError:
+                payload = None
+            mixers = payload.get("mixers") if isinstance(payload, dict) else None
+            mixer = (
+                mixers.get(split.group(0)) if isinstance(mixers, dict) else None
+            )
+            channels = mixer.get("channels") if isinstance(mixer, dict) else None
+            input_channels = (
+                channels.get("in") if isinstance(channels, dict) else None
+            )
+            candidate = channels.get("out") if isinstance(channels, dict) else None
+            if (
+                type(input_channels) is int
+                and input_channels == 2
+                and type(candidate) is int
+                and candidate >= 0
+            ):
+                mixer_output_channels = candidate
     return {
         "present": bool(split),
         "way_count": int(split.group("way_count")) if split else None,
-        "mixer_output_channels": int(out.group("out")) if out else None,
+        "mixer_output_channels": mixer_output_channels,
     }
 
 

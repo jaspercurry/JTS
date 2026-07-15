@@ -158,6 +158,34 @@ def test_classify_active_config_blocks_playback_split_channel_mismatch() -> None
     }
 
 
+def test_classify_active_config_accepts_safe_dump_block_split_channels() -> None:
+    text = _active_config_text().replace(
+        "    channels: { in: 2, out: 4 }",
+        "    channels:\n      in: 2\n      out: 4",
+    )
+
+    active = classify_camilla_config_text(text)
+
+    assert active["active_split"]["mixer_output_channels"] == 4
+    assert "active_split_output_channels_missing" not in {
+        issue["code"] for issue in active["issues"]
+    }
+
+
+def test_classify_active_config_rejects_block_split_with_wrong_input_count() -> None:
+    text = _active_config_text().replace(
+        "    channels: { in: 2, out: 4 }",
+        "    channels:\n      in: 999\n      out: 4",
+    )
+
+    active = classify_camilla_config_text(text)
+
+    assert active["active_split"]["mixer_output_channels"] is None
+    assert "active_split_output_channels_missing" in {
+        issue["code"] for issue in active["issues"]
+    }
+
+
 def test_classify_active_config_blocks_missing_active_split() -> None:
     text = _active_config_text().split("mixers:", 1)[0]
 

@@ -135,7 +135,7 @@ def float_matches(value: Any, expected: float) -> bool:
     """True iff ``value`` parses to within 1e-4 of ``expected`` (fail-closed)."""
     try:
         return abs(float(value) - expected) < 0.0001
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return False
 
 
@@ -146,7 +146,7 @@ def float_value(value: Any) -> float | None:
     or unparseable value must fail the check rather than raise."""
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
 
 

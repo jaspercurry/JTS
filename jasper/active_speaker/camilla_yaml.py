@@ -420,6 +420,7 @@ def _bass_management_hp_name(role: str) -> str:
 # emitter's own call sites — and its emission behaviour — completely untouched.
 driver_mute_name = _driver_mute_name
 driver_limiter_name = _driver_limiter_name
+driver_delay_name = _driver_delay_name
 driver_baseline_gain_name = _driver_baseline_gain_name
 driver_baseline_limiter_name = _driver_baseline_limiter_name
 protective_tweeter_hp_name = _protective_tweeter_hp_name

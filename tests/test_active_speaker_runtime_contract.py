@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from pathlib import Path
 
@@ -310,6 +311,48 @@ def test_mono_active_2way_rejects_flat_and_allows_guarded_graphs() -> None:
     assert tweeter.allowed is True
 
 
+@pytest.mark.parametrize("channel", [0, 1], ids=["woofer", "tweeter"])
+def test_guarded_commissioning_rejects_post_mute_filter(channel: int) -> None:
+    base = _active_yaml("mono", 2, {channel})
+    payload = yaml.safe_load(base)
+    payload["filters"]["forged_post_mute_peq"] = {
+        "type": "Biquad",
+        "parameters": {
+            "type": "Peaking",
+            "freq": 100.0,
+            "q": 1.0,
+            "gain": 60.0,
+        },
+    }
+    payload["pipeline"].append({
+        "type": "Filter",
+        "channels": [channel],
+        "names": ["forged_post_mute_peq"],
+    })
+
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"),
+        text=_dump_baseline(base, payload),
+    )
+
+    assert graph.allowed is False
+    assert "active_commissioning_chain_unrecognized" in _baseline_codes(graph)
+
+
+def test_guarded_commissioning_rejects_second_active_split() -> None:
+    base = _active_yaml("mono", 2, {0})
+    payload = yaml.safe_load(base)
+    payload["pipeline"].append({"type": "Mixer", "name": "split_active_2way"})
+
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"),
+        text=_dump_baseline(base, payload),
+    )
+
+    assert graph.allowed is False
+    assert "active_graph_mixer_sequence_invalid" in _baseline_codes(graph)
+
+
 def test_mono_active_2way_allows_approved_baseline_runtime() -> None:
     topology = _active_topology("mono", "active_2_way")
 
@@ -348,6 +391,11 @@ def _classify_baseline(text: str):
         topology=_active_topology("mono", "active_2_way"),
         text=text,
     )
+
+
+def _dump_baseline(base: str, payload: dict) -> str:
+    source = next(line for line in base.splitlines() if line.startswith("# Source:"))
+    return f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
 
 
 def test_baseline_headroom_unwired_is_blocked() -> None:
@@ -405,6 +453,352 @@ def test_baseline_positive_driver_gain_is_blocked() -> None:
 
     assert graph.allowed is False
     assert "active_baseline_gain_positive" in _baseline_codes(graph)
+
+
+@pytest.mark.parametrize("gain", [60.0, float("nan")], ids=["positive", "nan"])
+def test_baseline_appended_unsafe_post_split_gain_is_blocked(gain: float) -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    payload["filters"]["forged_post_limiter_gain"] = {
+        "type": "Gain",
+        "parameters": {"gain": gain, "inverted": False, "mute": False},
+    }
+    payload["pipeline"].append(
+        {
+            "type": "Filter",
+            "channels": [0, 1],
+            "names": ["forged_post_limiter_gain"],
+        }
+    )
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_gain_positive" in _baseline_codes(graph)
+
+
+def test_baseline_appended_post_limiter_peq_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    payload["filters"]["forged_post_limiter_peq"] = {
+        "type": "Biquad",
+        "parameters": {
+            "type": "Peaking",
+            "freq": 2000.0,
+            "q": 1.0,
+            "gain": 60.0,
+        },
+    }
+    payload["pipeline"].append(
+        {
+            "type": "Filter",
+            "channels": [0, 1],
+            "names": ["forged_post_limiter_peq"],
+        }
+    )
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_post_limiter_filter_unsafe" in _baseline_codes(graph)
+
+
+def test_baseline_tweeter_boost_inserted_before_limiter_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    payload["filters"]["forged_tweeter_low_boost"] = {
+        "type": "Biquad",
+        "parameters": {
+            "type": "Peaking",
+            "freq": 100.0,
+            "q": 1.0,
+            "gain": 60.0,
+        },
+    }
+    tweeter_names = payload["pipeline"][3]["names"]
+    tweeter_names.insert(
+        tweeter_names.index("as_tweeter_baseline_limiter"),
+        "forged_tweeter_low_boost",
+    )
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_driver_chain_unrecognized" in _baseline_codes(graph)
+
+
+def test_baseline_canonical_delay_with_wrong_filter_type_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    payload["filters"]["as_tweeter_delay"] = {
+        "type": "Gain",
+        "parameters": {"gain": -3.0, "inverted": False, "mute": False},
+    }
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_driver_chain_unrecognized" in _baseline_codes(graph)
+
+
+def test_baseline_huge_integer_delay_is_blocked_without_raising() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    payload["filters"]["as_tweeter_delay"]["parameters"]["delay"] = 10**400
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_driver_chain_unrecognized" in _baseline_codes(graph)
+
+
+def test_baseline_non_string_chain_name_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    tweeter_names = payload["pipeline"][3]["names"]
+    tweeter_names.insert(
+        tweeter_names.index("as_tweeter_baseline_limiter"),
+        123,
+    )
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_driver_chain_unrecognized" in _baseline_codes(graph)
+
+
+@pytest.mark.parametrize("position", ["between", "after"])
+def test_baseline_second_active_split_mixer_is_blocked(position: str) -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    forged = {"type": "Mixer", "name": "split_active_2way"}
+    if position == "between":
+        payload["pipeline"].insert(3, forged)
+    else:
+        payload["pipeline"].append(forged)
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_graph_mixer_sequence_invalid" in _baseline_codes(graph)
+
+
+@pytest.mark.parametrize(
+    "filter_type,value",
+    [
+        ("Gain", False),
+        ("Gain", "0"),
+        ("Delay", False),
+        ("Delay", "0"),
+    ],
+    ids=["gain-bool", "gain-string", "delay-bool", "delay-string"],
+)
+def test_baseline_runtime_tail_requires_exact_numeric_type(
+    filter_type: str,
+    value: object,
+) -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    name = "as_commission_malformed_tail"
+    if filter_type == "Gain":
+        parameters = {"gain": value, "inverted": False, "mute": False}
+    else:
+        parameters = {"delay": value, "unit": "ms"}
+    payload["filters"][name] = {
+        "type": filter_type,
+        "parameters": parameters,
+    }
+    payload["pipeline"].append({
+        "type": "Filter",
+        "channels": [0],
+        "names": [name],
+    })
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_post_limiter_filter_unsafe" in _baseline_codes(graph)
+
+
+def test_baseline_limiter_moved_before_split_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    limiter = "as_woofer_baseline_limiter"
+    payload["pipeline"][2]["names"].remove(limiter)
+    payload["pipeline"].insert(
+        1,
+        {"type": "Filter", "channels": [0], "names": [limiter]},
+    )
+    payload["filters"]["forged_post_split_peq"] = {
+        "type": "Biquad",
+        "parameters": {
+            "type": "Peaking",
+            "freq": 2000.0,
+            "q": 1.0,
+            "gain": 60.0,
+        },
+    }
+    payload["pipeline"].append({
+        "type": "Filter",
+        "channels": [0],
+        "names": ["forged_post_split_peq"],
+    })
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_limiter_order_invalid" in _baseline_codes(graph)
+
+
+def test_baseline_duplicate_post_split_limiter_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    payload["pipeline"].append({
+        "type": "Filter",
+        "channels": [0],
+        "names": ["as_woofer_baseline_limiter"],
+    })
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_limiter_order_invalid" in _baseline_codes(graph)
+
+
+def test_baseline_stacked_post_split_delays_exceeding_ceiling_are_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    for index in (1, 2):
+        payload["filters"][f"as_commission_forged_delay_{index}"] = {
+            "type": "Delay",
+            "parameters": {"delay": 15.0, "unit": "ms"},
+        }
+    payload["pipeline"].append({
+        "type": "Filter",
+        "channels": [0],
+        "names": [
+            "as_commission_forged_delay_1",
+            "as_commission_forged_delay_2",
+        ],
+    })
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_delay_ceiling_exceeded" in _baseline_codes(graph)
+
+
+def test_baseline_delay_plus_runtime_tail_exceeding_ceiling_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    payload["filters"]["as_woofer_delay"]["parameters"]["delay"] = 10.0
+    payload["filters"]["as_commission_forged_delay"] = {
+        "type": "Delay",
+        "parameters": {"delay": 15.0, "unit": "ms"},
+    }
+    payload["pipeline"].append({
+        "type": "Filter",
+        "channels": [0],
+        "names": ["as_commission_forged_delay"],
+    })
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_delay_ceiling_exceeded" in _baseline_codes(graph)
+
+
+def test_baseline_oversize_delay_before_limiter_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    payload["filters"]["forged_pre_limiter_delay"] = {
+        "type": "Delay",
+        "parameters": {"delay": 30.0, "unit": "ms"},
+    }
+    payload["pipeline"][2]["names"].insert(0, "forged_pre_limiter_delay")
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_delay_ceiling_exceeded" in _baseline_codes(graph)
+
+
+def test_baseline_quoted_channel_cannot_evade_post_limiter_check() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    payload["filters"]["forged_post_limiter_peq"] = {
+        "type": "Biquad",
+        "parameters": {
+            "type": "Peaking",
+            "freq": 2000.0,
+            "q": 1.0,
+            "gain": 60.0,
+        },
+    }
+    payload["pipeline"].append({
+        "type": "Filter",
+        "channels": ["0"],
+        "names": ["forged_post_limiter_peq"],
+    })
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_post_limiter_filter_unsafe" in _baseline_codes(graph)
+
+
+def test_baseline_mismatched_crossover_pair_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    payload = yaml.safe_load(base)
+    payload["filters"]["as_tweeter_woofer_tweeter_hp"]["parameters"][
+        "freq"
+    ] = 1200.0
+
+    graph = _classify_baseline(_dump_baseline(base, payload))
+
+    assert graph.allowed is False
+    assert "active_output_crossover_pair_mismatch" in _baseline_codes(graph)
+
+
+def test_baseline_role_chain_must_remain_grouped() -> None:
+    base = _active_baseline_yaml("stereo", 2)
+    payload = yaml.safe_load(base)
+    woofer_step = payload["pipeline"][2]
+    assert woofer_step["channels"] == [0, 2]
+    woofer_step["channels"] = [0]
+    payload["pipeline"].insert(
+        3,
+        {
+            "type": "Filter",
+            "channels": [2],
+            "names": list(woofer_step["names"]),
+        },
+    )
+
+    graph = classify_camilla_graph(
+        topology=_active_topology("stereo", "active_2_way"),
+        text=_dump_baseline(base, payload),
+    )
+
+    assert graph.allowed is False
+    assert "active_output_driver_chain_not_grouped" in _baseline_codes(graph)
+
+
+@pytest.mark.parametrize(
+    "channels",
+    [["0", "2"], [0.9, 2.9], [0, 0]],
+    ids=["quoted", "fractional", "duplicate"],
+)
+def test_baseline_grouped_chain_requires_exact_integer_channels(channels) -> None:
+    base = _active_baseline_yaml("stereo", 2)
+    payload = yaml.safe_load(base)
+    payload["pipeline"][2]["channels"] = channels
+
+    graph = classify_camilla_graph(
+        topology=_active_topology("stereo", "active_2_way"),
+        text=_dump_baseline(base, payload),
+    )
+
+    assert graph.allowed is False
+    assert "active_output_driver_chain_not_grouped" in _baseline_codes(graph)
 
 
 def test_baseline_positive_limiter_clip_is_blocked() -> None:

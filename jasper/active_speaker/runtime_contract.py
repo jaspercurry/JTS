@@ -19,6 +19,7 @@ explicit statefile writer helper at the bottom.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,8 +27,10 @@ from typing import Any, Iterable
 
 import yaml
 
+from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.output_topology import (
     SUB_CROSSOVER_HZ_HI,
+    SUB_CROSSOVER_HZ_LO,
     OutputTopology,
     OutputTopologyError,
     SpeakerChannel,
@@ -46,6 +49,7 @@ from .graph_evidence import (
     channel_select_mixer_name as _channel_select_mixer_name,
     driver_baseline_gain_name as _baseline_gain_name,
     driver_baseline_limiter_name as _baseline_limiter_name,
+    driver_delay_name as _driver_delay_name,
     driver_limiter_name,
     filter_params as _filter_params,
     filter_type as _filter_type,
@@ -57,6 +61,7 @@ from .graph_evidence import (
     sub_startup_limiter_name as _sub_startup_limiter_name,
 )
 from .graph_safety import (
+    TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     GraphView,
     bass_management_corner_matched,
     filter_param_matches,
@@ -80,6 +85,11 @@ from .path_safety import (
     staged_target_signature,
     target_assignment_signature,
     topology_target_signature,
+)
+from .profile import (
+    ADJACENT_PAIRS_BY_WAY,
+    SUB_CROSSOVER_ORDER,
+    SUPPORTED_LR_ORDERS,
 )
 from .staging import load_staged_startup_config
 
@@ -751,6 +761,72 @@ def _driver_domain_pair_trim_between_select_and_split(
     return select_idx < trim_idx < min(split_idxs)
 
 
+def _filter_step_channels(step: dict[str, Any]) -> set[int] | None:
+    raw_channels = step.get("channels")
+    if not isinstance(raw_channels, list) or any(
+        isinstance(value, bool) for value in raw_channels
+    ):
+        return None
+    try:
+        return {int(value) for value in raw_channels}
+    except (TypeError, ValueError):
+        return None
+
+
+def _exact_filter_step_channels(
+    step: dict[str, Any], expected: set[int]
+) -> bool:
+    raw_channels = step.get("channels")
+    return (
+        isinstance(raw_channels, list)
+        and len(raw_channels) == len(expected)
+        and all(type(value) is int for value in raw_channels)
+        and set(raw_channels) == expected
+    )
+
+
+def _strict_finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _post_split_filter_names(
+    payload: dict[str, Any],
+    *,
+    channel: int,
+) -> tuple[str, ...]:
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return ()
+    split_seen = False
+    out: list[str] = []
+    for raw_step in pipeline:
+        step = raw_step if isinstance(raw_step, dict) else {}
+        if step.get("type") == "Mixer":
+            name = step.get("name")
+            if isinstance(name, str) and name.startswith(ACTIVE_SPLIT_MIXER_PREFIX):
+                split_seen = True
+            continue
+        if not split_seen or step.get("type") != "Filter":
+            continue
+        step_channels = _filter_step_channels(step)
+        if step_channels is None or channel not in step_channels:
+            continue
+        raw_names = step.get("names")
+        if not isinstance(raw_names, list):
+            continue
+        out.extend(
+            name if isinstance(name, str) else "<invalid-filter-name>"
+            for name in raw_names
+        )
+    return tuple(out)
+
+
 def _pipeline_names_for_channels(
     payload: dict[str, Any],
     *,
@@ -764,12 +840,8 @@ def _pipeline_names_for_channels(
         step = raw_step if isinstance(raw_step, dict) else {}
         if step.get("type") != "Filter":
             continue
-        raw_channels = step.get("channels")
-        if not isinstance(raw_channels, list):
-            continue
-        try:
-            step_channels = {int(channel) for channel in raw_channels}
-        except (TypeError, ValueError):
+        step_channels = _filter_step_channels(step)
+        if step_channels is None:
             continue
         # A Camilla filter step may intentionally apply one role's baseline
         # chain to multiple outputs at once, for example both stereo woofers.
@@ -779,6 +851,482 @@ def _pipeline_names_for_channels(
             continue
         out.extend(str(name) for name in step.get("names", []) if name is not None)
     return tuple(out)
+
+
+def _unsafe_post_split_gains(payload: dict[str, Any]) -> tuple[str, ...]:
+    """Gain filters after the active split must remain non-positive.
+
+    Program-domain preference EQ can legitimately boost before the split because
+    every driver limiter remains downstream. After the split, an added positive
+    Gain could sit behind that limiter and defeat the active-output ceiling.
+    """
+
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return ()
+    split_seen = False
+    unsafe: set[str] = set()
+    for raw_step in pipeline:
+        step = raw_step if isinstance(raw_step, dict) else {}
+        if step.get("type") == "Mixer":
+            name = step.get("name")
+            if isinstance(name, str) and name.startswith(ACTIVE_SPLIT_MIXER_PREFIX):
+                split_seen = True
+            continue
+        if not split_seen or step.get("type") != "Filter":
+            continue
+        names = step.get("names")
+        if not isinstance(names, list):
+            continue
+        for name in names:
+            if not isinstance(name, str) or _filter_type(payload, name) != "Gain":
+                continue
+            gain = _strict_finite_number(_filter_params(payload, name).get("gain"))
+            if gain is None or gain > 0.0:
+                unsafe.add(name)
+    return tuple(sorted(unsafe))
+
+
+def _safe_commissioning_tail_filter(payload: dict[str, Any], name: str) -> bool:
+    if not name.startswith("as_commission_"):
+        return False
+    filter_type = _filter_type(payload, name)
+    params = _filter_params(payload, name)
+    if filter_type == "Delay":
+        delay_ms = _strict_finite_number(params.get("delay"))
+        return (
+            params.get("unit") == "ms"
+            and delay_ms is not None
+            and 0.0 <= delay_ms <= MAX_DSP_DELAY_US / 1000.0
+        )
+    if filter_type == "Gain":
+        gain = _strict_finite_number(params.get("gain"))
+        return (
+            gain is not None
+            and gain <= 0.0
+            and type(params.get("inverted")) is bool
+            and type(params.get("mute")) is bool
+        )
+    return False
+
+
+def _post_limiter_tail_evidence(
+    payload: dict[str, Any],
+    *,
+    channel: int,
+    limiter_name: str,
+) -> tuple[int, tuple[str, ...]]:
+    """Count the post-split limiter and reject transforms placed behind it."""
+
+    names = _post_split_filter_names(payload, channel=channel)
+    limiter_count = names.count(limiter_name)
+    unsafe: set[str] = set()
+    if limiter_count:
+        start = names.index(limiter_name) + 1
+        for name in names[start:]:
+            if name != limiter_name and not _safe_commissioning_tail_filter(
+                payload, name
+            ):
+                unsafe.add(name)
+    return limiter_count, tuple(sorted(unsafe))
+
+
+def _post_split_delay_evidence(
+    payload: dict[str, Any],
+    *,
+    channel: int,
+) -> tuple[float, tuple[str, ...]]:
+    """Return cumulative physical delay and malformed lanes for one output."""
+
+    total_ms = 0.0
+    invalid: set[str] = set()
+    for name in _post_split_filter_names(payload, channel=channel):
+        if _filter_type(payload, name) != "Delay":
+            continue
+        params = _filter_params(payload, name)
+        delay_ms = _strict_finite_number(params.get("delay"))
+        if (
+            params.get("unit") != "ms"
+            or delay_ms is None
+            or delay_ms < 0.0
+        ):
+            invalid.add(name)
+            continue
+        total_ms += delay_ms
+    return total_ms, tuple(sorted(invalid))
+
+
+_WAY_COUNT_BY_MAIN_MODE = {
+    "full_range_passive": 1,
+    "active_2_way": 2,
+    "active_3_way": 3,
+}
+
+
+def _crossover_directions(assignment: OutputAssignment) -> tuple[str, ...] | None:
+    way_count = _WAY_COUNT_BY_MAIN_MODE.get(assignment.speaker_mode)
+    if way_count is None:
+        return None
+    directions: list[str] = []
+    for lower_role, upper_role in ADJACENT_PAIRS_BY_WAY[way_count]:
+        if assignment.role == lower_role:
+            directions.append("lowpass")
+        if assignment.role == upper_role:
+            directions.append("highpass")
+    return tuple(directions) or None
+
+
+def _crossover_filter_safe(
+    payload: dict[str, Any],
+    *,
+    name: str,
+    role: str,
+    direction: str,
+) -> bool:
+    suffix = "lp" if direction == "lowpass" else "hp"
+    params = _filter_params(payload, name)
+    order = params.get("order")
+    frequency = _strict_finite_number(params.get("freq"))
+    minimum_frequency = (
+        TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ
+        if role == "tweeter" and direction == "highpass"
+        else 0.0
+    )
+    return (
+        name.startswith(f"as_{role}_")
+        and name.endswith(f"_{suffix}")
+        and _filter_type(payload, name) == "BiquadCombo"
+        and params.get("type") == f"LinkwitzRiley{direction.title()}"
+        and frequency is not None
+        and frequency > 0.0
+        and frequency >= minimum_frequency
+        and not isinstance(order, bool)
+        and isinstance(order, int)
+        and order in SUPPORTED_LR_ORDERS
+    )
+
+
+def _bass_management_filter_safe(
+    payload: dict[str, Any],
+    *,
+    name: str,
+    direction: str,
+) -> bool:
+    params = _filter_params(payload, name)
+    return (
+        _filter_type(payload, name) == "BiquadCombo"
+        and params.get("type") == f"LinkwitzRiley{direction.title()}"
+        and SUB_CROSSOVER_HZ_LO
+        <= (_strict_finite_number(params.get("freq")) or 0.0)
+        <= SUB_CROSSOVER_HZ_HI
+        and params.get("order") == SUB_CROSSOVER_ORDER
+    )
+
+
+def _baseline_gain_limiter_safe(
+    payload: dict[str, Any],
+    *,
+    gain_name: str,
+    limiter_name: str,
+) -> bool:
+    gain_params = _filter_params(payload, gain_name)
+    gain = _strict_finite_number(gain_params.get("gain"))
+    limiter_params = _filter_params(payload, limiter_name)
+    clip_limit = _strict_finite_number(limiter_params.get("clip_limit"))
+    return (
+        _filter_type(payload, gain_name) == "Gain"
+        and gain is not None
+        and gain <= 0.0
+        and type(gain_params.get("inverted")) is bool
+        and gain_params.get("mute") is False
+        and _filter_type(payload, limiter_name) == "Limiter"
+        and clip_limit is not None
+        and clip_limit <= 0.0
+        and limiter_params.get("soft_clip") is True
+    )
+
+
+def _baseline_output_chain(
+    payload: dict[str, Any],
+    *,
+    assignment: OutputAssignment,
+    channel: int,
+    bass_management_highpass: bool,
+) -> tuple[tuple[str, str], ...] | None:
+    """Prove the exact emitter-owned chain before the canonical limiter."""
+
+    names = _post_split_filter_names(payload, channel=channel)
+    if assignment.role == "subwoofer":
+        expected = (
+            _sub_lowpass_name(),
+            _sub_baseline_gain_name(),
+            _sub_baseline_limiter_name(),
+        )
+        return (
+            ()
+            if (
+                names[: len(expected)] == expected
+                and _bass_management_filter_safe(
+                    payload,
+                    name=_sub_lowpass_name(),
+                    direction="lowpass",
+                )
+                and _baseline_gain_limiter_safe(
+                    payload,
+                    gain_name=_sub_baseline_gain_name(),
+                    limiter_name=_sub_baseline_limiter_name(),
+                )
+            )
+            else None
+        )
+
+    limiter_name = _baseline_limiter_name(assignment.role)
+    if names.count(limiter_name) != 1:
+        return None
+    limiter_index = names.index(limiter_name)
+    chain = names[: limiter_index + 1]
+    cursor = 0
+    if bass_management_highpass:
+        bass_name = _bass_management_hp_name(assignment.role)
+        if (
+            not chain
+            or chain[0] != bass_name
+            or not _bass_management_filter_safe(
+                payload,
+                name=bass_name,
+                direction="highpass",
+            )
+        ):
+            return None
+        cursor += 1
+    directions = _crossover_directions(assignment)
+    if directions is None:
+        return None
+    crossovers: list[tuple[str, str]] = []
+    for direction in directions:
+        if cursor >= len(chain):
+            return None
+        name = chain[cursor]
+        if not _crossover_filter_safe(
+            payload,
+            name=name,
+            role=assignment.role,
+            direction=direction,
+        ):
+            return None
+        crossovers.append((direction, name))
+        cursor += 1
+    expected_tail = (
+        _driver_delay_name(assignment.role),
+        _baseline_gain_name(assignment.role),
+        limiter_name,
+    )
+    delay_params = _filter_params(payload, expected_tail[0])
+    delay_ms = _strict_finite_number(delay_params.get("delay"))
+    if (
+        chain[cursor:] != expected_tail
+        or _filter_type(payload, expected_tail[0]) != "Delay"
+        or delay_params.get("unit") != "ms"
+        or delay_ms is None
+        or not 0.0 <= delay_ms <= MAX_DSP_DELAY_US / 1000.0
+        or not _baseline_gain_limiter_safe(
+            payload,
+            gain_name=expected_tail[1],
+            limiter_name=limiter_name,
+        )
+    ):
+        return None
+    return tuple(crossovers)
+
+
+def _commissioning_output_chain(
+    payload: dict[str, Any],
+    *,
+    assignment: OutputAssignment,
+    channel: int,
+    bass_management_highpass: bool,
+) -> tuple[tuple[str, str], ...] | None:
+    """Prove one exact commissioning chain through its per-output mute."""
+
+    names = _post_split_filter_names(payload, channel=channel)
+    mute_name = _commission_mute_name(channel)
+    mute_params = _filter_params(payload, mute_name)
+    mute_gain = _strict_finite_number(mute_params.get("gain"))
+    mute_safe = (
+        _filter_type(payload, mute_name) == "Gain"
+        and mute_gain is not None
+        and mute_gain <= 0.0
+        and type(mute_params.get("inverted")) is bool
+        and type(mute_params.get("mute")) is bool
+    )
+    if assignment.role == "subwoofer":
+        limiter_name = _sub_startup_limiter_name()
+        expected = (_sub_lowpass_name(), limiter_name, mute_name)
+        limiter = _filter_params(payload, limiter_name)
+        clip_limit = _strict_finite_number(limiter.get("clip_limit"))
+        return (
+            ()
+            if (
+                names == expected
+                and mute_safe
+                and _bass_management_filter_safe(
+                    payload,
+                    name=_sub_lowpass_name(),
+                    direction="lowpass",
+                )
+                and _filter_type(payload, limiter_name) == "Limiter"
+                and clip_limit is not None
+                and clip_limit <= 0.0
+                and limiter.get("soft_clip") is True
+            )
+            else None
+        )
+
+    cursor = 0
+    if bass_management_highpass:
+        bass_name = _bass_management_hp_name(assignment.role)
+        if (
+            not names
+            or names[0] != bass_name
+            or not _bass_management_filter_safe(
+                payload,
+                name=bass_name,
+                direction="highpass",
+            )
+        ):
+            return None
+        cursor += 1
+    protective_name = protective_tweeter_hp_name(assignment.role)
+    if cursor < len(names) and names[cursor] == protective_name:
+        protective = _filter_params(payload, protective_name)
+        protective_order = protective.get("order")
+        if not (
+            _filter_type(payload, protective_name) == "BiquadCombo"
+            and protective.get("type") == "LinkwitzRileyHighpass"
+            and (
+                _strict_finite_number(protective.get("freq")) or 0.0
+            ) >= TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ
+            and not isinstance(protective_order, bool)
+            and isinstance(protective_order, int)
+            and protective_order in SUPPORTED_LR_ORDERS
+        ):
+            return None
+        cursor += 1
+    directions = _crossover_directions(assignment)
+    if directions is None:
+        return None
+    crossovers: list[tuple[str, str]] = []
+    for direction in directions:
+        if cursor >= len(names):
+            return None
+        name = names[cursor]
+        if not _crossover_filter_safe(
+            payload,
+            name=name,
+            role=assignment.role,
+            direction=direction,
+        ):
+            return None
+        crossovers.append((direction, name))
+        cursor += 1
+    delay_name = _driver_delay_name(assignment.role)
+    limiter_name = driver_limiter_name(assignment.role)
+    expected_tail = (delay_name, limiter_name, mute_name)
+    delay = _filter_params(payload, delay_name)
+    delay_ms = _strict_finite_number(delay.get("delay"))
+    limiter = _filter_params(payload, limiter_name)
+    clip_limit = _strict_finite_number(limiter.get("clip_limit"))
+    if (
+        names[cursor:] != expected_tail
+        or not mute_safe
+        or _filter_type(payload, delay_name) != "Delay"
+        or delay.get("unit") != "ms"
+        or delay_ms is None
+        or not 0.0 <= delay_ms <= MAX_DSP_DELAY_US / 1000.0
+        or _filter_type(payload, limiter_name) != "Limiter"
+        or clip_limit is None
+        or clip_limit > 0.0
+        or limiter.get("soft_clip") is not True
+    ):
+        return None
+    return tuple(crossovers)
+
+
+def _canonical_chain_grouped(
+    payload: dict[str, Any],
+    *,
+    expected_channels: set[int],
+    expected_names: tuple[str, ...],
+) -> bool:
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return False
+    split_seen = False
+    matches = 0
+    for raw_step in pipeline:
+        step = raw_step if isinstance(raw_step, dict) else {}
+        if step.get("type") == "Mixer":
+            name = step.get("name")
+            if isinstance(name, str) and name.startswith(ACTIVE_SPLIT_MIXER_PREFIX):
+                split_seen = True
+            continue
+        if not split_seen or step.get("type") != "Filter":
+            continue
+        raw_names = step.get("names")
+        if not isinstance(raw_names, list):
+            continue
+        names = tuple(name for name in raw_names if isinstance(name, str))
+        if (
+            _exact_filter_step_channels(step, expected_channels)
+            and names == expected_names
+        ):
+            matches += 1
+    return matches == 1
+
+
+def _crossover_pair_matches(
+    payload: dict[str, Any], lower_name: str, upper_name: str
+) -> bool:
+    lower = _filter_params(payload, lower_name)
+    upper = _filter_params(payload, upper_name)
+    return (
+        _strict_finite_number(lower.get("freq"))
+        == _strict_finite_number(upper.get("freq"))
+        and lower.get("order") == upper.get("order")
+    )
+
+
+def _mismatched_crossover_pairs(
+    payload: dict[str, Any],
+    crossovers_by_role: dict[str, tuple[tuple[str, str], ...]],
+    way_counts: set[int],
+) -> tuple[tuple[str, str], ...]:
+    mismatched: list[tuple[str, str]] = []
+    for way_count in sorted(way_counts):
+        for lower_role, upper_role in ADJACENT_PAIRS_BY_WAY.get(way_count, ()):
+            lower_name = next(
+                (
+                    name
+                    for direction, name in crossovers_by_role.get(lower_role, ())
+                    if direction == "lowpass"
+                ),
+                None,
+            )
+            upper_name = next(
+                (
+                    name
+                    for direction, name in crossovers_by_role.get(upper_role, ())
+                    if direction == "highpass"
+                ),
+                None,
+            )
+            if (
+                lower_name is None
+                or upper_name is None
+                or not _crossover_pair_matches(payload, lower_name, upper_name)
+            ):
+                mismatched.append((lower_role, upper_role))
+    return tuple(mismatched)
 
 
 def _driver_domain_pair_trim_safe(
@@ -934,6 +1482,16 @@ def _active_graph_evidence(
                 f"saved roleful topology requires {required_count}"
             ),
         ))
+    unsafe_output_gains = _unsafe_post_split_gains(payload)
+    if unsafe_output_gains:
+        issues.append(_issue(
+            "blocker",
+            "active_output_gain_positive",
+            (
+                "active graph has a positive or malformed Gain after the driver "
+                "split: " + ", ".join(unsafe_output_gains)
+            ),
+        ))
 
     mutes = _commission_mute_states(view)
     graph_indexes = (
@@ -995,6 +1553,31 @@ def _active_graph_evidence(
     # limiter / tweeter-HP checks below are identical. They differ only in the
     # pre-split prefix, branched inside the `is_baseline_like` block.
     is_baseline_like = is_baseline or is_driver_domain
+    mixer_names = _pipeline_mixer_names(payload)
+    active_way_counts = {
+        way_count
+        for item in contract.assignments
+        if (way_count := _WAY_COUNT_BY_MAIN_MODE.get(item.speaker_mode)) is not None
+    }
+    expected_split = (
+        f"split_active_{next(iter(active_way_counts))}way"
+        if len(active_way_counts) == 1
+        else None
+    )
+    expected_mixers = (
+        (_channel_select_mixer_name, expected_split)
+        if is_driver_domain and expected_split is not None
+        else ((expected_split,) if expected_split is not None else ())
+    )
+    if tuple(mixer_names) != expected_mixers:
+        issues.append(_issue(
+            "blocker",
+            "active_graph_mixer_sequence_invalid",
+            (
+                "active graph must retain the exact emitter mixer sequence with "
+                "one active split and no post-split mixer"
+            ),
+        ))
     unmuted_outputs = (
         set(graph_indexes)
         if is_baseline_like
@@ -1105,6 +1688,83 @@ def _active_graph_evidence(
                     ),
                 ))
 
+    if not is_baseline_like:
+        commissioning_crossovers: dict[str, tuple[tuple[str, str], ...]] = {}
+        for index in sorted(required_indexes):
+            assignment = by_output.get(index)
+            if assignment is None:
+                continue
+            role = assignment.role
+            crossovers = _commissioning_output_chain(
+                payload,
+                assignment=assignment,
+                channel=index,
+                bass_management_highpass=(
+                    contract.subwoofer_present and index in mains_low_outputs
+                ),
+            )
+            if crossovers is None:
+                issues.append(_issue(
+                    "blocker",
+                    "active_commissioning_chain_unrecognized",
+                    (
+                        "active graph does not use the exact ordered commissioning "
+                        f"chain through its mute on DAC output {index + 1} ({role})"
+                    ),
+                ))
+                continue
+            prior = commissioning_crossovers.setdefault(role, crossovers)
+            if prior != crossovers:
+                issues.append(_issue(
+                    "blocker",
+                    "active_commissioning_chain_unrecognized",
+                    f"active graph uses inconsistent {role} commissioning chains",
+                ))
+            role_channels = {
+                output for output, item in by_output.items() if item.role == role
+            }
+            post_split_names = _post_split_filter_names(payload, channel=index)
+            role_chain_names = post_split_names[:-1]
+            if index == min(role_channels) and not _canonical_chain_grouped(
+                payload,
+                expected_channels=role_channels,
+                expected_names=role_chain_names,
+            ):
+                issues.append(_issue(
+                    "blocker",
+                    "active_commissioning_chain_not_grouped",
+                    (
+                        f"active graph must wire one exact grouped {role} "
+                        "commissioning chain across its current outputs"
+                    ),
+                ))
+            if not _canonical_chain_grouped(
+                payload,
+                expected_channels={index},
+                expected_names=(_commission_mute_name(index),),
+            ):
+                issues.append(_issue(
+                    "blocker",
+                    "active_commissioning_mute_step_invalid",
+                    (
+                        "active graph must end each physical output with one exact "
+                        f"commission mute step on DAC output {index + 1}"
+                    ),
+                ))
+        for lower_role, upper_role in _mismatched_crossover_pairs(
+            payload,
+            commissioning_crossovers,
+            active_way_counts,
+        ):
+            issues.append(_issue(
+                "blocker",
+                "active_commissioning_crossover_pair_mismatch",
+                (
+                    f"active graph {lower_role}/{upper_role} commissioning "
+                    "crossovers must share one finite corner and LR order"
+                ),
+            ))
+
     if is_baseline_like:
         if is_baseline:
             # Program-domain prefix: the shared headroom gain rides channels
@@ -1136,7 +1796,6 @@ def _active_graph_evidence(
             # leaked in (its presence would mean an un-relocated Layer B/C on
             # the follower). channel-select is a Mixer step, read from the
             # parsed pipeline order rather than the Filter-only GraphView.
-            mixer_names = _pipeline_mixer_names(payload)
             if _channel_select_mixer_name not in mixer_names:
                 issues.append(_issue(
                     "blocker",
@@ -1247,10 +1906,18 @@ def _active_graph_evidence(
                     ),
                     "full_range",
                 )
-                if not mains_highpass_present(
-                    view,
-                    channels=mains_low_outputs,
-                    highpass_name=_bass_management_hp_name(low_role),
+                bass_highpass_name = _bass_management_hp_name(low_role)
+                if (
+                    not mains_highpass_present(
+                        view,
+                        channels=mains_low_outputs,
+                        highpass_name=bass_highpass_name,
+                    )
+                    or not _bass_management_filter_safe(
+                        payload,
+                        name=bass_highpass_name,
+                        direction="highpass",
+                    )
                 ):
                     issues.append(_issue(
                         "blocker",
@@ -1284,17 +1951,117 @@ def _active_graph_evidence(
                             "one crossover (the crossover Fc has been split)"
                         ),
                     ))
+        crossovers_by_role: dict[str, tuple[tuple[str, str], ...]] = {}
         for index in sorted(required_indexes):
             assignment = by_output.get(index)
             if assignment is None:
                 continue
             role = assignment.role
             # The sub output's protection is proven by sub_guard_present above
-            # (its gain/limiter names are sub-specific, not role-derived), so skip
-            # the role-derived per-driver chain check here.
+            # (its gain/limiter names are sub-specific, not role-derived). Its
+            # post-limiter tail still needs the same fail-closed check as a main.
+            limiter_name = (
+                _sub_baseline_limiter_name()
+                if role == "subwoofer"
+                else _baseline_limiter_name(role)
+            )
+            crossovers = _baseline_output_chain(
+                payload,
+                assignment=assignment,
+                channel=index,
+                bass_management_highpass=(
+                    contract.subwoofer_present and index in mains_low_outputs
+                ),
+            )
+            if crossovers is None:
+                issues.append(_issue(
+                    "blocker",
+                    "active_output_driver_chain_unrecognized",
+                    (
+                        "active graph does not use the exact ordered emitter "
+                        f"chain on DAC output {index + 1} ({role})"
+                    ),
+                ))
+            else:
+                prior = crossovers_by_role.setdefault(role, crossovers)
+                if prior != crossovers:
+                    issues.append(_issue(
+                        "blocker",
+                        "active_output_driver_chain_unrecognized",
+                        f"active graph uses inconsistent {role} crossover chains",
+                    ))
+                role_channels = {
+                    output
+                    for output, item in by_output.items()
+                    if item.role == role
+                }
+                post_split_names = _post_split_filter_names(payload, channel=index)
+                limiter_index = post_split_names.index(limiter_name)
+                expected_names = post_split_names[: limiter_index + 1]
+                if index == min(role_channels) and not _canonical_chain_grouped(
+                    payload,
+                    expected_channels=role_channels,
+                    expected_names=expected_names,
+                ):
+                    issues.append(_issue(
+                        "blocker",
+                        "active_output_driver_chain_not_grouped",
+                        (
+                            f"active graph must wire one exact grouped {role} "
+                            "driver chain across its current outputs"
+                        ),
+                    ))
+            limiter_count, unsafe_tail = _post_limiter_tail_evidence(
+                payload,
+                channel=index,
+                limiter_name=limiter_name,
+            )
+            if limiter_count != 1:
+                issues.append(_issue(
+                    "blocker",
+                    "active_output_limiter_order_invalid",
+                    (
+                        "active graph must wire exactly one canonical limiter "
+                        f"after the active split on DAC output {index + 1}; "
+                        f"found {limiter_count}"
+                    ),
+                ))
+            if unsafe_tail:
+                issues.append(_issue(
+                    "blocker",
+                    "active_output_post_limiter_filter_unsafe",
+                    (
+                        "active graph has an unapproved filter after the canonical "
+                        f"limiter on DAC output {index + 1}: "
+                        + ", ".join(unsafe_tail)
+                    ),
+                ))
+            total_delay_ms, invalid_delays = _post_split_delay_evidence(
+                payload,
+                channel=index,
+            )
+            if invalid_delays:
+                issues.append(_issue(
+                    "blocker",
+                    "active_output_delay_invalid",
+                    (
+                        "active graph has a malformed post-split delay on DAC "
+                        f"output {index + 1}: " + ", ".join(invalid_delays)
+                    ),
+                ))
+            maximum_delay_ms = MAX_DSP_DELAY_US / 1000.0
+            if total_delay_ms > maximum_delay_ms:
+                issues.append(_issue(
+                    "blocker",
+                    "active_output_delay_ceiling_exceeded",
+                    (
+                        "active graph cumulative post-split delay exceeds the "
+                        f"{maximum_delay_ms:g} ms ceiling on DAC output "
+                        f"{index + 1}: {total_delay_ms:g} ms"
+                    ),
+                ))
             if role == "subwoofer":
                 continue
-            limiter_name = _baseline_limiter_name(role)
             gain_name = _baseline_gain_name(role)
             names = _pipeline_names_for_channels(payload, channels={index})
             if limiter_name not in names or gain_name not in names:
@@ -1311,6 +2078,7 @@ def _active_graph_evidence(
             if (
                 _filter_type(payload, limiter_name) != "Limiter"
                 or limiter_clip is None
+                or not math.isfinite(limiter_clip)
                 or limiter_clip > 0.0
                 or not _truthy_bool(limiter_params.get("soft_clip"))
             ):
@@ -1323,7 +2091,7 @@ def _active_graph_evidence(
                     ),
                 ))
             gain = _float_value(_filter_params(payload, gain_name).get("gain"))
-            if gain is None or gain > 0.0:
+            if gain is None or not math.isfinite(gain) or gain > 0.0:
                 issues.append(_issue(
                     "blocker",
                     "active_baseline_gain_positive",
@@ -1350,6 +2118,19 @@ def _active_graph_evidence(
                             f"wired high-pass filter on DAC output {index + 1}"
                         ),
                     ))
+        for lower_role, upper_role in _mismatched_crossover_pairs(
+            payload,
+            crossovers_by_role,
+            active_way_counts,
+        ):
+            issues.append(_issue(
+                "blocker",
+                "active_output_crossover_pair_mismatch",
+                (
+                    f"active graph {lower_role}/{upper_role} low-pass and "
+                    "high-pass must share one finite corner and LR order"
+                ),
+            ))
 
     return {
         "safe": not issues,

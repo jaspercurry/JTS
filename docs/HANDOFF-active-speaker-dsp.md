@@ -790,16 +790,47 @@ For JTS, that means:
   fail-closed control-plane correlation only: `current` does not mean measured,
   candidate-ready, applied, verified, or Room-eligible.
 - The strict per-region evidence values define what fresh normal, reverse, and
-  delay capture authority must contain. Until the production summed host issues
-  and persists them from reserved run attempts, their existence does not make
-  the current run measured or candidate-ready.
+  delay capture authority must contain. The hardware-facing summed runtime now
+  accepts only a typed server-owned request bound to one exact current adjacent
+  region. The normal graph stays emitter-owned. Reverse adds one target-scoped
+  zero-gain inversion lane. Delay first adds target-scoped offsets that equalize
+  the two emitter-owned totals, then uses two zero-relative candidate lanes;
+  neither transform changes the same-role channels in a sibling speaker group.
+  The full scheduled envelope, not only the current coordinate, must retain
+  headroom under Shared's 20 ms ceiling. Transformed YAML preserves its proven
+  emitter source. Before the limiter, the shared classifier requires the
+  topology-derived emitter chain shape and order: optional bass-management HP,
+  matched adjacent-role LR crossover filters, canonical Delay, non-positive
+  Gain, then exactly one canonical Limiter, grouped across the role's current
+  outputs. Cumulative post-split delay on each physical output is capped at
+  20 ms. The existing 400 Hz tweeter floor and 40-200 Hz/order-4 local-sub
+  envelope are re-proved. Every roleful graph retains exactly one active split
+  (driver-domain adds only its channel-select mixer); guarded commissioning ends
+  each exact grouped protection chain with one per-output mute and permits no
+  post-mute tail. After a baseline limiter the classifier permits only the runtime's named finite
+  non-positive Gain and bounded Delay lanes; any other appended tail filter is
+  unsafe, and the supplied normal graph cannot predeclare that reserved
+  namespace. Every fresh applied readback is reclassified against the current
+  topology before capture.
+  It sets and freshly verifies the safe listening level before applying an
+  audible graph, then holds the existing bounded writer boundary through fresh
+  graph/path/listening-volume readback, the supplied admitted capture callback,
+  and exact predecessor restoration. It requires host-owned mutation-journal
+  callbacks around the live mutation and exposes a locked exact-predecessor
+  recovery operation for a future host to invoke before issuing new work. This
+  slice has no production caller and does not itself persist that journal or wire
+  restart recovery. Its future host must freshly re-emit and bind the exact preset
+  graph identity (including crossover IDs, Fc, and order) before making it
+  reachable. Cancellation drains
+  the transaction; cleanup failure outranks cancellation, and possible mutation/
+  audio is never reported as pre-audio certainty. The adapter schedules nothing
+  and grants no evidence or candidate authority by itself.
 - The shipped 350 Hz lower crossover now has a reviewed bounded schedule
   contract: its 29-coordinate fine grid becomes 15 symmetric coarse
   coordinates plus at most two adjacent fine refinements around an explicit
   coarse anchor. The exhaustive runner remains capped at 25. A separate final
   evaluator requires that exact schedule and applies the same winner policy.
-  The production host must consume both; no production-selected delay exists
-  yet.
+  A production host must consume both; this runtime never selects a delay.
 
 The existing deployed audio topology now has the runtime substrate for
 the constrained dual Apple active-output profile, but commissioning
@@ -2077,7 +2108,13 @@ Key external prior-art families named by the reports:
 Last verified: 2026-07-14 (Wave 1 target-bound research, visible confirmed
 driver-safety profile, excitation admission, nine-state lifecycle, exact
 eligibility receipt, reachable isolated-driver persisted admission under one
-bounded writer transaction, summed pre-audio refusal, strict group-by-region
+bounded writer transaction, direct summed-endpoint pre-audio refusal, the typed
+summed graph/apply/capture/restore runtime with exact graph/path/listening-volume
+readback, exact adjacent-group binding, group-scoped transforms, safe-volume-
+before-graph ordering, full-envelope 20 ms delay headroom, fresh transformed-
+graph safety reproof, required mutation-journal callbacks, locked predecessor
+recovery, and cancellation-drained cleanup,
+strict group-by-region
 normal/reverse/delay evidence values with typed run/attempt and geometry
 authority, the bounded low-frequency coarse-plus-refinement schedule,
 schedule-aware final evaluator,
