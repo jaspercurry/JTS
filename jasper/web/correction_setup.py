@@ -2354,6 +2354,132 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         raise
 
 
+def _room_graph_artifact_path(sess: Any, label: str) -> Path:
+    """Return a collision-free managed config path for one Room transaction."""
+
+    cfg = getattr(sess, "cfg", None)
+    config_dir = Path(
+        getattr(cfg, "config_dir", None)
+        or "/var/lib/camilladsp/configs"
+    )
+    token = re.sub(
+        r"[^A-Za-z0-9]",
+        "",
+        str(getattr(sess, "session_id", "session")),
+    ) or "session"
+    return config_dir / f"sound_{label}_{token}_{time.time_ns()}.yml"
+
+
+def _running_graph_snapshot_text(
+    raw: str,
+    current_path: str | Path,
+    *,
+    carrier: Any | None = None,
+) -> str:
+    """Make Camilla's comment-free active_raw reloadable with provenance.
+
+    CamillaDSP's active_raw is the graph-content authority but drops YAML
+    comments. Preserve only the bounded JTS ``# Source:`` marker from the
+    durable path so the graph carrier can distinguish a safe Active baseline
+    from transient commissioning graphs. All executable graph content remains
+    the fresh Camilla readback.
+    """
+
+    source_line = None
+    try:
+        for line in Path(current_path).read_text(encoding="utf-8").splitlines():
+            if line.startswith("# Source: ") and len(line) <= 256:
+                source_line = line
+                break
+    except OSError:
+        pass
+    # PR #1009's one-time recovery shape is a protected active-leader pipe
+    # graph stamped with the generic sound marker. Resolve it while the
+    # original durable name is still available; the collision-free snapshot
+    # name intentionally cannot trigger that filename-scoped compatibility
+    # rule later.
+    if carrier is None:
+        from jasper.sound.graph_carrier import carrier_for_loaded_config
+
+        carrier = carrier_for_loaded_config(
+            current_path,
+            config_dir=Path(current_path).parent,
+        )
+    if carrier.kind == "active_leader_program_bake":
+        from jasper.active_speaker.camilla_yaml import ACTIVE_PROGRAM_BAKE_SOURCE
+
+        source_line = f"# Source: {ACTIVE_PROGRAM_BAKE_SOURCE}"
+    text = raw.rstrip() + "\n"
+    if source_line:
+        body = "\n".join(
+            line for line in text.splitlines()
+            if not line.startswith("# Source: ")
+        )
+        return f"{source_line}\n{body.rstrip()}\n"
+    return text
+
+
+def _running_graph_body(text: str) -> str:
+    """Executable snapshot body, excluding the one JTS provenance comment."""
+
+    return "\n".join(
+        line for line in text.splitlines()
+        if not line.startswith("# Source: ")
+    ).strip()
+
+
+async def _snapshot_running_room_graph(
+    sess: Any,
+    cam: Any,
+    *,
+    current_path: str | Path | None = None,
+) -> tuple[Path, Path]:
+    """Persist one validated, content-stable copy of Camilla's running graph."""
+
+    from jasper.atomic_io import atomic_write_text
+    from jasper.correction.runtime_safety import assert_correction_graph_safe
+    from jasper.dsp_apply import validate_camilla_config
+    from jasper.sound.graph_carrier import (
+        CarrierCannotHostEq,
+        carrier_for_loaded_config,
+    )
+
+    current = current_path or await cam.get_config_file_path(best_effort=False)
+    if not current:
+        raise RuntimeError("CamillaDSP did not report a loaded config path")
+    carrier = carrier_for_loaded_config(
+        current,
+        config_dir=Path(current).parent,
+    )
+    if carrier.kind == "unknown":
+        raise CarrierCannotHostEq(
+            "unknown_config",
+            "CamillaDSP is running a configuration JTS didn't generate, so "
+            "Room cannot preserve it for exact restoration.",
+        )
+    raw = await cam.get_active_config_raw(best_effort=False)
+    if not isinstance(raw, str) or not raw.strip():
+        raise RuntimeError("CamillaDSP did not report a running graph")
+    text = _running_graph_snapshot_text(raw, current, carrier=carrier)
+    assert_correction_graph_safe(text)
+    snapshot = _room_graph_artifact_path(sess, "snapshot")
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        snapshot,
+        text,
+        mode=0o640,
+        group_from_parent=True,
+    )
+    validation = validate_camilla_config(snapshot)
+    if not validation.ok_to_apply:
+        snapshot.unlink(missing_ok=True)
+        raise RuntimeError(
+            "CamillaDSP's running graph could not be validated for exact "
+            f"restoration: {validation.error or validation.status.value}"
+        )
+    return Path(current), snapshot
+
+
 async def _load_measurement_baseline(
     sess: Any,
     cam: Any,
@@ -2381,10 +2507,6 @@ async def _load_measurement_baseline(
     )
     from jasper.sound.profile import SoundProfile
 
-    current_path = await cam.get_config_file_path(best_effort=False)
-    if not current_path:
-        raise RuntimeError("CamillaDSP did not report a loaded config path")
-    sess.pre_measurement_config_path = Path(current_path)
     sess.cfg.config_dir.mkdir(parents=True, exist_ok=True)
     out_path = sess.cfg.config_dir / (
         f"correction_measurement_{sess.session_id}_{int(sess.started_at)}.yml"
@@ -2401,7 +2523,15 @@ async def _load_measurement_baseline(
         anchor = await cam.get_config_file_path(best_effort=False)
         if not anchor:
             raise RuntimeError("CamillaDSP did not report a loaded config path")
-        carrier = carrier_for_loaded_config(anchor, config_dir=sess.cfg.config_dir)
+        _, restore_path = await _snapshot_running_room_graph(
+            sess,
+            cam,
+            current_path=anchor,
+        )
+        carrier = carrier_for_loaded_config(
+            restore_path,
+            config_dir=sess.cfg.config_dir,
+        )
         result = carrier.reemit(
             SoundProfile(enabled=False),
             room_peqs=[],
@@ -2411,8 +2541,11 @@ async def _load_measurement_baseline(
         )
         assert_correction_graph_safe(result.yaml)
         sess.pre_measurement_config_path = Path(anchor)
+        sess.pre_measurement_restore_path = restore_path
         return {
-            "prior_config_path": anchor,
+            # apply_dsp_config must roll back to immutable graph content, not
+            # the mutable durable filename Camilla happened to report.
+            "prior_config_path": str(restore_path),
             "room_peq_count": result.room_peq_count,
             "sound_filter_count": 0,
         }
@@ -2440,10 +2573,8 @@ async def _load_measurement_baseline(
             raise exc.__cause__ from exc
         raise
     sess.measurement_config_path = out_path
-    if state.prior_config_path:
-        sess.pre_measurement_config_path = Path(state.prior_config_path)
     descriptor = describe_current_config(
-        sess.pre_measurement_config_path,
+        sess.pre_measurement_restore_path,
         config_dir=sess.cfg.config_dir,
         base_config_path=sess.cfg.base_config_path,
     )
@@ -2452,6 +2583,7 @@ async def _load_measurement_baseline(
         "correction.measurement_baseline_loaded",
         session=sess.session_id,
         prior=str(sess.pre_measurement_config_path),
+        restore=str(sess.pre_measurement_restore_path),
         candidate=str(out_path),
         op_id=state.op_id,
     )
@@ -2459,6 +2591,7 @@ async def _load_measurement_baseline(
         "current_correction_at_start": descriptor,
         "measurement_config_path": str(out_path),
         "prior_config_path": str(sess.pre_measurement_config_path),
+        "restore_config_path": str(sess.pre_measurement_restore_path),
         "last_dsp_apply": state.to_dict(),
     }
 
@@ -6012,7 +6145,8 @@ async def _pre_measurement_restore_target(sess: Any, cam: Any) -> Path | None:
     if state_value in {"idle", "applied", "verified"}:
         return None
     prior = getattr(sess, "pre_measurement_config_path", None)
-    if not prior:
+    restore = getattr(sess, "pre_measurement_restore_path", None)
+    if not prior or not restore:
         return None
 
     current = await cam.get_config_file_path(best_effort=False)
@@ -6020,8 +6154,24 @@ async def _pre_measurement_restore_target(sess: Any, cam: Any) -> Path | None:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
     measurement = getattr(sess, "measurement_config_path", None)
     owned_path = Path(measurement) if measurement else Path(prior)
-    if Path(current) == owned_path:
-        return Path(prior)
+    prior_path = Path(prior)
+    restore_path = Path(restore)
+    if Path(current) in {owned_path, restore_path}:
+        return restore_path
+    if Path(current) == prior_path:
+        # A durable Active filename can be overwritten by a blocked candidate
+        # without CamillaDSP loading those new bytes. Compare the daemon's
+        # running graph with Start's immutable snapshot; filename equality by
+        # itself is not evidence that either the old or new content is active.
+        raw = await cam.get_active_config_raw(best_effort=False)
+        try:
+            saved = restore_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(
+                "Room's immutable predecessor snapshot is unavailable"
+            ) from exc
+        if _running_graph_body(raw) == _running_graph_body(saved):
+            return restore_path
 
     # A legal DSP writer may publish a newer Active graph after Room Start.
     # The shared lock makes this read stable; never use Room's saved predecessor
@@ -6034,6 +6184,7 @@ async def _pre_measurement_restore_target(sess: Any, cam: Any) -> Path | None:
         current=str(current),
         room_owned=str(owned_path),
         saved_predecessor=str(prior),
+        immutable_restore=str(restore_path),
         level=logging.WARNING,
     )
     return None
@@ -6050,8 +6201,8 @@ async def _resolve_reset_target_async(sess: Any, cam: Any) -> Path:
     or once a correction is applied/verified, re-emit that current topology
     with room PEQs cleared (Layer B removed, speaker DSP + preference EQ
     preserved). A re-emit failure may retain only the observably managed,
-    no-Room graph that Camilla reports as current; otherwise reversal fails
-    loudly without claiming that Layer B was removed.
+    no-Room graph captured from Camilla's active_raw before re-emit; otherwise
+    reversal fails loudly without claiming that Layer B was removed.
     """
     cfg = getattr(sess, "cfg", None)
     base_config_path = getattr(
@@ -6061,8 +6212,13 @@ async def _resolve_reset_target_async(sess: Any, cam: Any) -> Path:
     )
     target = await _pre_measurement_restore_target(sess, cam)
     if target is None:
+        _current, current_snapshot = await _snapshot_running_room_graph(sess, cam)
         try:
-            target = await _write_no_room_correction_config(sess, cam)
+            target = await _write_no_room_correction_config(
+                sess,
+                cam,
+                current_snapshot_path=current_snapshot,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "reset/auto-revert: no-room re-emit failed; checking the "
@@ -6074,13 +6230,12 @@ async def _resolve_reset_target_async(sess: Any, cam: Any) -> Path:
                 getattr(cfg, "config_dir", None)
                 or "/var/lib/camilladsp/configs"
             )
-            try:
-                current = await cam.get_config_file_path(best_effort=False)
-            except Exception:  # noqa: BLE001
-                current = None
-            target = Path(current) if current else None
+            # This immutable snapshot was captured and safety-validated before
+            # the failed re-emit wrote its separate candidate. Never re-read a
+            # mutable current filename here: it may be the rejected output.
+            target = current_snapshot
             descriptor = describe_current_config(
-                str(target) if target is not None else None,
+                str(target),
                 config_dir=config_dir,
                 base_config_path=Path(base_config_path),
             )
@@ -6193,17 +6348,22 @@ def _maybe_auto_revert(sess: Any) -> bool:
         return False
 
 
-async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
+async def _write_no_room_correction_config(
+    sess: Any,
+    cam: Any,
+    *,
+    current_snapshot_path: str | Path | None = None,
+) -> Path:
     """Emit the current graph with room correction cleared.
 
-    For passive/full-range graphs this is the ordinary sound config. For active
-    baselines it is still an active graph; content-based status/carrier checks
-    keep that safe even though the durable filename is `sound_current.yml`.
+    For passive/full-range graphs this is an ordinary sound config. For active
+    baselines it remains an active graph. The candidate is session-unique so a
+    validation failure cannot alter the durable filename Camilla is running.
     """
 
     from jasper.correction.runtime_safety import assert_correction_graph_safe
+    from jasper.dsp_apply import validate_camilla_config
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
-    from jasper.sound.camilla_yaml import sound_config_path
     from jasper.sound.graph_carrier import carrier_for_loaded_config
     from jasper.sound.profile import load_profile
 
@@ -6212,11 +6372,15 @@ async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
         getattr(cfg, "config_dir", Path("/var/lib/camilladsp/configs"))
     )
     config_dir.mkdir(parents=True, exist_ok=True)
-    current_path = await cam.get_config_file_path(best_effort=False)
-    if not current_path:
-        raise RuntimeError("CamillaDSP did not report a loaded config path")
-    out_path = sound_config_path(config_dir)
-    carrier = carrier_for_loaded_config(current_path, config_dir=config_dir)
+    if current_snapshot_path is None:
+        _current, snapshot_path = await _snapshot_running_room_graph(sess, cam)
+    else:
+        snapshot_path = Path(current_snapshot_path)
+    # Never emit over Camilla's reported current filename. Some JTS writers use
+    # durable names such as sound_current.yml; post-write validation failure
+    # must leave that live predecessor's bytes untouched.
+    out_path = _room_graph_artifact_path(sess, "reset")
+    carrier = carrier_for_loaded_config(snapshot_path, config_dir=config_dir)
     profile = load_profile()
     result = carrier.reemit(
         profile,
@@ -6226,10 +6390,16 @@ async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
         fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
     )
     assert_correction_graph_safe(result.yaml)
+    validation = validate_camilla_config(out_path)
+    if not validation.ok_to_apply:
+        raise RuntimeError(
+            "the generated no-Room graph failed CamillaDSP validation: "
+            f"{validation.error or validation.status.value}"
+        )
     log_event(
         logger,
         "correction.reset_no_room_config",
-        current=str(current_path),
+        current_snapshot=str(snapshot_path),
         candidate=str(out_path),
         room_peqs=result.room_peq_count,
     )

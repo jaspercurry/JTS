@@ -721,11 +721,13 @@
 > Room consumes that one decision and neither inspects the graph nor historical
 > B2b evidence. Automatic authority still requires fresh excitation-admitted
 > captures plus the measured delay walk. This v1 positive manual authority is
-> explicitly **solo-active only**. A grouped active leader's primary Camilla
-> graph is the program bake while driver-domain Layer A lives on the crossover
-> instance, so Active returns `active_grouped_room_correction_not_supported`
-> with `/rooms/` recovery. Full grouped support needs a later Active-owned
-> identity spanning both daemons.
+> explicitly **solo-active only**. Active reads fresh grouping membership for
+> both leader and follower roles before issuing that decision; the boundary is
+> valid even when CamillaDSP's `active_raw` has stripped every YAML comment. A
+> grouped active leader's primary Camilla graph is the program bake while
+> driver-domain Layer A lives on the crossover instance, so Active returns
+> `active_grouped_room_correction_not_supported` with `/rooms/` recovery. Full
+> grouped support needs a later Active-owned identity spanning both daemons.
 
 > **Update, 2026-07-14 (Wave 3 durable run;
 > hardware-free):** `jasper.active_speaker.commissioning_run` is now the bounded

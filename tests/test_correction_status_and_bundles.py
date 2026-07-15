@@ -738,8 +738,11 @@ async def test_reset_no_room_config_preserves_preference_and_strips_room(
     out_path = await correction_setup._write_no_room_correction_config(sess, fake_cam)
 
     yaml = out_path.read_text(encoding="utf-8")
-    assert safety_checks == [yaml]
-    assert out_path.name == "sound_current.yml"
+    assert len(safety_checks) == 2
+    assert safety_checks[-1] == yaml
+    assert out_path.name.startswith(f"sound_reset_{sess.session_id}_")
+    assert out_path.name.endswith(".yml")
+    assert current.read_text(encoding="utf-8") != yaml
     assert "room_peq_1:" not in yaml
     assert "sound_curve_harman_bass:" in yaml
     assert "sound_simple_treble:" in yaml
@@ -892,6 +895,9 @@ class _FakeCamilla:
 
     async def get_config_file_path(self, *, best_effort: bool = False):
         return self.current_path
+
+    async def get_active_config_raw(self, *, best_effort: bool = False):
+        return Path(self.current_path).read_text(encoding="utf-8")
 
     async def set_config_file_path(
         self, path: str, *, best_effort: bool = False,
@@ -1323,9 +1329,16 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
         str(tmp_path / "dsp_apply_state.json"),
     )
     monkeypatch.setattr(correction_setup, "_session", None)
-    fake_cam = _FakeCamilla(
-        current_path=str(tmp_path / "configs" / "correction_xyz_1700.yml"),
+    prior_path = tmp_path / "configs" / "correction_xyz_1700.yml"
+    prior_path.parent.mkdir()
+    prior_path.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            room_peqs=[PeqFilter(freq=45.0, q=3.0, gain=-6.0)],
+        ),
+        encoding="utf-8",
     )
+    fake_cam = _FakeCamilla(current_path=str(prior_path))
     monkeypatch.setattr(correction_setup, "_camilla", lambda: fake_cam)
 
     # Hold the sweep entirely — we just want to observe the reset
@@ -1382,12 +1395,12 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     generated = Path(fake_cam.set_calls[0]).read_text(encoding="utf-8")
     assert "room_peq_1" not in generated
     assert "sound_curve_" not in generated
-    # And snapshot the prior correction descriptor in the response so
-    # the UI can render "was: correction_xyz" if it wants.
+    # The descriptor is derived from immutable graph content rather than the
+    # mutable predecessor filename.
     prior = body["current_correction_at_start"]
     assert prior is not None
-    assert prior["kind"] == "correction"
-    assert prior["current_correction"]["session_id"] == "xyz"
+    assert prior["kind"] == "sound_with_correction"
+    assert prior["current_correction"]["session_id"] == "sound"
     assert body["strategy_choice"] == "balanced"
     assert body["correction_strategy"]["strategy_id"] == "balanced"
     assert sess.total_positions == 6
@@ -1397,6 +1410,9 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     assert sess.pre_measurement_config_path == Path(
         tmp_path / "configs" / "correction_xyz_1700.yml"
     )
+    assert sess.pre_measurement_restore_path is not None
+    assert sess.pre_measurement_restore_path != sess.pre_measurement_config_path
+    assert sess.pre_measurement_restore_path.exists()
     # Local browser permission/device selection is human-paced. /start must
     # suspend the automatic upload watchdog until setup is bound; otherwise a
     # household can time out while still responding to the permission prompt.
@@ -1462,8 +1478,6 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
         async def get_config_file_path(self, *, best_effort: bool = False):
             self.get_calls += 1
             if self.get_calls == 1:
-                return str(old_path)
-            if self.get_calls == 2:
                 self.current_path = str(new_path)
                 return str(new_path)
             return self.current_path
@@ -1475,6 +1489,9 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
             self.current_path = path
             return True
 
+        async def get_active_config_raw(self, *, best_effort: bool = False):
+            return Path(self.current_path).read_text(encoding="utf-8")
+
     payload = await correction_setup._load_measurement_baseline(
         sess,
         SwappingCamilla(),
@@ -1483,9 +1500,14 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
 
     assert payload["prior_config_path"] == str(new_path)
     assert sess.pre_measurement_config_path == new_path
+    assert sess.pre_measurement_restore_path is not None
+    assert sess.pre_measurement_restore_path != new_path
+    assert payload["restore_config_path"] == str(
+        sess.pre_measurement_restore_path
+    )
     assert payload["current_correction_at_start"]["current_correction"][
         "session_id"
-    ] == "new"
+    ] == "sound"
 
 
 @pytest.mark.asyncio
@@ -1621,6 +1643,8 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     assert payload["measurement_config_path"] == str(measurement_path)
     assert payload["prior_config_path"] == str(current)
     assert sess.pre_measurement_config_path == current
+    assert sess.pre_measurement_restore_path is not None
+    assert sess.pre_measurement_restore_path != current
 
 
 def test_start_handler_aborts_if_measurement_baseline_load_fails(
@@ -1648,10 +1672,13 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
     )
     monkeypatch.setattr(correction_setup, "_session", None)
 
-    fake_cam = _FakeCamilla(
-        current_path=str(tmp_path / "configs" / "correction_xyz_1700.yml"),
-        reset_ok=False,
+    prior_path = tmp_path / "configs" / "correction_xyz_1700.yml"
+    prior_path.parent.mkdir()
+    prior_path.write_text(
+        emit_sound_config(SoundProfile(enabled=False)),
+        encoding="utf-8",
     )
+    fake_cam = _FakeCamilla(current_path=str(prior_path), reset_ok=False)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: fake_cam)
     captured: dict = {}
     monkeypatch.setattr(

@@ -75,6 +75,14 @@ def _active_group_count(topology: Any) -> int:
     )
 
 
+def _grouped_active_runtime() -> bool:
+    """Fresh Active-owned scope fact for both bonded leaders and followers."""
+
+    from jasper.multiroom.config import is_active_member, load_config
+
+    return is_active_member(load_config())
+
+
 def _nonnegative_int(value: Any) -> int:
     try:
         return max(0, int(value))
@@ -470,7 +478,10 @@ def _applied_layer_a_binding(
         # that distributed graph, so Active emits one explicit unsupported
         # decision instead of a misleading crossover-reapply mismatch. A later
         # distributed authority must remain Active-owned and bind both daemons.
-        if f"Source: {_PROGRAM_BAKE_SOURCE}" in loaded_yaml:
+        if (
+            _grouped_active_runtime()
+            or f"Source: {_PROGRAM_BAKE_SOURCE}" in loaded_yaml
+        ):
             return {
                 "status": "distributed_active_unsupported",
                 "matches": False,

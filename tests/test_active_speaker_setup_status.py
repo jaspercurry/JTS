@@ -497,11 +497,13 @@ def test_manual_room_authority_allows_program_filters_on_exact_layer_a(
     assert binding["loaded_fingerprint"] == binding["expected_fingerprint"]
 
 
+@pytest.mark.parametrize("role", ["leader", "follower"])
 def test_manual_room_authority_explicitly_scopes_out_distributed_active(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    role: str,
 ) -> None:
-    """A bonded leader needs a future Active-owned two-daemon identity."""
+    """Fresh grouping state scopes comment-free leader/follower readback out."""
     from tests.test_active_speaker_runtime_contract import _program_bake_yaml
 
     topology = _active_topology()
@@ -513,8 +515,18 @@ def test_manual_room_authority_explicitly_scopes_out_distributed_active(
         config_path=protected_path,
     )
     _write_applied_graph(topology, manual, protected_path)
-    running_text = _program_bake_yaml()
+    running_text = (
+        _program_bake_yaml()
+        if role == "leader"
+        else protected_path.read_text(encoding="utf-8")
+    )
     current_path.write_text(running_text, encoding="utf-8")
+    active_raw = yaml.safe_dump(yaml.safe_load(running_text), sort_keys=False)
+    assert "# Source:" not in active_raw
+    monkeypatch.setattr(
+        "jasper.multiroom.config.load_config",
+        lambda: SimpleNamespace(enabled=True, error=None, role=role),
+    )
     monkeypatch.setattr(
         setup_mod,
         "build_baseline_profile_candidate",
@@ -533,7 +545,7 @@ def test_manual_room_authority_explicitly_scopes_out_distributed_active(
 
     status = setup_mod.read_active_speaker_setup_status(
         active_config_path=str(current_path),
-        active_config_text=running_text,
+        active_config_text=active_raw,
     )
 
     assert status["configured"] is True

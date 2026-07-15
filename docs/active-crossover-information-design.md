@@ -1192,7 +1192,9 @@ topology-current immutable snapshot whose explicit apply owner is `manual`
 projects `manual_applied_profile` only when CamillaDSP's fresh running
 `active_raw` readback has the same semantic Layer-A fingerprint as a
 recomposition from that snapshot **and the speaker is on its solo active
-runtime**. A grouped active leader instead projects
+runtime**. Solo/grouped scope comes from fresh grouping membership for both
+leader and follower roles, not from source comments that `active_raw` removes.
+A grouped active leader instead projects
 `active_grouped_room_correction_not_supported` and links to `/rooms/`; turning
 grouping off restores the solo proof boundary. A later distributed decision
 must be Active-owned and bind the program-bake Camilla instance plus the

@@ -336,11 +336,16 @@ baseline preparation and Apply writer boundary. A changed authority or identity
 refuses the mutation. Reset and automatic revert do not depend on new Room
 authority; they acquire the same writer boundary and resolve their restoration
 target after admission, preserving whichever Layer A a preceding legal Active
-apply actually loaded. The saved pre-Start predecessor is valid only while
-Camilla still reports Room's unique measurement graph; if that path has been
-superseded, reversal strips Room from the fresh current graph instead. A failed
-re-emit can retain only that observed current graph when it is managed and
-already contains no Room filters.
+apply actually loaded. Start stores a unique validated copy of CamillaDSP's
+running `active_raw`; its reported durable filename is provenance, not rollback
+content. Reversal restores that immutable copy while Room's measurement graph
+still owns the runtime, or when a fresh running-graph comparison proves the
+same-name predecessor has not actually changed. If a legal writer loaded a new
+graph, reversal snapshots that fresh runtime and emits Layer B removal into a
+different unique candidate. A failed or post-write-rejected re-emit cannot
+mutate the running filename or become its own fallback; only the immutable
+pre-emit snapshot may be retained, and only when it is managed and already has
+no Room filters.
 
 Historical B2b evidence is forensic only: it cannot supply modern candidate or
 receipt authority. Automatic crossover readiness must come from Active's fresh,

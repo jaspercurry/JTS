@@ -142,9 +142,12 @@
   evidence and never relabels automatic tuning as manual. Manual authority is
   positive only when Active's semantic Layer-A fingerprint of CamillaDSP's
   fresh running `active_raw` readback matches a recomposition from the
-  immutable applied snapshot on the solo active runtime. Grouped active is an
-  explicit v1 unsupported decision because the leader program bake is not the
-  driver-domain Layer A; `/rooms/` is the recovery path, and a later
+  immutable applied snapshot on the solo active runtime. Active derives the
+  grouped scope from fresh grouping membership, for both leaders and
+  followers; it does not depend on a `# Source:` comment that CamillaDSP's
+  `active_raw` readback removes. Grouped active is an explicit v1 unsupported
+  decision because the leader program bake is not the driver-domain Layer A;
+  `/rooms/` is the recovery path, and a later
   Active-owned identity must bind both Camilla daemons before Room can support
   that runtime. The
   fingerprint includes output-device settings and the complete driver-domain
@@ -159,12 +162,19 @@
   Apply repeats that comparison inside its shared writer boundary, so a later
   legal DSP writer cannot substitute a different crossover during a Room run.
   Reset and automatic revert remain independently available exact restoration
-  paths and do not require fresh Room authority: a mid-flight cancellation uses
-  the saved predecessor only while Camilla still runs Room's unique measurement
-  graph. If a legal Active apply has replaced it, or for an applied/verified
-  correction, reversal removes Room from the fresh current graph instead. A
-  no-room re-emit failure may retain only Camilla's observed current managed
-  no-Room graph. They resolve that target only after acquiring the shared
+  paths and do not require fresh Room authority. At Start, Room snapshots
+  CamillaDSP's running `active_raw` into a unique, safety-checked, validated
+  artifact; the reported durable predecessor filename remains provenance only
+  because an Active candidate build may rewrite that name without loading it.
+  A mid-flight cancellation restores the immutable artifact while Camilla still
+  runs Room's measurement graph, or while fresh `active_raw` proves that the
+  same-name predecessor is still the graph captured at Start. If a legal Active
+  apply has replaced it, or for an applied/verified correction, reversal
+  snapshots the fresh running graph and emits Layer B removal into a separate
+  unique candidate. A failed or rejected re-emit cannot alter the running
+  filename or become its own fallback; it may retain only the pre-emit immutable
+  snapshot when that snapshot is managed and already contains no Room filters.
+  They resolve that target only after acquiring the shared
   DSP-writer lock, so a concurrent legal Active apply cannot be overwritten by
   a target built from stale Layer A. Measurement-baseline load, Apply, Reset,
   and automatic revert wait for a terminal result after writer admission.

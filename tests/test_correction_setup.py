@@ -1002,12 +1002,21 @@ def test_room_relay_repeat_consumes_repeat_capture_only(monkeypatch, tmp_path):
     assert consumed == [("repeat", tmp_path / "repeat.wav")]
 
 
-def test_room_relay_repeat_keeps_capture_alive_when_terminal_event_is_unconfirmed(
+@pytest.mark.parametrize("repeat", [False, True], ids=["measurement", "repeat"])
+@pytest.mark.parametrize(
+    "failure",
+    ["complete_timeout", "start_oserror", "start_503"],
+    ids=["ambiguous-complete", "ambiguous-network", "ambiguous-server"],
+)
+def test_room_relay_sweep_keeps_capture_alive_when_event_is_unconfirmed(
     monkeypatch,
+    repeat,
+    failure,
 ):
-    """A committed upload must outlive a timed-out sweep-complete response."""
+    """Measurement and repeat preserve every ambiguous relay event outcome."""
     from contextlib import asynccontextmanager
 
+    from jasper.capture_relay.client import RelayError
     from jasper.correction import coordinator
 
     events = []
@@ -1020,8 +1029,12 @@ def test_room_relay_repeat_keeps_capture_alive_when_terminal_event_is_unconfirme
 
     async def post_host_event(_client, _pi_session, payload, *, hard_timeout_s):
         events.append((dict(payload), hard_timeout_s))
-        if payload["phase"] == "sweep_complete":
+        if failure == "complete_timeout" and payload["phase"] == "sweep_complete":
             raise asyncio.TimeoutError
+        if failure == "start_oserror" and payload["phase"] == "sweep_started":
+            raise OSError("response lost")
+        if failure == "start_503" and payload["phase"] == "sweep_started":
+            raise RelayError("relay response unavailable", 503)
 
     class Session:
         current_position = 1
@@ -1029,6 +1042,14 @@ def test_room_relay_repeat_keeps_capture_alive_when_terminal_event_is_unconfirme
 
         async def ensure_level_match_volume(self, _setter):
             return True
+
+        async def prepare_and_play_sweep(
+            self,
+            _play_sweep,
+            *,
+            runtime_probe_async,
+        ):
+            playback.append("measurement")
 
         async def prepare_and_play_repeat_sweep(
             self,
@@ -1068,10 +1089,10 @@ def test_room_relay_repeat_keeps_capture_alive_when_terminal_event_is_unconfirme
         Camilla(),
         client=client,
         pi_session=pi_session,
-        repeat=True,
+        repeat=repeat,
     )
 
-    assert playback == ["repeat"]
+    assert playback == ["repeat" if repeat else "measurement"]
     assert restored == [True]
     assert [event[0]["phase"] for event in events] == [
         "sweep_started",
@@ -1481,6 +1502,18 @@ def test_room_verify_checks_level_microphone_before_playback(monkeypatch, tmp_pa
             id="ambiguous-complete",
         ),
         pytest.param(
+            "start_oserror",
+            [b"RIFFfresh-verify"],
+            ["sweep_started", "sweep_complete"],
+            id="ambiguous-network",
+        ),
+        pytest.param(
+            "start_503",
+            [b"RIFFfresh-verify"],
+            ["sweep_started", "sweep_complete"],
+            id="ambiguous-server",
+        ),
+        pytest.param(
             "start_404",
             [],
             ["sweep_started"],
@@ -1528,6 +1561,10 @@ def test_room_relay_verify_host_event_failure_contract(
         events.append((dict(payload), hard_timeout_s))
         if failure == "complete_timeout" and payload["phase"] == "sweep_complete":
             raise asyncio.TimeoutError
+        if failure == "start_oserror" and payload["phase"] == "sweep_started":
+            raise OSError("response lost")
+        if failure == "start_503" and payload["phase"] == "sweep_started":
+            raise RelayError("relay response unavailable", 503)
         if failure in {"start_404", "start_429"} and payload["phase"] == "sweep_started":
             status = 404 if failure == "start_404" else 429
             raise RelayError("relay event was refused", status)
@@ -3253,12 +3290,16 @@ async def test_ready_reset_restores_exact_pre_measurement_graph():
     from jasper.correction.session import SessionState
 
     predecessor = Path("/var/lib/camilladsp/configs/before-room.yml")
+    restore = Path(
+        "/var/lib/camilladsp/configs/sound_snapshot_smoke_123.yml"
+    )
     measurement = Path(
         "/var/lib/camilladsp/configs/correction_measurement_smoke.yml"
     )
     sess = SimpleNamespace(
         state=SessionState.READY,
         pre_measurement_config_path=predecessor,
+        pre_measurement_restore_path=restore,
         measurement_config_path=measurement,
     )
 
@@ -3268,8 +3309,201 @@ async def test_ready_reset_restores_exact_pre_measurement_graph():
 
     assert (
         await correction_setup._resolve_reset_target_async(sess, Cam())
-        == predecessor
+        == restore
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
+@pytest.mark.parametrize(
+    "running_path",
+    ["measurement", "predecessor"],
+    ids=["blocked-active-build", "failed-active-load-rollback"],
+)
+async def test_room_reversal_uses_immutable_running_graph_after_active_overwrite(
+    tmp_path,
+    automatic,
+    running_path,
+):
+    """A mutable Active candidate filename is provenance, never rollback data."""
+    from jasper.correction.session import SessionState
+
+    predecessor = tmp_path / "active_speaker_manual_current.yml"
+    restore = tmp_path / "sound_snapshot_roomrun_123.yml"
+    measurement = tmp_path / "correction_measurement_roomrun_123.yml"
+    running_graph = "# Source: old-active\nfilters:\n  crossover: {}\n"
+    refused_candidate = "# Source: refused-active\nfilters:\n  crossover_new: {}\n"
+    restore.write_text(running_graph, encoding="utf-8")
+    measurement.write_text("filters: {}\n", encoding="utf-8")
+    # Active's candidate builder legally rewrote its durable filename, but the
+    # candidate was blocked or failed and these bytes never became the graph
+    # CamillaDSP was running.
+    predecessor.write_text(refused_candidate, encoding="utf-8")
+    loaded = []
+
+    class Cam:
+        current = str(
+            measurement if running_path == "measurement" else predecessor
+        )
+
+        async def get_config_file_path(self, *, best_effort=False):
+            return self.current
+
+        async def get_active_config_raw(self, *, best_effort=False):
+            return running_graph
+
+        async def set_config_file_path(self, path, *, best_effort=False):
+            loaded.append(path)
+            self.current = path
+            return True
+
+    class Session:
+        session_id = "roomrun"
+        state = SessionState.FAILED
+        pre_measurement_config_path = predecessor
+        pre_measurement_restore_path = restore
+        measurement_config_path = measurement
+        cfg = SimpleNamespace(
+            config_dir=tmp_path,
+            base_config_path=tmp_path / "base.yml",
+        )
+
+        async def reset(self, set_cb, *, target_config_path=None):
+            return await set_cb(str(target_config_path))
+
+        async def auto_revert(self, set_cb, *, target_config_path=None):
+            return await set_cb(str(target_config_path))
+
+    assert await correction_setup._run_locked_room_reset(
+        Session(),
+        Cam(),
+        automatic=automatic,
+    )
+    assert loaded == [str(restore)]
+    assert restore.read_text(encoding="utf-8") == running_graph
+    assert predecessor.read_text(encoding="utf-8") == refused_candidate
+
+
+@pytest.mark.asyncio
+async def test_room_reversal_does_not_restore_over_new_graph_loaded_at_same_path(
+    tmp_path,
+):
+    """Fresh active_raw distinguishes a real same-name load from an overwrite."""
+    from jasper.correction.session import SessionState
+
+    predecessor = tmp_path / "active_speaker_manual_current.yml"
+    restore = tmp_path / "sound_snapshot_roomrun_123.yml"
+    measurement = tmp_path / "correction_measurement_roomrun_123.yml"
+    restore.write_text("filters:\n  old_crossover: {}\n", encoding="utf-8")
+    predecessor.write_text("filters:\n  new_crossover: {}\n", encoding="utf-8")
+    sess = SimpleNamespace(
+        session_id="samepath",
+        state=SessionState.FAILED,
+        pre_measurement_config_path=predecessor,
+        pre_measurement_restore_path=restore,
+        measurement_config_path=measurement,
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(predecessor)
+
+        async def get_active_config_raw(self, *, best_effort=False):
+            return predecessor.read_text(encoding="utf-8")
+
+    assert await correction_setup._pre_measurement_restore_target(
+        sess,
+        Cam(),
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_running_graph_snapshot_does_not_mint_authority_for_custom_config(
+    tmp_path,
+):
+    """A managed snapshot name must not turn an unknown graph into a carrier."""
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.graph_carrier import CarrierCannotHostEq
+    from jasper.sound.profile import SoundProfile
+
+    custom = tmp_path / "advanced-handwritten.yml"
+    raw = emit_sound_config(SoundProfile(enabled=False))
+    custom.write_text(raw, encoding="utf-8")
+    sess = SimpleNamespace(
+        session_id="custom",
+        cfg=SimpleNamespace(config_dir=tmp_path),
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(custom)
+
+        async def get_active_config_raw(self, *, best_effort=False):
+            return raw
+
+    with pytest.raises(CarrierCannotHostEq) as exc_info:
+        await correction_setup._snapshot_running_room_graph(sess, Cam())
+
+    assert exc_info.value.reason_code == "unknown_config"
+    assert list(tmp_path.glob("sound_snapshot_custom_*.yml")) == []
+
+
+@pytest.mark.asyncio
+async def test_reset_safety_failure_preserves_current_and_uses_preemit_snapshot(
+    monkeypatch,
+    tmp_path,
+):
+    """Rejected Reset output cannot overwrite or become its own fallback."""
+    from jasper.correction.session import SessionState
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+
+    current = tmp_path / "sound_current.yml"
+    original = emit_sound_config(SoundProfile(enabled=False))
+    current.write_text(original, encoding="utf-8")
+    monkeypatch.setenv(
+        "JASPER_SOUND_PROFILE_PATH",
+        str(tmp_path / "no-saved-profile.json"),
+    )
+    safety_calls = []
+
+    def fail_candidate_after_snapshot(text):
+        safety_calls.append(text)
+        if len(safety_calls) == 2:
+            raise RuntimeError("post-write safety refusal")
+
+    monkeypatch.setattr(
+        "jasper.correction.runtime_safety.assert_correction_graph_safe",
+        fail_candidate_after_snapshot,
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(current)
+
+        async def get_active_config_raw(self, *, best_effort=False):
+            return original
+
+    sess = SimpleNamespace(
+        session_id="resetguard",
+        state=SessionState.APPLIED,
+        cfg=SimpleNamespace(
+            config_dir=tmp_path,
+            base_config_path=tmp_path / "base.yml",
+        ),
+    )
+
+    target = await correction_setup._resolve_reset_target_async(sess, Cam())
+
+    assert target.name.startswith("sound_snapshot_resetguard_")
+    assert correction_setup._running_graph_body(
+        target.read_text(encoding="utf-8")
+    ) == correction_setup._running_graph_body(original)
+    assert current.read_text(encoding="utf-8") == original
+    rejected = list(tmp_path.glob("sound_reset_resetguard_*.yml"))
+    assert len(rejected) == 1
+    assert target != rejected[0]
+    assert len(safety_calls) == 2
 
 
 @pytest.mark.asyncio
@@ -3307,13 +3541,21 @@ async def test_room_reversal_rejects_unverified_no_room_fallback(
         assert fallback_shape == "unreadable"
     operations = []
 
-    async def reemit_fails(_sess, _cam):
+    async def reemit_fails(_sess, _cam, **_kwargs):
         raise RuntimeError("carrier re-emit failed")
 
     monkeypatch.setattr(
         correction_setup,
         "_write_no_room_correction_config",
         reemit_fails,
+    )
+    async def snapshot_current(_sess, _cam):
+        return fallback, fallback
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_snapshot_running_room_graph",
+        snapshot_current,
     )
 
     class Cam:
@@ -3359,13 +3601,21 @@ async def test_reset_accepts_verified_no_room_active_fallback(
         "filters: {}\n"
     )
 
-    async def reemit_fails(_sess, _cam):
+    async def reemit_fails(_sess, _cam, **_kwargs):
         raise RuntimeError("carrier re-emit failed")
 
     monkeypatch.setattr(
         correction_setup,
         "_write_no_room_correction_config",
         reemit_fails,
+    )
+    async def snapshot_current(_sess, _cam):
+        return no_room, no_room
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_snapshot_running_room_graph",
+        snapshot_current,
     )
     sess = SimpleNamespace(
         session_id="no-room-fallback",
@@ -3397,6 +3647,7 @@ async def test_failed_room_reversal_preserves_newer_active_graph(
     from jasper.correction.session import SessionState
 
     old_active = tmp_path / "active-before-room.yml"
+    old_active_snapshot = tmp_path / "sound_snapshot_oldactive_123.yml"
     measurement = tmp_path / "correction_measurement_smoke_123.yml"
     new_active = tmp_path / "active-after-room-start.yml"
     no_room_new_active = tmp_path / "sound_current.yml"
@@ -3416,12 +3667,26 @@ async def test_failed_room_reversal_preserves_newer_active_graph(
 
     cam = Cam()
 
-    async def reemit_current(_sess, current_cam):
+    async def snapshot_current(_sess, current_cam):
         reemitted_from.append(
             await current_cam.get_config_file_path(best_effort=False)
         )
+        return new_active, old_active_snapshot
+
+    async def reemit_current(
+        _sess,
+        _current_cam,
+        *,
+        current_snapshot_path=None,
+    ):
+        assert current_snapshot_path == old_active_snapshot
         return no_room_new_active
 
+    monkeypatch.setattr(
+        correction_setup,
+        "_snapshot_running_room_graph",
+        snapshot_current,
+    )
     monkeypatch.setattr(
         correction_setup,
         "_write_no_room_correction_config",
@@ -3432,6 +3697,7 @@ async def test_failed_room_reversal_preserves_newer_active_graph(
         session_id = "active-superseded-room"
         state = SessionState.FAILED
         pre_measurement_config_path = old_active
+        pre_measurement_restore_path = tmp_path / "sound_snapshot_before_1.yml"
         measurement_config_path = measurement
         cfg = SimpleNamespace(
             config_dir=tmp_path,

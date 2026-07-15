@@ -129,7 +129,10 @@ existing layering):
     recovery shape: readable protected-tweeter topology plus content proving
     `File` → Snapcast FIFO. Other generic pipe configs, such as passive
     multiroom `grouping_leader.yml`, stay in the ordinary sound/correction
-    carrier and are never re-stamped as active program bakes.
+    carrier and are never re-stamped as active program bakes. Room resolves
+    this compatibility shape while the original filename is still available
+    and stamps its collision-free running-graph snapshot with the program-bake
+    source, preserving the same carrier for measurement and rollback.
   - `is_jts_generated_config` (name) → **sound/correction carrier**
     (`extract_room_peqs_from_config` → `emit_sound_config`) — today's two arms
     relocated **verbatim**, including the `member_camilla_kwargs()` splat
