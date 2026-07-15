@@ -43,6 +43,7 @@ const {
   ABORT_REPOSTS,
   RAMP_TERMINAL_STATES,
   rampEventFromStatus,
+  retryableRelayStatusError,
   runLevelRampProtocol,
 } = await import(dataUrl);
 
@@ -488,6 +489,47 @@ function setupBinding(id = "flow-123456789012") {
     });
     assert.deepEqual(ramp, { state, terminal: true });
   }
+  ok();
+}
+
+// A transient observational status failure must not abort a safe ramp.  The
+// next poll can still observe the Pi's terminal lock; credential/session 4xx
+// remains fatal instead of spinning until the outer duration bound.
+{
+  let statusReads = 0;
+  const client = {
+    async postEvent() {},
+    async fetchPhoneStatus() {
+      statusReads += 1;
+      if (statusReads === 1) throw new TypeError("Failed to fetch");
+      return {
+        host_event: { ramp: { state: "locked", run_token: "run-transient" } },
+      };
+    },
+  };
+  const recorder = {
+    start() {},
+    async stop() {
+      return new Float32Array(4800).fill(0.05);
+    },
+  };
+  const ramp = await runLevelRampProtocol({
+    client,
+    recorder,
+    spec: {
+      kind: "level_ramp",
+      run_token: "run-transient",
+      duration_ms: 5000,
+      sample_rate_hz: 48000,
+    },
+    blockMs: 100,
+    delay: async () => {},
+  });
+  assert.deepEqual(ramp, { state: "locked", terminal: true });
+  assert.equal(statusReads, 2);
+  assert.equal(retryableRelayStatusError({ status: 503 }), true);
+  assert.equal(retryableRelayStatusError({ status: 429 }), true);
+  assert.equal(retryableRelayStatusError({ status: 404 }), false);
   ok();
 }
 

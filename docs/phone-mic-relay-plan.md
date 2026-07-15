@@ -762,17 +762,19 @@ pairing proof, not a guess based on the Pages dashboard.
 
 ---
 
-Last updated: 2026-07-14 — Room defaults are speaker-owned (six positions,
+Last updated: 2026-07-15 — Room defaults are speaker-owned (six positions,
 flat target, balanced strategy, and an automatic main-seat trust repeat). The
 Room level check no longer collects a phone-owned position count; later Room
 links carry signed position/total metadata and authenticate the realized
 microphone against the Pi-retained level identity before playback. The trust
 repeat uses the same Room relay handler and state machine; its generic
 `presentation_variant` changes phone copy only and cannot own sequencing,
-timeout, or admission. Repo-pinned capture page build 20260714.1 adds the
+timeout, or admission. Repo-pinned capture page build 20260715.1 adds the
 repeat-specific phone copy and renders host sweep cancellation as expected
-control flow; external publication is intentionally pending coordinator
-release. Active-crossover capture uses
+control flow. A transient phone-side status-poll failure no longer aborts a
+bounded level walk, and the Pi gives idempotent host-progress writes one retry
+after a timeout, 429, or relay 5xx. External publication is intentionally
+pending coordinator release. Active-crossover capture uses
 role-sized sweeps,
 a signal-bounded controlled quiet crop, paired-window deconvolved per-band SNR,
 and the server-owned three-repeat admission loop; selecting a UMIK-2 preselects

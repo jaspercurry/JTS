@@ -152,6 +152,11 @@ _RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {
 # Bound the foreground relay registration so a slow/unreachable relay fails fast
 # rather than hanging the request thread for RelayClient's 15 s default.
 _RELAY_REGISTER_TIMEOUT_S = 10.0
+# Host progress is last-write-wins and idempotent.  One transient relay 5xx or
+# socket timeout must not abort a guarded level walk, but retries stay tightly
+# bounded so a dead relay still reaches the existing restore/Stop path.
+_RELAY_HOST_EVENT_ATTEMPTS = 2
+_RELAY_HOST_EVENT_RETRY_DELAY_S = 0.25
 # Exact set/readback plus the emergency set/readback each use Camilla's bounded
 # reconnect contract. Keep the HTTP owner alive for the complete sequence.
 _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
@@ -164,6 +169,41 @@ _SUMMED_CAPTURE_UNAVAILABLE_REASON = "active_summed_persisted_admission_unavaila
 # bounded and well inside the relay's rolling three-second sample window.
 _RELAY_LEVEL_AMBIENT_MIN_SAMPLES = 10
 _ROOM_SWEEP_PHONE_FAILURE = "the speaker could not complete this measurement"
+
+
+async def _post_relay_host_event(
+    client: Any,
+    pi_session: Any,
+    payload: Mapping[str, Any],
+) -> None:
+    """Publish one idempotent host event with one bounded transient retry."""
+
+    from jasper.capture_relay.client import RelayError
+
+    for attempt in range(1, _RELAY_HOST_EVENT_ATTEMPTS + 1):
+        try:
+            await asyncio.to_thread(
+                client.post_host_event,
+                pi_session.session_id,
+                pi_session.pull_token,
+                payload,
+            )
+            return
+        except RelayError as exc:
+            retryable = exc.status == 429 or exc.status >= 500
+            if not retryable or attempt >= _RELAY_HOST_EVENT_ATTEMPTS:
+                raise
+        except OSError:
+            if attempt >= _RELAY_HOST_EVENT_ATTEMPTS:
+                raise
+        log_event(
+            logger,
+            "capture_relay.host_event_retry",
+            level=logging.WARNING,
+            session_id=pi_session.session_id,
+            attempt=attempt,
+        )
+        await asyncio.sleep(_RELAY_HOST_EVENT_RETRY_DELAY_S)
 
 
 def _summed_capture_unavailable(*, ingress: str) -> dict[str, Any]:
@@ -3402,12 +3442,7 @@ async def _run_relay_level_match(
             try:
                 while outbound:
                     payload = outbound.pop(0)
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        payload,
-                    )
+                    await _post_relay_host_event(client, pi_session, payload)
                 fresh = await asyncio.to_thread(
                     client.status,
                     pi_session.session_id,
@@ -3431,10 +3466,9 @@ async def _run_relay_level_match(
                     reason=str(exc),
                 )
                 try:
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
+                    await _post_relay_host_event(
+                        client,
+                        pi_session,
                         {
                             "phase": "capture_incompatible",
                             "error": "capture control integrity check failed",
@@ -3577,12 +3611,7 @@ async def _run_relay_level_match(
                                 "phase": "setup_validated",
                                 "setup_token": setup_token,
                             }
-                        await asyncio.to_thread(
-                            client.post_host_event,
-                            pi_session.session_id,
-                            pi_session.pull_token,
-                            response,
-                        )
+                        await _post_relay_host_event(client, pi_session, response)
                         if response["phase"] == "setup_validation_failed":
                             raise ValueError(str(response["error"]))
                 refusal = (
@@ -3795,10 +3824,9 @@ async def _run_relay_level_match(
             terminal_state = (
                 "cancelled" if isinstance(exc, CaptureStopped) else "error"
             )
-            await asyncio.to_thread(
-                client.post_host_event,
-                pi_session.session_id,
-                pi_session.pull_token,
+            await _post_relay_host_event(
+                client,
+                pi_session,
                 {
                     "ramp": {
                         "state": terminal_state,

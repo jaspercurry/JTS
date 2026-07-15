@@ -437,8 +437,11 @@
   calibration-file match), is `capture_page_build=20260712.3`, supporting
   protocols 1 and 2. The public
   `https://capture.jasper.tech/version.json` reported `20260712.3` on
-  2026-07-12. Repo build 20260714.1 adds the Room-specific trust-repeat copy and
-  renders host `sweep_cancelled` as expected Stop control flow; it is
+  2026-07-12. Repo build 20260715.1 adds the Room-specific trust-repeat copy,
+  renders host `sweep_cancelled` as expected Stop control flow, and keeps a
+  safely bounded level walk alive across a transient relay status-poll failure.
+  The Pi retries one idempotent host-progress write after a timeout, 429, or
+  relay 5xx. The repo build is
   intentionally not published by this hardware-free lane, so that external
   release artifact remains pending.
   Crossover level and sweep volume transitions now use one durable backend

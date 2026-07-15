@@ -57,6 +57,16 @@ export const RAMP_TERMINAL_STATES = Object.freeze([
 ]);
 const RAMP_TERMINAL_STATE_SET = new Set(RAMP_TERMINAL_STATES);
 
+// A status read is observational and the whole ramp is already bounded by both
+// the Pi safety timeout and this page's duration_ms.  Keep the mic stream alive
+// across an ordinary network fetch failure, relay throttling, or relay 5xx; a
+// credential/session 4xx remains immediately fatal.
+export function retryableRelayStatusError(error) {
+  const status = Number(error && error.status);
+  if (Number.isFinite(status)) return status === 429 || status >= 500;
+  return error instanceof TypeError;
+}
+
 // Compute one {rms_dbfs, peak_dbfs, clip} verdict for a block of mono samples.
 // Exported for direct unit testing.
 export function blockLevel(samples) {
@@ -346,10 +356,14 @@ export async function runLevelRampProtocol(opts = {}) {
       const frames = await recorder.stop({ timeoutMs: 5000 });
       await streamer.addFrame(frames);
 
-      const ramp = rampEventFromStatus(
-        await client.fetchPhoneStatus(),
-        spec.run_token || "",
-      );
+      let phoneStatus;
+      try {
+        phoneStatus = await client.fetchPhoneStatus();
+      } catch (err) {
+        if (!retryableRelayStatusError(err)) throw err;
+        continue;
+      }
+      const ramp = rampEventFromStatus(phoneStatus, spec.run_token || "");
       if (ramp && typeof opts.onProgress === "function") opts.onProgress(ramp);
       if (ramp && ramp.terminal) {
         await streamer.close();

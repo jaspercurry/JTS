@@ -510,6 +510,51 @@ async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeyp
     assert purged == ["cap-stop"]
 
 
+@pytest.mark.asyncio
+async def test_relay_host_event_retries_one_transient_timeout(monkeypatch):
+    attempts = []
+
+    class Client:
+        def post_host_event(self, _session_id, _pull_token, payload):
+            attempts.append(payload)
+            if len(attempts) == 1:
+                raise TimeoutError("relay response timed out")
+
+    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
+    await correction_setup._post_relay_host_event(
+        Client(),
+        SimpleNamespace(session_id="cap-retry", pull_token="pull"),
+        {"phase": "setup_validated"},
+    )
+
+    assert attempts == [
+        {"phase": "setup_validated"},
+        {"phase": "setup_validated"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_relay_host_event_does_not_retry_nontransient_4xx(monkeypatch):
+    from jasper.capture_relay.client import RelayError
+
+    attempts = []
+
+    class Client:
+        def post_host_event(self, _session_id, _pull_token, payload):
+            attempts.append(payload)
+            raise RelayError("host event failed: 404", 404)
+
+    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
+    with pytest.raises(RelayError, match="404"):
+        await correction_setup._post_relay_host_event(
+            Client(),
+            SimpleNamespace(session_id="cap-gone", pull_token="pull"),
+            {"phase": "setup_validated"},
+        )
+
+    assert attempts == [{"phase": "setup_validated"}]
+
+
 def test_relay_capture_return_url_uses_request_host(monkeypatch):
     monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
     handler = SimpleNamespace(headers={"Host": "jts5.local"})
