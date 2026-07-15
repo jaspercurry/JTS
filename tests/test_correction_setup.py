@@ -1366,6 +1366,121 @@ def test_room_verify_checks_level_microphone_before_playback(monkeypatch, tmp_pa
     assert restored == [True]
 
 
+def test_room_relay_verify_keeps_capture_when_terminal_event_is_unconfirmed(
+    monkeypatch,
+    tmp_path,
+):
+    """A committed verify upload outlives a timed-out sweep-complete response."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator
+    from jasper.correction.session import SessionState
+
+    events = []
+    uploaded = []
+    registered = {}
+
+    @asynccontextmanager
+    async def measurement_window():
+        yield
+
+    async def post_host_event(
+        _client,
+        _pi_session,
+        payload,
+        *,
+        hard_timeout_s,
+    ):
+        events.append((dict(payload), hard_timeout_s))
+        if payload["phase"] == "sweep_complete":
+            raise asyncio.TimeoutError
+
+    class Session:
+        session_id = "room-verify-timeout"
+        state = SessionState.APPLIED
+        input_device = {"label": "UMIK-2"}
+        mic_calibration = None
+
+        def level_match_snapshot(self):
+            return {"last": {"ramp": {"state": "locked"}}}
+
+        def verify_capture_path(self):
+            return tmp_path / "verify.wav"
+
+        async def ensure_level_match_volume(self, _setter):
+            return True
+
+        async def start_verify_sweep(self, _play_sweep, *, runtime_probe_async):
+            return None
+
+        async def restore_level_match_volume(self, _setter):
+            return True
+
+        async def on_verify_capture_uploaded(self, path):
+            uploaded.append(path.read_bytes())
+
+    class Camilla:
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+        async def get_runtime_status(self, *, best_effort):
+            return {}
+
+    def fake_run(kind, _relay_base, *, return_url):
+        registered.update(kind=kind, return_url=return_url)
+        return {"tap_link": "https://capture.jasper.tech/#redacted"}
+
+    def fake_run_capture(_client, _pi_session, *, on_armed):
+        relay_session._call_state_callback(
+            on_armed,
+            SimpleNamespace(device={"label": "UMIK-2"}),
+        )
+        return SimpleNamespace(wav=b"RIFFfresh-verify", device={"label": "UMIK-2"})
+
+    client = SimpleNamespace(
+        post_host_event=lambda *_args, **_kwargs: pytest.fail(
+            "Verify progress must use the bounded ordered relay path"
+        )
+    )
+    pi_session = SimpleNamespace(session_id="relay-verify", pull_token="pull")
+    monkeypatch.setattr(
+        correction_setup,
+        "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", Session)
+    monkeypatch.setattr(correction_setup, "_camilla", Camilla)
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
+    monkeypatch.setattr(correction_setup, "_post_relay_host_event", post_host_event)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda awaitable, *, timeout: asyncio.run(awaitable),
+    )
+    monkeypatch.setattr(correction_setup, "_maybe_auto_revert", lambda _sess: None)
+    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    correction_setup._handle_relay_verify(
+        SimpleNamespace(headers={"Host": "jts3.local"})
+    )
+    asyncio.run(registered["kind"].run_and_consume(client, pi_session))
+
+    assert uploaded == [b"RIFFfresh-verify"]
+    assert [event[0]["phase"] for event in events] == [
+        "sweep_started",
+        "sweep_complete",
+    ]
+    assert all(
+        event[0]["capture_kind"] == "verify"
+        and event[1] == correction_setup._RELAY_CONTROL_TIMEOUT_S
+        for event in events
+    )
+
+
 def test_render_page_delegates_correction_when_bonded_follower(monkeypatch):
     monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
     monkeypatch.setattr(

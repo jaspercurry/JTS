@@ -265,6 +265,50 @@ async def _post_relay_host_event(
         await asyncio.sleep(_RELAY_HOST_EVENT_RETRY_DELAY_S)
 
 
+def _bounded_relay_control_client(client: Any) -> Any:
+    """Clone the production relay client onto the narrow control deadline."""
+
+    from jasper.capture_relay.client import RelayClient
+
+    return (
+        client.with_timeout(_RELAY_CONTROL_TIMEOUT_S)
+        if isinstance(client, RelayClient)
+        else client  # injected deterministic test double
+    )
+
+
+async def _post_room_sweep_host_event(
+    control_client: Any,
+    pi_session: Any,
+    payload: Mapping[str, Any],
+) -> None:
+    """Publish ordered Room progress without discarding ambiguous captures."""
+
+    from jasper.capture_relay.client import RelayError
+
+    try:
+        await _post_relay_host_event(
+            control_client,
+            pi_session,
+            payload,
+            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
+        )
+    except (asyncio.TimeoutError, OSError, RelayError) as exc:
+        # The request may have committed before its response timed out. Its
+        # detached write remains ordered, and run_capture's ready blob is the
+        # authoritative completion signal. Do not discard a valid WAV merely
+        # because this progress acknowledgement is unconfirmed.
+        log_event(
+            logger,
+            "capture_relay.room_sweep_host_event",
+            level=logging.WARNING,
+            session_id=pi_session.session_id,
+            phase=payload.get("phase"),
+            result="unconfirmed",
+            reason=type(exc).__name__,
+        )
+
+
 def _summed_capture_unavailable(*, ingress: str) -> dict[str, Any]:
     """Refuse legacy browser/raw summed capture before it can touch audio."""
 
@@ -1426,14 +1470,9 @@ def _run_relay_measurement_sweep(
     path returns, while still using the same measurement_window and
     MeasurementSession transition code as the local browser flow.
     """
-    from jasper.capture_relay.client import RelayClient, RelayError
     from jasper.correction import coordinator, playback
 
-    control_client = (
-        client.with_timeout(_RELAY_CONTROL_TIMEOUT_S)
-        if isinstance(client, RelayClient)
-        else client  # injected deterministic test double
-    )
+    control_client = _bounded_relay_control_client(client)
 
     async def _host_event(phase: str, **extra: Any) -> None:
         payload = {
@@ -1447,27 +1486,11 @@ def _run_relay_measurement_sweep(
             "capture_kind": "repeat" if repeat else "measurement",
             **extra,
         }
-        try:
-            await _post_relay_host_event(
-                control_client,
-                pi_session,
-                payload,
-                hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
-            )
-        except (asyncio.TimeoutError, OSError, RelayError) as exc:
-            # The request may have committed before its response timed out. Its
-            # detached write remains ordered, and run_capture's ready blob is
-            # the authoritative completion signal. Do not discard a valid WAV
-            # merely because this progress acknowledgement is unconfirmed.
-            log_event(
-                logger,
-                "capture_relay.room_sweep_host_event",
-                level=logging.WARNING,
-                session_id=pi_session.session_id,
-                phase=phase,
-                result="unconfirmed",
-                reason=type(exc).__name__,
-            )
+        await _post_room_sweep_host_event(
+            control_client,
+            pi_session,
+            payload,
+        )
 
     async def _run_sweep() -> None:
         async def _runtime_probe() -> dict[str, Any] | None:
@@ -3445,6 +3468,7 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         cam = _camilla()
         capture_path = sess.verify_capture_path()
+        control_client = _bounded_relay_control_client(client)
 
         async def _play_verify() -> None:
             async def _runtime_probe() -> dict[str, Any] | None:
@@ -3459,21 +3483,29 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                         "level check again"
                     )
                 try:
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        {"phase": "sweep_started", "position": 1, "total_positions": 1},
+                    await _post_room_sweep_host_event(
+                        control_client,
+                        pi_session,
+                        {
+                            "phase": "sweep_started",
+                            "position": 1,
+                            "total_positions": 1,
+                            "capture_kind": "verify",
+                        },
                     )
                     await sess.start_verify_sweep(
                         playback.play_sweep,
                         runtime_probe_async=_runtime_probe,
                     )
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        {"phase": "sweep_complete", "position": 1, "total_positions": 1},
+                    await _post_room_sweep_host_event(
+                        control_client,
+                        pi_session,
+                        {
+                            "phase": "sweep_complete",
+                            "position": 1,
+                            "total_positions": 1,
+                            "capture_kind": "verify",
+                        },
                     )
                 finally:
                     await sess.restore_level_match_volume(
