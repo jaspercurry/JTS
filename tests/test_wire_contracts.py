@@ -502,11 +502,21 @@ DASHBOARD_AUDIO_HEALTH_KEYS = {
     "sources", "issues", "technical", "status", "headline", "detail",
     "active_source", "since", "applicable", "kind", "verification",
     "runtime", "state", "started_at", "last_seen_at", "recovered_at",
+    "current_stream", "current_incident", "recent_incidents", "media",
+    "processing", "output", "signal", "session", "summary", "details",
+    "id", "key", "severity", "title", "source_id", "duration_seconds",
+    "duration_label", "count", "recurrence", "impact", "observed",
+    "likely_area", "evidence", "first_at", "last_at", "window_seconds",
+    "interruptions", "latency_events", "sync_events", "degraded_seconds",
+    "last_incident_at",
 }
 
 
 def test_dashboard_audio_health_keys_exist_in_normalized_sampler():
-    sampler = (REPO / "jasper" / "control" / "audio_health.py").read_text()
+    sampler = "\n".join(
+        (REPO / "jasper" / "control" / name).read_text()
+        for name in ("audio_health.py", "audio_incidents.py")
+    )
     missing = [
         key for key in sorted(DASHBOARD_AUDIO_HEALTH_KEYS)
         if f'"{key}"' not in sampler

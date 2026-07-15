@@ -237,21 +237,26 @@ A tight cluster (most events within ~3 ms of each other, around 0.118 s) — com
 
 ### System dashboard readout
 
-`/system/audio/` has a compact AirPlay source card backed by the normalized
-audio-health projection in
+`/system/audio/` includes AirPlay in the normalized audio-health projection in
 [`jasper/control/audio_health.py`](../jasper/control/audio_health.py). The
 projection consumes the bounded observations from
 [`jasper/control/airplay_health.py`](../jasper/control/airplay_health.py), keeps
 AirPlay synchronization separate from USB's low-latency route contract, and
 moves common fan-in/Camilla/outputd facts into shared-path or collapsed
-technical sections instead of presenting them as AirPlay-only problems. It is
-a recent-health view, not a full diagnostics runner:
+technical sections instead of presenting them as AirPlay-only problems. When
+AirPlay is selected, those honest source/processing/output/sync/reliability
+facts appear in the current-stream diagnostic; otherwise AirPlay is one compact
+readiness row. It is a recent-health view, not a full diagnostics runner:
 
 - Fan-in `STATUS` is sampled every 5 s over UDS with a short timeout.
   The sampler uses `airplay.frames_read` deltas for "currently receiving
   frames", `airplay.xrun_count` deltas for AirPlay input recovery
   events, output `xrun_count` deltas for downstream pressure, the
   configured fan-in buffers, and watchdog progress age.
+- The dashboard calls AirPlay the current stream only when the selected mux
+  lane and `jasper-mux STATUS.sources.airplay.playing` agree. Mux owns that
+  canonical MPRIS-plus-metadata predicate, so a free-running silent lane or a
+  phantom macOS SETUP session does not create a fake dashboard session.
 - Outputd final-output state is classified once as part of the shared audio
   path. Raw content/DAC xrun age, buffer, and rate context is available under
   the Audio view's collapsed technical details; it is not repeated as the
@@ -272,9 +277,12 @@ a recent-health view, not a full diagnostics runner:
   Camilla context includes buffer level, rate adjust, active config
   basename, and the active config's target/chunk values when the YAML is
   readable. These are useful context, not the hot-path truth source.
-- History is in-memory only: 10 s buckets for 30 min plus a small
-  recent-event ring. There is no database and no dashboard-poll-time
-  journal scan. The socket-activated `jasper-system-web` process only
+- Raw AirPlay history stays in memory: 10 s buckets for 30 min plus a small
+  recent-event ring. The normalized audio dashboard separately persists an
+  allowlisted ring of at most 20 incident freeze-frames so a control-service
+  restart does not erase recent troubleshooting context; it stores no audio or
+  track metadata. Neither path uses a database or performs a journal scan at
+  dashboard-poll time. The socket-activated `jasper-system-web` process only
   formats the already-digested `/system/snapshot` payload.
 - The canonical deploy wrapper writes a bounded maintenance marker at
   `/run/jasper-airplay-health-suppress-until`. While it is active, the
@@ -1823,11 +1831,12 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-07-14 (Tier-3 recovery final mutation rechecked as an
+Last verified: 2026-07-15 (Tier-3 recovery final mutation rechecked as an
 inactive-capable `restart` guarded by the unit's final source-intent
 ExecCondition so concurrent Off/role parking wins;
 `/system/audio/` normalized AirPlay projection,
-source-specific sync timing, legacy snapshot compatibility, and the
+current-stream/readiness presentation, source-specific sync timing, legacy
+snapshot compatibility, and the
 short-read non-escalation boundary rechecked against
 `jasper/control/{audio_health,airplay_health}.py`). Prior 2026-06-29 (JTS2 Apple-dongle AirPlay path checked at
 CamillaDSP 256/1536, fan-in output 1024, outputd DAC 512; counters clean

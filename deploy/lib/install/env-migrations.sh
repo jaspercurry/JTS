@@ -38,10 +38,10 @@ ensure_state_dir() {
 #
 # The dir mode (0770) + the daemons' UMask=0007 make NEW files group-writable,
 # but files CREATED BEFORE that landed (or by a root writer) can be
-# group-`jasper` yet mode 0644 — group-read-only. Because jasper-voice and
-# jasper-mux both declare StateDirectory=jasper, whichever restarts last
-# re-chowns the tree to its own user; the other daemon (same `jasper` group)
-# then cannot write a 0644 file it no longer owns, and the voice DBs raise
+# group-`jasper` yet mode 0644 — group-read-only. Because jasper-voice is the
+# sole StateDirectory=jasper owner, its restart re-chowns the tree to its user;
+# other writers in the same `jasper` group then cannot write a 0644 file they
+# no longer own, and the voice DBs raise
 # "attempt to write a readonly database" (the 2026-06-19 incident). This
 # one-time heal fixes the EXISTING files on upgrade; UMask=0007 keeps new ones
 # correct.
@@ -78,6 +78,7 @@ heal_shared_state_modes() {
     done
     heal_specs+=(
         "f:0660:${STATE_DIR}/speaker_volume.json"
+        "f:0660:${STATE_DIR}/audio_health_incidents.json"
         "f:0660:${STATE_DIR}/mux_mode.json"
         "f:0640:${STATE_DIR}/output_topology.json"
         "f:0660:${STATE_DIR}/grouping.env"

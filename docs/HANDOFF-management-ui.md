@@ -472,30 +472,41 @@ once, so polling does not reset controls, disclosure state, or text selection.
 
 **Audio** is the single household-facing audio-health view:
 
-- one concise overall conclusion plus the shared signal-path stages;
-- a conditional Timing card: USB shows the declared low-latency route's
-  runtime clock mode separately from its measured certification, while
-  AirPlay timing stays a source-specific synchronization concern;
-- a bounded recent-issues list that distinguishes ongoing trouble from a
-  recovered blip and reports time since the transition;
-- compact AirPlay, Spotify, Bluetooth, and USB Audio source cards derived
-  from the canonical music-source registry; cached service state distinguishes
-  Ready, Not running, Off, and a failed source-critical service without
-  treating ancillary helpers as renderers or starting another systemd probe
-  cadence. Canonical source intent owns the Off state: expected inactive units
-  are quiet, while an Off source with active resources is an explicit drift
-  issue. Source-specific timing appears only where the source has a real
-  contract;
-- collapsed technical details for raw fan-in/Camilla/outputd context; and
-- Audio conversion (Medium/Best ALSA rate-converter preference).
+- a current-stream diagnostic card with the active source plus only the media,
+  processing, output, latency, signal, and reliability facts the runtime can
+  support honestly. Missing facts disappear; configured maxima and shared-path
+  sample rates are not presented as observed source bitrate or bit depth;
+- an optional current-issue card with impact, observed evidence, likely area,
+  recurrence, and elapsed time. Healthy playback does not get a redundant
+  "playing" status card;
+- a compact current-session roll-up of observed interruptions, degraded timing,
+  and time affected;
+- at most five non-duplicated recent incidents. Their relative timestamps update
+  locally between polls, recovered rows say how long the event lasted, and a
+  native disclosure exposes the bounded freeze-frame evidence captured at the
+  transition. The incident ring survives a control-service restart without
+  becoming an unbounded log or database;
+- compact readiness rows for the *other* AirPlay, Spotify, Bluetooth, and USB
+  Audio sources, derived from the canonical music-source registry. Cached
+  service state distinguishes Ready, Not running, Off, and a failed
+  source-critical service without treating ancillary helpers as renderers or
+  starting another systemd probe cadence. Canonical source intent owns the Off
+  state: expected inactive units are quiet, while an Off source with active
+  resources is an explicit drift issue;
+- collapsed technical evidence for raw fan-in/Camilla/outputd and historical
+  route-validation context; and
+- collapsed Audio conversion controls (Medium/Best ALSA rate-converter
+  preference).
 
 The browser does not infer health from raw counters or contain latency
 thresholds. It renders the normalized `/system/snapshot.audio_health`
 contract and fails soft to an explicit unavailable card if that block is
 missing. Playback continuity and timing are separate axes: a USB L2 fallback
-can protect clean playback while honestly reporting increased latency, and an
-L0 lock is never presented as end-to-end certification without a fresh,
-matching route-latency artifact.
+can protect clean playback while honestly reporting increased latency. L0 is a
+live receiver clock-mode fact, not an end-to-end measurement; stale, missing,
+or mismatched route-validation artifacts remain technical evidence and never
+become a household warning. AirPlay reports synchronization mode/corrections
+rather than a misleading numeric latency estimate.
 
 ### 3.3 Web surfaces under `jasper/web/`
 
@@ -1468,7 +1479,7 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-07-14 (source-switch desired/effective/parked/unavailable
+Last verified: 2026-07-15 (source-switch desired/effective/parked/unavailable
 presentation and follower mutation guard rechecked against `sources_setup.py`,
 `bluetooth_setup.py`, and their static ES modules; lifecycle behavior linked
 to HANDOFF-source-lifecycle.md. Also
@@ -1477,8 +1488,10 @@ direct-link fallback and one shared poll loop),
 the normalized audio-health rendering boundary, and shared header-tab ownership
 rechecked against `jasper/web/system_setup.py`,
 `deploy/assets/system-status/js/`, `jasper/control/audio_health.py`, and
-`app.css`; the browser renders backend conclusions and keeps USB runtime mode
-separate from measured route certification). Prior 2026-07-12: canonical toggle
+`app.css`; the browser renders backend conclusions as current-stream facts,
+an optional current incident, a session roll-up, five recent freeze-frames, and
+compact other-source readiness; USB runtime mode stays separate from historical
+route evidence). Prior 2026-07-12: canonical toggle
 ownership and the no-focus-outline contract rechecked against `app.css` and the
 design-system guards; `/system/`
 memory tile now surfaces root

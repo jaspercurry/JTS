@@ -13,8 +13,8 @@ import {
 import { AUDIO_OPTIONS, updateAudioQuality } from "./sections.js";
 import { fmtEpochAgo } from "./format.js";
 import {
-  unavailableBody, overviewBody, latencyBody, issuesBody, sourcesBody,
-  technicalBody,
+  unavailableBody, currentStreamBody, currentIncident, currentIncidentBody,
+  issuesBody, otherSources, sourcesBody, technicalBody, refreshRelativeTimes,
 } from "./audio-sections.js";
 
 function buildAudioQuality(handlers) {
@@ -28,8 +28,8 @@ function buildAudioQuality(handlers) {
       onClick: () => handlers.setQuality(opt.converter),
     }),
   }));
-  const card = titledCard("Audio conversion");
-  card.body.append(
+  const body = h("div.info-card");
+  body.append(
     h("dl.deflist", null,
       h("dt", null, "Requested"), requested,
       h("dt", null, "Active"), active),
@@ -40,19 +40,20 @@ function buildAudioQuality(handlers) {
     h("div.choice-grid", null, buttons.map((button) => button.el)),
     status,
   );
-  return { section: card.section, requested, active, status, buttons };
+  const section = collapsible({ title: "Audio conversion", open: false, body });
+  return { section, requested, active, status, buttons };
 }
 
 export function buildAudioPanel(handlers) {
   const live = livePill();
-  const overview = titledCard("General", { accent: true });
-  const latency = titledCard("Latency");
-  latency.section.hidden = true;
+  const stream = titledCard("Current stream", { accent: true });
+  const currentIssue = titledCard("Current issue");
+  currentIssue.section.hidden = true;
   const issues = titledCard("Recent issues");
-  const sources = titledCard("Sources");
+  const sources = titledCard("Other sources");
   const technicalBodyHost = h("div.info-card");
   const technical = collapsible({
-    title: "Technical details", open: false, body: technicalBodyHost,
+    title: "Technical evidence", open: false, body: technicalBodyHost,
   });
   const quality = buildAudioQuality(handlers);
 
@@ -60,8 +61,8 @@ export function buildAudioPanel(handlers) {
     "attr:data-status-view": "audio",
   },
     live.el,
-    overview.section,
-    latency.section,
+    stream.section,
+    currentIssue.section,
     issues.section,
     sources.section,
     technical,
@@ -70,16 +71,23 @@ export function buildAudioPanel(handlers) {
 
   const refs = {
     staleness: live.label,
-    overview: overview.body,
-    latencySection: latency.section,
-    latency: latency.body,
+    stream: stream.body,
+    currentIncidentSection: currentIssue.section,
+    currentIncident: currentIssue.body,
     issues: issues.body,
+    sourcesSection: sources.section,
     sources: sources.body,
     technical: technicalBodyHost,
     qualitySection: quality.section,
     aq: quality,
     _memo: {},
   };
+  refs.panel = panel;
+  // Exactly one local clock for this build-once panel. It updates the handful
+  // of <time> nodes without another network request or DOM rebuild.
+  window.setInterval(() => {
+    if (!panel.hidden) refreshRelativeTimes(panel);
+  }, 1000);
   return { panel, refs };
 }
 
@@ -102,35 +110,39 @@ export function updateAudio(refs, snap) {
 
   const healthSources = health && Array.isArray(health.sources)
     ? health.sources : [];
-  const ageBucket = Math.floor(Date.now() / 10000);
-  const overviewData = health ? {
+  renderSection(refs, "stream", refs.stream, health && {
+    current_stream: health.current_stream,
+    session_summary: health.session_summary,
     overall: health.overall,
     signal_path: health.signal_path,
-    sources: healthSources.map((source) => ({
-      id: source.id, label: source.label,
-    })),
-    ageBucket,
-  } : null;
-  renderSection(refs, "overview", refs.overview, overviewData,
-    () => health ? overviewBody(health) : unavailableBody());
+    sources: healthSources,
+  }, () => health ? currentStreamBody(health) : unavailableBody());
+
+  const incident = health ? currentIncident(health) : null;
+  refs.currentIncidentSection.hidden = !incident;
+  if (incident) {
+    renderSection(refs, "currentIncident", refs.currentIncident, incident,
+      () => currentIncidentBody(health));
+  }
+
   renderSection(refs, "issues", refs.issues, health && {
-    issues: health.issues, ageBucket,
+    recent_incidents: health.recent_incidents,
+    issues: health.recent_incidents ? undefined : health.issues,
+    incident_window_label: health.incident_window_label,
   },
     () => health ? issuesBody(health) : h("p.audio-empty", null, "No issue history available."));
-  renderSection(refs, "sources", refs.sources, health && health.sources,
+
+  const remainingSources = health ? otherSources(health) : [];
+  refs.sourcesSection.hidden = !!health && !remainingSources.length;
+  renderSection(refs, "sources", refs.sources, health && {
+    current_stream: health.current_stream,
+    overall: health.overall,
+    sources: healthSources,
+  },
     () => health ? sourcesBody(health) : h("p.audio-empty", null, "No source health available."));
   renderSection(refs, "technical", refs.technical, health && health.technical,
     () => health ? technicalBody(health) : h("p.audio-empty", null, "No technical snapshot available."));
-
-  const latency = health && health.latency;
-  const showRouteLatency = !!(
-    latency && latency.applicable && latency.kind === "route_latency"
-  );
-  refs.latencySection.hidden = !showRouteLatency;
-  if (showRouteLatency) {
-    renderSection(refs, "latency", refs.latency, { latency, ageBucket },
-      () => latencyBody(health));
-  }
+  refreshRelativeTimes(refs.panel);
 
   try {
     updateAudioQuality(refs.aq, snap.audio_quality);
