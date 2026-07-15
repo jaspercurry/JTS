@@ -784,6 +784,12 @@ a write that outlives the awaiting deadline stays ordered ahead of newer
 writes; an older progress event therefore cannot complete after and replace a
 newer terminal event in the relay's last-write-wins slot. The Pi gives
 idempotent host-progress writes one retry after a timeout, 429, or relay 5xx.
+Room sweep-start/complete events use the same narrow, ordered path. An
+unconfirmed response does not discard the capture because the write may already
+have committed; the authenticated ready blob is the completion proof and the
+ordinary upload deadline still detects a truly undelivered terminal event. A
+2026-07-15 JTS3 UMIK-2 trust repeat exercised that exact case: the
+`sweep_complete` response timed out while the capture page uploaded the WAV.
 External publication is intentionally pending coordinator release.
 Active-crossover capture uses
 role-sized sweeps,

@@ -472,7 +472,13 @@
   writes, so a late progress event cannot replace a newer terminal event in the
   relay's last-write-wins slot.
   The Pi retries one idempotent host-progress write after a timeout, 429, or
-  relay 5xx. The repo build is
+  relay 5xx. Room sweep-start/complete events use that same narrow, ordered
+  path. A timed-out response does not abort capture because the event may
+  already have committed; the relay's authenticated ready blob remains the
+  completion proof, and the ordinary upload deadline still fails a genuinely
+  undelivered event. The 2026-07-15 JTS3 UMIK-2 repeat smoke pinned this after a
+  `sweep_complete` response timed out while the capture page uploaded the valid
+  WAV. The repo build is
   intentionally not published by this hardware-free lane, so that external
   release artifact remains pending.
   Crossover level and sweep volume transitions now use one durable backend

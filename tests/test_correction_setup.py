@@ -635,7 +635,7 @@ async def test_timed_out_relay_write_cannot_finish_after_newer_terminal_event(
 def test_relay_level_control_budget_stays_inside_default_feed_guard():
     from jasper.audio_measurement.ramp import MeasurementRamp
 
-    assert correction_setup._RELAY_LEVEL_CONTROL_TIMEOUT_S < (
+    assert correction_setup._RELAY_CONTROL_TIMEOUT_S < (
         correction_setup._RELAY_REGISTER_TIMEOUT_S
     )
     assert correction_setup._RELAY_LEVEL_PUMP_MAX_BLOCK_S == pytest.approx(4.75)
@@ -863,6 +863,87 @@ def test_room_relay_repeat_consumes_repeat_capture_only(monkeypatch, tmp_path):
     }
     assert playback == [True]
     assert consumed == [("repeat", tmp_path / "repeat.wav")]
+
+
+def test_room_relay_repeat_keeps_capture_alive_when_terminal_event_is_unconfirmed(
+    monkeypatch,
+):
+    """A committed upload must outlive a timed-out sweep-complete response."""
+    from contextlib import asynccontextmanager
+
+    from jasper.correction import coordinator
+
+    events = []
+    playback = []
+    restored = []
+
+    @asynccontextmanager
+    async def measurement_window():
+        yield
+
+    async def post_host_event(_client, _pi_session, payload, *, hard_timeout_s):
+        events.append((dict(payload), hard_timeout_s))
+        if payload["phase"] == "sweep_complete":
+            raise asyncio.TimeoutError
+
+    class Session:
+        current_position = 1
+        total_positions = 6
+
+        async def ensure_level_match_volume(self, _setter):
+            return True
+
+        async def prepare_and_play_repeat_sweep(
+            self,
+            _play_sweep,
+            *,
+            runtime_probe_async,
+        ):
+            playback.append("repeat")
+
+        async def restore_level_match_volume(self, _setter):
+            restored.append(True)
+            return True
+
+    class Camilla:
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+        async def get_runtime_status(self, *, best_effort):
+            return {}
+
+    client = SimpleNamespace(
+        post_host_event=lambda *_args, **_kwargs: pytest.fail(
+            "Room sweep events must use the bounded async relay path"
+        )
+    )
+    pi_session = SimpleNamespace(session_id="cap-repeat", pull_token="pull")
+    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
+    monkeypatch.setattr(correction_setup, "_post_relay_host_event", post_host_event)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda awaitable, *, timeout: asyncio.run(awaitable),
+    )
+
+    correction_setup._run_relay_measurement_sweep(
+        Session(),
+        Camilla(),
+        client=client,
+        pi_session=pi_session,
+        repeat=True,
+    )
+
+    assert playback == ["repeat"]
+    assert restored == [True]
+    assert [event[0]["phase"] for event in events] == [
+        "sweep_started",
+        "sweep_complete",
+    ]
+    assert all(
+        timeout == correction_setup._RELAY_CONTROL_TIMEOUT_S
+        for _payload, timeout in events
+    )
 
 
 def test_room_relay_capture_refuses_changed_mic_before_playback(

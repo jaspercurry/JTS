@@ -166,13 +166,14 @@ _RELAY_LEVEL_CONTROL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="correction-relay-control",
 )
-# Level-ramp status and host events share one serialized pump. Give those small
-# control requests a separate WAN timeout: one retried host event plus the next
-# status read can then block for at most 4.75 s, comfortably inside the ramp's
-# default 8 s feed-loss guard. Registration retains its wider 10 s budget.
-_RELAY_LEVEL_CONTROL_TIMEOUT_S = 1.5
+# Level-ramp status and Room host events share one serialized pump. Give those
+# small control requests a separate WAN timeout: one retried level event plus
+# the next status read can then block for at most 4.75 s, comfortably inside
+# the ramp's default 8 s feed-loss guard. Registration retains its wider 10 s
+# budget.
+_RELAY_CONTROL_TIMEOUT_S = 1.5
 _RELAY_LEVEL_PUMP_MAX_BLOCK_S = (
-    (_RELAY_HOST_EVENT_ATTEMPTS + 1) * _RELAY_LEVEL_CONTROL_TIMEOUT_S
+    (_RELAY_HOST_EVENT_ATTEMPTS + 1) * _RELAY_CONTROL_TIMEOUT_S
     + _RELAY_HOST_EVENT_RETRY_DELAY_S
 )
 # Exact set/readback plus the emergency set/readback each use Camilla's bounded
@@ -1425,9 +1426,16 @@ def _run_relay_measurement_sweep(
     path returns, while still using the same measurement_window and
     MeasurementSession transition code as the local browser flow.
     """
+    from jasper.capture_relay.client import RelayClient, RelayError
     from jasper.correction import coordinator, playback
 
-    def _host_event(phase: str, **extra: Any) -> None:
+    control_client = (
+        client.with_timeout(_RELAY_CONTROL_TIMEOUT_S)
+        if isinstance(client, RelayClient)
+        else client  # injected deterministic test double
+    )
+
+    async def _host_event(phase: str, **extra: Any) -> None:
         payload = {
             "phase": phase,
             "position": (
@@ -1439,7 +1447,27 @@ def _run_relay_measurement_sweep(
             "capture_kind": "repeat" if repeat else "measurement",
             **extra,
         }
-        client.post_host_event(pi_session.session_id, pi_session.pull_token, payload)
+        try:
+            await _post_relay_host_event(
+                control_client,
+                pi_session,
+                payload,
+                hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
+            )
+        except (asyncio.TimeoutError, OSError, RelayError) as exc:
+            # The request may have committed before its response timed out. Its
+            # detached write remains ordered, and run_capture's ready blob is
+            # the authoritative completion signal. Do not discard a valid WAV
+            # merely because this progress acknowledgement is unconfirmed.
+            log_event(
+                logger,
+                "capture_relay.room_sweep_host_event",
+                level=logging.WARNING,
+                session_id=pi_session.session_id,
+                phase=phase,
+                result="unconfirmed",
+                reason=type(exc).__name__,
+            )
 
     async def _run_sweep() -> None:
         async def _runtime_probe() -> dict[str, Any] | None:
@@ -1454,7 +1482,7 @@ def _run_relay_measurement_sweep(
                     "check again"
                 )
             try:
-                await asyncio.to_thread(_host_event, "sweep_started")
+                await _host_event("sweep_started")
                 prepare = (
                     sess.prepare_and_play_repeat_sweep
                     if repeat
@@ -1464,7 +1492,7 @@ def _run_relay_measurement_sweep(
                     playback.play_sweep,
                     runtime_probe_async=_runtime_probe,
                 )
-                await asyncio.to_thread(_host_event, "sweep_complete")
+                await _host_event("sweep_complete")
             finally:
                 # The renderers resume when measurement_window exits. Restore
                 # the household listening volume before that boundary, on every
@@ -1480,12 +1508,20 @@ def _run_relay_measurement_sweep(
         )
     except (concurrent.futures.TimeoutError, RuntimeError, OSError, ValueError):
         try:
-            _host_event(
-                "sweep_failed",
-                error=_ROOM_SWEEP_PHONE_FAILURE,
-                error_code="room_sweep_unavailable",
+            _run_async(
+                _host_event(
+                    "sweep_failed",
+                    error=_ROOM_SWEEP_PHONE_FAILURE,
+                    error_code="room_sweep_unavailable",
+                ),
+                timeout=_RELAY_LEVEL_PUMP_MAX_BLOCK_S + 1.0,
             )
-        except (RuntimeError, OSError, ValueError):
+        except (
+            concurrent.futures.TimeoutError,
+            RuntimeError,
+            OSError,
+            ValueError,
+        ):
             logger.debug("could not publish relay sweep failure", exc_info=True)
         raise
 
@@ -3564,7 +3600,7 @@ async def _run_relay_level_match(
     from jasper.capture_relay.client import RelayClient
 
     control_client = (
-        client.with_timeout(_RELAY_LEVEL_CONTROL_TIMEOUT_S)
+        client.with_timeout(_RELAY_CONTROL_TIMEOUT_S)
         if isinstance(client, RelayClient)
         else client  # injected deterministic test double
     )
@@ -3602,13 +3638,13 @@ async def _run_relay_level_match(
                         control_client,
                         pi_session,
                         payload,
-                        hard_timeout_s=_RELAY_LEVEL_CONTROL_TIMEOUT_S,
+                        hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
                     )
                 fresh = await _run_relay_control_request(
                     control_client.status,
                     pi_session.session_id,
                     pi_session.pull_token,
-                    hard_timeout_s=_RELAY_LEVEL_CONTROL_TIMEOUT_S,
+                    hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
                 )
                 if isinstance(fresh, dict):
                     verified_event = event_verifier.verify(fresh.get("event"))
@@ -3635,7 +3671,7 @@ async def _run_relay_level_match(
                             "phase": "capture_incompatible",
                             "error": "capture control integrity check failed",
                         },
-                        hard_timeout_s=_RELAY_LEVEL_CONTROL_TIMEOUT_S,
+                        hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
                     )
                 except (OSError, RuntimeError, ValueError):
                     logger.warning(
@@ -3778,7 +3814,7 @@ async def _run_relay_level_match(
                             control_client,
                             pi_session,
                             response,
-                            hard_timeout_s=_RELAY_LEVEL_CONTROL_TIMEOUT_S,
+                            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
                         )
                         if response["phase"] == "setup_validation_failed":
                             raise ValueError(str(response["error"]))
@@ -4003,7 +4039,7 @@ async def _run_relay_level_match(
                         "error": str(exc),
                     }
                 },
-                hard_timeout_s=_RELAY_LEVEL_CONTROL_TIMEOUT_S,
+                hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
             )
             await asyncio.sleep(0.75)
         except (OSError, RuntimeError, ValueError):
