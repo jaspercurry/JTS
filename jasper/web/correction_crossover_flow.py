@@ -191,7 +191,7 @@ def handle_apply(
         ),
         timeout=30.0,
     )
-    if payload.get("status") != "applied":
+    if payload.get("status") not in {"applied", "applied_unverified"}:
         return payload, HTTPStatus.CONFLICT
 
     # This explicit user action is the terminal owner of commissioning.  The
@@ -242,6 +242,33 @@ def handle_apply(
         session_id=payload["commissioning_session"]["session_id"],
     )
     return payload, HTTPStatus.OK
+
+
+def handle_restore(
+    run_async: AsyncRunner,
+    camilla_factory: CamillaFactory,
+    *,
+    blocking_phase: str | None = None,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    """Restore one crash-interrupted strict candidate apply."""
+
+    from . import correction_crossover_backend as backend
+
+    if blocking_phase is not None:
+        return {
+            "status": "refused",
+            "reason": "measurement_in_progress",
+            "blocking_phase": blocking_phase,
+        }, HTTPStatus.CONFLICT
+    payload = run_async(
+        backend.restore_commissioning_candidate(camilla_factory=camilla_factory),
+        timeout=30.0,
+    )
+    return payload, (
+        HTTPStatus.OK
+        if payload.get("status") == "rolled_back"
+        else HTTPStatus.CONFLICT
+    )
 
 
 def handle_driver_test(

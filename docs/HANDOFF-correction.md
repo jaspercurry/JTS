@@ -70,17 +70,14 @@
   run/lifecycle summary without process owner id or evidence payloads. `current`
   additionally requires the comparison's complete schema/fingerprint and exact
   current topology/protected-profile binding. A failure to start the durable
-  run revokes the just-published comparison/repeat authority. Production
-  currently leaves the web-created run `unconfigured`; no browser route
-  reserves its region-scoped attempts or commits lifecycle transitions. The
-  typed internal host can progress an exact trusted composition to `measured`
-  only while the program's normalized applied baseline and microphone
-  calibration remain exact; normal, reverse, and delay graph identities cannot
-  be reused.
-
-  Candidate/apply/verification, receipt issuance, and Room
-  consumption remain unavailable. No sound, live graph mutation, or hardware
-  was exercised.
+  run revokes the just-published comparison/repeat authority. The original
+  Wave 3 slice stopped at an `unconfigured` web-created run and an internal
+  synthetic host. That boundary is now superseded by the production isolated
+  and summed relay, exact candidate publication/review, and reviewed
+  apply/readback/restore integration described in the current Active→Room
+  status below. Post-apply verification, receipt issuance, and Room consumption
+  remain unavailable. No sound, live graph mutation, or hardware was exercised
+  while wiring those software paths.
 - ✅ **Room R1 — envelope v9 owns whole-page visibility, truthful entry
   failures, and disclosed run defaults (hardware-free;
   real-device browser pass pending).** `jasper.correction.envelope` now emits
@@ -218,10 +215,12 @@
   internal host can reserve generation-bound region attempts and advance an
   exact synthetic-admitted composition through `protected` to `measured`, with
   cross-process issuance CAS and exact restore/restart recovery. The Active
-  integration lane must still add candidate apply/readback, post-apply
-  verification, receipt
-  issuance/persistence, and the Room consumer together before this becomes
-  authority. No generic graph
+  integration now also compiles and applies the exact reviewed candidate under
+  the existing DSP writer lock, persists fresh protected graph/path/volume
+  readback proof, and either retains it as `applied_unverified` or restores the
+  exact predecessor before unlock. The remaining integration lane must still
+  add post-apply verification, receipt issuance/persistence, and the Room
+  consumer together before this becomes authority. No generic graph
   transaction landed; exact rollback state reuses
   `audio_measurement.null_walk.DspPredecessor`. No hardware behavior was changed
   or revalidated by this slice.
@@ -519,6 +518,14 @@
   evaluator refusal persists one generation-scoped failure artifact, advances
   the existing lifecycle to `blocked` with `candidate_scoring_failed`, and
   offers a fresh complete measurement run instead of retrying the same evidence.
+  The review now has one explicit Apply action. Active reopens the exact
+  candidate fingerprint, rechecks current target/safety authority inside the
+  shared writer lock, compiles it through the baseline emitter, and requires a
+  fresh protected graph/path/volume readback before `applied_unverified`.
+  Cancellation, mutation/readback failure, or an unproved retained write
+  restores the exact predecessor; `/status` exposes retry/finalize/restore as
+  one server-owned next action. Post-apply fixed-axis capture and Room unlock
+  are still withheld until the receipt slice lands.
   `jasper.active_speaker.web_measurement`
   owns bounded browser WAV evidence plus acoustic-analysis recording.
   This page is also the ownership boundary between manual and automatic
@@ -1422,6 +1429,7 @@ POST /crossover/region-geometry body: {expected_target_fingerprint,
 POST /crossover/candidate    resume exact candidate publication if execution
                              stopped after measured evidence became durable
 POST /crossover/apply        atomically apply measured Layer A; restore gain lease
+POST /crossover/restore      restore or finalize the exact pre-apply DSP state
 POST /crossover/driver-test  start one protected per-driver audible test
 POST /crossover/driver-confirm record the protected driver-test result
 POST /crossover/driver-abort stop the driver test and restore the graph
@@ -2633,14 +2641,17 @@ semantics checked against Room's terminal mutation policy; Active isolated-drive
 persisted admission, server-owned capture handoff, legacy summed pre-audio
 refusal, the recorder-only production summed relay, exact measured-candidate
 publication/readback, `candidate_ready` binding, and review projection checked
-hardware-free;
+hardware-free; the explicit reviewed apply, baseline compiler handoff, fresh
+protected graph/path/volume proof, exact failure/cancellation/restart restore,
+retained-state finalization, and browser apply/restore projection were also
+checked through injected runtime seams;
 Active's signed geometry and durable calibration/device binding, typed internal
 summed evidence host, exact
 graph/capture/restore runtime, durable artifacts, and deterministic measured
 progression were also checked with synthetic admitted fixtures; Active's durable bundle-backed commissioning-run start,
 startup owner-generation claim, stale-callback refusal, and fail-closed
-crossover status were also checked; candidate apply, verification/receipt,
-and Room authority remain unavailable. Wave 2 paid tuning backend extraction checked the
+crossover status were also checked; post-apply verification/receipt and Room
+authority remain unavailable, and no live crossover graph was changed. Wave 2 paid tuning backend extraction checked the
 shared cross-route throttle, fresh household spend gate, exact provider
 arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP
 error translation without moving proposal acceptance or live apply. Acoustic-

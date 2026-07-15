@@ -23,6 +23,8 @@ from typing import Any, Literal
 from jasper.audio_hardware.dac import by_id as dac_profile_by_id
 from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
+    ExactDspStateIdentity,
+    NormalizedActiveRawIdentity,
     json_fingerprint,
 )
 from jasper.audio_measurement.null_walk import NullWalkError
@@ -50,8 +52,12 @@ from .commissioning_host import (
     RegionCommissioningInputs,
     commissioning_program_key,
 )
-from .commissioning_isolated_producer import current_region_evidence_plan
+from .commissioning_isolated_producer import (
+    current_region_evidence_plan,
+    reopen_region_evidence_plan_for_baseline,
+)
 from .commissioning_lifecycle import CommissioningTransition
+from .commissioning_receipt import RequiredTargetPlan
 from .commissioning_run import CommissioningRunHandle, CommissioningRunStore
 from .driver_safety import evaluate_driver_safety_profile
 from .measured_candidate import (
@@ -197,6 +203,103 @@ class CommissioningCaptureService:
         self.evidence_store = evidence_store
         self.load_current_authority = load_current_authority
 
+    def _region_plan(
+        self,
+        authority: CommissioningHostAuthoritySnapshot,
+        *,
+        protected_safety_profile_fingerprint: str,
+    ) -> RegionEvidencePlan:
+        """Resolve pre-apply authority without rebasing it onto an applied graph."""
+
+        from .commissioning_apply import APPLY_PURPOSE
+
+        lifecycle = self.run_store.lifecycle_state(self.run)
+        mutation = self.run_store.current_live_mutation(self.run)
+        applied_lifecycle = lifecycle in {"applied_unverified", "verified"}
+        retained = (
+            mutation is not None
+            and mutation.purpose == APPLY_PURPOSE
+            and mutation.status == "retained"
+        )
+        if applied_lifecycle and not retained:
+            raise CommissioningServiceError(
+                "applied_proof_stale",
+                "applied commissioning has no retained live-mutation proof",
+            )
+        if retained and lifecycle in {
+            "candidate_ready",
+            "applied_unverified",
+            "verified",
+        }:
+            assert mutation is not None
+            if (
+                mutation.rollback_artifact_path is None
+                or mutation.rollback_artifact_fingerprint is None
+            ):
+                raise CommissioningServiceError(
+                    "applied_proof_stale",
+                    "retained apply has no exact pre-apply authority pointer",
+                )
+            try:
+                artifact = self.evidence_store.identify_artifact(
+                    mutation.rollback_artifact_path
+                )
+                if artifact.fingerprint != mutation.rollback_artifact_fingerprint:
+                    raise CommissioningServiceError(
+                        "applied_proof_stale",
+                        "retained apply predecessor pointer changed",
+                    )
+                predecessor = ExactDspStateIdentity.from_mapping(
+                    self.evidence_store.reopen_json_artifact(artifact)
+                )
+                normalized = predecessor.state.get("normalized_active_raw")
+                if not isinstance(normalized, dict):
+                    raise CommissioningServiceError(
+                        "applied_proof_stale",
+                        "retained apply predecessor omitted its normalized graph",
+                    )
+                baseline_fingerprint = NormalizedActiveRawIdentity(
+                    normalized
+                ).active_raw_fingerprint
+                return reopen_region_evidence_plan_for_baseline(
+                    topology=authority.topology,
+                    preset=authority.preset,
+                    comparison_set=authority.comparison_set,
+                    calibration_id=authority.calibration_id,
+                    calibration=authority.calibration,
+                    protected_safety_profile_fingerprint=(
+                        protected_safety_profile_fingerprint
+                    ),
+                    baseline_active_raw_fingerprint=baseline_fingerprint,
+                    run=self.run,
+                    evidence_store=self.evidence_store,
+                )
+            except CommissioningServiceError:
+                raise
+            except (
+                CommissioningEvidenceStoreError,
+                OSError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                raise CommissioningServiceError(
+                    "applied_proof_stale",
+                    "retained apply pre-apply authority could not be reopened",
+                ) from exc
+        return current_region_evidence_plan(
+            topology=authority.topology,
+            preset=authority.preset,
+            comparison_set=authority.comparison_set,
+            applied_profile=authority.applied_profile,
+            calibration_id=authority.calibration_id,
+            calibration=authority.calibration,
+            protected_safety_profile_fingerprint=(
+                protected_safety_profile_fingerprint
+            ),
+            run=self.run,
+            evidence_store=self.evidence_store,
+        )
+
     def _current(
         self,
         *,
@@ -229,16 +332,9 @@ class CommissioningCaptureService:
                 "authority_stale", "driver safety authority is no longer current"
             )
         try:
-            plan = current_region_evidence_plan(
-                topology=authority.topology,
-                preset=authority.preset,
-                comparison_set=authority.comparison_set,
-                applied_profile=authority.applied_profile,
-                calibration_id=authority.calibration_id,
-                calibration=authority.calibration,
+            plan = self._region_plan(
+                authority,
                 protected_safety_profile_fingerprint=safety.profile_fingerprint,
-                run=self.run,
-                evidence_store=self.evidence_store,
             )
             reopen_isolated = (
                 self.evidence_store.reopen_complete_isolated_driver_evidence
@@ -374,6 +470,33 @@ class CommissioningCaptureService:
                 return None
             values.append(reopened[0])
         return tuple(values)
+
+    def _required_target_plan(
+        self,
+        current: _CurrentComposition,
+    ) -> RequiredTargetPlan:
+        inputs = self._region_inputs(current.plan)
+        if inputs is None:
+            raise CommissioningServiceError(
+                "geometry_incomplete",
+                "fixed-axis geometry is required before candidate apply",
+            )
+        placements: dict[str, str] = {}
+        by_target = {item.target_fingerprint: item for item in inputs}
+        for target in current.plan.targets:
+            item = by_target[target.fingerprint]
+            previous = placements.setdefault(
+                target.speaker_group_id, item.placement_fingerprint
+            )
+            if previous != item.placement_fingerprint:
+                raise CommissioningServiceError(
+                    "launch_scope_unsupported",
+                    "one fixed-axis placement per speaker group is required",
+                )
+        return RequiredTargetPlan.from_topology(
+            current.authority.topology,
+            placement_fingerprints=placements,
+        )
 
     def _reopen_candidate(
         self,
@@ -576,12 +699,7 @@ class CommissioningCaptureService:
     ) -> dict[str, Any]:
         preset = candidate.source_preset
         roles = required_driver_roles(preset.way_count)
-        attenuations = dict(candidate.role_attenuations_db)
-        delays = dict(candidate.role_delays_ms)
-        polarity: dict[str, str] = {}
-        for region in preset.crossover_regions:
-            polarity[region.lower_driver] = region.lower_polarity
-            polarity[region.upper_driver] = region.upper_polarity
+        corrections = candidate.driver_corrections()
         return {
             "fingerprint": candidate.fingerprint,
             "artifact_fingerprint": artifact.fingerprint,
@@ -604,9 +722,13 @@ class CommissioningCaptureService:
             "drivers": [
                 {
                     "role": role,
-                    "attenuation_db": attenuations[role],
-                    "delay_ms": delays[role],
-                    "polarity": polarity[role],
+                    "attenuation_db": corrections[role]["gain_db"],
+                    "delay_ms": corrections[role]["delay_ms"],
+                    "polarity": (
+                        "inverted"
+                        if corrections[role]["inverted"]
+                        else "non-inverted"
+                    ),
                 }
                 for role in roles
             ],
@@ -707,6 +829,131 @@ class CommissioningCaptureService:
         )
         return self._candidate_review(candidate, artifact)
 
+    async def apply_candidate(
+        self,
+        *,
+        expected_candidate_fingerprint: str,
+        runtime_port: Any,
+        load_config_path: Callable[[str], Any],
+    ) -> dict[str, Any]:
+        """Apply only the exact reviewed candidate through the Active owner."""
+
+        from .commissioning_apply import apply_measured_candidate
+        from .commissioning_runtime import CommissioningRuntimePort
+        from .crossover_preview import load_crossover_preview
+        from .design_draft import load_design_draft
+        from .measurement import load_measurement_state
+
+        if not isinstance(runtime_port, CommissioningRuntimePort):
+            raise TypeError("runtime_port must be CommissioningRuntimePort")
+        expected = expected_candidate_fingerprint.strip()
+        if not expected:
+            raise CommissioningServiceError(
+                "candidate_review_required",
+                "the reviewed candidate fingerprint is required",
+            )
+        current = self._current()
+        lifecycle = self.run_store.lifecycle_state(self.run)
+        if lifecycle == "rolled_back":
+            candidate, artifact = self._reopen_candidate(
+                current, require_transition=False
+            )
+        elif lifecycle in {"candidate_ready", "applied_unverified"}:
+            candidate, artifact = self._reopen_candidate(
+                current,
+                require_transition=lifecycle == "candidate_ready",
+            )
+        else:
+            raise CommissioningServiceError(
+                "candidate_not_ready",
+                f"candidate apply requires candidate_ready, not {lifecycle}",
+            )
+        if candidate.fingerprint != expected:
+            raise CommissioningServiceError(
+                "candidate_review_stale",
+                "the candidate changed after review; refresh before applying",
+            )
+        if lifecycle == "rolled_back" and not self.run_store.transition(
+            self.run,
+            CommissioningTransition(
+                from_state="rolled_back",
+                to_state="candidate_ready",
+                evidence_kind="candidate_artifact",
+                evidence_fingerprint=artifact.fingerprint,
+            ),
+        ):
+            raise CommissioningServiceError(
+                "run_generation_stale", "candidate retry lost run ownership"
+            )
+        target_plan = self._required_target_plan(current)
+        safety = evaluate_driver_safety_profile(
+            current.authority.safety_profile,
+            current.authority.topology,
+        )
+        if not safety.confirmed_and_current or safety.profile_fingerprint is None:
+            raise CommissioningServiceError(
+                "authority_stale", "driver safety authority is no longer current"
+            )
+        topology = current.authority.topology
+        draft = load_design_draft(topology=topology)
+        preview = load_crossover_preview(current_design_draft=draft)
+        measurements = load_measurement_state(topology)
+
+        def verify_current() -> None:
+            refreshed = self._current()
+            reopened, _ = self._reopen_candidate(
+                refreshed,
+                require_transition=(
+                    self.run_store.lifecycle_state(self.run) == "candidate_ready"
+                ),
+            )
+            if (
+                refreshed != current
+                or reopened != candidate
+                or self._required_target_plan(refreshed) != target_plan
+            ):
+                raise CommissioningServiceError(
+                    "candidate_review_stale",
+                    "candidate authority changed before writer-lock admission",
+                )
+
+        return await apply_measured_candidate(
+            run=self.run,
+            run_store=self.run_store,
+            store=self.evidence_store,
+            candidate=candidate,
+            target_plan=target_plan,
+            safety_profile_fingerprint=safety.profile_fingerprint,
+            topology=topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            runtime_port=runtime_port,
+            load_config_path=load_config_path,
+            verify_current=verify_current,
+        )
+
+    async def restore_candidate(
+        self,
+        *,
+        runtime_port: Any,
+        load_config_path: Callable[[str], Any],
+    ) -> dict[str, Any]:
+        """Restore a crash-interrupted candidate apply from its exact pointer."""
+
+        from .commissioning_apply import restore_pending_candidate_apply
+        from .commissioning_runtime import CommissioningRuntimePort
+
+        if not isinstance(runtime_port, CommissioningRuntimePort):
+            raise TypeError("runtime_port must be CommissioningRuntimePort")
+        return await restore_pending_candidate_apply(
+            run=self.run,
+            run_store=self.run_store,
+            store=self.evidence_store,
+            runtime_port=runtime_port,
+            load_config_path=load_config_path,
+        )
+
     def attest_geometry(
         self,
         *,
@@ -793,6 +1040,60 @@ class CommissioningCaptureService:
     def status(self) -> dict[str, Any]:
         """Return one current state without reserving attempts or live mutations."""
 
+        from .commissioning_apply import APPLY_PURPOSE
+
+        if not self.run_store.callback_is_current(self.run):
+            raise CommissioningServiceError(
+                "run_generation_stale", "commissioning run ownership changed"
+            )
+        lifecycle_state = self.run_store.lifecycle_state(self.run)
+        live_mutation = self.run_store.current_live_mutation(self.run)
+        recovery_status = None
+        recovery_detail = None
+        if live_mutation is not None and live_mutation.purpose == APPLY_PURPOSE:
+            if (
+                live_mutation.status == "mutation_pending"
+                and lifecycle_state
+                in {"candidate_ready", "blocked_live_state_unknown"}
+            ):
+                recovery_status = "restore_required"
+                recovery_detail = (
+                    "The live DSP outcome is uncertain. Restore the exact "
+                    "previous crossover before continuing."
+                )
+            elif (
+                live_mutation.status in {"restored", "aborted"}
+                and lifecycle_state == "blocked_live_state_unknown"
+            ):
+                recovery_status = "restore_finalization_required"
+                recovery_detail = (
+                    "The exact previous crossover is already restored. Finish "
+                    "its durable recovery state before continuing."
+                )
+        if recovery_status is not None:
+            assert live_mutation is not None
+            return {
+                "schema_version": 1,
+                "kind": "jts_active_region_commissioning_status",
+                "status": recovery_status,
+                "run_id": self.run.run_id,
+                "owner_generation": self.run.owner_generation,
+                "lifecycle_state": lifecycle_state,
+                "plan_fingerprint": None,
+                "isolated_evidence_fingerprint": None,
+                "geometry": [],
+                "next_geometry": None,
+                "next_capture": None,
+                "candidate": None,
+                "candidate_failure": None,
+                "applied_candidate": None,
+                "live_mutation": {
+                    "status": live_mutation.status,
+                    "purpose": live_mutation.purpose,
+                    "issuance_id": live_mutation.issuance_id,
+                },
+                "detail": recovery_detail,
+            }
         current = self._current(verify_child_evidence=False)
         geometry_rows: list[dict[str, Any]] = []
         for target in current.plan.targets:
@@ -814,9 +1115,9 @@ class CommissioningCaptureService:
         missing_geometry = next(
             (item for item in geometry_rows if not item["attested"]), None
         )
-        lifecycle_state = self.run_store.lifecycle_state(self.run)
         candidate_review = None
         candidate_failure = None
+        applied_candidate = None
         if lifecycle_state == "measured":
             # Lifecycle is not a second evidence authority.  Reuse the host's
             # exact complete-artifact reopen + transition-fingerprint check
@@ -836,7 +1137,60 @@ class CommissioningCaptureService:
                 current, require_transition=True
             )
             candidate_review = self._candidate_review(candidate, artifact)
-            status = "candidate_ready"
+            if live_mutation is not None and live_mutation.status == "retained":
+                status = "apply_finalization_required"
+            elif live_mutation is not None and live_mutation.status == (
+                "mutation_pending"
+            ):
+                status = "restore_required"
+            else:
+                status = "candidate_ready"
+        elif lifecycle_state == "applied_unverified":
+            from .commissioning_apply import reopen_applied_candidate_proof
+
+            candidate, artifact = self._reopen_candidate(
+                current, require_transition=False
+            )
+            candidate_review = self._candidate_review(candidate, artifact)
+            if live_mutation is None or live_mutation.status != "retained":
+                raise CommissioningServiceError(
+                    "applied_proof_stale",
+                    "applied lifecycle has no retained live-mutation proof",
+                )
+            safety = evaluate_driver_safety_profile(
+                current.authority.safety_profile,
+                current.authority.topology,
+            )
+            if not safety.confirmed_and_current or safety.profile_fingerprint is None:
+                raise CommissioningServiceError(
+                    "authority_stale", "driver safety authority is no longer current"
+                )
+            proof, proof_artifact = reopen_applied_candidate_proof(
+                store=self.evidence_store,
+                run=self.run,
+                mutation=live_mutation,
+                candidate=candidate,
+                target_plan=self._required_target_plan(current),
+                safety_profile_fingerprint=safety.profile_fingerprint,
+            )
+            applied_candidate = {
+                "proof_fingerprint": proof.fingerprint,
+                "artifact_fingerprint": proof_artifact.fingerprint,
+                "candidate_fingerprint": proof.candidate_fingerprint,
+                "target_plan_fingerprint": proof.target_plan_fingerprint,
+                "fresh_graph_fingerprint": (
+                    proof.observed_fresh_readback_graph.fingerprint
+                ),
+            }
+            status = "applied_unverified"
+        elif lifecycle_state == "rolled_back":
+            candidate, artifact = self._reopen_candidate(
+                current, require_transition=False
+            )
+            candidate_review = self._candidate_review(candidate, artifact)
+            status = "apply_rolled_back"
+        elif lifecycle_state == "blocked_live_state_unknown":
+            status = "restore_required"
         elif lifecycle_state == "blocked":
             transition = self.run_store.lifecycle_transition(self.run)
             if (
@@ -881,6 +1235,14 @@ class CommissioningCaptureService:
             "run_id": self.run.run_id,
             "owner_generation": self.run.owner_generation,
             "lifecycle_state": lifecycle_state,
+            # ``_current`` has revalidated this comparison against either the
+            # current protected graph or the exact retained apply predecessor.
+            # Keep that pre-apply context visible after a reviewed candidate is
+            # installed so the outer status adapter does not stale the run by
+            # comparing its evidence with the newly applied profile.
+            "profile_context_id": current.authority.comparison_set.get(
+                "profile_context_id"
+            ),
             "plan_fingerprint": current.plan.fingerprint,
             "isolated_evidence_fingerprint": current.isolated.fingerprint,
             "geometry": geometry_rows,
@@ -888,6 +1250,16 @@ class CommissioningCaptureService:
             "next_capture": next_capture,
             "candidate": candidate_review,
             "candidate_failure": candidate_failure,
+            "applied_candidate": applied_candidate,
+            "live_mutation": (
+                {
+                    "status": live_mutation.status,
+                    "purpose": live_mutation.purpose,
+                    "issuance_id": live_mutation.issuance_id,
+                }
+                if live_mutation is not None
+                else None
+            ),
             "detail": (
                 (
                     "Exact measured evidence could not authorize a candidate; "
@@ -895,7 +1267,22 @@ class CommissioningCaptureService:
                 )
                 if status == "candidate_refused"
                 else (
-                    None
+                    (
+                        "The candidate graph is applied and read back; retry to "
+                        "finish its durable state."
+                        if status == "apply_finalization_required"
+                        else (
+                            "The previous crossover was restored exactly. Retry "
+                            "the reviewed candidate when ready."
+                            if status == "apply_rolled_back"
+                            else (
+                                "The live DSP outcome is uncertain. Restore the "
+                                "exact previous crossover before continuing."
+                                if status == "restore_required"
+                                else None
+                            )
+                        )
+                    )
                     if status != "unavailable"
                     else (
                         "commissioning cannot collect from lifecycle "

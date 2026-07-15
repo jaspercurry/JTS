@@ -699,9 +699,10 @@
 > mutation, and observed applied graph. Attempted/unknown mutation and
 > failed or performed rollback cannot mint a positive receipt. Exact rollback
 > state reuses `null_walk.DspPredecessor`; no generic graph-transaction
-> framework landed. Writer locking, live apply/readback, exact restoration,
-> receipt issuance/persistence, and Room consumption remain the later
-> integration lane.
+> framework landed. The later Active integration now owns writer-locked
+> candidate apply, fresh graph/path/volume readback, and exact predecessor
+> restoration; post-apply verification, receipt issuance/persistence, and Room
+> consumption remain the later integration lane.
 >
 > Current `active_speaker/bundles.py` evidence remains forensic/fail-soft. The
 > new lifecycle is not current `/state`, and `active_speaker.setup_status` still
@@ -777,10 +778,41 @@
 > deterministic evaluator refusal is persisted as exact failure evidence,
 > transitions the run through the existing `candidate_scoring_failed` blocked
 > path, and requires a fresh complete measurement sequence rather than a futile
-> retry of immutable evidence. Graph
-> mutation/apply, verification/receipt, and Room consumption remain unavailable.
+> retry of immutable evidence.
+> Post-apply verification/receipt and Room consumption remain unavailable.
 > Real summed capture transport is now composed through the correction relay, but
 > live JTS3 playback and acoustic capture remain unvalidated.
+
+> **Update, 2026-07-15 (measured-candidate apply boundary; hardware-free):**
+> the candidate review now offers one explicit Apply action carrying the exact
+> reviewed candidate fingerprint. Active recompiles that candidate through the
+> existing baseline emitter, requiring the retained preset to match exactly and
+> using only its measured attenuation, polarity, and absolute per-role delay.
+> One existing DSP writer lock spans the final authority recheck, exact
+> graph/path/listening-volume predecessor snapshot, existing bounded
+> `apply_dsp_config` load, fresh readback, protected-graph classification, and
+> any exact restore. The run sidecar distinguishes pre-mutation release,
+> pending/unknown mutation, proved restore, and a freshly proved retained
+> graph. Apply proof and compiler/apply artifacts are write-once under the exact
+> issuance. A cancellation, load/readback/protection failure, or unproved
+> retained-sidecar write restores graph, path, and volume before the lock is
+> released and replaces the shared DSP apply result with that restored outcome.
+> A crash-interrupted pending mutation drains writer admission and exact restore
+> despite request cancellation, records the same shared outcome, and is
+> recoverable from its exact predecessor pointer. Once the retained proof is
+> durable, retry performs only
+> baseline-state and lifecycle finalization and never re-applies audio.
+> `/crossover/status` projects `candidate_ready`,
+> `apply_finalization_required`, `apply_rolled_back`, `restore_required`,
+> `restore_finalization_required`, or `applied_unverified` from that same
+> run/evidence authority. A transient writer-lock collision leaves the exact
+> reviewed candidate retryable. The durable pre-apply plan remains the evidence
+> authority after the measured graph becomes Layer A; it is revalidated against
+> the retained mutation's exact predecessor instead of being rebuilt from the
+> new applied graph. The browser owns
+> no mutation state machine. This slice has synthetic/contract coverage only;
+> post-apply fixed-axis verification, receipt issuance, Room handoff, and the
+> first live JTS3 candidate apply remain outstanding.
 
 ## Current Operational Truth
 
@@ -2176,12 +2208,14 @@ schedule-aware final evaluator,
 complete-plan replay guards, production fixed-axis relay population of the
 strict three-repeat-per-driver aggregate, the store-backed pure deterministic electrical
 candidate evaluator, exact candidate persistence/readback and `candidate_ready`
-review projection, receipt schema-v2 one-shot roles, and the
+review projection, writer-locked measured-candidate compiler/apply, fresh
+protected graph/path/volume readback, exact cancellation/failure/restart
+restore, retained-proof finalization, receipt schema-v2 one-shot roles, and the
 durable bundle-backed commissioning-run store/start/status boundary and service owner-
-generation claim; no production candidate apply or live verification/receipt
-producer, and
+generation claim; no live post-apply verification/receipt producer, and
 temporary passive-only Room
-admission checked contract-only; no hardware behavior revalidated. Frozen applied-preset startup anchor, durable
+admission checked contract-only; the candidate apply boundary was checked
+hardware-free and no hardware behavior revalidated. Frozen applied-preset startup anchor, durable
 crossover-volume intent, confirmed recovery,
 and relay lease ownership checked; bounded CamillaDSP worker cancellation checked
 against the outer commissioning rollback transaction; superseded readiness and

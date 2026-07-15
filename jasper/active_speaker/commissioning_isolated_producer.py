@@ -91,6 +91,84 @@ def _missing(error: CommissioningEvidenceStoreError) -> bool:
     return error.code == CommissioningEvidenceStoreErrorCode.MISSING
 
 
+def _reopen_region_evidence_plan_for_baseline(
+    *,
+    topology: OutputTopology,
+    preset: ActiveSpeakerPreset,
+    comparison_set: Mapping[str, Any],
+    calibration_id: str,
+    calibration: CalibrationCurve,
+    protected_safety_profile_fingerprint: str,
+    baseline_active_raw_fingerprint: str,
+    run: CommissioningRunHandle,
+    evidence_store: CommissioningEvidenceStore,
+    publish_if_missing: bool,
+) -> RegionEvidencePlan:
+    try:
+        context = active_region_context_fingerprint(
+            baseline_active_raw_fingerprint=baseline_active_raw_fingerprint,
+            calibration_id=calibration_id,
+            calibration=calibration,
+        )
+        expected = derive_region_evidence_plan(
+            preset,
+            topology,
+            run=run,
+            protected_safety_profile_fingerprint=(
+                protected_safety_profile_fingerprint
+            ),
+            comparison_set_fingerprint=str(comparison_set.get("fingerprint") or ""),
+            threshold_profile_fingerprint=(
+                active_region_threshold_profile_fingerprint()
+            ),
+            context_fingerprint=context,
+        )
+    except (TypeError, ValueError) as exc:
+        raise IsolatedCapturePromotionError(
+            "capture baseline or calibration context is invalid"
+        ) from exc
+    try:
+        existing = evidence_store.reopen_region_evidence_plan(run=run)
+    except CommissioningEvidenceStoreError as exc:
+        if not publish_if_missing or not _missing(exc):
+            raise
+        evidence_store.publish_region_evidence_plan(expected)
+        existing = evidence_store.reopen_region_evidence_plan(run=run)
+    if existing != expected:
+        raise IsolatedCapturePromotionError(
+            "current capture authority differs from the durable commissioning plan"
+        )
+    return existing
+
+
+def reopen_region_evidence_plan_for_baseline(
+    *,
+    topology: OutputTopology,
+    preset: ActiveSpeakerPreset,
+    comparison_set: Mapping[str, Any],
+    calibration_id: str,
+    calibration: CalibrationCurve,
+    protected_safety_profile_fingerprint: str,
+    baseline_active_raw_fingerprint: str,
+    run: CommissioningRunHandle,
+    evidence_store: CommissioningEvidenceStore,
+) -> RegionEvidencePlan:
+    """Reopen a durable plan against its exact captured baseline identity."""
+
+    return _reopen_region_evidence_plan_for_baseline(
+        topology=topology,
+        preset=preset,
+        comparison_set=comparison_set,
+        calibration_id=calibration_id,
+        calibration=calibration,
+        protected_safety_profile_fingerprint=protected_safety_profile_fingerprint,
+        baseline_active_raw_fingerprint=baseline_active_raw_fingerprint,
+        run=run,
+        evidence_store=evidence_store,
+        publish_if_missing=False,
+    )
+
+
 def current_region_evidence_plan(
     *,
     topology: OutputTopology,
@@ -119,36 +197,22 @@ def current_region_evidence_plan(
         baseline = NormalizedActiveRawIdentity(
             yaml.safe_load(normal_raw)
         ).active_raw_fingerprint
-        context = active_region_context_fingerprint(
-            baseline_active_raw_fingerprint=baseline,
-            calibration_id=calibration_id,
-            calibration=calibration,
-        )
     except (TypeError, ValueError, yaml.YAMLError) as exc:
         raise IsolatedCapturePromotionError(
             "capture baseline or calibration context is invalid"
         ) from exc
-    expected = derive_region_evidence_plan(
-        preset,
-        topology,
+    return _reopen_region_evidence_plan_for_baseline(
+        topology=topology,
+        preset=preset,
+        comparison_set=comparison_set,
+        calibration_id=calibration_id,
+        calibration=calibration,
+        protected_safety_profile_fingerprint=protected_safety_profile_fingerprint,
+        baseline_active_raw_fingerprint=baseline,
         run=run,
-        protected_safety_profile_fingerprint=(protected_safety_profile_fingerprint),
-        comparison_set_fingerprint=str(comparison_set.get("fingerprint") or ""),
-        threshold_profile_fingerprint=(active_region_threshold_profile_fingerprint()),
-        context_fingerprint=context,
+        evidence_store=evidence_store,
+        publish_if_missing=True,
     )
-    try:
-        existing = evidence_store.reopen_region_evidence_plan(run=run)
-    except CommissioningEvidenceStoreError as exc:
-        if not _missing(exc):
-            raise
-        evidence_store.publish_region_evidence_plan(expected)
-        existing = evidence_store.reopen_region_evidence_plan(run=run)
-    if existing != expected:
-        raise IsolatedCapturePromotionError(
-            "current capture authority differs from the durable commissioning plan"
-        )
-    return existing
 
 
 def _placement_fingerprint(

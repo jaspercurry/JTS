@@ -1423,6 +1423,52 @@ def test_clean_abort_requires_exact_restore_and_is_a_retryable_terminal(
         )
 
 
+def test_retained_live_mutation_is_terminal_without_claiming_restore(
+    tmp_path: Path,
+) -> None:
+    store = CommissioningRunStore(
+        path=tmp_path / "run.json",
+        owner_id="5" * 32,
+    )
+    handle = _start(store)
+    issued = store.issue_live_mutation(
+        handle,
+        purpose="measured_candidate_apply",
+        operation_fingerprint="6" * 64,
+    )
+    pending = store.record_live_mutation_intent(
+        handle,
+        issued,
+        rollback_artifact_path=(
+            f"candidate-apply/{issued.issuance_id}/predecessor.json"
+        ),
+        rollback_artifact_fingerprint="7" * 64,
+    )
+
+    retained = store.record_live_mutation_retained(
+        handle,
+        pending,
+        applied_proof_fingerprint="8" * 64,
+    )
+
+    assert retained.status == "retained"
+    assert retained.rollback_artifact_path == pending.rollback_artifact_path
+    assert retained.restoration_evidence_fingerprint is None
+    assert retained.terminal_evidence_fingerprint == "8" * 64
+    assert store.pending_live_mutation(handle) is None
+    reopened = CommissioningRunStore(
+        path=tmp_path / "run.json",
+        owner_id="5" * 32,
+    )
+    assert reopened.current_live_mutation(handle) == retained
+    with pytest.raises(CommissioningRunConflict, match="pending mutation"):
+        reopened.record_live_mutation_retained(
+            handle,
+            retained,
+            applied_proof_fingerprint="9" * 64,
+        )
+
+
 def test_live_mutation_sidecar_is_strictly_fingerprinted(tmp_path: Path) -> None:
     store = CommissioningRunStore(
         path=tmp_path / "run.json",

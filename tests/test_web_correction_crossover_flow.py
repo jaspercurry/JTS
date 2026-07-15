@@ -1774,6 +1774,7 @@ def test_commissioning_run_status_is_current_only_for_exact_comparison(
     assert current == {
         "status": "current",
         "reason": None,
+        "profile_context_id": "protected-profile",
         "session_id": "session-1",
         "run_id": handle.run_id,
         "owner_generation": 1,
@@ -1913,6 +1914,7 @@ def test_crossover_module_is_a_thin_server_envelope_renderer():
     assert "env.alternate_actions" in source
     assert "baseline_candidate_fingerprint_mismatch" in source
     assert "candidateChanged" in source
+    assert "A failed mutation may still have advanced durable authority" in source
     assert "await refresh();" in source
 
 
@@ -1929,7 +1931,7 @@ def test_fast_terminal_stop_reenables_the_authoritative_next_action():
     )
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert result == {"ok": True, "passed": 7}
+    assert result == {"ok": True, "passed": 13}
 
 
 # --- passive-gating: Layer A hidden for a full-range passive speaker ----------
@@ -2132,6 +2134,89 @@ def _locked_level(status: dict) -> None:
         # listening volume between sweep windows.
         "last": {"ramp": {"state": "locked", "restored": True}},
     }
+
+
+def test_applied_candidate_keeps_exact_run_current_through_status_and_envelope(
+    monkeypatch, tmp_path
+):
+    from jasper.active_speaker import (
+        baseline_profile,
+        crossover_envelope,
+        repeat_admission,
+        setup_status,
+        web_commissioning,
+    )
+    from jasper.active_speaker.commissioning_run import CommissioningRunStore
+
+    comparison = _commissioning_comparison()
+    status = _envelope_status()
+    status["measurements"]["active_comparison_set"] = comparison
+    store = CommissioningRunStore(
+        path=tmp_path / "commissioning-run.json",
+        owner_id="1" * 32,
+    )
+    monkeypatch.setattr(backend, "_COMMISSIONING_RUN_STORE", store)
+    backend.begin_commissioning_run(comparison)
+    monkeypatch.setattr(
+        web_measurement,
+        "status_payload",
+        lambda: {
+            "ok": True,
+            "topology": status["topology"],
+            "targets": status["targets"],
+            "measurements": status["measurements"],
+        },
+    )
+    monkeypatch.setattr(web_commissioning, "commission_status_payload", lambda: {})
+    applied_setup = dict(status["setup"])
+    applied_setup["protected_profile"] = {
+        "status": "ready",
+        "candidate_fingerprint": "newly-applied-profile",
+    }
+    applied_setup["applied_crossover"] = {
+        "valid": True,
+        "owner": "automatic",
+        "reason": None,
+    }
+    monkeypatch.setattr(
+        setup_status, "read_active_speaker_setup_status", lambda: applied_setup
+    )
+    monkeypatch.setattr(
+        backend,
+        "commissioning_region_status",
+        lambda: {
+            "status": "applied_unverified",
+            "profile_context_id": comparison["profile_context_id"],
+        },
+    )
+    monkeypatch.setattr(repeat_admission, "snapshot", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        baseline_profile, "load_applied_baseline_profile_state", lambda: {}
+    )
+    monkeypatch.setattr(backend, "_LEVEL_LEASE", backend.CrossoverLevelLease())
+    run_status = backend.commissioning_run_status
+
+    def complete_isolated(*args, **kwargs):
+        result = run_status(*args, **kwargs)
+        result["isolated_evidence"] = {"status": "complete"}
+        return result
+
+    monkeypatch.setattr(backend, "commissioning_run_status", complete_isolated)
+
+    live = backend.status_payload()
+    envelope = crossover_envelope.build_crossover_envelope(live)
+
+    assert live["setup"]["protected_profile"]["candidate_fingerprint"] == (
+        "newly-applied-profile"
+    )
+    assert live["commissioning_run"]["status"] == "current"
+    assert live["commissioning_run"]["profile_context_id"] == comparison[
+        "profile_context_id"
+    ]
+    assert live["region_commissioning"]["status"] == "applied_unverified"
+    assert envelope["screen"] == "alignment"
+    assert envelope["next_action"] is None
+    assert "applied and freshly read back" in envelope["verdict_text"]
 
 
 def test_crossover_envelope_exposes_only_explicit_volume_recovery():
@@ -2527,7 +2612,7 @@ def test_crossover_envelope_passive_speaker_is_gated():
     }
     assert env["nudges"] == []
     assert "crossover" in env["verdict_text"].lower()
-    assert env["schema_version"] == 4
+    assert env["schema_version"] == 5
 
 
 def test_crossover_envelope_requires_protected_setup_first():
@@ -2606,6 +2691,64 @@ def test_crossover_apply_refuses_while_relay_measurement_is_active(monkeypatch):
     assert status == 409
     assert payload["status"] == "refused"
     assert payload["reason"] == "measurement_in_progress"
+
+
+@pytest.mark.asyncio
+async def test_automatic_apply_does_not_fall_back_past_strict_candidate_authority(
+    monkeypatch,
+):
+    from jasper.web import correction_crossover_backend as backend
+
+    monkeypatch.setattr(
+        backend._LEVEL_LEASE,
+        "assert_volume_safety_resolved",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_commissioning_capture_service",
+        lambda: (_ for _ in ()).throw(ValueError("candidate artifact unreadable")),
+    )
+    monkeypatch.setattr(
+        backend._COMMISSIONING_RUN_STORE,
+        "snapshot",
+        lambda: {"current": {"lifecycle_state": "candidate_ready"}},
+    )
+
+    with pytest.raises(ValueError, match="strict commissioning candidate"):
+        await backend.apply_profile(
+            tuning_owner="automatic",
+            expected_candidate_fingerprint="reviewed-candidate",
+            camilla_factory=lambda: pytest.fail("DSP mutation must not start"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_automatic_apply_does_not_use_legacy_evidence_during_strict_run(
+    monkeypatch,
+):
+    from jasper.web import correction_crossover_backend as backend
+
+    monkeypatch.setattr(
+        backend._LEVEL_LEASE,
+        "assert_volume_safety_resolved",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_commissioning_capture_service",
+        lambda: SimpleNamespace(
+            run="strict-run",
+            run_store=SimpleNamespace(lifecycle_state=lambda _run: "measured"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="reviewed strict candidate"):
+        await backend.apply_profile(
+            tuning_owner="automatic",
+            expected_candidate_fingerprint="legacy-candidate",
+            camilla_factory=lambda: pytest.fail("DSP mutation must not start"),
+        )
 
 
 def test_direct_crossover_audio_actions_include_active_relay_blocker(monkeypatch):
@@ -2966,9 +3109,31 @@ def test_crossover_envelope_projects_active_owned_alignment_actions():
     }
     ready = crossover_envelope.build_crossover_envelope(status)
     assert ready["screen"] == "review"
-    assert ready["next_action"] is None
+    assert ready["next_action"] == {
+        "id": "apply_measured_candidate",
+        "label": "Apply reviewed crossover",
+        "endpoint": "/correction/crossover/apply",
+        "body": {
+            "tuning_owner": "automatic",
+            "expected_candidate_fingerprint": "candidate-1",
+        },
+    }
     assert ready["candidate_review"] == review
     assert "Frequency, filter family, and order stay" in ready["verdict_text"]
+
+    status["region_commissioning"] = {
+        "status": "restore_finalization_required",
+        "detail": "The exact previous crossover is already restored.",
+    }
+    finishing_restore = crossover_envelope.build_crossover_envelope(status)
+    assert finishing_restore["screen"] == "apply"
+    assert finishing_restore["next_action"] == {
+        "id": "finish_candidate_restore",
+        "label": "Finish restore",
+        "endpoint": "/correction/crossover/restore",
+        "body": {},
+    }
+    assert "already restored" in finishing_restore["verdict_text"]
 
     status["region_commissioning"] = {
         "status": "candidate_refused",
@@ -3039,7 +3204,11 @@ def test_strict_alignment_precedes_prior_automatic_applied_profile():
             "measure_region_alignment",
         ),
         ({"status": "measured"}, "review", "prepare_measured_candidate"),
-        ({"status": "candidate_ready", "candidate": {}}, "review", None),
+        (
+            {"status": "candidate_ready", "candidate": {}},
+            "review",
+            "apply_measured_candidate",
+        ),
     )
 
     for region_status, expected_screen, expected_action in cases:
@@ -4948,7 +5117,7 @@ def test_durable_level_run_keeps_waiting_without_volatile_relay_state():
 
     assert env["screen"] == "waiting"
     assert env["next_action"] is None
-    assert env["schema_version"] == 4
+    assert env["schema_version"] == 5
 
 
 def test_phone_timeout_keeps_exact_run_waiting_and_explains_correlation():
@@ -7280,6 +7449,32 @@ def test_crossover_relay_route_is_registered():
     assert "/crossover/relay-cancel" in correction_setup._POST_ROUTES
     assert "/crossover/region-geometry" in correction_setup._POST_ROUTES
     assert "/crossover/candidate" in correction_setup._POST_ROUTES
+    assert "/crossover/restore" in correction_setup._POST_ROUTES
+
+
+def test_crossover_restore_route_dispatches_without_browser_policy(monkeypatch):
+    from jasper.web import correction_setup
+
+    seen = []
+    monkeypatch.setattr(correction_setup, "_active_relay_phase", lambda: None)
+
+    def restore(run_async, camilla_factory, *, blocking_phase):
+        seen.append((run_async, camilla_factory, blocking_phase))
+        return {"status": "rolled_back"}, 200
+
+    monkeypatch.setattr(flow, "handle_restore", restore)
+    handler_type = correction_setup._make_handler({"hostname": "jts.local"})
+    handler = handler_type.__new__(handler_type)
+    sent = []
+    handler._send_json = lambda payload, status=200: sent.append((payload, status))
+
+    handler._dispatch_crossover("/crossover/restore")
+
+    assert sent == [({"status": "rolled_back"}, 200)]
+    assert len(seen) == 1
+    assert seen[0][0] is correction_setup._run_async
+    assert seen[0][1] is correction_setup._camilla
+    assert seen[0][2] is None
 
 
 def test_region_geometry_route_accepts_only_the_server_target_and_signed_value(

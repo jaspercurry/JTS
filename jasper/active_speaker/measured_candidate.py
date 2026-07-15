@@ -371,6 +371,24 @@ class MeasuredElectricalCandidate:
     def to_dict(self) -> dict[str, Any]:
         return {**self._core(), "fingerprint": self.fingerprint}
 
+    def driver_corrections(self) -> dict[str, dict[str, float | bool]]:
+        """Return the exact compiler-ready refinement this candidate owns."""
+
+        polarity: dict[str, bool] = {}
+        for region in self.source_preset.crossover_regions:
+            polarity[region.lower_driver] = region.lower_polarity == "inverted"
+            polarity[region.upper_driver] = region.upper_polarity == "inverted"
+        attenuations = dict(self.role_attenuations_db)
+        delays = dict(self.role_delays_ms)
+        return {
+            role: {
+                "gain_db": attenuations[role],
+                "delay_ms": delays[role],
+                "inverted": polarity[role],
+            }
+            for role in required_driver_roles(self.source_preset.way_count)
+        }
+
     @classmethod
     def from_mapping(cls, raw: Any) -> MeasuredElectricalCandidate:
         """Strictly reopen one persisted evaluator result without re-scoring WAVs."""

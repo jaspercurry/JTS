@@ -87,6 +87,7 @@ ApplyActiveRaw = Callable[[str], Awaitable[bool]]
 ReadConfigPath = Callable[[], Awaitable[str | None]]
 ReadListeningVolume = Callable[[], Awaitable[float | None]]
 SetListeningVolume = Callable[[float], Awaitable[bool]]
+LoadConfigPath = Callable[[str], Awaitable[bool]]
 RecordMutationIntent = Callable[[ExactDspStateIdentity], Awaitable[None]]
 
 
@@ -577,6 +578,16 @@ async def _snapshot(port: CommissioningRuntimePort) -> _Predecessor:
         }
     )
     return _Predecessor(raw, graph, path, volume, exact)
+
+
+async def snapshot_exact_dsp_state(
+    port: CommissioningRuntimePort,
+) -> ExactDspStateIdentity:
+    """Freshly observe the exact graph/path/volume state under an owning lock."""
+
+    if not isinstance(port, CommissioningRuntimePort):
+        raise CommissioningRuntimeError("port must be CommissioningRuntimePort")
+    return (await _snapshot(port)).exact
 
 
 def _filter_params(
@@ -1085,9 +1096,22 @@ async def _capture_awaitable(awaitable: Awaitable[T]) -> _AwaitOutcome[T]:
 
 
 async def _restore(
-    port: CommissioningRuntimePort, predecessor: _Predecessor
+    port: CommissioningRuntimePort,
+    predecessor: _Predecessor,
+    *,
+    load_config_path: LoadConfigPath | None = None,
 ) -> _RestoreResult:
     issues: list[str] = []
+
+    if load_config_path is not None:
+        path_apply = await _capture_awaitable(load_config_path(predecessor.path))
+        if path_apply.error is not None:
+            issues.append(
+                "predecessor config-path apply raised "
+                f"{type(path_apply.error).__name__}"
+            )
+        elif not path_apply.value:
+            issues.append("predecessor config-path apply was rejected")
 
     graph_apply = await _capture_awaitable(port.apply_active_raw(predecessor.raw))
     if graph_apply.error is not None:
@@ -1172,6 +1196,28 @@ async def _restore(
     if issues or graph is None or path is None or volume is None:
         return _RestoreResult(None, "; ".join(issues) or "restore readback failed")
     return _RestoreResult(RestoreObservation(graph, path, volume), None)
+
+
+async def restore_exact_dsp_state_locked(
+    port: CommissioningRuntimePort,
+    predecessor: ExactDspStateIdentity,
+    *,
+    load_config_path: LoadConfigPath | None = None,
+) -> RestoreObservation:
+    """Restore one predecessor while the caller retains the DSP writer lock."""
+
+    if not isinstance(port, CommissioningRuntimePort):
+        raise CommissioningRuntimeError("port must be CommissioningRuntimePort")
+    result = await _restore(
+        port,
+        _predecessor_from_identity(predecessor),
+        load_config_path=load_config_path,
+    )
+    if result.error is not None or result.observation is None:
+        raise CommissioningRuntimeError(
+            result.error or "exact predecessor restoration was not proved"
+        )
+    return result.observation
 
 
 def _predecessor_from_identity(identity: ExactDspStateIdentity) -> _Predecessor:

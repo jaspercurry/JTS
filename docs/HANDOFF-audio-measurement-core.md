@@ -86,8 +86,10 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   electrical candidate. The Active production service now invokes it after the
   final summed capture and persists/reopens one exact candidate before binding
   `candidate_ready`; Shared remains only the evidence/identity substrate and
-  owns no candidate policy. Graph mutation/apply, verification/receipt, and Room
-  consumption remain blocked.
+  owns no candidate policy. Active now applies that reviewed candidate under
+  the shared writer lock and uses Shared's exact DSP-state identity for fresh
+  readback and restoration; Shared still owns no candidate, apply, or receipt
+  policy. Verification/receipt and Room consumption remain blocked.
 - `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
   `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
   replay inputs, admission artifacts, algorithm id/version, geometry, placement,
@@ -1303,10 +1305,12 @@ free. The strict write-once commissioning evidence store, exact typed reopen,
 deep child-artifact verification, generation-scoped incomplete state, and
 run-scoped complete recovery plus the store-backed pure deterministic electrical
 candidate evaluator and Active-owned exact candidate persistence/readback were
-checked hardware-free. No hardware behavior
-revalidated. Wave 1 excitation/evidence identities
-and `null_walk.DspPredecessor` reuse remain contract-only.
-Production candidate apply, verification/receipt, and Room authority remain
-unavailable. Crossover adapter
+checked hardware-free. Active's reviewed candidate apply now exercises the
+existing shared writer lock and exact graph/path/volume snapshot/restore seams;
+failure, cancellation, ambiguous retained-write, and restart recovery were
+checked with injected runtime ports. No hardware behavior was revalidated.
+Wave 1 excitation/evidence identities remain the shared substrate rather than
+feature policy. Production post-apply verification/receipt and Room authority
+remain unavailable. Crossover adapter
 volume-lease participation and measurement-flow admission ownership rechecked
 against correction, balance, sync, and the coordinator mutex)

@@ -24,7 +24,7 @@ from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
 
-CROSSOVER_ENVELOPE_SCHEMA_VERSION = 4
+CROSSOVER_ENVELOPE_SCHEMA_VERSION = 5
 
 _STEP_IDS = ("speaker_setup", "microphone", "drivers", "alignment", "apply")
 _STEP_LABELS = {
@@ -278,7 +278,19 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     setup_ready = _setup_ready(status)
     setup_contract = _mapping(status.get("setup"))
     protected_profile = _mapping(setup_contract.get("protected_profile"))
-    profile_context_id = str(protected_profile.get("candidate_fingerprint") or "")
+    commissioning_run = _mapping(status.get("commissioning_run"))
+    protected_profile_context_id = str(
+        protected_profile.get("candidate_fingerprint") or ""
+    )
+    retained_profile_context_id = str(
+        commissioning_run.get("profile_context_id") or ""
+    )
+    profile_context_id = (
+        retained_profile_context_id
+        if commissioning_run.get("status") == "current"
+        and retained_profile_context_id
+        else protected_profile_context_id
+    )
     comparison_set_ready = bool(
         comparison_set_ready
         and profile_context_id
@@ -322,7 +334,6 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     automatic_candidate_fingerprint = str(
         automatic_candidate.get("candidate_fingerprint") or ""
     )
-    commissioning_run = _mapping(status.get("commissioning_run"))
     isolated_evidence = _mapping(commissioning_run.get("isolated_evidence"))
     strict_isolated_complete = bool(
         commissioning_run.get("status") == "current"
@@ -1046,7 +1057,99 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "from the fixed-axis evidence, and normal-versus-reverse evidence "
             "retains the shown polarity."
         )
+        candidate = _mapping(region_commissioning.get("candidate"))
+        action = {
+            "id": "apply_measured_candidate",
+            "label": "Apply reviewed crossover",
+            "endpoint": "/correction/crossover/apply",
+            "body": {
+                "tuning_owner": "automatic",
+                "expected_candidate_fingerprint": str(
+                    candidate.get("fingerprint") or ""
+                ),
+            },
+        }
+        active_step = "apply"
+    elif (
+        strict_isolated_complete
+        and region_commissioning.get("status") == "apply_finalization_required"
+    ):
+        candidate = _mapping(region_commissioning.get("candidate"))
+        screen = "review"
+        verdict = str(region_commissioning.get("detail") or "Finish applying.")
+        action = {
+            "id": "finish_measured_candidate_apply",
+            "label": "Finish apply",
+            "endpoint": "/correction/crossover/apply",
+            "body": {
+                "tuning_owner": "automatic",
+                "expected_candidate_fingerprint": str(
+                    candidate.get("fingerprint") or ""
+                ),
+            },
+        }
+        active_step = "apply"
+    elif (
+        strict_isolated_complete
+        and region_commissioning.get("status") == "apply_rolled_back"
+    ):
+        candidate = _mapping(region_commissioning.get("candidate"))
+        screen = "review"
+        verdict = str(region_commissioning.get("detail") or "Apply was restored.")
+        action = {
+            "id": "retry_measured_candidate_apply",
+            "label": "Retry reviewed crossover",
+            "endpoint": "/correction/crossover/apply",
+            "body": {
+                "tuning_owner": "automatic",
+                "expected_candidate_fingerprint": str(
+                    candidate.get("fingerprint") or ""
+                ),
+            },
+        }
+        active_step = "apply"
+    elif (
+        strict_isolated_complete
+        and region_commissioning.get("status") == "applied_unverified"
+    ):
+        screen = "alignment"
+        verdict = (
+            "The reviewed crossover is applied and freshly read back. Keep the "
+            "microphone at the same fixed axis for combined-response verification."
+        )
         action = None
+        active_step = "alignment"
+    elif (
+        strict_isolated_complete
+        and region_commissioning.get("status") == "restore_finalization_required"
+    ):
+        screen = "apply"
+        verdict = str(
+            region_commissioning.get("detail")
+            or "Finish the already-proved restore before continuing."
+        )
+        action = {
+            "id": "finish_candidate_restore",
+            "label": "Finish restore",
+            "endpoint": "/correction/crossover/restore",
+            "body": {},
+        }
+        active_step = "apply"
+    elif (
+        strict_isolated_complete
+        and region_commissioning.get("status") == "restore_required"
+    ):
+        screen = "apply"
+        verdict = str(
+            region_commissioning.get("detail")
+            or "Restore the previous crossover before continuing."
+        )
+        action = {
+            "id": "restore_candidate_predecessor",
+            "label": "Restore previous crossover",
+            "endpoint": "/correction/crossover/restore",
+            "body": {},
+        }
         active_step = "apply"
     elif (
         strict_isolated_complete

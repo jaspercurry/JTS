@@ -242,6 +242,13 @@ a later capture cannot alter production audio during an unrelated EQ recompose.
 While a replacement candidate is staged, its state and content-addressed config
 remain separate and the retained `applied_recomposition_profile` stays the one
 carrier SSOT until apply succeeds.
+The production measured-candidate lane uses this same baseline compiler and
+state boundary: it requires the reviewed preset to match the compiled preset
+exactly, emits the candidate's attenuation/polarity/delay corrections, and
+promotes that immutable snapshot only after fresh live readback has produced a
+retained applied proof. A failed or cancelled load restores the exact live
+predecessor while the staged candidate continues to retain the prior applied
+profile for carrier consumers.
 It is a sibling of `build_baseline_profile_candidate`, **not** a new param on it:
 the
 durable baseline (`active_speaker_baseline.yml`, the reconcile fallback) stays
@@ -465,5 +472,6 @@ boundary:
   `tests/test_active_speaker_runtime_contract.py`,
   `tests/test_active_speaker_baseline_profile.py`
 
-Last verified: 2026-07-14 (graph-carrier ownership rechecked against bounded,
-cancellation-safe shared DSP-writer admission; carrier dispatch is unchanged)
+Last verified: 2026-07-15 (graph-carrier ownership rechecked against bounded,
+cancellation-safe shared DSP-writer admission and the measured-candidate
+baseline promotion boundary; carrier dispatch is unchanged)
