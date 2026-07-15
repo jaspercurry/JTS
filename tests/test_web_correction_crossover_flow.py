@@ -3037,6 +3037,20 @@ def test_crossover_envelope_projects_active_owned_alignment_actions():
     assert "Frequency, filter family, and order stay" in ready["verdict_text"]
 
     status["region_commissioning"] = {
+        "status": "restore_finalization_required",
+        "detail": "The exact previous crossover is already restored.",
+    }
+    finishing_restore = crossover_envelope.build_crossover_envelope(status)
+    assert finishing_restore["screen"] == "apply"
+    assert finishing_restore["next_action"] == {
+        "id": "finish_candidate_restore",
+        "label": "Finish restore",
+        "endpoint": "/correction/crossover/restore",
+        "body": {},
+    }
+    assert "already restored" in finishing_restore["verdict_text"]
+
+    status["region_commissioning"] = {
         "status": "candidate_refused",
         "detail": "Exact evidence could not authorize a candidate.",
         "candidate_failure": {
@@ -7350,6 +7364,32 @@ def test_crossover_relay_route_is_registered():
     assert "/crossover/relay-cancel" in correction_setup._POST_ROUTES
     assert "/crossover/region-geometry" in correction_setup._POST_ROUTES
     assert "/crossover/candidate" in correction_setup._POST_ROUTES
+    assert "/crossover/restore" in correction_setup._POST_ROUTES
+
+
+def test_crossover_restore_route_dispatches_without_browser_policy(monkeypatch):
+    from jasper.web import correction_setup
+
+    seen = []
+    monkeypatch.setattr(correction_setup, "_active_relay_phase", lambda: None)
+
+    def restore(run_async, camilla_factory, *, blocking_phase):
+        seen.append((run_async, camilla_factory, blocking_phase))
+        return {"status": "rolled_back"}, 200
+
+    monkeypatch.setattr(flow, "handle_restore", restore)
+    handler_type = correction_setup._make_handler({"hostname": "jts.local"})
+    handler = handler_type.__new__(handler_type)
+    sent = []
+    handler._send_json = lambda payload, status=200: sent.append((payload, status))
+
+    handler._dispatch_crossover("/crossover/restore")
+
+    assert sent == [({"status": "rolled_back"}, 200)]
+    assert len(seen) == 1
+    assert seen[0][0] is correction_setup._run_async
+    assert seen[0][1] is correction_setup._camilla
+    assert seen[0][2] is None
 
 
 def test_region_geometry_route_accepts_only_the_server_target_and_signed_value(

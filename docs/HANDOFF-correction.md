@@ -1432,6 +1432,7 @@ POST /crossover/region-geometry body: {expected_target_fingerprint,
 POST /crossover/candidate    resume exact candidate publication if execution
                              stopped after measured evidence became durable
 POST /crossover/apply        atomically apply measured Layer A; restore gain lease
+POST /crossover/restore      restore or finalize the exact pre-apply DSP state
 POST /crossover/driver-test  start one protected per-driver audible test
 POST /crossover/driver-confirm record the protected driver-test result
 POST /crossover/driver-abort stop the driver test and restore the graph

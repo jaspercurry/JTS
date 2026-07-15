@@ -1968,8 +1968,13 @@ def persist_applied_baseline_profile(
         candidate.get("kind") != BASELINE_PROFILE_KIND
         or candidate.get("status") not in {"ready_to_apply", "applied"}
         or not isinstance(candidate.get("recomposition_snapshot"), Mapping)
+        or apply_state.get("result") != "success"
+        or baseline_candidate_fingerprint(candidate)
+        != candidate.get("candidate_fingerprint")
     ):
-        raise ValueError("baseline candidate is not ready to become applied state")
+        raise ValueError(
+            "baseline candidate and successful apply proof are required"
+        )
     target = baseline_profile_state_path(state_path)
     existing = _load_saved_state(target)
     candidate_identity = baseline_candidate_fingerprint(candidate)

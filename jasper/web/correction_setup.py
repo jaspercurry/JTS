@@ -245,6 +245,7 @@ _POST_ROUTES = frozenset({
     "/crossover/relay-capture",
     "/crossover/relay-cancel",
     "/crossover/apply",
+    "/crossover/restore",
     "/crossover/recover-volume",
     "/balance/start",
     "/balance/ramp",

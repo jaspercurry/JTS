@@ -1110,6 +1110,22 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         active_step = "alignment"
     elif (
         strict_isolated_complete
+        and region_commissioning.get("status") == "restore_finalization_required"
+    ):
+        screen = "apply"
+        verdict = str(
+            region_commissioning.get("detail")
+            or "Finish the already-proved restore before continuing."
+        )
+        action = {
+            "id": "finish_candidate_restore",
+            "label": "Finish restore",
+            "endpoint": "/correction/crossover/restore",
+            "body": {},
+        }
+        active_step = "apply"
+    elif (
+        strict_isolated_complete
         and region_commissioning.get("status") == "restore_required"
     ):
         screen = "apply"

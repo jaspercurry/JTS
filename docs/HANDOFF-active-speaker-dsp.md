@@ -778,7 +778,7 @@
 > deterministic evaluator refusal is persisted as exact failure evidence,
 > transitions the run through the existing `candidate_scoring_failed` blocked
 > path, and requires a fresh complete measurement sequence rather than a futile
-> retry of immutable evidence. Graph
+> retry of immutable evidence.
 > Post-apply verification/receipt and Room consumption remain unavailable.
 > Real summed capture transport is now composed through the correction relay, but
 > live JTS3 playback and acoustic capture remain unvalidated.
@@ -800,8 +800,13 @@
 > predecessor pointer. Once the retained proof is durable, retry performs only
 > baseline-state and lifecycle finalization and never re-applies audio.
 > `/crossover/status` projects `candidate_ready`,
-> `apply_finalization_required`, `apply_rolled_back`, `restore_required`, or
-> `applied_unverified` from that same run/evidence authority. The browser owns
+> `apply_finalization_required`, `apply_rolled_back`, `restore_required`,
+> `restore_finalization_required`, or `applied_unverified` from that same
+> run/evidence authority. A transient writer-lock collision leaves the exact
+> reviewed candidate retryable. The durable pre-apply plan remains the evidence
+> authority after the measured graph becomes Layer A; it is revalidated against
+> the retained mutation's exact predecessor instead of being rebuilt from the
+> new applied graph. The browser owns
 > no mutation state machine. This slice has synthetic/contract coverage only;
 > post-apply fixed-axis verification, receipt issuance, Room handoff, and the
 > first live JTS3 candidate apply remain outstanding.

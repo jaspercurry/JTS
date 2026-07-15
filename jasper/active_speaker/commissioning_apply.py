@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from jasper.dsp_apply import (
     apply_dsp_config,
     dsp_apply_lock_path,
     dsp_writer_lock,
+    record_dsp_apply_state,
     validate_camilla_config,
 )
 from jasper.log_event import log_event
@@ -263,15 +265,13 @@ def _rollback_artifact(
     return _publish_json(store, run, issuance_id, filename, evidence.to_dict())
 
 
-def _pre_mutation_block(
+def _record_no_mutation_failure(
     *,
     run: CommissioningRunHandle,
-    run_store: CommissioningRunStore,
     store: CommissioningEvidenceStore,
     issuance: CommissioningLiveMutation,
     failure_code: str,
-) -> dict[str, Any]:
-    run_store.release_live_mutation(run, issuance)
+) -> tuple[CommissioningRollbackEvidence, ArtifactIdentity]:
     evidence = CommissioningRollbackEvidence(
         mutation_state="not_attempted",
         status="not_applicable",
@@ -285,6 +285,24 @@ def _pre_mutation_block(
         issuance_id=issuance.issuance_id,
         filename="apply-failure.json",
         evidence=evidence,
+    )
+    return evidence, artifact
+
+
+def _pre_mutation_block(
+    *,
+    run: CommissioningRunHandle,
+    run_store: CommissioningRunStore,
+    store: CommissioningEvidenceStore,
+    issuance: CommissioningLiveMutation,
+    failure_code: str,
+) -> dict[str, Any]:
+    run_store.release_live_mutation(run, issuance)
+    evidence, artifact = _record_no_mutation_failure(
+        run=run,
+        store=store,
+        issuance=issuance,
+        failure_code=failure_code,
     )
     if not run_store.transition(
         run,
@@ -306,6 +324,83 @@ def _pre_mutation_block(
     }
 
 
+def _pre_mutation_retry(
+    *,
+    run: CommissioningRunHandle,
+    run_store: CommissioningRunStore,
+    store: CommissioningEvidenceStore,
+    issuance: CommissioningLiveMutation,
+    failure_code: str,
+) -> dict[str, Any]:
+    """Release a transient refusal without discarding measured authority."""
+
+    run_store.release_live_mutation(run, issuance)
+    evidence, artifact = _record_no_mutation_failure(
+        run=run,
+        store=store,
+        issuance=issuance,
+        failure_code=failure_code,
+    )
+    log_event(
+        logger,
+        "correction.active_commissioning_candidate_apply_deferred",
+        session=run.session_id,
+        run_id=run.run_id,
+        owner_generation=run.owner_generation,
+        issuance_id=issuance.issuance_id,
+        failure_code=failure_code,
+        evidence_fingerprint=artifact.fingerprint,
+    )
+    return {
+        "status": "candidate_ready",
+        "failure_code": failure_code,
+        "rollback": evidence.to_dict(),
+    }
+
+
+def _record_wrapper_restore_outcome(
+    *,
+    error: BaseException,
+    apply_state: DspApplyState | None,
+    issuance: CommissioningLiveMutation,
+    predecessor: ExactDspStateIdentity,
+    candidate_config_path: str,
+    failure_code: str,
+    rollback_succeeded: bool,
+    rollback_error: str | None = None,
+) -> None:
+    state = apply_state
+    if state is None and isinstance(error, DspApplyError):
+        state = error.state
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if state is None:
+        state = DspApplyState(
+            schema_version=1,
+            op_id=issuance.issuance_id,
+            source=APPLY_SOURCE,
+            phase="rollback",
+            result="in_progress",
+            started_at=now,
+            finished_at=None,
+            prior_config_path=str(predecessor.state["config_path"]),
+            candidate_config_path=candidate_config_path,
+        )
+    state.phase = "done"
+    state.result = (
+        f"active_wrapper_{failure_code}_rolled_back"
+        if rollback_succeeded
+        else f"active_wrapper_{failure_code}_rollback_failed"
+    )
+    state.finished_at = now
+    state.active_config_path = (
+        str(predecessor.state["config_path"]) if rollback_succeeded else None
+    )
+    state.rollback_attempted = True
+    state.rollback_succeeded = rollback_succeeded
+    state.rollback_error = rollback_error
+    record_dsp_apply_state(state)
+
+
 async def _restore_failed_mutation_locked(
     *,
     error: BaseException,
@@ -319,6 +414,7 @@ async def _restore_failed_mutation_locked(
     predecessor: ExactDspStateIdentity,
     runtime_port: CommissioningRuntimePort,
     load_config_path: LoadConfigPath,
+    candidate_config_path: str,
     apply_state: DspApplyState | None,
     observed_graph: NormalizedActiveRawIdentity | None,
 ) -> dict[str, Any]:
@@ -347,6 +443,16 @@ async def _restore_failed_mutation_locked(
             load_config_path=load_config_path,
         )
     except BaseException as restore_exc:  # noqa: BLE001 - evidence for cancellation too
+        _record_wrapper_restore_outcome(
+            error=error,
+            apply_state=apply_state,
+            issuance=issuance,
+            predecessor=predecessor,
+            candidate_config_path=candidate_config_path,
+            failure_code=failure_code,
+            rollback_succeeded=False,
+            rollback_error=str(restore_exc),
+        )
         restore_failure = CommissioningRollbackEvidence(
             mutation_state="unknown",
             status="unknown",
@@ -371,6 +477,15 @@ async def _restore_failed_mutation_locked(
             "candidate apply failed and exact predecessor restore is not proved",
         ) from restore_exc
 
+    _record_wrapper_restore_outcome(
+        error=error,
+        apply_state=apply_state,
+        issuance=issuance,
+        predecessor=predecessor,
+        candidate_config_path=candidate_config_path,
+        failure_code=failure_code,
+        rollback_succeeded=True,
+    )
     unknown_artifact = _rollback_artifact(
         store=store,
         run=run,
@@ -1111,6 +1226,7 @@ async def apply_measured_candidate(
                         predecessor=predecessor,
                         runtime_port=runtime_port,
                         load_config_path=load_config_path,
+                        candidate_config_path=_candidate_path(baseline),
                         apply_state=apply_state,
                         observed_graph=observed_graph,
                     )
@@ -1149,7 +1265,7 @@ async def apply_measured_candidate(
                 )
                 return result
     except DspWriterLockTimeout:
-        return _pre_mutation_block(
+        return _pre_mutation_retry(
             run=run,
             run_store=run_store,
             store=store,

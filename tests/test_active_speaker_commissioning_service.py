@@ -108,6 +108,11 @@ def _service_harness(
         return plan
 
     monkeypatch.setattr(service_module, "current_region_evidence_plan", current_plan)
+    monkeypatch.setattr(
+        service_module,
+        "reopen_region_evidence_plan_for_baseline",
+        current_plan,
+    )
     service = CommissioningCaptureService(
         run=plan.authority.run,
         run_store=run_store,

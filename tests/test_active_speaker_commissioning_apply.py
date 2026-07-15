@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +16,13 @@ import pytest
 import yaml
 
 from jasper.active_speaker import commissioning_apply as apply_module
+from jasper.active_speaker import commissioning_isolated_producer as producer_module
+from jasper.active_speaker import commissioning_service as service_module
 from jasper.active_speaker.baseline_profile import (
     BASELINE_PROFILE_KIND,
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
+    recompose_applied_baseline_yaml,
 )
 from jasper.active_speaker.commissioning_apply import (
     CommissioningApplyError,
@@ -24,9 +30,18 @@ from jasper.active_speaker.commissioning_apply import (
     restore_pending_candidate_apply,
 )
 from jasper.active_speaker.commissioning_run import CommissioningRunStore
-from jasper.active_speaker.commissioning_runtime import CommissioningRuntimePort
+from jasper.active_speaker.commissioning_runtime import (
+    CommissioningRuntimePort,
+    snapshot_exact_dsp_state,
+)
+from jasper.active_speaker.commissioning_service import CommissioningServiceError
 from jasper.active_speaker.runtime_contract import GraphSafety
-from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+from jasper.dsp_apply import (
+    CamillaConfigValidationResult,
+    DspWriterLockTimeout,
+    ValidationStatus,
+    last_dsp_apply_state,
+)
 from tests.test_active_speaker_commissioning_service import (
     _complete_candidate_evidence,
     _service_harness,
@@ -56,8 +71,13 @@ def _candidate_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return harness, current, candidate
 
 
-def _runtime(candidate_text: str, *, fail_candidate_load: bool = False):
-    predecessor_text = yaml.safe_dump(
+def _runtime(
+    candidate_text: str,
+    *,
+    predecessor_text: str | None = None,
+    fail_candidate_load: bool = False,
+):
+    predecessor_text = predecessor_text or yaml.safe_dump(
         {
             "devices": {"volume_limit": -12.0},
             "filters": {"predecessor": {"type": "Gain"}},
@@ -222,8 +242,14 @@ async def _apply(
         candidate_path=candidate_path,
         candidate_text=candidate_text,
     )
+    predecessor_text, issues = recompose_applied_baseline_yaml(
+        current.authority.topology,
+        applied_profile=current.authority.applied_profile,
+    )
+    assert predecessor_text is not None and issues == []
     port, load_path, state, predecessor_text = _runtime(
         candidate_text,
+        predecessor_text=predecessor_text,
         fail_candidate_load=fail_candidate_load,
     )
     try:
@@ -233,7 +259,9 @@ async def _apply(
             store=harness.evidence_store,
             candidate=candidate,
             target_plan=harness.service._required_target_plan(current),
-            safety_profile_fingerprint="a" * 64,
+            safety_profile_fingerprint=(
+                harness.plan.authority.protected_safety_profile_fingerprint
+            ),
             topology=current.authority.topology,
             design_draft={},
             crossover_preview={},
@@ -335,7 +363,9 @@ async def test_retained_apply_retry_only_finishes_durable_state(
         store=harness.evidence_store,
         candidate=candidate,
         target_plan=harness.service._required_target_plan(current),
-        safety_profile_fingerprint="a" * 64,
+        safety_profile_fingerprint=(
+            harness.plan.authority.protected_safety_profile_fingerprint
+        ),
         topology=current.authority.topology,
         design_draft={},
         crossover_preview={},
@@ -358,6 +388,9 @@ async def test_retained_sidecar_failure_restores_before_writer_unlock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    dsp_state_path = tmp_path / "dsp-apply-state.json"
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(dsp_state_path))
+
     def fail_retained(*_args, **_kwargs):
         raise OSError("simulated retained-sidecar failure")
 
@@ -378,6 +411,16 @@ async def test_retained_sidecar_failure_restores_before_writer_unlock(
         "volume": -36.0,
     }
     assert harness.run_store.lifecycle_state(harness.plan.authority.run) == "rolled_back"
+    shared_state = last_dsp_apply_state(state_path=dsp_state_path)
+    assert shared_state is not None
+    assert shared_state["result"] == (
+        "active_wrapper_mutation_outcome_unknown_rolled_back"
+    )
+    assert shared_state["active_config_path"] == (
+        "/etc/camilladsp/predecessor.yml"
+    )
+    assert shared_state["rollback_attempted"] is True
+    assert shared_state["rollback_succeeded"] is True
 
 
 @pytest.mark.asyncio
@@ -444,7 +487,9 @@ async def test_restart_after_proved_restore_finishes_without_mutating_dsp_again(
     harness.service.load_current_authority = lambda: (_ for _ in ()).throw(
         ValueError("simulated stale product authority")
     )
-    assert harness.service.status()["status"] == "restore_required"
+    status = harness.service.status()
+    assert status["status"] == "restore_finalization_required"
+    assert "already restored" in status["detail"]
 
     result = await restore_pending_candidate_apply(
         run=harness.plan.authority.run,
@@ -462,3 +507,385 @@ async def test_restart_after_proved_restore_finishes_without_mutating_dsp_again(
         "volume": -36.0,
     }
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_applied_profile_change_keeps_preapply_plan_for_status_and_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_transition = CommissioningRunStore.transition
+    failed_transition = False
+
+    def fail_applied_transition_once(self, handle, transition, **kwargs):
+        nonlocal failed_transition
+        if transition.to_state == "applied_unverified" and not failed_transition:
+            failed_transition = True
+            return False
+        return real_transition(self, handle, transition, **kwargs)
+
+    monkeypatch.setattr(
+        CommissioningRunStore,
+        "transition",
+        fail_applied_transition_once,
+    )
+    harness, candidate, interrupted, state, _previous, port, load = await _apply(
+        tmp_path,
+        monkeypatch,
+        capture_error=True,
+    )
+    assert isinstance(interrupted, CommissioningApplyError)
+    assert interrupted.code == "candidate_apply_finalization_required"
+    assert failed_transition is True
+    assert state["path"] == str(tmp_path / "candidate.yml")
+    saved = json.loads((tmp_path / "baseline-state.json").read_text())
+    assert saved["status"] == "applied"
+
+    harness.service.load_current_authority = lambda: replace(
+        harness.authority,
+        applied_profile=saved,
+    )
+    monkeypatch.setattr(
+        producer_module,
+        "active_region_threshold_profile_fingerprint",
+        lambda: harness.plan.authority.threshold_profile_fingerprint,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "reopen_region_evidence_plan_for_baseline",
+        producer_module.reopen_region_evidence_plan_for_baseline,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "current_region_evidence_plan",
+        lambda **_kwargs: pytest.fail(
+            "post-apply status must not rebuild authority from the new graph"
+        ),
+    )
+
+    status = harness.service.status()
+    assert status["status"] == "apply_finalization_required"
+    assert status["candidate"]["fingerprint"] == candidate.fingerprint
+
+    current = harness.service._current()
+    result = await apply_measured_candidate(
+        run=harness.plan.authority.run,
+        run_store=harness.run_store,
+        store=harness.evidence_store,
+        candidate=candidate,
+        target_plan=harness.service._required_target_plan(current),
+        safety_profile_fingerprint=(
+            harness.plan.authority.protected_safety_profile_fingerprint
+        ),
+        topology=current.authority.topology,
+        design_draft={},
+        crossover_preview={},
+        measurements={},
+        runtime_port=port,
+        load_config_path=load,
+        verify_current=lambda: pytest.fail("retained retry must not reload audio"),
+        state_path=tmp_path / "baseline-state.json",
+        config_path=tmp_path / "candidate.yml",
+        validate=_valid,
+    )
+
+    assert result["status"] == "applied_unverified"
+    assert state["path"] == str(tmp_path / "candidate.yml")
+    assert harness.service.status()["status"] == "applied_unverified"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_mutation_intent_restores_exact_predecessor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dsp_state_path = tmp_path / "dsp-apply-state.json"
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(dsp_state_path))
+    harness, current, candidate = _candidate_harness(tmp_path, monkeypatch)
+    candidate_path = tmp_path / "candidate.yml"
+    candidate_text = yaml.safe_dump(
+        {
+            "devices": {"volume_limit": -12.0},
+            "filters": {"candidate": {"type": "Gain"}},
+        },
+        sort_keys=True,
+    )
+    _install_compiler(
+        monkeypatch,
+        candidate_path=candidate_path,
+        candidate_text=candidate_text,
+    )
+    predecessor_text, issues = recompose_applied_baseline_yaml(
+        current.authority.topology,
+        applied_profile=current.authority.applied_profile,
+    )
+    assert predecessor_text is not None and issues == []
+    port, real_load, state, predecessor_text = _runtime(
+        candidate_text,
+        predecessor_text=predecessor_text,
+    )
+    candidate_loaded = asyncio.Event()
+
+    async def load_then_wait(path: str) -> bool:
+        loaded = await real_load(path)
+        if path == str(candidate_path):
+            candidate_loaded.set()
+            await asyncio.Future()
+        return loaded
+
+    task = asyncio.create_task(
+        apply_measured_candidate(
+            run=harness.plan.authority.run,
+            run_store=harness.run_store,
+            store=harness.evidence_store,
+            candidate=candidate,
+            target_plan=harness.service._required_target_plan(current),
+            safety_profile_fingerprint=(
+                harness.plan.authority.protected_safety_profile_fingerprint
+            ),
+            topology=current.authority.topology,
+            design_draft={},
+            crossover_preview={},
+            measurements={},
+            runtime_port=port,
+            load_config_path=load_then_wait,
+            verify_current=lambda: None,
+            state_path=tmp_path / "baseline-state.json",
+            config_path=candidate_path,
+            validate=_valid,
+        )
+    )
+    await asyncio.wait_for(candidate_loaded.wait(), timeout=2.0)
+    mutation = harness.run_store.current_live_mutation(harness.plan.authority.run)
+    assert mutation is not None and mutation.status == "mutation_pending"
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert state == {
+        "raw": predecessor_text,
+        "path": "/etc/camilladsp/predecessor.yml",
+        "volume": -36.0,
+    }
+    mutation = harness.run_store.current_live_mutation(harness.plan.authority.run)
+    assert mutation is not None and mutation.status == "aborted"
+    assert harness.run_store.lifecycle_state(harness.plan.authority.run) == "rolled_back"
+    shared_state = last_dsp_apply_state(state_path=dsp_state_path)
+    assert shared_state is not None
+    assert shared_state["result"].endswith("_rolled_back")
+    assert shared_state["rollback_succeeded"] is True
+
+
+@pytest.mark.asyncio
+async def test_restart_with_pending_mutation_performs_live_exact_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness, current, candidate = _candidate_harness(tmp_path, monkeypatch)
+    candidate_text = yaml.safe_dump(
+        {
+            "devices": {"volume_limit": -12.0},
+            "filters": {"candidate": {"type": "Gain"}},
+        },
+        sort_keys=True,
+    )
+    predecessor_text, issues = recompose_applied_baseline_yaml(
+        current.authority.topology,
+        applied_profile=current.authority.applied_profile,
+    )
+    assert predecessor_text is not None and issues == []
+    port, load, state, predecessor_text = _runtime(
+        candidate_text,
+        predecessor_text=predecessor_text,
+    )
+    predecessor = await snapshot_exact_dsp_state(port)
+    run = harness.plan.authority.run
+    target_plan = harness.service._required_target_plan(current)
+    operation = apply_module._operation_fingerprint(
+        run=run,
+        candidate=candidate,
+        target_plan=target_plan,
+        safety_profile_fingerprint=(
+            harness.plan.authority.protected_safety_profile_fingerprint
+        ),
+    )
+    issuance = harness.run_store.issue_live_mutation(
+        run,
+        purpose=apply_module.APPLY_PURPOSE,
+        operation_fingerprint=operation,
+    )
+    predecessor_artifact = harness.evidence_store.publish_json_artifact(
+        apply_module._source_path(
+            run,
+            issuance.issuance_id,
+            "predecessor.json",
+        ),
+        predecessor.to_dict(),
+    )
+    harness.run_store.record_live_mutation_intent(
+        run,
+        issuance,
+        rollback_artifact_path=predecessor_artifact.relative_path,
+        rollback_artifact_fingerprint=predecessor_artifact.fingerprint,
+    )
+    state.update(
+        {
+            "raw": candidate_text,
+            "path": str(tmp_path / "candidate.yml"),
+            "volume": -18.0,
+        }
+    )
+
+    assert harness.service.status()["status"] == "restore_required"
+    result = await restore_pending_candidate_apply(
+        run=run,
+        run_store=harness.run_store,
+        store=harness.evidence_store,
+        runtime_port=port,
+        load_config_path=load,
+        config_path=tmp_path / "candidate.yml",
+    )
+
+    assert result["status"] == "rolled_back"
+    assert state == {
+        "raw": predecessor_text,
+        "path": "/etc/camilladsp/predecessor.yml",
+        "volume": -36.0,
+    }
+    mutation = harness.run_store.current_live_mutation(run)
+    assert mutation is not None and mutation.status == "aborted"
+
+
+@pytest.mark.asyncio
+async def test_writer_lock_timeout_leaves_candidate_ready_and_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    @asynccontextmanager
+    async def collide_once(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise DspWriterLockTimeout(
+                tmp_path / "dsp-writer.lock",
+                timeout_s=10.0,
+                waited_s=10.0,
+                source=apply_module.APPLY_SOURCE,
+            )
+        yield
+
+    monkeypatch.setattr(apply_module, "dsp_writer_lock", collide_once)
+    harness, candidate, deferred, state, _previous, port, load = await _apply(
+        tmp_path,
+        monkeypatch,
+    )
+
+    assert deferred["status"] == "candidate_ready"
+    assert deferred["failure_code"] == "writer_lock_unavailable"
+    assert harness.run_store.lifecycle_state(harness.plan.authority.run) == (
+        "candidate_ready"
+    )
+    mutation = harness.run_store.current_live_mutation(harness.plan.authority.run)
+    assert mutation is not None and mutation.status == "released"
+
+    current = harness.service._current()
+    result = await apply_measured_candidate(
+        run=harness.plan.authority.run,
+        run_store=harness.run_store,
+        store=harness.evidence_store,
+        candidate=candidate,
+        target_plan=harness.service._required_target_plan(current),
+        safety_profile_fingerprint=(
+            harness.plan.authority.protected_safety_profile_fingerprint
+        ),
+        topology=current.authority.topology,
+        design_draft={},
+        crossover_preview={},
+        measurements={},
+        runtime_port=port,
+        load_config_path=load,
+        verify_current=lambda: None,
+        state_path=tmp_path / "baseline-state.json",
+        config_path=tmp_path / "candidate.yml",
+        validate=_valid,
+    )
+
+    assert result["status"] == "applied_unverified"
+    assert state["path"] == str(tmp_path / "candidate.yml")
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_rolled_back_review_does_not_change_known_restore_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness, _candidate, result, _state, _previous, port, load = await _apply(
+        tmp_path,
+        monkeypatch,
+        fail_candidate_load=True,
+    )
+    assert result["status"] == "rolled_back"
+
+    with pytest.raises(CommissioningServiceError) as captured:
+        await harness.service.apply_candidate(
+            expected_candidate_fingerprint="0" * 64,
+            runtime_port=port,
+            load_config_path=load,
+        )
+
+    assert captured.value.code == "candidate_review_stale"
+    assert harness.run_store.lifecycle_state(harness.plan.authority.run) == "rolled_back"
+    assert harness.service.status()["status"] == "apply_rolled_back"
+
+
+def test_known_restore_in_candidate_ready_is_retryable_not_restore_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness, current, _candidate = _candidate_harness(tmp_path, monkeypatch)
+    candidate, artifact = harness.service._reopen_candidate(
+        current,
+        require_transition=True,
+    )
+    run = harness.plan.authority.run
+    issuance = harness.run_store.issue_live_mutation(
+        run,
+        purpose=apply_module.APPLY_PURPOSE,
+        operation_fingerprint="b" * 64,
+    )
+    predecessor = harness.evidence_store.publish_json_artifact(
+        apply_module._source_path(run, issuance.issuance_id, "predecessor.json"),
+        {
+            "schema_version": 1,
+            "kind": "placeholder",
+            "candidate_fingerprint": candidate.fingerprint,
+        },
+    )
+    pending = harness.run_store.record_live_mutation_intent(
+        run,
+        issuance,
+        rollback_artifact_path=predecessor.relative_path,
+        rollback_artifact_fingerprint=predecessor.fingerprint,
+    )
+    restored = harness.run_store.record_live_mutation_restored(
+        run,
+        pending,
+        restoration_evidence_fingerprint="c" * 64,
+    )
+    harness.run_store.record_live_mutation_aborted(
+        run,
+        restored,
+        failure_evidence_fingerprint="d" * 64,
+    )
+
+    status = harness.service.status()
+
+    assert status["status"] == "candidate_ready"
+    assert status["candidate"]["fingerprint"] == candidate.fingerprint
+    transition = harness.run_store.lifecycle_transition(run)
+    assert transition is not None
+    assert transition.evidence_fingerprint == artifact.fingerprint
