@@ -26,6 +26,7 @@ from jasper.active_speaker.baseline_profile import (
     PROVENANCE_RECOMMENDED_START,
     _derive_corrections,
     _GAIN_SOURCE_TO_PROVENANCE,
+    active_layer_a_fingerprint,
     apply_baseline_profile,
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
@@ -2212,6 +2213,72 @@ def test_applied_room_and_reset_only_mutate_program_domain(tmp_path: Path) -> No
         name.startswith("room_peq_")
         for step in room["pipeline"][room_split_index:]
         for name in step.get("names", [])
+    )
+
+
+def _applied_layer_a_yaml(tmp_path: Path) -> str:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    applied = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=_measurements(topology, tmp_path),
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    applied["status"] = "applied"
+    text, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+    )
+    assert issues == []
+    assert text is not None
+    return text
+
+
+@pytest.mark.parametrize("mutation", ["playback", "mixer", "pipeline_suffix"])
+def test_layer_a_fingerprint_rejects_every_bound_domain_mutation(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    baseline_yaml = _applied_layer_a_yaml(tmp_path)
+    changed = yaml_lib.safe_load(baseline_yaml)
+    split_index = next(
+        index
+        for index, step in enumerate(changed["pipeline"])
+        if step.get("type") == "Mixer"
+    )
+    split_name = changed["pipeline"][split_index]["name"]
+    if mutation == "playback":
+        changed["devices"]["playback"]["device"] = "unexpected_output"
+    elif mutation == "mixer":
+        source = changed["mixers"][split_name]["mapping"][0]["sources"][0]
+        source["gain"] = float(source.get("gain", 0.0)) - 0.25
+    else:
+        driver_step = changed["pipeline"][split_index + 1]
+        driver_step["channels"] = [int(driver_step["channels"][0]) + 1]
+
+    assert active_layer_a_fingerprint(yaml_lib.safe_dump(changed)) != (
+        active_layer_a_fingerprint(baseline_yaml)
+    )
+
+
+def test_layer_a_fingerprint_ignores_capture_only_mutation(tmp_path: Path) -> None:
+    baseline_yaml = _applied_layer_a_yaml(tmp_path)
+    changed = yaml_lib.safe_load(baseline_yaml)
+    changed["devices"]["capture"] = {
+        "type": "Alsa",
+        "channels": 2,
+        "device": "alternate_program_capture",
+        "format": "S32_LE",
+    }
+
+    assert active_layer_a_fingerprint(yaml_lib.safe_dump(changed)) == (
+        active_layer_a_fingerprint(baseline_yaml)
     )
 
 

@@ -224,13 +224,17 @@ verify, acceptance, and automatic-revert path can use it.
 [`_handle_start()`](../jasper/web/correction_setup.py) asks
 [`jasper.correction.runtime_safety`](../jasper/correction/runtime_safety.py)
 whether `/etc/camilladsp/outputd-cutover.yml` is legal for the saved output
-topology before playing the sweep. For ordinary full-range stereo this still
-means every measurement captures the raw room through the current protected
-outputd-safe baseline, never through a prior room-correction or preference-EQ
-profile. Saved active/protected topology, or explicit mono topology that would
-be driven by a wider flat graph, fails before sweep playback. The agent must
-understand this — its "compare verify against measured" reasoning only works
-when both were captured against the same legal baseline.
+topology before playing the sweep. Ordinary full-range layouts measure through
+that protected flat baseline, never through a prior Room or preference-EQ
+profile. A saved active/protected topology instead uses the active graph carrier:
+an operator-applied manual profile may enter Room only when Active's semantic
+Layer-A fingerprint of CamillaDSP's fresh `active_raw` readback matches
+snapshot-derived recomposition. The measurement baseline then strips only the
+pre-split Room/preference layers and preserves the exact crossover, routing,
+polarity, delay, gain, and protection. An incomplete or mismatched active setup,
+or any topology for which neither legal baseline exists, fails before sweep
+playback. The agent must understand this — its "compare verify against measured"
+reasoning only works when both were captured against the same legal baseline.
 
 ### Storage layout
 
@@ -700,9 +704,11 @@ Two key constraints from existing architecture:
 1. **`/start` resets to flat only when the topology contract permits it**
    ([`_handle_start`](../jasper/web/correction_setup.py)). The agent must never
    bypass this — fresh measurements capture the raw room for legal full-range
-   layouts, and active/protected layouts are deferred to the active-speaker
-   flow. If the agent wants to know how the *corrected* pipeline measures, it
-   goes through `/verify` (which deliberately doesn't reset).
+   layouts. For active/protected layouts with matching manual applied-profile
+   authority, the active graph carrier preserves Layer A and strips only the
+   pre-split Room/preference layers; incomplete or mismatched active authority
+   remains blocked. If the agent wants to know how the *corrected* pipeline
+   measures, it goes through `/verify` (which deliberately doesn't reset).
 2. **`measurement_window()` precondition: no active voice session.**
    ([`jasper/correction/coordinator.py`](../jasper/correction/coordinator.py))
    The agent cannot trigger a re-measurement while "Jarvis" is in a
@@ -1316,7 +1322,11 @@ Codebase:
 
 ---
 
-Last verified: 2026-07-13 (Wave 2 paid tuning backend extraction rechecked the
+Last verified: 2026-07-15 (manual-active Room admission, fresh Layer-A readback
+binding, and topology-preserving measurement baseline rechecked against
+`jasper/active_speaker/setup_status.py`, `jasper/sound/graph_carrier.py`, and
+`jasper/web/correction_setup.py`; prior 2026-07-13 Wave 2 paid tuning backend
+extraction rechecked the
 shared interpret/propose throttle, gate-before/provider/record-after order,
 fresh cap settings, provider-error translation, and fail-soft ledger behavior
 against `jasper/web/correction_tuning.py` and the thin adapters in
