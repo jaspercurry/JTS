@@ -777,7 +777,12 @@ attempt/transition orchestrator on the browser route. The typed internal
 evidence host now reserves deterministic region attempts, persists and reopens
 exact admitted normal/reverse/delay sets, evaluates the bounded measured delay
 schedule, and advances the exact run from `unconfigured` through `protected`
-to `measured`. It does not create candidate, apply, receipt, or Room authority.
+to `measured`. A store-backed pure deterministic evaluator can now reopen exact
+complete isolated and summed evidence and derive an
+attenuation/polarity/delay-only electrical candidate. The production host does
+not invoke it and no product route populates the required isolated set, so no
+candidate is persisted and `candidate_ready`, graph mutation/apply,
+verification/receipt, and Room authority remain unavailable.
 The direct browser/raw combined-capture route remains permanently pre-audio
 refused with `active_summed_persisted_admission_unavailable`. Real Wave 4
 geometry and capture inputs must still enter through the typed internal host;
@@ -1416,9 +1421,11 @@ As of 2026-07-14, JTS has much of the substrate but not the full product:
   physical driver in the same plan and persists one canonical run-scoped
   complete artifact with deep child/admission verification. Existing mutable
   and fail-soft driver records cannot be promoted or backfilled into it; fresh
-  production population remains Wave 4 work. There is still no measured
-  candidate, candidate graph mutation, verification, receipt issuer, or Room
-  authority path. Room's
+  production population remains Wave 4 work. The store-backed pure evaluator
+  can derive a deterministic electrical candidate from exact synthetic-admitted
+  complete evidence, but production does not invoke or persist it. There is
+  still no `candidate_ready` transition, candidate graph mutation/apply,
+  verification, receipt issuer, or Room authority path. Room's
   temporary R1b adapter admits passive/not-required and
   blocks every active topology rather than trusting the applied-snapshot
   positive. Live receipt production/consumption and on-device proof remain later
@@ -1590,7 +1597,7 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-14 (Wave 2 reconstruction, measured-candidate input,
+Last verified: 2026-07-15 (Wave 2 reconstruction, measured-candidate input,
 preparation-only safety, level-run correlation contracts and terminal-result
 liveness, permanent historical refusal, the reachable isolated-driver
 Shared-admission/playback adapter and bounded writer transaction,
@@ -1601,7 +1608,8 @@ startup owner-generation claim, fail-closed crossover status, strict pure
 group-by-region and isolated-driver evidence sets with typed run/attempt,
 physical-target, graph, admission, and geometry authority,
 the bounded low-frequency coarse-plus-refinement schedule and schedule-aware
-final evaluator, complete-plan replay
+final evaluator, the store-backed pure deterministic electrical candidate
+evaluator, complete-plan replay
 guards, receipt schema-v2 one-shot roles,
 and Room's temporary passive-only admission boundary checked against the current
 implementation and cited measurement literature; no live audio/DSP/hardware

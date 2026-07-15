@@ -75,9 +75,13 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   admitted captures for every physical driver in that same plan, with one
   canonical run-scoped artifact and deep child/admission verification on every
   reopen. The existing fail-soft measurement records are not promoted into
-  that authority; fresh production population remains Wave 4 work. Candidate
-  evaluation, apply/verification, receipt production, and Room consumption
-  remain blocked.
+  that authority; fresh production population remains Wave 4 work. A
+  store-backed pure deterministic evaluator can now reopen the exact complete
+  isolated and summed artifacts and derive an attenuation/polarity/delay-only
+  electrical candidate. No production host invokes it, and isolated evidence
+  is not yet populated by the product path; candidate persistence,
+  `candidate_ready`, graph mutation/apply, verification/receipt, and Room
+  consumption remain blocked.
 - `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
   `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
   replay inputs, admission artifacts, algorithm id/version, geometry, placement,
@@ -1252,7 +1256,7 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-14 (bounded, cancellation-safe shared DSP-writer
+Last verified: 2026-07-15 (bounded, cancellation-safe shared DSP-writer
 admission and contention observability checked hardware-free; Wave 2 neutral artifact-manifest, playback,
 admission-artifact, and guarded-playback ownership; exact Room byte/schema/path
 compatibility; Room playback shim; temporary passive-only Room admission
@@ -1274,9 +1278,11 @@ Durable bundle-backed Active run identity, startup owner claim,
 stale-callback refusal, and fail-closed crossover status were checked hardware-
 free. The strict write-once commissioning evidence store, exact typed reopen,
 deep child-artifact verification, generation-scoped incomplete state, and
-run-scoped complete recovery were checked hardware-free. No hardware behavior
+run-scoped complete recovery plus the store-backed pure deterministic electrical
+candidate evaluator were checked hardware-free. No hardware behavior
 revalidated. Wave 1 excitation/evidence identities
 and `null_walk.DspPredecessor` reuse remain contract-only.
-Candidate/verification/receipt and Room authority remain unavailable. Crossover adapter
+Production candidate persistence/readiness/apply, verification/receipt, and
+Room authority remain unavailable. Crossover adapter
 volume-lease participation and measurement-flow admission ownership rechecked
 against correction, balance, sync, and the coordinator mutex)

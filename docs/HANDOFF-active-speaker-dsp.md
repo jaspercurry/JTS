@@ -755,10 +755,13 @@
 > post-apply-target, and receipt containers are explicitly schema version 2.
 > Shared also exposes a pure `select_scheduled_delay()` final evaluator that
 > requires the exact schedule and reuses the exhaustive selector's
-> repeatability, plateau, and tie policy. The typed internal summed host and
-> strict persistence adapter are now present, but no measured-candidate
-> producer, candidate graph mutation, verification producer, receipt issuer,
-> Room consumer, or hardware capture composition is present yet.
+> repeatability, plateau, and tie policy. A store-backed pure deterministic
+> evaluator now consumes exact complete isolated and summed evidence and
+> derives an attenuation/polarity/delay-only electrical candidate. The
+> production host does not invoke it and the product does not yet populate the
+> required isolated evidence; candidate persistence, `candidate_ready`, graph
+> mutation/apply, verification/receipt, Room consumption, and hardware capture
+> composition remain unavailable.
 
 ## Current Operational Truth
 
@@ -2130,7 +2133,7 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-14 (Wave 1 target-bound research, visible confirmed
+Last verified: 2026-07-15 (Wave 1 target-bound research, visible confirmed
 driver-safety profile, excitation admission, nine-state lifecycle, exact
 eligibility receipt, reachable isolated-driver persisted admission under one
 bounded writer transaction, direct summed-endpoint pre-audio refusal, the typed
@@ -2145,9 +2148,11 @@ strict group-by-region
 normal/reverse/delay evidence values with typed run/attempt and geometry
 authority, the bounded low-frequency coarse-plus-refinement schedule,
 schedule-aware final evaluator,
-complete-plan replay guards, receipt schema-v2 one-shot roles, and the
+complete-plan replay guards, the store-backed pure deterministic electrical
+candidate evaluator, receipt schema-v2 one-shot roles, and the
 durable bundle-backed commissioning-run store/start/status boundary and service owner-
-generation claim; no live candidate/verification/receipt producer, and
+generation claim; no production candidate persistence/readiness/apply or live
+verification/receipt producer, and
 temporary passive-only Room
 admission checked contract-only; no hardware behavior revalidated. Frozen applied-preset startup anchor, durable
 crossover-volume intent, confirmed recovery,

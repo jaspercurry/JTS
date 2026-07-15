@@ -54,6 +54,7 @@ from .crossover_contract import (
     legacy_manual_preservation_state,
 )
 from .crossover_preview import crossover_preview_fingerprint
+from .level_trim import LevelTrimError, attenuation_from_group_deltas
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
     active_playback_route_capability,
@@ -305,7 +306,7 @@ def _measured_level_trims(
         ):
             by_group.setdefault(group_id, {})[role] = record
 
-    per_group_trims: list[dict[str, float]] = []
+    per_group_delta_chains: list[list[tuple[str, str, float]]] = []
     deltas: list[dict[str, Any]] = []
     incomparable_groups: list[dict[str, Any]] = []
     for group_id, group_records in sorted(by_group.items()):
@@ -346,7 +347,7 @@ def _measured_level_trims(
             })
             continue
         assert all(value is not None for value in excitation_by_role.values())
-        raw: dict[str, float] = {roles[0]: 0.0}
+        adjacent_deltas: list[tuple[str, str, float]] = []
         group_deltas: list[dict[str, Any]] = []
         usable = True
         for region in regions:
@@ -365,11 +366,10 @@ def _measured_level_trims(
                 if measured_up is not None
                 else None
             )
-            if level_lo is None or level_up is None or lo_role not in raw:
+            if level_lo is None or level_up is None:
                 usable = False
                 break
-            # effective[U] == effective[L]  =>  trim[U] = trim[L] + L_lo - L_up
-            raw[up_role] = raw[lo_role] + level_lo - level_up
+            adjacent_deltas.append((lo_role, up_role, level_up - level_lo))
             group_deltas.append({
                 "speaker_group_id": group_id,
                 "crossover_fc_hz": fc,
@@ -381,18 +381,14 @@ def _measured_level_trims(
                     up_role: round(float(excitation_by_role[up_role]), 2),
                 },
             })
-        if not usable or set(raw) != set(roles):
+        if not usable:
             continue
-        offset = max(raw.values())  # quietest driver becomes the 0 dB reference
-        per_group_trims.append({
-            role: max(round(raw[role] - offset, 1), _MAX_ATTENUATION_DB)
-            for role in roles
-        })
+        per_group_delta_chains.append(adjacent_deltas)
         deltas.extend(group_deltas)
 
     meta: dict[str, Any] = {
         "groups_total": len(by_group),
-        "groups_measured": len(per_group_trims),
+        "groups_measured": len(per_group_delta_chains),
         "measured_group_ids": sorted({
             str(item["speaker_group_id"])
             for item in deltas
@@ -408,18 +404,15 @@ def _measured_level_trims(
         ),
         "incomparable_groups": incomparable_groups,
     }
-    if not per_group_trims:
+    if not per_group_delta_chains:
         return {}, meta
 
-    averaged = {
-        role: sum(group[role] for group in per_group_trims) / len(per_group_trims)
-        for role in roles
-    }
-    offset = max(averaged.values())
-    trims = {
-        role: max(round(averaged[role] - offset, 1), _MAX_ATTENUATION_DB)
-        for role in roles
-    }
+    try:
+        trims = attenuation_from_group_deltas(
+            roles, per_group_delta_chains, minimum_db=_MAX_ATTENUATION_DB
+        )
+    except LevelTrimError:
+        return {}, meta
     meta["trims"] = dict(trims)
     return trims, meta
 
