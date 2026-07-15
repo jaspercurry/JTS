@@ -347,6 +347,34 @@ async def test_allowed_baseline_is_not_summed_protection(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_summed_protection_refuses_a_ceiling_above_the_measurement_level(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path)
+    graph = yaml.safe_load(harness.guarded_raw)
+    graph["devices"]["volume_limit"] = 0.0
+    drifted_raw = runtime._dump_graph(
+        graph,
+        source_header=runtime._source_header(harness.guarded_raw),
+    )
+    transport_called = False
+
+    async def transport(play):
+        nonlocal transport_called
+        transport_called = True
+        raise AssertionError("an unbounded graph must refuse before transport")
+
+    with pytest.raises(SummedCaptureProducerError) as raised:
+        await harness.producer(transport).capture(
+            harness.operation,
+            _context(drifted_raw),
+        )
+
+    assert raised.value.code == "generation_refused"
+    assert transport_called is False
+
+
+@pytest.mark.asyncio
 async def test_guarded_graph_must_equal_operation_physical_outputs(
     tmp_path: Path,
 ) -> None:
@@ -459,6 +487,43 @@ async def test_transport_must_consume_play_exactly_once(
     assert raised.value.code == (
         "transport_play_missing" if play_count == 0 else "transport_play_reused"
     )
+
+
+@pytest.mark.asyncio
+async def test_transport_cannot_retain_playback_capability_after_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _harness(tmp_path)
+    retained = []
+    playback_calls = 0
+
+    async def fake_playback(source, *, alsa_device: str, timeout_s: float):
+        nonlocal playback_calls
+        playback_calls += 1
+        return PlaybackResult(
+            wav_path=source.path,
+            alsa_device=alsa_device,
+            returncode=0,
+        )
+
+    monkeypatch.setattr(admitted_playback, "play_verified_wav", fake_playback)
+
+    async def transport(play):
+        retained.append(play)
+        return RawCaptureResult(b"synthetic", {})
+
+    with pytest.raises(SummedCaptureProducerError) as raised:
+        await harness.producer(transport).capture(
+            harness.operation,
+            _context(harness.guarded_raw),
+        )
+    assert raised.value.code == "transport_play_missing"
+
+    with pytest.raises(SummedCaptureProducerError) as late:
+        await retained[0]()
+    assert late.value.code == "transport_play_expired"
+    assert playback_calls == 0
 
 
 @pytest.mark.asyncio

@@ -286,6 +286,11 @@ normal, reverse, and delay coordinate requires a distinct live-graph identity.
 Cleanup freshly proves the predecessor graph and path before restoring its
 potentially louder listening volume; an unproved graph restore retains the
 attenuated measurement volume and blocks as unknown.
+Every transient summed graph also lowers `devices.volume_limit` to the quieter
+of the inherited ceiling and the admitted measurement volume, and playback
+admission freshly proves that ceiling. The raw transport's play closure expires
+as soon as transport returns, raises, or is cancelled, so it cannot retain an
+audio capability beyond the guarded writer transaction.
 Protection proof accepts canonical stereo pipeline steps only when every covered
 output shares the target driver role; isolated-driver admission remains
 singleton-only, and mixed-role groups fail closed. A zero-delay coordinate

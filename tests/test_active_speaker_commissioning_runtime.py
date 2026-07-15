@@ -372,6 +372,42 @@ async def test_normal_capture_holds_candidate_and_restores_exact_predecessor(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["normal", "reverse", "delay"])
+async def test_every_summed_candidate_caps_volume_at_the_measurement_level(
+    tmp_path: Path,
+    kind: runtime.SummedGraphKind,
+) -> None:
+    fake = FakePort()
+
+    async def capture(context: runtime.CommissioningLiveContext):
+        assert context.graph.normalized_active_raw["devices"]["volume_limit"] == -32.0
+        return _admitted()
+
+    await runtime.run_summed_capture(
+        fake.port(),
+        _request(kind),
+        capture,
+        topology=_TOPOLOGY,
+        mutation_journal=_journal(),
+        config_dir=tmp_path,
+    )
+
+
+def test_summed_candidate_does_not_relax_a_quieter_inherited_volume_limit() -> None:
+    request = _request()
+    graph = yaml.safe_load(request.normal_active_raw)
+    graph["devices"]["volume_limit"] = -40.0
+    request = replace(request, normal_active_raw=_raw(graph))
+
+    normal = runtime._normal_graph(
+        request,
+        runtime._topology_binding(request, _TOPOLOGY),
+    )
+
+    assert normal["devices"]["volume_limit"] == -40.0
+
+
+@pytest.mark.asyncio
 async def test_fresh_readback_rereads_every_live_value_on_every_call(
     tmp_path: Path,
 ) -> None:

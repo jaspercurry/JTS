@@ -228,10 +228,16 @@ class _PlaybackGate:
 
     def __init__(self, play: Callable[[], Awaitable[AdmittedPlaybackResult]]) -> None:
         self._play = play
+        self._expired = False
         self.task: asyncio.Task[PlaybackResult] | None = None
         self.admitted: AdmittedPlaybackResult | None = None
 
     def begin(self) -> Awaitable[PlaybackResult]:
+        if self._expired:
+            raise SummedCaptureProducerError(
+                "transport_play_expired",
+                "raw capture transport retained an expired play closure",
+            )
         if self.task is not None:
             raise SummedCaptureProducerError(
                 "transport_play_reused",
@@ -245,6 +251,11 @@ class _PlaybackGate:
 
         self.task = asyncio.create_task(run())
         return self.task
+
+    def expire(self) -> None:
+        """Refuse future playback starts without cancelling an owned task."""
+
+        self._expired = True
 
 
 async def _cancel_and_drain(task: asyncio.Task[Any]) -> None:
@@ -698,6 +709,12 @@ class SummedCaptureProducer:
         graph_safety = classify_camilla_graph(
             topology=self.topology, text=readback.active_raw
         )
+        devices = readback.graph.normalized_active_raw.get("devices")
+        volume_limit = (
+            gs.float_value(devices.get("volume_limit"))
+            if isinstance(devices, Mapping)
+            else None
+        )
         evaluation = evaluate_driver_safety_profile(
             self.safety_profile, self.topology
         )
@@ -730,6 +747,10 @@ class SummedCaptureProducer:
                 expected_volume_db,
                 rel_tol=0.0,
                 abs_tol=1e-6,
+            ),
+            "graph_volume_ceiling": (
+                volume_limit is not None
+                and volume_limit <= expected_volume_db + 0.0001
             ),
             "profile_current": (
                 evaluation.confirmed_and_current
@@ -890,7 +911,10 @@ class SummedCaptureProducer:
         capture_completed = False
 
         async def capture_and_settle_playback() -> RawCaptureResult:
-            raw_capture = await self.raw_transport(gate.begin)
+            try:
+                raw_capture = await self.raw_transport(gate.begin)
+            finally:
+                gate.expire()
             if not isinstance(raw_capture, RawCaptureResult):
                 raise SummedCaptureProducerError(
                     "raw_capture_invalid",

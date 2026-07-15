@@ -74,6 +74,11 @@
 > schedule-aware selector only after the exact schedule is complete. The joined
 > runtime holds the existing writer lock through server-derived graph apply,
 > admitted playback/capture, and exact graph/path/listening-volume restoration.
+> Each transient graph hard-caps `devices.volume_limit` at the quieter of its
+> inherited ceiling and the admitted measurement volume; playback re-admission
+> freshly proves that ceiling. The capture transport's play closure expires
+> when transport returns, raises, or is cancelled, so no retained callback can
+> emit audio after the guarded transaction.
 > The plan fingerprints the normalized applied baseline plus microphone
 > calibration once for the complete program; every fresh operation must still
 > match it. Normal, reverse, and every delay coordinate—including zero—must
@@ -1592,5 +1597,5 @@ the bounded low-frequency coarse-plus-refinement schedule and schedule-aware
 final evaluator, complete-plan replay
 guards, receipt schema-v2 one-shot roles,
 and Room's temporary passive-only admission boundary checked against the current
-implementation and cited measurement literature; no live audio, DSP mutation,
-or hardware behavior was changed or revalidated.)
+implementation and cited measurement literature; no live audio/DSP/hardware
+operation was performed or hardware-validated.)

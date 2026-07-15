@@ -628,7 +628,8 @@ def _normal_graph(
     devices = graph.get("devices")
     volume_limit = devices.get("volume_limit") if isinstance(devices, Mapping) else None
     if (
-        isinstance(volume_limit, bool)
+        not isinstance(devices, dict)
+        or isinstance(volume_limit, bool)
         or not isinstance(volume_limit, (int, float))
         or not math.isfinite(float(volume_limit))
         or float(volume_limit) > 0.0
@@ -636,6 +637,7 @@ def _normal_graph(
         raise CommissioningRuntimeError(
             "server-derived graph must retain a non-positive volume ceiling"
         )
+    devices["volume_limit"] = min(float(volume_limit), request.listening_volume_db)
     filters = graph.get("filters")
     if isinstance(filters, Mapping) and any(
         isinstance(name, str)

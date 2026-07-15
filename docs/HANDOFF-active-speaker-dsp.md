@@ -2129,8 +2129,10 @@ eligibility receipt, reachable isolated-driver persisted admission under one
 bounded writer transaction, direct summed-endpoint pre-audio refusal, the typed
 summed graph/apply/capture/restore runtime with exact graph/path/listening-volume
 readback, exact adjacent-group binding, group-scoped transforms, safe-volume-
-before-graph ordering, full-envelope 20 ms delay headroom, fresh transformed-
-graph safety reproof, required mutation-journal callbacks, locked predecessor
+before-graph ordering, a transient graph ceiling no louder than the admitted
+measurement volume, full-envelope 20 ms delay headroom, fresh transformed-
+graph safety reproof, expiry of the raw transport's playback capability when
+transport ends, required mutation-journal callbacks, locked predecessor
 recovery, and cancellation-drained cleanup,
 strict group-by-region
 normal/reverse/delay evidence values with typed run/attempt and geometry
