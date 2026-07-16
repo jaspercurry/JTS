@@ -28,6 +28,7 @@ from jasper.audio_measurement.null_walk import (
     select_scheduled_delay,
 )
 
+from ._common import require_sha256_hex
 from .commissioning_evidence import (
     ACTIVE_REGION_SUMMED_ANALYZER_POLICY_ID,
     ACTIVE_REGION_SUMMED_ANALYZER_POLICY_VERSION,
@@ -255,13 +256,12 @@ def _finite(value: Any, name: str) -> float:
 
 
 def _sha256(value: Any, name: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise MeasuredCandidateError(f"{name} must be a lowercase SHA-256")
-    return value
+    return require_sha256_hex(
+        value,
+        name,
+        MeasuredCandidateError,
+        message=f"{name} must be a lowercase SHA-256",
+    )
 
 
 @dataclass(frozen=True, slots=True, init=False)

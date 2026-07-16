@@ -1192,9 +1192,7 @@ def test_compute_autolevel_cap_clamps():
     from jasper.correction.session import compute_autolevel_cap
 
     def cap(original):
-        return compute_autolevel_cap(
-            original, bump_db=6.0, floor_db=-20.0, ceil_db=-6.0
-        )
+        return compute_autolevel_cap(original, bump_db=6.0, ceil_db=-6.0)
 
     assert cap(-19.0) == -13.0   # +6 bump lands inside the band
     assert cap(-28.5) == -22.5   # quiet listener never rises by more than +6

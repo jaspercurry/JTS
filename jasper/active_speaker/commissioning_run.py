@@ -46,6 +46,7 @@ from jasper.audio_measurement.evidence_identity import (
 )
 from jasper.log_event import log_event
 
+from ._common import require_sha256_hex
 from .commissioning_lifecycle import (
     COMMISSIONING_STATES,
     CommissioningLifecycleError,
@@ -80,7 +81,6 @@ logger = logging.getLogger(__name__)
 _THREAD_LOCK = threading.RLock()
 _LIVE_EXECUTION_THREAD_LOCK = threading.Lock()
 _UUID_HEX_RE = re.compile(r"[0-9a-f]{32}")
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
@@ -483,11 +483,7 @@ def _relative_artifact_path(value: Any) -> str:
 
 
 def _sha256(value: Any, *, field_name: str) -> str:
-    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise CommissioningRunError(
-            f"{field_name} must be a lowercase SHA-256 fingerprint"
-        )
-    return value
+    return require_sha256_hex(value, field_name, CommissioningRunError)
 
 
 def _uuid_hex(value: Any, *, field_name: str) -> str:

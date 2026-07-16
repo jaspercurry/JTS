@@ -25,6 +25,7 @@ from jasper.audio_measurement.excitation_admission import (
 )
 from jasper.output_topology import OutputTopology
 
+from ._common import require_sha256_hex
 from .driver_protection import driver_protection_profile
 from .driver_safety import evaluate_driver_safety_profile
 from .measurement import active_driver_targets
@@ -50,10 +51,12 @@ class ExcitationSafetyPlanRefusal(str, Enum):
 
 
 def _sha256(value: Any, *, field: str) -> str:
-    token = value if isinstance(value, str) else ""
-    if len(token) != 64 or any(ch not in "0123456789abcdef" for ch in token):
-        raise ExcitationSafetyPlanError(f"{field} must be a lowercase SHA-256")
-    return token
+    return require_sha256_hex(
+        value,
+        field,
+        ExcitationSafetyPlanError,
+        message=f"{field} must be a lowercase SHA-256",
+    )
 
 
 def _finite(value: Any, *, field: str) -> float:
