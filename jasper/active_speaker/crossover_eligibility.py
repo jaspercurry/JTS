@@ -115,10 +115,7 @@ def render_repeat_progress(progress: RepeatProgress) -> str:
     """Render the shared near/fixed stationary-repeat status sentence."""
 
     if progress.attempts:
-        return (
-            f" Repeat {progress.attempts + 1}; {progress.accepted} of "
-            f"{progress.target} accepted so far."
-        )
+        return f" {progress.accepted} of {progress.target} measurements accepted."
     return f" JTS takes {progress.target} stationary repeats."
 
 
