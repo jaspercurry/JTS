@@ -5653,12 +5653,14 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
         _rolled_back,
     )
     monkeypatch.setattr(
-        web, "_commission_tone_select_fanin_lane", lambda: {"status": "ok"}
+        web, "_commission_tone_select_fanin_lane", lambda *_a: {"status": "ok"}
     )
     monkeypatch.setattr(
         web,
         "_commission_tone_release_fanin_lane",
-        lambda *, reason: {"status": "ok", "reason": reason},
+        lambda *, reason, fanin_gate_context=None: {
+            "status": "ok", "reason": reason,
+        },
     )
 
     async def _fake_play_sweep(wav_path, *, alsa_device, timeout_s):
@@ -5759,6 +5761,59 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
     assert purged["done"] is True
     assert purged["gate"] == ["acquire", "release"]
     assert host_events == ["sweep_started", "sweep_complete"]
+
+
+@pytest.mark.asyncio
+async def test_crossover_relay_driver_sweep_nests_under_correction_measurement_gate(
+    monkeypatch, tmp_path
+):
+    """The crossover-driver-sweep relay flow's _play() runs INSIDE
+    coordinator.measurement_window(), which already holds the mux's single
+    test fan-in gate under owner=MEASUREMENT_GATE_OWNER
+    ('correction-measurement'). Before this fix, play_driver_capture_sweep
+    always claimed its own 'active-speaker-commissioning' owner — refused
+    outright by the mux while correction's owner already held the gate
+    (hardware-observed on JTS3: RuntimeError "test fan-in gate is owned by
+    'correction-measurement'", deterministic 2/2). This pins that
+    build_crossover_relay_run_and_consume threads a FaninGateContext for the
+    OUTER owner all the way down to _commission_tone_select_fanin_lane."""
+    from jasper.active_speaker.web_commissioning import FaninGateContext
+    from jasper.active_speaker import web_commissioning as wc
+    from jasper.correction import coordinator
+    from jasper.web import correction_crossover_backend as be
+
+    applied_profile = _real_play_boundary(monkeypatch, tmp_path, kind="driver")
+    _fake_relay_transport(monkeypatch)
+    monkeypatch.setattr(
+        be, "record_driver_capture", lambda *_a, **_k: {"recorded": True}
+    )
+
+    select_calls: list[FaninGateContext | None] = []
+
+    def capture_select(fanin_gate_context=None):
+        select_calls.append(fanin_gate_context)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(wc, "_commission_tone_select_fanin_lane", capture_select)
+
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        post_host_event=lambda *_a, **_k: None,
+        blocking_phase=lambda: None,
+        applied_profile=applied_profile,
+        driver_locked_main_volume_db=lambda: -12.0,
+        **_relay_contract(),
+    )
+    await run_and_consume(object(), _relay_pi_session("driver"))
+
+    assert select_calls == [
+        FaninGateContext(
+            owner=coordinator.MEASUREMENT_GATE_OWNER,
+            restore_label=coordinator.MEASUREMENT_FANIN_LABEL,
+        ),
+    ]
 
 
 @pytest.mark.asyncio
