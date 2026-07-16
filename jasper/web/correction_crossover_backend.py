@@ -1686,7 +1686,8 @@ def status_payload() -> dict[str, Any]:
     # driver/summed targets; a `full_range_passive` speaker has none, so
     # `active=False` is the honest "this speaker has no crossover to tune" flag
     # for the envelope-driven page to consume. Derived from the already-computed
-    # targets — no extra topology read. Pinned by
+    # targets. (The active-only block below does its own fail-soft topology
+    # read for the safety-profile evaluation.) Pinned by
     # tests/test_web_correction_crossover_flow.py.
     targets_raw = payload.get("targets")
     targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
