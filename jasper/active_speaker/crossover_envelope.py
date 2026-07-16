@@ -211,6 +211,15 @@ _LEVEL_SOLVE_REFUSAL_CODE_ROOM_TOO_NOISY = "room_too_noisy_for_safe_measurement"
 
 
 def _describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
+    """Homeowner copy for a level-solve refusal.
+
+    Honest about what the offered action does: redoing the level check
+    re-runs the full guided microphone/level sequence (today the room's
+    ambient reading is a byproduct of that ramp, so re-measuring a quieter
+    room requires re-locking -- see the branch comments at the call sites).
+    The copy must not imply the saved levels survive the redo.
+    """
+
     band = refusal.get("failing_band_hz")
     lo, hi = (
         (band[0], band[1])
@@ -222,16 +231,20 @@ def _describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
         if isinstance(lo, (int, float)) and isinstance(hi, (int, float))
         else "Room noise in this driver's measurement band"
     )
+    remedy = (
+        "Quiet the room or move the microphone closer, then redo the quick "
+        "level check (about 2 minutes) to measure again."
+    )
     if str(refusal.get("code") or "") != _LEVEL_SOLVE_REFUSAL_CODE_ROOM_TOO_NOISY:
         # Only one code exists today; an unrecognized future one still gets
         # levers-naming copy rather than a bare technical string.
         return (
             f"{band_text} could not be measured reliably at a safe level. "
-            "Quiet the room or move the microphone closer, then measure again."
+            f"{remedy}"
         )
     return (
-        f"{band_text} is too high to measure reliably at safe levels. Quiet "
-        "the room or move the microphone closer, then measure again."
+        f"{band_text} is too high to measure reliably at safe levels. "
+        f"{remedy}"
     )
 
 
@@ -1087,14 +1100,21 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             # the bare SNR floor for this driver. Fired BEFORE any tone
             # plays -- render the honest pre-flight terminal instead of
             # letting a doomed sweep burn a bounded repeat attempt. The
-            # driver's level lock is untouched (see
-            # CrossoverLevelLease._acquire_sweep_volume); only the room or
-            # mic position needs to change before trying again.
+            # refusal itself never touched the saved levels, but the offered
+            # remedy DOES redo the level check from the start: today the
+            # room's ambient reading is a byproduct of the level ramp, so a
+            # quieter room can only be re-measured by re-running the guided
+            # sequence (which invalidates the prior locks -- see
+            # _handle_crossover_relay_level_match's `continuing` gate). A
+            # per-driver retained-locks retry is the planned seam for the
+            # phone ambient-stats PR (fresh per-band ambient without a
+            # re-lock) plus the W2.5 invalidation-semantics design; the copy
+            # below is honest about the redo until then.
             screen = "level_solve_refused"
             verdict = _describe_level_solve_refusal(solve_refusal)
             action = {
                 "id": "level_match",
-                "label": f"Restart {role} driver level check",
+                "label": "Redo the quick level check (about 2 minutes)",
                 "endpoint": "/correction/crossover/level-match",
                 "body": {},
             }
@@ -1242,12 +1262,14 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             solve_refusal := _active_level_solve_refusal(status, physical_target_id)
         ) is not None:
             # Closed-loop level solver (W2.1): same pre-flight refusal as the
-            # near-field branch above, for the fixed reference-axis sweep.
+            # near-field branch above, for the fixed reference-axis sweep --
+            # including the same honest-copy rule (the offered remedy redoes
+            # the level check from the start; see that branch's comment).
             screen = "level_solve_refused"
             verdict = _describe_level_solve_refusal(solve_refusal)
             action = {
                 "id": "level_match",
-                "label": f"Restart {role} driver level check",
+                "label": "Redo the quick level check (about 2 minutes)",
                 "endpoint": "/correction/crossover/level-match",
                 "body": {},
             }

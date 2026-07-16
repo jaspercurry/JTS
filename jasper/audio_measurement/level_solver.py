@@ -131,6 +131,12 @@ REFUSAL_ROOM_TOO_NOISY = "room_too_noisy_for_safe_measurement"
 # module) only ever PARSES the event; the phone-side emitter is a later PR.
 AMBIENT_STATS_SCHEMA_VERSION = 1
 
+# Upper bound on the per-band list a phone event may carry. Real emitters
+# send a handful of octave / 1/3-octave rows; anything larger is malformed
+# (or hostile) input and takes the same fail-soft fallback path as any other
+# malformed event -- never an unbounded parse.
+AMBIENT_STATS_MAX_BANDS = 64
+
 
 @dataclass(frozen=True)
 class AmbientBand:
@@ -405,7 +411,8 @@ def parse_ambient_stats_event(
     ``run_token`` mismatch (a stale event from a previous attempt), a
     ``schema`` this build does not understand, a ``clipped`` capture (the
     phone's own quiet-window recording clipped -- its levels cannot be
-    trusted), or malformed/empty ``bands``.
+    trusted), or malformed/empty/oversized ``bands`` (more than
+    ``AMBIENT_STATS_MAX_BANDS`` rows).
     """
 
     if not isinstance(raw, Mapping):
@@ -425,7 +432,11 @@ def parse_ambient_stats_event(
     if stats.get("clipped") is True:
         return None
     raw_bands = stats.get("bands")
-    if not isinstance(raw_bands, (list, tuple)) or not raw_bands:
+    if (
+        not isinstance(raw_bands, (list, tuple))
+        or not raw_bands
+        or len(raw_bands) > AMBIENT_STATS_MAX_BANDS
+    ):
         return None
     bands: list[AmbientBand] = []
     for entry in raw_bands:

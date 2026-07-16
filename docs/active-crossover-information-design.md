@@ -582,7 +582,10 @@ already floors it well below the ceiling) needs. When even that best effort
 cannot clear the bare 20 dB floor, the solver refuses with a typed
 `room_too_noisy_for_safe_measurement` result BEFORE any tone plays, naming
 the failing band and the two levers (quiet the room, move the microphone
-closer) — this refusal does not invalidate the driver's level lock. If
+closer) — the refusal itself does not invalidate the driver's level lock,
+though the remedy the UI offers today re-runs the guided level check from
+the start (ambient is currently a ramp byproduct; a retained-locks
+re-measure is the planned seam for the phone ambient-stats follow-up). If
 sweep 1's own measured SNR still misses despite the solve (the solver's
 ambient estimate was optimistic), a one-time "bounded correction" escalates
 the assumed ambient by the measured shortfall for the remaining repeats; a

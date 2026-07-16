@@ -6283,6 +6283,17 @@ def test_crossover_envelope_renders_level_solve_refusal_before_measuring():
     assert env["next_action"]["id"] == "level_match"
     assert env["next_action"]["endpoint"] == "/correction/crossover/level-match"
     assert env["progress"]["position"] == 2  # microphone step
+    # Honest copy: posting /level-match from this state re-runs the guided
+    # level sequence (today ambient is a ramp byproduct, so a quieter room
+    # can only be re-measured by re-locking -- the `continuing` gate in
+    # _handle_crossover_relay_level_match invalidates the prior locks). The
+    # label and verdict must say the level check gets redone; neither may
+    # imply the saved levels survive.
+    assert env["next_action"]["label"] == (
+        "Redo the quick level check (about 2 minutes)"
+    )
+    assert "redo the quick level check" in env["verdict_text"]
+    assert "lock" not in env["verdict_text"].lower()
 
 
 def test_crossover_envelope_refusal_scoped_to_the_refused_target():
@@ -6321,6 +6332,11 @@ def test_crossover_envelope_reference_axis_level_solve_refusal():
 
     assert env["screen"] == "level_solve_refused"
     assert env["next_action"]["id"] == "level_match"
+    # Same honest-copy contract as the near-field branch.
+    assert env["next_action"]["label"] == (
+        "Redo the quick level check (about 2 minutes)"
+    )
+    assert "redo the quick level check" in env["verdict_text"]
 
 
 # --- phone-mic relay transport (P7) -------------------------------------------

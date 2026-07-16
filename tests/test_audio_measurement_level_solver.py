@@ -526,6 +526,24 @@ def test_parse_non_int_schema_falls_back():
     assert parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN) is None
 
 
+def test_parse_oversized_band_list_falls_back():
+    """A band list beyond AMBIENT_STATS_MAX_BANDS is malformed (or hostile)
+    input -- same fail-soft path as any other malformed event."""
+
+    oversized = [
+        {"lo_hz": 20.0 + i, "hi_hz": 21.0 + i, "rms_dbfs": -50.0}
+        for i in range(level_solver.AMBIENT_STATS_MAX_BANDS + 1)
+    ]
+    event = _valid_event(bands=oversized)
+    assert parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN) is None
+
+    at_cap = oversized[: level_solver.AMBIENT_STATS_MAX_BANDS]
+    event = _valid_event(bands=at_cap)
+    parsed = parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN)
+    assert parsed is not None
+    assert len(parsed) == level_solver.AMBIENT_STATS_MAX_BANDS
+
+
 def test_parsed_ambient_bands_feed_the_solver_end_to_end():
     event = _valid_event()
     bands = parse_ambient_stats_event(event, expected_run_token=_RUN_TOKEN)
