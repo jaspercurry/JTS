@@ -1143,6 +1143,35 @@ async def test_crossover_lease_accepts_and_reasserts_bounded_low_lock():
     assert chain._vol == pytest.approx(original)
 
 
+def test_crossover_lease_phone_timeout_never_undercuts_server_safety_timeout():
+    """The phone's hard capture deadline must always exceed the server's own
+    ``MeasurementRamp.safety_timeout`` for the SAME ramp config, with the
+    documented grace margin — otherwise the phone can declare a false timeout
+    failure while the Pi's ramp is still legitimately running (the JTS3
+    2026-07-15 crossover level-ramp incident: the phone's flat, disconnected
+    hard-timeout constant undercut the server's real ~58 s safety timeout)."""
+
+    import math
+
+    from jasper.active_speaker.crossover_level_run import PHONE_TRANSPORT_GRACE_S
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease()
+    for geometry in (
+        "near_field_driver:mono:woofer",
+        "reference_axis_driver:mono:tweeter",
+    ):
+        server_safety_timeout_s = lease._ramp_config_for_geometry(
+            geometry
+        ).safety_timeout
+        phone_timeout_ms = lease.phone_hard_timeout_ms(geometry)
+
+        assert phone_timeout_ms == math.ceil(
+            (server_safety_timeout_s + PHONE_TRANSPORT_GRACE_S) * 1000.0
+        )
+        assert phone_timeout_ms > server_safety_timeout_s * 1000.0
+
+
 @pytest.mark.asyncio
 async def test_crossover_start_supplies_scheduler_ports(monkeypatch):
     """The production crossover caller need not inject test scheduler seams."""

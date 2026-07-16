@@ -376,7 +376,10 @@ export async function runLevelRampProtocol(opts = {}) {
   }
 
   await streamer.abort("phone_timeout");
-  throw new Error("speaker did not finish the level check before the timeout");
+  throw new Error(
+    "timed out waiting for the speaker's level-check result — this is a " +
+      "phone/relay timeout, not a failed measurement",
+  );
 }
 
 function cloneJsonObject(value) {

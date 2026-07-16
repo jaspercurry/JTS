@@ -324,6 +324,25 @@
   synthetic — H1 (on-device settle cadence + iOS/Android AGC-freeze
   confirmation) supplies the real threshold values; the `JASPER_RAMP_*`
   env knobs in `.env.example` are documented placeholders until then.
+  The phone's hard capture deadline (`level_ramp`'s `duration_ms`) must never
+  undercut the Pi's own `MeasurementRamp.safety_timeout` for that run — a
+  2026-07-15 JTS3 hardware run showed the crossover driver-level phone page
+  declaring a false timeout at ~33 s while the woofer/tweeter ramp was still
+  legitimately climbing toward its ~58 s server safety timeout. The fix:
+  `CrossoverLevelLease.phone_hard_timeout_ms(geometry)`
+  ([`jasper/web/correction_crossover_backend.py`](../jasper/web/correction_crossover_backend.py))
+  derives the crossover level-match relay spec's `hard_timeout_ms` from the
+  SAME `MeasurementRamp` config `run_level_match` executes, plus
+  `crossover_level_run.PHONE_TRANSPORT_GRACE_S` (30 s) — so the client
+  deadline tracks the server's real, possibly env-tuned safety timeout
+  instead of a flat constant that happened to exceed only the current
+  defaults. Room's listening-position level match
+  (`SessionState.run_level_match` in
+  [`jasper/correction/session.py`](../jasper/correction/session.py)) still
+  builds its own independent `MeasurementRamp.from_env(...)` and the phone
+  spec still carries a flat `hard_timeout_ms` default — the same coupling
+  gap exists there but is unobserved so far; wiring it through the same
+  pattern is a natural follow-up if it fires.
   Design of record:
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §3.1.
 - 🧪 **P4 — deterministic verify-acceptance loop (hardware-free complete,

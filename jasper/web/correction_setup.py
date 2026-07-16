@@ -4667,6 +4667,7 @@ def _handle_crossover_relay_level_match(
                 geometry_label=f"{target['role']} measurement position",
                 placement_instruction=str(target["placement_instruction"]),
                 tone_frequency_hz=float(target["tone_frequency_hz"]),
+                hard_timeout_ms=lease.phone_hard_timeout_ms(str(target["geometry"])),
                 run_token=run_token,
                 setup_binding_id=setup_binding_id,
                 setup_collect_positions=False,

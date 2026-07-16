@@ -25,7 +25,7 @@ import {
 } from "./constraints.js?v=20260711-4";
 import { safeReturnUrl } from "./return-url.js";
 import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
-import { runLevelRampProtocol } from "./level-events.js?v=20260715-3";
+import { runLevelRampProtocol } from "./level-events.js?v=20260715-4";
 import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
   assertCaptureProtocolCompatible,

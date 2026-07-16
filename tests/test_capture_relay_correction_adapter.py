@@ -1472,7 +1472,11 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         backend,
         "level_lease",
         lambda: SimpleNamespace(
-            level_match_snapshot=lambda **_kwargs: {"running": False}
+            level_match_snapshot=lambda **_kwargs: {"running": False},
+            # Pinned so `_open` demonstrably derives the phone's hard capture
+            # deadline from the lease (never a flat, disconnected constant
+            # that could undercut the server's real ramp safety timeout).
+            phone_hard_timeout_ms=lambda _geometry: 91234,
         ),
     )
     monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
@@ -1525,6 +1529,9 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         "Move the microphone capsule to 3 cm"
     )
     assert "woofer cone" in spec.screen[1]["items"][0]
+    # The phone's hard capture deadline comes from the lease's own derived
+    # timeout, not a flat constant decoupled from the server's ramp config.
+    assert spec.duration_ms == 91234
     assert load_measurement_state(topology)["active_comparison_set"] == prior_set
     assert payload["relay"]["url"].startswith("https://capture.jasper.tech/")
 
