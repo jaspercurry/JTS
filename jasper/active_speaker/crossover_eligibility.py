@@ -69,6 +69,25 @@ class RepeatProgress:
     accepted: int
     target: int
     failure: Mapping[str, Any]
+    # The durable ledger's own terminal "completed" status (repeat_admission's
+    # ready -> completed transition, set once every accepted repeat has been
+    # played AND its final measurement was persisted). This is
+    # distinct from `failure`: a repeat set can complete every one of its
+    # bounded attempts and still fail to produce USABLE acoustic evidence
+    # (e.g. every accepted repeat's overlap-band SNR is "insufficient" per
+    # jasper.audio_measurement.snr_policy). Once completed, no further
+    # repeat can ever be reserved (repeat_admission.reserve() raises); a
+    # caller MUST stop offering "repeat N+1" and render the honest terminal
+    # instead of looping on an action that will fail at reservation.
+    completed: bool
+    # The most recent per-attempt result recorded on the ledger, when any
+    # exist — carries the accepted median's own SNR evidence
+    # (`estimated_snr_db`, `snr_verdict`, `snr_shortfall_db`,
+    # `worst_band_id`) even when that attempt was `accepted: True` (repeat
+    # acceptance is an outlier/consistency check, not an SNR gate — see
+    # `web_measurement.py`'s per-attempt `admission_result`). Callers use
+    # this to name the shortfall concretely instead of a generic message.
+    last_result: Mapping[str, Any]
 
 
 def repeat_progress(repeats: Any, target_id: str) -> RepeatProgress:
@@ -80,13 +99,16 @@ def repeat_progress(repeats: Any, target_id: str) -> RepeatProgress:
     attempts = nonnegative_int(entry.get("attempts"))
     accepted = nonnegative_int(entry.get("accepted"))
     target = nonnegative_int(entry.get("target"), default=3)
+    completed = entry.get("status") == "completed"
+    results = mapping_sequence(entry.get("results"))
+    last_result = results[-1] if results else {}
     if attempts > 4:
         attempts = 0
     if accepted > 3:
         accepted = 0
     if target != 3:
         target = 3
-    return RepeatProgress(attempts, accepted, target, failure)
+    return RepeatProgress(attempts, accepted, target, failure, completed, last_result)
 
 
 def render_repeat_progress(progress: RepeatProgress) -> str:

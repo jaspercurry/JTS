@@ -3953,6 +3953,230 @@ def test_completed_two_of_four_repeat_set_requires_fresh_level_run(target_id):
     assert "cannot be resumed" in env["verdict_text"]
 
 
+def _insufficient_driver_acoustic(role: str) -> dict:
+    """A driver that produced sound but never cleared the per-band SNR floor.
+
+    Distinct from a repeat *failure*: every repeat was individually accepted
+    (no clipping/outlier/transport rejection -- see
+    ``_completed_insufficient_near_field_repeat_state``), but the aggregate
+    overlap-band magnitude SNR is "insufficient"
+    (jasper.audio_measurement.snr_policy), so the band is not ``usable``.
+    """
+    acoustic = _driver_acoustic(role)
+    acoustic["acoustic"]["overlap_levels"] = [{
+        "region_id": "woofer_tweeter",
+        "above_validity_floor": True,
+        "usable": False,
+        "snr_verdict": "insufficient",
+    }]
+    return acoustic
+
+
+def _completed_insufficient_near_field_repeat_state(status: dict) -> None:
+    """Woofer's near-field repeat set: completed, 3/3 accepted, insufficient SNR.
+
+    Mirrors the exact shape ``web_measurement._finalize_driver_repeat_set``
+    persists: repeat *acceptance* (outlier/clipping/transport check) is
+    independent of the aggregate SNR verdict, so the final accepted attempt's
+    own ``admission_result`` still carries ``snr_verdict: "insufficient"``.
+    JTS3 run 13: per-repeat SNR 8.4-10.5 dB, well under the 20 dB warn floor
+    (docs/active-crossover-information-design.md "Level control and SNR").
+    """
+    targets = {
+        "mono:woofer": {
+            "target_fingerprint": "6" * 64,
+            "status": "completed",
+            "attempts": 3,
+            "results": [
+                {
+                    "attempt": 1,
+                    "accepted": True,
+                    "estimated_snr_db": 10.5,
+                    "snr_verdict": "insufficient",
+                    "snr_shortfall_db": 9.5,
+                    "worst_band_id": "upper_bass",
+                },
+                {
+                    "attempt": 2,
+                    "accepted": True,
+                    "estimated_snr_db": 9.1,
+                    "snr_verdict": "insufficient",
+                    "snr_shortfall_db": 10.9,
+                    "worst_band_id": "upper_bass",
+                },
+                {
+                    "attempt": 3,
+                    "accepted": True,
+                    "estimated_snr_db": 8.4,
+                    "snr_verdict": "insufficient",
+                    "snr_shortfall_db": 11.6,
+                    "worst_band_id": "upper_bass",
+                },
+            ],
+        },
+    }
+    status["level_match"]["repeats"] = {
+        "targets": targets,
+        "failures": {},
+        "durable": {"status": "active", "targets": targets},
+    }
+
+
+def test_completed_insufficient_woofer_repeat_set_renders_honest_terminal():
+    """JTS3 run 13 (punch #28): the woofer repeat set completed 3/3 (every
+    repeat individually accepted) but its SNR never cleared the floor, so the
+    aggregate acoustic evidence stayed unusable. Pre-fix, the envelope kept
+    deriving "repeat N+1" from attempt count alone and offered a fourth
+    repeat that fails at reservation
+    (repeat_admission.reserve() raises "the crossover repeat set is
+    completed") -- a closed loop. This must render an honest terminal with
+    the existing "Restart driver level check" recovery affordance instead of
+    offering another repeat."""
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _insufficient_driver_acoustic("woofer"),
+    }
+    _completed_insufficient_near_field_repeat_state(status)
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert env["next_action"] == {
+        "id": "level_match",
+        "label": "Restart woofer driver level check",
+        "endpoint": "/correction/crossover/level-match",
+        "body": {},
+    }
+    assert "repeat" not in env["next_action"]["label"].lower()
+    verdict = env["verdict_text"]
+    assert "wasn't enough signal" in verdict
+    assert "8.4 dB SNR" in verdict
+    assert "11.6 dB more needed" in verdict
+    assert "upper bass band" in verdict
+    # Language guide (docs/active-crossover-information-design.md): no
+    # internal vocabulary leaks into the plain-language copy.
+    lowered = verdict.lower()
+    for banned in (
+        "fingerprint", "authority", "candidate", "authorizes",
+        "ledger", "repeat_admission", "comparison set",
+    ):
+        assert banned not in lowered
+
+
+def test_completed_insufficient_fixed_axis_repeat_set_renders_honest_terminal():
+    """Same defect, fixed-axis geometry: the reference-axis repeat set can
+    independently complete 3/3 accepted with insufficient SNR while
+    near-field stays healthy."""
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    _completed_near_field_repeat_state(status)
+    status["measurements"]["summary"][
+        "latest_reference_axis_driver_measurements"
+    ] = {
+        "mono:woofer": _insufficient_driver_acoustic("woofer"),
+    }
+    status["measurements"]["summary"]["latest_reference_axis_driver_measurements"][
+        "mono:woofer"
+    ]["acoustic"]["capture_geometry"] = "reference_axis"
+    status["measurements"]["summary"]["latest_reference_axis_driver_measurements"][
+        "mono:woofer"
+    ]["acoustic"]["gating"] = {"applied": True, "f_valid_floor_hz": 320.0}
+    status["measurements"]["summary"]["latest_reference_axis_driver_measurements"][
+        "mono:woofer"
+    ]["placement_proof"]["policy_id"] = "driver_reference_axis_v1"
+    _lock_reference_axis_driver(status, "woofer")
+    from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+    repeat_target_id, repeat_target_fingerprint = driver_repeat_binding(
+        speaker_group_id="mono",
+        role="woofer",
+        target_fingerprint="6" * 64,
+        capture_geometry="reference_axis",
+    )
+    entry = {
+        "target_fingerprint": repeat_target_fingerprint,
+        "status": "completed",
+        "attempts": 3,
+        "results": [
+            {
+                "attempt": attempt,
+                "accepted": True,
+                "estimated_snr_db": 8.4,
+                "snr_verdict": "insufficient",
+                "snr_shortfall_db": 11.6,
+                "worst_band_id": "upper_bass",
+            }
+            for attempt in (1, 2, 3)
+        ],
+    }
+    status["level_match"]["repeats"]["targets"][repeat_target_id] = entry
+    status["level_match"]["repeats"]["durable"]["targets"][repeat_target_id] = entry
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert env["next_action"] == {
+        "id": "level_match",
+        "label": "Restart woofer driver level check",
+        "endpoint": "/correction/crossover/level-match",
+        "body": {},
+    }
+    assert "wasn't enough signal" in env["verdict_text"]
+    assert "8.4 dB SNR" in env["verdict_text"]
+
+
+def test_completed_sufficient_woofer_advances_to_next_driver_target():
+    """The happy path (untested on hardware before run 14): once the woofer's
+    repeat set completes 3/3 with USABLE acoustic evidence, the envelope
+    must advance past it to the next target (tweeter) rather than looping or
+    rendering a terminal state."""
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+    }
+    targets = {
+        "mono:woofer": {
+            "target_fingerprint": "6" * 64,
+            "status": "completed",
+            "attempts": 3,
+            "results": [
+                {"attempt": attempt, "accepted": True}
+                for attempt in (1, 2, 3)
+            ],
+        },
+    }
+    status["level_match"]["repeats"] = {
+        "targets": targets,
+        "failures": {},
+        "durable": {"status": "active", "targets": targets},
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "driver"
+    assert env["next_action"] == {
+        "id": "measure_driver",
+        "label": "Position the mic, then measure tweeter",
+        "endpoint": "/correction/crossover/relay-capture",
+        "body": {
+            "kind": "driver",
+            "speaker_group_id": "mono",
+            "role": "tweeter",
+        },
+    }
+
+
 def test_envelope_refuses_apply_without_fixed_axis_repeat_controller():
     from jasper.active_speaker import crossover_envelope
 

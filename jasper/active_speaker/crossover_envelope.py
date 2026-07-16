@@ -118,6 +118,40 @@ def _usable_reference_axis_driver_acoustic(
     )
 
 
+def _completed_insufficient_verdict(role: str, progress: Any) -> str:
+    """Honest terminal copy for a fully-repeated but still-unusable driver.
+
+    Reached only when the repeat set's own durable status is "completed"
+    (every bounded repeat played, each individually accepted -- no
+    outlier/clipping/transport rejection) yet the target is still in
+    ``missing_drivers``/``missing_reference_axis_drivers``: the accepted
+    evidence never cleared the per-band magnitude SNR floor (25 dB
+    confident, 20 dB warn -- docs/active-crossover-information-design.md
+    "Level control and SNR"; below 20 dB is "insufficient"). There is no
+    fifth attempt to offer here -- repeat_admission.reserve() refuses a
+    completed set -- so this names the shortfall with the same evidence
+    style as an in-progress rejection ("17.4 dB SNR; 2.6 dB more needed" --
+    the design doc's Language guide) and points at the one legitimate
+    remedy: a fresh, louder level check.
+    """
+    from .crossover_eligibility import finite_float
+
+    snr = finite_float(progress.last_result.get("estimated_snr_db"))
+    shortfall = finite_float(progress.last_result.get("snr_shortfall_db"))
+    band = str(progress.last_result.get("worst_band_id") or "").replace("_", " ")
+    if snr is not None and shortfall is not None:
+        band_clause = f" in the {band} band" if band else ""
+        evidence = f" ({snr:.1f} dB SNR{band_clause}; {shortfall:.1f} dB more needed)"
+    else:
+        evidence = ""
+    return (
+        f"The {role} measurement finished, but there wasn't enough signal "
+        f"above the room's noise to tune from{evidence}. Raise the "
+        "measurement level or quiet the room, then restart the driver "
+        "level check to measure again."
+    )
+
+
 def _level_state(status: Mapping[str, Any]) -> tuple[bool, str, bool]:
     level = _mapping(status.get("level_match"))
     last = _mapping(level.get("last"))
@@ -961,6 +995,23 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "body": {},
             }
             active_step = "microphone"
+        elif progress.completed:
+            # The repeat set finished every bounded attempt and each was
+            # individually accepted, but the target is still in
+            # missing_drivers -- the accepted evidence itself is unusable
+            # (e.g. per-band SNR "insufficient"). Offering "repeat N+1" here
+            # is a dead end: repeat_admission.reserve() refuses a completed
+            # set (JTS3 run 13 hit exactly this, looping on an action that
+            # failed at reservation). Render the honest terminal instead.
+            screen = "microphone"
+            verdict = _completed_insufficient_verdict(role, progress)
+            action = {
+                "id": "level_match",
+                "label": f"Restart {role} driver level check",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {},
+            }
+            active_step = "microphone"
         else:
             screen = "driver"
             verdict = (
@@ -1067,6 +1118,20 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "continue. Its attempts were preserved; restart the driver "
                 "level check to create a fresh comparison-bound set."
             )
+            action = {
+                "id": "level_match",
+                "label": f"Restart {role} driver level check",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {},
+            }
+            active_step = "microphone"
+        elif progress.completed:
+            # Same terminal shape as the near-field branch above: the fixed-
+            # axis repeat set finished every bounded, individually-accepted
+            # attempt, but the target is still unusable (insufficient SNR).
+            # No fifth attempt exists to offer; render the honest terminal.
+            screen = "microphone"
+            verdict = _completed_insufficient_verdict(role, progress)
             action = {
                 "id": "level_match",
                 "label": f"Restart {role} driver level check",

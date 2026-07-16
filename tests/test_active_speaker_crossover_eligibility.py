@@ -391,3 +391,189 @@ def test_mapping_sequence_and_repeat_progress_reject_malformed_types(value):
     assert progress.accepted == expected_count
     assert progress.target == 3
     assert progress.failure == {}
+    assert progress.completed is False
+    assert progress.last_result == {}
+
+
+def test_repeat_progress_exposes_completed_status_and_last_result():
+    """The envelope's driver-step derivation must be able to tell "the repeat
+    set finished all its bounded attempts" apart from "still in progress" --
+    the durable ledger's own ``status`` field is the only place that
+    distinction lives, and it must survive the safe/bounded projection."""
+    progress = repeat_progress(
+        {
+            "targets": {
+                "mono:woofer": {
+                    "status": "completed",
+                    "attempts": 3,
+                    "accepted": 3,
+                    "target": 3,
+                    "results": [
+                        {"attempt": 1, "accepted": True},
+                        {
+                            "attempt": 2,
+                            "accepted": True,
+                            "estimated_snr_db": 8.4,
+                            "snr_verdict": "insufficient",
+                        },
+                    ],
+                }
+            },
+            "failures": {},
+        },
+        "mono:woofer",
+    )
+
+    assert progress.completed is True
+    assert progress.last_result == {
+        "attempt": 2,
+        "accepted": True,
+        "estimated_snr_db": 8.4,
+        "snr_verdict": "insufficient",
+    }
+
+
+@pytest.mark.parametrize("status", ("active", "ready", "refused", "aborted", None))
+def test_repeat_progress_completed_is_false_for_every_other_status(status):
+    progress = repeat_progress(
+        {"targets": {"mono:woofer": {"status": status, "attempts": 1}}, "failures": {}},
+        "mono:woofer",
+    )
+
+    assert progress.completed is False
+
+
+def test_level_check_restart_invalidates_stale_completed_insufficient_evidence(
+    tmp_path,
+):
+    """Verifies the invalidation machinery a driver-level-check restart relies
+    on (``jasper.web.correction_setup._handle_crossover_relay_level_match``'s
+    inner ``_run()``, the "not fixed_axis_request and not continuing" branch:
+    ``repeat_admission.invalidate()`` then
+    ``measurement.clear_active_comparison_set()`` before a fresh comparison
+    set is minted, logged as ``event=correction.crossover_comparison_set_invalidated
+    reason=new_level_match_started``). A woofer repeat set that completed
+    3/3 with an insufficient median must not survive that restart: the
+    ledger itself is wiped, and the stale acoustic record's placement proof
+    (bound to the OLD comparison set) fails ``capture_proof_valid`` against
+    the freshly-minted one -- so the honest-terminal render's own "Restart
+    driver level check" action cannot be undone by a stale record leaking
+    back into ``driver_acoustic_usable``."""
+    from jasper.active_speaker import repeat_admission
+    from jasper.active_speaker.crossover_eligibility import driver_acoustic_usable
+    from jasper.active_speaker.capture_geometry import normalized_placement_proof
+
+    repeat_path = tmp_path / "repeat.json"
+    target = {
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "target_fingerprint": "6" * 64,
+    }
+
+    def comparison(seed: str) -> dict:
+        core = {
+            "schema_version": 2,
+            "comparison_set_id": seed * 32,
+            "created_at": "2026-07-12T12:00:00Z",
+            "topology_id": "topology-1",
+            "profile_context_id": "profile-1",
+            "setup_sha256": "2" * 64,
+            "device_sha256": "3" * 64,
+            "calibration_id": "",
+            "driver_level_locks": {
+                "mono:woofer": {
+                    "target_id": "mono:woofer",
+                    "speaker_group_id": "mono",
+                    "role": "woofer",
+                    "tone_frequency_hz": 100.0,
+                    "tone_peak_dbfs": -20.0,
+                    "commissioning_gain_db": 0.0,
+                    "locked_main_volume_db": -18.0,
+                }
+            },
+        }
+        core["fingerprint"] = comparison_set_fingerprint(core)
+        return core
+
+    old_comparison = comparison("1")
+
+    # Drive the repeat ledger to "completed" with an insufficient median,
+    # the same shape `_finalize_driver_repeat_set` persists for 3/3 accepted
+    # repeats whose aggregate SNR never cleared the floor.
+    repeat_admission.activate(old_comparison, path=repeat_path)
+    for attempt in (1, 2, 3):
+        reservation = repeat_admission.reserve(
+            old_comparison,
+            target_id="mono:woofer",
+            target_fingerprint=target["target_fingerprint"],
+            path=repeat_path,
+        )
+        repeat_admission.finish(
+            old_comparison,
+            target_id="mono:woofer",
+            target_fingerprint=target["target_fingerprint"],
+            token=reservation["token"],
+            result={"accepted": True, "snr_verdict": "insufficient"},
+            status="ready" if attempt == 3 else "active",
+            path=repeat_path,
+        )
+    repeat_admission.complete(
+        old_comparison,
+        target_id="mono:woofer",
+        target_fingerprint=target["target_fingerprint"],
+        path=repeat_path,
+    )
+    assert (
+        repeat_admission.snapshot(old_comparison, path=repeat_path)["targets"][
+            "mono:woofer"
+        ]["status"]
+        == "completed"
+    )
+
+    old_record = {
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "target_fingerprint": target["target_fingerprint"],
+        "captured": True,
+        "mic_clipping": False,
+        "repeats": {"target": 3, "accepted": 3, "admission_attempts": 3},
+        "acoustic": {
+            "verdict": "present",
+            "capture_geometry": "near_field",
+            "mic_clipping": False,
+            "gating": {
+                "applied": False,
+                "exempt_reason": "near_field",
+                "f_valid_floor_hz": None,
+            },
+            "overlap_levels": [{"above_validity_floor": True, "usable": True}],
+        },
+        "placement_proof": normalized_placement_proof(
+            policy_id="driver_same_distance_v1",
+            acknowledgement_binding="ack",
+            relay_session_id="relay-1",
+            capture_page={
+                "capture_protocol_version": 2,
+                "capture_page_build": "20260711.1",
+            },
+            speaker_group_id="mono",
+            role="woofer",
+            target_fingerprint=target["target_fingerprint"],
+            comparison_set=old_comparison,
+        ),
+    }
+    assert driver_acoustic_usable(
+        old_record, old_comparison, target, capture_geometry="near_field"
+    )
+
+    # The exact pair the restart branch calls before minting a fresh
+    # comparison set.
+    repeat_admission.invalidate(path=repeat_path)
+    new_comparison = comparison("9")
+
+    wiped = repeat_admission.snapshot(path=repeat_path)
+    assert wiped["targets"] == {}
+    assert new_comparison["comparison_set_id"] != old_comparison["comparison_set_id"]
+    assert not driver_acoustic_usable(
+        old_record, new_comparison, target, capture_geometry="near_field"
+    )
