@@ -19,7 +19,9 @@ from jasper.active_speaker.measurement import active_driver_targets
 from tests.active_speaker_fixtures import mono_output_topology
 
 
-def _profile_and_targets(*, cooldown_s: float = 1):
+def _profile_and_targets(
+    *, cooldown_s: float = 1, woofer_required_filters: list | None = None
+):
     topology = mono_output_topology()
     common = {
         "hard_excitation_band_hz": [500, 20_000],
@@ -32,6 +34,14 @@ def _profile_and_targets(*, cooldown_s: float = 1):
             "minimum_cooldown_s": cooldown_s,
         },
     }
+    if woofer_required_filters is None:
+        woofer_required_filters = [
+            {
+                "kind": "lowpass",
+                "cutoff_hz": 3000,
+                "minimum_slope_db_per_octave": 24,
+            }
+        ]
     settings = {
         "drivers": [
             {
@@ -39,13 +49,7 @@ def _profile_and_targets(*, cooldown_s: float = 1):
                 "target_id": "mono:woofer",
                 "role": "woofer",
                 "model": "Example W6",
-                "required_protection_filters": [
-                    {
-                        "kind": "lowpass",
-                        "cutoff_hz": 3000,
-                        "minimum_slope_db_per_octave": 24,
-                    }
-                ],
+                "required_protection_filters": woofer_required_filters,
                 "cabinet": {
                     "enclosure_kind": "sealed",
                     "radiator_count": 1,

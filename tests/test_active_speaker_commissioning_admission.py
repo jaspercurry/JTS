@@ -41,8 +41,12 @@ from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_active_speaker_web_commissioning import _driver_comparison_set
 
 
-def _context(tmp_path: Path, monkeypatch):
-    topology, profile, targets = _profile_and_targets()
+def _context(
+    tmp_path: Path, monkeypatch, *, woofer_required_filters: list | None = None
+):
+    topology, profile, targets = _profile_and_targets(
+        woofer_required_filters=woofer_required_filters
+    )
     opened = bundles.open_bundle(
         topology,
         calibration_id="mic-1",
@@ -170,6 +174,161 @@ def test_live_proof_binds_required_filter_and_volume(tmp_path, monkeypatch):
     assert report["checks"]["target_commissioning_gain_current"] is False
     assert report["observed_target_commissioning_gain_db"] == 0.0
     assert report["expected_target_commissioning_gain_db"] == -50.0
+
+
+def test_required_filters_present_vacuous_when_none_declared(tmp_path, monkeypatch):
+    """JTS3 hardware repro (runs 6-7): woofer legitimately declares zero
+    required protection filters — protective high-passes are tweeter
+    machinery; the woofer's protection is the limiter/headroom/mask checks
+    in this same report, computed independently and unaffected here. Before
+    the fix, ``bool(filter_checks) and all(filter_checks)`` on an empty list
+    turned "no requirements declared" into a hard refusal
+    (``required_filters_present=False``, named by
+    ``failed_checks=required_filters_present`` with ``filter_checks=[]``)
+    on every woofer sweep. This must fail against pre-fix code.
+    """
+    topology, profile, _targets, comparison, applied, raw, load_payload = _context(
+        tmp_path, monkeypatch, woofer_required_filters=[]
+    )
+    prepared, _meta = prepare_capture_plan(
+        topology,
+        profile,
+        comparison,
+        applied,
+        speaker_group_id="mono",
+        role="woofer",
+        commissioning_gain_db=-50.0,
+        expected_main_volume_db=-4.0,
+        expected_graph_fingerprint=running_graph_fingerprint(raw),
+    )
+    evidence, report = issue_protection_evidence(
+        topology=topology,
+        safety_profile=profile,
+        prepared=prepared,
+        load_payload=load_payload,
+        running_config_raw=raw,
+        observed_main_volume_db=-4.0,
+        expected_main_volume_db=-4.0,
+    )
+    assert report["filter_checks"] == []
+    assert report["checks"]["required_filters_present"] is True
+    assert evidence.current is True
+    assert report["passed"] is True
+
+
+def test_required_filters_present_false_when_declared_filter_missing(
+    tmp_path, monkeypatch
+):
+    """Requirements declared and one is absent from the live graph: still
+    a hard refusal (unchanged all-present/any-missing semantics)."""
+
+    topology, profile, _targets, comparison, applied, raw, load_payload = _context(
+        tmp_path, monkeypatch
+    )
+    prepared, _meta = prepare_capture_plan(
+        topology,
+        profile,
+        comparison,
+        applied,
+        speaker_group_id="mono",
+        role="woofer",
+        commissioning_gain_db=-50.0,
+        expected_main_volume_db=-4.0,
+        expected_graph_fingerprint=running_graph_fingerprint(raw),
+    )
+    drifted = raw.replace("LinkwitzRileyLowpass", "LinkwitzRileyHighpass")
+    evidence, report = issue_protection_evidence(
+        topology=topology,
+        safety_profile=profile,
+        prepared=prepared,
+        load_payload=load_payload,
+        running_config_raw=drifted,
+        observed_main_volume_db=-4.0,
+        expected_main_volume_db=-4.0,
+    )
+    assert report["filter_checks"] == [False]
+    assert report["checks"]["required_filters_present"] is False
+    assert evidence.current is False
+
+
+def test_required_filters_present_false_when_output_index_unresolved(
+    tmp_path, monkeypatch
+):
+    """Requirements declared but the target's output index cannot be
+    resolved: fail closed — requirements are declared but unverifiable."""
+
+    import jasper.active_speaker.commissioning_admission as admission_module
+
+    topology, profile, _targets, comparison, applied, raw, load_payload = _context(
+        tmp_path, monkeypatch
+    )
+    prepared, _meta = prepare_capture_plan(
+        topology,
+        profile,
+        comparison,
+        applied,
+        speaker_group_id="mono",
+        role="woofer",
+        commissioning_gain_db=-50.0,
+        expected_main_volume_db=-4.0,
+        expected_graph_fingerprint=running_graph_fingerprint(raw),
+    )
+    real_targets = admission_module.active_driver_targets(topology)
+    unresolved = [
+        dict(target, output_index=None)
+        if target["target_id"] == prepared.target_id
+        else target
+        for target in real_targets
+    ]
+    monkeypatch.setattr(
+        admission_module, "active_driver_targets", lambda _topology: unresolved
+    )
+    evidence, report = issue_protection_evidence(
+        topology=topology,
+        safety_profile=profile,
+        prepared=prepared,
+        load_payload=load_payload,
+        running_config_raw=raw,
+        observed_main_volume_db=-4.0,
+        expected_main_volume_db=-4.0,
+    )
+    assert report["filter_checks"] == []
+    assert report["checks"]["required_filters_present"] is False
+    assert evidence.current is False
+
+
+def test_required_filters_present_true_when_all_declared_filters_present(
+    tmp_path, monkeypatch
+):
+    """Requirements declared and all present: passes (baseline shape)."""
+
+    topology, profile, _targets, comparison, applied, raw, load_payload = _context(
+        tmp_path, monkeypatch
+    )
+    prepared, _meta = prepare_capture_plan(
+        topology,
+        profile,
+        comparison,
+        applied,
+        speaker_group_id="mono",
+        role="woofer",
+        commissioning_gain_db=-50.0,
+        expected_main_volume_db=-4.0,
+        expected_graph_fingerprint=running_graph_fingerprint(raw),
+    )
+    evidence, report = issue_protection_evidence(
+        topology=topology,
+        safety_profile=profile,
+        prepared=prepared,
+        load_payload=load_payload,
+        running_config_raw=raw,
+        observed_main_volume_db=-4.0,
+        expected_main_volume_db=-4.0,
+    )
+    assert report["filter_checks"] == [True]
+    assert report["checks"]["required_filters_present"] is True
+    assert evidence.current is True
+    assert report["passed"] is True
 
 
 def test_prepare_capture_plan_refuses_unbounded_cooldown(tmp_path, monkeypatch):
