@@ -55,7 +55,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div id="crossover-nudges" aria-live="polite"></div>
   </section>
 
-  <section id="crossover-review" class="info-card hidden" aria-label="Measured crossover candidate">
+  <section id="crossover-review" class="info-card" aria-label="Measured crossover candidate" hidden>
     <p class="eyebrow">Review before apply</p>
     <h2 class="section__title">Measured crossover candidate</h2>
     <div id="crossover-review-body"></div>
@@ -63,11 +63,11 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
 
   <section class="info-card" aria-live="polite">
     <div id="crossover-action" class="measurement-row__actions"></div>
-    <div id="crossover-relay" class="hidden">
+    <div id="crossover-relay" hidden>
       <p id="crossover-relay-status" class="form-hint"></p>
-      <a id="crossover-relay-link" class="btn btn--primary hidden" href="#" target="_blank" rel="noopener">Open phone capture</a>
+      <a id="crossover-relay-link" class="btn btn--primary" href="#" target="_blank" rel="noopener" hidden>Open phone capture</a>
       <div id="crossover-relay-qr" class="relay-qr"></div>
-      <button id="crossover-relay-stop" class="btn btn--danger hidden" type="button">Stop measurement</button>
+      <button id="crossover-relay-stop" class="btn btn--danger" type="button" hidden>Stop measurement</button>
     </div>
     <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
   </section>

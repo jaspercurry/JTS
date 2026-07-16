@@ -43,8 +43,8 @@ def test_relay_link_opens_a_new_tab_so_the_wizard_tab_survives():
     page = flow.render_page("jts.local")
     html = page.decode("utf-8")
     assert (
-        '<a id="crossover-relay-link" class="btn btn--primary hidden" '
-        'href="#" target="_blank" rel="noopener">Open phone capture</a>'
+        '<a id="crossover-relay-link" class="btn btn--primary" '
+        'href="#" target="_blank" rel="noopener" hidden>Open phone capture</a>'
     ) in html
 
 

@@ -108,7 +108,11 @@ const nextAction = {
 
 function actionRowChildren() { return elements.get("crossover-action").children; }
 function relayLinkVisible() {
-  return !elements.get("crossover-relay-link").classList.contains("hidden");
+  // The page's only hiding mechanism is the native `hidden` attribute
+  // (app.css defines `[hidden] { display: none !important; }` and no
+  // `.hidden` class rule) — assert the property the CSS actually implements,
+  // not a classList token the stylesheet never wired up.
+  return !elements.get("crossover-relay-link").hidden;
 }
 
 // Only one of {action-row primary, relay link} may be visible at once — the
