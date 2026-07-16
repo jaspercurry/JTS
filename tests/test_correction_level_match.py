@@ -506,12 +506,39 @@ def test_describe_ramp_refusal_appends_the_measured_detail():
     assert "slopes 0.64, 0.61 over 4 steps" in refusal.user_message
 
 
-def test_describe_ramp_refusal_safety_timeout_prefix_match():
-    refusal = describe_ramp_refusal("safety timeout after 45s")
-    # The code stays the exact ramp string (log-groupable elsewhere would
-    # need normalization, but this exact string is what RampData.error holds).
-    assert refusal.code == "safety timeout after 45s"
-    assert "took too long" in refusal.user_message.lower()
+@pytest.mark.parametrize(
+    ("raw_error", "canonical_code", "message_fragment"),
+    [
+        ("safety timeout after 45s", "safety_timeout", "took too long"),
+        (
+            "phone feed lost (no samples for 8s)",
+            "phone_feed_lost",
+            "lost the phone's microphone feed",
+        ),
+        (
+            "safe cap reached below target window; raise the external "
+            "amplifier and retry",
+            "safe_cap_below_window",
+            "too quiet at the safe volume limit",
+        ),
+        (
+            "non-finite pre-ramp main_volume: nan",
+            "non_finite_original",
+            "starting volume was invalid",
+        ),
+    ],
+)
+def test_describe_ramp_refusal_normalizes_parameterized_family_codes(
+    raw_error, canonical_code, message_fragment
+):
+    """Parameterized terminals (a duration/dB baked into RampData.error) get
+    ONE canonical snake_case code per family, so `reason=` log keys group
+    across runs instead of one key per duration — while the verbatim
+    parameterized error stays visible in the user_message parenthetical."""
+    refusal = describe_ramp_refusal(raw_error)
+    assert refusal.code == canonical_code
+    assert message_fragment in refusal.user_message.lower()
+    assert raw_error in refusal.user_message
 
 
 def test_describe_ramp_refusal_empty_code_is_the_generic_not_locked_case():

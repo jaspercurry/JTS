@@ -386,15 +386,18 @@ def _level_match_refusal_failure(session: Any) -> dict[str, Any] | None:
     Scoped by ``ramp["error"]`` being non-empty, not by ``ramp["state"]``: a
     plain user-initiated cancel and a safety-timeout terminal both land in
     ``RampState.CANCELLED``, and only the timeout sets an ``error`` — an
-    ordinary cancel must stay silent here. A still-running ramp (climbing /
-    settling / confirming) never has ``error`` set either, so this is a
-    no-op mid-check. Once the level locks, :func:`_relay_level_ready`
-    short-circuits so a stale prior failure never lingers after a
-    successful retry.
+    ordinary cancel must stay silent here. While a RETRY ramp is live
+    (``running`` is True — the same liveness source
+    :func:`_next_action_for` reads), the prior attempt's terminal is stale
+    news, not the current state, so nothing is reported mid-check. Once the
+    level locks, :func:`_relay_level_ready` short-circuits so a stale prior
+    failure never lingers after a successful retry.
     """
     if _relay_level_ready(session):
         return None
     level = _level_match_snapshot(session)
+    if level.get("running") is True:
+        return None
     last = level.get("last") if isinstance(level, dict) else None
     ramp = last.get("ramp") if isinstance(last, dict) else None
     if not isinstance(ramp, dict):

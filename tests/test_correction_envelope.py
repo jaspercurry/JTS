@@ -852,6 +852,26 @@ def test_relay_locked_level_match_never_shows_a_stale_refusal():
     assert envelope.build_envelope(sess)["failure"] is None
 
 
+def test_relay_running_retry_suppresses_the_prior_attempt_refusal():
+    """Retry-after-error: while a NEW ramp is live (running=True), the PRIOR
+    attempt's terminal is stale news — the Room page must not keep showing
+    "can't be trusted" copy over a check that is currently climbing. Same
+    liveness source _next_action_for reads."""
+    sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="error")
+    sess.level_match_snapshot = lambda: {
+        "running": True,
+        "locks": {},
+        "last": {
+            "ramp": {
+                "state": "error",
+                "restored": False,
+                "error": "agc_suspected",
+            },
+        },
+    }
+    assert envelope.build_envelope(sess)["failure"] is None
+
+
 def test_relay_in_progress_ramp_is_not_a_refusal():
     for state in ("climbing", "settling", "confirming"):
         sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state=state)

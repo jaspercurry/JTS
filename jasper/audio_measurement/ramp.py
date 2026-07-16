@@ -1211,8 +1211,6 @@ class RampController:
                                 "slopes "
                                 + ", ".join(f"{s:.2f}" for s in slopes)
                                 + f" over {steps} steps"
-                                if slopes
-                                else None
                             ),
                             event="ramp_agc_suspected",
                             level=logging.WARNING,

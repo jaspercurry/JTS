@@ -791,26 +791,36 @@ _RAMP_REFUSAL_COPY: dict[str, str] = {
     ),
 }
 
-# (prefix, message) — matched in order for terminals whose `error` carries a
-# parameterized detail (a duration, a dB value) after a fixed lead-in.
-_RAMP_REFUSAL_PREFIX_COPY: tuple[tuple[str, str], ...] = (
+# (prefix, canonical_code, message) — matched in order for terminals whose
+# `error` carries a parameterized detail (a duration, a dB value) after a
+# fixed lead-in. The canonical snake_case code is what `RampRefusal.code`
+# (and therefore the `reason=` log key) carries, so `reason=safety_timeout`
+# groups across runs instead of one key per duration; the verbatim
+# parameterized error stays visible in the user_message parenthetical.
+_RAMP_REFUSAL_PREFIX_COPY: tuple[tuple[str, str, str], ...] = (
     (
         "safety timeout",
+        "safety_timeout",
         "The check took too long and stopped for safety. Retry the level "
         "check.",
     ),
     (
         "phone feed lost",
+        "phone_feed_lost",
         "The speaker lost the phone's microphone feed partway through the "
         "check. Keep the capture page open, then retry.",
     ),
     (
         "safe cap reached below target window",
+        "safe_cap_below_window",
         "The microphone is still too quiet at the safe volume limit. Raise "
         "the external amplifier a little, then retry.",
     ),
     (
+        # Matches ramp.py's existing `reason="non_finite_original"` log field
+        # for this terminal — one group key across both surfaces.
         "non-finite pre-ramp main_volume",
+        "non_finite_original",
         "The speaker's starting volume was invalid. Retry the level check.",
     ),
 )
@@ -828,30 +838,43 @@ def describe_ramp_refusal(
     e.g. ``agc_suspected``; a full sentence for others, e.g. ``"clip
     detected"`` or ``"phone feed lost (no samples for 8s)"``). A falsy
     ``error`` (``outcome.locked`` is False but the ramp never set one) is the
-    generic "not locked" case. An unrecognized code always gets a generic
-    fallback that INCLUDES the raw code, never a silently-generic message —
-    most unrecognized codes are already a plain sentence, so echoing it
-    verbatim (title-cased, period-terminated) reads naturally. ``detail`` —
-    when the ramp attached one (``RampData.error_detail`` — currently only
-    ``agc_suspected``'s measured slopes/step count) — is appended in
-    parentheses so retries and support conversations can point at the exact
-    evidence, without changing the stable ``code`` used for log grouping.
+    generic "not locked" case. Parameterized terminals (a duration, a dB
+    value baked into the string) are normalized to one canonical snake_case
+    ``code`` per family via the prefix table, so ``reason=`` log keys group
+    across runs; the verbatim parameterized error is preserved in the
+    user_message parenthetical instead. An unrecognized code always gets a
+    generic fallback that INCLUDES the raw code, never a silently-generic
+    message — most unrecognized codes are already a plain sentence, so
+    echoing it verbatim (title-cased, period-terminated) reads naturally.
+    ``detail`` — when the ramp attached one (``RampData.error_detail`` —
+    currently only ``agc_suspected``'s measured slopes/step count) — is
+    appended in parentheses so retries and support conversations can point
+    at the exact evidence, without changing the stable ``code`` used for log
+    grouping.
     """
-    code = str(error or "").strip()
-    if not code:
+    raw = str(error or "").strip()
+    if not raw:
         return RampRefusal(code="not_locked", user_message=_NOT_LOCKED_MESSAGE)
-    message: str | None = _RAMP_REFUSAL_COPY.get(code)
+    code = raw
+    message: str | None = _RAMP_REFUSAL_COPY.get(raw)
+    extras: list[str] = []
     if message is None:
-        for prefix, prefix_message in _RAMP_REFUSAL_PREFIX_COPY:
-            if code.startswith(prefix):
+        for prefix, family_code, prefix_message in _RAMP_REFUSAL_PREFIX_COPY:
+            if raw.startswith(prefix):
+                code = family_code
                 message = prefix_message
+                # The code is normalized; keep the verbatim, parameterized
+                # error visible to the household/support conversation.
+                extras.append(raw)
                 break
     if message is None:
-        text = code[0].upper() + code[1:]
+        text = raw[0].upper() + raw[1:]
         message = text if text.endswith((".", "!", "?")) else f"{text}."
-    extra = str(detail or "").strip()
-    if extra:
-        message = f"{message} ({extra})"
+    detail_text = str(detail or "").strip()
+    if detail_text:
+        extras.append(detail_text)
+    if extras:
+        message = f"{message} ({'; '.join(extras)})"
     return RampRefusal(code=code, user_message=message)
 
 
