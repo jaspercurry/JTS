@@ -2550,6 +2550,170 @@ def test_level_target_context_revalidates_before_tone():
         flow.validate_current_level_target_context(changed, **kwargs)
 
 
+def test_level_target_context_admits_mid_sequence_anchor():
+    # Run-11 repro (gate #4 of the class): tweeter tone-prep calls
+    # validate_current_level_target_context mid-sequence, when the persisted
+    # config is (by #1523 design) the all-muted staged anchor -- setup reads
+    # blocked/active_speaker_commissioning_config_loaded while the
+    # fingerprint and applied_crossover checks pass. The raw ready
+    # requirement raised the MISLEADING "protected crossover setup changed
+    # after this link was created" even though nothing changed.
+    #
+    # Confirmed FAILING pre-fix: without the shared predicate in this
+    # validator, the first call below raises that exact ValueError
+    # (verified by running this test against the pre-fix validator).
+    import copy
+
+    status = _envelope_status()
+    status["setup"]["status"] = "blocked"
+    status["setup"]["reason"] = "active_speaker_commissioning_config_loaded"
+    status["capture_entry_pending"] = True
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
+    status["targets"]["drivers"][0]["target_fingerprint"] = "target-woofer"
+    kwargs = {
+        "current_topology_id": "topology-1",
+        "expected_topology_id": "topology-1",
+        "expected_profile_context_id": "protected-profile",
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "expected_target_fingerprint": "target-woofer",
+    }
+
+    flow.validate_current_level_target_context(status, **kwargs)
+
+    # A different blocked reason (even with the stash) refuses as before.
+    changed = copy.deepcopy(status)
+    changed["setup"]["reason"] = "active_baseline_profile_unreadable"
+    with pytest.raises(ValueError, match="protected crossover setup changed"):
+        flow.validate_current_level_target_context(changed, **kwargs)
+
+    # The in-sequence reason WITHOUT a pending stash refuses as before.
+    changed = copy.deepcopy(status)
+    changed["capture_entry_pending"] = False
+    with pytest.raises(ValueError, match="protected crossover setup changed"):
+        flow.validate_current_level_target_context(changed, **kwargs)
+
+    # Copy accuracy: post-fix, the "setup changed" error still fires for the
+    # genuine changed-underneath case -- a profile fingerprint that really
+    # did change after the link was created, even mid-anchor.
+    changed = copy.deepcopy(status)
+    changed["setup"]["protected_profile"]["candidate_fingerprint"] = "changed"
+    with pytest.raises(ValueError, match="protected crossover setup changed"):
+        flow.validate_current_level_target_context(changed, **kwargs)
+
+
+def test_capture_context_admits_mid_sequence_anchor():
+    # Arm-time sweep equivalent of the tone-prep repro: the phone arms
+    # minutes after POST, mid-sequence, while the persisted config is the
+    # staged anchor. validate_current_capture_context must admit exactly the
+    # in-sequence state and keep refusing every genuine change.
+    import copy
+
+    status = _mid_sequence_sweep_status()
+    status["level_match"]["run"] = {"terminal_reason": "state_unavailable"}
+    status["targets"]["drivers"][0]["target_fingerprint"] = "target-woofer"
+    kwargs = {
+        "current_topology_id": _COMPARISON_SET["topology_id"],
+        "expected_topology_id": _COMPARISON_SET["topology_id"],
+        "expected_profile_context_id": _COMPARISON_SET["profile_context_id"],
+        "expected_comparison_set": _COMPARISON_SET,
+        "kind": "driver",
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "capture_geometry": "near_field",
+        "expected_target_fingerprint": "target-woofer",
+    }
+
+    flow.validate_current_capture_context(status, **kwargs)
+
+    changed = copy.deepcopy(status)
+    changed["setup"]["reason"] = "active_baseline_profile_unreadable"
+    with pytest.raises(ValueError, match="protected crossover setup changed"):
+        flow.validate_current_capture_context(changed, **kwargs)
+
+    changed = copy.deepcopy(status)
+    changed["capture_entry_pending"] = False
+    with pytest.raises(ValueError, match="protected crossover setup changed"):
+        flow.validate_current_capture_context(changed, **kwargs)
+
+    changed = copy.deepcopy(status)
+    changed["setup"]["protected_profile"]["candidate_fingerprint"] = "changed"
+    with pytest.raises(ValueError, match="protected crossover setup changed"):
+        flow.validate_current_capture_context(changed, **kwargs)
+
+
+def test_setup_readiness_gates_share_the_in_sequence_anchor_predicate():
+    """Gate-class closure pin (runs 10-11; PRs #1525/#1526 + this one).
+
+    Four separate gates each carried a raw `setup.get("status") != "ready"`
+    comparison against the active-speaker setup payload, and each one
+    independently wedged an automatic capture sequence while the persisted
+    config was (by #1523 design) the all-muted staged anchor. Any raw
+    readiness comparison in these files must either consult
+    setup_blocked_only_by_in_sequence_anchor in the same statement or carry
+    an explicit `in-sequence-anchor-exempt` justification comment -- so
+    gate #5 of the class can never land silently.
+    """
+    import re
+    from pathlib import Path
+
+    import jasper
+
+    root = Path(jasper.__file__).parent
+    files = (
+        root / "web" / "correction_setup.py",
+        root / "web" / "correction_crossover_flow.py",
+        root / "web" / "correction_crossover_backend.py",
+        root / "active_speaker" / "crossover_envelope.py",
+    )
+    # Matches the setup-status dict's status compared to "ready"
+    # (setup/raw_setup/setup_status variables, .get() or subscript). Scoped
+    # to those variable names so unrelated "ready" statuses (excitation,
+    # signal plans, repeat entries, level_match.ready) never false-positive.
+    pattern = re.compile(
+        r'\b(?:raw_)?setup(?:_status)?'
+        r'(?:\.get\(\s*"status"\s*\)|\[\s*"status"\s*\])'
+        r'\s*[!=]=\s*"ready"'
+    )
+    offenders = []
+    for path in files:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if not pattern.search(line):
+                continue
+            # The predicate must be consulted in the SAME condition — look
+            # forward only (a nearby import or comment naming it must not
+            # satisfy the pin; a reverted gate under an intact import would
+            # otherwise slip through).
+            forward = "\n".join(lines[i:i + 6])
+            if "setup_blocked_only_by_in_sequence_anchor" in forward:
+                continue
+            # A justified exclusion is an explicit marker in the comment
+            # block directly above the comparison.
+            preceding_comments = []
+            for prior in reversed(lines[max(0, i - 12):i]):
+                stripped = prior.strip()
+                if stripped.startswith("#"):
+                    preceding_comments.append(stripped)
+                elif stripped:
+                    break
+            if any(
+                "in-sequence-anchor-exempt" in comment
+                for comment in preceding_comments
+            ):
+                continue
+            offenders.append(f"{path.name}:{i + 1}: {line.strip()}")
+    assert not offenders, (
+        "raw active-speaker setup readiness comparison without the shared "
+        "in-sequence-anchor predicate (wire it, or justify with an "
+        "'in-sequence-anchor-exempt' comment):\n" + "\n".join(offenders)
+    )
+
+
 def test_automatic_candidate_requires_driver_evidence_not_summed_capture():
     from jasper.active_speaker.crossover_contract import (
         automatic_candidate_readiness,

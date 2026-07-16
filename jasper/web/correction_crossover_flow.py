@@ -569,6 +569,13 @@ def ensure_automatic_measurement_profile(
             owner=applied.get("owner"),
         )
 
+    # in-sequence-anchor-exempt: this gate is unreachable mid-sequence — a
+    # running sequence has applied_crossover.valid True and early-returns
+    # above before the legacy migration runs. It fires only immediately
+    # after the legacy apply_profile this function just performed, which
+    # repoints production itself (superseding any capture-entry stash), so
+    # full "ready" is the correct proof that the fresh apply produced a
+    # ready production graph. Do not admit the staged anchor here.
     if setup.get("status") != "ready":
         raise ValueError(
             str(
@@ -618,8 +625,20 @@ def validate_current_capture_context(
     applied = applied if isinstance(applied, Mapping) else {}
     protected = setup.get("protected_profile")
     protected = protected if isinstance(protected, Mapping) else {}
+    # Arm-time runs mid-sequence by design: between capture attempts the
+    # persisted config is the all-muted staged anchor (PR #1523), so setup
+    # reads blocked. Admit exactly that in-sequence state via the shared
+    # predicate; the fingerprint and applied checks below still catch a
+    # setup that genuinely changed underneath the link.
+    from jasper.active_speaker.setup_status import (
+        setup_blocked_only_by_in_sequence_anchor,
+    )
+
     if (
-        setup.get("status") != "ready"
+        (
+            setup.get("status") != "ready"
+            and not setup_blocked_only_by_in_sequence_anchor(status)
+        )
         or applied.get("valid") is not True
         or str(protected.get("candidate_fingerprint") or "")
         != expected_profile_context_id
@@ -722,8 +741,21 @@ def validate_current_level_target_context(
     protected = protected if isinstance(protected, Mapping) else {}
     applied = setup.get("applied_crossover")
     applied = applied if isinstance(applied, Mapping) else {}
+    # Tone-prep for lock 2..N runs while the persisted config is the
+    # all-muted staged anchor (PR #1523), so a raw ready requirement here
+    # wedged the tweeter tone (run 11). Admit exactly the in-sequence state;
+    # every remaining trigger of this error is a genuine changed-underneath
+    # case (fingerprint/applied/other-blocked regression after the link was
+    # created), so the copy stays accurate.
+    from jasper.active_speaker.setup_status import (
+        setup_blocked_only_by_in_sequence_anchor,
+    )
+
     if (
-        setup.get("status") != "ready"
+        (
+            setup.get("status") != "ready"
+            and not setup_blocked_only_by_in_sequence_anchor(status)
+        )
         or applied.get("valid") is not True
         or str(protected.get("candidate_fingerprint") or "")
         != expected_profile_context_id
