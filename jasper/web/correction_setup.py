@@ -1003,6 +1003,7 @@ __TABS__
   <p id="capture-handoff-copy" class="hint"></p>
   <div id="relay-link-row" class="relay-link-row hidden">
     <a id="relay-tap-link" class="btn btn--primary" href="#" target="_blank" rel="noopener">Open phone capture</a>
+    <div id="relay-qr" class="relay-qr"></div>
   </div>
   <p id="relay-status" class="relay-status"></p>
 </section>

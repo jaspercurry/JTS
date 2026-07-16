@@ -570,6 +570,8 @@ Prefer:
 - **Measuring 6 positions with the flat target — Change**
 - **Finish speaker setup first**
 - **Open phone capture**
+- **Scan with your phone's camera**
+- **Show QR code**
 - **Put your phone at the main seat**
 - **Move to position 2 of 6**
 - **Measure this position**

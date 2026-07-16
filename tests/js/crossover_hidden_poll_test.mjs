@@ -39,6 +39,7 @@ const ids = [
   "crossover-relay",
   "crossover-relay-status",
   "crossover-relay-link",
+  "crossover-relay-qr",
   "crossover-relay-stop",
   "capture-status",
 ];
@@ -69,6 +70,11 @@ globalThis.clearTimeout = (id) => {
 
 globalThis.__getJSON = async () => ({});
 globalThis.__postJSON = async () => ({});
+// deploy/assets/shared/js/qr.js's renderRelayQr is exercised elsewhere
+// (tests/js/qr_harness.mjs for the encoder/DOM, crossover_stop_render_test.mjs
+// for the wiring) — this file only drives schedulePoll(), so a no-op stands
+// in purely so the module (which imports it) loads without a real DOM.
+globalThis.__renderRelayQr = () => {};
 
 const here = dirname(fileURLToPath(import.meta.url));
 let source = readFileSync(
@@ -76,9 +82,12 @@ let source = readFileSync(
   "utf8",
 );
 source = source.replace(
-  /^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*/m,
-  "const getJSON = globalThis.__getJSON; const postJSON = globalThis.__postJSON;\n",
+  /^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm,
+  "",
 );
+source =
+  "const getJSON = globalThis.__getJSON; const postJSON = globalThis.__postJSON; " +
+  "const renderRelayQr = globalThis.__renderRelayQr;\n" + source;
 const bootStart = source.lastIndexOf("\nrefresh().catch((error) => {");
 if (bootStart < 0) throw new Error("crossover module boot call not found");
 source = source.slice(0, bootStart).concat(

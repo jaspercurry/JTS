@@ -267,6 +267,41 @@
 .relay-status.ok { color: var(--status-ok); font-weight: 600; }
 .relay-status.bad { color: var(--status-danger); font-weight: 600; }
 
+/* QR hand-off (deploy/assets/shared/js/qr.js renderRelayQr): a quiet card
+ * shown prominently by default on desktop/tablet, tucked into a collapsed
+ * <details> on phone widths where the tap link above is already the
+ * primary, working path. */
+.relay-qr:empty { display: none; }
+.relay-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0.4rem 0 0.2rem;
+  padding: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-quiet);
+}
+.relay-qr__canvas {
+  width: 200px;
+  height: 200px;
+  max-width: 100%;
+  background: #fff;
+  border-radius: var(--radius-sm);
+}
+.relay-qr__caption {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.relay-qr__details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.relay-qr__details[open] > summary { margin-bottom: 0.5rem; }
+
 /* ---- Capture settings (constraint table + live level meter) ----------- */
 .level-bar-track {
   height: 28px;

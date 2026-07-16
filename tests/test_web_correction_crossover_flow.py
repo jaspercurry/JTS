@@ -1961,7 +1961,7 @@ def test_fast_terminal_stop_reenables_the_authoritative_next_action():
     )
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert result == {"ok": True, "passed": 16}
+    assert result == {"ok": True, "passed": 18}
 
 
 def test_hidden_tab_slows_polling_instead_of_stopping():

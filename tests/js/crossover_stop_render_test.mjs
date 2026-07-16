@@ -48,6 +48,7 @@ const ids = [
   "crossover-relay",
   "crossover-relay-status",
   "crossover-relay-link",
+  "crossover-relay-qr",
   "crossover-relay-stop",
   "capture-status",
 ];
@@ -88,15 +89,29 @@ globalThis.__postJSON = async () => {
   return postResponse;
 };
 
+// deploy/assets/shared/js/qr.js's renderRelayQr is tested in isolation by
+// tests/js/qr_harness.mjs (pure encoder + DOM structure). Here a spy checks
+// only the WIRING — that render()/renderRelay() hand it the crossover-relay-qr
+// container and the exact relay.tap_link href, per "assert on its input, not
+// on pixel output."
+const relayQrCalls = [];
+globalThis.__renderRelayQr = (container, text) => {
+  relayQrCalls.push({ container, text });
+};
+function lastRelayQrCall() { return relayQrCalls[relayQrCalls.length - 1] || null; }
+
 const here = dirname(fileURLToPath(import.meta.url));
 let source = readFileSync(
   resolve(here, "../../deploy/assets/correction/js/crossover/main.js"),
   "utf8",
 );
 source = source.replace(
-  /^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*/m,
-  "const getJSON = globalThis.__getJSON; const postJSON = globalThis.__postJSON;\n",
+  /^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm,
+  "",
 );
+source =
+  "const getJSON = globalThis.__getJSON; const postJSON = globalThis.__postJSON; " +
+  "const renderRelayQr = globalThis.__renderRelayQr;\n" + source;
 const bootStart = source.lastIndexOf("\nrefresh().catch((error) => {");
 if (bootStart < 0) throw new Error("crossover module boot call not found");
 source = source.slice(0, bootStart).concat(
@@ -111,7 +126,30 @@ render({
   relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=cap" },
   next_action: null,
 });
+
+// --- QR hand-off wiring: renderRelay() passes the crossover-relay-qr
+//     container and the EXACT tap_link (fragment included, since the
+//     capture key rides there) to renderRelayQr while awaiting_phone.
+assert.equal(
+  lastRelayQrCall() && lastRelayQrCall().container,
+  elements.get("crossover-relay-qr"),
+  "the QR renders into the crossover-relay-qr container",
+);
+assert.equal(
+  lastRelayQrCall() && lastRelayQrCall().text,
+  "https://capture.test/#s=cap",
+  "the QR is handed the exact tap_link, fragment included",
+);
+
 await stopRelay();
+
+// stopRelay's own render (status: "stopping", no tap_link) clears the QR —
+// the hand-off step is over once a Stop is in flight.
+assert.equal(
+  lastRelayQrCall() && lastRelayQrCall().text,
+  null,
+  "a relay with no tap_link (e.g. stopping) clears the QR",
+);
 
 const actions = elements.get("crossover-action").children;
 assert.equal(actions.length, 1);
@@ -287,4 +325,4 @@ assert.equal(
   "Candidate apply needs durable finalization.",
 );
 
-console.log(JSON.stringify({ ok: true, passed: 16 }));
+console.log(JSON.stringify({ ok: true, passed: 18 }));

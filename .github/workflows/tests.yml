@@ -203,6 +203,7 @@ jobs:
           bash scripts/check-js-syntax.sh
           node tests/js/sound_profile_harness.mjs deploy/assets/sound-profile/js/main.js
           node tests/js/dialog_harness.mjs deploy/assets/shared/js/dialog.js
+          node tests/js/qr_harness.mjs deploy/assets/shared/js/qr.js
           node scripts/check-peq-parity.mjs
           node scripts/check-balance-trim-parity.mjs
           node tests/js/correction_render_harness.mjs deploy/assets/correction/js/main.js

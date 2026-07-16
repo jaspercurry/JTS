@@ -2314,6 +2314,12 @@ These items can only be verified on real hardware. Deploy with
       bounded level-check handoff appears; **Open phone capture** opens the
       signed phone page, and the phone-reported position count cannot change
       the Pi-owned six-position run.
+- [ ] On a desktop/tablet browser width, the same handoff also shows a QR
+      code next to **Open phone capture**, open by default; scanning it with
+      a phone camera opens the identical signed capture page (the fragment
+      carrying the E2E key must ride into the scanned link intact). On a
+      phone-width browser the QR is present but collapsed under **Show QR
+      code** — the tap link stays the primary, default-visible path there.
 
 ### Relay-first six-position run and verification
 - [ ] Complete the phone microphone/calibration setup and level check. The
