@@ -166,6 +166,93 @@ def _legacy_applied_profile_needs_reapply(status: Mapping[str, Any]) -> bool:
     )
 
 
+_DRIVER_SAFETY_ROLE_LABELS = {
+    "woofer": "Woofer",
+    "mid": "Midrange",
+    "tweeter": "Tweeter",
+}
+
+
+def _driver_safety_role_label(role: str) -> str:
+    if role in _DRIVER_SAFETY_ROLE_LABELS:
+        return _DRIVER_SAFETY_ROLE_LABELS[role]
+    label = role.replace("_", " ").strip()
+    return label.capitalize() if label else "Driver"
+
+
+def _driver_safety_profile_nudges(
+    evaluation: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    """Translate the safety profile's own verdict into plain-language copy.
+
+    Reuses ``evaluate_driver_safety_profile``'s status/reasons rather than
+    re-deriving completeness from field presence, and follows the Language
+    guide in docs/active-crossover-information-design.md: no internal
+    vocabulary (no "fingerprint", "candidate", "authority", or raw field
+    names) in user-facing copy.
+    """
+
+    status = str(evaluation.get("status") or "missing")
+    if status != "incomplete":
+        text = {
+            "missing": "Driver safety limits have not been set up yet.",
+            "malformed": "Saved driver safety limits could not be read cleanly.",
+            "stale": (
+                "Saved driver safety limits no longer match the current "
+                "speaker setup."
+            ),
+            "unconfirmed": (
+                "Driver safety limits were saved but not yet confirmed."
+            ),
+        }.get(status, "Driver safety limits are not ready.")
+        return [{
+            "code": "crossover_driver_safety_profile_not_ready",
+            "severity": "warn",
+            "text": f"{text} Finish the driver details in speaker setup.",
+        }]
+    reasons = evaluation.get("reasons")
+    reasons = reasons if isinstance(reasons, (list, tuple)) else ()
+    missing_roles: list[str] = []
+    review_roles: list[str] = []
+    for reason in reasons:
+        role, sep, detail = str(reason).partition(":")
+        if not sep:
+            continue
+        label = _driver_safety_role_label(role)
+        bucket = missing_roles if detail.endswith("_missing") else review_roles
+        if label not in bucket:
+            bucket.append(label)
+    nudges: list[dict[str, str]] = []
+    if missing_roles:
+        nudges.append({
+            "code": "crossover_driver_safety_profile_incomplete",
+            "severity": "warn",
+            "text": (
+                f"{', '.join(missing_roles)} safety limits are missing "
+                "— finish the driver details in speaker setup."
+            ),
+        })
+    if review_roles:
+        nudges.append({
+            "code": "crossover_driver_safety_profile_needs_review",
+            "severity": "warn",
+            "text": (
+                f"{', '.join(review_roles)} safety limits need review "
+                "— check the driver details in speaker setup."
+            ),
+        })
+    if not nudges:
+        nudges.append({
+            "code": "crossover_driver_safety_profile_incomplete",
+            "severity": "warn",
+            "text": (
+                "Driver safety limits are incomplete. Finish the driver "
+                "details in speaker setup."
+            ),
+        })
+    return nudges
+
+
 def _step_payload(done: set[str], active: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for step_id in _STEP_IDS:
@@ -276,6 +363,20 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     level_ramp = _mapping(level_last.get("ramp"))
     level_lock_kind = str(level_ramp.get("lock_kind") or "")
     setup_ready = _setup_ready(status)
+    if "driver_safety_profile_evaluation" in status:
+        driver_safety_evaluation = _mapping(
+            status.get("driver_safety_profile_evaluation")
+        )
+        driver_safety_authorized = (
+            driver_safety_evaluation.get("confirmed_and_current") is True
+        )
+    else:
+        # Legacy/test callers that predate this gate omit the key entirely;
+        # do not newly block them here. Every production caller goes through
+        # correction_crossover_backend.status_payload(), which always sets
+        # this key (None when unreadable, so that path still fails closed).
+        driver_safety_evaluation = {}
+        driver_safety_authorized = True
     setup_contract = _mapping(status.get("setup"))
     protected_profile = _mapping(setup_contract.get("protected_profile"))
     commissioning_run = _mapping(status.get("commissioning_run"))
@@ -374,7 +475,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     )
 
     done: set[str] = set()
-    if setup_ready:
+    if setup_ready and driver_safety_authorized:
         done.add("speaker_setup")
     if level_ready:
         done.add("microphone")
@@ -580,12 +681,24 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         })
 
     alternate_actions: list[dict[str, Any]] = []
-    if not setup_ready:
+    if not setup_ready or not driver_safety_authorized:
         screen = "speaker_setup"
-        verdict = (
-            "Finish the protected speaker setup first. This proves the output map "
-            "and tweeter protection before a microphone sweep can play."
-        )
+        if not setup_ready:
+            verdict = (
+                "Finish the protected speaker setup first. This proves the output map "
+                "and tweeter protection before a microphone sweep can play."
+            )
+        else:
+            # setup_ready is true but the driver safety profile itself is not
+            # confirmed-and-current: do not offer any measurement action (level
+            # match / sweeps) here, since the deep excitation admission would
+            # only refuse it later, after locks and acceptance repeats.
+            verdict = (
+                "Confirm the driver safety details in speaker setup before "
+                "measuring. JTS will not start a microphone sweep until each "
+                "driver's safe playback limits are confirmed."
+            )
+            nudges.extend(_driver_safety_profile_nudges(driver_safety_evaluation))
         action: dict[str, Any] | None = {
             "id": "speaker_setup",
             "label": "Finish speaker setup",
