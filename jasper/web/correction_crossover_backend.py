@@ -50,13 +50,40 @@ _DEFAULT_VOLUME_SAFETY_STATE_PATH = Path(
 _VOLUME_READBACK_TOLERANCE_DB = 0.05
 CamillaFactory = Callable[[], Any]
 
+# The level-match ramp's phone-reported noise_floor_dbfs (RampData.noise_floor_dbfs)
+# is the solver's broadband ambient fallback input (see
+# jasper.audio_measurement.level_solver). When a lock predates that field, or
+# the ramp never got a phone-reported reading, fall back to a deliberately
+# pessimistic (loud) assumption -- erring toward more required headroom or a
+# refusal is safer than silently under-provisioning a driver's sweep level.
+_FALLBACK_AMBIENT_BROADBAND_DBFS = -30.0
+
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_level_run import (
         CrossoverLevelRunClaim,
         CrossoverLevelRunFailure,
     )
+    from jasper.audio_measurement.level_solver import LevelSolveRefusal
     from jasper.audio_measurement.ramp import MeasurementRamp
     from jasper.correction.level_match import LevelMatchOutcome, LevelMatchSession
+
+
+class LevelSolveRefused(RuntimeError):
+    """No safe (main_volume_db, commissioning_gain_db) clears even the bare
+    SNR floor for this driver -- fired before any tone plays.
+
+    Carries the typed :class:`~jasper.audio_measurement.level_solver.LevelSolveRefusal`
+    so the caller does not re-derive it; user-facing copy is owned by
+    :mod:`jasper.active_speaker.crossover_envelope` (the single
+    code -> copy mapping, mirroring ``describe_ramp_refusal``).
+    """
+
+    def __init__(self, refusal: "LevelSolveRefusal") -> None:
+        self.refusal = refusal
+        super().__init__(
+            f"level_solve_refused code={refusal.code} "
+            f"band={refusal.failing_band_hz[0]:.0f}-{refusal.failing_band_hz[1]:.0f}Hz"
+        )
 
 
 class UnresolvedVolumeRecoveryResult(str, Enum):
@@ -168,6 +195,20 @@ class CrossoverLevelLease:
         self.noise_floor_db = None
         self.mic_calibration = None
         self.input_device = None
+        # Closed-loop level solver (W2.1): the most recent refusal (surfaced
+        # by the envelope until a fresh level-match clears it) and each
+        # target's one-time bounded-correction escalation. Keyed by
+        # target_id; see _solve_driver_level.
+        self._solve_refusal: dict[str, Any] | None = None
+        self._solve_escalation_db: dict[str, float] = {}
+        # One solve per sweep: _acquire_sweep_volume computes and stores the
+        # SolvedLevel here (keyed by group/role/geometry so a mismatched read
+        # can never consume another sweep's solve); the excitation-ledger
+        # (driver_sweep_locked_main_volume_db) and gain-override
+        # (solved_commissioning_gain_db) reads consume this stored result
+        # instead of re-solving. Cleared with the sweep window and the level
+        # context -- a stored field, not a caching layer.
+        self._active_sweep_solve: tuple[str, str, str, Any] | None = None
         # Interim fixed-position repeats are process-local and scoped by both
         # the immutable comparison set and driver target.  Nothing from one
         # level/profile context can be paired with another.
@@ -663,7 +704,32 @@ class CrossoverLevelLease:
             self._outcomes[geometry] = outcome
             if outcome.locked:
                 self.context_id = context_id
+            # A fresh ramp result changes the solver's inputs (gain_map_db,
+            # cap_db, noise_floor_dbfs) for this geometry -- any earlier
+            # refusal, stored per-sweep solve, or bounded-correction
+            # escalation for this target is stale. The escalation in
+            # particular must not survive a re-lock: the fresh ramp
+            # re-measured the ambient it was compensating for, so keeping it
+            # would double-count the correction.
+            self._solve_refusal = None
+            self._active_sweep_solve = None
+            self._discard_solve_escalation_for_geometry(geometry)
         return outcome
+
+    def _discard_solve_escalation_for_geometry(self, geometry: str) -> None:
+        from jasper.active_speaker.capture_geometry import (
+            parse_driver_level_geometry,
+        )
+
+        try:
+            _capture_geometry, group_id, role = parse_driver_level_geometry(
+                geometry
+            )
+        except ValueError:
+            return
+        target_id = self._target_id_for(group_id, role)
+        if target_id is not None:
+            self._solve_escalation_db.pop(target_id, None)
 
     async def cancel_level_match(self) -> bool:
         """Ask the retained crossover ramp to stop through its safe restore."""
@@ -697,9 +763,203 @@ class CrossoverLevelLease:
             self._repeat_sessions = {}
             self._repeat_failures = {}
             self._durable_repeat_progress = {}
+            self._solve_refusal = None
+            self._solve_escalation_db = {}
+            self._active_sweep_solve = None
         log_event(
             logger,
             "correction.crossover_level_context_invalidated",
+        )
+
+    def _target_id_for(self, speaker_group_id: str, role: str) -> str | None:
+        for target_id, target in self._targets.items():
+            if (
+                str(target.get("speaker_group_id") or "") == speaker_group_id
+                and str(target.get("role") or "").lower() == role.lower()
+            ):
+                return target_id
+        return None
+
+    def _solve_driver_level(
+        self,
+        speaker_group_id: str,
+        role: str,
+        *,
+        capture_geometry: str,
+    ) -> Any:
+        """Solve this driver's sweep (main_volume_db, commissioning_gain_db).
+
+        Pure math lives in :mod:`jasper.audio_measurement.level_solver`; this
+        method is the domain adapter -- it reads the geometry-scoped ramp
+        outcome's facts (``gain_map_db``, ``cap_db``, ``noise_floor_dbfs``),
+        the confirmed driver-safety ceilings (``resolve_driver_excitation_ceilings``
+        -- the SAME derivation admission itself uses, so the solver's
+        ceilings can never drift from what admission will actually enforce),
+        and this driver's currently-applied baseline commissioning gain.
+        Deterministic given those inputs, and each call solves fresh -- but
+        in the sweep flow this runs exactly ONCE per sweep, from
+        ``_acquire_sweep_volume``, which stores the result for the
+        excitation-ledger and gain-override reads (see
+        ``_active_sweep_solve``). Returns ``None`` when there is no locked
+        ramp outcome yet or a driver-safety ceiling cannot be resolved --
+        callers already treat that as "nothing to reassert / solve" (mirrors
+        the pre-W2.1 fallback of using the raw lock).
+        """
+
+        from jasper.active_speaker.capture_geometry import driver_level_geometry
+        from jasper.active_speaker.design_draft import load_design_draft
+        from jasper.active_speaker.excitation_safety_plan import (
+            ExcitationSafetyPlanError,
+            resolve_driver_excitation_ceilings,
+        )
+        from jasper.audio_measurement import level_solver
+        from jasper.audio_measurement.quality_model import DRIVER as DRIVER_QUALITY_MODEL
+        from jasper.output_topology import load_output_topology
+
+        target_id = self._target_id_for(speaker_group_id, role)
+        if target_id is None or target_id not in self._targets:
+            return None
+        target = self._targets[target_id]
+        geometry = driver_level_geometry(speaker_group_id, role, capture_geometry)
+        outcome = self._outcomes.get(geometry)
+        if outcome is None:
+            return None
+        locked = outcome.ramp.locked_main_volume_db
+        if (
+            isinstance(locked, bool)
+            or not isinstance(locked, (int, float))
+            or not math.isfinite(float(locked))
+            or float(locked) > 0.0
+        ):
+            return None
+        # getattr, not direct access: RampData always declares these fields
+        # in production, but a hardware-free test double (or a future ramp
+        # variant) that only stubs the fields it needs must degrade to "solve
+        # unavailable, fall back to the raw lock" rather than crash.
+        gain_map_db = getattr(outcome.ramp, "gain_map_db", None)
+        if gain_map_db is None or not math.isfinite(float(gain_map_db)):
+            return None
+        target_fingerprint = str(target.get("target_fingerprint") or "")
+        try:
+            topology = load_output_topology()
+            draft = load_design_draft(topology=topology)
+            safety_profile = draft.get("driver_safety_profile")
+            if not isinstance(safety_profile, Mapping):
+                return None
+            permitted_band, max_effective_peak_dbfs = resolve_driver_excitation_ceilings(
+                safety_profile, target_fingerprint
+            )
+        except (ExcitationSafetyPlanError, OSError, RuntimeError, TypeError, ValueError):
+            return None
+        main_volume_cap_db = getattr(outcome.ramp, "cap_db", None)
+        if (
+            main_volume_cap_db is None
+            or not math.isfinite(float(main_volume_cap_db))
+            or float(main_volume_cap_db) > 0.0
+        ):
+            main_volume_cap_db = 0.0
+        ambient_broadband_dbfs = getattr(outcome.ramp, "noise_floor_dbfs", None)
+        if ambient_broadband_dbfs is None or not math.isfinite(
+            float(ambient_broadband_dbfs)
+        ):
+            ambient_broadband_dbfs = _FALLBACK_AMBIENT_BROADBAND_DBFS
+        # Bounded correction (W2.1 item 4): a one-time escalation, in dB of
+        # additional required headroom, applied after sweep 1's measured
+        # worst-band SNR still missed the solver's prediction. Modeled as
+        # extra assumed ambient loudness (a LESS negative dBFS figure, which
+        # monotonically raises the solved level) so every downstream ceiling
+        # check (mic-clip, peak) still applies to the escalated target.
+        ambient_broadband_dbfs = float(ambient_broadband_dbfs) + self._solve_escalation_db.get(
+            target_id, 0.0
+        )
+        commissioning_gain_baseline_db = min(
+            0.0, float(target.get("commissioning_gain_db") or 0.0)
+        )
+        # The sweep's own source peak is commissioning_admission's constant,
+        # passed explicitly so the solver's ledger tracks the value the
+        # DriverSweepGeneratorPlan will actually be built with -- never a
+        # solver-side default that could silently diverge from it.
+        from jasper.active_speaker.commissioning_admission import (
+            ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
+        )
+
+        result = level_solver.solve_level(
+            gain_map_db=float(gain_map_db),
+            admitted_band_hz=(permitted_band.lower_hz, permitted_band.upper_hz),
+            commissioning_gain_baseline_db=commissioning_gain_baseline_db,
+            main_volume_cap_db=float(main_volume_cap_db),
+            max_effective_peak_dbfs=float(max_effective_peak_dbfs),
+            ambient_broadband_dbfs=ambient_broadband_dbfs,
+            model=DRIVER_QUALITY_MODEL,
+            sweep_amplitude_dbfs=ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
+        )
+        if isinstance(result, level_solver.LevelSolveRefusal):
+            log_event(
+                logger,
+                "measurement.level_solved",
+                target_id=target_id,
+                role=role,
+                capture_geometry=capture_geometry,
+                gain_map_db=f"{float(gain_map_db):.1f}",
+                main_volume_cap_db=f"{float(main_volume_cap_db):.1f}",
+                max_effective_peak_dbfs=f"{float(max_effective_peak_dbfs):.1f}",
+                ambient_broadband_dbfs=f"{ambient_broadband_dbfs:.1f}",
+                outcome="refused",
+                main_volume_db="",
+                commissioning_gain_db="",
+                predicted_worst_band_snr_db=f"{result.available_db:.1f}",
+                failing_band_lo_hz=f"{result.failing_band_hz[0]:.1f}",
+                failing_band_hi_hz=f"{result.failing_band_hz[1]:.1f}",
+                required_db=f"{result.required_db:.1f}",
+                available_db=f"{result.available_db:.1f}",
+            )
+            self._solve_refusal = {
+                "target_id": target_id,
+                "role": role,
+                **result.to_dict(),
+            }
+            return result
+        log_event(
+            logger,
+            "measurement.level_solved",
+            target_id=target_id,
+            role=role,
+            capture_geometry=capture_geometry,
+            gain_map_db=f"{float(gain_map_db):.1f}",
+            main_volume_cap_db=f"{float(main_volume_cap_db):.1f}",
+            max_effective_peak_dbfs=f"{float(max_effective_peak_dbfs):.1f}",
+            ambient_broadband_dbfs=f"{ambient_broadband_dbfs:.1f}",
+            outcome="achieved" if result.achieved_target else "best_effort",
+            main_volume_db=f"{result.main_volume_db:.1f}",
+            commissioning_gain_db=f"{result.commissioning_gain_db:.1f}",
+            predicted_worst_band_snr_db=f"{result.predicted_worst_band_snr_db:.1f}",
+        )
+        self._solve_refusal = None
+        return result
+
+    def record_solve_escalation(
+        self, speaker_group_id: str, role: str, *, shortfall_db: float
+    ) -> None:
+        """One-time bounded-correction escalation (W2.1 item 4).
+
+        Called after a driver capture's OWN measured worst-band SNR still
+        misses despite the solve. Fires at most once per target -- a second
+        miss is the solver's job to refuse on the NEXT attempt, not a second
+        escalation (never a user-facing retry ritual).
+        """
+
+        if not math.isfinite(shortfall_db) or shortfall_db <= 0.0:
+            return
+        target_id = self._target_id_for(speaker_group_id, role)
+        if target_id is None or target_id in self._solve_escalation_db:
+            return
+        self._solve_escalation_db[target_id] = float(shortfall_db)
+        log_event(
+            logger,
+            "measurement.level_solve_escalated",
+            target_id=target_id,
+            role=role,
+            shortfall_db=f"{float(shortfall_db):.1f}",
         )
 
     async def acquire_driver_sweep_volume(
@@ -711,7 +971,7 @@ class CrossoverLevelLease:
         *,
         capture_geometry: str = "near_field",
     ) -> bool:
-        """Acquire a sweep-scoped lease at this driver's measured target."""
+        """Acquire a sweep-scoped lease at this driver's solved measurement level."""
 
         from jasper.active_speaker.capture_geometry import driver_level_geometry
 
@@ -725,7 +985,23 @@ class CrossoverLevelLease:
             source="driver_sweep",
             speaker_group_id=speaker_group_id,
             role=role,
+            capture_geometry=capture_geometry,
         )
+
+    def _stored_sweep_solve(
+        self, speaker_group_id: str, role: str, capture_geometry: str
+    ) -> Any:
+        stored = self._active_sweep_solve
+        if stored is None:
+            return None
+        group, stored_role, geometry, solved = stored
+        if (
+            group == speaker_group_id
+            and stored_role == role.lower()
+            and geometry == capture_geometry
+        ):
+            return solved
+        return None
 
     def driver_sweep_locked_main_volume_db(
         self,
@@ -734,9 +1010,24 @@ class CrossoverLevelLease:
         *,
         capture_geometry: str,
     ) -> float | None:
-        """Return the exact lock a geometry-scoped sweep will reassert."""
+        """Return the exact level a geometry-scoped sweep will reassert.
+
+        The closed-loop level solver (W2.1) chooses this value: the solve
+        runs ONCE per sweep, inside ``_acquire_sweep_volume``, and this read
+        consumes that stored result -- never a second solve, so the ledger
+        can never diverge from the reasserted volume and only one
+        ``measurement.level_solved`` event is emitted per sweep. Outside an
+        active solved sweep (no stored result -- e.g. the solve could not
+        run and the acquire fell back to the raw lock), this returns the raw
+        ramp lock, the pre-W2.1 behavior.
+        """
 
         from jasper.active_speaker.capture_geometry import driver_level_geometry
+        from jasper.audio_measurement import level_solver
+
+        solved = self._stored_sweep_solve(speaker_group_id, role, capture_geometry)
+        if isinstance(solved, level_solver.SolvedLevel):
+            return solved.main_volume_db
 
         geometry = driver_level_geometry(
             speaker_group_id, role, capture_geometry
@@ -751,6 +1042,32 @@ class CrossoverLevelLease:
         ):
             return None
         return float(value)
+
+    def solved_commissioning_gain_db(
+        self,
+        speaker_group_id: str,
+        role: str,
+        *,
+        capture_geometry: str,
+    ) -> float | None:
+        """The stored solve's ``commissioning_gain_db`` for this sweep, if any.
+
+        Consumes the SolvedLevel stored by ``_acquire_sweep_volume`` (one
+        solve per sweep -- see ``driver_sweep_locked_main_volume_db``).
+        ``None`` when there is no stored solve for this exact
+        group/role/geometry -- the caller
+        (:func:`play_driver_capture_sweep`) treats that as "no override" and
+        keeps the pre-W2.1 applied-baseline role gain.
+        """
+
+        from jasper.audio_measurement import level_solver
+
+        solved = self._stored_sweep_solve(speaker_group_id, role, capture_geometry)
+        return (
+            solved.commissioning_gain_db
+            if isinstance(solved, level_solver.SolvedLevel)
+            else None
+        )
 
     def discard_driver_level_outcome(
         self,
@@ -774,6 +1091,10 @@ class CrossoverLevelLease:
                 self.context_id = None
             self.level_lock_store.discard(geometry)
             self._level_run_store.invalidate_succeeded_result(geometry=geometry)
+            if self._stored_sweep_solve(
+                speaker_group_id, role, capture_geometry
+            ) is not None:
+                self._active_sweep_solve = None
 
     async def acquire_summed_sweep_volume(
         self,
@@ -838,6 +1159,7 @@ class CrossoverLevelLease:
         source: str,
         speaker_group_id: str,
         role: str,
+        capture_geometry: str | None = None,
     ) -> bool:
         self.assert_volume_safety_resolved()
         from jasper.audio_measurement.ramp import RampState
@@ -855,6 +1177,33 @@ class CrossoverLevelLease:
                 or float(target) > 0.0
             ):
                 return False
+            # Closed-loop level solver (W2.1): an isolated driver sweep
+            # reasserts the SOLVED level, not the raw ramp lock -- the ramp
+            # only proves a safe MIC level exists; the solver decides how
+            # loud the actual sweep should be to clear the SNR requirement.
+            # This is the ONE solve per sweep: the result is stored on the
+            # lease so the excitation-ledger and gain-override reads consume
+            # it instead of re-solving. A summed sweep
+            # (source == "summed_sweep") plays multiple drivers'
+            # already-applied role gains at once and is out of scope for a
+            # per-driver level solve.
+            self._active_sweep_solve = None
+            if source == "driver_sweep" and capture_geometry is not None:
+                from jasper.audio_measurement import level_solver
+
+                solved = self._solve_driver_level(
+                    speaker_group_id, role, capture_geometry=capture_geometry
+                )
+                if isinstance(solved, level_solver.LevelSolveRefusal):
+                    raise LevelSolveRefused(solved)
+                if isinstance(solved, level_solver.SolvedLevel):
+                    target = solved.main_volume_db
+                    self._active_sweep_solve = (
+                        speaker_group_id,
+                        role.lower(),
+                        capture_geometry,
+                        solved,
+                    )
             entry = await get_main_volume_db()
             if (
                 isinstance(entry, bool)
@@ -894,6 +1243,9 @@ class CrossoverLevelLease:
     ) -> UnresolvedVolumeRecoveryResult:
         """Drain one sweep's durable exact-or-emergency volume recovery."""
 
+        # The stored per-sweep solve is scoped to the sweep window that
+        # computed it (see _acquire_sweep_volume).
+        self._active_sweep_solve = None
         if self._sweep_entry_volume_db is None:
             return UnresolvedVolumeRecoveryResult.EXACT_RESTORED
         return await self._drain_volume_recovery(
@@ -1292,6 +1644,13 @@ class CrossoverLevelLease:
             "unresolved_volume_safety": self.unresolved_volume_safety,
             "missing_targets": missing,
             "next_target": self._targets.get(missing[0]) if missing else None,
+            # Closed-loop level solver (W2.1): the most recent refusal, if
+            # any -- the envelope renders it as a dedicated pre-flight
+            # terminal instead of letting a driver sweep play into a
+            # doomed measurement. Cleared by a fresh ramp lock or a new
+            # level-match run (see _solve_driver_level /
+            # invalidate_comparison_context).
+            "solve_refusal": self._solve_refusal,
             "ready": bool(
                 self._targets
                 and not missing
@@ -2080,6 +2439,22 @@ async def play_driver_capture_sweep(
         )
     else:
         _LEVEL_LEASE.assert_volume_safety_resolved()
+    # Closed-loop level solver (W2.1): the solve already ran (and this
+    # sweep's volume was reasserted) inside acquire_driver_sweep_volume via
+    # volume_lease_prepared -- read its chosen commissioning_gain_db here so
+    # the excitation ledger matches the SAME solve, not a second computation.
+    # None when the sweep did not go through the level lease (e.g. the
+    # standalone /sound/ commissioning path) or the solve could not run;
+    # web_commissioning falls back to the applied baseline's role gain.
+    commissioning_gain_db_override = (
+        _LEVEL_LEASE.solved_commissioning_gain_db(
+            str(raw.get("speaker_group_id") or ""),
+            str(raw.get("role") or "").lower(),
+            capture_geometry=str(raw.get("capture_geometry") or "near_field").lower(),
+        )
+        if volume_lease_prepared
+        else None
+    )
     payload = await web_commissioning.play_driver_capture_sweep(
         raw,
         camilla_factory=camilla_factory,
@@ -2087,6 +2462,7 @@ async def play_driver_capture_sweep(
         applied_profile=applied_profile,
         locked_main_volume_db=locked_main_volume_db,
         fanin_gate_context=fanin_gate_context,
+        commissioning_gain_db_override=commissioning_gain_db_override,
     )
     log_event(
         logger,
@@ -2219,6 +2595,29 @@ def record_driver_capture(
             "status"
         ),
     )
+    # Bounded correction (W2.1 item 4): the solve predicted a safe level
+    # would clear the SNR requirement, but this attempt's OWN measured
+    # verdict still rejected it (a model-error case -- the fallback ambient
+    # guess, or a per-band evidence event, undershot the real room). Escalate
+    # the solver's assumed ambient by exactly the measured shortfall so the
+    # NEXT repeat attempt asks for more headroom; record_solve_escalation
+    # itself enforces "at most once" -- repeats 2-3 inherit the same bump,
+    # and a second miss becomes the solver's typed refusal on its own next
+    # solve, not a second escalation.
+    repeat_progress = payload.get("repeat_progress")
+    latest_rejection = (
+        repeat_progress.get("latest_rejection")
+        if isinstance(repeat_progress, Mapping)
+        else None
+    )
+    if isinstance(latest_rejection, Mapping):
+        shortfall = latest_rejection.get("snr_shortfall_db")
+        if isinstance(shortfall, (int, float)) and not isinstance(shortfall, bool):
+            _LEVEL_LEASE.record_solve_escalation(
+                str(raw.get("speaker_group_id") or ""),
+                str(raw.get("role") or "").lower(),
+                shortfall_db=float(shortfall),
+            )
     return payload
 
 

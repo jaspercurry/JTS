@@ -2479,6 +2479,7 @@ async def play_driver_capture_sweep(
     applied_profile: dict[str, Any] | None = None,
     locked_main_volume_db: float | None = None,
     fanin_gate_context: FaninGateContext | None = None,
+    commissioning_gain_db_override: float | None = None,
 ) -> dict[str, Any]:
     """Play the analyzer sweep through one already-confirmed driver path.
 
@@ -2486,6 +2487,15 @@ async def play_driver_capture_sweep(
     correction measurement window (the crossover-driver-sweep relay flow) —
     see ``FaninGateContext``. ``None`` (the default) is the standalone
     ``/sound/`` commissioning path with today's unchanged behavior.
+
+    ``commissioning_gain_db_override`` is the closed-loop level solver's
+    (W2.1) chosen ``commissioning_gain_db`` for THIS sweep, already validated
+    non-positive by :func:`jasper.audio_measurement.level_solver.solve_level`.
+    When given, it REPLACES the applied baseline's per-role gain
+    (``planned_excitation["commissioning_gain_db"]``) for this sweep only —
+    the applied crossover's own role gain is untouched. ``None`` (the
+    default, and every non-crossover-relay caller) preserves today's
+    behavior exactly.
     """
 
     if not isinstance(raw, dict):
@@ -2573,7 +2583,28 @@ async def play_driver_capture_sweep(
     # snapshot owns this isolated role gain; and excitation.py owns the -12 dBFS
     # ESS source peak. Startup-load authorization is neither an acoustic level
     # nor a role gain: it must stay at calibration_level.py's quiet floor.
-    commissioning_gain_db = float(planned_excitation["commissioning_gain_db"])
+    #
+    # The closed-loop level solver (W2.1) may override the applied role gain
+    # for THIS sweep -- see commissioning_gain_db_override's docstring above.
+    # planned_excitation's own commissioning_gain_db/effective_peak_dbfs are
+    # updated to match so every downstream consumer of this dict (the
+    # played-excitation ledger, the response payload) reports what actually
+    # played, not the pre-solve baseline.
+    commissioning_gain_db = (
+        float(commissioning_gain_db_override)
+        if commissioning_gain_db_override is not None
+        else float(planned_excitation["commissioning_gain_db"])
+    )
+    if commissioning_gain_db_override is not None:
+        planned_excitation = {
+            **planned_excitation,
+            "commissioning_gain_db": commissioning_gain_db,
+            "effective_peak_dbfs": (
+                planned_excitation["effective_peak_dbfs"]
+                - float(planned_excitation["commissioning_gain_db"])
+                + commissioning_gain_db
+            ),
+        }
     startup_gate_level = calibration_level_payload()
     snapshot = _dict_value(validated_snapshot.get("snapshot"))
     preset_raw = snapshot.get("preset")

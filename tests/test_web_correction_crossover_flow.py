@@ -6246,108 +6246,97 @@ def test_crossover_envelope_surfaces_bounded_low_lock_without_blocking_sweeps():
 
     assert env["screen"] == "driver"
     assert env["next_action"]["id"] == "measure_driver"
-    # The bounded-low nudge is scoped to the microphone step (see
-    # test_crossover_envelope_bounded_low_nudge_step_scoped_to_microphone
-    # below); this envelope resolves to the drivers step, so it must not
-    # appear here.
+    # W2.1 deleted the user-facing bounded-low nudge (the level solver, not
+    # the lock window, now decides sweep level -- bounded_low_level is an
+    # internal lock annotation only). A bounded-low lock must still not
+    # block sweeps from being offered.
     assert env["nudges"] == []
 
 
-def _bounded_low_level_match() -> dict:
+def _refusal(target_id: str, role: str) -> dict:
     return {
-        "running": False,
-        "valid": True,
-        "ready": True,
-        "context_id": "protected-profile",
-        "last": {
-            "ramp": {
-                "state": "locked",
-                "lock_kind": "bounded_low_level",
-                "window_shortfall_db": 13.07,
-            }
-        },
+        "target_id": target_id,
+        "role": role,
+        "code": "room_too_noisy_for_safe_measurement",
+        "failing_band_hz": [40.0, 400.0],
+        "required_db": 20.0,
+        "available_db": 15.3,
     }
 
 
-_BOUNDED_LOW_NUDGE = {
-    "code": "bounded_low_measurement_level",
-    "severity": "warn",
-    "text": (
-        "The microphone level is stable and safe but lower than preferred "
-        "(13.1 dB below the preferred window). JTS will verify each sweep "
-        "before using it."
-    ),
-}
+def test_crossover_envelope_renders_level_solve_refusal_before_measuring():
+    """W2.1: a closed-loop level-solve refusal fires BEFORE any tone plays --
+    the envelope must render the dedicated terminal instead of offering
+    "Measure {role}", which would just burn a doomed repeat attempt."""
 
-
-def test_crossover_envelope_bounded_low_nudge_step_scoped_to_microphone():
-    """The bounded-low nudge is derived from level_match.last -- the most
-    recently persisted ramp -- which does not necessarily belong to the
-    screen the envelope currently renders. Hardware testing on 2026-07-16
-    found this nudge rendering on every screen (driver, alignment, apply)
-    until a later ramp happened to overwrite level_match.last. The nudge
-    must only attach when the envelope resolves to the microphone step.
-
-    Pre-fix, this failed: the nudge appeared on all four constructed
-    statuses (including driver/alignment/apply), not just the microphone
-    one. See PR body for the recorded pre-fix failure output.
-    """
     from jasper.active_speaker import crossover_envelope
 
-    # Present: near-field driver evidence is complete but the fixed-axis
-    # microphone level for the reference-axis pass has not been locked yet
-    # -- this is still the microphone step, and level_match.last legitimately
-    # carries the bounded-low lock from the near-field level check.
-    present_status = _envelope_status()
-    present_status["level_match"] = _bounded_low_level_match()
-    present_status["measurements"]["summary"]["latest_driver_measurements"] = {
+    status = _envelope_status()
+    _locked_level(status)
+    status["level_match"]["solve_refusal"] = _refusal("mono:woofer", "woofer")
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "level_solve_refused"
+    assert "40" in env["verdict_text"] and "400" in env["verdict_text"]
+    assert "too high to measure reliably at safe levels" in env["verdict_text"]
+    assert env["next_action"]["id"] == "level_match"
+    assert env["next_action"]["endpoint"] == "/correction/crossover/level-match"
+    assert env["progress"]["position"] == 2  # microphone step
+    # Honest copy: posting /level-match from this state re-runs the guided
+    # level sequence (today ambient is a ramp byproduct, so a quieter room
+    # can only be re-measured by re-locking -- the `continuing` gate in
+    # _handle_crossover_relay_level_match invalidates the prior locks). The
+    # label and verdict must say the level check gets redone; neither may
+    # imply the saved levels survive.
+    assert env["next_action"]["label"] == (
+        "Redo the quick level check (about 2 minutes)"
+    )
+    assert "redo the quick level check" in env["verdict_text"]
+    assert "lock" not in env["verdict_text"].lower()
+
+
+def test_crossover_envelope_refusal_scoped_to_the_refused_target():
+    """A refusal for a DIFFERENT target than the one currently being
+    measured must not hijack this driver's screen."""
+
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["level_match"]["solve_refusal"] = _refusal("mono:tweeter", "tweeter")
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    # missing_drivers[0] is the woofer (measurements.summary is empty); the
+    # stored refusal is for the tweeter, so the woofer's normal
+    # "measure_driver" flow renders unaffected.
+    assert env["screen"] == "driver"
+    assert env["next_action"]["id"] == "measure_driver"
+
+
+def test_crossover_envelope_reference_axis_level_solve_refusal():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
         "mono:woofer": _driver_acoustic("woofer"),
         "mono:tweeter": _driver_acoustic("tweeter"),
     }
-    _completed_near_field_repeat_state(present_status)
-    present_env = crossover_envelope.build_crossover_envelope(present_status)
-    assert present_env["screen"] == "microphone"
-    assert present_env["nudges"] == [_BOUNDED_LOW_NUDGE]
+    _completed_near_field_repeat_state(status)
+    status["level_match"]["reference_axis_driver_locks"] = {"mono:woofer": -3.0}
+    status["level_match"]["solve_refusal"] = _refusal("mono:woofer", "woofer")
 
-    # Absent: driver screen, same persisted bounded-low ramp.
-    driver_status = _envelope_status()
-    driver_status["level_match"] = _bounded_low_level_match()
-    driver_env = crossover_envelope.build_crossover_envelope(driver_status)
-    assert driver_env["screen"] == "driver"
-    assert driver_env["nudges"] == []
+    env = crossover_envelope.build_crossover_envelope(status)
 
-    # Absent: apply screen, same persisted bounded-low ramp.
-    apply_status = _envelope_status()
-    apply_status["level_match"] = _bounded_low_level_match()
-    apply_status["measurements"]["summary"]["latest_driver_measurements"] = {
-        "mono:woofer": _driver_acoustic("woofer"),
-        "mono:tweeter": _driver_acoustic("tweeter"),
-    }
-    _completed_near_field_repeat_state(apply_status)
-    _complete_reference_axis(apply_status)
-    _lock_reference_axis_driver(apply_status, "woofer")
-    _lock_reference_axis_driver(apply_status, "tweeter")
-    _completed_reference_axis_repeat_state(apply_status)
-    apply_status["setup"]["automatic_candidate"] = {
-        "ready": True,
-        "reason": None,
-        "candidate_fingerprint": "automatic-candidate",
-    }
-    apply_env = crossover_envelope.build_crossover_envelope(apply_status)
-    assert apply_env["screen"] == "apply"
-    assert apply_env["nudges"] == []
-
-    # Absent: alignment screen, same persisted bounded-low ramp.
-    alignment_status = _envelope_status()
-    alignment_status["level_match"] = _bounded_low_level_match()
-    alignment_status["commissioning_run"] = {
-        "status": "current",
-        "isolated_evidence": {"status": "complete"},
-    }
-    alignment_status["region_commissioning"] = {"status": "collecting"}
-    alignment_env = crossover_envelope.build_crossover_envelope(alignment_status)
-    assert alignment_env["screen"] == "alignment"
-    assert alignment_env["nudges"] == []
+    assert env["screen"] == "level_solve_refused"
+    assert env["next_action"]["id"] == "level_match"
+    # Same honest-copy contract as the near-field branch.
+    assert env["next_action"]["label"] == (
+        "Redo the quick level check (about 2 minutes)"
+    )
+    assert "redo the quick level check" in env["verdict_text"]
 
 
 # --- phone-mic relay transport (P7) -------------------------------------------

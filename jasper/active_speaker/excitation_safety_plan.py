@@ -349,29 +349,24 @@ def _target_for_request(
     return matches[0]
 
 
-def prepare_driver_excitation_plan(
-    topology: OutputTopology,
+def resolve_driver_excitation_ceilings(
     safety_profile: Mapping[str, Any],
-    requested_plan: RequestedDriverExcitationPlan,
-) -> PreparedDriverExcitationPlan:
-    """Bind exact current policy for Shared admission or a typed refusal."""
+    target_fingerprint: str,
+) -> tuple[FrequencyBand, float]:
+    """The confirmed permitted band + maximum effective-peak ceiling for one
+    driver target.
 
-    if not isinstance(topology, OutputTopology):
-        raise ExcitationSafetyPlanError("topology must be OutputTopology")
-    if not isinstance(safety_profile, Mapping):
-        raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
-        )
-    if not isinstance(requested_plan, RequestedDriverExcitationPlan):
-        raise ExcitationSafetyPlanError(
-            "requested_plan must be RequestedDriverExcitationPlan"
-        )
-    evaluation = evaluate_driver_safety_profile(safety_profile, topology)
-    if not evaluation.confirmed_and_current or evaluation.profile_fingerprint is None:
-        raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
-        )
-    target = _target_for_request(safety_profile, requested_plan.target_fingerprint)
+    Extracted from :func:`prepare_driver_excitation_plan` so a caller that
+    needs ONLY these two ceilings -- the level solver (W2.1), choosing a
+    sweep's ``main_volume_db``/``commissioning_gain_db`` before any
+    ``DriverSweepGeneratorPlan`` exists to admit -- does not have to
+    duplicate this derivation. Admission itself (:func:`admit_excitation`
+    via :func:`prepare_driver_excitation_plan`) still re-derives and
+    re-validates these same ceilings against the actual requested plan; this
+    function has no authority of its own, it is shared math.
+    """
+
+    target = _target_for_request(safety_profile, target_fingerprint)
     role = str(target.get("role") or "")
     target_id = str(target.get("target_id") or "")
     hard_band = target.get("hard_excitation_band_hz")
@@ -409,6 +404,51 @@ def prepare_driver_excitation_plan(
     maximum_peak = min(
         float(profile_limits["max_effective_peak_dbfs"]),
         protection.max_auto_level_dbfs,
+    )
+    return permitted_band, maximum_peak
+
+
+def prepare_driver_excitation_plan(
+    topology: OutputTopology,
+    safety_profile: Mapping[str, Any],
+    requested_plan: RequestedDriverExcitationPlan,
+) -> PreparedDriverExcitationPlan:
+    """Bind exact current policy for Shared admission or a typed refusal."""
+
+    if not isinstance(topology, OutputTopology):
+        raise ExcitationSafetyPlanError("topology must be OutputTopology")
+    if not isinstance(safety_profile, Mapping):
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+        )
+    if not isinstance(requested_plan, RequestedDriverExcitationPlan):
+        raise ExcitationSafetyPlanError(
+            "requested_plan must be RequestedDriverExcitationPlan"
+        )
+    evaluation = evaluate_driver_safety_profile(safety_profile, topology)
+    if not evaluation.confirmed_and_current or evaluation.profile_fingerprint is None:
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+        )
+    target = _target_for_request(safety_profile, requested_plan.target_fingerprint)
+    role = str(target.get("role") or "")
+    target_id = str(target.get("target_id") or "")
+    profile_limits = target.get("level_duration_limits")
+    required_filters = target.get("required_protection_filters")
+    # resolve_driver_excitation_ceilings already validated an equivalent
+    # profile_limits mapping (on its own re-fetched target) and would have
+    # raised above if it were malformed; this re-check is for mypy's
+    # narrowing in THIS function's scope, not new runtime behavior.
+    if not isinstance(profile_limits, Mapping):
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+        )
+    permitted_band, maximum_peak = resolve_driver_excitation_ceilings(
+        safety_profile, requested_plan.target_fingerprint
+    )
+    protection = driver_protection_profile(
+        role,
+        driver_style=target.get("driver_style"),
     )
     maximum_duration = min(
         float(profile_limits["max_sweep_duration_s"]),
