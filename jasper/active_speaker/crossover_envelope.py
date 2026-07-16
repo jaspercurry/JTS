@@ -915,13 +915,15 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "href": "/sound/",
             },
         ]
-        if durable_repeat.get("status") == "unavailable" or blocked_controller_targets:
+        if durable_repeat.get("status") == "unavailable":
             # An automatic retune's level context was discarded (durable
-            # repeat state unavailable, or a repeat result was blocked/
-            # interrupted mid-persistence) while a manual profile is applied.
-            # This screen otherwise reads as a clean terminal and hides that
-            # an in-progress retune got interrupted -- hardware-confirmed
-            # 2026-07-16.
+            # repeat safety state unavailable) while a manual profile is
+            # applied. This screen otherwise reads as a clean terminal and
+            # hides that an in-progress retune got interrupted --
+            # hardware-confirmed 2026-07-16. A blocked controller target
+            # never reaches this branch: the earlier unconditional
+            # `elif blocked_controller_targets and not strict_isolated_complete`
+            # branch owns that condition and forces screen="microphone".
             nudges.append({
                 "code": "crossover_done_manual_retune_interrupted",
                 "severity": "warn",
