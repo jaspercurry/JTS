@@ -356,14 +356,28 @@ class MeasurementRamp:
     # commanded levels is direct evidence the WHOLE mic->USB->OS->browser chain
     # held its gain fixed while climbing — stronger than the (frequently
     # unavailable) browser flag, and it works identically on iOS and Android.
-    # ``agc_slope_min_steps`` — regression needs evidence spread across at
-    # least this many distinct commanded-volume steps before a verdict is
-    # trusted; fewer is INDETERMINATE, never auto-passed. ``agc_slope_threshold``
-    # — recommended default 0.7: leaves headroom for real reading jitter (a
-    # perfectly linear chain still won't measure exactly 1.0) while staying far
-    # enough above a materially AGC'd chain's flattened response (an aggressive
-    # AGC compresses the staircase toward 0.1-0.3) that the two regimes don't
-    # overlap. H1 supplies a hardware-measured number; this is a placeholder.
+    # ``agc_slope_min_span_db`` — the PRIMARY evidence gate: the trusted
+    # samples must cover at least this many dB of commanded-level span before
+    # a verdict is rendered. Span is what gives the regression x-leverage: at
+    # the default 0.75 dB step, 3 distinct steps is only ~1.5 dB of span, and
+    # over that little leverage the OLS slope's sampling noise under realistic
+    # mic jitter can push a true-slope-1.0 chain under the threshold by chance
+    # (a fragile false abort — the availability regression this feature exists
+    # to fix, just in a new shape). 6 dB of span (8 steps) makes the slope
+    # estimate robust while still aborting a truly AGC'd chain at deeply quiet
+    # levels: evidence begins the moment reports clear the trust floor, and
+    # the staircase typically has ~20+ dB of climb between that point and the
+    # window, so a verdict lands within ~6.75 dB (span + one step of
+    # quantization) of trust-clearing — far below the pre-window.
+    # ``agc_slope_min_steps`` stays as a secondary floor on distinct
+    # commanded levels; fewer than either bound is INDETERMINATE, never
+    # auto-passed. ``agc_slope_threshold`` — recommended default 0.7: leaves
+    # headroom for real reading jitter (a perfectly linear chain still won't
+    # measure exactly 1.0) while staying far enough above a materially AGC'd
+    # chain's flattened response (an aggressive AGC compresses the staircase
+    # toward 0.1-0.3) that the two regimes don't overlap. H1 supplies
+    # hardware-measured numbers; these are placeholders.
+    agc_slope_min_span_db: float = 6.0
     agc_slope_min_steps: int = 3
     agc_slope_threshold: float = 0.7
 
@@ -428,6 +442,11 @@ class MeasurementRamp:
                 "agc_slope_min_steps must be >= 2 (a regression needs at least "
                 "two distinct commanded levels)"
             )
+        if (
+            not math.isfinite(self.agc_slope_min_span_db)
+            or self.agc_slope_min_span_db <= 0
+        ):
+            raise ValueError("agc_slope_min_span_db must be finite and > 0")
         if not math.isfinite(self.agc_slope_threshold) or self.agc_slope_threshold <= 0:
             raise ValueError("agc_slope_threshold must be finite and > 0")
         if (
@@ -576,6 +595,12 @@ class MeasurementRamp:
             ),
             "cap_ceil_db": _env_float(
                 "JASPER_RAMP_CAP_CEIL_DB", cls.cap_ceil_db, lo=-30.0, hi=0.0
+            ),
+            "agc_slope_min_span_db": _env_float(
+                "JASPER_RAMP_AGC_SLOPE_MIN_SPAN_DB",
+                cls.agc_slope_min_span_db,
+                lo=1.0,
+                hi=20.0,
             ),
             "agc_slope_min_steps": _env_int(
                 "JASPER_RAMP_AGC_SLOPE_MIN_STEPS",
@@ -1150,6 +1175,7 @@ class RampController:
                         # (usually still-quiet) commanded level the staircase
                         # has reached — never keep climbing an AGC-suspected
                         # chain toward the window.
+                        xs = [x for x, _ in v.agc_evidence]
                         return await _terminal(
                             RampState.ERROR,
                             final_db=d.original_main_volume_db,
@@ -1159,7 +1185,8 @@ class RampController:
                             slope=(
                                 f"{d.agc_slope:.3f}" if d.agc_slope is not None else ""
                             ),
-                            steps=len({round(x, 3) for x, _ in v.agc_evidence}),
+                            steps=len({round(x, 3) for x in xs}),
+                            span_db=(f"{max(xs) - min(xs):.2f}" if xs else "0"),
                         )
 
                 outcome = await self._tick_state(
@@ -1318,18 +1345,22 @@ class RampController:
                 if d.agc_unattested and not d.agc_trusted:
                     # A slope FAILURE already aborted earlier in run() — the
                     # only way to reach a would-be lock here with agc_trusted
-                    # False is an indeterminate verdict (never enough distinct
-                    # commanded-level evidence, e.g. the window sat close to
-                    # the pre-ramp start). Fail closed to the honest error
-                    # rather than lock on unproven gain stability.
+                    # False is an indeterminate verdict (not enough
+                    # commanded-level span/steps of evidence, e.g. the window
+                    # sat close to the pre-ramp start). Fail closed — but
+                    # under a DISTINCT wire code from agc_suspected: no AGC
+                    # was observed here, only insufficient evidence, and the
+                    # phone renders different copy for the two cases.
+                    xs = [x for x, _ in v.agc_evidence]
                     return await _terminal(
                         RampState.ERROR,
                         final_db=d.original_main_volume_db,
-                        error="agc_suspected",
-                        event="ramp_agc_suspected",
+                        error="agc_indeterminate",
+                        event="ramp_agc_indeterminate",
                         level=logging.WARNING,
                         reason="insufficient_slope_evidence",
-                        steps=len({round(x, 3) for x, _ in v.agc_evidence}),
+                        steps=len({round(x, 3) for x in xs}),
+                        span_db=(f"{max(xs) - min(xs):.2f}" if xs else "0"),
                     )
                 d.locked_main_volume_db = d.current_main_volume_db
                 d.lock_kind = RampLockKind.IN_WINDOW
@@ -1436,10 +1467,13 @@ class RampController:
         Called only for an unattested run whose verdict is still undecided.
         Appends ``(commanded_db, rms)`` pairs at the CURRENT commanded level
         (stable for this tick — only ``_set`` mutates it), then, once evidence
-        spans at least ``agc_slope_min_steps`` distinct commanded levels,
-        regresses reported rms against commanded dB and sets ``agc_verified``.
-        Leaves it ``None`` (indeterminate) when there still aren't enough
-        distinct steps — the caller in ``run()`` treats a ``False`` verdict as
+        covers at least ``agc_slope_min_span_db`` of commanded-level SPAN (the
+        primary gate — span is the regression's x-leverage; a few adjacent
+        0.75 dB steps aren't enough to estimate the slope robustly under real
+        mic jitter) AND ``agc_slope_min_steps`` distinct commanded levels (the
+        secondary floor), regresses reported rms against commanded dB and sets
+        ``agc_verified``. Leaves it ``None`` (indeterminate) while either
+        bound is unmet — the caller in ``run()`` treats a ``False`` verdict as
         an immediate abort; ``None`` at lock time is handled separately (see
         ``_tick_state`` and ``_bounded_low_level_is_usable``).
         """
@@ -1447,6 +1481,9 @@ class RampController:
             v.agc_evidence.append((d.current_main_volume_db, rms))
         steps = {round(x, 3) for x, _ in v.agc_evidence}
         if len(steps) < cfg.agc_slope_min_steps:
+            return
+        span = max(x for x, _ in v.agc_evidence) - min(x for x, _ in v.agc_evidence)
+        if span < cfg.agc_slope_min_span_db:
             return
         slope = _ols_slope(v.agc_evidence)
         if slope is None:
@@ -1484,8 +1521,9 @@ class RampController:
         Uses ``agc_trusted``, not the raw ``agc_frozen`` flag: an attested run
         behaves exactly as before (``agc_trusted == agc_frozen`` when
         ``agc_unattested`` is False). An unattested run reaching the cap with
-        too few distinct staircase steps to reach an AGC verdict (a driver
-        capped early, e.g. a tweeter ramp with a small pre-cap window) is
+        too little commanded-level span (or too few distinct steps) to reach
+        an AGC verdict (a driver capped early, e.g. a tweeter ramp with a
+        small pre-cap window) is
         INDETERMINATE (``agc_verified is None``) — ``agc_trusted`` is False in
         that case too, so it fails closed to the ordinary
         ``bounded_low_evidence_insufficient`` MAXED_OUT path rather than

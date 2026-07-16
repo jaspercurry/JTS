@@ -581,12 +581,17 @@ mode for a tool whose entire job is a trustworthy result.
   linearity **empirically** from the ramp's own quiet-start staircase instead
   — a time-varying AGC gain flattens the reported response toward the
   staircase (slope well under 1), so regressing reported `rms_dbfs` against
-  the commanded `main_volume_db` across `agc_slope_min_steps` (default 3)
+  the commanded `main_volume_db` across `agc_slope_min_span_db` (default
+  6.0 dB) of commanded-level span plus `agc_slope_min_steps` (default 3)
   distinct levels and requiring slope `>= agc_slope_threshold` (default 0.7)
   is direct evidence the whole mic→USB→OS→browser chain held its gain fixed.
-  A verified chain locks with semantics identical to an attested one; a
-  slope failure or a lock-time-indeterminate verdict aborts closed
-  (`error="agc_suspected"`) rather than ever trusting an unproven lock. A
+  (Span is the primary gate — a few adjacent 0.75 dB steps give too little
+  x-leverage for the slope to be robust under real mic jitter.) A verified
+  chain locks with semantics identical to an attested one; a slope failure
+  aborts closed (`error="agc_suspected"`) still at deeply quiet levels, and a
+  lock-time-indeterminate verdict (insufficient span/steps — no AGC observed)
+  aborts closed under the distinct `error="agc_indeterminate"` so the phone
+  can render honest non-AGC copy — never trusting an unproven lock. A
   future manual lock mode still needs its own acknowledged protocol; it must
   not be inferred from AGC-compressed (verified-untrustworthy) samples.
 - **…with a device-capability fallback.** Because some iOS builds *cannot* honor

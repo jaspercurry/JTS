@@ -454,10 +454,15 @@ def test_bounded_low_stability_threshold_must_be_finite_and_nonnegative():
 
 def test_agc_slope_config_defaults_and_validation():
     cfg = MeasurementRamp()
+    assert cfg.agc_slope_min_span_db == pytest.approx(6.0)
     assert cfg.agc_slope_min_steps == 3
     assert cfg.agc_slope_threshold == pytest.approx(0.7)
     with pytest.raises(ValueError, match="agc_slope_min_steps"):
         MeasurementRamp(agc_slope_min_steps=1)
+    with pytest.raises(ValueError, match="agc_slope_min_span_db"):
+        MeasurementRamp(agc_slope_min_span_db=0.0)
+    with pytest.raises(ValueError, match="agc_slope_min_span_db"):
+        MeasurementRamp(agc_slope_min_span_db=float("inf"))
     with pytest.raises(ValueError, match="agc_slope_threshold"):
         MeasurementRamp(agc_slope_threshold=0.0)
     with pytest.raises(ValueError, match="agc_slope_threshold"):
@@ -465,16 +470,20 @@ def test_agc_slope_config_defaults_and_validation():
 
 
 def test_agc_slope_env_knobs_apply_and_fall_back(monkeypatch):
+    monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_MIN_SPAN_DB", "8.0")
     monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_MIN_STEPS", "4")
     monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_THRESHOLD", "0.6")
     cfg = MeasurementRamp.from_env()
+    assert cfg.agc_slope_min_span_db == pytest.approx(8.0)
     assert cfg.agc_slope_min_steps == 4
     assert cfg.agc_slope_threshold == pytest.approx(0.6)
 
     # Out-of-range values fall back to the documented default.
+    monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_MIN_SPAN_DB", "0.5")
     monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_MIN_STEPS", "1")
     monkeypatch.setenv("JASPER_RAMP_AGC_SLOPE_THRESHOLD", "1.5")
     cfg = MeasurementRamp.from_env()
+    assert cfg.agc_slope_min_span_db == MeasurementRamp.agc_slope_min_span_db
     assert cfg.agc_slope_min_steps == MeasurementRamp.agc_slope_min_steps
     assert cfg.agc_slope_threshold == MeasurementRamp.agc_slope_threshold
 
@@ -567,14 +576,23 @@ async def test_agc_unattested_flat_chain_aborts_before_window_at_quiet_levels():
     assert data.error == "agc_suspected"
     assert data.agc_verified is False
     assert data.agc_slope is not None and data.agc_slope < cfg.agc_slope_threshold
-    # Caught within the first few steps, well below the pre-window — never
-    # kept climbing an AGC-suspected chain toward the target level.
-    assert max(chain.commanded) < cfg.pre_window
+    # Caught at deeply quiet levels: evidence starts at the -50 dB staircase
+    # start (the mic cleared the trust floor immediately), so the span-gated
+    # verdict lands at start + agc_slope_min_span_db (+ <=1 step of
+    # quantization) — commanded -44.0 dB here, 22.5 dB below the pre-window.
+    # Never kept climbing an AGC-suspected chain toward the target level.
+    assert max(chain.commanded) == pytest.approx(-50.0 + cfg.agc_slope_min_span_db)
+    assert max(chain.commanded) < cfg.pre_window - 20.0
     assert chain.commanded[-1] == pytest.approx(-50.0)  # restored
 
 
 @pytest.mark.asyncio
 async def test_agc_unattested_noisy_but_linear_chain_still_verifies():
+    # The reviewer-flagged fragility case: a true-slope-1.0 chain with
+    # realistic per-reading jitter. Over a mere ~1.5 dB of x-leverage (3
+    # adjacent 0.75 dB steps) this jitter could push the OLS slope under the
+    # threshold by chance; the 6 dB minimum-span gate is what makes the
+    # verdict robust. 1.0 dB uniform jitter over the full span must verify.
     cfg = MeasurementRamp(**FAST)
     chain = ChainModel(
         gain_db=10.0,
@@ -582,8 +600,8 @@ async def test_agc_unattested_noisy_but_linear_chain_still_verifies():
         agc_frozen=False,
         agc_unattested=True,
         agc_gain_fraction=1.0,
-        jitter_db=0.3,
-        seed=42,
+        jitter_db=1.0,
+        seed=7,
     )
     controller, data, tone = await _run(chain, cfg, original=-30.0)
     assert data.state == RampState.LOCKED
@@ -594,9 +612,11 @@ async def test_agc_unattested_noisy_but_linear_chain_still_verifies():
 @pytest.mark.asyncio
 async def test_agc_unattested_insufficient_evidence_at_lock_fails_closed():
     # The chain crosses the pre-window in a SINGLE staircase step (a near-cap
-    # original volume), so the slope check never sees 3 distinct commanded
-    # levels before CONFIRMING would otherwise lock. Indeterminate must never
-    # silently trust the lock.
+    # original volume), so the slope check never sees the required span/steps
+    # before CONFIRMING would otherwise lock. Indeterminate must never
+    # silently trust the lock — and it aborts under the DISTINCT
+    # agc_indeterminate wire code (no AGC was observed, only insufficient
+    # evidence; the phone renders different copy).
     cfg = MeasurementRamp(**FAST, agc_slope_min_steps=3)
     chain = ChainModel(
         gain_db=32.0,  # pre_window (-21.5) is crossed on the very first step
@@ -607,8 +627,33 @@ async def test_agc_unattested_insufficient_evidence_at_lock_fails_closed():
     )
     controller, data, tone = await _run(chain, cfg, original=-50.0)
     assert data.state == RampState.ERROR
-    assert data.error == "agc_suspected"
+    assert data.error == "agc_indeterminate"
     assert data.agc_verified is None  # indeterminate, not a computed failure
+    assert data.lock_kind is None
+    assert chain.commanded[-1] == pytest.approx(-50.0)  # restored
+
+
+@pytest.mark.asyncio
+async def test_agc_unattested_steps_met_but_span_unmet_is_still_indeterminate():
+    # Isolates the SPAN gate from the steps floor: gain 28.2 crosses the
+    # pre-window on the second staircase step, and the settle jump lands at
+    # -44.2 — THREE distinct commanded levels (-50, -49.25, -44.2) satisfy
+    # agc_slope_min_steps, but the 5.8 dB total span is under the 6.0 dB
+    # minimum. The verdict must stay indeterminate (span is the regression's
+    # x-leverage; a threshold met on steps alone is exactly the fragile shape
+    # the span gate exists to reject) and the would-be lock fails closed.
+    cfg = MeasurementRamp(**FAST)
+    chain = ChainModel(
+        gain_db=28.2,
+        start_vol=-50.0,
+        agc_frozen=False,
+        agc_unattested=True,
+        agc_gain_fraction=1.0,
+    )
+    controller, data, tone = await _run(chain, cfg, original=-50.0)
+    assert data.state == RampState.ERROR
+    assert data.error == "agc_indeterminate"
+    assert data.agc_verified is None
     assert data.lock_kind is None
     assert chain.commanded[-1] == pytest.approx(-50.0)  # restored
 

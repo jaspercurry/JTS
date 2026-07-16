@@ -315,14 +315,21 @@
   level batch, and `RampController` verifies chain linearity **empirically**
   from the ramp's own quiet-start staircase instead of trusting a browser flag
   iOS never supplies — regress reported `rms_dbfs` against the commanded
-  `main_volume_db` (both dB) once evidence spans `agc_slope_min_steps`
-  (default 3) distinct commanded levels; a slope `>= agc_slope_threshold`
-  (default 0.7) verifies the chain (`RampData.agc_verified = True`, lock
-  semantics identical to attested — see `RampData.agc_trusted`); a lower slope
-  aborts immediately with a NEW terminal code, `error="agc_suspected"`, before
-  the ramp ever nears the target window; too few distinct steps by lock time
-  (INDETERMINATE, e.g. a driver capped early) also fails closed to that same
-  code for an ordinary window lock, or to the pre-existing
+  `main_volume_db` (both dB) once evidence covers `agc_slope_min_span_db`
+  (default 6.0 dB) of commanded-level span (the primary gate — span is the
+  regression's x-leverage; a few adjacent steps under real mic jitter could
+  push a genuinely linear chain under threshold by chance) AND
+  `agc_slope_min_steps` (default 3) distinct commanded levels (the secondary
+  floor); a slope `>= agc_slope_threshold` (default 0.7) verifies the chain
+  (`RampData.agc_verified = True`, lock semantics identical to attested — see
+  `RampData.agc_trusted`); a lower slope aborts immediately with a NEW
+  terminal code, `error="agc_suspected"`, still at deeply quiet levels
+  (within ~span+one-step of where reports first cleared the trust floor,
+  typically 15-20+ dB below the pre-window); insufficient span/steps by lock
+  time (INDETERMINATE, e.g. a driver capped early) also fails closed — under
+  the DISTINCT wire code `error="agc_indeterminate"` for an ordinary window
+  lock (no AGC was observed, only insufficient evidence, and the phone
+  renders different copy for the two), or to the pre-existing
   `bounded_low_evidence_insufficient` `MAXED_OUT` for the degraded cap policy
   — never a silently-trusted lock either way. `agc_unattested=true` is encoded
   ALONGSIDE `agc_frozen=false` (never `agc_frozen=true`) specifically so an

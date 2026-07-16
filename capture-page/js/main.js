@@ -383,11 +383,18 @@ function renderLevelRampComplete(ctx, ramp) {
   };
   const message = messages[state] || messages.error;
   if (state === "error" && terminalError === "agc_suspected") {
-    // The Pi could not empirically verify this phone's mic-gain chain is
-    // stable (the staircase's reported-vs-commanded slope stayed flat) —
-    // show the friendly AGC-specific copy instead of the raw server code.
+    // The Pi observed a flat reported-vs-commanded staircase slope — this
+    // phone's mic chain IS adjusting gain automatically. Friendly copy
+    // instead of the raw server code.
     message.note =
       "Your phone is adjusting microphone levels automatically, which prevents accurate measurement. Try a different phone or a USB measurement microphone.";
+    message.status = `Level check failed — ${message.note}`;
+  } else if (state === "error" && terminalError === "agc_indeterminate") {
+    // The Pi could not gather enough staircase evidence to render a verdict
+    // either way (e.g. the level locked too close to the starting volume).
+    // No AGC was observed — the copy must not claim it was.
+    message.note =
+      "JTS couldn't gather enough measurement evidence to verify this microphone's level accuracy. Try again, or use a different microphone or device.";
     message.status = `Level check failed — ${message.note}`;
   } else if (state === "error" && terminalError) {
     message.note = terminalError;

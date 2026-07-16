@@ -301,7 +301,9 @@ def test_capture_page_level_ramp_agc_gate_only_refuses_explicit_on():
 
 def test_capture_page_level_ramp_shows_friendly_agc_suspected_copy():
     """The Pi's empirical slope-verification failure (agc_suspected) gets a
-    phone-facing explanation instead of the raw server error code."""
+    phone-facing explanation instead of the raw server error code — and the
+    INDETERMINATE outcome (agc_indeterminate: insufficient evidence, no AGC
+    observed) gets its own honest copy that does not claim AGC was seen."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     start = main_js.index("function renderLevelRampComplete")
@@ -313,6 +315,12 @@ def test_capture_page_level_ramp_shows_friendly_agc_suspected_copy():
         "Your phone is adjusting microphone levels automatically, which "
         "prevents accurate measurement. Try a different phone or a USB "
         "measurement microphone." in ramp_complete
+    )
+    assert 'terminalError === "agc_indeterminate"' in ramp_complete
+    assert (
+        "JTS couldn't gather enough measurement evidence to verify this "
+        "microphone's level accuracy. Try again, or use a different "
+        "microphone or device." in ramp_complete
     )
 
 
