@@ -323,11 +323,24 @@ def build_usb_mic_status(
         "source_age_basis": str(relay.get("source_age_basis") or "")
         if relay_fresh
         else "",
+        "source_age_scope": str(relay.get("source_age_scope") or "")
+        if relay_fresh
+        else "",
         "source_age_sample_count": _status_int(
             relay.get("source_age_sample_count")
         )
         if relay_fresh
         else 0,
+        "source_age_window_generation": _status_int(
+            relay.get("source_age_window_generation")
+        )
+        if relay_fresh
+        else 0,
+        "source_age_window_started_epoch_sec": _status_optional_float(
+            relay.get("source_age_window_started_epoch_sec")
+        )
+        if relay_fresh
+        else None,
         "source_age_ms_p50": _status_optional_float(
             relay.get("source_age_ms_p50")
         )
@@ -346,6 +359,17 @@ def build_usb_mic_status(
         "packets_lost": _status_int(relay.get("packets_lost"))
         if relay_fresh
         else 0,
+        "sequence_resets": _status_int(relay.get("sequence_resets"))
+        if relay_fresh
+        else 0,
+        "sequence_reorders": _status_int(relay.get("sequence_reorders"))
+        if relay_fresh
+        else 0,
+        "sequence_discontinuities": _status_int(
+            relay.get("sequence_discontinuities")
+        )
+        if relay_fresh
+        else 0,
         "periods_dropped_streaming": _status_int(
             relay.get("periods_dropped_streaming")
         )
@@ -356,6 +380,9 @@ def build_usb_mic_status(
         )
         if relay_fresh
         else 0,
+        "drop_regime_basis": str(relay.get("drop_regime_basis") or "")
+        if relay_fresh
+        else "",
         "periods_dropped": _status_int(relay.get("periods_dropped"))
         if relay_fresh
         else 0,

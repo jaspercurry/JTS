@@ -58,6 +58,13 @@ ACCEPTED_PACKET_BYTES = frozenset(
 QUEUE_PERIODS = 2
 PIPE_BYTES = 4096
 SOURCE_AGE_WINDOW_PERIODS = 512
+SOURCE_AGE_BASIS = "bridge_emit_monotonic_v2"
+SOURCE_AGE_SCOPE = "bridge_emit_to_relay_dequeue"
+DROP_REGIME_BASIS = "status_interval_host_hw_ptr_advance"
+# Local UDP can only queue hundreds of these 656-byte packets. Treat a jump
+# larger than this generous bound as a sender discontinuity rather than
+# publishing a catastrophic false loss count after a restart/reset.
+MAX_PLAUSIBLE_SEQUENCE_GAP = 4096
 UAC2_DEVICE = "plughw:CARD=UAC2Gadget,DEV=0"
 # The UAC2 gadget fixes the playback ring at four periods on the current Pi
 # kernel. A 10 ms period is therefore the value that realizes the 40 ms
@@ -77,9 +84,62 @@ class RelayError(RuntimeError):
 class QueuedFrame:
     """One native AEC frame plus bridge-emit metadata."""
 
-    t_capture_ns: int
+    t_bridge_emit_ns: int
     seq: int | None
     pcm: bytes
+
+
+@dataclass(frozen=True)
+class SourceAgeSnapshot:
+    """One bounded, host-session-aware view of emit-to-dequeue ages."""
+
+    samples_ms: tuple[float, ...]
+    generation: int
+    started_epoch_sec: float
+
+
+@dataclass
+class SequenceTracker:
+    """Count plausible forward loss without lying on reorder or reset."""
+
+    last_seq: int | None = None
+    resets: int = 0
+    reorders: int = 0
+    discontinuities: int = 0
+
+    def clear_baseline(self) -> None:
+        self.last_seq = None
+
+    def observe(self, seq: int) -> int:
+        if self.last_seq is None:
+            self.last_seq = seq
+            return 0
+        expected = (self.last_seq + 1) & 0xFFFFFFFF
+        if seq == expected:
+            self.last_seq = seq
+            return 0
+        if seq == self.last_seq:
+            return 0
+        # TimestampedLegEmitter always restarts at zero. Handle that explicit
+        # reset before modular half-range math can mistake a high-half reset
+        # for billions of forward losses.
+        if seq == 0:
+            self.last_seq = 0
+            self.resets += 1
+            return 0
+        delta = (seq - self.last_seq) & 0xFFFFFFFF
+        if delta >= 0x80000000:
+            # A small/old packet arrived behind the high-water mark. Do not
+            # move the baseline backward or the next in-order packet will look
+            # lost even though it was already observed.
+            self.reorders += 1
+            return 0
+        gap = delta - 1
+        self.last_seq = seq
+        if gap <= MAX_PLAUSIBLE_SEQUENCE_GAP:
+            return gap
+        self.discontinuities += 1
+        return 0
 
 
 class LatestAudioQueue:
@@ -128,6 +188,8 @@ class AplaySink:
         self._source_ages_ms: deque[float] = deque(
             maxlen=SOURCE_AGE_WINDOW_PERIODS
         )
+        self._source_age_generation = 0
+        self._source_age_started_epoch_sec = time.time()
         self._pipe_baseline_logged = False
         self.process = subprocess.Popen(
             [
@@ -176,7 +238,7 @@ class AplaySink:
                 0.0,
                 (
                     time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-                    - frame.t_capture_ns
+                    - frame.t_bridge_emit_ns
                 ) / 1_000_000.0,
             )
             try:
@@ -222,8 +284,25 @@ class AplaySink:
     def source_ages_ms(self) -> tuple[float, ...]:
         """Return a stable snapshot of recent bridge-emit-to-dequeue ages."""
 
+        return self.source_age_snapshot().samples_ms
+
+    def source_age_snapshot(self) -> SourceAgeSnapshot:
+        """Return samples plus the reset generation that owns them."""
+
         with self._progress_lock:
-            return tuple(self._source_ages_ms)
+            return SourceAgeSnapshot(
+                samples_ms=tuple(self._source_ages_ms),
+                generation=self._source_age_generation,
+                started_epoch_sec=self._source_age_started_epoch_sec,
+            )
+
+    def reset_source_age_window(self) -> None:
+        """Exclude prior/idle-session samples from the next recording window."""
+
+        with self._progress_lock:
+            self._source_ages_ms.clear()
+            self._source_age_generation += 1
+            self._source_age_started_epoch_sec = time.time()
 
     def log_pipe_baseline_once(self) -> None:
         """Log one transitional measurement of aplay's opaque stdin pipe."""
@@ -281,17 +360,23 @@ def _decode_audio_packet(
 
     if len(payload) == V2_PACKET_BYTES:
         try:
-            magic, version, _flags, seq, t_capture_ns = struct.unpack(
+            magic, version, flags, seq, t_bridge_emit_ns = struct.unpack(
                 USB_MIC_HEADER_STRUCT,
                 payload[:USB_MIC_HEADER_BYTES],
             )
         except struct.error:
             return None
-        if magic != USB_MIC_PACKET_MAGIC or version != USB_MIC_PACKET_VERSION:
+        if (
+            magic != USB_MIC_PACKET_MAGIC
+            or version != USB_MIC_PACKET_VERSION
+            or flags != 0
+            or t_bridge_emit_ns <= 0
+            or t_bridge_emit_ns > received_monotonic_ns
+        ):
             return None
         return (
             QueuedFrame(
-                t_capture_ns=t_capture_ns,
+                t_bridge_emit_ns=t_bridge_emit_ns,
                 seq=seq,
                 pcm=payload[USB_MIC_HEADER_BYTES:],
             ),
@@ -308,16 +393,6 @@ def _decode_audio_packet(
             for offset in range(0, len(payload), PERIOD_BYTES)
         )
     return None
-
-
-def _sequence_gap(last_seq: int | None, seq: int) -> int:
-    """Return forward u32 sequence loss without inflating resets/reordering."""
-
-    if last_seq is None:
-        return 0
-    expected = (last_seq + 1) & 0xFFFFFFFF
-    gap = (seq - expected) & 0xFFFFFFFF
-    return gap if 0 < gap < 0x80000000 else 0
 
 
 def _source_age_percentiles(samples_ms: Iterable[float]) -> dict[str, float | None]:
@@ -407,7 +482,7 @@ class HostProgressTracker:
 
 @dataclass
 class DropRegimeCounters:
-    """Cumulative queue drops split by whether the host clock advances."""
+    """Queue drops attributed by sampled host-clock status interval."""
 
     streaming: int = 0
     idle: int = 0
@@ -550,7 +625,7 @@ def run_relay(
     periods = 0
     malformed_packets = 0
     packets_lost = 0
-    last_seq: int | None = None
+    sequence = SequenceTracker()
     started_monotonic = time.monotonic()
     last_packet_monotonic = 0.0
     last_packet_epoch_sec = 0.0
@@ -592,10 +667,9 @@ def run_relay(
                         last_packet_epoch_sec = time.time()
                         packet_seq = frames[0].seq
                         if packet_seq is None:
-                            last_seq = None
+                            sequence.clear_baseline()
                         else:
-                            packets_lost += _sequence_gap(last_seq, packet_seq)
-                            last_seq = packet_seq
+                            packets_lost += sequence.observe(packet_seq)
                         for frame in frames:
                             sink.queue.put(frame)
                             periods += 1
@@ -610,6 +684,12 @@ def run_relay(
                     now_monotonic=now,
                     now_epoch_sec=now_epoch,
                 )
+                # While the host clock is idle, repeatedly discard any samples
+                # produced while aplay is filling or frozen. The first samples
+                # dequeued when a real host session resumes then remain in a
+                # fresh generation instead of mixing with a prior recording.
+                if not host_clock_advanced:
+                    sink.reset_source_age_window()
                 sink_frames, sink_progress_monotonic, sink_progress_epoch = (
                     sink.progress()
                 )
@@ -636,7 +716,8 @@ def run_relay(
                     drops_since_status,
                     host_clock_advancing=host_clock_advanced,
                 )
-                source_ages_ms = sink.source_ages_ms()
+                source_age = sink.source_age_snapshot()
+                source_ages_ms = source_age.samples_ms
                 age_percentiles = _source_age_percentiles(source_ages_ms)
                 audio_stalled = bool(health["audio_stalled"])
                 if audio_stalled != last_audio_stalled:
@@ -658,6 +739,9 @@ def run_relay(
                     "legacy_packets_received": legacy_packets,
                     "malformed_packets": malformed_packets,
                     "packets_lost": packets_lost,
+                    "sequence_resets": sequence.resets,
+                    "sequence_reorders": sequence.reorders,
+                    "sequence_discontinuities": sequence.discontinuities,
                     "periods_queued": periods,
                     "periods_dropped": periods_dropped,
                     "periods_dropped_streaming": drop_regimes.streaming,
@@ -675,8 +759,14 @@ def run_relay(
                     ),
                     "host_pcm_running": host_snapshot.running,
                     "host_hw_ptr": host_snapshot.hw_ptr,
-                    "source_age_basis": "bridge_emit_monotonic_v2",
+                    "source_age_basis": SOURCE_AGE_BASIS,
+                    "source_age_scope": SOURCE_AGE_SCOPE,
                     "source_age_sample_count": len(source_ages_ms),
+                    "source_age_window_generation": source_age.generation,
+                    "source_age_window_started_epoch_sec": (
+                        source_age.started_epoch_sec
+                    ),
+                    "drop_regime_basis": DROP_REGIME_BASIS,
                     **age_percentiles,
                     **health,
                     "udp_port": udp_port,
@@ -691,7 +781,8 @@ def run_relay(
             residual_drops,
             host_clock_advancing=last_host_clock_advancing,
         )
-        final_source_ages_ms = sink.source_ages_ms()
+        final_source_age = sink.source_age_snapshot()
+        final_source_ages_ms = final_source_age.samples_ms
         _write_status(status_path, {
             "state": "stopped",
             "packets_received": packets,
@@ -700,13 +791,22 @@ def run_relay(
             "legacy_packets_received": legacy_packets,
             "malformed_packets": malformed_packets,
             "packets_lost": packets_lost,
+            "sequence_resets": sequence.resets,
+            "sequence_reorders": sequence.reorders,
+            "sequence_discontinuities": sequence.discontinuities,
             "periods_queued": periods,
             "periods_dropped": sink.queue.dropped,
             "periods_dropped_streaming": drop_regimes.streaming,
             "periods_dropped_idle": drop_regimes.idle,
             "frames_written": sink.progress()[0],
-            "source_age_basis": "bridge_emit_monotonic_v2",
+            "source_age_basis": SOURCE_AGE_BASIS,
+            "source_age_scope": SOURCE_AGE_SCOPE,
             "source_age_sample_count": len(final_source_ages_ms),
+            "source_age_window_generation": final_source_age.generation,
+            "source_age_window_started_epoch_sec": (
+                final_source_age.started_epoch_sec
+            ),
+            "drop_regime_basis": DROP_REGIME_BASIS,
             **_source_age_percentiles(final_source_ages_ms),
             "host_streaming": False,
             "audio_healthy": False,

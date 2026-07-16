@@ -111,6 +111,15 @@ processing. The bridge logs the separately negotiated PortAudio input latency
 as `event=aec.mic_stream_latency`. Voice/wake legs keep their established raw
 1280-sample / 80 ms packet contract with no header.
 
+There is **no independent computer-microphone leg picker yet**. Export mirrors
+the bridge's final cleaned stream—the same primary/session selection sent to
+`:9876`—rather than owning a second hard-coded beam choice. A future picker
+should derive its valid export choices from the active `ChipBeamPlan`, preserve
+that production-clean selection as the default, and reject legs the resolved
+hardware profile does not provide. It should not bake today's
+`chip_aec_150`/`chip_aec_210` names into the cross-profile UI or persistence
+contract.
+
 The new relay accepts the old raw 20 ms and legacy 80 ms packet shapes, but
 compatibility is intentionally one-way: an old relay cannot decode the new
 656-byte v2 packet. Normal deploy and rollback therefore restart the bridge and
@@ -127,6 +136,13 @@ is not created. The `/wake/` switch restarts the bridge so intent and producer
 agree, while
 [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) owns descriptor composition and
 [PRIVACY.md](../PRIVACY.md) owns mic-mute behavior.
+
+Relay schema 3 names this partial measurement with
+`source_age_scope=bridge_emit_to_relay_dequeue`. Its bounded percentile window
+is rotated while the sampled host `hw_ptr` is not advancing, and status exposes
+the window generation and start time. That prevents a prior or idle recording
+window from silently contaminating resumed-session percentiles; it still does
+not turn the value into an end-to-end host latency measurement.
 
 The chip-AEC profile's default wake surface is deliberately one detector:
 the primary/session beam (`JASPER_MIC_DEVICE=udp:9876`, wake leg `on`).

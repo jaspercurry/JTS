@@ -23,11 +23,12 @@ from jasper.cli.usb_mic import (
     PERIOD_BYTES,
     QueuedFrame,
     QUEUE_PERIODS,
+    SequenceTracker,
+    SourceAgeSnapshot,
     V2_PACKET_BYTES,
     _audio_health_snapshot,
     _decode_audio_packet,
     _read_host_pcm_status,
-    _sequence_gap,
     _source_age_percentiles,
 )
 from jasper.music_sources import Source
@@ -125,24 +126,40 @@ def test_status_surfaces_relay_latency_and_loss_telemetry(tmp_path: Path) -> Non
     status = _status_fixture(tmp_path, relay_overrides={
         "schema_version": 3,
         "source_age_basis": "bridge_emit_monotonic_v2",
+        "source_age_scope": "bridge_emit_to_relay_dequeue",
         "source_age_sample_count": 100,
+        "source_age_window_generation": 4,
+        "source_age_window_started_epoch_sec": 95.0,
         "source_age_ms_p50": 31.2,
         "source_age_ms_p95": 47.8,
         "source_age_ms_p99": 52.1,
         "packets_lost": 2,
+        "sequence_resets": 1,
+        "sequence_reorders": 2,
+        "sequence_discontinuities": 3,
         "periods_dropped_streaming": 3,
         "periods_dropped_idle": 40,
+        "drop_regime_basis": "status_interval_host_hw_ptr_advance",
     })
 
     assert status["relay_schema_version"] == 3
     assert status["source_age_basis"] == "bridge_emit_monotonic_v2"
+    assert status["source_age_scope"] == "bridge_emit_to_relay_dequeue"
     assert status["source_age_sample_count"] == 100
+    assert status["source_age_window_generation"] == 4
+    assert status["source_age_window_started_epoch_sec"] == 95.0
     assert status["source_age_ms_p50"] == 31.2
     assert status["source_age_ms_p95"] == 47.8
     assert status["source_age_ms_p99"] == 52.1
     assert status["packets_lost"] == 2
+    assert status["sequence_resets"] == 1
+    assert status["sequence_reorders"] == 2
+    assert status["sequence_discontinuities"] == 3
     assert status["periods_dropped_streaming"] == 3
     assert status["periods_dropped_idle"] == 40
+    assert status["drop_regime_basis"] == (
+        "status_interval_host_hw_ptr_advance"
+    )
 
 
 def test_status_does_not_conflate_assistant_pause_with_usb_export(
@@ -376,8 +393,11 @@ def test_relay_forwards_nonzero_pcm_unchanged(monkeypatch, tmp_path: Path) -> No
         def progress(self) -> tuple[int, float, float]:
             return (0, 0.0, 0.0)
 
-        def source_ages_ms(self) -> tuple[float, ...]:
-            return ()
+        def source_age_snapshot(self) -> SourceAgeSnapshot:
+            return SourceAgeSnapshot((), 0, 0.0)
+
+        def reset_source_age_window(self) -> None:
+            pass
 
         def log_pipe_baseline_once(self) -> None:
             pass
@@ -428,6 +448,8 @@ def _write_one_frame(
     sink.process.poll.return_value = 1
     sink._progress_lock = threading.Lock()
     sink._source_ages_ms = deque(maxlen=512)
+    sink._source_age_generation = 0
+    sink._source_age_started_epoch_sec = 100.0
     sink.frames_written = 0
     sink.last_progress_epoch_sec = 0.0
     sink.last_progress_monotonic = 0.0
@@ -443,24 +465,24 @@ def _write_one_frame(
 
 def test_relay_parses_v2_header_and_measures_age(monkeypatch) -> None:
     pcm = b"\x11\x22" * (PERIOD_BYTES // 2)
-    captured_ns = 1_000_000_000
+    bridge_emit_ns = 1_000_000_000
     packet = struct.pack(
         USB_MIC_HEADER_STRUCT,
         USB_MIC_PACKET_MAGIC,
         USB_MIC_PACKET_VERSION,
         0,
         7,
-        captured_ns,
+        bridge_emit_ns,
     ) + pcm
 
     frames = _decode_audio_packet(packet, received_monotonic_ns=9_000_000_000)
-    assert frames == (QueuedFrame(captured_ns, 7, pcm),)
+    assert frames == (QueuedFrame(bridge_emit_ns, 7, pcm),)
     assert len(packet) == V2_PACKET_BYTES
 
     sink = _write_one_frame(
         monkeypatch,
         frames[0],
-        now_ns=captured_ns + 50_000_000,
+        now_ns=bridge_emit_ns + 50_000_000,
     )
 
     sink.process.stdin.write.assert_called_once_with(pcm)
@@ -491,34 +513,82 @@ def test_relay_splits_legacy_packet_into_ordered_native_frames() -> None:
     assert frames is not None
     assert len(frames) == 4
     assert tuple(frame.pcm for frame in frames) == chunks
-    assert all(frame.t_capture_ns == 123_000 for frame in frames)
+    assert all(frame.t_bridge_emit_ns == 123_000 for frame in frames)
     assert all(frame.seq is None for frame in frames)
 
 
-@pytest.mark.parametrize("field", ["magic", "version"])
-def test_relay_rejects_malformed_v2_headers(field: str) -> None:
-    magic = b"NO" if field == "magic" else USB_MIC_PACKET_MAGIC
-    version = 99 if field == "version" else USB_MIC_PACKET_VERSION
+@pytest.mark.parametrize(
+    ("magic", "version", "flags", "bridge_emit_ns", "received_ns"),
+    (
+        (b"NO", USB_MIC_PACKET_VERSION, 0, 1_000, 2_000),
+        (USB_MIC_PACKET_MAGIC, 99, 0, 1_000, 2_000),
+        (USB_MIC_PACKET_MAGIC, USB_MIC_PACKET_VERSION, 1, 1_000, 2_000),
+        (USB_MIC_PACKET_MAGIC, USB_MIC_PACKET_VERSION, 0, 0, 2_000),
+        (USB_MIC_PACKET_MAGIC, USB_MIC_PACKET_VERSION, 0, 2_001, 2_000),
+    ),
+)
+def test_relay_rejects_malformed_v2_headers(
+    magic: bytes,
+    version: int,
+    flags: int,
+    bridge_emit_ns: int,
+    received_ns: int,
+) -> None:
     packet = struct.pack(
         USB_MIC_HEADER_STRUCT,
         magic,
         version,
-        0,
+        flags,
         1,
-        1_000,
+        bridge_emit_ns,
     ) + bytes(PERIOD_BYTES)
 
     assert len(packet) == USB_MIC_HEADER_BYTES + PERIOD_BYTES
-    assert _decode_audio_packet(packet, received_monotonic_ns=2_000) is None
+    assert _decode_audio_packet(packet, received_monotonic_ns=received_ns) is None
 
 
-def test_relay_counts_seq_gaps_without_inflating_resets() -> None:
-    assert _sequence_gap(None, 0) == 0
-    assert _sequence_gap(0, 1) == 0
-    assert _sequence_gap(1, 3) == 1
-    assert _sequence_gap(0xFFFFFFFF, 0) == 0
-    assert _sequence_gap(100, 0) == 0
-    assert _sequence_gap(10, 10) == 0
+def test_sequence_tracker_counts_only_plausible_forward_loss() -> None:
+    tracker = SequenceTracker()
+    assert tracker.observe(0) == 0
+    assert tracker.observe(1) == 0
+    assert tracker.observe(3) == 1
+    assert tracker.resets == 0
+    assert tracker.reorders == 0
+    assert tracker.discontinuities == 0
+
+
+def test_sequence_tracker_handles_wrap_reset_reorder_and_discontinuity() -> None:
+    wrap = SequenceTracker(last_seq=0xFFFFFFFF)
+    assert wrap.observe(0) == 0
+    assert wrap.resets == 0
+
+    reset = SequenceTracker(last_seq=0x80000001)
+    assert reset.observe(0) == 0
+    assert reset.observe(1) == 0
+    assert reset.resets == 1
+
+    reorder = SequenceTracker(last_seq=100)
+    assert reorder.observe(99) == 0
+    assert reorder.last_seq == 100
+    assert reorder.observe(101) == 0
+    assert reorder.reorders == 1
+
+    discontinuity = SequenceTracker(last_seq=0)
+    assert discontinuity.observe(4098) == 0
+    assert discontinuity.discontinuities == 1
+
+
+def test_source_age_window_reset_clears_prior_session(monkeypatch) -> None:
+    sink = usb_mic_cli.AplaySink.__new__(usb_mic_cli.AplaySink)
+    sink._progress_lock = threading.Lock()
+    sink._source_ages_ms = deque((10.0, 20.0), maxlen=512)
+    sink._source_age_generation = 3
+    sink._source_age_started_epoch_sec = 100.0
+    monkeypatch.setattr(usb_mic_cli.time, "time", lambda: 200.0)
+
+    sink.reset_source_age_window()
+
+    assert sink.source_age_snapshot() == SourceAgeSnapshot((), 4, 200.0)
 
 
 def test_relay_splits_drops_by_regime() -> None:
@@ -579,6 +649,7 @@ def test_relay_reports_v2_loss_percentiles_and_drop_regimes(monkeypatch) -> None
             self.queue = FakeQueue()
             self.baselines = 0
             self.baseline_drop_count = None
+            self.age_window_resets = 0
 
         def check(self) -> None:
             pass
@@ -586,8 +657,15 @@ def test_relay_reports_v2_loss_percentiles_and_drop_regimes(monkeypatch) -> None
         def progress(self) -> tuple[int, float, float]:
             return 0, 1.4, 100.0
 
-        def source_ages_ms(self) -> tuple[float, ...]:
-            return 10.0, 20.0, 30.0
+        def source_age_snapshot(self) -> SourceAgeSnapshot:
+            return SourceAgeSnapshot(
+                (10.0, 20.0, 30.0),
+                self.age_window_resets,
+                900.0,
+            )
+
+        def reset_source_age_window(self) -> None:
+            self.age_window_resets += 1
 
         def log_pipe_baseline_once(self) -> None:
             if self.baselines == 0:
@@ -648,14 +726,24 @@ def test_relay_reports_v2_loss_percentiles_and_drop_regimes(monkeypatch) -> None
     assert status["packets_received"] == 3
     assert status["v2_packets_received"] == 3
     assert status["packets_lost"] == 1
+    assert status["sequence_resets"] == 0
+    assert status["sequence_reorders"] == 0
+    assert status["sequence_discontinuities"] == 0
+    assert status["source_age_scope"] == "bridge_emit_to_relay_dequeue"
+    assert status["source_age_window_generation"] == 2
+    assert status["source_age_window_started_epoch_sec"] == 900.0
     assert status["source_age_ms_p50"] == 20.0
     assert status["source_age_ms_p95"] == 30.0
     assert status["source_age_ms_p99"] == 30.0
     assert status["periods_dropped_idle"] == 2
     assert status["periods_dropped_streaming"] == 1
     assert status["periods_dropped"] == 3
+    assert status["drop_regime_basis"] == (
+        "status_interval_host_hw_ptr_advance"
+    )
     assert fake_sink.baselines == 1
     assert fake_sink.baseline_drop_count == 2
+    assert fake_sink.age_window_resets == 2
 
 
 def test_host_streaming_requires_advancing_host_and_sink_progress() -> None:

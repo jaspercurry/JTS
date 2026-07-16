@@ -126,8 +126,10 @@ jasper-usbmic.service               (optional Pi-to-host clean-mic relay)
 `jasper-usbmic` publishes `/run/jasper-usbmic/status.json` schema 3 with
 separate source-packet, sink-write, and host `hw_ptr` progress timestamps plus
 drop counts/rate. The schema also carries v2 bridge-emit age p50/p95/p99,
-sequence-gap loss, and separate drop totals while the host clock is advancing
-versus idle. ALSA's gadget PCM reports `RUNNING` as soon as `aplay` opens,
+bounded sequence-gap loss, and drop totals attributed to host-advancing versus
+idle **status intervals**. That split is diagnostic attribution at the 500 ms
+sampling boundary, not proof of the exact host-clock state at each individual
+drop. ALSA's gadget PCM reports `RUNNING` as soon as `aplay` opens,
 even when no host application is consuming it, so `RUNNING` is never treated as
 host use by itself. The Wake page says Streaming only after `hw_ptr` actually
 advances. A never-advanced or later-idle clock is normal Ready state; queue
@@ -206,8 +208,12 @@ if the host is not consuming. It uses ALSA's blocking 16→48 kHz conversion
 proven by the lab, with a 10 ms ALSA period that the Pi's four-period UAC2 ring
 realizes as a 40 ms hardware buffer. The dedicated `:9894` packet now carries a
 sequence and bridge-emit monotonic timestamp; status reports a bounded rolling
-p50/p95/p99 from bridge emit to relay dequeue, plus sequence gaps and active-
-host versus idle drop totals. `event=usb_mic.pipe_configured` records the real
+p50/p95/p99 from bridge emit to relay dequeue, plus sequence gaps and status-
+interval-attributed active-host versus idle drop totals. The machine-readable
+scope is `source_age_scope=bridge_emit_to_relay_dequeue`; generation/start
+fields identify the rolling age window, which is cleared while the sampled
+host clock is idle so prior-session ages do not survive a resume.
+`event=usb_mic.pipe_configured` records the real
 pipe capacity and `event=usb_mic.pipe_baseline` records one startup occupancy
 sample while this transitional pipe still exists.
 

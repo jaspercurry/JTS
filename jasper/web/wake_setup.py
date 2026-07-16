@@ -807,10 +807,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self._handle_save(form)
                 return
             if path.startswith("/layer/"):
+                layer = path[len("/layer/"):]
+                if layer not in _VALID_LAYERS:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
                 if not guard_mutating_request(self):
                     reject_csrf(self)
                     return
-                self._handle_layer(path[len("/layer/"):])
+                self._handle_layer(layer)
                 return
             if path == "/profile":
                 if not guard_mutating_request(self):
