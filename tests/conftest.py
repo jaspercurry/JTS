@@ -63,3 +63,18 @@ def _isolate_environ():
         for k, v in saved.items():
             if os.environ.get(k) != v:
                 os.environ[k] = v
+
+
+@pytest.fixture(autouse=True)
+def _isolate_capture_entry_anchor(tmp_path_factory, monkeypatch):
+    """Point the automatic-capture entry stash at a per-test temp file.
+
+    jasper.active_speaker.capture_entry_anchor durably stashes the production
+    CamillaDSP path under /var/lib/jasper by default; any test exercising the
+    automatic capture loaders would otherwise write (or fail to write) real
+    host state on a dev machine.
+    """
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CAPTURE_ENTRY_STATE",
+        str(tmp_path_factory.mktemp("capture-entry") / "capture_entry.json"),
+    )

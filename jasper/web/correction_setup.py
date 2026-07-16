@@ -7420,6 +7420,46 @@ def make_server(
     return _systemd.make_http_server(target, _make_handler(cfg))
 
 
+def _restore_capture_entry() -> None:
+    """Converge an abandoned automatic capture sequence back to production.
+
+    An automatic capture sequence leaves the persisted CamillaDSP path on the
+    all-muted staged anchor between attempts; the production path is stashed
+    durably (capture_entry_anchor). This runs at both in-process lifecycle
+    exits — service start (`_claim_crossover_state_owners`, covering a
+    previous process that crashed/restarted mid-sequence) and this process's
+    own idle shutdown (`main`'s IdleShutdownTracker hook, covering the common
+    abandon: the user closes the tab, correction-web idles out minutes later).
+    Fail direction if it cannot run (CamillaDSP unreachable): the speaker
+    stays on the all-muted anchor — muted, never loud — and the stash is
+    retained for the next opportunity.
+    """
+
+    from jasper.active_speaker import web_commissioning
+
+    _run_async(
+        web_commissioning.restore_pending_capture_entry_config(
+            camilla_factory=_camilla,
+        ),
+        timeout=15.0,
+    )
+
+
+def _idle_exit_restore_capture_entry() -> None:
+    """Fail-soft idle-shutdown wrapper for :func:`_restore_capture_entry`."""
+
+    try:
+        _restore_capture_entry()
+    except (OSError, RuntimeError, ValueError) as exc:
+        log_event(
+            logger,
+            "correction.capture_entry_restore_unavailable",
+            level=logging.WARNING,
+            boundary="idle_exit",
+            reason=type(exc).__name__,
+        )
+
+
 def _claim_crossover_state_owners() -> None:
     """Retire prior-process Active work before this service accepts requests."""
 
@@ -7438,6 +7478,10 @@ def _claim_crossover_state_owners() -> None:
         (
             "correction.active_commissioning_run_unavailable",
             correction_crossover_backend.claim_commissioning_run_owner,
+        ),
+        (
+            "correction.capture_entry_restore_unavailable",
+            _restore_capture_entry,
         ),
     )
     for event, claim in claims:
@@ -7486,7 +7530,16 @@ def main(argv: list[str] | None = None) -> int:
     server = make_server(target, hostname=args.hostname)
 
     handler_cls = server.RequestHandlerClass
-    tracker = _systemd.IdleShutdownTracker()
+    # The idle exit is exactly the abandoned-sequence moment (user closed the
+    # tab, no requests for the threshold) — the daemon's last in-process
+    # chance to converge a capture sequence parked on the all-muted anchor
+    # back to production before the process goes away. The hook is bounded
+    # (_run_async timeout) and exception-guarded by the tracker; on a
+    # deferred/failed restore the durable stash survives for the next
+    # service-start claim boundary.
+    tracker = _systemd.IdleShutdownTracker(
+        on_idle_exit=_idle_exit_restore_capture_entry,
+    )
     _systemd.install_request_idle_bump(handler_cls, tracker)
     tracker.start()
 

@@ -457,13 +457,18 @@ def test_driver_level_match_loads_isolated_path_and_restores_entry_graph(monkeyp
         load_call.update(kwargs)
         return prepared_load
 
-    async def restore(payload, *, camilla_factory):
+    # The level-match teardown re-mutes to the staged anchor ONLY; production
+    # stays stashed for the sequence-level restore. A per-level-match
+    # production restore would force the following sweep attempts to reload
+    # the anchor again — the double-config-swap churn that starved the sweep
+    # transport on JTS3 (2026-07-16).
+    async def rollback_to_anchor(payload, *, camilla_factory):
         restored.append((payload, camilla_factory))
-        return {"status": "rolled_back"}
+        return {"status": "anchored"}
 
     monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", load)
     monkeypatch.setattr(
-        web, "_restore_automatic_driver_entry_config_resilient", restore
+        web, "_rollback_capture_attempt_to_anchor_resilient", rollback_to_anchor
     )
     camilla_factory = lambda: object()
 
@@ -488,7 +493,7 @@ def test_driver_level_match_loads_isolated_path_and_restores_entry_graph(monkeyp
             prepared, camilla_factory=camilla_factory
         )
     )
-    assert result == {"status": "rolled_back"}
+    assert result == {"status": "anchored"}
     assert restored == [(prepared_load, camilla_factory)]
 
 
@@ -1237,6 +1242,384 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
     assert anchor_call["preset"] is frozen_preset
     assert anchor_call["crossover_preview"] is None
     assert load_driver_call["volume_limit_db"] == -4.0
+    # De-anchoring live production must durably stash its path FIRST, so the
+    # sequence-level restore has a crash-safe target.
+    from jasper.active_speaker import capture_entry_anchor
+
+    assert capture_entry_anchor.pending_entry() == entry_path
+    # _ensure_commission_startup_anchor reporting status="loaded" means it just
+    # reloaded the all-muted anchor and already triggered
+    # jasper-audio-hardware-reconcile for this exact DAC a moment ago (see
+    # startup_load._trigger_audio_hardware_reconcile). A second reconcile
+    # immediately behind it is redundant -- hardware-reproduced on JTS3
+    # 2026-07-16 (deterministic 2/2 aplay timeouts on the driver capture
+    # sweep), where an automatic capture retry always re-enters this reload
+    # branch (the flow's own cleanup, _restore_automatic_driver_entry_config,
+    # reverts CamillaDSP's persisted config path to the pre-commissioning
+    # production config after every attempt) and paid for two
+    # jasper-audio-hardware-reconcile round trips per attempt even though
+    # every run reported env_changed=0 render_changed=0.
+    assert load_driver_call["reconcile_output_hardware"] is False
+
+
+def test_automatic_driver_load_skips_second_reconcile_only_after_fresh_anchor_reload(
+    monkeypatch,
+):
+    """already_loaded (anchor fast path, no reload) must still reconcile once.
+
+    Companion to the "loaded" case above: when
+    ``_ensure_commission_startup_anchor`` takes its already-anchored fast path
+    (nothing needed reloading, so it did not just trigger a reconcile),
+    ``load_driver_commissioning_config`` must still be allowed its own
+    reconcile -- there is no recent confirmation of this exact hardware to
+    piggyback on.
+    """
+
+    entry_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            return entry_path
+
+    monkeypatch.setattr(web, "load_staged_startup_config", lambda: {"status": "staged"})
+
+    async def ensure_anchor(**_kwargs):
+        return {"status": "already_loaded", "staged_config_path": entry_path}
+
+    monkeypatch.setattr(web, "_ensure_commission_startup_anchor", ensure_anchor)
+    monkeypatch.setattr(
+        web,
+        "write_commission_path_safety",
+        lambda *_args, **_kwargs: "/tmp/path-safety.json",
+    )
+    monkeypatch.setattr(
+        web,
+        "commission_seams",
+        lambda _cam: (object(), object(), object()),
+    )
+
+    load_driver_call = {}
+
+    async def load_driver(*_args, **kwargs):
+        load_driver_call.update(kwargs)
+        return {"load": {"status": "loaded"}}
+
+    monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
+
+    asyncio.run(
+        web._load_driver_commissioning_config_for_level(
+            topology=_topology(),
+            speaker_group_id="mono",
+            role="woofer",
+            level_dbfs=0.0,
+            volume_limit_db=-4.0,
+            startup_gate_calibration_level={"status": "floor"},
+            preset=object(),
+            crossover_preview=None,
+            camilla_factory=Cam,
+        )
+    )
+
+    assert load_driver_call["reconcile_output_hardware"] is True
+
+
+def test_capture_retry_reuses_staged_anchor_without_reanchoring(monkeypatch):
+    """A retry attempt must not re-load the staged anchor (zero SetConfigs).
+
+    Per-attempt teardown leaves the persisted path ON the staged anchor and
+    the sequence's production path stashed. The next attempt then takes the
+    REAL ``_ensure_commission_startup_anchor`` fast path: no
+    ``set_config_file_path`` call at all before the commissioning load, and
+    the stash keeps the original production path. Restoring production per
+    attempt forced anchor reload + commissioning load ~150 ms apart before
+    every retry's ``aplay`` — the double config swap behind the JTS3
+    2026-07-16 deterministic sweep timeouts.
+    """
+
+    from jasper.active_speaker import capture_entry_anchor
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    production_path = "/var/lib/camilladsp/configs/sound_current.yml"
+    capture_entry_anchor.record_entry(production_path)  # attempt 1 stashed it
+
+    set_calls = []
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            return staged_path  # attempt 1's teardown left the anchor loaded
+
+        async def set_config_file_path(self, path, *, best_effort):
+            set_calls.append(path)
+            return True
+
+    monkeypatch.setattr(
+        web,
+        "load_staged_startup_config",
+        lambda: {"status": "staged", "config": {"path": staged_path}},
+    )
+    monkeypatch.setattr(
+        web,
+        "write_commission_path_safety",
+        lambda *_args, **_kwargs: "/tmp/path-safety.json",
+    )
+    monkeypatch.setattr(
+        web,
+        "commission_seams",
+        lambda _cam: (object(), object(), object()),
+    )
+
+    load_driver_call = {}
+
+    async def load_driver(*_args, **kwargs):
+        load_driver_call.update(kwargs)
+        return {"load": {"status": "loaded"}}
+
+    monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
+
+    payload = asyncio.run(
+        web._load_driver_commissioning_config_for_level(
+            topology=_topology(),
+            speaker_group_id="mono",
+            role="woofer",
+            level_dbfs=0.0,
+            volume_limit_db=-4.0,
+            startup_gate_calibration_level={"status": "floor"},
+            preset=object(),
+            crossover_preview=None,
+            camilla_factory=Cam,
+        )
+    )
+
+    # Real fast path: the anchor is already the persisted path, so nothing
+    # was staged or reloaded — zero SetConfigFilePath calls this attempt.
+    assert payload["startup_setup"]["status"] == "already_loaded"
+    assert set_calls == []
+    # The stash still holds the SEQUENCE's production path — an anchored
+    # attempt must not overwrite it with the anchor.
+    assert capture_entry_anchor.pending_entry() == production_path
+    assert load_driver_call["load_config"] is not None
+
+
+def test_level_match_teardown_leaves_anchor_for_first_sweep_attempt(monkeypatch):
+    """Sweep attempt 1 after a same-session level lock does ZERO SetConfigFilePath.
+
+    The level-match prepare loaded the staged anchor once (the sequence's only
+    persisted-path write); its teardown re-mutes via the INLINE rollback
+    (``commission_load_config`` = CamillaDSP ``SetConfig``, persisted path
+    untouched) and deliberately does not restore production. The first sweep
+    attempt therefore finds persisted==anchor and takes the real anchor fast
+    path — the run-8 wedge shape (level teardown -> production -> sweep
+    re-anchor double SetConfig) no longer exists. The only double config swap
+    left in the sequence is at level-match START, which never wedged (arming
+    waits on the phone; seconds of settle before any tone).
+    """
+
+    from jasper.active_speaker import capture_entry_anchor
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    production_path = "/var/lib/camilladsp/configs/sound_current.yml"
+
+    set_calls = []
+
+    class Cam:
+        # After level-match prepare, the persisted path IS the staged anchor
+        # (commission loads are inline and never repoint it).
+        async def get_config_file_path(self, *, best_effort):
+            return staged_path
+
+        async def set_config_file_path(self, path, *, best_effort):
+            set_calls.append(path)
+            return True
+
+    # The state the level-match prepare left behind: stash = production,
+    # transaction entry = production.
+    capture_entry_anchor.record_entry(production_path)
+    prepared = {
+        "load": {
+            "load": {"status": "loaded"},
+            "measurement_transaction": {
+                "kind": "automatic_driver_capture",
+                "entry_config_path": production_path,
+                "restored": False,
+            },
+        },
+    }
+
+    async def inner_rollback(**_kwargs):
+        # rollback_driver_commissioning_config through the INLINE seam.
+        return {"rollback": {"status": "rolled_back"}}
+
+    monkeypatch.setattr(web, "_rollback_summed_commissioning_config", inner_rollback)
+
+    teardown = asyncio.run(
+        web.restore_automatic_driver_level_match(prepared, camilla_factory=Cam)
+    )
+    assert teardown["status"] == "anchored"
+    assert set_calls == []  # teardown never repoints the persisted path
+
+    monkeypatch.setattr(
+        web,
+        "load_staged_startup_config",
+        lambda: {"status": "staged", "config": {"path": staged_path}},
+    )
+    monkeypatch.setattr(
+        web,
+        "write_commission_path_safety",
+        lambda *_args, **_kwargs: "/tmp/path-safety.json",
+    )
+    monkeypatch.setattr(
+        web,
+        "commission_seams",
+        lambda _cam: (object(), object(), object()),
+    )
+
+    async def load_driver(*_args, **_kwargs):
+        return {"load": {"status": "loaded"}}
+
+    monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
+
+    payload = asyncio.run(
+        web._load_driver_commissioning_config_for_level(
+            topology=_topology(),
+            speaker_group_id="mono",
+            role="woofer",
+            level_dbfs=0.0,
+            volume_limit_db=-4.0,
+            startup_gate_calibration_level={"status": "floor"},
+            preset=object(),
+            crossover_preview=None,
+            camilla_factory=Cam,
+        )
+    )
+
+    # Attempt 1 rides the real anchor fast path: still zero SetConfigFilePath
+    # across teardown + sweep load, stash intact for the sequence restore.
+    assert payload["startup_setup"]["status"] == "already_loaded"
+    assert set_calls == []
+    assert capture_entry_anchor.pending_entry() == production_path
+
+
+def test_restore_pending_capture_entry_config_restores_exactly_once(monkeypatch, tmp_path):
+    from jasper.active_speaker import capture_entry_anchor
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    entry = tmp_path / "sound_current.yml"
+    entry.write_text("devices: {}\n", encoding="utf-8")
+    capture_entry_anchor.record_entry(str(entry))
+
+    set_calls = []
+
+    class Cam:
+        current = staged_path
+
+        async def get_config_file_path(self, *, best_effort):
+            return type(self).current
+
+        async def set_config_file_path(self, path, *, best_effort):
+            set_calls.append(path)
+            type(self).current = path
+            return True
+
+    monkeypatch.setattr(
+        web,
+        "load_staged_startup_config",
+        lambda: {"status": "staged", "config": {"path": staged_path}},
+    )
+
+    first = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=Cam)
+    )
+    assert first == {"status": "restored", "config_path": str(entry)}
+    assert set_calls == [str(entry)]
+    assert capture_entry_anchor.pending_entry() is None
+
+    second = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=Cam)
+    )
+    assert second == {"status": "idle"}
+    assert set_calls == [str(entry)]  # exactly once
+
+
+def test_restore_pending_capture_entry_config_defers_and_supersedes(
+    monkeypatch, tmp_path
+):
+    """Unreachable Camilla retains the stash; a repointed production clears it."""
+
+    from jasper.active_speaker import capture_entry_anchor
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    entry = tmp_path / "sound_current.yml"
+    entry.write_text("devices: {}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        web,
+        "load_staged_startup_config",
+        lambda: {"status": "staged", "config": {"path": staged_path}},
+    )
+
+    # Camilla unreachable -> deferred, stash retained (muted-safe posture).
+    capture_entry_anchor.record_entry(str(entry))
+
+    class UnreachableCam:
+        async def get_config_file_path(self, *, best_effort):
+            raise RuntimeError("camilla down")
+
+        async def set_config_file_path(self, path, *, best_effort):
+            raise AssertionError("must not load while state is unknown")
+
+    deferred = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=UnreachableCam)
+    )
+    assert deferred["status"] == "deferred"
+    assert capture_entry_anchor.pending_entry() == str(entry)
+
+    # Persisted path is no longer the staged anchor (an apply repointed
+    # production) -> the stale stash is cleared WITHOUT touching CamillaDSP.
+    class RepointedCam:
+        async def get_config_file_path(self, *, best_effort):
+            return "/var/lib/camilladsp/configs/newly_applied.yml"
+
+        async def set_config_file_path(self, path, *, best_effort):
+            raise AssertionError("superseded stash must not reload anything")
+
+    superseded = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=RepointedCam)
+    )
+    assert superseded["status"] == "superseded"
+    assert capture_entry_anchor.pending_entry() is None
+
+
+def test_restore_pending_capture_entry_config_missing_entry_stays_muted(
+    monkeypatch, tmp_path
+):
+    """A vanished production config clears the stash and keeps the anchor.
+
+    Fail direction is muted-never-loud: with no valid restore target the
+    speaker stays on the all-muted staged anchor rather than guessing.
+    """
+
+    from jasper.active_speaker import capture_entry_anchor
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    capture_entry_anchor.record_entry(str(tmp_path / "deleted.yml"))
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            return staged_path
+
+        async def set_config_file_path(self, path, *, best_effort):
+            raise AssertionError("must not load a missing config")
+
+    monkeypatch.setattr(
+        web,
+        "load_staged_startup_config",
+        lambda: {"status": "staged", "config": {"path": staged_path}},
+    )
+
+    result = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=Cam)
+    )
+    assert result["status"] == "entry_missing"
+    assert capture_entry_anchor.pending_entry() is None
 
 
 def test_stage_startup_config_does_not_reread_mutable_preview_for_explicit_preset(
@@ -1557,15 +1940,22 @@ def test_automatic_driver_load_failure_restores_entry_graph(
             },
         }
 
+    # The per-attempt teardown re-mutes to the staged anchor; the entry
+    # production path must NOT be restored per attempt (sequence-level restore
+    # owns it — see restore_pending_capture_entry_config). restore_fails now
+    # exercises the anchor rollback itself failing, which must still flip the
+    # attempt to failed because the driver may be left audible.
     async def inner_rollback(**_kwargs):
-        return {"status": "blocked"}
+        if restore_fails:
+            return {"rollback": {"status": "rollback_failed"}}
+        return {"rollback": {"status": "blocked"}}
 
     restored_paths = []
 
     class Cam:
         async def set_config_file_path(self, path, *, best_effort):
             restored_paths.append(path)
-            return not restore_fails
+            return True
 
     log_calls = []
     monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", blocked_load)
@@ -1585,7 +1975,7 @@ def test_automatic_driver_load_failure_restores_entry_graph(
     )
 
     assert payload["status"] == ("failed" if restore_fails else "blocked")
-    assert restored_paths == [entry_path]
+    assert restored_paths == []
     if restore_fails:
         assert payload["issues"][0]["code"] == (
             "automatic_driver_config_restore_failed"
@@ -1596,7 +1986,8 @@ def test_automatic_driver_load_failure_restores_entry_graph(
             for args, kwargs in log_calls
         )
     else:
-        assert payload["rollback"]["config_path"] == entry_path
+        assert payload["rollback"]["status"] == "anchored"
+        assert payload["rollback"]["pending_entry_config_path"] == entry_path
         assert payload["issues"][0]["code"] == "calibration_level_not_at_floor"
 
 
@@ -1805,7 +2196,7 @@ def test_driver_capture_holds_one_writer_lock_through_restore(monkeypatch, cance
         del camilla_factory
         assert acquire_lock is False
         events.append("restore")
-        return {"status": "rolled_back", "config_path": "/tmp/entry.yml"}
+        return {"status": "anchored"}
 
     monkeypatch.setattr(dsp_apply, "dsp_writer_lock", tracked_lock)
     monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", load)
@@ -1813,7 +2204,7 @@ def test_driver_capture_holds_one_writer_lock_through_restore(monkeypatch, cance
     monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda *_a: {})
     monkeypatch.setattr(web, "_commission_tone_release_fanin_lane", lambda **_kw: None)
     monkeypatch.setattr(
-        web, "_restore_automatic_driver_entry_config_resilient", restore
+        web, "_rollback_capture_attempt_to_anchor_resilient", restore
     )
     monkeypatch.setattr(
         commissioning_admission, "play_admitted_driver_capture", admitted
