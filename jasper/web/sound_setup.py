@@ -1783,6 +1783,7 @@ def _active_speaker_calibration_level_payload(
         load_calibration_level_state,
         update_calibration_level_state,
     )
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
 
     if raw is None:
         return load_calibration_level_state()
@@ -1790,11 +1791,16 @@ def _active_speaker_calibration_level_payload(
         raise ValueError("calibration level request must be an object")
     action = str(raw.get("action") or "set")
     level = raw.get("level_dbfs", raw.get("requested_level_dbfs"))
+    # Bind the persisted level to the current commissioning run (the active
+    # safe_playback session) so a previous session's test level can never
+    # seed this one — see docs/HANDOFF-active-speaker-dsp.md "Stage 5".
+    run_id = load_safe_playback_state().get("session_id")
     payload = update_calibration_level_state(
         action=action,
         requested_level_dbfs=level,
         observed_mic_dbfs=raw.get("observed_mic_dbfs"),
         mic_clipping=bool(raw.get("mic_clipping")),
+        run_id=run_id,
     )
     log_event(
         logger,
@@ -1820,7 +1826,9 @@ def _active_speaker_stop_payload() -> dict[str, Any]:
     playback = stop_tone_playback(reason="operator_stop")
     state = dict(stop_safe_playback_session())
     try:
-        state["calibration_level"] = update_calibration_level_state(action="stop")
+        state["calibration_level"] = update_calibration_level_state(
+            action="stop", run_id=state.get("session_id")
+        )
     except Exception as e:  # noqa: BLE001
         log_event(
             logger,

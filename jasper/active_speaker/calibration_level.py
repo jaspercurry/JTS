@@ -68,6 +68,7 @@ def _default_state_payload(path: Path) -> dict[str, Any]:
         "updated_at": None,
         "last_action": "default_floor",
         "state_path": str(path),
+        "run_id": None,
     })
     return payload
 
@@ -192,8 +193,19 @@ def calibration_level_payload(
 def load_calibration_level_state(
     *,
     state_path: str | Path | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Return the persisted calibration level, defaulting to the safe floor."""
+    """Return the persisted calibration level, defaulting to the safe floor.
+
+    ``run_id`` scopes the read to one commissioning run (for example the
+    active ``safe_playback`` session id). When the caller passes a
+    ``run_id`` and the persisted state was written by a different run — or
+    predates this identity field entirely (pre-fix statefiles) — the read
+    resolves to the same safe-floor default as no state on disk, so a
+    previous session's test level can never seed a new one. Callers that
+    omit ``run_id`` (the default) get the unscoped persisted value, matching
+    prior behavior for read-only/display call sites.
+    """
 
     path = _state_path(state_path)
     try:
@@ -201,6 +213,8 @@ def load_calibration_level_state(
     except (OSError, json.JSONDecodeError):
         return _default_state_payload(path)
     if not isinstance(raw, dict):
+        return _default_state_payload(path)
+    if run_id is not None and raw.get("run_id") != run_id:
         return _default_state_payload(path)
     test_signal = (
         raw.get("test_signal") if isinstance(raw.get("test_signal"), dict) else {}
@@ -216,6 +230,7 @@ def load_calibration_level_state(
         "updated_at": raw.get("updated_at"),
         "last_action": raw.get("last_action") or "load",
         "state_path": str(path),
+        "run_id": raw.get("run_id"),
         "issues": [
             issue for issue in raw.get("issues", []) if isinstance(issue, dict)
         ],
@@ -230,6 +245,7 @@ def update_calibration_level_state(
     observed_mic_dbfs: Any = None,
     mic_clipping: bool = False,
     state_path: str | Path | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Persist one guarded level transition.
 
@@ -237,10 +253,17 @@ def update_calibration_level_state(
     the product-facing audible ramp action may move by a larger bounded step so
     the user is not forced through dozens of clicks. Lowering and reset-to-floor
     remain unrestricted because they reduce risk.
+
+    ``run_id`` binds the transition to one commissioning run: the prior level
+    used to compute this step is only trusted when it was persisted under the
+    same ``run_id`` (see :func:`load_calibration_level_state`), and the result
+    is stamped with ``run_id`` so the next call in the same run round-trips
+    correctly while a differently-scoped (or unscoped legacy) caller starts
+    fresh at the floor.
     """
 
     path = _state_path(state_path)
-    current_state = load_calibration_level_state(state_path=path)
+    current_state = load_calibration_level_state(state_path=path, run_id=run_id)
     current = clamp_test_level_dbfs(
         (current_state.get("test_signal") or {}).get("requested_level_dbfs")
     )
@@ -309,6 +332,7 @@ def update_calibration_level_state(
         "updated_at": _utc_now(),
         "last_action": action_id,
         "state_path": str(path),
+        "run_id": run_id,
         "prior_level_dbfs": current,
         "requested_level_dbfs": (
             _finite_float(requested_level_dbfs)
