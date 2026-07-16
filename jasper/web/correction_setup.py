@@ -4486,7 +4486,20 @@ def _handle_crossover_relay_level_match(
         raise ValueError("this speaker has no active crossover to measure")
     raw_setup = status.get("setup")
     setup = raw_setup if isinstance(raw_setup, dict) else {}
-    if setup.get("status") != "ready":
+    # Between capture attempts the persisted CamillaDSP path deliberately
+    # stays on the all-muted staged anchor (PR #1523), which reports setup as
+    # blocked. The shared predicate admits exactly that in-sequence state
+    # (blocked + commissioning-config-loaded reason + pending capture-entry
+    # stash) so lock 2..N of a running sequence isn't refused as an
+    # unfinished setup — hardware-observed on JTS3 blocking tweeter lock 2/2
+    # (run 10). Every other blocked reason refuses exactly as before.
+    from jasper.active_speaker.setup_status import (
+        setup_blocked_only_by_in_sequence_anchor,
+    )
+
+    if setup.get("status") != "ready" and not (
+        setup_blocked_only_by_in_sequence_anchor(status)
+    ):
         raise ValueError(
             "finish and apply the protected active-speaker setup before measuring it"
         )
@@ -5383,10 +5396,23 @@ def _handle_crossover_relay_capture(
         )
     topology = load_output_topology()
     setup = status.get("setup") if isinstance(status, dict) else None
+    # Same in-sequence-anchor carve-out as the level-match endpoint and the
+    # envelope's _setup_ready: mid-sequence the persisted config is the
+    # all-muted staged anchor by design (PR #1523), so a blocked setup with
+    # that exact reason plus a pending capture-entry stash must not refuse
+    # the sweep the envelope itself is offering. All other blocked reasons
+    # refuse exactly as before.
+    from jasper.active_speaker.setup_status import (
+        setup_blocked_only_by_in_sequence_anchor,
+    )
+
     if (
         not status.get("active")
         or not isinstance(setup, dict)
-        or setup.get("status") != "ready"
+        or (
+            setup.get("status") != "ready"
+            and not setup_blocked_only_by_in_sequence_anchor(status)
+        )
     ):
         raise ValueError(
             "protected speaker setup is no longer ready; finish it before "

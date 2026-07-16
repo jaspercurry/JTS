@@ -1623,6 +1623,176 @@ def test_crossover_level_start_refuses_unauthorized_driver_safety_profile(
         correction_setup._handle_crossover_relay_level_match(handler)
 
 
+def _mid_sequence_crossover_level_status(topology) -> dict:
+    """Composed status mid-sequence: anchored (blocked) + stash pending.
+
+    PR #1523 keeps the persisted CamillaDSP path on the all-muted staged
+    anchor BETWEEN capture attempts, so the live setup status reads
+    blocked/active_speaker_commissioning_config_loaded while the sequence is
+    running; backend.status_payload() composes capture_entry_pending=True
+    from the capture-entry stash. applied_crossover stays valid — the
+    sequence started from an applied profile, so the legacy-preservation
+    migration must be a no-op here.
+    """
+    from jasper.active_speaker.measurement import active_driver_targets
+    from tests.test_active_speaker_profile import _two_way_preset
+
+    return {
+        "active": True,
+        "capture_entry_pending": True,
+        "setup": {
+            "status": "blocked",
+            "reason": "active_speaker_commissioning_config_loaded",
+            "baseline_profile": {"candidate_fingerprint": "candidate-1"},
+            "protected_profile": {
+                "source_fingerprint": "c" * 64,
+                "candidate_fingerprint": "c" * 64,
+            },
+            "applied_crossover": {
+                "valid": True,
+                "owner": "manual",
+                "reason": None,
+            },
+        },
+        "applied_profile": {
+            "recomposition_snapshot": {"preset": _two_way_preset("mono")},
+        },
+        "targets": {"drivers": active_driver_targets(topology)},
+    }
+
+
+def test_crossover_level_start_mid_sequence_anchor_mints_relay(monkeypatch):
+    """Run-10 repro (JTS3, tweeter lock 2/2 blocked at 05:32): a level-match
+    POST mid-sequence — persisted config anchored on the staged all-muted
+    config (setup blocked, reason active_speaker_commissioning_config_loaded)
+    with the capture-entry stash pending — must mint a relay, not 400 with
+    "finish and apply the protected active-speaker setup". Lock 1 predates
+    the anchor (production still loaded), so only lock 2+ hit this.
+
+    Confirmed FAILING pre-fix: without the shared in-sequence-anchor
+    predicate at the endpoint gate, this raises that exact ValueError
+    (verified by running this test against the pre-fix gate)."""
+    import asyncio
+
+    from jasper.active_speaker import web_commissioning
+    import jasper.output_topology as output_topology
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_setup
+
+    topology = _topology()
+    monkeypatch.setattr(output_topology, "load_output_topology", lambda: topology)
+    status = _mid_sequence_crossover_level_status(topology)
+    monkeypatch.setattr(backend, "status_payload", lambda: status)
+    monkeypatch.setattr(
+        backend,
+        "apply_profile",
+        lambda **_kwargs: pytest.fail(
+            "a mid-sequence level match must not re-apply any profile"
+        ),
+    )
+    monkeypatch.setattr(
+        web_commissioning,
+        "automatic_driver_excitation",
+        lambda _topology, role, **_kwargs: {
+            "status": "ready",
+            "commissioning_gain_db": -3.0 if role == "woofer" else -18.0,
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "level_lease",
+        lambda: SimpleNamespace(
+            level_match_snapshot=lambda **_kwargs: {"running": False},
+            phone_hard_timeout_ms=lambda _geometry: 91234,
+        ),
+    )
+    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda coro, *, timeout: asyncio.run(coro),
+    )
+    registered = {}
+
+    def open_capture(_client, spec, **_kwargs):
+        registered["spec"] = spec
+        return object()
+
+    monkeypatch.setattr(adapter, "open_capture", open_capture)
+
+    def run_relay(kind, relay_base, *, return_url):
+        registered.update(label=kind.label, relay_base=relay_base)
+        kind.open(object(), relay_base, "https://capture.jasper.tech", return_url)
+        return {"url": "https://capture.jasper.tech/session"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", run_relay)
+    monkeypatch.setattr(
+        correction_setup,
+        "_request_local_return_url",
+        lambda *_args: "https://jts.local/correction/crossover/",
+    )
+
+    body = json.dumps({"capture_geometry": "near_field"}).encode()
+    handler = SimpleNamespace(
+        headers={"Content-Length": str(len(body))},
+        rfile=io.BytesIO(body),
+    )
+    payload = correction_setup._handle_crossover_relay_level_match(handler)
+
+    assert payload["relay"]["url"].startswith("https://capture.jasper.tech/")
+    assert registered["label"] == "level_ramp:crossover"
+    assert registered["spec"].stimulus.label.endswith("level-match tone")
+
+
+@pytest.mark.parametrize(
+    ("reason", "capture_entry_pending"),
+    (
+        # Any other blocked reason refuses even with the stash pending — a
+        # pending stash must never paper over a genuinely-unfinished setup.
+        ("active_baseline_profile_unreadable", True),
+        # The exact in-sequence reason WITHOUT a pending stash refuses too:
+        # nothing proves a capture sequence still owns the anchor.
+        ("active_speaker_commissioning_config_loaded", False),
+    ),
+)
+def test_crossover_level_start_refuses_other_blocked_setups(
+    monkeypatch, reason, capture_entry_pending
+):
+    import jasper.output_topology as output_topology
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_setup
+
+    topology = _topology()
+    monkeypatch.setattr(output_topology, "load_output_topology", lambda: topology)
+    status = _mid_sequence_crossover_level_status(topology)
+    status["setup"]["reason"] = reason
+    status["capture_entry_pending"] = capture_entry_pending
+    monkeypatch.setattr(backend, "status_payload", lambda: status)
+    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
+    monkeypatch.setattr(
+        correction_setup,
+        "_crossover_blocking_phase",
+        lambda: pytest.fail("must fail before checking for a blocking phase"),
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_relay_capture",
+        lambda *_args, **_kwargs: pytest.fail("must fail before relay registration"),
+    )
+
+    with pytest.raises(
+        ValueError, match="finish and apply the protected active-speaker setup"
+    ):
+        body = json.dumps({"capture_geometry": "near_field"}).encode()
+        handler = SimpleNamespace(
+            headers={"Content-Length": str(len(body))},
+            rfile=io.BytesIO(body),
+        )
+        correction_setup._handle_crossover_relay_level_match(handler)
+
+
 def test_open_commissioning_bundle_for_level_match_forwards_calibration_id(
     monkeypatch,
 ) -> None:

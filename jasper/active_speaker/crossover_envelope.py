@@ -157,40 +157,25 @@ def _setup_ready(status: Mapping[str, Any]) -> bool:
     """Whether the "speaker_setup" step is satisfied.
 
     Normally requires ``setup.status == "ready"``. One narrow composition
-    exception: PR #1523 keeps the persisted CamillaDSP path anchored on the
-    all-muted staged config *between* capture attempts within a single
-    automatic measurement sequence (crash-safe posture — a crash/reboot
-    mid-sequence comes back muted, never loud, restored at sequence end via
-    the capture-entry stash). ``read_active_speaker_setup_status()`` sees
-    that staged path and correctly reports
-    ``blocked``/``active_speaker_commissioning_config_loaded`` in isolation
-    — but composed literally with this gate, every mid-sequence poll forced
-    the operator back to "Finish speaker setup" with no flow-owned recovery
-    (JTS3 punch #24: after the woofer level lock, the tweeter lock was never
-    offered; the only exit invalidated the locks already captured).
-
-    This is "anchored mid-sequence by design", not "setup unproven", and the
-    capture-entry stash (``jasper.active_speaker.capture_entry_anchor``) is
-    the correct discriminator rather than a heuristic: its lifecycle *is*
-    the sequence boundary — written once when a sequence de-anchors
-    production, and cleared by every restore path (sequence end, idle-exit,
-    the service-start claim). The service-start claim boundary runs that
-    restore *before* any envelope is served, so a stale stash can never
-    make a post-crash "unfinished setup" speaker read as ready here; a
-    speaker that never de-anchored (or has already been restored) has no
-    pending stash and still gates exactly as before.
+    exception, shared with the level-match/sweep endpoint gates in
+    correction_setup.py: a setup blocked only because the automatic capture
+    sequence's own all-muted staged anchor is loaded, with the capture-entry
+    stash pending, is "anchored mid-sequence by design", not "setup
+    unproven" (JTS3 punch #24: after the woofer level lock, the tweeter
+    lock was never offered; the only exit invalidated the locks already
+    captured). The full composition story and the stash-as-discriminator
+    argument live on
+    :func:`jasper.active_speaker.setup_status.setup_blocked_only_by_in_sequence_anchor`.
     """
+
+    from .setup_status import setup_blocked_only_by_in_sequence_anchor
 
     setup = _mapping(status.get("setup"))
     if setup.get("active") is not True:
         return False
     if setup.get("status") == "ready":
         return True
-    return bool(
-        setup.get("status") == "blocked"
-        and setup.get("reason") == "active_speaker_commissioning_config_loaded"
-        and status.get("capture_entry_pending") is True
-    )
+    return setup_blocked_only_by_in_sequence_anchor(status)
 
 
 def _legacy_applied_profile_needs_reapply(status: Mapping[str, Any]) -> bool:

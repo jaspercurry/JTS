@@ -50,6 +50,50 @@ _STAGED_CONFIG_BASENAMES = {
     "active_speaker_staged_startup.yml",
     "active_speaker_commissioning.yml",
 }
+IN_SEQUENCE_CAPTURE_ANCHOR_REASON = "active_speaker_commissioning_config_loaded"
+
+
+def setup_blocked_only_by_in_sequence_anchor(
+    status: Mapping[str, Any],
+) -> bool:
+    """Whether a blocked setup status is the capture sequence's own anchor.
+
+    ``status`` is the composed crossover status payload
+    (``correction_crossover_backend.status_payload()``), which carries both
+    the ``setup`` artifact this module produces and the backend-composed
+    ``capture_entry_pending`` flag.
+
+    PR #1523 keeps the persisted CamillaDSP path anchored on the all-muted
+    staged config *between* capture attempts within a single automatic
+    measurement sequence (crash-safe posture — a crash/reboot mid-sequence
+    comes back muted, never loud; production is restored exactly once at
+    sequence end/idle-exit via the capture-entry stash).
+    :func:`read_active_speaker_setup_status` sees that staged path and
+    correctly reports ``blocked``/``active_speaker_commissioning_config_loaded``
+    in isolation — but any readiness gate that requires exact ``"ready"``
+    wedges the flow permanently mid-sequence (JTS3 punch #24: the envelope;
+    run 10: the level-match and sweep endpoint gates blocked tweeter lock
+    2/2 the same way). That state is "anchored mid-sequence by design", not
+    "setup unproven".
+
+    The capture-entry stash (``jasper.active_speaker.capture_entry_anchor``)
+    is the discriminator rather than a heuristic: its lifecycle *is* the
+    sequence boundary — written once when a sequence de-anchors production,
+    cleared by every restore path (sequence end, idle-exit, the
+    service-start claim). The service-start claim boundary runs that
+    restore *before* any envelope or endpoint serves, so a stale stash can
+    never make a post-crash, genuinely-unfinished setup read as ready.
+    Every other blocked reason, and this reason without a pending stash,
+    must gate exactly as a plain blocked status.
+    """
+
+    setup = status.get("setup")
+    setup = setup if isinstance(setup, Mapping) else {}
+    return bool(
+        setup.get("status") == "blocked"
+        and setup.get("reason") == IN_SEQUENCE_CAPTURE_ANCHOR_REASON
+        and status.get("capture_entry_pending") is True
+    )
 _READINESS_DERIVATION_ERRORS = (
     OSError,
     RuntimeError,
@@ -638,7 +682,7 @@ def read_active_speaker_setup_status(
     elif config_basename in _STAGED_CONFIG_BASENAMES:
         issues.append(_issue(
             "blocker",
-            "active_speaker_commissioning_config_loaded",
+            IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
             "active speaker setup/commissioning graph is loaded",
         ))
 
