@@ -849,6 +849,53 @@ def running_commission_evidence(
     }
 
 
+def running_graph_matches_staged_anchor(
+    running_config_raw: str | None,
+    *,
+    audible_outputs: Iterable[int],
+) -> bool:
+    """True when the RUNNING readback still shows the all-muted staged anchor.
+
+    The convergence discriminator for the transient commissioning load
+    (``startup_load.load_driver_commissioning_config``): CamillaDSP acks the
+    inline ``SetConfig`` before its readback side reflects the new graph, so a
+    read taken immediately after the load can still return the staged all-muted
+    anchor (hardware-reproduced 2026-07-15, ~22 ms after the apply). The
+    intended commission graph un-mutes exactly ``audible_outputs``; the staged
+    anchor hard-mutes every output. So "every intended-audible output is still
+    hard-muted AND wired" is the cheapest reliable "the switch has not landed
+    yet" signal — robust to CamillaDSP's own YAML dialect, unlike raw-text
+    comparison against the staged file.
+
+    Fail direction: an unparseable/empty readback or an empty
+    ``audible_outputs`` returns False — the caller cannot positively prove the
+    graph is still the anchor, so the (failing) live evidence decides
+    immediately rather than waiting out the convergence budget on a readback
+    that will never discriminate.
+    """
+    audible = {int(i) for i in audible_outputs}
+    if not audible:
+        return False
+    config: Any = None
+    if isinstance(running_config_raw, str) and running_config_raw.strip():
+        try:
+            config = yaml.safe_load(running_config_raw)
+        except yaml.YAMLError:
+            config = None
+    if not isinstance(config, dict):
+        return False
+    view = gs.view_from_camilla_dict(config)
+    return all(
+        gs.output_hard_muted_and_wired(
+            view,
+            index,
+            mute_name=output_commission_mute_name(index),
+            mute_gain_db=STARTUP_MUTE_GAIN_DB,
+        )
+        for index in audible
+    )
+
+
 def _preset_from_crossover_preview(
     topology: OutputTopology,
     preview: dict[str, Any],

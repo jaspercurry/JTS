@@ -21,6 +21,7 @@ narrower safety contract.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -38,6 +39,7 @@ from jasper.dsp_apply import (
     apply_dsp_config,
     validate_camilla_config,
 )
+from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology, channel_identity_report
 
 from ._common import gate as _gate, issue as _issue
@@ -69,6 +71,7 @@ from .staging import (
     load_staged_startup_config,
     prepare_driver_commissioning_config,
     running_commission_evidence,
+    running_graph_matches_staged_anchor,
     staged_config_path,
 )
 
@@ -89,6 +92,16 @@ DEFAULT_COMMISSION_LOAD_STATE_PATH = Path(
     "/var/lib/jasper/active_speaker_commission_load.json"
 )
 COMMISSION_LOAD_STATE_ENV = "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE"
+
+# _live_confirm convergence poll (load_driver_commissioning_config): CamillaDSP
+# acks the inline SetConfig before its readback side reflects the new graph, so
+# the post-load safety read can transiently return the staged all-muted anchor
+# (hardware-reproduced 2026-07-15 on JTS3: ~22 ms after the apply). Re-read on
+# this interval until the readback stops matching the anchor, bounded by the
+# budget so a load that never takes effect fails closed in a few seconds
+# instead of hanging apply_dsp_config's writer lock.
+LIVE_CONFIRM_POLL_INTERVAL_S = 0.15
+LIVE_CONFIRM_CONVERGENCE_BUDGET_S = 5.0
 
 PathLoader = Callable[[str], Awaitable[bool]]
 ConfigPathReader = Callable[[], Awaitable[str | None]]
@@ -1091,8 +1104,11 @@ async def rollback_protected_startup_config(
 #     graph, the post-load check reads the RUNNING graph back over the websocket
 #     (`read_running_config` → active_raw) and asserts the mask/high-pass against
 #     it with `running_commission_evidence` — the "assert the HP is present in the
-#     RUNNING pipeline, not just the file" gate. A failed live check rolls back to
-#     the staged anchor inside the apply transaction.
+#     RUNNING pipeline, not just the file" gate. The readback is a bounded
+#     convergence poll (CamillaDSP acks the inline load before active_raw
+#     reflects it — see LIVE_CONFIRM_POLL_INTERVAL_S), never a single shot. A
+#     failed live check rolls back to the staged anchor inside the apply
+#     transaction.
 #
 # Evidence is re-derived at load time by re-running
 # `prepare_driver_commissioning_config` (S2): the load never trusts a persisted or
@@ -1584,8 +1600,11 @@ async def load_driver_commissioning_config(
     loader (``load_config`` = ``set_active_config_raw`` of the file's contents) so
     the durable boot config / outputd statefile stay pointed at the all-muted
     staged config (crash-recovery-MUTED). After the apply, the RUNNING graph is
-    read back (``read_running_config``) and re-asserted with
-    :func:`running_commission_evidence`; a failed check rolls back to the staged
+    read back (``read_running_config``) — polled until it stops matching the
+    staged anchor, bounded by ``LIVE_CONFIRM_CONVERGENCE_BUDGET_S``, because
+    CamillaDSP acks the inline load before the readback reflects the new
+    graph — and re-asserted with :func:`running_commission_evidence`; a failed
+    check rolls back to the staged
     anchor. ``get_current_config_path`` reads the persisted statefile path (for
     the path-safety binding + the durable-statefile S3 fact), NOT the running
     graph.
@@ -1770,31 +1789,74 @@ async def load_driver_commissioning_config(
         live_evidence = captured["evidence"]
         # (1) The RUNNING graph (read back over the websocket, not the file) must
         #     match the intended per-driver mask + keep the protective high-pass.
+        #     CamillaDSP acks the inline SetConfig before the readback reflects
+        #     the new graph (hardware-reproduced 2026-07-15: the first read
+        #     ~22 ms after the load still returned the staged all-muted anchor),
+        #     so poll until the readback stops matching the anchor — bounded by
+        #     LIVE_CONFIRM_CONVERGENCE_BUDGET_S — and only then let the safety
+        #     evidence decide. A readback that NEVER leaves the anchor is a
+        #     load/convergence failure, distinct from a safety failure: the
+        #     operator remedy is "the load didn't take", not "the graph is
+        #     unsafe".
+        started = time.monotonic()
+        attempts = 0
+        converged = False
+        live: dict[str, Any] = {"passed": False, "checks": {}}
         try:
-            running_raw = await read_running_config()
-        except Exception as exc:  # noqa: BLE001
-            captured["live"] = {
-                "passed": False,
-                "checks": {"running_config_readable": False},
-            }
+            while True:
+                attempts += 1
+                try:
+                    running_raw = await read_running_config()
+                except Exception as exc:  # noqa: BLE001
+                    captured["live"] = {
+                        "passed": False,
+                        "checks": {"running_config_readable": False},
+                    }
+                    raise RuntimeError(
+                        f"could not read back the running CamillaDSP graph: {type(exc).__name__}"
+                    ) from exc
+                live = running_commission_evidence(
+                    running_raw,
+                    audible_outputs=live_evidence.get("audible_outputs", []),
+                    muted_outputs=live_evidence.get("muted_outputs", []),
+                    tweeter_outputs=live_evidence.get("tweeter_outputs", []),
+                    protective_hp_hz=live_evidence.get("protective_highpass_hz"),
+                    tweeter_highpass_name=str(
+                        live_evidence.get("tweeter_highpass_name") or ""
+                    ),
+                    tweeter_highpass_order=int(
+                        live_evidence.get("tweeter_highpass_order") or 4
+                    ),
+                    expected_headroom_db=COMMISSIONING_HEADROOM_DB,
+                )
+                captured["live"] = live
+                if live["passed"] or not running_graph_matches_staged_anchor(
+                    running_raw,
+                    audible_outputs=live_evidence.get("audible_outputs", []),
+                ):
+                    # Converged: the running graph is no longer the staged
+                    # anchor (or already passes) — the evidence verdict is real.
+                    converged = True
+                    break
+                if time.monotonic() - started >= LIVE_CONFIRM_CONVERGENCE_BUDGET_S:
+                    break
+                await asyncio.sleep(LIVE_CONFIRM_POLL_INTERVAL_S)
+        finally:
+            log_event(
+                logger,
+                "active_speaker.driver_commission_live_confirm",
+                group=speaker_group_id,
+                role=role,
+                attempts=attempts,
+                elapsed_ms=round((time.monotonic() - started) * 1000.0),
+                converged=converged,
+            )
+        if not converged:
             raise RuntimeError(
-                f"could not read back the running CamillaDSP graph: {type(exc).__name__}"
-            ) from exc
-        live = running_commission_evidence(
-            running_raw,
-            audible_outputs=live_evidence.get("audible_outputs", []),
-            muted_outputs=live_evidence.get("muted_outputs", []),
-            tweeter_outputs=live_evidence.get("tweeter_outputs", []),
-            protective_hp_hz=live_evidence.get("protective_highpass_hz"),
-            tweeter_highpass_name=str(
-                live_evidence.get("tweeter_highpass_name") or ""
-            ),
-            tweeter_highpass_order=int(
-                live_evidence.get("tweeter_highpass_order") or 4
-            ),
-            expected_headroom_db=COMMISSIONING_HEADROOM_DB,
-        )
-        captured["live"] = live
+                "running graph never switched off the staged all-muted anchor "
+                f"within {LIVE_CONFIRM_CONVERGENCE_BUDGET_S:.1f}s — commissioning "
+                "load did not take effect"
+            )
         if not live["passed"]:
             failed = sorted(
                 code for code, ok in live.get("checks", {}).items() if not ok

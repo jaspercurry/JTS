@@ -1363,8 +1363,16 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
     (`CamillaController.get_active_config_raw` → `active_raw`) and re-asserts the
     mask + protective high-pass with `staging.running_commission_evidence` — a
     `yaml.safe_load`-based check robust to CamillaDSP's block-style
-    re-serialization, run inside the apply lock so a drift or a stale-graph
-    read-back rolls back to the staged anchor and fails closed. A precondition gate
+    re-serialization, run inside the apply lock so a drifted graph rolls back
+    to the staged anchor and fails closed. The read-back is a **bounded
+    convergence poll**, not a single shot: CamillaDSP acks the inline
+    `SetConfig` before `active_raw` reflects the new graph (hardware-reproduced
+    2026-07-15 on JTS3, ~22 ms), so the gate re-reads until the readback stops
+    matching the staged anchor (`staging.running_graph_matches_staged_anchor`,
+    budget `LIVE_CONFIRM_CONVERGENCE_BUDGET_S` ≈ 5 s) before the safety
+    evidence decides. A readback that never leaves the anchor raises a
+    distinct load-convergence error ("commissioning load did not take
+    effect"), not the safety-checks error. A precondition gate
     refuses to run unless the staged boot config is already the active graph.
     Because the commission state file can outlive the transient Camilla graph,
     `/sound/active-speaker/commission-state` overlays live runtime status from
