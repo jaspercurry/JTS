@@ -33,7 +33,7 @@
 > fresh authoritative comparison set that carries a production bundle session
 > id now starts one durable Active commissioning run. The control-plane store
 > persists the exact session fingerprint, run id, process-owner generation,
-> immutable target-attempt reservations, and a bounded hash-chained journal of
+> immutable target-attempt reservations, and a bounded, sequenced journal of
 > the nine-state transitions. Correction-web claims that owner at service start,
 > making prior-generation callbacks stale, and
 > `/correction/crossover/status` reports its `commissioning_run` block as
@@ -1195,7 +1195,7 @@ persists the lifecycle's exact current-run identity in
 created only with a fresh bundle-backed comparison set; owner generation is
 claimed at correction-web startup, and stale run/attempt callbacks cannot
 commit. The store can persist bounded target-attempt reservations and a
-hash-chained transition journal. The internal evidence host uses both.
+sequenced transition journal. The internal evidence host uses both.
 Correction-web now supplies a thin production composition: it persists signed
 per-region geometry, reopens the comparison-bound calibration and recorder
 hash, and passes relay WAV bytes to the host. It does not choose an operation or
@@ -1513,7 +1513,7 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   replay across normal, reverse, delay, and region roles. A new
   bounded, atomically persisted run store now binds a fresh bundle-backed
   comparison to exact session/run/owner-generation identity, attempt slots, and
-  a hash-chained transition journal. Correction-web claims the owner at startup
+  a sequenced transition journal. Correction-web claims the owner at startup
   and exposes a fail-closed `commissioning_run` status; comparison drift is
   reported stale and prior-generation callbacks cannot commit. The typed
   internal summed host now owns durable attempts, the bounded graph/capture/
