@@ -352,12 +352,10 @@ class MeasurementRamp:
     fade_step_s: float = 0.03
 
     # Dynamic cap: the lower of original + bump and the absolute ceiling. This
-    # is the OPERATIVE ceiling — tighter than HARD_CEILING_DBFS. ``cap_floor_db``
-    # remains in the config for API/env compatibility with the legacy ramp, but
-    # is deliberately NOT applied: flooring a quiet listener's cap upward can
-    # turn a promised +12 dB maximum rise into a much larger, unsafe jump.
+    # is the OPERATIVE ceiling — tighter than HARD_CEILING_DBFS. There is no
+    # floor: flooring a quiet listener's cap upward can turn a promised +12 dB
+    # maximum rise into a much larger, unsafe jump.
     cap_bump_db: float = 12.0
-    cap_floor_db: float = -20.0
     cap_ceil_db: float = -3.0
 
     # Derived pre-window: the coarse staircase stops here. Defaulted from the

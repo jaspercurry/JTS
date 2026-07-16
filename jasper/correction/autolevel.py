@@ -63,15 +63,15 @@ class AutolevelData:
 
 
 def compute_autolevel_cap(
-    original_db: float, *, bump_db: float, floor_db: float, ceil_db: float
+    original_db: float, *, bump_db: float, ceil_db: float
 ) -> float:
     """End-of-ramp cap: never above ``original + bump`` or ``ceil_db``.
 
-    ``floor_db`` remains in this legacy API for caller compatibility, but is
-    intentionally not applied. Flooring a quiet listener's cap upward can
-    exceed the promised bump by tens of decibels.
+    Flooring a quiet listener's cap upward can exceed the promised bump by
+    tens of decibels, so there is no floor parameter — see
+    ``MeasurementRamp.dynamic_cap`` in ``jasper/audio_measurement/ramp.py``
+    for the same invariant on the newer ramp.
     """
-    del floor_db
     return min(original_db + bump_db, ceil_db)
 
 
@@ -328,7 +328,6 @@ class AutolevelController:
                 end_db = compute_autolevel_cap(
                     al.original_main_volume_db,
                     bump_db=end_db_bump,
-                    floor_db=end_db_absolute_min,
                     ceil_db=end_db_absolute_max,
                 )
                 logger.info(

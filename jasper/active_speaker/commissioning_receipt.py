@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Literal, Mapping, TypeAlias, cast
@@ -44,10 +43,10 @@ from jasper.audio_measurement.excitation_artifacts import (
 )
 from jasper.output_topology import OutputTopology, OutputTopologyError
 
+from ._common import require_sha256_hex
 from .bundles import BUNDLE_KIND
 from .measurement import active_summed_targets
 
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 POST_APPLY_CONSUMER_ID = "active_crossover"
 POST_APPLY_MEASUREMENT_KIND = "active_crossover_post_apply"
 REFERENCE_AXIS_GEOMETRY_ID = "reference_axis"
@@ -129,11 +128,7 @@ def _optional_text(value: Any, *, field_name: str) -> str | None:
 
 
 def _sha256(value: Any, *, field_name: str) -> str:
-    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise CommissioningReceiptError(
-            f"{field_name} must be a lowercase SHA-256 fingerprint"
-        )
-    return value
+    return require_sha256_hex(value, field_name, CommissioningReceiptError)
 
 
 def _fingerprint(payload: Mapping[str, Any]) -> str:

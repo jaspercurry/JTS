@@ -42,6 +42,7 @@ from jasper.audio_measurement.null_walk import (
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.output_topology import OutputTopology
 
+from ._common import require_sha256_hex
 from .baseline_profile import topology_config_fingerprint
 from .bundles import BUNDLE_KIND
 from .measurement import active_driver_targets
@@ -73,7 +74,6 @@ ACTIVE_ISOLATED_DRIVER_MEASUREMENT_KIND = "active_crossover_isolated_driver"
 
 EvidenceKind: TypeAlias = Literal["normal", "reverse", "delay_null"]
 
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _MEASUREMENT_KIND_BY_EVIDENCE: dict[str, str] = {
     "normal": ACTIVE_REGION_NORMAL_MEASUREMENT_KIND,
@@ -115,11 +115,7 @@ def _identifier(value: Any, *, field_name: str) -> str:
 
 
 def _sha256(value: Any, *, field_name: str) -> str:
-    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise CommissioningEvidenceError(
-            f"{field_name} must be a lowercase SHA-256 fingerprint"
-        )
-    return value
+    return require_sha256_hex(value, field_name, CommissioningEvidenceError)
 
 
 def _positive_int(value: Any, *, field_name: str) -> int:
