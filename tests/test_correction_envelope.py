@@ -785,6 +785,109 @@ def test_relay_verification_pending_keeps_phone_handoff_visible(state):
     assert env["next_action"] is None
 
 
+# ---------- relay level-match refusal (2026-07-16 jts3 finding) -----------
+#
+# A level-match ramp terminal that doesn't lock (agc_suspected, a safety
+# timeout, ...) never advances session.state, so it fell outside every other
+# `failure` branch and the Room envelope served `failure: null` with no
+# explanation. These pin that the envelope now surfaces the same mapped
+# homeowner copy the phone terminal gets.
+
+
+def test_relay_agc_suspected_terminal_surfaces_the_mapped_failure():
+    sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="error")
+    sess.level_match_snapshot = lambda: {
+        "running": False,
+        "locks": {},
+        "last": {
+            "ramp": {
+                "state": "error",
+                "restored": False,
+                "error": "agc_suspected",
+                "error_detail": "slopes 0.64, 0.61 over 4 steps",
+            },
+        },
+    }
+
+    env = envelope.build_envelope(sess)
+
+    assert env["failure"] is not None
+    assert env["failure"]["code"] == "agc_suspected"
+    assert "automatic gain" in env["failure"]["text"]
+    assert "slopes 0.64, 0.61 over 4 steps" in env["failure"]["text"]
+    assert env["failure"]["retryable"] is True
+    # verdict_text already prioritizes `failure` ahead of every screen-scoped
+    # fallback, so the same mapped copy is what a homeowner actually reads.
+    assert env["verdict_text"] == env["failure"]["text"]
+    # A refusal is not "no action needed" — withhold any forward action so
+    # the phone/Room flow retries the check rather than silently continuing.
+    assert env["next_action"] is None
+
+
+def test_relay_safety_timeout_terminal_is_distinguished_from_a_plain_cancel():
+    # Both a genuine user cancel and a safety-timeout refusal land in
+    # RampState.CANCELLED; only the timeout sets `error`.
+    cancelled = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="cancelled")
+    assert envelope.build_envelope(cancelled)["failure"] is None
+
+    timed_out = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="cancelled")
+    timed_out.level_match_snapshot = lambda: {
+        "running": False,
+        "locks": {},
+        "last": {
+            "ramp": {
+                "state": "cancelled",
+                "restored": False,
+                "error": "safety timeout after 45s",
+            },
+        },
+    }
+    env = envelope.build_envelope(timed_out)
+    assert env["failure"] is not None
+    assert "took too long" in env["failure"]["text"].lower()
+
+
+def test_relay_locked_level_match_never_shows_a_stale_refusal():
+    sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="locked")
+    assert envelope.build_envelope(sess)["failure"] is None
+
+
+def test_relay_running_retry_suppresses_the_prior_attempt_refusal():
+    """Retry-after-error: while a NEW ramp is live (running=True), the PRIOR
+    attempt's terminal is stale news — the Room page must not keep showing
+    "can't be trusted" copy over a check that is currently climbing. Same
+    liveness source _next_action_for reads."""
+    sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="error")
+    sess.level_match_snapshot = lambda: {
+        "running": True,
+        "locks": {},
+        "last": {
+            "ramp": {
+                "state": "error",
+                "restored": False,
+                "error": "agc_suspected",
+            },
+        },
+    }
+    assert envelope.build_envelope(sess)["failure"] is None
+
+
+def test_relay_in_progress_ramp_is_not_a_refusal():
+    for state in ("climbing", "settling", "confirming"):
+        sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state=state)
+        assert envelope.build_envelope(sess)["failure"] is None
+
+
+def test_local_transport_never_consults_the_relay_refusal_mapping():
+    # A local (non-relay) session must not be affected by this branch at all
+    # — it has no `level_match_snapshot` shaped this way.
+    sess = _FakeSession(SessionState.NEEDS_NOISE_CAPTURE)
+    sess.local_capture_setup_bound = True
+    sess.autolevel = _FakeAutolevel("error")
+    env = envelope.build_envelope(sess)
+    assert env["failure"] is None
+
+
 # ---------- level screen (autolevel sub-state) -----------------------------
 
 

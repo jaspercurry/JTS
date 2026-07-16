@@ -25,6 +25,7 @@ import concurrent.futures
 import io
 import inspect
 import json
+import logging
 from types import SimpleNamespace
 import threading
 import time
@@ -362,6 +363,53 @@ def test_relay_stop_callback_is_atomic_with_starting_state():
         correction_setup._set_relay_capture(None)
 
 
+def test_relay_capture_failure_names_the_ramp_reason_not_the_exception_class(caplog):
+    """A level-match ramp refusal (LevelMatchRefused) must surface its stable
+    ramp code as the adapter_failed `reason=`, never the bare exception class
+    name — and the published /status error must be the homeowner message,
+    not the raw code (the 2026-07-16 jts3 finding)."""
+    from jasper.correction.level_match import LevelMatchRefused, describe_ramp_refusal
+
+    refusal = describe_ramp_refusal("agc_suspected")
+
+    def open_capture(_client, _relay_base, _capture_origin, _return_url):
+        return SimpleNamespace(
+            tap_link="https://capture.test/#s=cap_1",
+            pi_session=object(),
+        )
+
+    async def run_and_consume(_client, _pi_session):
+        raise LevelMatchRefused(refusal)
+
+    correction_setup._set_relay_capture(None)
+    caplog.set_level(logging.WARNING, logger="jasper.web.correction_setup")
+    try:
+        correction_setup._run_relay_capture(
+            correction_setup.RelayCaptureKind(
+                label="level_ramp:room",
+                open=open_capture,
+                run_and_consume=run_and_consume,
+            ),
+            "https://relay.test",
+            return_url="http://jts.local/correction/",
+        )
+        deadline = time.monotonic() + 2
+        relay = None
+        while time.monotonic() < deadline:
+            relay = correction_setup._get_relay_capture()
+            if relay is not None and relay.get("status") == "failed":
+                break
+            time.sleep(0.01)
+    finally:
+        correction_setup._set_relay_capture(None)
+
+    assert relay is not None
+    assert relay["status"] == "failed"
+    assert relay["error"] == refusal.user_message
+    assert "reason=agc_suspected" in caplog.text
+    assert "reason=LevelMatchRefused" not in caplog.text
+
+
 def test_run_async_timeout_waits_for_coroutine_cleanup():
     started = threading.Event()
     cleanup_started = threading.Event()
@@ -618,6 +666,117 @@ async def test_level_pump_refreshes_status_after_host_event_timeout(monkeypatch)
         {"phase": "ramp_progress"},
     ]
     assert status_reads
+    assert purged == ["cap-level"]
+
+
+@pytest.mark.asyncio
+async def test_relay_level_match_unlocked_raises_refused_and_posts_mapped_message(
+    monkeypatch,
+):
+    """A ramp terminal that never locks must raise the typed LevelMatchRefused
+    (not a bare ValueError carrying the raw ramp code) and the phone terminal
+    must see the mapped homeowner message, not "agc_suspected" verbatim (the
+    2026-07-16 jts3 finding). Mirrors
+    test_level_pump_refreshes_status_after_host_event_timeout's fixture shape
+    (a status feed carrying `level_batch` so the pump admits samples and the
+    adapter calls into `run_level_match`), but the fake session's ramp never
+    locks."""
+    from contextlib import asynccontextmanager
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator, level_match, playback
+    from jasper.correction.level_match import LevelMatchRefused, describe_ramp_refusal
+
+    host_events = []
+    purged = []
+
+    class Session:
+        session_id = "room-level"
+        noise_floor_db = -40.0
+        input_device = None
+        mic_calibration = None
+
+        async def run_level_match(self, _geometry, **_kwargs):
+            return SimpleNamespace(
+                locked=False,
+                ramp=SimpleNamespace(error="agc_suspected", error_detail=None),
+            )
+
+    class Client:
+        def post_host_event(self, _session_id, _pull_token, payload):
+            host_events.append(dict(payload))
+
+        def status(self, _session_id, _pull_token):
+            return {"event": {"level_batch": {"samples": []}}}
+
+        def delete(self, session_id, _pull_token):
+            purged.append(session_id)
+
+    class Camilla:
+        async def get_volume_db(self, *, best_effort):
+            return -30.0
+
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+    class TonePlayer:
+        def __init__(self, _path):
+            pass
+
+        async def play(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    class EventVerifier:
+        def __init__(self, _pi_session):
+            pass
+
+        def verify(self, event):
+            return event
+
+    @asynccontextmanager
+    async def measurement_window():
+        yield
+
+    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: Camilla())
+    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: "tone.wav")
+    monkeypatch.setattr(playback, "TonePlayer", TonePlayer)
+    monkeypatch.setattr(
+        level_match,
+        "parse_level_batch",
+        lambda *_args, **_kwargs: [
+            SimpleNamespace(rms_dbfs=-40.0, seq=1, t_client_ms=1)
+        ],
+    )
+    monkeypatch.setattr(relay_session, "PhoneEventVerifier", EventVerifier)
+    monkeypatch.setattr(relay_session, "validate_capture_page", lambda *_args: None)
+    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
+
+    refusal = describe_ramp_refusal("agc_suspected")
+
+    with pytest.raises(LevelMatchRefused) as excinfo:
+        await correction_setup._run_relay_level_match(
+            Session(),
+            Client(),
+            SimpleNamespace(
+                session_id="cap-level",
+                pull_token="pull",
+                spec=SimpleNamespace(capture_protocol_version=1, kind="level_ramp"),
+            ),
+            geometry="listening_position",
+            run_token="run-level",
+        )
+
+    assert excinfo.value.code == "agc_suspected"
+    assert excinfo.value.user_message == refusal.user_message
+    terminal_events = [e for e in host_events if e.get("ramp", {}).get("terminal")]
+    assert terminal_events, host_events
+    assert terminal_events[-1]["ramp"]["error"] == refusal.user_message
+    assert terminal_events[-1]["ramp"]["error"] != "agc_suspected"
+    assert terminal_events[-1]["ramp"]["state"] == "error"
     assert purged == ["cap-level"]
 
 

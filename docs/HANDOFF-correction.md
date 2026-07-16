@@ -322,10 +322,34 @@
   `agc_slope_min_steps` (default 3) distinct commanded levels (the secondary
   floor); a slope `>= agc_slope_threshold` (default 0.7) verifies the chain
   (`RampData.agc_verified = True`, lock semantics identical to attested — see
-  `RampData.agc_trusted`); a lower slope aborts immediately with a NEW
-  terminal code, `error="agc_suspected"`, still at deeply quiet levels
-  (within ~span+one-step of where reports first cleared the trust floor,
-  typically 15-20+ dB below the pre-window); insufficient span/steps by lock
+  `RampData.agc_trusted`); a lower slope on the FIRST evidence window is held
+  open, not terminal — the 2026-07-16 jts3 finding: a 3-step/6.65 dB-span
+  estimate at slope 0.644 (just under 0.70) refused a mic that passed
+  cleanly with more evidence (4 steps) in a different flow twenty minutes
+  later, so a single marginal estimate is not enough to refuse a
+  measurement. `RampController._update_agc_evidence` records the marginal
+  `(slope, steps)` in `_LoopVars.agc_marginal` and logs `ramp_agc_marginal`
+  (INFO, single emitter), then holds `agc_verified` at `None` until the
+  staircase produces at least one more distinct commanded level; only a
+  SECOND failing evaluation — guaranteeing >= 4 distinct commanded levels —
+  sets `agc_verified = False` and the run's own `_terminal(...)` call fires
+  the single `ramp_agc_suspected` emission (a 2026-07-16 pre-fix bug had this
+  event logged TWICE, from both `_update_agc_evidence` and the terminal, with
+  two different field orders — now one emitter, one order), still at deeply
+  quiet levels (now ~span+two-steps of where reports first cleared the trust
+  floor). `RampData.error_detail` carries both measured slopes and the final
+  step count (e.g. `"slopes 0.64, 0.61 over 4 steps"`) so the refusal names
+  its evidence, not just its code — the SAME threshold, lock windows, ramp
+  rates, and safety timeout are unchanged. The homeowner-facing translation
+  of `(error, error_detail)` lives in exactly one place,
+  `jasper.correction.level_match.describe_ramp_refusal` — the relay web
+  adapter raises the typed `LevelMatchRefused(code, user_message)` instead of
+  a bare `ValueError(detail)` (the phone terminal and
+  `capture_relay.adapter_failed`'s `reason=` used to carry the raw code / the
+  exception class name with no translation), and the Room envelope
+  (`jasper.correction.envelope._level_match_refusal_failure`) surfaces the
+  same mapped message as `failure` instead of silently showing nothing while
+  the level is unlocked. Insufficient span/steps by lock
   time (INDETERMINATE, e.g. a driver capped early) also fails closed — under
   the DISTINCT wire code `error="agc_indeterminate"` for an ordinary window
   lock (no AGC was observed, only insufficient evidence, and the phone
@@ -2780,7 +2804,23 @@ Internal:
 
 ---
 
-Last verified: 2026-07-16 (empirical AGC slope verification for unattested
+Last verified: 2026-07-16 (jts3 hardware finding: a single marginal
+`agc_suspected` estimate — 0.644 slope over 3 steps — refused a measurement
+whose mic later passed cleanly with more evidence. The gate now holds a
+first failing estimate open for one more staircase step before any
+terminal, guaranteeing >= 4 steps of evidence for a real refusal, and
+`RampData.error_detail` names the measured slopes/steps; the double
+`ramp_agc_suspected` log emission is deduped to one; and every relay
+level-match refusal is translated through one mapping,
+`jasper.correction.level_match.describe_ramp_refusal`, into a typed
+`LevelMatchRefused(code, user_message)` — the phone terminal, the
+`capture_relay.adapter_failed` log `reason=`, and the Room envelope's
+`failure` block all read the same homeowner copy instead of a raw code or
+nothing at all. Checked against `jasper.audio_measurement.ramp
+.RampController._update_agc_evidence`, `jasper.correction.level_match
+.describe_ramp_refusal`, `jasper.correction.envelope
+._level_match_refusal_failure`, and hardware-free tests; no hardware
+behavior revalidated). Prior 2026-07-16 (empirical AGC slope verification for unattested
 level-ramp chains — undefined `autoGainControl` on iOS/WebKit no longer
 refuses client-side; `RampController` regresses the staircase's reported vs
 commanded dB and locks only once verified, aborting `agc_suspected` on a
