@@ -92,9 +92,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260715.5",
+        "capture_page_build": "20260715.6",
     }
-    assert "main.js?v=20260715-3" in index_html
+    assert "main.js?v=20260715-4" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -108,7 +108,7 @@ def test_capture_page_treats_host_stop_as_expected_control_flow():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     assert 'phase === "sweep_cancelled"' in main_js
-    assert "Measurement stopped safely. Return to the speaker" in main_js
+    assert "Measurement stopped safely. The speaker page shows what happens next." in main_js
     assert "if (sweepCompleted === false) return;" in main_js
 
 
@@ -293,4 +293,99 @@ def test_capture_page_level_completion_does_not_promise_wrong_next_step():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     assert "ready for the measurement sweep" not in main_js
-    assert "Level matched — return to the speaker for the next step." in main_js
+    assert "Level matched. The speaker continues on its own." in main_js
+
+
+def test_capture_page_terminal_screens_describe_outcome_not_command_return():
+    """Owner-directed reframe: terminal screens describe what happens next —
+    the household never needs to physically return to the speaker, since the
+    wizard auto-advances on its own. Pins the PHONE-1/XOVER-6 copy."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    start = main_js.index("function renderLevelRampComplete")
+    end = main_js.index("async function enumerateAudioInputs", start)
+    ramp_complete = main_js[start:end]
+    assert "Return to the speaker" not in ramp_complete
+    assert (
+        "Level matched. The speaker will continue on its own — "
+        "you can put this phone down." in ramp_complete
+    )
+    assert "The speaker page shows what happens next." in ramp_complete
+
+    assert (
+        "Measurement uploaded. The speaker will continue automatically."
+        in main_js
+    )
+    assert "You can close this tab." in main_js
+
+
+def test_capture_page_sweep_failed_renders_terminal_screen_not_dead_start():
+    """XOVER-6 interim: sweep_failed used to leave the Start-button screen
+    visible with a retry that replays a stale spec/run_token. It must now
+    render a terminal outcome screen instead, like ramp failures do."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "function renderSweepFailed(ctx, err)" in main_js
+    assert "failure.sweepFailed = true" in main_js
+    assert "if (err && err.sweepFailed) {" in main_js
+    assert "renderSweepFailed(ctx, err);" in main_js
+
+    start = main_js.index("function renderSweepFailed")
+    end = main_js.index("async function enumerateAudioInputs", start)
+    sweep_failed_path = main_js[start:end]
+    assert "Tap Start to try again" not in sweep_failed_path
+    assert "The speaker page shows what happens next." in sweep_failed_path
+
+
+def test_capture_page_no_return_link_falls_back_to_close_tab_copy():
+    """PHONE-2: when safeReturnUrl() is empty, the terminal screens that
+    otherwise render a Back-to-speaker button must not silently drop the CTA
+    with no replacement copy. 3 pre-existing call sites (capture complete,
+    ramp complete, bound-setup-expired) plus the new XOVER-6 sweep_failed
+    screen, which needs the same fallback."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert main_js.count('linkButton("Back to speaker", returnUrl)') == 4
+    assert main_js.count('text: "You can close this tab."') == 4
+
+
+def test_capture_page_setup_continue_and_fragment_errors_use_friendly_helper():
+    """PHONE-3: the calibration-continue, position-count-continue, and
+    fragment-parse error paths used to surface raw exception text with their
+    own ad hoc ternary instead of the shared captureFailureMessage() helper."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert (
+        'setStatus(err && err.message ? String(err.message) : String(err), "error")'
+        not in main_js
+    )
+
+    start = main_js.index("handle = parseFragment(")
+    end = main_js.index("client = new RelayClient(", start)
+    boot_fragment_path = main_js[start:end]
+    assert "setStatus(captureFailureMessage(err), \"error\");" in boot_fragment_path
+
+
+def test_capture_page_names_the_device_instead_of_ambiguous_this_page():
+    """Item 6: backgrounded-abort copy said 'stay on this page', ambiguous
+    about which device. Name the phone explicitly."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "must stay on this page" not in main_js
+    assert "this phone's screen must stay on" in main_js
+
+
+def test_crossover_candidate_review_collapses_provenance_hashes():
+    """PHONE-4: renderCandidateReview() lives in the Pi-served /correction/
+    crossover wizard (deploy/assets/correction/js/crossover/main.js), not
+    capture-page/ — the reviewer's cited surface is what actually renders
+    candidate hashes to the household. Raw fingerprints/algorithm id+version
+    move behind a collapsed <details> disclosure; the region/driver rows stay
+    primary, plain-language copy."""
+    crossover_js = (
+        _REPO / "deploy/assets/correction/js/crossover/main.js"
+    ).read_text(encoding="utf-8")
+
+    assert "el('details', {class: 'candidate-provenance'}" in crossover_js
+    assert "el('summary', {text: 'Technical details'})" in crossover_js
+    assert "evidence.algorithm_id" in crossover_js

@@ -161,7 +161,9 @@ function captureFailureMessage(err) {
       "and create a new phone capture link."
     );
   }
-  return `Measurement failed: ${message}. Tap Start to try again.`;
+  // Trim a trailing period so wrapping a message that is already a full
+  // sentence (e.g. FragmentError's own friendly text) never produces "..".
+  return `Measurement failed: ${message.replace(/\.+$/, "")}. Tap Start to try again.`;
 }
 
 function relayBootFailureMessage(err) {
@@ -179,8 +181,8 @@ function relayBootFailureMessage(err) {
   }
   if (message.includes("incompatible")) {
     return (
-      `${message}. Return to the speaker and update it or publish the matching ` +
-      "capture page before trying again."
+      `${message}. Return to the speaker and update it, publish the matching ` +
+      "capture page, or create a fresh link from the speaker page before trying again."
     );
   }
   return (
@@ -303,7 +305,7 @@ function renderCaptureComplete(ctx) {
     el("h1", { class: "cap-heading", text: "Measurement uploaded" }),
     el("p", {
       class: "cap-note",
-      text: "Your speaker is analyzing the recording. Return to the local speaker page to continue.",
+      text: "Measurement uploaded. The speaker will continue automatically.",
     }),
   ];
   if (returnUrl) {
@@ -311,10 +313,36 @@ function renderCaptureComplete(ctx) {
   } else {
     children.push(el("p", {
       class: "cap-note",
-      text: "You can now return to the speaker page on your local network.",
+      text: "You can close this tab.",
     }));
   }
   setScreen(ctx.screenEl, children);
+}
+
+// XOVER-6 interim: sweep_failed used to bubble up through onStart's generic
+// catch and leave the Start-button screen on-screen — a dead affordance,
+// since a retry replays the same (now stale) spec/run_token rather than
+// fetching a fresh one. Render a terminal screen instead, matching the
+// renderLevelRampComplete pattern: state the outcome, then point at the
+// speaker page rather than offering a retry that cannot work. A proper fix
+// (session refresh so retry is live again) is a separate, larger change.
+function renderSweepFailed(ctx, err) {
+  const message = (err && err.message ? String(err.message) : String(err)).replace(/\.+$/, "");
+  const returnUrl = safeReturnUrl(ctx.spec);
+  const children = [
+    el("h1", { class: "cap-heading", text: "Measurement failed" }),
+    el("p", {
+      class: "cap-note",
+      text: `${message}. The speaker page shows what happens next.`,
+    }),
+  ];
+  if (returnUrl) {
+    children.push(linkButton("Back to speaker", returnUrl));
+  } else {
+    children.push(el("p", { class: "cap-note", text: "You can close this tab." }));
+  }
+  setScreen(ctx.screenEl, children);
+  setStatus("Measurement failed. The speaker page shows what happens next.", "error");
 }
 
 function renderLevelRampComplete(ctx, ramp) {
@@ -324,32 +352,32 @@ function renderLevelRampComplete(ctx, ramp) {
   const messages = {
     locked: {
       heading: "Level matched",
-      note: "The speaker locked a safe measurement level. Return to the speaker to continue.",
-      status: "Level matched — return to the speaker for the next step.",
+      note: "Level matched. The speaker will continue on its own — you can put this phone down.",
+      status: "Level matched. The speaker continues on its own.",
       kind: "done",
     },
     maxed_out: {
       heading: "Level check needs attention",
-      note: "The speaker reached its safe software limit. Return to the speaker for the next instruction.",
-      status: "Safe software limit reached — check the speaker page.",
+      note: "The speaker reached its safe software limit. The speaker page shows what happens next.",
+      status: "Safe software limit reached. The speaker page shows what happens next.",
       kind: "error",
     },
     aborted: {
       heading: "Level check stopped",
-      note: "The level check was stopped. Return to the speaker before trying again.",
+      note: "The level check was stopped. The speaker page shows what happens next.",
       status: "Level check stopped.",
       kind: "error",
     },
     cancelled: {
       heading: "Level check cancelled",
-      note: "The speaker cancelled this level check. Return to the speaker to continue.",
+      note: "The speaker cancelled this level check. The speaker page shows what happens next.",
       status: "Level check cancelled.",
       kind: "error",
     },
     error: {
       heading: "Level check failed",
-      note: "The speaker could not lock a safe level. Return to the speaker for details.",
-      status: "Level check failed — check the speaker page.",
+      note: "The speaker could not lock a safe level. The speaker page shows what happens next.",
+      status: "Level check failed. The speaker page shows what happens next.",
       kind: "error",
     },
   };
@@ -362,7 +390,11 @@ function renderLevelRampComplete(ctx, ramp) {
     el("h1", { class: "cap-heading", text: message.heading }),
     el("p", { class: "cap-note", text: message.note }),
   ];
-  if (returnUrl) children.push(linkButton("Back to speaker", returnUrl));
+  if (returnUrl) {
+    children.push(linkButton("Back to speaker", returnUrl));
+  } else {
+    children.push(el("p", { class: "cap-note", text: "You can close this tab." }));
+  }
   setScreen(ctx.screenEl, children);
   setStatus(message.status, message.kind);
 }
@@ -605,7 +637,7 @@ function renderCalibration(screenEl, ctx) {
       try {
         await bindSetupBeforeLevel(ctx);
       } catch (err) {
-        setStatus(err && err.message ? String(err.message) : String(err), "error");
+        setStatus(captureFailureMessage(err), "error");
         return;
       }
       renderLevelReady(screenEl, ctx);
@@ -613,7 +645,7 @@ function renderCalibration(screenEl, ctx) {
       try {
         await validateSetupBeforeContinue(ctx);
       } catch (err) {
-        setStatus(err && err.message ? String(err.message) : String(err), "error");
+        setStatus(captureFailureMessage(err), "error");
         return;
       }
       renderPositionCount(screenEl, ctx);
@@ -716,7 +748,7 @@ function renderPositionCount(screenEl, ctx) {
     try {
       await bindSetupBeforeLevel(ctx);
     } catch (err) {
-      setStatus(err && err.message ? String(err.message) : String(err), "error");
+      setStatus(captureFailureMessage(err), "error");
       return;
     }
     renderLevelReady(screenEl, ctx);
@@ -810,7 +842,7 @@ async function onLevelRampStart(ctx) {
     aborted = true;
     setStatus(
       reason === "backgrounded"
-        ? "Level check stopped — the screen must stay on this page."
+        ? "Level check stopped — this phone's screen must stay on."
         : `Level check stopped — ${reason}.`,
       "error",
     );
@@ -950,11 +982,16 @@ async function waitForSweepComplete(client, spec, isAborted) {
     }
     if (phase === "sweep_complete") return true;
     if (phase === "sweep_cancelled") {
-      setStatus("Measurement stopped safely. Return to the speaker to continue.", "info");
+      setStatus("Measurement stopped safely. The speaker page shows what happens next.", "info");
       return false;
     }
     if (phase === "sweep_failed") {
-      throw new Error(event.error || "speaker sweep failed");
+      // Marked so onStart's catch renders a terminal failure screen instead
+      // of leaving the dead Start button visible (XOVER-6 interim — see
+      // renderSweepFailed).
+      const failure = new Error(event.error || "speaker sweep failed");
+      failure.sweepFailed = true;
+      throw failure;
     }
     await delayMs(pollMs);
   }
@@ -984,7 +1021,7 @@ async function onStart(ctx) {
     aborted = true;
     setStatus(
       reason === "backgrounded"
-        ? "Measurement stopped — the screen must stay on this page. Tap Start to try again."
+        ? "Measurement stopped — this phone's screen must stay on. Tap Start to try again."
         : `Measurement stopped — ${reason}. Tap Start to try again.`,
       "error",
     );
@@ -1102,7 +1139,11 @@ async function onStart(ctx) {
     setStatus("Done — your speaker is analyzing the measurement.", "done");
   } catch (err) {
     if (!aborted) {
-      setStatus(captureFailureMessage(err), "error");
+      if (err && err.sweepFailed) {
+        renderSweepFailed(ctx, err);
+      } else {
+        setStatus(captureFailureMessage(err), "error");
+      }
     }
   } finally {
     // Host Stop is expected control flow and returns above without throwing.
@@ -1127,7 +1168,7 @@ async function boot() {
   try {
     handle = parseFragment(globalThis.location ? globalThis.location.hash : "");
   } catch (err) {
-    setStatus(err.message, "error");
+    setStatus(captureFailureMessage(err), "error");
     return;
   }
 
@@ -1177,7 +1218,11 @@ async function boot() {
           text: "This phone no longer has the setup identity from the safe level check. Return to the speaker and run that check again before measuring.",
         }),
       ];
-      if (returnUrl) children.push(linkButton("Back to speaker", returnUrl));
+      if (returnUrl) {
+        children.push(linkButton("Back to speaker", returnUrl));
+      } else {
+        children.push(el("p", { class: "cap-note", text: "You can close this tab." }));
+      }
       setScreen(screenEl, children);
       setStatus("Measurement setup expired — run the level check again.", "error");
       return;
