@@ -152,7 +152,8 @@ TTS is already a core realtime-voice component:
   `VOLUME_CONTEXT`: post-DSP outputd must not inherit fan-in's downstream
   pre-compensation, and today it has neither equivalent mute semantics nor
   live re-gain for queued speech. It keeps the pre-volume-context bonded-member
-  behavior. The named follow-up **Outputd post-DSP assistant-volume parity**
+  behavior. The follow-up
+  [Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
   must make mix stage an explicit input to `decide_gain`, add mute, and apply
   live re-gain in outputd's mix loop before parity can be claimed.
 - Cues and chirps route through the same `TtsPlayout` object. They

@@ -592,10 +592,10 @@ audio mixes post-round-trip instead of riding the synced stream. The reconciler
 also writes `JASPER_TTS_MIX_STAGE=post_dsp`; that explicit fact disables every
 voice/coordinator volume-context publisher for this route. Outputd therefore
 keeps the pre-volume-context behavior and does not claim fan-in parity for
-mute, downstream compensation, or live knob re-gain. The named follow-up
-**Outputd post-DSP assistant-volume parity** must make mix stage an explicit
-gain-policy input, add post-DSP mute semantics, and re-gain queued speech in
-outputd's mix loop before parity can be claimed. One
+mute, downstream compensation, or live knob re-gain. The follow-up
+[Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
+must make mix stage an explicit gain-policy input, add post-DSP mute semantics,
+and re-gain queued speech in outputd's mix loop before parity can be claimed. One
 contract delta to know when comparing acks: both daemons now return a
 per-segment playout ledger in the `FLUSH_SYNC` ack (provider item id,
 flushed frames, `max_audio_played_ms`, `events[]`) — the ack KEY shape is a

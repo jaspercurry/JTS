@@ -361,9 +361,10 @@ in `jasper-fanin`.
 The passive bonded-member route is explicitly outside this parity claim. Its
 grouping env sets `JASPER_TTS_MIX_STAGE=post_dsp`, and voice/coordinator send no
 pre-DSP `VOLUME_CONTEXT` to outputd. Outputd continues the pre-volume-context
-post-round-trip behavior until the named **Outputd post-DSP assistant-volume
-parity** follow-up gives gain policy an explicit mix-stage input and adds mute
-plus live re-gain in outputd's mix loop. Do not reuse fan-in's
+post-round-trip behavior until
+[Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
+gives gain policy an explicit mix-stage input and adds mute plus live re-gain
+in outputd's mix loop. Do not reuse fan-in's
 `- downstream_db` algebra at a post-DSP mixer.
 
 Python owns only provider source profiles:

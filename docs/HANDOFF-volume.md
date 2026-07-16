@@ -479,7 +479,9 @@ Multiple guardrails sit on top:
   and caps the result with the dynamic peak-aware limit (`max_peak_dbfs -
   source_peak_dbfs`) so quiet voices are not pinned below music by a
   stale global clamp. Passive bonded outputd TTS deliberately does not claim
-  volume-context parity yet; see the named follow-up in
+  volume-context parity yet; see
+  [Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
+  and the scope in
   [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
 - `volume_limit: 0.0` in every JTS CamillaDSP YAML — base,
   room-correction, sound-preference, and active-speaker baseline configs
