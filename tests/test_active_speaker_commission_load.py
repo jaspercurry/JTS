@@ -21,6 +21,7 @@ staged config (crash-recovery-MUTED). These tests pin:
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -614,6 +615,22 @@ def test_live_confirm_never_converging_raises_convergence_not_safety(
     staged_path = staged["config"]["path"]
     staged_raw = _block(Path(staged_path).read_text(encoding="utf-8"))
     cam = StuckCamilla(staged_path, staged_raw)
+    # Deterministic budget expiry: with a real wall clock, a CI scheduling
+    # stall > the 50 ms budget between loop start and the first post-read
+    # check ends the loop after ONE read and flakes `read_calls > 1`
+    # (observed twice on the py3.12 leg, 2026-07-16). Freeze the module's
+    # clock at 0 until the second read has happened, then expire the
+    # budget — read-count-keyed, so it stays valid if the loop gains or
+    # loses monotonic() call sites. Scoped to the module's `time` binding
+    # (delegating wrapper), never the global time module.
+    class _ReadKeyedTime:
+        def monotonic(self):
+            return 0.0 if cam.read_calls < 2 else 1000.0
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    monkeypatch.setattr(startup_load_mod, "time", _ReadKeyedTime())
 
     with caplog.at_level("INFO", logger=startup_load_mod.logger.name):
         result, cam, *_ = _load(tmp_path, monkeypatch, role="woofer", camilla=cam)
