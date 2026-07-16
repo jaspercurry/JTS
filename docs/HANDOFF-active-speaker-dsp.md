@@ -1964,7 +1964,17 @@ volume: the operator controls the requested test level, JTS clamps it to a
 small safe envelope, and the default is the quietest setting (`-80 dBFS`). As of
 2026-06-03 the level is a backend-owned persisted guard at
 `/var/lib/jasper/active_speaker_calibration_level.json` (test override:
-`JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE`). The `/sound/` card updates
+`JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE`). As of 2026-07-16 the
+persisted state is scoped to the current commissioning run: the write path
+(`_active_speaker_calibration_level_payload` / `_active_speaker_stop_payload`
+in `jasper/web/sound_setup.py`) stamps each write with the active
+`safe_playback` session id (`run_id`), and a load whose stored `run_id`
+doesn't match the caller's — including a pre-fix statefile with no `run_id`
+at all — resolves to the same safe-floor default as no state on disk. This
+closes a residual where a leftover level from a differently-configured past
+session could seed a fresh run louder than the operator has acknowledged
+this run; read-only display call sites that omit `run_id` are unaffected.
+The `/sound/` card updates
 that state through `/sound/active-speaker/calibration-level`; upward movement
 is limited to one 1 dB manual `set` transition. Product-facing
 `raise_toward_audible` / `ramp` transitions may move by the larger bounded
@@ -2225,7 +2235,10 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-15 (Wave 1 target-bound research, visible confirmed
+Last verified: 2026-07-16 (calibration-level statefile scoped to the current
+commissioning run's `safe_playback` session id, checked against
+`jasper.active_speaker.calibration_level` and `jasper.web.sound_setup`; prior
+2026-07-15 pass covered Wave 1 target-bound research, visible confirmed
 driver-safety profile, excitation admission, nine-state lifecycle, exact
 eligibility receipt, reachable isolated-driver persisted admission under one
 bounded writer transaction, legacy direct summed-endpoint pre-audio refusal,
