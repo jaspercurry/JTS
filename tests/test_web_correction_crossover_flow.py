@@ -3866,7 +3866,7 @@ def test_reference_axis_envelope_uses_canonical_repeat_binding(monkeypatch):
     env = crossover_envelope.build_crossover_envelope(status)
 
     assert env["next_action"]["id"] == "measure_reference_axis_driver"
-    assert env["next_action"]["label"] == "Measure fixed-axis woofer — repeat 2"
+    assert env["next_action"]["label"] == "Measure fixed-axis woofer again"
 
 
 def test_restart_after_near_field_capture_returns_to_fixed_axis_level():
@@ -4707,6 +4707,52 @@ def test_crossover_envelope_manual_profile_offers_room_edit_or_automatic():
         "tune_automatic",
         "edit_manual",
     ]
+    # A fresh, uninterrupted done_manual carries no interrupted-retune nudge.
+    assert env["nudges"] == []
+
+
+def test_crossover_envelope_done_manual_surfaces_interrupted_retune_nudge():
+    """A manual profile is applied, but an in-progress automatic retune's
+    level context was discarded (durable repeat safety state unavailable).
+    Pre-fix, done_manual renders as a clean terminal ("Your manual crossover
+    is applied and ready for room correction.") with no indication that a
+    retune was interrupted -- hardware-confirmed 2026-07-16. Post-fix, an
+    honest nudge names the interruption and where the flow resumes.
+    """
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["setup"]["acoustic_commissioning"] = {"allowed": True}
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
+    status["applied_profile"] = {
+        "status": "applied",
+        "tuning_owner": "manual",
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "tuning_owner": "manual",
+        },
+    }
+    status["level_match"]["repeats"] = {"durable": {"status": "unavailable"}}
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "done_manual"
+    interrupted = [
+        n for n in env["nudges"]
+        if n["code"] == "crossover_done_manual_retune_interrupted"
+    ]
+    assert interrupted == [{
+        "code": "crossover_done_manual_retune_interrupted",
+        "severity": "warn",
+        "text": (
+            "An earlier measurement attempt was interrupted. Measuring "
+            "starts again from the microphone step."
+        ),
+    }]
 
 
 def test_completed_automatic_measurement_explicitly_replaces_manual_profile():
@@ -4945,6 +4991,37 @@ def test_crossover_envelope_requires_exact_controller_attempt_coverage(
     assert (env["screen"] == "apply") is apply_ready
 
 
+@pytest.mark.parametrize("attempts", (0, 1, 2))
+def test_crossover_envelope_driver_label_never_leaks_repeat_numeral(attempts):
+    """The repeat-ledger counter must never appear in the button label --
+    it belongs in verdict_text (render_repeat_progress), not next_action.
+    Covers attempts 0 (no prior repeat), 1, and 2."""
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    if attempts:
+        status["level_match"]["repeats"] = {
+            "targets": {
+                "mono:woofer": {
+                    "attempts": attempts,
+                    "accepted": attempts,
+                    "target": 3,
+                }
+            },
+            "failures": {},
+        }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    label = env["next_action"]["label"]
+    assert "repeat" not in label.lower()
+    if attempts:
+        assert label == "Measure woofer again"
+    else:
+        assert label == "Position the mic, then measure woofer"
+
+
 def test_crossover_envelope_surfaces_server_owned_repeat_progress():
     from jasper.active_speaker import crossover_envelope
 
@@ -4964,8 +5041,8 @@ def test_crossover_envelope_surfaces_server_owned_repeat_progress():
     env = crossover_envelope.build_crossover_envelope(status)
 
     assert env["screen"] == "driver"
-    assert "Repeat 3; 2 of 3 accepted" in env["verdict_text"]
-    assert env["next_action"]["label"] == "Measure woofer — repeat 3"
+    assert "2 of 3 measurements accepted" in env["verdict_text"]
+    assert env["next_action"]["label"] == "Measure woofer again"
 
 
 def test_crossover_envelope_surfaces_fixed_axis_repeat_progress():
@@ -4990,8 +5067,8 @@ def test_crossover_envelope_surfaces_fixed_axis_repeat_progress():
     env = crossover_envelope.build_crossover_envelope(status)
 
     assert env["screen"] == "driver_reference_axis"
-    assert "Repeat 3; 2 of 3 accepted" in env["verdict_text"]
-    assert env["next_action"]["label"] == "Measure fixed-axis woofer — repeat 3"
+    assert "2 of 3 measurements accepted" in env["verdict_text"]
+    assert env["next_action"]["label"] == "Measure fixed-axis woofer again"
 
 
 @pytest.mark.parametrize("capture_geometry", ["near_field", "reference_axis"])
@@ -5092,8 +5169,8 @@ def test_durable_attempts_override_process_only_repeat_count():
     _locked_level(status)
     status["level_match"]["repeats"] = store.repeat_snapshot()
     env = crossover_envelope.build_crossover_envelope(status)
-    assert "Repeat 4; 1 of 3 accepted" in env["verdict_text"]
-    assert env["next_action"]["label"] == "Measure woofer — repeat 4"
+    assert "1 of 3 measurements accepted" in env["verdict_text"]
+    assert env["next_action"]["label"] == "Measure woofer again"
 
 
 @pytest.mark.parametrize(
@@ -6124,15 +6201,107 @@ def test_crossover_envelope_surfaces_bounded_low_lock_without_blocking_sweeps():
 
     assert env["screen"] == "driver"
     assert env["next_action"]["id"] == "measure_driver"
-    assert env["nudges"] == [{
-        "code": "bounded_low_measurement_level",
-        "severity": "warn",
-        "text": (
-            "The microphone level is stable and safe but lower than preferred "
-            "(13.1 dB below the preferred window). JTS will verify each sweep "
-            "before using it."
-        ),
-    }]
+    # The bounded-low nudge is step-scoped to the microphone screen (see
+    # test_crossover_envelope_bounded_low_nudge_step_scoped_to_microphone
+    # below); this screen is "driver", so it must not appear here.
+    assert env["nudges"] == []
+
+
+def _bounded_low_level_match() -> dict:
+    return {
+        "running": False,
+        "valid": True,
+        "ready": True,
+        "context_id": "protected-profile",
+        "last": {
+            "ramp": {
+                "state": "locked",
+                "lock_kind": "bounded_low_level",
+                "window_shortfall_db": 13.07,
+            }
+        },
+    }
+
+
+_BOUNDED_LOW_NUDGE = {
+    "code": "bounded_low_measurement_level",
+    "severity": "warn",
+    "text": (
+        "The microphone level is stable and safe but lower than preferred "
+        "(13.1 dB below the preferred window). JTS will verify each sweep "
+        "before using it."
+    ),
+}
+
+
+def test_crossover_envelope_bounded_low_nudge_step_scoped_to_microphone():
+    """The bounded-low nudge is derived from level_match.last -- the most
+    recently persisted ramp -- which does not necessarily belong to the
+    screen the envelope currently renders. Hardware testing on 2026-07-16
+    found this nudge rendering on every screen (driver, alignment, apply)
+    until a later ramp happened to overwrite level_match.last. The nudge
+    must only attach when the envelope resolves to the microphone step.
+
+    Pre-fix, this failed: the nudge appeared on all four constructed
+    statuses (including driver/alignment/apply), not just the microphone
+    one. See PR body for the recorded pre-fix failure output.
+    """
+    from jasper.active_speaker import crossover_envelope
+
+    # Present: near-field driver evidence is complete but the fixed-axis
+    # microphone level for the reference-axis pass has not been locked yet
+    # -- this is still the microphone step, and level_match.last legitimately
+    # carries the bounded-low lock from the near-field level check.
+    present_status = _envelope_status()
+    present_status["level_match"] = _bounded_low_level_match()
+    present_status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    _completed_near_field_repeat_state(present_status)
+    present_env = crossover_envelope.build_crossover_envelope(present_status)
+    assert present_env["screen"] == "microphone"
+    assert present_env["nudges"] == [_BOUNDED_LOW_NUDGE]
+
+    # Absent: driver screen, same persisted bounded-low ramp.
+    driver_status = _envelope_status()
+    driver_status["level_match"] = _bounded_low_level_match()
+    driver_env = crossover_envelope.build_crossover_envelope(driver_status)
+    assert driver_env["screen"] == "driver"
+    assert driver_env["nudges"] == []
+
+    # Absent: apply screen, same persisted bounded-low ramp.
+    apply_status = _envelope_status()
+    apply_status["level_match"] = _bounded_low_level_match()
+    apply_status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    _completed_near_field_repeat_state(apply_status)
+    _complete_reference_axis(apply_status)
+    _lock_reference_axis_driver(apply_status, "woofer")
+    _lock_reference_axis_driver(apply_status, "tweeter")
+    _completed_reference_axis_repeat_state(apply_status)
+    apply_status["setup"]["automatic_candidate"] = {
+        "ready": True,
+        "reason": None,
+        "candidate_fingerprint": "automatic-candidate",
+    }
+    apply_env = crossover_envelope.build_crossover_envelope(apply_status)
+    assert apply_env["screen"] == "apply"
+    assert apply_env["nudges"] == []
+
+    # Absent: alignment screen, same persisted bounded-low ramp.
+    alignment_status = _envelope_status()
+    alignment_status["level_match"] = _bounded_low_level_match()
+    alignment_status["commissioning_run"] = {
+        "status": "current",
+        "isolated_evidence": {"status": "complete"},
+    }
+    alignment_status["region_commissioning"] = {"status": "collecting"}
+    alignment_env = crossover_envelope.build_crossover_envelope(alignment_status)
+    assert alignment_env["screen"] == "alignment"
+    assert alignment_env["nudges"] == []
 
 
 # --- phone-mic relay transport (P7) -------------------------------------------

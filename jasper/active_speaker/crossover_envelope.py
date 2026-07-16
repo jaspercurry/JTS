@@ -585,6 +585,13 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         done.update({"microphone", "drivers"})
 
     nudges: list[dict[str, str]] = []
+    # Collected provisionally and only attached to `nudges` once `active_step`
+    # is resolved below (this nudge is derived from the most recent persisted
+    # ramp, level_match.last, which can be stale relative to the screen the
+    # envelope actually renders — hardware-confirmed on 2026-07-16 to render
+    # on every screen, including driver/alignment/apply, until a different
+    # ramp overwrote it). Step-scoped to the microphone screen only.
+    pending_bounded_low_nudge: dict[str, str] | None = None
     level_run = _level_run(status)
     level_run_phase = str(level_run.get("phase") or "")
     level_run_unavailable = level_run.get("terminal_reason") == "state_unavailable"
@@ -649,14 +656,14 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(shortfall, (int, float))
             else ""
         )
-        nudges.append({
+        pending_bounded_low_nudge = {
             "code": "bounded_low_measurement_level",
             "severity": "warn",
             "text": (
                 "The microphone level is stable and safe but lower than preferred"
                 f"{shortfall_text}. JTS will verify each sweep before using it."
             ),
-        })
+        }
 
     if durable_repeat.get("status") == "unavailable":
         level_ready = False
@@ -908,6 +915,21 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "href": "/sound/",
             },
         ]
+        if durable_repeat.get("status") == "unavailable" or blocked_controller_targets:
+            # An automatic retune's level context was discarded (durable
+            # repeat state unavailable, or a repeat result was blocked/
+            # interrupted mid-persistence) while a manual profile is applied.
+            # This screen otherwise reads as a clean terminal and hides that
+            # an in-progress retune got interrupted -- hardware-confirmed
+            # 2026-07-16.
+            nudges.append({
+                "code": "crossover_done_manual_retune_interrupted",
+                "severity": "warn",
+                "text": (
+                    "An earlier measurement attempt was interrupted. Measuring "
+                    "starts again from the microphone step."
+                ),
+            })
         active_step = "apply"
     elif (
         not strict_isolated_complete
@@ -1080,7 +1102,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 action = {
                     "id": "measure_driver",
                     "label": (
-                        f"Measure {role} — repeat {attempts + 1}"
+                        f"Measure {role} again"
                         if attempts
                         else f"Position the mic, then measure {role}"
                     ),
@@ -1208,7 +1230,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             action = {
                 "id": "measure_reference_axis_driver",
                 "label": (
-                    f"Measure fixed-axis {role} — repeat {attempts + 1}"
+                    f"Measure fixed-axis {role} again"
                     if attempts
                     else f"Fix the mic on-axis, then measure {role}"
                 ),
@@ -1559,6 +1581,9 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "body": {},
         }
         active_step = "microphone"
+
+    if active_step == "microphone" and pending_bounded_low_nudge is not None:
+        nudges.append(pending_bounded_low_nudge)
 
     return {
         "schema_version": CROSSOVER_ENVELOPE_SCHEMA_VERSION,

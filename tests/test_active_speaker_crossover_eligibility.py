@@ -13,8 +13,10 @@ from jasper.active_speaker.capture_geometry import (
     driver_repeat_binding,
 )
 from jasper.active_speaker.crossover_eligibility import (
+    RepeatProgress,
     automatic_measurement_eligibility,
     mapping_sequence,
+    render_repeat_progress,
     repeat_progress,
 )
 
@@ -431,6 +433,29 @@ def test_repeat_progress_exposes_completed_status_and_last_result():
         "estimated_snr_db": 8.4,
         "snr_verdict": "insufficient",
     }
+
+
+def test_render_repeat_progress_uses_human_terms_not_repeat_n():
+    """The progress sentence must never say "Repeat N" -- that leaked the
+    repeat-ledger counter into user-facing copy. It stays a plain count of
+    accepted-vs-target measurements."""
+    zero_attempts = render_repeat_progress(
+        RepeatProgress(
+            attempts=0, accepted=0, target=3, failure={}, completed=False,
+            last_result={},
+        )
+    )
+    assert zero_attempts == " JTS takes 3 stationary repeats."
+    assert "Repeat" not in zero_attempts
+
+    with_attempts = render_repeat_progress(
+        RepeatProgress(
+            attempts=2, accepted=2, target=3, failure={}, completed=False,
+            last_result={},
+        )
+    )
+    assert with_attempts == " 2 of 3 measurements accepted."
+    assert "Repeat" not in with_attempts
 
 
 @pytest.mark.parametrize("status", ("active", "ready", "refused", "aborted", None))
