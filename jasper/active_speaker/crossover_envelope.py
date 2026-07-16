@@ -590,7 +590,9 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     # ramp, level_match.last, which can be stale relative to the screen the
     # envelope actually renders — hardware-confirmed on 2026-07-16 to render
     # on every screen, including driver/alignment/apply, until a different
-    # ramp overwrote it). Step-scoped to the microphone screen only.
+    # ramp overwrote it). Scoped to the microphone STEP
+    # (active_step == "microphone", which legitimately includes the
+    # waiting screen during a level ramp), not to one screen.
     pending_bounded_low_nudge: dict[str, str] | None = None
     level_run = _level_run(status)
     level_run_phase = str(level_run.get("phase") or "")
@@ -668,6 +670,9 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     if durable_repeat.get("status") == "unavailable":
         level_ready = False
         done.discard("microphone")
+        # On the done_manual screen the tailored interrupted-retune nudge
+        # supersedes this generic one (the supersede decision lives at that
+        # branch's attachment point, which removes this entry).
         nudges.append({
             "code": "crossover_repeat_admission_unavailable",
             "severity": "warn",
@@ -918,12 +923,21 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         if durable_repeat.get("status") == "unavailable":
             # An automatic retune's level context was discarded (durable
             # repeat safety state unavailable) while a manual profile is
-            # applied. This screen otherwise reads as a clean terminal and
-            # hides that an in-progress retune got interrupted --
+            # applied. The verdict otherwise reads as a clean terminal and
+            # does not name that an in-progress retune got interrupted --
             # hardware-confirmed 2026-07-16. A blocked controller target
             # never reaches this branch: the earlier unconditional
             # `elif blocked_controller_targets and not strict_isolated_complete`
             # branch owns that condition and forces screen="microphone".
+            #
+            # One fact, one nudge: this tailored nudge and the generic
+            # crossover_repeat_admission_unavailable nudge (appended above)
+            # fire from the identical condition, so on this screen the
+            # tailored one supersedes the generic one.
+            nudges[:] = [
+                nudge for nudge in nudges
+                if nudge["code"] != "crossover_repeat_admission_unavailable"
+            ]
             nudges.append({
                 "code": "crossover_done_manual_retune_interrupted",
                 "severity": "warn",

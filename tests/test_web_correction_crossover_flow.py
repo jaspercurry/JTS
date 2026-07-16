@@ -4714,10 +4714,14 @@ def test_crossover_envelope_manual_profile_offers_room_edit_or_automatic():
 def test_crossover_envelope_done_manual_surfaces_interrupted_retune_nudge():
     """A manual profile is applied, but an in-progress automatic retune's
     level context was discarded (durable repeat safety state unavailable).
-    Pre-fix, done_manual renders as a clean terminal ("Your manual crossover
-    is applied and ready for room correction.") with no indication that a
-    retune was interrupted -- hardware-confirmed 2026-07-16. Post-fix, an
-    honest nudge names the interruption and where the flow resumes.
+    Pre-fix, done_manual's verdict read as a clean terminal ("Your manual
+    crossover is applied and ready for room correction.") and the only hint
+    was the generic jargon nudge ("Repeat safety state is unavailable...")
+    -- hardware-confirmed 2026-07-16. Post-fix, one tailored nudge names the
+    interruption and where the flow resumes, and it SUPERSEDES the generic
+    crossover_repeat_admission_unavailable nudge that fires from the same
+    condition: one fact, one nudge. Pinning the full nudge list makes that
+    dedupe decision explicit and regression-proof.
     """
     from jasper.active_speaker import crossover_envelope
 
@@ -4741,11 +4745,9 @@ def test_crossover_envelope_done_manual_surfaces_interrupted_retune_nudge():
     env = crossover_envelope.build_crossover_envelope(status)
 
     assert env["screen"] == "done_manual"
-    interrupted = [
-        n for n in env["nudges"]
-        if n["code"] == "crossover_done_manual_retune_interrupted"
-    ]
-    assert interrupted == [{
+    # The FULL nudge list: exactly the tailored nudge, nothing else -- the
+    # generic crossover_repeat_admission_unavailable nudge must not co-fire.
+    assert env["nudges"] == [{
         "code": "crossover_done_manual_retune_interrupted",
         "severity": "warn",
         "text": (
@@ -4753,6 +4755,16 @@ def test_crossover_envelope_done_manual_surfaces_interrupted_retune_nudge():
             "starts again from the microphone step."
         ),
     }]
+
+    # Contrast: on every other screen the generic nudge is unchanged --
+    # the supersede is scoped to done_manual only.
+    other_status = _envelope_status()
+    other_status["level_match"]["repeats"] = {"durable": {"status": "unavailable"}}
+    other_env = crossover_envelope.build_crossover_envelope(other_status)
+    assert other_env["screen"] != "done_manual"
+    assert [n["code"] for n in other_env["nudges"]] == [
+        "crossover_repeat_admission_unavailable"
+    ]
 
 
 def test_completed_automatic_measurement_explicitly_replaces_manual_profile():
@@ -6201,9 +6213,10 @@ def test_crossover_envelope_surfaces_bounded_low_lock_without_blocking_sweeps():
 
     assert env["screen"] == "driver"
     assert env["next_action"]["id"] == "measure_driver"
-    # The bounded-low nudge is step-scoped to the microphone screen (see
+    # The bounded-low nudge is scoped to the microphone step (see
     # test_crossover_envelope_bounded_low_nudge_step_scoped_to_microphone
-    # below); this screen is "driver", so it must not appear here.
+    # below); this envelope resolves to the drivers step, so it must not
+    # appear here.
     assert env["nudges"] == []
 
 
