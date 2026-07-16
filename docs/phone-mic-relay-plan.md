@@ -297,7 +297,9 @@ audio. Full sequence:
    the Pi validates/applies it and replies `host_event.phase="setup_validated"`.
    The phone then streams compact level batches, and the Pi raises software gain
    gradually from quiet until stable, restores listening volume, and retains the
-   target for sweeps. Unsupported/unknown AGC is refused before the tone.
+   target for sweeps. AGC explicitly reported on is refused before the tone;
+   unattested (unknown) AGC proceeds and is verified empirically from the
+   ramp's own staircase — see §9.
 5. **Phone** opens a signed capture-only Room link carrying the Pi-owned
    position/total, records passive room noise, starts the sweep recording, and
    drops authenticated `armed` metadata with the realized device in the relay.
@@ -568,11 +570,30 @@ mode for a tool whose entire job is a trustworthy result.
   rather than warn; let the spec set refuse-vs-warn **per kind**. Keep the raw
   source-track width as diagnostics, but do not confuse a multi-channel USB
   source with the mono channel-zero artifact produced by `createMonoRecorder`.
-- **Level-ramp AGC is stricter.** Automatic leveling requires explicit realized
-  `autoGainControl === false`. Missing/unknown is not treated as false: the phone
-  posts a token-scoped refusal and the Pi never starts the tone. A future manual
-  lock mode needs its own acknowledged protocol; it must not be inferred from
-  AGC-compressed samples.
+- **Level-ramp AGC is verified, not just attested (2026-07-16).** An explicit
+  realized `autoGainControl === true` still posts a token-scoped refusal and
+  the Pi never starts the tone — a browser-confirmed time-varying gain cannot
+  be interpreted as a stable acoustic gain map. But `undefined`/`null` (every
+  WebKit/iOS build — `getSettings()` never reports the setting) is NOT treated
+  the same as a proven AGC-on: the phone proceeds as *unattested*
+  (`agc_frozen:false` + `agc_unattested:true` on every level batch), and
+  `RampController` (`jasper/audio_measurement/ramp.py`) verifies chain
+  linearity **empirically** from the ramp's own quiet-start staircase instead
+  — a time-varying AGC gain flattens the reported response toward the
+  staircase (slope well under 1), so regressing reported `rms_dbfs` against
+  the commanded `main_volume_db` across `agc_slope_min_span_db` (default
+  6.0 dB) of commanded-level span plus `agc_slope_min_steps` (default 3)
+  distinct levels and requiring slope `>= agc_slope_threshold` (default 0.7)
+  is direct evidence the whole mic→USB→OS→browser chain held its gain fixed.
+  (Span is the primary gate — a few adjacent 0.75 dB steps give too little
+  x-leverage for the slope to be robust under real mic jitter.) A verified
+  chain locks with semantics identical to an attested one; a slope failure
+  aborts closed (`error="agc_suspected"`) still at deeply quiet levels, and a
+  lock-time-indeterminate verdict (insufficient span/steps — no AGC observed)
+  aborts closed under the distinct `error="agc_indeterminate"` so the phone
+  can render honest non-AGC copy — never trusting an unproven lock. A
+  future manual lock mode still needs its own acknowledged protocol; it must
+  not be inferred from AGC-compressed (verified-untrustworthy) samples.
 - **…with a device-capability fallback.** Because some iOS builds *cannot* honor
   `echoCancellation:false`, a hard refuse could refuse every iPhone. Instead probe
   the realized constraints and, if clean capture is impossible on this device,
@@ -762,7 +783,11 @@ pairing proof, not a guess based on the Pages dashboard.
 
 ---
 
-Last updated: 2026-07-15 — Room defaults are speaker-owned (six positions,
+Last updated: 2026-07-16 — §9's level-ramp AGC gate now verifies chain
+linearity empirically for an unattested (undefined `autoGainControl`) phone
+instead of refusing it client-side; see "Level-ramp AGC is verified, not just
+attested" above and `jasper/audio_measurement/ramp.py`. Prior 2026-07-15 —
+Room defaults are speaker-owned (six positions,
 flat target, balanced strategy, and an automatic main-seat trust repeat). The
 Room level check no longer collects a phone-owned position count; later Room
 links carry signed position/total metadata and authenticate the realized

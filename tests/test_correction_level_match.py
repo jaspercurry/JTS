@@ -24,6 +24,7 @@ import pytest
 from jasper.audio_measurement.ramp import (
     LEVEL_EVENT_SCHEMA_VERSION,
     MeasurementRamp,
+    RampData,
     RampLockKind,
     RampState,
 )
@@ -135,6 +136,42 @@ def test_parse_level_batch_applies_batch_agc_flag():
     event = _batch([{"seq": 1, "rms_dbfs": -30.0}], agc_frozen=False)
     got = parse_level_batch(event)
     assert got[0].agc_frozen is False  # batch-level superset applies
+
+
+def test_parse_level_batch_applies_batch_agc_unattested_flag():
+    # New-client wire shape for an unattested (undefined AGC) phone: the
+    # batch superset carries agc_unattested even when a per-sample entry
+    # omits it (mirrors the existing agc_frozen cascade).
+    event = _batch(
+        [{"seq": 1, "rms_dbfs": -30.0}], agc_frozen=False, agc_unattested=True
+    )
+    got = parse_level_batch(event)
+    assert got[0].agc_frozen is False
+    assert got[0].agc_unattested is True
+
+    # Per-sample values win over the batch superset when both are present.
+    event2 = _batch(
+        [{"seq": 1, "rms_dbfs": -30.0, "agc_unattested": False}],
+        agc_frozen=False,
+        agc_unattested=True,
+    )
+    got2 = parse_level_batch(event2)
+    assert got2[0].agc_unattested is False
+
+
+def test_parse_level_batch_old_server_shape_ignores_unattested_field():
+    # Mixed-version safety: an OLD server (this parser, before agc_unattested
+    # existed) reading a NEW client's unattested batch sees only agc_frozen —
+    # always false for an unattested chain at the wire level (never true) —
+    # so it falls back to the pre-existing "never trust" behavior instead of
+    # silently trusting an unproven chain. Simulated here by parsing the
+    # batch and confirming agc_frozen alone (ignoring agc_unattested) already
+    # carries the safe signal.
+    event = _batch(
+        [{"seq": 1, "rms_dbfs": -30.0}], agc_frozen=False, agc_unattested=True
+    )
+    got = parse_level_batch(event)
+    assert got[0].agc_frozen is False
 
 
 def test_parse_level_batch_token_scoping():
@@ -303,6 +340,49 @@ async def test_relay_feed_latches_schema_mismatch_warning(caplog):
     assert len(warnings) == 1  # a stale mismatched slot warns once, not per tick
 
 
+# --- MeasurementLevelLock.from_ramp sources agc_frozen from agc_trusted -------
+
+
+def test_lock_from_ramp_attested_is_byte_identical():
+    data = RampData(
+        state=RampState.LOCKED,
+        locked_main_volume_db=-18.0,
+        lock_kind=RampLockKind.IN_WINDOW,
+        agc_frozen=True,
+    )
+    lock = MeasurementLevelLock.from_ramp(MicGeometry.LISTENING_POSITION.value, data)
+    assert lock.agc_frozen is True
+
+
+def test_lock_from_ramp_unattested_verified_reads_as_trustworthy():
+    # A verified-unattested run has agc_frozen=False at the wire/RampData
+    # level (by design — see LevelSample), but agc_verified=True. The lock
+    # must read as trustworthy (agc_frozen=True) so downstream consumers
+    # (check_level_drift) treat it identically to an attested lock.
+    data = RampData(
+        state=RampState.LOCKED,
+        locked_main_volume_db=-18.0,
+        lock_kind=RampLockKind.IN_WINDOW,
+        agc_frozen=False,
+        agc_unattested=True,
+        agc_verified=True,
+    )
+    assert data.agc_trusted is True
+    lock = MeasurementLevelLock.from_ramp(MicGeometry.LISTENING_POSITION.value, data)
+    assert lock.agc_frozen is True
+
+
+def test_lock_from_ramp_explicit_agc_on_reads_as_untrustworthy():
+    data = RampData(
+        state=RampState.LOCKED,
+        locked_main_volume_db=-18.0,
+        lock_kind=RampLockKind.MANUAL,
+        agc_frozen=False,
+    )
+    lock = MeasurementLevelLock.from_ramp(MicGeometry.LISTENING_POSITION.value, data)
+    assert lock.agc_frozen is False
+
+
 # --- geometry lock store ------------------------------------------------------
 
 
@@ -410,10 +490,19 @@ class FakeChain:
     back through a mutable relay status dict as armed level batches. The Pi's
     host events land in the same status dict (host_event echo works)."""
 
-    def __init__(self, *, gain_db, start_vol, nf=-80.0, run_token=""):
+    def __init__(
+        self,
+        *,
+        gain_db,
+        start_vol,
+        nf=-80.0,
+        run_token="",
+        agc_unattested=False,
+    ):
         self.gain_db = gain_db
         self.nf = nf
         self.run_token = run_token
+        self.agc_unattested = agc_unattested
         self._vol = start_vol
         self.commanded = []
         self._seq = 0
@@ -458,7 +547,8 @@ class FakeChain:
                         "rms_dbfs": mic,
                         "peak_dbfs": mic + 3.0,
                         "clip": False,
-                        "agc_frozen": True,
+                        "agc_frozen": not self.agc_unattested,
+                        "agc_unattested": self.agc_unattested,
                     }
                 ],
             }
@@ -507,6 +597,27 @@ async def test_level_match_session_locks_and_stores_geometry_lock():
     # LOCKED run's final is the lock value, itself <= cap).
     for vol in chain.commanded:
         assert vol <= cap + 1e-9
+
+
+@pytest.mark.asyncio
+async def test_level_match_session_unattested_verified_locks_like_attested():
+    """End-to-end through the full relay adapter: an unattested (undefined
+    AGC) chain — the wire-level agc_frozen is false on every sample — still
+    locks IN_WINDOW once the staircase's slope is empirically verified, and
+    the stored lock reads as trustworthy (agc_frozen=True), identically to
+    the attested test above."""
+    store = LevelLockStore()
+    sess = _session(store)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0, agc_unattested=True)
+    outcome = await _run_geometry(sess, chain, MicGeometry.LISTENING_POSITION.value)
+    assert outcome.ramp.state == RampState.LOCKED
+    assert outcome.ramp.lock_kind is RampLockKind.IN_WINDOW
+    assert outcome.ramp.agc_unattested is True
+    assert outcome.ramp.agc_verified is True
+    assert outcome.locked
+    lock = store.get(MicGeometry.LISTENING_POSITION.value)
+    assert lock is not None
+    assert lock.agc_frozen is True  # verified-unattested reads as trustworthy
 
 
 @pytest.mark.asyncio

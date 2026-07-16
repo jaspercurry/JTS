@@ -25,7 +25,7 @@ import {
 } from "./constraints.js?v=20260711-4";
 import { safeReturnUrl } from "./return-url.js";
 import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
-import { runLevelRampProtocol } from "./level-events.js?v=20260715-5";
+import { runLevelRampProtocol } from "./level-events.js?v=20260716-1";
 import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
   assertCaptureProtocolCompatible,
@@ -382,7 +382,21 @@ function renderLevelRampComplete(ctx, ramp) {
     },
   };
   const message = messages[state] || messages.error;
-  if (state === "error" && terminalError) {
+  if (state === "error" && terminalError === "agc_suspected") {
+    // The Pi observed a flat reported-vs-commanded staircase slope — this
+    // phone's mic chain IS adjusting gain automatically. Friendly copy
+    // instead of the raw server code.
+    message.note =
+      "Your phone is adjusting microphone levels automatically, which prevents accurate measurement. Try a different phone or a USB measurement microphone.";
+    message.status = `Level check failed — ${message.note}`;
+  } else if (state === "error" && terminalError === "agc_indeterminate") {
+    // The Pi could not gather enough staircase evidence to render a verdict
+    // either way (e.g. the level locked too close to the starting volume).
+    // No AGC was observed — the copy must not claim it was.
+    message.note =
+      "JTS couldn't gather enough measurement evidence to verify this microphone's level accuracy. Try again, or use a different microphone or device.";
+    message.status = `Level check failed — ${message.note}`;
+  } else if (state === "error" && terminalError) {
     message.note = terminalError;
     message.status = `Level check failed — ${terminalError}`;
   }
@@ -874,11 +888,18 @@ async function onLevelRampStart(ctx) {
       );
       return;
     }
-    // The current relay protocol has no safe manual-lock acknowledgement. If
-    // the browser does not prove AGC=false, a rising tone cannot be interpreted
-    // as a stable acoustic gain map. Refuse explicitly and tell the Pi why;
-    // never silently run a degraded automatic ramp.
-    if (capture.settings.autoGainControl !== false) {
+    // The current relay protocol has no safe manual-lock acknowledgement, so a
+    // browser that AFFIRMATIVELY reports AGC on (autoGainControl === true) is
+    // refused outright — a rising tone through a browser-confirmed
+    // time-varying gain cannot be interpreted as a stable acoustic gain map.
+    // A browser that never reports the setting either way
+    // (autoGainControl === undefined — every WebKit/iOS build; getSettings()
+    // simply omits the key) is NOT the same thing as a proven AGC-on: it
+    // proceeds as "unattested", and the Pi verifies chain linearity
+    // empirically from the ramp's own staircase (ramp.py) instead of trusting
+    // a browser flag that iOS never supplies.
+    const realizedAgc = capture.settings.autoGainControl;
+    if (realizedAgc === true) {
       await recorder.close();
       recorder = null;
       try {
@@ -898,6 +919,7 @@ async function onLevelRampStart(ctx) {
       );
       return;
     }
+    const agcAttested = realizedAgc === false;
 
     wakeLock = await acquireWakeLock();
     disposeWatch = watchVisibilityAbort(
@@ -917,9 +939,12 @@ async function onLevelRampStart(ctx) {
       client,
       recorder,
       spec,
-      // The explicit preflight above proved realized AGC=false; unknown/on
-      // browsers were refused before the Pi could start a tone.
-      agcFrozen: true,
+      // agcAttested (realized AGC=false) rides unchanged; an unattested
+      // browser (AGC neither proven off nor reported on) posts agcFrozen:false
+      // + agcUnattested:true so the Pi can empirically verify the chain from
+      // the ramp's own staircase instead of trusting an absent browser flag.
+      agcFrozen: agcAttested,
+      agcUnattested: !agcAttested,
       context: {
         setup: setupWirePayload(),
         device: capture.device,

@@ -232,9 +232,20 @@ class LevelSample:
     decimates the series. ``rms_dbfs`` / ``peak_dbfs`` are computed on the phone
     the same way the Pi's ``quality._dbfs`` computes them. ``clip`` marks a
     full-scale sample (immediate abort). ``agc_frozen`` is the phone's realized
-    ``autoGainControl:false`` state — ``False`` means the browser ignored the
-    request (iOS historically does) and the level is AGC-compressed, so it must
-    not be trusted as a gain-map reference.
+    ``autoGainControl:false`` state — ``False`` means either the browser left
+    AGC on (explicitly reported ``true``) or never reports the setting at all
+    (``undefined`` — every WebKit build; ``getSettings()`` simply omits the
+    key). ``agc_unattested`` disambiguates the two ``agc_frozen=False`` cases:
+    ``True`` means the browser could not attest either way (the iOS/Safari
+    shape) and the sample is eligible for the empirical slope verification in
+    :class:`RampController` instead of being auto-rejected; ``False`` (the
+    default) is the original meaning — the browser affirmatively reported AGC
+    on, so the level is AGC-compressed and must never be trusted as a gain-map
+    reference. Encoding it this way (never bare ``agc_frozen=True`` for an
+    unattested chain) means an older Pi that has not learned about
+    ``agc_unattested`` still falls back to the pre-existing "never trust"
+    behavior instead of silently trusting an unproven chain — see
+    ``docs/HANDOFF-correction.md`` "Level-match ramp".
     """
 
     seq: int
@@ -243,6 +254,7 @@ class LevelSample:
     peak_dbfs: float
     clip: bool = False
     agc_frozen: bool = True
+    agc_unattested: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LevelSample:
@@ -264,6 +276,7 @@ class LevelSample:
             peak_dbfs=peak,
             clip=bool(data.get("clip", False)),
             agc_frozen=bool(data.get("agc_frozen", True)),
+            agc_unattested=bool(data.get("agc_unattested", False)),
         )
 
 
@@ -335,6 +348,39 @@ class MeasurementRamp:
     bounded_low_max_spread_db: float = 1.5
     bounded_low_max_shortfall_db: float = 20.0
 
+    # Empirical AGC verification for an unattested chain (no browser attestation
+    # either way — every WebKit build). Regress reported rms_dbfs against the
+    # ramp's own commanded main_volume_db (both dB, so a gain-stable chain has
+    # slope 1): a time-varying AGC gain flattens the reported response toward
+    # the staircase (slope << 1), so a slope at/near 1 across several distinct
+    # commanded levels is direct evidence the WHOLE mic->USB->OS->browser chain
+    # held its gain fixed while climbing — stronger than the (frequently
+    # unavailable) browser flag, and it works identically on iOS and Android.
+    # ``agc_slope_min_span_db`` — the PRIMARY evidence gate: the trusted
+    # samples must cover at least this many dB of commanded-level span before
+    # a verdict is rendered. Span is what gives the regression x-leverage: at
+    # the default 0.75 dB step, 3 distinct steps is only ~1.5 dB of span, and
+    # over that little leverage the OLS slope's sampling noise under realistic
+    # mic jitter can push a true-slope-1.0 chain under the threshold by chance
+    # (a fragile false abort — the availability regression this feature exists
+    # to fix, just in a new shape). 6 dB of span (8 steps) makes the slope
+    # estimate robust while still aborting a truly AGC'd chain at deeply quiet
+    # levels: evidence begins the moment reports clear the trust floor, and
+    # the staircase typically has ~20+ dB of climb between that point and the
+    # window, so a verdict lands within ~6.75 dB (span + one step of
+    # quantization) of trust-clearing — far below the pre-window.
+    # ``agc_slope_min_steps`` stays as a secondary floor on distinct
+    # commanded levels; fewer than either bound is INDETERMINATE, never
+    # auto-passed. ``agc_slope_threshold`` — recommended default 0.7: leaves
+    # headroom for real reading jitter (a perfectly linear chain still won't
+    # measure exactly 1.0) while staying far enough above a materially AGC'd
+    # chain's flattened response (an aggressive AGC compresses the staircase
+    # toward 0.1-0.3) that the two regimes don't overlap. H1 supplies
+    # hardware-measured numbers; these are placeholders.
+    agc_slope_min_span_db: float = 6.0
+    agc_slope_min_steps: int = 3
+    agc_slope_threshold: float = 0.7
+
     # Feed liveness: if NO samples at all (trusted or not) arrive for this long
     # after the tone starts, the phone is gone — abort and restore (a vanished
     # phone also has no clip protection).
@@ -391,6 +437,18 @@ class MeasurementRamp:
             raise ValueError("settle_min_samples must be >= 1")
         if self.max_jumps < 1:
             raise ValueError("max_jumps must be >= 1")
+        if self.agc_slope_min_steps < 2:
+            raise ValueError(
+                "agc_slope_min_steps must be >= 2 (a regression needs at least "
+                "two distinct commanded levels)"
+            )
+        if (
+            not math.isfinite(self.agc_slope_min_span_db)
+            or self.agc_slope_min_span_db <= 0
+        ):
+            raise ValueError("agc_slope_min_span_db must be finite and > 0")
+        if not math.isfinite(self.agc_slope_threshold) or self.agc_slope_threshold <= 0:
+            raise ValueError("agc_slope_threshold must be finite and > 0")
         if (
             not math.isfinite(self.bounded_low_max_spread_db)
             or self.bounded_low_max_spread_db < 0
@@ -538,6 +596,24 @@ class MeasurementRamp:
             "cap_ceil_db": _env_float(
                 "JASPER_RAMP_CAP_CEIL_DB", cls.cap_ceil_db, lo=-30.0, hi=0.0
             ),
+            "agc_slope_min_span_db": _env_float(
+                "JASPER_RAMP_AGC_SLOPE_MIN_SPAN_DB",
+                cls.agc_slope_min_span_db,
+                lo=1.0,
+                hi=20.0,
+            ),
+            "agc_slope_min_steps": _env_int(
+                "JASPER_RAMP_AGC_SLOPE_MIN_STEPS",
+                cls.agc_slope_min_steps,
+                lo=2,
+                hi=10,
+            ),
+            "agc_slope_threshold": _env_float(
+                "JASPER_RAMP_AGC_SLOPE_THRESHOLD",
+                cls.agc_slope_threshold,
+                lo=0.1,
+                hi=1.0,
+            ),
         }
         merged = {**env_values, **overrides}
         try:
@@ -573,6 +649,18 @@ class RampData:
     noise_floor_dbfs: float | None = None
     trust_margin_db: float | None = None
     agc_frozen: bool = True
+    # True once any admitted sample carried agc_unattested=true (the browser
+    # never reported autoGainControl either way — every WebKit build). Gates
+    # the empirical slope verification below; irrelevant (stays False) for a
+    # browser-attested or explicitly-AGC-on run.
+    agc_unattested: bool = False
+    # None = not yet decided (insufficient distinct commanded-level evidence).
+    # True = the staircase's reported-vs-commanded slope cleared the threshold
+    # — the chain is empirically gain-stable. False = it did not — the run
+    # aborts (agc_suspected) the moment this is set.
+    agc_verified: bool | None = None
+    # The most recently computed regression slope, for diagnostics/logging.
+    agc_slope: float | None = None
     # Count of trusted samples ever accepted. Reaching the cap may begin a
     # bounded-low evidence hold only when this is nonzero; a phone that never
     # produced a usable sample is an ERROR, not an acoustic diagnosis.
@@ -605,6 +693,28 @@ class RampData:
             return None
         return max(0.0, threshold - self.max_observed_rms_dbfs)
 
+    @property
+    def agc_trusted(self) -> bool:
+        """Whether this run's level evidence is a trustworthy gain-map reference.
+
+        For an ordinary (non-unattested) run this is exactly ``agc_frozen`` —
+        the raw browser-attested flag — so an attested run's behavior is
+        byte-identical to before this property existed. For an unattested run
+        (``agc_unattested`` True) it is the *empirical* verdict instead:
+        ``agc_verified is True`` once the slope check passed, never the raw
+        ``agc_frozen`` (which stays False for an unattested run at the wire
+        level, by design — see :class:`LevelSample`, and the mixed
+        old-Pi/new-page safety note in ``docs/HANDOFF-correction.md``). Every
+        downstream consumer that used to gate on ``agc_frozen`` as "is this
+        reference trustworthy" (:meth:`RampController._bounded_low_level_is_usable`,
+        :meth:`jasper.correction.level_match.MeasurementLevelLock.from_ramp`)
+        reads this property instead, so a verified-unattested lock behaves
+        identically to an attested one.
+        """
+        if self.agc_unattested:
+            return self.agc_verified is True
+        return self.agc_frozen
+
     def snapshot(self) -> dict[str, Any]:
         def r(x: float | None) -> float | None:
             return round(x, 2) if x is not None else None
@@ -626,6 +736,10 @@ class RampData:
             "trust_threshold_dbfs": r(self.trust_threshold_dbfs),
             "trust_deficit_db": r(self.trust_deficit_db),
             "agc_frozen": self.agc_frozen,
+            "agc_unattested": self.agc_unattested,
+            "agc_verified": self.agc_verified,
+            "agc_slope": r(self.agc_slope),
+            "agc_trusted": self.agc_trusted,
             "trusted_sample_count": self.trusted_sample_count,
             "observed_sample_count": self.observed_sample_count,
             "finite_sample_count": self.finite_sample_count,
@@ -672,6 +786,27 @@ class _LoopVars:
     # below the pre-window.  It routes the stable evidence to the explicitly
     # degraded bounded-low policy instead of fabricating a normal window lock.
     bounded_low_candidate: bool = False
+    # (commanded_main_volume_db, reported_rms_dbfs) pairs collected from an
+    # unattested chain's trusted samples (raw, not blank_until-gated — see the
+    # rationale where this is populated in run()), for the empirical AGC slope
+    # check. Unused (stays empty) for an attested/explicitly-AGC-on run.
+    agc_evidence: list[tuple[float, float]] = field(default_factory=list)
+
+
+def _ols_slope(points: list[tuple[float, float]]) -> float | None:
+    """Ordinary-least-squares slope of ``y`` (rms_dbfs) against ``x`` (commanded
+    dB). ``None`` when there are too few points or the x-values are degenerate
+    (all equal — a vertical/undefined fit), so a caller can distinguish "not
+    enough evidence yet" from a real, low, computed slope."""
+    if len(points) < 2:
+        return None
+    x_mean = sum(x for x, _ in points) / len(points)
+    y_mean = sum(y for _, y in points) / len(points)
+    denom = sum((x - x_mean) ** 2 for x, _ in points)
+    if denom <= 1e-9:
+        return None
+    numer = sum((x - x_mean) * (y - y_mean) for x, y in points)
+    return numer / denom
 
 
 class RampController:
@@ -1021,6 +1156,39 @@ class RampController:
                     [s.rms_dbfs for s in trusted] if now >= v.blank_until else []
                 )
 
+                if d.agc_unattested and d.agc_verified is None and trusted:
+                    # Deliberately NOT settled_stream: with the default step
+                    # cadence (0.5 s) much faster than max_loop_latency_s
+                    # (2 s), blank_until never clears mid-climb, so a
+                    # blank-gated stream would starve the regression of the
+                    # very staircase evidence it needs. Like the CLIMBING
+                    # pre-window crossing check above, raw trusted samples are
+                    # used — a rough linearity trend across many steps and
+                    # points tolerates the same per-sample lag/smear that
+                    # crossing detection already tolerates, and OLS averages
+                    # it out.
+                    self._update_agc_evidence(
+                        d, v, cfg, [s.rms_dbfs for s in trusted]
+                    )
+                    if d.agc_verified is False:
+                        # Explicit slope failure: abort NOW, at whatever
+                        # (usually still-quiet) commanded level the staircase
+                        # has reached — never keep climbing an AGC-suspected
+                        # chain toward the window.
+                        xs = [x for x, _ in v.agc_evidence]
+                        return await _terminal(
+                            RampState.ERROR,
+                            final_db=d.original_main_volume_db,
+                            error="agc_suspected",
+                            event="ramp_agc_suspected",
+                            level=logging.WARNING,
+                            slope=(
+                                f"{d.agc_slope:.3f}" if d.agc_slope is not None else ""
+                            ),
+                            steps=len({round(x, 3) for x in xs}),
+                            span_db=(f"{max(xs) - min(xs):.2f}" if xs else "0"),
+                        )
+
                 outcome = await self._tick_state(
                     d, v, cfg, now, trusted, settled_stream, _set, _terminal
                 )
@@ -1174,6 +1342,26 @@ class RampController:
                     v.confirm_out_buf.append(value)
                     v.confirm_in_streak = 0
             if v.confirm_in_streak >= cfg.confirm_k:
+                if d.agc_unattested and not d.agc_trusted:
+                    # A slope FAILURE already aborted earlier in run() — the
+                    # only way to reach a would-be lock here with agc_trusted
+                    # False is an indeterminate verdict (not enough
+                    # commanded-level span/steps of evidence, e.g. the window
+                    # sat close to the pre-ramp start). Fail closed — but
+                    # under a DISTINCT wire code from agc_suspected: no AGC
+                    # was observed here, only insufficient evidence, and the
+                    # phone renders different copy for the two cases.
+                    xs = [x for x, _ in v.agc_evidence]
+                    return await _terminal(
+                        RampState.ERROR,
+                        final_db=d.original_main_volume_db,
+                        error="agc_indeterminate",
+                        event="ramp_agc_indeterminate",
+                        level=logging.WARNING,
+                        reason="insufficient_slope_evidence",
+                        steps=len({round(x, 3) for x in xs}),
+                        span_db=(f"{max(xs) - min(xs):.2f}" if xs else "0"),
+                    )
                 d.locked_main_volume_db = d.current_main_volume_db
                 d.lock_kind = RampLockKind.IN_WINDOW
                 return await _terminal(
@@ -1267,15 +1455,84 @@ class RampController:
         d.window_shortfall_db = max(0.0, cfg.window_low_dbfs - settled)
         return settled
 
+    def _update_agc_evidence(
+        self,
+        d: RampData,
+        v: _LoopVars,
+        cfg: MeasurementRamp,
+        rms_values: list[float],
+    ) -> None:
+        """Fold this tick's trusted samples into the AGC slope evidence.
+
+        Called only for an unattested run whose verdict is still undecided.
+        Appends ``(commanded_db, rms)`` pairs at the CURRENT commanded level
+        (stable for this tick — only ``_set`` mutates it), then, once evidence
+        covers at least ``agc_slope_min_span_db`` of commanded-level SPAN (the
+        primary gate — span is the regression's x-leverage; a few adjacent
+        0.75 dB steps aren't enough to estimate the slope robustly under real
+        mic jitter) AND ``agc_slope_min_steps`` distinct commanded levels (the
+        secondary floor), regresses reported rms against commanded dB and sets
+        ``agc_verified``. Leaves it ``None`` (indeterminate) while either
+        bound is unmet — the caller in ``run()`` treats a ``False`` verdict as
+        an immediate abort; ``None`` at lock time is handled separately (see
+        ``_tick_state`` and ``_bounded_low_level_is_usable``).
+        """
+        for rms in rms_values:
+            v.agc_evidence.append((d.current_main_volume_db, rms))
+        steps = {round(x, 3) for x, _ in v.agc_evidence}
+        if len(steps) < cfg.agc_slope_min_steps:
+            return
+        span = max(x for x, _ in v.agc_evidence) - min(x for x, _ in v.agc_evidence)
+        if span < cfg.agc_slope_min_span_db:
+            return
+        slope = _ols_slope(v.agc_evidence)
+        if slope is None:
+            return
+        d.agc_slope = slope
+        if slope >= cfg.agc_slope_threshold:
+            d.agc_verified = True
+            log_event(
+                logger,
+                "ramp_agc_verified",
+                session=self.session_id,
+                slope=f"{slope:.3f}",
+                steps=len(steps),
+                at_db=f"{d.current_main_volume_db:.1f}",
+            )
+        else:
+            d.agc_verified = False
+            log_event(
+                logger,
+                "ramp_agc_suspected",
+                level=logging.WARNING,
+                session=self.session_id,
+                slope=f"{slope:.3f}",
+                steps=len(steps),
+                at_db=f"{d.current_main_volume_db:.1f}",
+            )
+
     @staticmethod
     def _bounded_low_level_is_usable(
         d: RampData,
         cfg: MeasurementRamp,
     ) -> bool:
-        """Whether cap evidence satisfies the degraded lock contract."""
+        """Whether cap evidence satisfies the degraded lock contract.
+
+        Uses ``agc_trusted``, not the raw ``agc_frozen`` flag: an attested run
+        behaves exactly as before (``agc_trusted == agc_frozen`` when
+        ``agc_unattested`` is False). An unattested run reaching the cap with
+        too little commanded-level span (or too few distinct steps) to reach
+        an AGC verdict (a driver capped early, e.g. a tweeter ramp with a
+        small pre-cap window) is
+        INDETERMINATE (``agc_verified is None``) — ``agc_trusted`` is False in
+        that case too, so it fails closed to the ordinary
+        ``bounded_low_evidence_insufficient`` MAXED_OUT path rather than
+        manufacturing a degraded lock on unproven gain stability. A slope
+        FAILURE never reaches here: it aborts immediately in ``run()``.
+        """
         return bool(
             cfg.allow_bounded_low_level
-            and d.agc_frozen
+            and d.agc_trusted
             and d.noise_floor_dbfs is not None
             and d.settled_snr_db is not None
             and d.settled_snr_db >= cfg.trust_margin_db
@@ -1337,7 +1594,15 @@ class RampController:
         ambient-dominated. ``agc_frozen=false`` on any sample is recorded so the
         adapter can degrade + disable drift (§3.1 (c)) — the ramp still runs (the
         user may manually lock; that is the degrade path), but an AGC-compressed
-        level is never a trusted gain-map reference.
+        level is never a trusted gain-map reference. The one exception is
+        ``agc_frozen=false`` PAIRED with ``agc_unattested=true`` (the browser
+        could not attest either way, not a proven AGC-on) — those samples are
+        admitted through the SAME finite/clip/noise-floor gates as an attested
+        sample, because whether they end up trustworthy is decided by the
+        empirical slope check in ``run()``/``_update_agc_evidence``, not by an
+        automatic reject here. A sample claiming BOTH ``agc_frozen=true`` and
+        ``agc_unattested=true`` is treated as fully attested — the explicit
+        attestation wins over the contradictory unattested hint.
         """
         cfg = self.config
         trusted: list[LevelSample] = []
@@ -1380,11 +1645,18 @@ class RampController:
                 d.nonfinite_sample_count += 1
                 continue  # hostile/broken payload; liveness only, never trusted
             if not s.agc_frozen:
-                d.agc_frozen = False
-                d.agc_rejected_sample_count += 1
-                # AGC-compressed: usable as a liveness signal but never as a
-                # trusted level. Skip it from the trusted set.
-                continue
+                if s.agc_unattested:
+                    # Not proven AGC-on — eligible for the slope check. Fall
+                    # through to the SAME admission gates an attested sample
+                    # gets; `run()` decides whether the accumulated evidence
+                    # is actually trustworthy before any lock can use it.
+                    d.agc_unattested = True
+                else:
+                    d.agc_frozen = False
+                    d.agc_rejected_sample_count += 1
+                    # AGC-compressed: usable as a liveness signal but never as
+                    # a trusted level. Skip it from the trusted set.
+                    continue
             if floor is not None and s.rms_dbfs < floor + cfg.trust_margin_db:
                 d.below_noise_sample_count += 1
                 continue  # ambient-dominated; not trustable
