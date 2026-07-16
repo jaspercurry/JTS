@@ -88,7 +88,7 @@ function renderCandidateReview(review) {
     ? review.retained_crossover_regions : [];
   const drivers = review && Array.isArray(review.drivers) ? review.drivers : [];
   const visible = Boolean(review && regions.length && drivers.length);
-  els.review.classList.toggle('hidden', !visible);
+  els.review.hidden = !visible;
   if (!visible) {
     els.reviewBody.replaceChildren();
     return;
@@ -216,12 +216,12 @@ function renderActions(primary, alternates = []) {
 function renderRelay(relay) {
   const active = relay && RELAY_IN_FLIGHT.has(relay.status);
   const stoppable = relay && RELAY_STOPPABLE.has(relay.status);
-  els.relay.classList.toggle('hidden', !active);
-  els.relayLink.classList.add('hidden');
+  els.relay.hidden = !active;
+  els.relayLink.hidden = true;
   // Cleared by default alongside the link; repopulated below only in the
   // one branch that has a tap_link to encode.
   renderRelayQr(els.relayQr, null);
-  els.relayStop.classList.toggle('hidden', !stoppable);
+  els.relayStop.hidden = !stoppable;
   els.relayStop.disabled = stopInFlight;
   if (!active) {
     if (relay && relay.status === 'failed') {
@@ -247,7 +247,7 @@ function renderRelay(relay) {
   }
   if (relay.tap_link) {
     els.relayLink.href = relay.tap_link;
-    els.relayLink.classList.remove('hidden');
+    els.relayLink.hidden = false;
     els.relayStatus.textContent = 'Open the trusted capture page and follow its one next step.';
     renderRelayQr(els.relayQr, relay.tap_link);
   } else {

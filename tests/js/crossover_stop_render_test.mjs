@@ -232,7 +232,7 @@ render({
     },
   },
 });
-assert.equal(elements.get("crossover-review").classList.contains("hidden"), false);
+assert.equal(elements.get("crossover-review").hidden, false);
 assert.equal(elements.get("crossover-review-body").children.length, 1);
 
 nextEnvelope = {
