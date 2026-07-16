@@ -1046,15 +1046,30 @@ Sequencing constraints honored: Waves 1–2 are pure new files (zero
 collision with the crossover program's active churn); Wave 3 touches
 the hot files (`camilla_yaml.py`, `runtime_contract.py`,
 `camilla_emit.py`) and must be small-PR + rebase-often; the wizard
-wave keeps out of the god-files. Each wave lists its Codex brief
-seed; every implementation PR runs `scripts/test-fast` locally and
-lands via the normal PR flow.
+wave keeps out of the god-files. Every implementation PR runs
+`scripts/test-fast` locally and lands via the normal PR flow.
+
+> **Execution prompts live in
+> [`docs/bass-extension-waves/`](bass-extension-waves/README.md)** —
+> one self-contained Codex prompt per wave plus a shared engineering
+> charter (file allowlists, frozen interfaces, anti-overengineering
+> fences, preflight drift checks). The operator hands Codex exactly
+> one wave file per session. The wave summaries below remain the
+> architectural intent; the prompt files are the binding execution
+> contracts and are revised (not improvised around) when main drifts.
 
 **Wave status:** (update as waves land)
 
-| Wave | Status |
-|---|---|
-| 0–7 | not started |
+| Wave | Prompt | Status |
+|---|---|---|
+| 0 | [wave-0](bass-extension-waves/wave-0-hardware-spikes.md) | not started |
+| 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | not started |
+| 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | not started |
+| 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | not started |
+| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | not started |
+| 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | not started |
+| 6 | [wave-6](bass-extension-waves/wave-6-ui.md) | not started |
+| 7 | [wave-7](bass-extension-waves/wave-7-hardware-validation.md) | not started |
 
 ### Wave 0 — Hardware prototypes (decision spikes, lab box; ~2 days; NOT Codex — needs hardware)
 
