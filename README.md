@@ -956,6 +956,9 @@ reference. Currently:
   listening level rises. Profile schema, enclosure-adapter contract,
   level-ladder commissioning, CamillaDSP runtime mechanism candidates, and
   the phased wave plan. No code exists yet — read before starting any wave.
+  Per-wave Codex execution prompts (shared charter, file allowlists, frozen
+  interfaces) live in
+  [`docs/bass-extension-waves/`](docs/bass-extension-waves/README.md).
 - [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — HTTPS
   correction measurement hub at `/correction/`: room correction,
   active-crossover mic measurement, and bass/subwoofer tuning surfaces;
