@@ -186,3 +186,8 @@
     width: 100%;
   }
 }
+
+/* Narrow screens collapse step labels to dots (mirrors correction.css). */
+@media (max-width: 30rem) {
+  .wizard-step__label { display: none; }
+}
