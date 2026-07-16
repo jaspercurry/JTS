@@ -391,6 +391,15 @@ capture_spec:
       - { type: "steps",   items: ["Stand at the couch", "Hold the phone up", "Stay quiet for 10s"] }
       - { type: "level_meter", source: "mic" }
       - { type: "button",  label: "Start", action: "begin_capture" }
+  default_setup:              # OPTIONAL household-mic prefill hint (Wave-2
+    calibration:              # persistence, jasper/correction/household_mic.py):
+      mode: "serial"          # "serial" | "upload"; the model key, a last-4
+      model: "minidsp_umik2"  # serial display form, and the resolvable
+      serial_display: "8494"  # calibration_id of the mic the household last
+      calibration_id: "..."   # used. A HINT the page may ignore (today's page
+                              # does); the one-tap confirm UI that reads it is
+                              # a follow-up page PR. Never binding — real setup
+                              # still validates through the normal flow.
   output:
     format: "wav"             # mono 16-bit PCM WAV at sample_rate_hz
   max_upload_bytes: 33554432  # 32 MB cap; mirror the Pi backend limit

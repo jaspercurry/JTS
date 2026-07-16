@@ -26,6 +26,7 @@ from jasper.capture_relay.spec import (
     CaptureSpecError,
     CaptureStimulus,
     CaptureValidity,
+    DefaultSetupCalibration,
     build_crossover_sweep_spec,
     build_level_ramp_spec,
     build_room_sweep_spec,
@@ -220,6 +221,99 @@ def test_from_dict_validates_and_reconstructs_sub_records():
     assert isinstance(s.constraints, CaptureConstraints)
     assert isinstance(s.stimulus, CaptureStimulus)
     assert isinstance(s.validity, CaptureValidity)
+
+
+# --- default_setup.calibration — the optional household-mic prefill hint ------
+# (Wave-2 persistence, jasper/correction/household_mic.py. Never binding; the
+# current capture page ignores unknown spec fields, so the block is inert
+# until the one-tap-confirm follow-up page PR reads it.)
+
+
+def _household_hint(**overrides) -> DefaultSetupCalibration:
+    kwargs = dict(
+        mode="serial",
+        model="minidsp_umik2",
+        serial_display="8494",
+        calibration_id="minidsp-minidsp_umik2-abc123456789",
+    )
+    kwargs.update(overrides)
+    return DefaultSetupCalibration(**kwargs)
+
+
+def test_default_setup_calibration_round_trips_and_is_omitted_when_absent():
+    populated = build_level_ramp_spec(default_setup_calibration=_household_hint())
+    payload = populated.to_dict()
+    assert payload["default_setup"] == {
+        "calibration": {
+            "mode": "serial",
+            "model": "minidsp_umik2",
+            "serial_display": "8494",
+            "calibration_id": "minidsp-minidsp_umik2-abc123456789",
+        }
+    }
+    again = CaptureSpec.from_dict(payload)
+    assert again.default_setup_calibration == populated.default_setup_calibration
+    assert again.to_dict() == payload  # stable round-trip
+
+    # Absent by default: existing callers/specs emit no default_setup key at
+    # all, so older pages and the relay see byte-identical payload shapes.
+    assert "default_setup" not in build_level_ramp_spec().to_dict()
+    assert CaptureSpec.from_dict(
+        build_level_ramp_spec().to_dict()
+    ).default_setup_calibration is None
+
+
+def test_default_setup_calibration_from_dict_is_strict():
+    good = _household_hint().to_dict()
+    assert DefaultSetupCalibration.from_dict(good) == _household_hint()
+    with pytest.raises(CaptureSpecError, match="unknown keys"):
+        DefaultSetupCalibration.from_dict({**good, "serial": "700-1234"})
+    with pytest.raises(CaptureSpecError, match="must be an object"):
+        DefaultSetupCalibration.from_dict(["not", "a", "mapping"])
+
+
+def test_default_setup_calibration_vocabulary_is_enforced():
+    with pytest.raises(CaptureSpecError, match="default_setup.calibration.mode"):
+        build_level_ramp_spec(
+            default_setup_calibration=_household_hint(mode="telepathy"),
+        )
+    # "none" deliberately absent from the vocabulary: a record only exists
+    # after a calibration succeeded, so the hint is present-and-actionable
+    # or omitted entirely.
+    with pytest.raises(CaptureSpecError, match="default_setup.calibration.mode"):
+        build_level_ramp_spec(
+            default_setup_calibration=_household_hint(mode="none"),
+        )
+    with pytest.raises(CaptureSpecError, match="calibration_id"):
+        build_level_ramp_spec(
+            default_setup_calibration=_household_hint(calibration_id=""),
+        )
+
+
+def test_from_dict_rejects_malformed_default_setup_block():
+    base = build_level_ramp_spec(
+        default_setup_calibration=_household_hint()
+    ).to_dict()
+
+    non_mapping = dict(base)
+    non_mapping["default_setup"] = "not-an-object"
+    with pytest.raises(CaptureSpecError, match="default_setup must be an object"):
+        CaptureSpec.from_dict(non_mapping)
+
+    unknown_sub_key = dict(base)
+    unknown_sub_key["default_setup"] = {
+        "calibration": _household_hint().to_dict(),
+        "device": {"label": "smuggled"},
+    }
+    with pytest.raises(CaptureSpecError, match="default_setup has unknown keys"):
+        CaptureSpec.from_dict(unknown_sub_key)
+
+    unknown_calibration_key = dict(base)
+    unknown_calibration_key["default_setup"] = {
+        "calibration": {**_household_hint().to_dict(), "serial": "700-1234"},
+    }
+    with pytest.raises(CaptureSpecError, match="unknown keys"):
+        CaptureSpec.from_dict(unknown_calibration_key)
 
 
 def test_passive_capture_has_null_stimulus():

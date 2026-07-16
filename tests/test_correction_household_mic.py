@@ -56,7 +56,7 @@ def test_household_mic_record_round_trips(tmp_path: Path):
     assert loaded.model_key == "other"
     assert loaded.label == "Lab mic"
     assert loaded.calibration_id == record.calibration_id
-    assert loaded.curve_sha256 == record.file_sha256
+    assert loaded.file_sha256 == record.file_sha256
     assert loaded.provider == "manual_upload"
     assert loaded.serial_display == "3456"  # last-4 only, never the raw serial
     assert loaded.updated_at > 0
@@ -175,7 +175,7 @@ def test_resolve_household_mic_calibration_falls_back_to_content_hash(
         model_key=household.model_key,
         label=household.label,
         calibration_id="some-other-id-that-does-not-exist",
-        curve_sha256=household.curve_sha256,
+        file_sha256=household.file_sha256,
         orientation=household.orientation,
         provider=household.provider,
         updated_at=household.updated_at,
@@ -195,7 +195,7 @@ def test_resolve_household_mic_calibration_returns_none_when_unresolvable(
         model_key="other",
         label="Lab mic",
         calibration_id="missing-id",
-        curve_sha256="0" * 64,
+        file_sha256="0" * 64,
         orientation="unknown",
         provider="manual_upload",
         updated_at=1.0,

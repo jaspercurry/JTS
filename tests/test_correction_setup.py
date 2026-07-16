@@ -3269,6 +3269,102 @@ def test_relay_calibration_mismatch_replaces_household_mic_never_blocks(
     assert "new_model=dayton_imm6" in caplog.text
 
 
+def test_same_model_different_serial_also_replaces_household_mic(
+    tmp_path, monkeypatch, caplog,
+):
+    """Within one model, a different physical unit (serial_hash) is still a
+    mic swap: the record is replaced and household_mic_replaced fires with a
+    `changed=serial` discriminator — while the serial hashes themselves stay
+    out of the log line."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+
+    from jasper.audio_measurement import calibration
+
+    def fake_fetch(*, model_key, serial, orientation, root, opener=None):
+        return calibration.store_calibration(
+            text=f"20 -1\n100 0\n1000 1\n# unit {serial}\n",
+            provider="minidsp",
+            model=model_key,
+            label="miniDSP UMIK-2",
+            source="https://vendor.example/cal.txt",
+            serial=serial,
+            orientation=orientation,
+            root=root,
+        )
+
+    monkeypatch.setattr(calibration, "fetch_vendor_calibration", fake_fetch)
+
+    for serial in ("810-1111", "810-2222"):
+        sess = SimpleNamespace(
+            current_position=0, total_positions=5, mic_calibration=None,
+        )
+        correction_setup._apply_relay_setup_to_session(
+            sess,
+            {
+                "calibration": {
+                    "mode": "serial",
+                    "model": "minidsp_umik2",
+                    "serial": serial,
+                },
+            },
+        )
+        assert sess.mic_calibration is not None
+
+    from jasper.audio_measurement.calibration import serial_hash
+    from jasper.correction.household_mic import read_household_mic
+
+    record = read_household_mic(path=household_path)
+    assert record is not None
+    assert record.serial_hash == serial_hash("810-2222")
+    assert "event=correction.household_mic_replaced" in caplog.text
+    assert "changed=serial" in caplog.text
+    # Hashes never ride the event line.
+    assert serial_hash("810-1111") not in caplog.text
+    assert serial_hash("810-2222") not in caplog.text
+
+
+def test_household_mic_write_failure_never_blocks_the_calibration(
+    tmp_path, monkeypatch, caplog,
+):
+    """The documented never-block invariant: persisting the household record
+    is best-effort. A write failure logs one WARN and the calibration that
+    triggered it still establishes successfully."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.WARNING, logger="jasper.web.correction_setup")
+
+    from jasper.correction import household_mic
+
+    def boom(record, *, path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(household_mic, "write_household_mic", boom)
+
+    sess = SimpleNamespace(
+        current_position=0, total_positions=5, mic_calibration=None,
+    )
+    correction_setup._apply_relay_setup_to_session(
+        sess,
+        {
+            "calibration": {
+                "mode": "upload",
+                "filename": "lab.txt",
+                "content": "20 -1\n100 0\n1000 1\n",
+                "label": "Lab mic",
+                "model": "other",
+            },
+        },
+    )
+
+    assert sess.mic_calibration is not None  # calibration still established
+    assert not household_path.exists()
+    assert "failed to persist household mic record" in caplog.text
+
+
 def test_e2e_calibration_fetch_success_saves_household_mic(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     household_path = tmp_path / "household_mic.json"

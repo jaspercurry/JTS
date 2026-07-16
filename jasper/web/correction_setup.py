@@ -1480,12 +1480,24 @@ def _save_household_mic(record: Any, *, serial: str | None = None) -> None:
             "failed to persist household mic record: %r", exc, exc_info=True,
         )
         return
-    if previous is not None and previous.model_key != new_record.model_key:
+    # A replace is any change of mic IDENTITY: the model, or — within the
+    # same model — a different physical unit (serial_hash). The hashes
+    # themselves stay out of the log line (they are stable per-unit
+    # identifiers; the event only needs to say WHAT kind of change
+    # happened), so `changed=` is the minimal discriminator.
+    changed: list[str] = []
+    if previous is not None:
+        if previous.model_key != new_record.model_key:
+            changed.append("model")
+        if previous.serial_hash != new_record.serial_hash:
+            changed.append("serial")
+    if previous is not None and changed:
         log_event(
             logger,
             "correction.household_mic_replaced",
             old_model=previous.model_key,
             new_model=new_record.model_key,
+            changed="+".join(changed),
         )
     else:
         log_event(

@@ -71,7 +71,7 @@ _REQUIRED_STRING_FIELDS = (
     "model_key",
     "label",
     "calibration_id",
-    "curve_sha256",
+    "file_sha256",
     "orientation",
     "provider",
 )
@@ -81,16 +81,17 @@ _REQUIRED_STRING_FIELDS = (
 class HouseholdMicRecord:
     """The household's remembered measurement mic + calibration.
 
-    ``calibration_id``/``curve_sha256`` point back at the persisted
-    calibration in ``jasper/audio_measurement/calibration.py``'s registry
-    (``curve_sha256`` mirrors that module's ``CalibrationRecord.file_sha256``
-    — same content hash, renamed here for readability at this layer).
+    ``calibration_id``/``file_sha256`` point back at the persisted
+    calibration in ``jasper/audio_measurement/calibration.py``'s registry —
+    ``file_sha256`` is the same content hash as that module's
+    ``CalibrationRecord.file_sha256``, kept under the canonical name so the
+    field greps identically across both layers.
     """
 
     model_key: str
     label: str
     calibration_id: str
-    curve_sha256: str
+    file_sha256: str
     orientation: str
     provider: str
     serial_hash: str | None = None
@@ -106,7 +107,7 @@ class HouseholdMicRecord:
             "serial_hash": self.serial_hash,
             "serial_display": self.serial_display,
             "calibration_id": self.calibration_id,
-            "curve_sha256": self.curve_sha256,
+            "file_sha256": self.file_sha256,
             "orientation": self.orientation,
             "provider": self.provider,
             "updated_at": self.updated_at,
@@ -134,7 +135,7 @@ class HouseholdMicRecord:
             model_key=str(data["model_key"]),
             label=str(data["label"]),
             calibration_id=str(data["calibration_id"]),
-            curve_sha256=str(data["curve_sha256"]),
+            file_sha256=str(data["file_sha256"]),
             orientation=str(data["orientation"]),
             provider=str(data["provider"]),
             serial_hash=str(serial_hash) if serial_hash else None,
@@ -180,7 +181,7 @@ def household_mic_from_calibration(
         model_key=str(record.model),
         label=str(record.label),
         calibration_id=str(record.calibration_id),
-        curve_sha256=str(record.file_sha256),
+        file_sha256=str(record.file_sha256),
         orientation=str(record.orientation),
         provider=str(record.provider),
         serial_hash=record.serial_hash,
@@ -288,5 +289,5 @@ def resolve_household_mic_calibration(
         # documented this function as fail-soft.
         pass
     return find_stored_calibration_by_content_hash(
-        file_sha256=record.curve_sha256, root=calibration_root,
+        file_sha256=record.file_sha256, root=calibration_root,
     )
