@@ -2028,8 +2028,15 @@ async def play_driver_capture_sweep(
     applied_profile: dict[str, Any] | None = None,
     locked_main_volume_db: float | None = None,
     volume_lease_prepared: bool = False,
+    fanin_gate_context: web_commissioning.FaninGateContext | None = None,
 ) -> dict[str, Any]:
-    """Play a mic-capture sweep through an already-confirmed driver."""
+    """Play a mic-capture sweep through an already-confirmed driver.
+
+    ``fanin_gate_context`` threads through to
+    ``web_commissioning.play_driver_capture_sweep`` — set only by the
+    relay flow when this sweep runs inside a correction measurement window
+    (see ``FaninGateContext``).
+    """
 
     if volume_lease_prepared:
         _LEVEL_LEASE.assert_sweep_volume_owned(
@@ -2045,6 +2052,7 @@ async def play_driver_capture_sweep(
         blocking_phase=blocking_phase,
         applied_profile=applied_profile,
         locked_main_volume_db=locked_main_volume_db,
+        fanin_gate_context=fanin_gate_context,
     )
     log_event(
         logger,

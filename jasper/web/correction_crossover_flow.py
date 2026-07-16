@@ -1035,8 +1035,20 @@ def build_crossover_relay_run_and_consume(
     async def _play(
         on_sweep_ready: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        from jasper.active_speaker.web_commissioning import FaninGateContext
         from jasper.correction import coordinator
         import asyncio
+
+        # This sweep runs inside the measurement window's own held gate
+        # (owner=coordinator.MEASUREMENT_GATE_OWNER). The tone/sweep must
+        # select under that SAME owner rather than claiming its own
+        # standalone gate — a second owner is refused outright — and must
+        # restore the window's label (not release) when it ends. See
+        # FaninGateContext.
+        fanin_gate_context = FaninGateContext(
+            owner=coordinator.MEASUREMENT_GATE_OWNER,
+            restore_label=coordinator.MEASUREMENT_FANIN_LABEL,
+        )
 
         # Re-evaluate the mutual-exclusion probe NOW (at play time, not POST
         # time) — the play functions refuse with reason=measurement_in_progress
@@ -1081,6 +1093,7 @@ def build_crossover_relay_run_and_consume(
                         ),
                         locked_main_volume_db=locked_main_volume_db,
                         volume_lease_prepared=prepare_play is not None,
+                        fanin_gate_context=fanin_gate_context,
                     )
                 summed_play_raw = {"speaker_group_id": group_id}
                 for key in (

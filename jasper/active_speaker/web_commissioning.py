@@ -23,6 +23,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Coroutine
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -115,6 +116,32 @@ COMMISSION_TONE_MUX_SOCKET = os.environ.get(
 COMMISSION_TONE_FANIN_LABEL = "correction"
 _COMMISSION_TONE_LOCK = threading.Lock()
 _COMMISSION_TONE_SESSION: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class FaninGateContext:
+    """Nesting context for a tone/sweep played inside another feature's hold.
+
+    A correction measurement window (``jasper.correction.coordinator``) holds
+    the mux's single test fan-in gate for its whole duration under its own
+    owner. When commission-tone playback runs *inside* that window (the
+    crossover-driver-sweep relay flow), it must not claim the gate under its
+    own standalone owner (``active-speaker-commissioning``) — the mux refuses
+    a second owner outright. Passing a ``FaninGateContext`` makes the tone
+    path select/restore under the OUTER owner instead: the mux already allows
+    same-owner re-select (``select_test_fanin_label`` treats a matching owner
+    as a lease refresh, not a conflict), so the gate stays continuously held
+    by one owner across the window. ``restore_label`` is the label the outer
+    owner had selected before the tone started; end-of-tone always relabels
+    back to it rather than releasing — the outer caller's own end-of-window
+    release remains the only release. ``None`` (the default everywhere) means
+    the standalone ``/sound/`` commissioning path: today's unchanged
+    behavior, owning and releasing its own gate.
+    """
+
+    owner: str
+    restore_label: str
+
 
 _EVIDENCE_READ_ERRORS = (
     OSError,
@@ -480,30 +507,53 @@ def _commission_tone_mux_command(cmd: str) -> dict[str, Any]:
     return payload
 
 
-def _commission_tone_select_fanin_lane() -> dict[str, Any]:
+def _commission_tone_select_fanin_lane(
+    fanin_gate_context: FaninGateContext | None = None,
+) -> dict[str, Any]:
+    owner = (
+        fanin_gate_context.owner
+        if fanin_gate_context is not None
+        else "active-speaker-commissioning"
+    )
     try:
         return _commission_tone_mux_command(
-            "TEST_SELECT "
-            f"{COMMISSION_TONE_FANIN_LABEL} active-speaker-commissioning",
+            f"TEST_SELECT {COMMISSION_TONE_FANIN_LABEL} {owner}",
         )
     except _MUX_COMMAND_ERRORS:
-        # SELECT may have landed even when its response was lost. The
-        # owner-scoped idempotent release cannot disturb correction's gate.
-        _commission_tone_release_fanin_lane(reason="select_indeterminate")
+        # SELECT may have landed even when its response was lost. Standalone
+        # mode's owner-scoped release cannot disturb another feature's gate.
+        # Nested mode must not release the outer owner's gate either — it
+        # recovers by restoring the outer owner's prior label instead.
+        _commission_tone_release_fanin_lane(
+            reason="select_indeterminate", fanin_gate_context=fanin_gate_context,
+        )
         raise
 
 
-def _commission_tone_release_fanin_lane(*, reason: str) -> dict[str, Any]:
-    try:
-        payload = _commission_tone_mux_command(
-            "TEST_RELEASE active-speaker-commissioning",
+def _commission_tone_release_fanin_lane(
+    *, reason: str, fanin_gate_context: FaninGateContext | None = None,
+) -> dict[str, Any]:
+    if fanin_gate_context is not None:
+        # Nested under another feature's hold: never release that owner's
+        # gate. Relabel back to what the outer owner had selected before the
+        # tone started — same-owner re-select is a lease refresh, not a
+        # conflict, so the gate stays continuously held by the outer owner.
+        command = (
+            f"TEST_SELECT {fanin_gate_context.restore_label} "
+            f"{fanin_gate_context.owner}"
         )
+        action = "fanin_restore"
+    else:
+        command = "TEST_RELEASE active-speaker-commissioning"
+        action = "fanin_release"
+    try:
+        payload = _commission_tone_mux_command(command)
     except _MUX_COMMAND_ERRORS as exc:
         log_event(
             logger,
             "active_speaker.web_commission_tone",
             level=logging.WARNING,
-            action="fanin_release",
+            action=action,
             reason=reason,
             status="failed",
             error=str(exc),
@@ -512,7 +562,7 @@ def _commission_tone_release_fanin_lane(*, reason: str) -> dict[str, Any]:
     log_event(
         logger,
         "active_speaker.web_commission_tone",
-        action="fanin_release",
+        action=action,
         reason=reason,
         status="ok",
         active_source=payload.get("active_source"),
@@ -2237,8 +2287,15 @@ async def play_driver_capture_sweep(
     blocking_phase: str | None = None,
     applied_profile: dict[str, Any] | None = None,
     locked_main_volume_db: float | None = None,
+    fanin_gate_context: FaninGateContext | None = None,
 ) -> dict[str, Any]:
-    """Play the analyzer sweep through one already-confirmed driver path."""
+    """Play the analyzer sweep through one already-confirmed driver path.
+
+    ``fanin_gate_context`` is set only when this sweep runs inside a
+    correction measurement window (the crossover-driver-sweep relay flow) —
+    see ``FaninGateContext``. ``None`` (the default) is the standalone
+    ``/sound/`` commissioning path with today's unchanged behavior.
+    """
 
     if not isinstance(raw, dict):
         raise ValueError("driver capture sweep request must be an object")
@@ -2428,7 +2485,9 @@ async def play_driver_capture_sweep(
                             _dict_value(load_applied_baseline_profile_state()),
                         )
 
-                    fanin_gate = _commission_tone_select_fanin_lane()
+                    fanin_gate = _commission_tone_select_fanin_lane(
+                        fanin_gate_context,
+                    )
                     admitted = await play_admitted_driver_capture(
                         topology=topology,
                         safety_profile=safety_profile,
@@ -2535,7 +2594,10 @@ async def play_driver_capture_sweep(
                 }
             finally:
                 if fanin_gate is not None:
-                    _commission_tone_release_fanin_lane(reason="capture_sweep")
+                    _commission_tone_release_fanin_lane(
+                        reason="capture_sweep",
+                        fanin_gate_context=fanin_gate_context,
+                    )
                 transaction = _dict_value(
                     load_payload.get("measurement_transaction")
                 )

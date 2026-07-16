@@ -686,7 +686,7 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
 
     monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", fake_load)
     monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
-    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda: {})
+    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda *_a: {})
     monkeypatch.setattr(web, "_commission_tone_release_fanin_lane", lambda **_kw: None)
     from jasper.active_speaker import commissioning_admission
 
@@ -714,6 +714,219 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
     assert play_call["commissioning_gain_db"] == applied_gain_db
     assert play_call["expected_main_volume_db"] == -4.0
     assert payload["test_level_dbfs"] != legacy_floor_dbfs
+
+
+def test_commission_tone_select_fanin_lane_indeterminate_recovery_standalone(
+    monkeypatch,
+):
+    """SELECT response lost (mux command raises): standalone mode's recovery
+    releases its OWN owner — never correction's gate."""
+
+    calls: list[str] = []
+
+    def flaky_mux_command(cmd: str) -> dict:
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise RuntimeError("response lost")
+        return {"active_source": None}
+
+    monkeypatch.setattr(web, "_commission_tone_mux_command", flaky_mux_command)
+
+    with pytest.raises(RuntimeError, match="response lost"):
+        web._commission_tone_select_fanin_lane()
+
+    assert calls == [
+        "TEST_SELECT correction active-speaker-commissioning",
+        "TEST_RELEASE active-speaker-commissioning",
+    ]
+
+
+def test_commission_tone_select_fanin_lane_indeterminate_recovery_nested(
+    monkeypatch,
+):
+    """SELECT response lost while nested under a correction measurement
+    window: recovery must NOT release the outer owner's gate — it restores
+    the outer owner's prior label instead (still a TEST_SELECT, never a
+    TEST_RELEASE)."""
+
+    calls: list[str] = []
+
+    def flaky_mux_command(cmd: str) -> dict:
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise RuntimeError("response lost")
+        return {"active_source": "correction"}
+
+    monkeypatch.setattr(web, "_commission_tone_mux_command", flaky_mux_command)
+    fanin_gate_context = web.FaninGateContext(
+        owner="correction-measurement", restore_label="correction",
+    )
+
+    with pytest.raises(RuntimeError, match="response lost"):
+        web._commission_tone_select_fanin_lane(fanin_gate_context)
+
+    assert calls == [
+        "TEST_SELECT correction correction-measurement",
+        "TEST_SELECT correction correction-measurement",
+    ]
+    assert all("TEST_RELEASE" not in call for call in calls)
+
+
+def _driver_capture_sweep_boundary(monkeypatch, *, play_admitted=None):
+    """Boundary mocks for a play_driver_capture_sweep() run that leave the
+    REAL _commission_tone_select/release_fanin_lane() in place — only the
+    lowest-level socket call (_commission_tone_mux_command) is faked — so
+    tests can inspect the actual TEST_SELECT/TEST_RELEASE strings sent to
+    jasper-mux for standalone vs nested (FaninGateContext) commissioning.
+    """
+    topology = _topology()
+    measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
+    monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
+    from jasper.active_speaker import baseline_profile
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state",
+        lambda: _applied_excitation_profile(topology=topology),
+    )
+
+    async def fake_load(**kwargs):
+        return {"load": {"status": "loaded"}}
+
+    async def default_play_admitted(**kwargs):
+        return SimpleNamespace(
+            sweep_meta=SimpleNamespace(
+                to_dict=lambda: {"amplitude_dbfs": -12.0}
+            ),
+            handoff=SimpleNamespace(
+                admission_id="admission-woofer",
+                to_dict=lambda: {"admission_id": "admission-woofer"},
+            ),
+        )
+
+    monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", fake_load)
+    monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
+    from jasper.active_speaker import commissioning_admission
+
+    monkeypatch.setattr(
+        commissioning_admission,
+        "play_admitted_driver_capture",
+        play_admitted or default_play_admitted,
+    )
+
+    mux_calls: list[str] = []
+
+    def fake_mux_command(cmd: str) -> dict:
+        mux_calls.append(cmd)
+        return {"active_source": "correction"}
+
+    monkeypatch.setattr(web, "_commission_tone_mux_command", fake_mux_command)
+    return mux_calls
+
+
+def test_driver_capture_sweep_standalone_mode_owns_and_releases_its_own_gate(
+    monkeypatch,
+):
+    """No FaninGateContext (today's /sound/ commissioning path): unchanged
+    behavior — claims its own owner and releases it, never touching
+    correction's gate."""
+
+    mux_calls = _driver_capture_sweep_boundary(monkeypatch)
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
+        )
+    )
+
+    assert payload["status"] == "completed"
+    assert mux_calls == [
+        "TEST_SELECT correction active-speaker-commissioning",
+        "TEST_RELEASE active-speaker-commissioning",
+    ]
+
+
+def test_driver_capture_sweep_nested_mode_selects_and_restores_under_outer_owner(
+    monkeypatch,
+):
+    """FaninGateContext set (the crossover-driver-sweep relay flow, running
+    inside a correction measurement window): the tone selects under the
+    OUTER owner (never its own 'active-speaker-commissioning') and, on
+    completion, relabels back to the outer owner's prior label — never a
+    TEST_RELEASE. The gate stays continuously held by one owner across the
+    window; the coordinator's own end-of-window release is the only
+    release. This is the PR #1508 regression pin: before the fix, the
+    second-owner SELECT was refused with 'test fan-in gate is owned by
+    correction-measurement' (hardware-observed on JTS3)."""
+
+    mux_calls = _driver_capture_sweep_boundary(monkeypatch)
+    fanin_gate_context = web.FaninGateContext(
+        owner="correction-measurement", restore_label="correction",
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
+            fanin_gate_context=fanin_gate_context,
+        )
+    )
+
+    assert payload["status"] == "completed"
+    assert mux_calls == [
+        "TEST_SELECT correction correction-measurement",
+        "TEST_SELECT correction correction-measurement",
+    ]
+    assert all("TEST_RELEASE" not in call for call in mux_calls)
+    assert all("correction-measurement" in call for call in mux_calls)
+
+
+def test_driver_capture_sweep_nested_mode_restores_label_on_crash(monkeypatch):
+    """Crash mid-tone (the admitted capture raises) still restores the outer
+    owner's label via the finally block — the nested gate is never left
+    dangling on an unhandled exception, and it is still a restore, not a
+    release."""
+
+    async def crashing_play_admitted(**kwargs):
+        raise RuntimeError("simulated mid-tone crash")
+
+    mux_calls = _driver_capture_sweep_boundary(
+        monkeypatch, play_admitted=crashing_play_admitted,
+    )
+    fanin_gate_context = web.FaninGateContext(
+        owner="correction-measurement", restore_label="correction",
+    )
+
+    with pytest.raises(RuntimeError, match="simulated mid-tone crash"):
+        asyncio.run(
+            web.play_driver_capture_sweep(
+                {"speaker_group_id": "mono", "role": "woofer"},
+                camilla_factory=lambda: object(),
+                locked_main_volume_db=-4.0,
+                fanin_gate_context=fanin_gate_context,
+            )
+        )
+
+    assert mux_calls == [
+        "TEST_SELECT correction correction-measurement",
+        "TEST_SELECT correction correction-measurement",
+    ]
+    assert all("TEST_RELEASE" not in call for call in mux_calls)
 
 
 @pytest.mark.parametrize(
@@ -779,7 +992,7 @@ def test_driver_capture_post_play_failure_reports_consumed_attempt_and_reason(
 
     monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", fake_load)
     monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
-    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda: {})
+    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda *_a: {})
     monkeypatch.setattr(web, "_commission_tone_release_fanin_lane", lambda **_kw: None)
     monkeypatch.setattr(
         commissioning_admission, "play_admitted_driver_capture", drift_after_play
@@ -1597,7 +1810,7 @@ def test_driver_capture_holds_one_writer_lock_through_restore(monkeypatch, cance
     monkeypatch.setattr(dsp_apply, "dsp_writer_lock", tracked_lock)
     monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", load)
     monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
-    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda: {})
+    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda *_a: {})
     monkeypatch.setattr(web, "_commission_tone_release_fanin_lane", lambda **_kw: None)
     monkeypatch.setattr(
         web, "_restore_automatic_driver_entry_config_resilient", restore
