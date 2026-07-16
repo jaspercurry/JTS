@@ -1237,6 +1237,80 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
     assert anchor_call["preset"] is frozen_preset
     assert anchor_call["crossover_preview"] is None
     assert load_driver_call["volume_limit_db"] == -4.0
+    # _ensure_commission_startup_anchor reporting status="loaded" means it just
+    # reloaded the all-muted anchor and already triggered
+    # jasper-audio-hardware-reconcile for this exact DAC a moment ago (see
+    # startup_load._trigger_audio_hardware_reconcile). A second reconcile
+    # immediately behind it is redundant -- hardware-reproduced on JTS3
+    # 2026-07-16 (deterministic 2/2 aplay timeouts on the driver capture
+    # sweep), where an automatic capture retry always re-enters this reload
+    # branch (the flow's own cleanup, _restore_automatic_driver_entry_config,
+    # reverts CamillaDSP's persisted config path to the pre-commissioning
+    # production config after every attempt) and paid for two
+    # jasper-audio-hardware-reconcile round trips per attempt even though
+    # every run reported env_changed=0 render_changed=0.
+    assert load_driver_call["reconcile_output_hardware"] is False
+
+
+def test_automatic_driver_load_skips_second_reconcile_only_after_fresh_anchor_reload(
+    monkeypatch,
+):
+    """already_loaded (anchor fast path, no reload) must still reconcile once.
+
+    Companion to the "loaded" case above: when
+    ``_ensure_commission_startup_anchor`` takes its already-anchored fast path
+    (nothing needed reloading, so it did not just trigger a reconcile),
+    ``load_driver_commissioning_config`` must still be allowed its own
+    reconcile -- there is no recent confirmation of this exact hardware to
+    piggyback on.
+    """
+
+    entry_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            return entry_path
+
+    monkeypatch.setattr(web, "load_staged_startup_config", lambda: {"status": "staged"})
+
+    async def ensure_anchor(**_kwargs):
+        return {"status": "already_loaded", "staged_config_path": entry_path}
+
+    monkeypatch.setattr(web, "_ensure_commission_startup_anchor", ensure_anchor)
+    monkeypatch.setattr(
+        web,
+        "write_commission_path_safety",
+        lambda *_args, **_kwargs: "/tmp/path-safety.json",
+    )
+    monkeypatch.setattr(
+        web,
+        "commission_seams",
+        lambda _cam: (object(), object(), object()),
+    )
+
+    load_driver_call = {}
+
+    async def load_driver(*_args, **kwargs):
+        load_driver_call.update(kwargs)
+        return {"load": {"status": "loaded"}}
+
+    monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
+
+    asyncio.run(
+        web._load_driver_commissioning_config_for_level(
+            topology=_topology(),
+            speaker_group_id="mono",
+            role="woofer",
+            level_dbfs=0.0,
+            volume_limit_db=-4.0,
+            startup_gate_calibration_level={"status": "floor"},
+            preset=object(),
+            crossover_preview=None,
+            camilla_factory=Cam,
+        )
+    )
+
+    assert load_driver_call["reconcile_output_hardware"] is True
 
 
 def test_stage_startup_config_does_not_reread_mutable_preview_for_explicit_preset(

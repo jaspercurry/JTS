@@ -1963,6 +1963,25 @@ async def _load_driver_commissioning_config_for_level(
             current_config_error,
         )
         load_config, read_running_config, get_current_config_path = commission_seams(cam)
+        # ``startup_setup["status"] == "loaded"`` means _ensure_commission_startup_anchor
+        # just reloaded the all-muted anchor a moment ago and already triggered
+        # jasper-audio-hardware-reconcile for this exact DAC/topology (the
+        # "already_loaded" fast path, taken when nothing needed reloading, does
+        # not). The automatic capture-sweep flow's own cleanup
+        # (_restore_automatic_driver_entry_config) reverts CamillaDSP's
+        # persisted config path to the pre-commissioning production config
+        # after every single attempt, so an immediate retry of the same
+        # speaker_group_id/role (jasper.active_speaker.repeat_admission) always
+        # takes the reload branch here — hardware-reproduced on JTS3
+        # 2026-07-16: every audio_hardware_reconcile run in that window
+        # reported env_changed=0 render_changed=0 (a verified no-op), yet
+        # load_driver_commissioning_config's default reconcile_output_hardware
+        # asked for a SECOND reconcile run milliseconds after the first,
+        # doubling the reconcile+CamillaDSP-graph-churn paid immediately before
+        # the mic-capture aplay call on every retry. The output hardware
+        # cannot have changed in that window, so skip the second reconcile the
+        # same way commission_ramp.py's same-target ramp steps already do.
+        just_reconciled_hardware = startup_setup.get("status") == "loaded"
         payload = await load_driver_commissioning_config(
             topology,
             speaker_group_id=speaker_group_id,
@@ -1979,6 +1998,7 @@ async def _load_driver_commissioning_config_for_level(
             filter_mode=APPLIED_RESPONSE_FILTER_MODE,
             path_safety_evidence_path=evidence_path,
             acquire_lock=acquire_lock,
+            reconcile_output_hardware=not just_reconciled_hardware,
         )
         payload["startup_setup"] = startup_setup
         payload["measurement_transaction"] = transaction
