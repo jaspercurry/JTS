@@ -413,6 +413,15 @@ configureSelect("strategy-select", [
   ["balanced", "Balanced"],
 ], "balanced");
 getOrMake("measurement-options").classList.add("hidden");
+// Real markup (jasper/web/correction_setup.py) starts every envelope
+// section and the wizard's own reset button hidden. Mirror that here so an
+// isolated renderCurrentCorrection() call — before any renderSections() /
+// applyButtonPolicy() has run — sees the same "nothing shown yet" DOM a
+// freshly-loaded page would, matching the one-reset-at-a-time invariant
+// (renderCurrentCorrection defers the banner's own reset button whenever
+// the wizard's reset button is visible in its section).
+["measurement-review", "apply-status", "result-proof", "reset-correction"]
+  .forEach((id) => getOrMake(id).classList.add("hidden"));
 
 // Inject stubs for the named imports (csrfHeaders, jsonHeaders, etc.)
 const preamble = `
@@ -2511,9 +2520,104 @@ await (async () => {
   globalThis.__confirmReturn = undefined;
 }
 
+// 40. One reset affordance at a time — the RESULT ("Done") screen. This is
+//     the concrete overlap the owner flagged: envelope.py's SCREEN_RESULT
+//     sections are [current-correction, result-proof], so the persistent
+//     banner and the wizard's own #reset-correction button are BOTH
+//     normally-visible sections simultaneously. The user's attention is
+//     already on the Done section that hosts the wizard button, so it wins
+//     and the banner's reset control defers (the banner message itself —
+//     tone/copy — still renders; only its OWN reset button hides).
+{
+  renderCurrentCorrection(currentPresentation({
+    tone: "applied",
+    message_template: "Room correction on — 5 adjustments applied {applied_at}",
+    applied_at_epoch: 1718000000,
+    reset_allowed: true,
+  }));
+  applyButtonPolicy("verified", "idle");
+  renderSections(["current-correction", "result-proof"], {
+    measured: { freqs_hz: [20, 200], magnitude_db: [0, 0] },
+  });
+
+  const wizardReset = getOrMake("reset-correction");
+  assert(!wizardReset.classList.contains("hidden") &&
+    !getOrMake("result-proof").classList.contains("hidden"),
+    "Done screen: the wizard's reset button is visible in result-proof");
+  assert(resetBtn().classList.contains("hidden"),
+    "Done screen: the banner's reset button defers to the wizard's");
+  assert(label().textContent.startsWith("Room correction on"),
+    "Done screen: the banner's status copy still renders (only its reset hides)");
+}
+
+// 41. One reset affordance at a time — idle with an applied correction.
+//     envelope.py's SCREEN_IDLE sections are [current-correction,
+//     run-defaults]; no wizard section ever hosts #reset-correction on
+//     idle, so the banner is the reset home there — exactly the
+//     "returning to idle" case the fix is required to preserve.
+{
+  applyButtonPolicy("idle", "idle");
+  renderSections(["current-correction", "run-defaults"], {});
+  renderCurrentCorrection(currentPresentation({
+    tone: "applied",
+    message_template: "Room correction on — 5 adjustments applied {applied_at}",
+    applied_at_epoch: 1718000000,
+    reset_allowed: true,
+  }));
+
+  assert(!resetBtn().classList.contains("hidden"),
+    "idle with an applied correction: the banner reset is visible");
+  assert(getOrMake("reset-correction").classList.contains("hidden"),
+    "idle with an applied correction: the wizard reset stays hidden (no host section)");
+}
+
+// 42. apply-status never renders the current-correction section at all
+//     (screen APPLY's sections are [apply-status] only), so the banner's
+//     reset control is structurally invisible there regardless of
+//     reset_allowed — only the wizard's reset button can show.
+{
+  renderCurrentCorrection(currentPresentation({
+    tone: "applied",
+    message_template: "Room correction on — 5 adjustments applied {applied_at}",
+    applied_at_epoch: 1718000000,
+    reset_allowed: true,
+  }));
+  applyButtonPolicy("applied", "idle");
+  renderSections(["apply-status"], {});
+
+  assert(!getOrMake("reset-correction").classList.contains("hidden") &&
+    !getOrMake("apply-status").classList.contains("hidden"),
+    "apply-status: the wizard reset is visible");
+  assert(getOrMake("current-correction").classList.contains("hidden"),
+    "apply-status: the banner section itself is not rendered, so it cannot overlap");
+}
+
+// 43. The wizard-reset predicate is structural (the button's own ancestor
+//     chain), not positional. #reset-correction is ONE node moved between
+//     host sections: parked un-hidden inside a hidden section while a
+//     DIFFERENT host section is visible must read as not-visible, so the
+//     banner reset REMAINS — never zero visible reset affordances.
+{
+  const wizardReset = getOrMake("reset-correction");
+  getOrMake("measurement-review").appendChild(wizardReset);
+  wizardReset.classList.remove("hidden");
+  getOrMake("measurement-review").classList.add("hidden");
+  getOrMake("apply-status").classList.remove("hidden");
+
+  renderCurrentCorrection(currentPresentation({
+    tone: "applied",
+    message_template: "Room correction on — 5 adjustments applied {applied_at}",
+    applied_at_epoch: 1718000000,
+    reset_allowed: true,
+  }));
+
+  assert(!resetBtn().classList.contains("hidden"),
+    "button inside a hidden section: banner reset remains visible even with another host section shown");
+}
+
 resetEnvelopeBookkeeping();
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 58 }));
+console.log(JSON.stringify({ ok: true, tests: 62 }));

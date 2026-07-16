@@ -60,6 +60,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var currentCorrectionBanner = document.getElementById('current-correction');
   var currentCorrectionLabel = document.getElementById('current-correction-label');
   var currentCorrectionResetBtn = document.getElementById('current-correction-reset');
+  // Latest server answer to "is reset allowed at all" — cached so the
+  // one-reset-at-a-time reconciliation below (syncCurrentCorrectionReset)
+  // can re-derive banner visibility without a fresh /status fetch whenever
+  // the wizard's own reset button appears or disappears.
+  var currentCorrectionResetAllowed = false;
   // Stepped-wizard chrome (P3b) — driven by GET /envelope.
   var wizardChrome = document.getElementById('wizard-chrome');
   var wizardSteps = document.getElementById('wizard-steps');
@@ -1107,11 +1112,38 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     currentCorrectionBanner.classList.add(tone);
   }
 
+  // One reset affordance visible at a time. resetBtn (#reset-correction) is
+  // the wizard-flow control renderSections() re-homes into whichever of
+  // measurement-review / apply-status / result-proof is the live section;
+  // applyButtonPolicy() owns its own hidden class on top of that. When both
+  // agree it is on-screen, the user's attention is already on the wizard
+  // section that hosts it, so the persistent status banner defers to it —
+  // the banner stays the reset home for every other state (e.g. idle with
+  // an applied correction, where no wizard section hosts the button).
+  // Structural, not positional: renderSections MOVES the single button node
+  // between host sections, so "any host section visible" could false-positive
+  // while the button sits inside a hidden one (leaving ZERO visible resets).
+  // Walk the button's own ancestor chain instead.
+  function isWizardResetVisible() {
+    for (var node = resetBtn; node; node = node.parentNode || null) {
+      if (node.classList && node.classList.contains('hidden')) return false;
+    }
+    return true;
+  }
+
+  function syncCurrentCorrectionReset() {
+    hideEl(
+      currentCorrectionResetBtn,
+      !currentCorrectionResetAllowed || isWizardResetVisible()
+    );
+  }
+
   function renderCurrentCorrectionUnavailable() {
     setCurrentCorrectionTone('flat');
     currentCorrectionLabel.textContent =
       'The current correction could not be checked. Try again.';
-    currentCorrectionResetBtn.classList.add('hidden');
+    currentCorrectionResetAllowed = false;
+    syncCurrentCorrectionReset();
   }
 
   function renderCurrentCorrection(presentation) {
@@ -1145,7 +1177,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
     setCurrentCorrectionTone(presentation.tone);
     currentCorrectionLabel.textContent = message;
-    hideEl(currentCorrectionResetBtn, !presentation.reset_allowed);
+    currentCorrectionResetAllowed = !!presentation.reset_allowed;
+    syncCurrentCorrectionReset();
   }
 
   async function refreshCurrentCorrection() {
@@ -1568,6 +1601,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
     var haveResult = !!(curves && curves.measured);
     hideEl(resultSection, !haveResult);
+    // Whole-section visibility just settled — re-derive whether the banner's
+    // own reset control should defer to the wizard's.
+    syncCurrentCorrectionReset();
   }
 
   // The envelope router. Renders the full wizard chrome from one envelope
@@ -3009,6 +3045,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     } else if (state === 'applied' || state === 'verified') {
       resetBtn.classList.remove('hidden');
     }
+    // resetBtn's own hidden class just settled — re-derive whether the
+    // banner's reset control should defer to it (see syncCurrentCorrectionReset).
+    syncCurrentCorrectionReset();
   }
 
   function renderRelayStatusFromSnapshot(snapshot) {
