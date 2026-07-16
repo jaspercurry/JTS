@@ -245,31 +245,14 @@ def ensure_volume_limit_db(value: float) -> float:
     return out
 
 
-# --- Lean-lane File-capture resampler (CamillaDSP v4 object schema) ---
-# A File (named-pipe) capture has no hardware clock, so enable_rate_adjust can
-# only discipline it by steering an ASYNC resampler's ratio (rate-adjust
-# "method 2"). The deployed CamillaDSP is v4.x, whose resampler is an OBJECT
-# under "devices": a "resampler" mapping carrying an AsyncSinc kind and a
-# Balanced profile (see file_capture_resampler_yaml below for the emitted YAML).
-# The pre-v2 scalar form (`resampler_type: BalancedAsync`) is rejected by the
-# v4 parser, so emitters MUST use the object form. AsyncSinc / Balanced is
-# CamillaDSP's recommended speed/quality point for adaptive rate adjustment on
-# a 1 GB Pi 5. Shared here so both the stereo and active-speaker emitters use
-# one definition (no copy-paste twin, no cross-package private import).
-DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE = "AsyncSinc"
-DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE = "Balanced"
-# CamillaDSP v4 async (ratio-adjustable) resampler types — the ONLY ones that
-# can carry enable_rate_adjust on a clockless File capture. Synchronous cannot.
+# CamillaDSP v4 async (ratio-adjustable) resampler types. The snd-aloop safety
+# predicate below recognizes these explicitly so an unknown or synchronous
+# resampler cannot be mistaken for the oscillation-prone adaptive shape.
 ASYNC_RESAMPLER_TYPES = frozenset({"AsyncSinc", "AsyncPoly"})
 
 
 def is_async_resampler(resampler_type: str | None) -> bool:
-    """True iff ``resampler_type`` is a CamillaDSP v4 async (ratio-adjustable)
-    resampler — the only kind that can carry enable_rate_adjust on a clockless
-    File capture. Exact-set membership: an unknown or ``Synchronous`` type
-    returns False so the File-capture guard fails loud rather than emitting a
-    config that would free-run.
-    """
+    """Return whether this is a recognized v4 ratio-adjustable resampler."""
     return resampler_type in ASYNC_RESAMPLER_TYPES
 
 
@@ -287,9 +270,7 @@ def snd_aloop_rate_adjust_oscillation_reason(text: str) -> str | None:
     The regression test in test_camilla_config_contract.py feeds it every
     JTS-generated snd-aloop capture config to pin that the emitters never produce
     the oscillation-prone shape; a genuinely NEW emitter path is only covered once
-    it is added to that test's fixtures. (Contrast the lean-lane File-capture
-    case, whose safe shape is the inverse — a clockless File named-pipe capture
-    REQUIRES enable_rate_adjust + an async resampler.)
+    it is added to that test's fixtures.
 
     A snd-aloop ALSA capture (``plug:jasper_capture`` / ``hw:Loopback,...``) at
     capture-rate == playback-rate already rate-tracks via the loopback, so
@@ -301,14 +282,13 @@ def snd_aloop_rate_adjust_oscillation_reason(text: str) -> str | None:
     Returns a one-clause reason string when the config is a JTS-generated
     snd-aloop capture config (single samplerate ⇒ capture == playback by
     construction) that carries an async resampler — the dangerous both-on
-    combination. Returns None when the config is not a snd-aloop capture (e.g. a
-    File-capture lean config, which has its own guard) or is safe. NOTE the
-    bonded-leader pipe-sink config legitimately sets ``enable_rate_adjust:
-    false`` on its snd-aloop capture (snapclient is the sole rate-tracker on the
-    synced chain) — that is NOT this oscillation and is intentionally not
-    flagged; only the async-resampler-on-loopback case is. Parser is
-    deliberately lightweight — these are JTS-generated configs with a stable,
-    simple ``devices:`` shape, not arbitrary YAML.
+    combination. Returns None when the config is not a snd-aloop capture or is
+    safe. NOTE the bonded-leader pipe-sink config legitimately sets
+    ``enable_rate_adjust: false`` on its snd-aloop capture (snapclient is the
+    sole rate-tracker on the synced chain) — that is NOT this oscillation and is
+    intentionally not flagged; only the async-resampler-on-loopback case is.
+    Parser is deliberately lightweight — these are JTS-generated configs with
+    a stable, simple ``devices:`` shape, not arbitrary YAML.
     """
     capture_device: str | None = None
     has_resampler = False
@@ -352,7 +332,7 @@ def snd_aloop_rate_adjust_oscillation_reason(text: str) -> str | None:
     if capture_device is None:
         return None
     if not any(tok in capture_device for tok in _SND_ALOOP_CAPTURE_TOKENS):
-        return None  # not a snd-aloop capture (e.g. File lean lane)
+        return None  # not a snd-aloop capture
 
     if has_resampler and is_async_resampler(resampler_type):
         return (
@@ -362,24 +342,6 @@ def snd_aloop_rate_adjust_oscillation_reason(text: str) -> str | None:
             "oscillation)"
         )
     return None
-
-
-def file_capture_resampler_yaml(
-    resampler_type: str,
-    profile: str | None = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
-) -> str:
-    """Emit the CamillaDSP v4 ``resampler:`` object block for a File-capture
-    lean-lane config.
-
-    Newline-prefixed and indented to nest under ``devices:`` (two spaces for
-    ``resampler:``, four for its keys). ``profile`` applies to ``AsyncSinc``;
-    pass ``None`` to omit it (e.g. ``AsyncPoly``, which takes ``interpolation``
-    rather than ``profile``).
-    """
-    block = f"\n  resampler:\n    type: {resampler_type}"
-    if profile:
-        block += f"\n    profile: {profile}"
-    return block
 
 
 @dataclass(frozen=True)

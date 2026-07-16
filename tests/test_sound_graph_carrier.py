@@ -788,3 +788,26 @@ def test_program_bake_carrier_ignores_shm_ring_coupling(tmp_path):
     ).yaml
     assert 'device: "plug:jasper_capture"' in cfg
     assert f'device: "{RING_CAPTURE_DEVICE}"' not in cfg
+
+
+def test_active_baseline_ignores_stereo_only_shm_ring_coupling(tmp_path):
+    # shm_ring is solo-stereo-only; the active baseline keeps its roleful ALSA
+    # capture/playback graph regardless of the coupling. The carrier accepts
+    # the keyword for call-site uniformity (every carrier's reemit() takes
+    # it) but never threads it into active recomposition.
+    path = tmp_path / "active_speaker_baseline.yml"
+    path.write_text(_active_baseline_yaml("mono", 2))
+    with mock.patch(
+        "jasper.sound.graph_carrier._bonded_active_member", return_value=False
+    ), mock.patch(
+        "jasper.sound.graph_carrier._recompose_active_baseline_with_eq",
+        return_value="active-yaml",
+    ) as recompose:
+        carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
+        result = carrier.reemit(
+            SoundProfile(enabled=False),
+            fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
+        )
+
+    assert result.yaml == "active-yaml"
+    assert "coupling_capture_kwargs" not in recompose.call_args.kwargs
