@@ -1158,6 +1158,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   async function resetFromBanner() {
+    if (!(await jtsConfirm(
+      'Reset room correction? This removes the applied adjustments and cannot be undone.',
+      {danger: true},
+    ))) {
+      return;
+    }
     currentCorrectionResetBtn.disabled = true;
     currentCorrectionLabel.textContent = 'Resetting correction…';
     try {
@@ -3184,6 +3190,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   async function resetCorrection() {
+    if (!(await jtsConfirm(
+      'Reset room correction? This removes the applied adjustments and cannot be undone.',
+      {danger: true},
+    ))) {
+      return;
+    }
     resetBtn.disabled = true;
     setStateBadge('analyzing', 'resetting correction…');
     try {
