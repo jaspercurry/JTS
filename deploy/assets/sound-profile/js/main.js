@@ -1070,6 +1070,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var entry = hfDriverStyleEntry(style);
     return entry ? entry.label : String(style || '').replace(/_/g, ' ');
   }
+  // One-sentence restatement of the confirmed tweeter style(s) + floor for
+  // the safety-confirmation toast. Floor is only stated for styles the local
+  // table knows; anything else stays label-only (server is the authority).
+  function tweeterStyleConfirmNote() {
+    var notes = [];
+    var seen = {};
+    driverResearchTargets(currentOutputTopology()).forEach(function(target) {
+      if (target.role !== 'tweeter') return;
+      var entry = hfDriverStyleEntry(target.driver_style);
+      var note = entry
+        ? entry.label + ', ' + entry.floor_hz + ' Hz protective floor'
+        : (target.driver_style
+          ? driverStyleLabel(target.driver_style)
+          : 'style not set, conservative 5000 Hz protective floor');
+      if (!seen[note]) { seen[note] = true; notes.push(note); }
+    });
+    return notes.length ? ' Tweeter: ' + notes.join('; ') + '.' : '';
+  }
   function activeCrossoverPairs(topology) {
     var pairs = [];
     var seen = {};
@@ -2458,10 +2476,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '</label>' +
         (role === 'tweeter' ? '<p class="setting-row__hint">' + (
           target.driver_style
+            // A style the picker doesn't know (set via API or a newer build)
+            // renders label-only: never show a guessed floor — the server's
+            // safety evaluation is the floor authority.
             ? 'Tweeter style: ' + escapeHtml(driverStyleLabel(target.driver_style)) +
-              ' — protective high-pass floor ' +
-              escapeHtml(String((hfDriverStyleEntry(target.driver_style) || {}).floor_hz || 5000)) +
-              ' Hz.'
+              (hfDriverStyleEntry(target.driver_style)
+                ? ' — protective high-pass floor ' +
+                  escapeHtml(String(hfDriverStyleEntry(target.driver_style).floor_hz)) +
+                  ' Hz.'
+                : '.')
             : 'Tweeter style not set — using the conservative 5000 Hz floor. ' +
               'Set it on the speaker layout step.'
         ) + '</p>' : '') +
@@ -3085,6 +3108,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
                 '" data-role="' + escapeHtml(channel.role || '') + '">' +
                 '<option value=""' + (channel.driver_style ? '' : ' selected') + '>' +
                   'Not sure (conservative default)</option>' +
+                // A stored style the picker doesn't know (set via API or a
+                // newer build) gets its own selected option so the select
+                // never misreports it as "Not sure".
+                (channel.driver_style && !hfDriverStyleEntry(channel.driver_style) ?
+                  '<option value="' + escapeHtml(channel.driver_style) + '" selected>' +
+                    escapeHtml(driverStyleLabel(channel.driver_style)) + '</option>' : '') +
                 hfDriverStyles().map(function(item) {
                   return '<option value="' + escapeHtml(item.value) + '"' +
                     (channel.driver_style === item.value ? ' selected' : '') + '>' +
@@ -5405,7 +5434,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       crossoverPreview.error = '';
       if (options.nextStep) outputStepOverride = options.nextStep;
       if (options.confirmSafetyProfile) {
-        status('Safety limits confirmed for the current physical outputs. This still does not authorize sound.');
+        status('Safety limits confirmed for the current physical outputs.' +
+          tweeterStyleConfirmNote() + ' This still does not authorize sound.');
       } else if (!options.forPreview) {
         status(importWarning
           ? 'Working setup updated from visible fields. Imported JSON was not saved.'

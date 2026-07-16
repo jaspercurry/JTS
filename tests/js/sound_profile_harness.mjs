@@ -1991,6 +1991,68 @@ async function testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview() {
   return { tweeterDriverStyleSelectorSetsTopologyAndAppearsInReview: true };
 }
 
+// A stored driver_style the picker doesn't know (set via API or a newer
+// build, e.g. horn_compression_driver) must render label-only — never a
+// guessed floor number — and the picker must not misreport it as "Not sure".
+// The server's safety evaluation stays the floor authority.
+async function testUnknownDriverStyleRendersWithoutGuessedFloor() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.speaker_groups[0].channels[1].driver_style = "horn_compression_driver";
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(topology)),
+  }));
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("Tweeter style: horn compression driver.")) {
+    fail("an unknown-to-the-picker style must render its label without a floor", { html });
+  }
+  if (html.includes("horn compression driver — protective high-pass floor") ||
+      /horn compression driver[^<]*5000/.test(html)) {
+    fail("an unknown-to-the-picker style must never show a guessed floor", { html });
+  }
+  if (!html.includes('value="horn_compression_driver" selected')) {
+    fail("the picker must show the stored unknown style as selected, not 'Not sure'", { html });
+  }
+  return { unknownDriverStyleRendersWithoutGuessedFloor: true };
+}
+
+// Nit from review: the safety-confirmation toast restates the confirmed
+// tweeter style + floor so the operator sees what they just confirmed.
+async function testConfirmSafetyToastRestatesTweeterStyleAndFloor() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.speaker_groups[0].channels[1].driver_style = "compression_driver";
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(topology)),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        return Promise.resolve(response({
+          status: "ready_for_review",
+          revision: 4,
+          summary: {},
+          operator_inputs: {},
+        }));
+      }
+      return Promise.resolve(response({ status: "ready_for_review", revision: 3, summary: {}, operator_inputs: {} }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({ "data-act": "confirm-driver-safety" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const text = harness.elements.get("status").textContent;
+  if (!text.includes("Safety limits confirmed") ||
+      !text.includes("Compression driver (horn-loaded), 2000 Hz protective floor")) {
+    fail("confirm toast must restate the confirmed tweeter style and floor", { text });
+  }
+  if (!text.includes("does not authorize sound")) {
+    fail("confirm toast must keep the no-audio disclaimer", { text });
+  }
+  return { confirmSafetyToastRestatesTweeterStyleAndFloor: true };
+}
+
 // Punch #13 (MEDIUM): a save refusal (e.g. a stale-fingerprint confirmation)
 // must surface the server's real error, not a false "saved" toast. Verified
 // this already holds for both the plain working-setup save and the
@@ -5237,6 +5299,8 @@ results.push(await testCombinedSoundsRightStopsAndSavesActiveLoop());
 results.push(await testStaleSummedValidationDoesNotRenderValidatedGroup());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview());
+results.push(await testUnknownDriverStyleRendersWithoutGuessedFloor());
+results.push(await testConfirmSafetyToastRestatesTweeterStyleAndFloor());
 results.push(await testDesignDraftSaveRefusalShowsServerErrorNotSavedToast());
 results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
 results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
