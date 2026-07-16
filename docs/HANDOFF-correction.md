@@ -324,25 +324,37 @@
   synthetic — H1 (on-device settle cadence + iOS/Android AGC-freeze
   confirmation) supplies the real threshold values; the `JASPER_RAMP_*`
   env knobs in `.env.example` are documented placeholders until then.
-  The phone's hard capture deadline (`level_ramp`'s `duration_ms`) must never
-  undercut the Pi's own `MeasurementRamp.safety_timeout` for that run — a
-  2026-07-15 JTS3 hardware run showed the crossover driver-level phone page
-  declaring a false timeout at ~33 s while the woofer/tweeter ramp was still
-  legitimately climbing toward its ~58 s server safety timeout. The fix:
+  **Phone false-timeout on a locked ramp — root-caused 2026-07-15 (JTS3
+  tweeter driver ramp).** The server locked at 33.8 s (well inside its 58 s
+  safety timeout) but the phone showed "did not finish the level check
+  before the timeout". Journal + code forensics: the relay worker's
+  `postEvent`/`postHostEvent` each write back the WHOLE session meta from
+  their own request-start read, so a phone batch post that read the meta
+  just before the Pi's terminal write reverts `host_event` when it lands.
+  The Pi's terminal re-post latch used to STOP on the first confirmed
+  read-back (the tweeter confirmed within ~1.5 s; the woofer coincidentally
+  re-posted for ~4 s and survived) — after that one revert, nobody re-posted,
+  the phone never saw the terminal, and its own deadline eventually fired.
+  Three changes landed: (1) the latch in `LevelMatchSession.run_for_geometry`
+  ([`jasper/correction/level_match.py`](../jasper/correction/level_match.py))
+  now always runs the full bounded `TERMINAL_POST_ATTEMPTS` schedule — the
+  read-back is observability (`level_match_done terminal_echoed=`), not an
+  exit; (2) the phone's `runLevelRampProtocol` deadline is per-phase: armed
+  at Start for the arming phase and RE-ARMED once when the Pi's ramp first
+  becomes visible for this run token, so pre-ramp overhead (setup echo,
+  ambient baseline, DSP commissioning load) no longer shrinks the ramp's
+  budget — matching the server's ramp_start-anchored safety timeout; (3) the
+  crossover level-match relay spec's `hard_timeout_ms` is now derived —
   `CrossoverLevelLease.phone_hard_timeout_ms(geometry)`
   ([`jasper/web/correction_crossover_backend.py`](../jasper/web/correction_crossover_backend.py))
-  derives the crossover level-match relay spec's `hard_timeout_ms` from the
-  SAME `MeasurementRamp` config `run_level_match` executes, plus
-  `crossover_level_run.PHONE_TRANSPORT_GRACE_S` (30 s) — so the client
-  deadline tracks the server's real, possibly env-tuned safety timeout
-  instead of a flat constant that happened to exceed only the current
-  defaults. Room's listening-position level match
-  (`SessionState.run_level_match` in
-  [`jasper/correction/session.py`](../jasper/correction/session.py)) still
-  builds its own independent `MeasurementRamp.from_env(...)` and the phone
-  spec still carries a flat `hard_timeout_ms` default — the same coupling
-  gap exists there but is unobserved so far; wiring it through the same
-  pattern is a natural follow-up if it fires.
+  computes it from the SAME `MeasurementRamp` config `run_level_match`
+  executes plus `crossover_level_run.PHONE_TRANSPORT_GRACE_S` (30 s), so the
+  client budget tracks env-tuned ramp knobs instead of a flat constant.
+  Residual (flagged, not fixed): the durable fix for the revert race is
+  per-field storage in the relay worker (separate keys for `event` /
+  `host_event`) — a relay deploy, tracked separately; and Room's
+  listening-position spec still carries the flat `hard_timeout_ms` default
+  (benign under the per-phase re-arm, which Room shares).
   Design of record:
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §3.1.
 - 🧪 **P4 — deterministic verify-acceptance loop (hardware-free complete,

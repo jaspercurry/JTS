@@ -644,8 +644,11 @@ class RelayLevelFeed:
         """The ramp state currently echoed in the relay's host_event, if any.
 
         The Pi's pull-token ``/status`` includes ``host_event`` (worker.js
-        ``getStatus``), so a terminal post that a phone putMeta race reverted is
-        detectable: re-post until this reads back the expected value."""
+        ``getStatus``), so a terminal post that a phone putMeta race reverted
+        is detectable. Observability only: a single confirmed read-back is NOT
+        durable (the next phone batch post can revert it), so the terminal
+        re-post schedule always runs to its bounded end regardless of what
+        this returns."""
         try:
             status = self._read_status() or {}
         except _FEED_ERRORS:
@@ -707,7 +710,9 @@ class LevelMatchSession:
     DEFAULT_ARMED_TIMEOUT_S = 90.0
     ARMED_POLL_S = 0.25
     # Terminal host-event re-posting: attempts × spacing bound the "phone still
-    # metering with a hot mic" window after a putMeta revert race.
+    # metering with a hot mic" window after a putMeta revert race. The FULL
+    # schedule always runs (no early exit on a confirmed echo) — see the
+    # re-post loop in run_for_geometry for the revert-race rationale.
     TERMINAL_POST_ATTEMPTS = 5
     TERMINAL_POST_SPACING_S = 0.75
 
@@ -849,15 +854,25 @@ class LevelMatchSession:
             self.store.put(lock)
 
         # Terminal ramp state → phone. The event slot is a read-modify-write
-        # race (§3.1), so the post is latched: re-post until the relay status
-        # echoes it back in host_event, bounded by TERMINAL_POST_ATTEMPTS.
+        # race (§3.1): the worker's postEvent/postHostEvent each write back the
+        # WHOLE session meta from their own request-start read, so a phone
+        # batch post that read the meta just before our terminal write reverts
+        # host_event when it lands. Always run the FULL bounded re-post
+        # schedule — never stop on a single confirmed read-back. Breaking on
+        # first echo left exactly one revert window with nobody re-posting,
+        # and a phone that then never sees the terminal runs to its own
+        # deadline and reports a false timeout (2026-07-15 JTS3 tweeter ramp:
+        # locked at 33.8 s, echo confirmed on attempt ~2, latch stopped, a
+        # batch clobbered it back, phone showed "did not finish ... timeout").
+        # The read-back is observability now, not an exit condition.
         # All terminal states are posted — a Pi-side CANCELLED/ERROR must also
         # stop the phone's metering, not just LOCKED/MAXED_OUT.
+        terminal_echoed = False
         for _attempt in range(self.TERMINAL_POST_ATTEMPTS):
             feed.post_ramp_signal("state", data.state.value)
             await sleep(self.TERMINAL_POST_SPACING_S)
             if feed.read_back_ramp_state() == data.state.value:
-                break
+                terminal_echoed = True
 
         outcome = LevelMatchOutcome(
             geometry=geometry,
@@ -877,6 +892,7 @@ class LevelMatchSession:
                 if data.locked_main_volume_db is not None
                 else ""
             ),
+            terminal_echoed=terminal_echoed,
         )
         return outcome
 

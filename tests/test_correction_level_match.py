@@ -558,10 +558,15 @@ async def test_level_match_persists_bounded_low_evidence_in_lock_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_level_match_terminal_state_reposted_until_echoed():
-    # The relay event slot is a read-modify-write race: the terminal state is
-    # re-posted until /status echoes it back. FakeChain echoes on the first
-    # post, so the loop stops early — and at least one post carries the state.
+async def test_level_match_terminal_state_repost_never_stops_on_first_echo():
+    # The relay event slot is a whole-meta read-modify-write race: a phone
+    # batch post whose read predates the Pi's terminal write reverts
+    # host_event when it lands. Stopping the re-post schedule on a single
+    # confirmed echo left exactly that revert window with nobody re-posting —
+    # the phone then missed the terminal and reported a false timeout
+    # (2026-07-15 JTS3 tweeter ramp: locked at 33.8 s server-side, phone
+    # showed "did not finish the level check before the timeout"). The full
+    # bounded schedule must run even when the echo confirms immediately.
     sess = _session()
     chain = FakeChain(gain_db=10.0, start_vol=-30.0)
     outcome = await _run_geometry(sess, chain, MicGeometry.LISTENING_POSITION.value)
@@ -569,9 +574,8 @@ async def test_level_match_terminal_state_reposted_until_echoed():
     terminal_posts = [
         e for e in chain.host_events if e.get("ramp", {}).get("state") == "locked"
     ]
-    assert terminal_posts, "terminal ramp state was never posted"
-    # Echo detected on the first verify → no full 5-attempt blast.
-    assert len(terminal_posts) <= 2
+    # FakeChain echoes on the first post; the schedule still runs to its end.
+    assert len(terminal_posts) == LevelMatchSession.TERMINAL_POST_ATTEMPTS
 
 
 @pytest.mark.asyncio
