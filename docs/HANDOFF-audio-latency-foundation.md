@@ -296,7 +296,9 @@ scalar). `file_capture_resampler_yaml`, `DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE`/
 producerless `capture_pipe_path` surface, 2026-07-15); `is_async_resampler`
 survives in
 [`jasper/camilla_config_contract.py`](../jasper/camilla_config_contract.py)
-for the still-live snd-aloop rate_adjust/resampler oscillation guard. Neither
+for the snd-aloop rate_adjust/resampler oscillation guard (a test-only
+invariant guard — no runtime caller; `test_camilla_config_contract` feeds it
+every JTS-generated config). Neither
 the stereo ([`jasper/sound/camilla_yaml.py`](../jasper/sound/camilla_yaml.py))
 nor active-speaker
 ([`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py))
