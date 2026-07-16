@@ -249,6 +249,37 @@ const RELAY_URL =
   }
 }
 
+// 8b. Unchanged-link renders are skipped — the wizards call renderRelayQr
+//     from their ~1.5 s poll loop with the same link for the whole
+//     awaiting_phone phase. A rebuild each tick would snap a tapped-open
+//     <details> shut within a tick; a repeat render with the same href must
+//     leave the DOM untouched, while a DIFFERENT href still rebuilds.
+{
+  globalThis.window = { matchMedia: () => ({ matches: false }) }; // narrow
+  const container = makeEl("div");
+  renderRelayQr(container, RELAY_URL);
+  const details = container.children[0];
+  assert(details && details.tagName === "DETAILS", "sanity: first render builds the details");
+  details.open = true; // the user taps "Show QR code"
+
+  renderRelayQr(container, RELAY_URL); // next poll tick, same link
+  assert(container.children[0] === details,
+    "a repeat render with the same link leaves the details element untouched");
+  assert(details.open === true,
+    "the user's tapped-open state survives the poll tick");
+
+  renderRelayQr(container, RELAY_URL + "&changed=1"); // a genuinely new link
+  assert(container.children[0] !== details,
+    "a render with a different link rebuilds the QR");
+  assert(container.children[0].children[1].getAttribute("data-qr-text") ===
+      RELAY_URL + "&changed=1",
+    "the rebuilt canvas encodes the new href");
+
+  renderRelayQr(container, null); // terminal state still clears
+  assert(container.children.length === 0,
+    "clearing after a link change still empties the container");
+}
+
 // 8. isDesktopViewport(): no window (or no matchMedia) defaults to the
 //    prominent desktop layout — the safer default when the viewport signal
 //    is unavailable — and otherwise reflects window.matchMedia verbatim.
@@ -266,4 +297,4 @@ if (failures) {
   console.error(`\n${failures} qr.js test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 8 }));
+console.log(JSON.stringify({ ok: true, tests: 9 }));

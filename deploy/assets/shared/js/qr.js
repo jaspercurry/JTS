@@ -1345,13 +1345,33 @@ export function isDesktopViewport() {
 // pages) and then built up purely through DOM APIs — createElement,
 // setAttribute, textContent, appendChild. `text` itself is never assigned
 // to innerHTML.
+//
+// UNCHANGED-LINK RENDERS ARE SKIPPED. Both wizards call this from their poll
+// loop (~1.5 s cadence) with the same link for the whole awaiting_phone
+// phase; rebuilding each tick would destroy interaction state — on a narrow
+// viewport the user's tapped-open <details> would snap shut within a tick —
+// and re-run the encoder for nothing. The last rendered text is memoized
+// per container (WeakMap, so a discarded container frees its entry); a
+// repeat render with the same value (including "still cleared") returns
+// untouched, while an actual link change or a clear still rebuilds exactly
+// as before.
+const lastRenderedText = new WeakMap();
+
 export function renderRelayQr(container, text, opts = {}) {
   if (!container) return;
+  const normalized = text ? String(text) : null;
+  if (
+    lastRenderedText.has(container) &&
+    lastRenderedText.get(container) === normalized
+  ) {
+    return;
+  }
+  lastRenderedText.set(container, normalized);
   container.innerHTML = '';
   container.className = 'relay-qr';
-  if (!text) return;
+  if (!normalized) return;
 
-  const { size, isDark } = encodeQrMatrix(text, opts.ecLevel);
+  const { size, isDark } = encodeQrMatrix(normalized, opts.ecLevel);
   const modulePx = opts.modulePx || DEFAULT_MODULE_PX;
 
   const canvas = document.createElement('canvas');
@@ -1371,7 +1391,7 @@ export function renderRelayQr(container, text, opts = {}) {
   // Stashes exactly what was encoded — the load-bearing seam tests assert
   // against, since it proves the full href (fragment included) reached the
   // encoder without needing to decode rendered pixels back out.
-  canvas.setAttribute('data-qr-text', text);
+  canvas.setAttribute('data-qr-text', normalized);
   const ctx = canvas.getContext && canvas.getContext('2d');
   if (ctx) {
     ctx.fillStyle = '#ffffff';
