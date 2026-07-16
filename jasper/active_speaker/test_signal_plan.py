@@ -37,13 +37,23 @@ DRIVER_SWEEP_DURATIONS_S = {
 DEFAULT_DRIVER_SWEEP_DURATION_S = 6.0
 MAX_TWEETER_SWEEP_DURATION_S = 4.0
 SUMMED_SWEEP_DURATION_S = 8.0
-# One fixed controlled interval covers the longest phase-closed protected
-# driver sweep plus locator/leakage margin. The analyzer selects a real quiet
-# crop; it never pads or repeats noise.
-# The synchronized-sweep kernel rounds an approximate 12.0 s request to about
-# 12.09 s so its phase closes cleanly. Two seconds of margin keeps the real
-# reference plus the 250 ms leakage guard entirely inside the paused interval.
-CROSSOVER_AMBIENT_DURATION_S = max(DRIVER_SWEEP_DURATIONS_S.values()) + 2.0
+# The controlled quiet interval is sized to the sweep it precedes plus
+# locator/leakage margin — the synchronized-sweep kernel rounds an approximate
+# N-second request to about N + 0.09 s so its phase closes cleanly, and two
+# seconds of margin keeps the real reference plus the 250 ms leakage guard
+# entirely inside the paused interval. See ``driver_ambient_duration_s``.
+AMBIENT_DURATION_MARGIN_S = 2.0
+# Historical worst-case ceiling: the longest per-driver ambient window across
+# every role. NOT the per-sweep quiet duration a household actually waits
+# through — that is ``driver_ambient_duration_s(role)``, sized to that
+# driver's own (usually much shorter) sweep. This constant remains the right
+# value for callers that need a fixed upper bound regardless of which driver
+# is under test: the automatic-cooldown safety budget in
+# ``commissioning_admission.py``, and the summed/verification region capture
+# (no single driver role to size against).
+CROSSOVER_AMBIENT_DURATION_S = (
+    max(DRIVER_SWEEP_DURATIONS_S.values()) + AMBIENT_DURATION_MARGIN_S
+)
 
 # The public capture page's deadline begins at ``armed`` and includes relay
 # polling, the controlled ambient interval, DSP setup, the sweep, and post-roll.
@@ -75,6 +85,24 @@ def driver_sweep_duration_s(role: str) -> float:
     if role_id == "tweeter":
         duration = min(duration, MAX_TWEETER_SWEEP_DURATION_S)
     return float(duration)
+
+
+def driver_ambient_duration_s(role: str) -> float:
+    """Return the right-sized quiet-reference window that precedes ``role``'s
+    sweep: that driver's own protected sweep duration plus the fixed
+    locator/leakage margin.
+
+    A fixed worst-case pause (``CROSSOVER_AMBIENT_DURATION_S``, sized to the
+    longest driver) forced every driver — including a 4 s tweeter sweep — to
+    sit through the SAME 14 s of silence before its tone started. Per-driver
+    sizing keeps the analyzer's pairing invariant — the controlled window must
+    cover the kernel sweep length plus
+    ``driver_acoustics.AMBIENT_CONTROLLED_LEAD_S`` (the ``controlled_start``
+    check in ``driver_acoustics._capture_to_magnitude``) — while cutting the
+    wait for every driver shorter than the longest one.
+    """
+
+    return driver_sweep_duration_s(role) + AMBIENT_DURATION_MARGIN_S
 
 
 def protective_tweeter_highpass_frequency_hz(

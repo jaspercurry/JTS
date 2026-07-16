@@ -493,10 +493,19 @@
   kernel-side per-driver signal plan (12 s woofer/subwoofer, 8 s midrange,
   4 s tweeter; one sweep definition — the phone copy matches the sweep the Pi plays; the
   deconv reference always regenerated from the played `sweep_meta`, so
-  phone is a pure recorder). Driver recordings include a 14-second controlled
-  quiet interval before playback and their hard deadline is 45 s; the phone's
-  `duration_ms` remains only a backstop because normal completion follows the
-  Pi's `sweep_complete` event. The generic builder retains the 30 s floor like `room_sweep`'s
+  phone is a pure recorder). Driver recordings include a controlled quiet
+  interval before playback, right-sized per driver (that driver's own sweep
+  duration + 2 s — 14 s woofer/subwoofer, 10 s midrange, 6 s tweeter; see
+  `test_signal_plan.driver_ambient_duration_s`, landed 2026-07-16 to replace a
+  fixed 14 s pause that made every driver — including a 4 s tweeter sweep —
+  sit through the longest driver's silence) and their hard deadline is 45 s;
+  the phone's `duration_ms` remains only a backstop because normal completion
+  follows the Pi's `sweep_complete` event. The pre-tone quiet phase now
+  renders a live countdown on the phone (`ambient_started`'s host event
+  carries `duration_s`) instead of an unexplained silent wait, and the phone
+  can Stop a driver sweep or level ramp itself — a new "stop" screen action
+  wired to the same abort() path the visibility-abort case already used
+  (`capture-page/js/main.js`'s `stopCapture`). The generic builder retains the 30 s floor like `room_sweep`'s
   `hard_timeout_ms` (normal recorder completion is the Pi's `sweep_complete` relay
   event; the deadline is only the backstop). During the quiet interval and
   playback, an authenticated phone-activity watchdog cancels on backgrounding,

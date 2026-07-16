@@ -27,7 +27,7 @@
 import { resolveTheme } from "./theme.js";
 
 const COMPONENT_TYPES = new Set(["heading", "steps", "level_meter", "button", "note"]);
-const BUTTON_ACTIONS = new Set(["begin_capture", "retry"]);
+const BUTTON_ACTIONS = new Set(["begin_capture", "retry", "stop"]);
 
 function el(doc, tag, className) {
   const node = doc.createElement(tag);
@@ -75,11 +75,17 @@ function renderComponent(component, doc, handlers, refs) {
     return wrap;
   }
   if (type === "button") {
-    const b = el(doc, "button", "cap-button");
-    b.type = "button";
-    setText(b, component.label);
     // The action is a SELECTOR into host-provided handlers, never a handler.
     const action = BUTTON_ACTIONS.has(component.action) ? component.action : null;
+    // "stop" is styled danger (red) — it is the one button on this page whose
+    // tap is destructive to the in-progress measurement, never routine.
+    const b = el(
+      doc,
+      "button",
+      action === "stop" ? "cap-button cap-button--danger" : "cap-button",
+    );
+    b.type = "button";
+    setText(b, component.label);
     if (action) {
       b.setAttribute("data-action", action);
       const handler = handlers && handlers[action];

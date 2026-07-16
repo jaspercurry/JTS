@@ -5566,29 +5566,34 @@ def _handle_crossover_relay_capture(
         return_url: str,
     ) -> RelayCapture:
         from jasper.active_speaker.test_signal_plan import (
-            CROSSOVER_AMBIENT_DURATION_S,
             CROSSOVER_CAPTURE_HARD_TIMEOUT_S,
             CROSSOVER_CAPTURE_MAX_WAV_BYTES,
             SUMMED_SWEEP_DURATION_S,
             driver_sweep_duration_s,
         )
 
+        role = str(raw.get("role") or "")
         sweep_duration_s = (
-            driver_sweep_duration_s(str(raw.get("role") or ""))
+            driver_sweep_duration_s(role)
             if kind_id == "driver"
             else SUMMED_SWEEP_DURATION_S
+        )
+        # Right-sized per driver (the sweep's own duration + margin) rather than
+        # a fixed worst-case pause — see correction_crossover_flow's
+        # crossover_ambient_duration_s, the SAME function the flow's own sleep
+        # default resolves so the spec and the actual pause can never drift.
+        ambient_duration_s = correction_crossover_flow.crossover_ambient_duration_s(
+            kind_id, role
         )
         return correction_adapter.open_capture(
             client,
             build_crossover_sweep_spec(
                 driver_label=driver_label,
-                driver_role=str(raw.get("role") or "summed"),
+                driver_role=role or "summed",
                 driver_capture_geometry=requested_geometry,
                 acknowledgement_binding=acknowledgement_binding,
                 stimulus_duration_ms=int(round(sweep_duration_s * 1000)),
-                ambient_duration_ms=int(
-                    round(CROSSOVER_AMBIENT_DURATION_S * 1000)
-                ),
+                ambient_duration_ms=int(round(ambient_duration_s * 1000)),
                 hard_timeout_ms=int(round(CROSSOVER_CAPTURE_HARD_TIMEOUT_S * 1000)),
                 max_upload_bytes=CROSSOVER_CAPTURE_MAX_WAV_BYTES,
             ),

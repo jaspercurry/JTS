@@ -189,8 +189,10 @@
 > per-driver signal plan (12 s woofer/subwoofer, 8 s midrange, 4 s tweeter;
 > one sweep definition; the deconv
 > reference is always regenerated from the played `sweep_meta`, so the phone is a
-> pure recorder). Each driver recording includes a 14-second controlled quiet
-> interval before playback; a signal locator excludes pre-armed audio. The
+> pure recorder). Each driver recording includes a controlled quiet interval
+> before playback, right-sized per driver as of 2026-07-16 (that role's own
+> sweep length + 2 s — 14 s woofer/subwoofer down to 6 s tweeter, not a fixed
+> 14 s pause); a signal locator excludes pre-armed audio. The
 > phone's hard deadline is 45 s and the Pi's `sweep_complete` event
 > remains normal recorder completion. The safe probe owns only non-clipping level. The
 > deconvolved per-band sweep-versus-ambient verdict and the server-owned

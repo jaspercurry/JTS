@@ -44,8 +44,10 @@
 > records a passive noise-floor window before the Pi plays anything, and the Pi
 > publishes `sweep_complete` so the phone stops from real sweep progress rather
 > than a fixed timer.
-> The crossover kind additionally holds a 14-second controlled quiet interval
-> before every role-sized ESS and carries the entire raw WAV back to the Pi.
+> The crossover kind additionally holds a controlled quiet interval — sized to
+> that role's own sweep length + 2 s (2026-07-16; 14 s woofer/subwoofer down to
+> 6 s tweeter, not a fixed 14 s pause) — before every role-sized ESS and
+> carries the entire raw WAV back to the Pi.
 > A bounded signal locator selects separate, real, equal-length signal and
 > quiet crops after relay latency. The Pi runs both through the same regularized inverse,
 > applies the signal-owned arrival window and reflection gate to both (ambient
@@ -101,8 +103,10 @@
 > server-computed twice (refused at POST while room/balance/sync is active,
 > re-checked at armed time); the `crossover_sweep` spec floors the phone's hard
 > recording deadline at 30 s (`hard_timeout_ms`, the `room_sweep` contract).
-> Lane D raises the crossover-only floor to 45 s so its controlled 14 s quiet
-> capture, per-driver sweep, config load, and `sweep_complete` round trip cannot
+> Lane D raises the crossover-only floor to 45 s so its controlled quiet
+> capture (per-driver: that role's sweep + 2 s, worst case 14 s for
+> woofer/subwoofer), per-driver sweep, config load, and `sweep_complete`
+> round trip cannot
 > race the phone deadline; the room and sync relay floors remain 30 s. The
 > preceding near-field level step owns microphone
 > and calibration setup; its identity is bound to the protected applied speaker

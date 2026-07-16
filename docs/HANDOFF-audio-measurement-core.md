@@ -573,8 +573,10 @@ create a second retention system.
   already there — that's why the refactor is low-risk.
 - **Active-crossover repeat + SNR controller (2026-07-12).** The protected
   level probe now owns only a safe, non-clipping playback level. Each driver
-  measurement holds a 14-second controlled quiet interval followed by a
-  role-sized ESS (woofer/subwoofer 12 s, midrange 8 s, tweeter 4 s), and
+  measurement holds a controlled quiet interval — right-sized per driver as of
+  2026-07-16 (that role's own sweep length + 2 s, so 14 s woofer/subwoofer down
+  to 6 s tweeter, not a fixed 14 s pause) — followed by a role-sized ESS
+  (woofer/subwoofer 12 s, midrange 8 s, tweeter 4 s), and
   compares deconvolved sweep-band magnitude against ambient passed through
   the same regularized inverse, signal-owned arrival window/reflection gate,
   and calibration domain (ambient noise never selects its own IR argmax).

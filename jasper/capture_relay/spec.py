@@ -68,7 +68,7 @@ DEFAULT_THEME = {"accent": "sage", "font": "figtree"}
 # Server-driven-UI component vocabulary. The page renderer draws exactly these
 # types; anything else is rejected on both sides.
 UI_COMPONENT_TYPES = ("heading", "steps", "level_meter", "button", "note")
-UI_BUTTON_ACTIONS = ("begin_capture", "retry")
+UI_BUTTON_ACTIONS = ("begin_capture", "retry", "stop")
 UI_METER_SOURCES = ("mic",)
 CALIBRATION_MODEL_KEYS = ("key", "label", "aliases")
 
@@ -1157,6 +1157,7 @@ def build_crossover_sweep_spec(
             ),
             ui_level_meter("mic"),
             ui_button(button_label, action="begin_capture"),
+            ui_button("Stop", action="stop"),
             ui_note("Keep the screen on — leaving this page stops the recording."),
         ),
         max_upload_bytes=max_upload_bytes,
@@ -1246,6 +1247,7 @@ def build_level_ramp_spec(
             ),
             ui_level_meter("mic"),
             ui_button("Start level check", action="begin_capture"),
+            ui_button("Stop", action="stop"),
             ui_note("Keep the screen on — leaving this page stops the level match."),
         ),
         calibration_models=tuple(calibration_models),

@@ -416,6 +416,28 @@ def handle_summed_capture(
 # ----------------------------------------------------------------------
 
 
+def crossover_ambient_duration_s(kind: str, role: str) -> float:
+    """Right-sized quiet-reference window for one crossover relay sweep.
+
+    A driver sweep's own protected duration decides its ambient window
+    (:func:`jasper.active_speaker.test_signal_plan.driver_ambient_duration_s`)
+    so a short tweeter sweep does not inherit the longest driver's ~14 s pause.
+    Summed/verification sweeps keep the historical worst-case window — there is
+    no single driver role to size them against. This ONE function backs both
+    the capture spec's ``ambient_duration_ms`` (``correction_setup._open``) and
+    this module's own sleep default (``build_crossover_relay_run_and_consume``),
+    so the two can never drift apart.
+    """
+    from jasper.active_speaker.test_signal_plan import (
+        CROSSOVER_AMBIENT_DURATION_S,
+        driver_ambient_duration_s,
+    )
+
+    if kind == "driver" and role:
+        return driver_ambient_duration_s(role)
+    return CROSSOVER_AMBIENT_DURATION_S
+
+
 def relay_kind_from_raw(raw: dict[str, Any]) -> str:
     """The crossover relay capture kind, validated at the thin HTTP boundary.
 
@@ -1064,11 +1086,7 @@ def build_crossover_relay_run_and_consume(
         finish_failed_repeat_attempt(reservation, failure_type)
 
     if ambient_duration_s is None:
-        from jasper.active_speaker.test_signal_plan import (
-            CROSSOVER_AMBIENT_DURATION_S,
-        )
-
-        ambient_duration_s = CROSSOVER_AMBIENT_DURATION_S
+        ambient_duration_s = crossover_ambient_duration_s(kind, role)
     ambient_duration_s = max(0.0, float(ambient_duration_s))
 
     async def _play(

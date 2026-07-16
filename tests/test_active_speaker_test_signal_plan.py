@@ -215,3 +215,61 @@ def test_driver_sweep_duration_is_longer_for_lf_and_bounded_for_tweeter() -> Non
     assert driver_sweep_duration_s("mid") == 8.0
     assert driver_sweep_duration_s("tweeter") == 4.0
     assert driver_sweep_duration_s("future_role") == 6.0
+
+
+def test_driver_ambient_duration_is_right_sized_per_driver_not_worst_case() -> None:
+    """A tweeter's 4 s sweep must not inherit the longest driver's ~14 s pause
+    (the pre-2026-07-16 fixed CROSSOVER_AMBIENT_DURATION_S). Contract: the
+    flow's sleep default, the capture spec's ambient_duration_ms, and this
+    plan module's own duration table must all agree, per driver kind — see
+    ``crossover_ambient_duration_s`` in
+    ``jasper.web.correction_crossover_flow``, the single function both the
+    relay spec builder (correction_setup._open) and the flow's own sleep
+    default (build_crossover_relay_run_and_consume) resolve through."""
+    from jasper.active_speaker.test_signal_plan import (
+        AMBIENT_DURATION_MARGIN_S,
+        CROSSOVER_AMBIENT_DURATION_S,
+        DRIVER_SWEEP_DURATIONS_S,
+        driver_ambient_duration_s,
+    )
+    from jasper.web.correction_crossover_flow import crossover_ambient_duration_s
+
+    for role, sweep_s in DRIVER_SWEEP_DURATIONS_S.items():
+        expected = sweep_s + AMBIENT_DURATION_MARGIN_S
+        assert driver_ambient_duration_s(role) == expected
+        assert crossover_ambient_duration_s("driver", role) == expected
+
+    # A short driver's ambient window is strictly shorter than the historical
+    # worst-case constant — the whole point of the right-sizing fix.
+    assert driver_ambient_duration_s("tweeter") < CROSSOVER_AMBIENT_DURATION_S
+    assert driver_ambient_duration_s("mid") < CROSSOVER_AMBIENT_DURATION_S
+    # The longest driver's own ambient window still matches the worst-case
+    # ceiling exactly (it IS the driver the ceiling was sized against).
+    assert driver_ambient_duration_s("woofer") == CROSSOVER_AMBIENT_DURATION_S
+
+    # Non-driver kinds (summed/verification) keep the historical worst-case
+    # window — there is no single driver role to size against.
+    assert crossover_ambient_duration_s("summed", "") == CROSSOVER_AMBIENT_DURATION_S
+    assert (
+        crossover_ambient_duration_s("verification", "")
+        == CROSSOVER_AMBIENT_DURATION_S
+    )
+
+    # The analyzer's REAL pairing requirement, pinned to its own named
+    # constant: _capture_to_magnitude selects the quiet crop starting
+    # AMBIENT_CONTROLLED_LEAD_S before the sweep-length window and raises when
+    # that start precedes the controlled interval — so it effectively requires
+    # ambient_duration >= kernel sweep duration + AMBIENT_CONTROLLED_LEAD_S.
+    # The kernel sweep runs slightly LONGER than the requested duration (the
+    # synchronized-sweep kernel rounds ~12.0 s up to ~12.09 s so its phase
+    # closes cleanly); ROUNDING_ALLOWANCE covers that growth with headroom.
+    # Importing the analyzer's constant means a future margin reduction below
+    # its requirement fails HERE instead of silently rejecting every capture
+    # at runtime.
+    from jasper.active_speaker.driver_acoustics import AMBIENT_CONTROLLED_LEAD_S
+
+    ROUNDING_ALLOWANCE_S = 0.25  # synchronized-sweep kernel phase-rounding (~0.09 s)
+    for role, sweep_s in DRIVER_SWEEP_DURATIONS_S.items():
+        assert driver_ambient_duration_s(role) >= (
+            sweep_s + AMBIENT_CONTROLLED_LEAD_S + ROUNDING_ALLOWANCE_S
+        )

@@ -45,6 +45,7 @@ _HARNESSES = [
     "capture_protocol_test.mjs",
     "capture_transport_integrity_test.mjs",
     "capture_host_stop_lifecycle_test.mjs",
+    "capture_stop_and_ambient_countdown_test.mjs",
 ]
 
 
@@ -391,12 +392,13 @@ def test_capture_page_no_return_link_falls_back_to_close_tab_copy():
     """PHONE-2: when safeReturnUrl() is empty, the terminal screens that
     otherwise render a Back-to-speaker button must not silently drop the CTA
     with no replacement copy. 3 pre-existing call sites (capture complete,
-    ramp complete, bound-setup-expired) plus the new XOVER-6 sweep_failed
-    screen, which needs the same fallback."""
+    ramp complete, bound-setup-expired), the XOVER-6 sweep_failed screen, and
+    the phone-initiated Stop terminal screen (renderStoppedScreen) all need
+    the same fallback."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    assert main_js.count('linkButton("Back to speaker", returnUrl)') == 4
-    assert main_js.count('text: "You can close this tab."') == 4
+    assert main_js.count('linkButton("Back to speaker", returnUrl)') == 5
+    assert main_js.count('text: "You can close this tab."') == 5
 
 
 def test_capture_page_setup_continue_and_fragment_errors_use_friendly_helper():

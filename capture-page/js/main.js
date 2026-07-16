@@ -319,6 +319,41 @@ function renderCaptureComplete(ctx) {
   setScreen(ctx.screenEl, children);
 }
 
+function renderStoppedScreen(ctx) {
+  const returnUrl = safeReturnUrl(ctx.spec);
+  const children = [
+    el("h1", { class: "cap-heading", text: "Measurement stopped." }),
+    el("p", {
+      class: "cap-note",
+      text: "You stopped this measurement. The speaker page shows what happens next.",
+    }),
+  ];
+  if (returnUrl) {
+    children.push(linkButton("Back to speaker", returnUrl));
+  } else {
+    children.push(el("p", { class: "cap-note", text: "You can close this tab." }));
+  }
+  setScreen(ctx.screenEl, children);
+  setStatus("Measurement stopped.", "info");
+}
+
+// The Stop button's one job: call whichever capture leg's own `abort(reason)`
+// is currently live, with the SAME "reason" vocabulary the visibility-abort
+// path already uses (capture_host_stop_lifecycle_test.mjs;
+// capture-page/js/level-events.js's aborted/abort_reason superset) — no new
+// protocol, just a second trigger for the existing one. `onStart` and
+// `onLevelRampStart` each point this at their own local `abort` closure while
+// their capture is live, and clear it in `finally` so a stray tap after
+// completion is a no-op.
+let activeAbort = null;
+
+function stopCapture() {
+  // Returns the abort() promise (rather than firing-and-forgetting it) so a
+  // caller — a test, or `onclick`'s own no-op handling of the return value —
+  // can await its side effects (the relay post, the terminal screen) settling.
+  return typeof activeAbort === "function" ? activeAbort("stopped") : undefined;
+}
+
 // XOVER-6 interim: sweep_failed used to bubble up through onStart's generic
 // catch and leave the Start-button screen on-screen — a dead affordance,
 // since a retry replays the same (now stale) spec/run_token rather than
@@ -692,7 +727,7 @@ function renderLevelReady(screenEl, ctx) {
   // replacing an exact near-field/listening-position instruction with generic
   // copy after microphone selection.
   ctx.captureRefs = renderScreen(screenEl, ctx.spec, {
-    handlers: { begin_capture: () => onLevelRampStart(ctx) },
+    handlers: { begin_capture: () => onLevelRampStart(ctx), stop: stopCapture },
   });
   screenEl.appendChild(el("div", { class: "cap-actions" }, [back]));
   ctx.captureRefs.buttons.push({ action: null, el: back });
@@ -839,7 +874,16 @@ function updateLevelMeters(ctx, level) {
 
 function setCaptureButtonsDisabled(ctx, disabled) {
   const buttons = (ctx.captureRefs && ctx.captureRefs.buttons) || [];
-  for (const ref of buttons) ref.el.disabled = Boolean(disabled);
+  // Only the level-ramp leg (onLevelRampStart) calls this; it disables
+  // Start/Back for the ramp's duration, and Stop is skipped so it stays
+  // tappable through that window. The sweep leg (onStart) never calls it —
+  // its Start stays enabled during capture (pre-existing behavior; the
+  // sweep-leg interaction model is being redesigned in Wave 2's
+  // session-spanning work, so no new disable logic here).
+  for (const ref of buttons) {
+    if (ref.action === "stop") continue;
+    ref.el.disabled = Boolean(disabled);
+  }
 }
 
 async function onLevelRampStart(ctx) {
@@ -854,12 +898,16 @@ async function onLevelRampStart(ctx) {
   const abort = async (reason) => {
     if (aborted) return;
     aborted = true;
-    setStatus(
-      reason === "backgrounded"
-        ? "Level check stopped — this phone's screen must stay on."
-        : `Level check stopped — ${reason}.`,
-      "error",
-    );
+    if (reason === "stopped") {
+      renderStoppedScreen(ctx);
+    } else {
+      setStatus(
+        reason === "backgrounded"
+          ? "Level check stopped — this phone's screen must stay on."
+          : `Level check stopped — ${reason}.`,
+        "error",
+      );
+    }
     if (streamer) await streamer.abort(reason);
     if (recorder) {
       try {
@@ -870,6 +918,7 @@ async function onLevelRampStart(ctx) {
       recorder = null;
     }
   };
+  activeAbort = abort;
 
   try {
     setStatus("Starting microphone…", "info");
@@ -976,6 +1025,7 @@ async function onLevelRampStart(ctx) {
     }
     if (wakeLock) await wakeLock.release();
     setCaptureButtonsDisabled(ctx, false);
+    if (activeAbort === abort) activeAbort = null;
   }
 }
 
@@ -984,6 +1034,17 @@ async function waitForSweepComplete(client, spec, isAborted) {
   const pollMs = Math.max(100, Math.min(1000, Number(spec.progress_poll_ms) || 250));
   const deadline = Date.now() + timeoutMs;
   let lastPhase = "";
+  // The Pi's own quiet-reference pause is now right-sized per driver (a short
+  // tweeter sweep no longer inherits the longest driver's ~14 s pause — see
+  // jasper.active_speaker.test_signal_plan.driver_ambient_duration_s), which
+  // made the prior fixed "Measuring room noise" status read as unexplained
+  // silence of unknown length. The `ambient_started` host event already
+  // carries `duration_s` (relayed verbatim — see RelayClient.post_host_event's
+  // docstring); render a live countdown from it instead of adding a new spec
+  // field. An older Pi build that omits `duration_s` falls back to the
+  // original static copy — no countdown, same as before.
+  let ambientDeadlineMs = null;
+  let lastCountdownSeconds = null;
   while (Date.now() < deadline) {
     if (isAborted()) return false;
     const status = await client.fetchPhoneStatus();
@@ -995,14 +1056,36 @@ async function waitForSweepComplete(client, spec, isAborted) {
     if (phase && phase !== lastPhase) {
       lastPhase = phase;
       if (phase === "ambient_started") {
-        setStatus(
-          "Measuring room noise — stay quiet and keep the phone still.",
-          "recording",
-        );
+        const durationS = Number(event.duration_s);
+        ambientDeadlineMs =
+          Number.isFinite(durationS) && durationS > 0
+            ? Date.now() + durationS * 1000
+            : null;
+        lastCountdownSeconds = null;
+        if (!ambientDeadlineMs) {
+          setStatus(
+            "Measuring room noise — stay quiet and keep the phone still.",
+            "recording",
+          );
+        }
       } else if (phase === "sweep_started") {
-        setStatus("Tone is playing — stay quiet and keep the phone still.", "recording");
+        ambientDeadlineMs = null;
+        setStatus("Playing the measurement tone…", "recording");
       } else if (phase === "sweep_complete") {
         setStatus("Tone finished — capturing the room tail.", "recording");
+      }
+    }
+    if (phase === "ambient_started" && ambientDeadlineMs) {
+      const remaining = Math.max(
+        0,
+        Math.ceil((ambientDeadlineMs - Date.now()) / 1000),
+      );
+      if (remaining !== lastCountdownSeconds) {
+        lastCountdownSeconds = remaining;
+        setStatus(
+          `Listening to the room… the tone starts in about ${remaining} seconds`,
+          "recording",
+        );
       }
     }
     if (phase === "sweep_complete") return true;
@@ -1044,12 +1127,16 @@ async function onStart(ctx) {
   const abort = async (reason) => {
     if (aborted) return;
     aborted = true;
-    setStatus(
-      reason === "backgrounded"
-        ? "Measurement stopped — this phone's screen must stay on. Tap Start to try again."
-        : `Measurement stopped — ${reason}. Tap Start to try again.`,
-      "error",
-    );
+    if (reason === "stopped") {
+      renderStoppedScreen(ctx);
+    } else {
+      setStatus(
+        reason === "backgrounded"
+          ? "Measurement stopped — this phone's screen must stay on. Tap Start to try again."
+          : `Measurement stopped — ${reason}. Tap Start to try again.`,
+        "error",
+      );
+    }
     try {
       await client.postEvent({ aborted: true, abort_reason: reason });
     } catch {
@@ -1064,6 +1151,7 @@ async function onStart(ctx) {
       recorder = null;
     }
   };
+  activeAbort = abort;
 
   try {
     setStatus("Starting microphone…", "info");
@@ -1184,6 +1272,7 @@ async function onStart(ctx) {
     }
     disposeWatch();
     if (wakeLock) await wakeLock.release();
+    if (activeAbort === abort) activeAbort = null;
   }
 }
 
@@ -1284,6 +1373,7 @@ async function boot() {
       handlers: {
         begin_capture: () => onStart(ctx),
         retry: () => onStart(ctx),
+        stop: stopCapture,
       },
     });
     void buildMicPicker(screenEl);
@@ -1351,4 +1441,4 @@ if (typeof document !== "undefined" && typeof window !== "undefined") {
   }
 }
 
-export { boot, onStart, onLevelRampStart, relayBootFailureMessage };
+export { boot, onStart, onLevelRampStart, relayBootFailureMessage, stopCapture };
