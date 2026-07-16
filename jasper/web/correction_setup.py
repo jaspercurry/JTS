@@ -5770,9 +5770,22 @@ def _handle_crossover_relay_capture(
 
 
 def _handle_crossover_relay_cancel() -> dict[str, Any]:
-    """Stop Crossover relay work and keep its slot until cleanup completes."""
+    """Stop Crossover relay work and keep its slot until cleanup completes.
 
-    relay = _request_relay_stop("crossover_sweep:", "level_ramp:crossover")
+    The Stop button is already hidden once the rendered relay status turns
+    terminal (crossover/main.js's ``RELAY_STOPPABLE`` gate), but a poll-cycle
+    race can still let a click reach the server after the relay finished on
+    its own (the phone completed, or another tab already stopped it).
+    ``_request_relay_stop`` raises a diagnostic message for that case; map it
+    to a plain-language sentence here rather than leaking it to the page.
+    """
+
+    try:
+        relay = _request_relay_stop("crossover_sweep:", "level_ramp:crossover")
+    except ValueError:
+        raise ValueError(
+            "This measurement already stopped — nothing more to do here."
+        ) from None
     return {"relay": relay}
 
 

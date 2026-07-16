@@ -658,7 +658,20 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             latest_status = str(entry.get("status") or "")
     if latest_rejection or latest_status in {"refused", "aborted"}:
         reason = str(latest_rejection.get("reject_reason") or latest_status)
-        if latest_rejection.get("clipping") is True:
+        # Infra failures (DSP-load convergence timeouts, gate/admission
+        # refusals, other pre-tone transport errors — recorded with
+        # `phase: "transport"` by `_finish_failed_repeat_attempt` in
+        # correction_setup.py) never played a tone, so telling the operator
+        # to "keep the room quiet" is actively misleading: there is nothing
+        # in the room to fix. `repeat_admission.finish()` already defaults an
+        # absent phase to "acoustic" for its own logging, so this reads the
+        # same existing field rather than inventing a new classification.
+        if latest_rejection.get("phase") == "transport":
+            text = (
+                "That attempt didn't finish on the speaker's side — nothing "
+                "to fix in the room. Try again."
+            )
+        elif latest_rejection.get("clipping") is True:
             text = "The latest sweep clipped. Keep the microphone still and reduce the input gain."
         elif (shortfall := finite_float(
             latest_rejection.get("snr_shortfall_db")
@@ -1137,8 +1150,8 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         screen = "alignment"
         verdict = (
             f"Keep the microphone fixed. Measure the {stage_text} "
-            "capture. JTS chooses the exact graph, polarity, delay coordinate, "
-            "attempt, and repeat."
+            "capture. JTS chooses everything else — position, polarity, "
+            "and repeat count."
         )
         action = {
             "id": "measure_region_alignment",

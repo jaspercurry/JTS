@@ -25,9 +25,15 @@ let refreshInFlight = null;
 let refreshQueued = false;
 let renderEpoch = 0;
 let pollTimer = null;
+let lastPollDelayMs = null;
 
 const POLL_MS = 1500;
 const RETRY_MS = 5000;
+// While the tab is hidden (phone in hand, screen off), poll far less often
+// instead of stopping outright — a stopped poller can't auto-advance the
+// wizard when the phone finishes its side. Normal cadence resumes on
+// visibilitychange (and on the next render() call after that).
+const HIDDEN_POLL_MS = 10000;
 const RELAY_STOPPABLE = new Set(['starting', 'awaiting_phone']);
 const RELAY_IN_FLIGHT = new Set([
   ...RELAY_STOPPABLE,
@@ -343,21 +349,21 @@ async function runAction(action, button) {
 }
 
 function schedulePoll(delayMs) {
+  lastPollDelayMs = delayMs;
   if (pollTimer !== null) {
     clearTimeout(pollTimer);
     pollTimer = null;
   }
-  if (
-    delayMs === null ||
-    (typeof document !== 'undefined' && document.visibilityState === 'hidden')
-  ) return;
+  if (delayMs === null) return;
+  const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  const effectiveDelay = hidden ? Math.max(delayMs, HIDDEN_POLL_MS) : delayMs;
   pollTimer = setTimeout(() => {
     pollTimer = null;
     refresh().catch((error) => {
       setStatus(error.message, 'bad');
       schedulePoll(RETRY_MS);
     });
-  }, delayMs);
+  }, effectiveDelay);
 }
 
 async function runRefreshQueue() {
@@ -384,7 +390,10 @@ if (typeof document !== 'undefined') {
   els.relayStop.addEventListener('click', stopRelay);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
-      schedulePoll(null);
+      // Re-apply whichever cadence is already in effect — schedulePoll()
+      // stretches it to HIDDEN_POLL_MS itself; a null intent (no active
+      // reason to poll) stays null.
+      schedulePoll(lastPollDelayMs);
       return;
     }
     refresh().catch((error) => {

@@ -419,7 +419,7 @@ const csrfHeaders = () => ({ 'X-CSRF-Token': 'harness', 'Content-Type': 'applica
 const jsonHeaders = () => ({ 'X-CSRF-Token': 'harness', 'Content-Type': 'application/json' });
 async function jtsConfirm() {
   globalThis.__confirmCalls = (globalThis.__confirmCalls || 0) + 1;
-  return true;
+  return globalThis.__confirmReturn === undefined ? true : globalThis.__confirmReturn;
 }
 async function jtsAlert() {}
 function escapeText(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -691,6 +691,53 @@ function currentPresentation(over) {
     "parked-state Cancel retains destructive confirmation");
   assert(fetchCountFor("/reset") === 1,
     "confirmed parked-state Cancel still dispatches reset");
+}
+
+// 11d. A pending mic-permission grant (startMicCapture's getUserMedia await)
+//      latches wizardActionInFlight before the OS prompt settles — and that
+//      await may never settle. Cancelling must not leave the primary CTA
+//      stranded behind a flag that only the (possibly-never-resolving)
+//      original action would otherwise clear.
+{
+  setFetchRoute("/reset", () => ({}));
+  resetFetchCounts();
+  globalThis.__confirmCalls = 0;
+  applyButtonPolicy("awaiting_capture", "idle");
+  const nextBtn = getOrMake("wizard-next");
+  const nextAction = { label: "Allow microphone", endpoint: "/local-capture/setup" };
+
+  setWizardActionInFlight(true);
+  renderPrimaryAction(nextAction);
+  assert(nextBtn.classList.contains("hidden") && nextBtn.disabled,
+    "sanity check: an in-flight action gates the primary CTA");
+
+  await cancelMeasurement();
+  assert(fetchCountFor("/reset") === 1, "Cancel still dispatches reset");
+
+  renderPrimaryAction(nextAction);
+  assert(!nextBtn.classList.contains("hidden") && !nextBtn.disabled,
+    "cancel success clears the stale in-flight latch so the CTA is not stranded");
+}
+
+// 11e. A fast double-tap on Cancel must not stack two confirm dialogs: the
+//      button disables itself before jtsConfirm() is awaited, not after —
+//      and declining the confirm re-enables it rather than leaving it stuck.
+{
+  setFetchRoute("/reset", () => ({}));
+  resetFetchCounts();
+  globalThis.__confirmCalls = 0;
+  applyButtonPolicy("awaiting_capture", "idle");
+  const emergency = getOrMake("cancel-measurement");
+
+  globalThis.__confirmReturn = false;
+  const declinePromise = cancelMeasurement();
+  assert(emergency.disabled === true,
+    "Cancel disables itself before jtsConfirm() resolves, closing the double-tap race");
+  await declinePromise;
+  assert(emergency.disabled === false,
+    "declining the confirm re-enables Cancel");
+  assert(fetchCountFor("/reset") === 0, "a declined cancel never posts reset");
+  globalThis.__confirmReturn = true;
 }
 
 // ---- drawBeforeAfterFill (via drawChart + recording canvas context) --------

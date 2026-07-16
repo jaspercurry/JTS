@@ -35,6 +35,36 @@ def _json_handler(payload):
     )
 
 
+def test_relay_link_opens_a_new_tab_so_the_wizard_tab_survives():
+    # A single-device household follows this link on the SAME phone/laptop
+    # that is running the wizard. Without target=_blank + rel=noopener, the
+    # only tab navigates away and the wizard is stranded (mirrors the room
+    # flow's own relay-tap-link in correction_setup.py).
+    page = flow.render_page("jts.local")
+    html = page.decode("utf-8")
+    assert (
+        '<a id="crossover-relay-link" class="btn btn--primary hidden" '
+        'href="#" target="_blank" rel="noopener">Open phone capture</a>'
+    ) in html
+
+
+def test_crossover_page_css_styles_the_step_spine_and_nudges():
+    # crossover/main.js's renderSteps()/renderNudges() emit
+    # `wizard-step <status>` / `wizard-nudge <severity>` markup (the same
+    # shape the room flow's correction.css already styles), but crossover.css
+    # never carried the rules. The server's in-progress step status is
+    # literally "active" (crossover_envelope.py's `_step_payload`), so the
+    # CSS must target `.wizard-step.active`, not the room page's `.current`.
+    css = (
+        Path("deploy/assets/correction/crossover.css").read_text(encoding="utf-8")
+    )
+    assert ".wizard-step.active" in css
+    assert ".wizard-step.done" in css
+    assert ".wizard-nudge.info" in css
+    assert ".wizard-nudge.warn" in css
+    assert ".wizard-step.current" not in css
+
+
 def test_request_payload_parses_capture_query():
     handler = SimpleNamespace(
         path=(
@@ -1934,6 +1964,22 @@ def test_fast_terminal_stop_reenables_the_authoritative_next_action():
     assert result == {"ok": True, "passed": 16}
 
 
+def test_hidden_tab_slows_polling_instead_of_stopping():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not on PATH")
+    harness = Path("tests/js/crossover_hidden_poll_test.mjs")
+    proc = subprocess.run(
+        [node, str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result == {"ok": True, "passed": 6}
+
+
 # --- passive-gating: Layer A hidden for a full-range passive speaker ----------
 
 
@@ -2263,6 +2309,61 @@ def test_crossover_envelope_exposes_only_explicit_volume_recovery():
         "body": {},
     }
     assert env["alternate_actions"] == []
+
+
+def test_repeat_rejection_nudge_distinguishes_infra_from_acoustic_failure():
+    """An infra failure (no tone ever played) must not tell the operator to
+    quiet the room — there is nothing acoustic to fix. Transport-phase
+    failures (`_finish_failed_repeat_attempt` in correction_setup.py records
+    `phase: "transport"`) get their own copy; everything else keeps the
+    existing acoustic-rejection text."""
+    from jasper.active_speaker import crossover_envelope
+
+    def _durable_repeat_state(result: dict) -> dict:
+        status = _envelope_status()
+        status["level_match"]["repeats"] = {
+            "targets": {},
+            "failures": {},
+            "durable": {
+                "status": "active",
+                "targets": {
+                    "mono:woofer": {
+                        "target_fingerprint": "6" * 64,
+                        "status": "active",
+                        "attempts": 1,
+                        "results": [{"attempt": 1, "accepted": False, **result}],
+                    },
+                },
+            },
+        }
+        return status
+
+    infra_status = _durable_repeat_state({
+        "reject_reason": "capture_failed",
+        "failure_type": "RuntimeError",
+        "phase": "transport",
+    })
+    infra_env = crossover_envelope.build_crossover_envelope(infra_status)
+    infra_nudge = next(
+        n for n in infra_env["nudges"] if n["code"] == "crossover_repeat_rejected"
+    )
+    assert infra_nudge["text"] == (
+        "That attempt didn't finish on the speaker's side — nothing to fix "
+        "in the room. Try again."
+    )
+    assert infra_nudge["severity"] == "warn"
+
+    acoustic_status = _durable_repeat_state({
+        "reject_reason": "insufficient_accepted_repeats",
+    })
+    acoustic_env = crossover_envelope.build_crossover_envelope(acoustic_status)
+    acoustic_nudge = next(
+        n for n in acoustic_env["nudges"] if n["code"] == "crossover_repeat_rejected"
+    )
+    assert acoustic_nudge["text"] == (
+        "The latest sweep was not usable (insufficient accepted repeats). "
+        "Keep the room quiet and retry."
+    )
 
 
 _COMPARISON_SET = {
@@ -2801,6 +2902,13 @@ def test_crossover_apply_refuses_while_relay_measurement_is_active(monkeypatch):
     assert status == 409
     assert payload["status"] == "refused"
     assert payload["reason"] == "measurement_in_progress"
+    # A top-level `error` is required so the shared JS parser
+    # (assets/shared/js/http.js parseResponse) surfaces this sentence instead
+    # of falling back to a bare "HTTP 409".
+    assert payload["error"] == payload["next_step"]
+    assert payload["error"] == (
+        "Finish the active measurement before applying the crossover."
+    )
 
 
 @pytest.mark.asyncio
@@ -3193,7 +3301,7 @@ def test_crossover_envelope_projects_active_owned_alignment_actions():
         "endpoint": "/correction/crossover/relay-capture",
         "body": {"kind": "summed"},
     }
-    assert "exact graph, polarity, delay coordinate" in capture["verdict_text"]
+    assert "JTS chooses everything else" in capture["verdict_text"]
 
     status["region_commissioning"] = {"status": "measured"}
     measured = crossover_envelope.build_crossover_envelope(status)
@@ -6957,6 +7065,23 @@ async def test_stop_is_refused_after_commit_begins(monkeypatch):
     finally:
         release_record.set()
         correction_setup._set_relay_capture(None)
+
+
+def test_relay_cancel_on_already_dead_relay_gets_plain_language_error():
+    # A poll-cycle race can let a Stop click reach the server after the relay
+    # already finished (phone completed, or another tab already stopped it).
+    # The handler must map _request_relay_stop's diagnostic ValueError to a
+    # sentence a homeowner can act on, not leak it as-is (and definitely not
+    # let the shared JS parser fall back to "HTTP 409" — see
+    # http.js parseResponse).
+    from jasper.web import correction_setup
+
+    correction_setup._set_relay_capture(None)
+    with pytest.raises(
+        ValueError,
+        match=r"^This measurement already stopped — nothing more to do here\.$",
+    ):
+        correction_setup._handle_crossover_relay_cancel()
 
 
 @pytest.mark.asyncio

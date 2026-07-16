@@ -65,7 +65,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div id="crossover-action" class="measurement-row__actions"></div>
     <div id="crossover-relay" class="hidden">
       <p id="crossover-relay-status" class="form-hint"></p>
-      <a id="crossover-relay-link" class="btn btn--primary hidden" href="#">Open phone capture</a>
+      <a id="crossover-relay-link" class="btn btn--primary hidden" href="#" target="_blank" rel="noopener">Open phone capture</a>
       <button id="crossover-relay-stop" class="btn btn--danger hidden" type="button">Stop measurement</button>
     </div>
     <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
@@ -177,11 +177,17 @@ def handle_apply(
             "error": "Choose manual or automatic crossover tuning before applying.",
         }, HTTPStatus.BAD_REQUEST
     if blocking_phase is not None:
+        next_step = "Finish the active measurement before applying the crossover."
         return {
             "status": "refused",
             "reason": "measurement_in_progress",
             "blocking_phase": blocking_phase,
-            "next_step": "Finish the active measurement before applying the crossover.",
+            "next_step": next_step,
+            # The shared JS error parser (assets/shared/js/http.js) reads only
+            # a top-level `error`, falling back to "HTTP <status>" when it's
+            # absent — this refusal previously had none, so the apply page
+            # surfaced the raw "HTTP 409" instead of an actionable sentence.
+            "error": next_step,
         }, HTTPStatus.CONFLICT
     payload = run_async(
         backend.apply_profile(
