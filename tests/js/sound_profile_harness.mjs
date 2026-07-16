@@ -1921,6 +1921,118 @@ async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
   return { twoOutputChannelSelectorAutoAssignsPeerOnSave: true };
 }
 
+// JTS3 hardware punch: a compression-driver tweeter commissioned with a
+// ~2 kHz crossover point was permanently blocked because driver_style had no
+// UI surface anywhere, so the conservative 5000 Hz "unknown style" floor
+// could never be lowered to the driver's real 2000 Hz floor. This pins the
+// fix: the layout card offers a tweeter-only style selector that writes onto
+// the topology channel (the existing single writer, saved through
+// ./output-topology), and the declared style is visible on the driver
+// research/review card before the safety profile is confirmed.
+async function testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview() {
+  const topology = activeTwoWayTopologyPayload();
+  const saves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        saves.push(body.output_topology);
+        return Promise.resolve(response({
+          output_topology: body.output_topology,
+          topology_revision: "saved-1",
+        }));
+      }
+      return Promise.resolve(response(topology));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  if (!initialHtml.includes('data-driver-style data-group-id="main" data-role="tweeter"')) {
+    fail("layout card must offer a tweeter driver-style selector", { initialHtml });
+  }
+  if (initialHtml.includes('data-driver-style data-group-id="main" data-role="woofer"')) {
+    fail("a low-frequency role must not get a driver-style selector (unused by the floor policy)", { initialHtml });
+  }
+  if (!initialHtml.includes("Not sure (conservative default)")) {
+    fail("undeclared style must default to the conservative 'not sure' option", { initialHtml });
+  }
+  if (!initialHtml.includes("Tweeter style not set") || !initialHtml.includes("5000 Hz floor")) {
+    fail("driver research/review card must show the undeclared-style conservative floor", { initialHtml });
+  }
+
+  harness.dispatchChange({
+    value: "compression_driver",
+    getAttribute(name) {
+      return { "data-group-id": "main", "data-role": "tweeter" }[name] || "";
+    },
+    hasAttribute(name) { return name === "data-driver-style"; },
+  });
+  await harness.flush();
+
+  const afterSelectHtml = harness.elements.get("view-body").innerHTML;
+  if (!afterSelectHtml.includes('value="compression_driver" selected')) {
+    fail("selecting a style must reflect back as the selected option", { afterSelectHtml });
+  }
+  if (!afterSelectHtml.includes("Tweeter style: Compression driver (horn-loaded)") ||
+      !afterSelectHtml.includes("protective high-pass floor 2000 Hz")) {
+    fail("declared style must be visible on the review card with its floor", { afterSelectHtml });
+  }
+
+  harness.dispatchClick({ "data-act": "save-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (saves.length !== 1) fail("style change should save through the existing topology writer", { saves });
+  const tweeter = saves[0].speaker_groups[0].channels.find((c) => c.role === "tweeter");
+  if (!tweeter || tweeter.driver_style !== "compression_driver") {
+    fail("saved topology must carry the declared driver_style on the channel", { tweeter });
+  }
+  return { tweeterDriverStyleSelectorSetsTopologyAndAppearsInReview: true };
+}
+
+// Punch #13 (MEDIUM): a save refusal (e.g. a stale-fingerprint confirmation)
+// must surface the server's real error, not a false "saved" toast. Verified
+// this already holds for both the plain working-setup save and the
+// confirm-safety-profile save (same handler, same status branch) — this pins
+// it as a regression guard.
+async function testDesignDraftSaveRefusalShowsServerErrorNotSavedToast() {
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        posts.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response(
+          { error: "driver safety profile confirmation did not validate as current" },
+          false,
+          400,
+        ));
+      }
+      return Promise.resolve(response({ status: "ready_for_review", revision: 3, summary: {}, operator_inputs: {} }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({ "data-act": "confirm-driver-safety" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (posts.length !== 1) fail("confirm action should POST once", { posts });
+  const statusNode = harness.elements.get("status");
+  if (!statusNode.textContent.includes("driver safety profile confirmation did not validate as current")) {
+    fail("a 400 refusal must surface the server's real error text", { text: statusNode.textContent });
+  }
+  if (statusNode.textContent.toLowerCase().includes("saved") ||
+      statusNode.textContent.toLowerCase().includes("confirmed for the current")) {
+    fail("a 400 refusal must not show a success/saved toast", { text: statusNode.textContent });
+  }
+  if (!statusNode.className.includes("err")) {
+    fail("a 400 refusal must render with the error status style", { className: statusNode.className });
+  }
+  return { designDraftSaveRefusalShowsServerErrorNotSavedToast: true };
+}
+
 async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
   const topology = activeTwoWayTopologyPayload();
   const fetchHandler = baseFetch({
@@ -5124,6 +5236,8 @@ results.push(await testReloadedPageRendersReloadSafeStopForActiveTest());
 results.push(await testCombinedSoundsRightStopsAndSavesActiveLoop());
 results.push(await testStaleSummedValidationDoesNotRenderValidatedGroup());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
+results.push(await testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview());
+results.push(await testDesignDraftSaveRefusalShowsServerErrorNotSavedToast());
 results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
 results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
 results.push(await testConfirmOutputAbortsPendingAuditionWithoutAutoRamp());
