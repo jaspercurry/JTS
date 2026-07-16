@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getJSON, postJSON } from '/assets/shared/js/http.js';
+import { renderRelayQr } from '/assets/shared/js/qr.js';
 
 const els = {
   verdict: document.getElementById('crossover-verdict'),
@@ -14,6 +15,7 @@ const els = {
   relay: document.getElementById('crossover-relay'),
   relayStatus: document.getElementById('crossover-relay-status'),
   relayLink: document.getElementById('crossover-relay-link'),
+  relayQr: document.getElementById('crossover-relay-qr'),
   relayStop: document.getElementById('crossover-relay-stop'),
   status: document.getElementById('capture-status'),
 };
@@ -216,6 +218,9 @@ function renderRelay(relay) {
   const stoppable = relay && RELAY_STOPPABLE.has(relay.status);
   els.relay.classList.toggle('hidden', !active);
   els.relayLink.classList.add('hidden');
+  // Cleared by default alongside the link; repopulated below only in the
+  // one branch that has a tap_link to encode.
+  renderRelayQr(els.relayQr, null);
   els.relayStop.classList.toggle('hidden', !stoppable);
   els.relayStop.disabled = stopInFlight;
   if (!active) {
@@ -244,6 +249,7 @@ function renderRelay(relay) {
     els.relayLink.href = relay.tap_link;
     els.relayLink.classList.remove('hidden');
     els.relayStatus.textContent = 'Open the trusted capture page and follow its one next step.';
+    renderRelayQr(els.relayQr, relay.tap_link);
   } else {
     els.relayStatus.textContent = 'Creating the phone capture link…';
   }

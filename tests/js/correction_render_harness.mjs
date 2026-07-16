@@ -292,6 +292,7 @@ source = source.replace(
       wizardActionInFlight = !!value;
     },
     setRelayMode,
+    renderRelayCapture,
     setRelayConfigured: function (value) {
       relayConfigured = !!value;
       setRelayMode(relayMode);
@@ -436,11 +437,25 @@ async function jtsAlert() {}
 function escapeText(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 `;
 
+// ---- QR relay hand-off spy ----
+// deploy/assets/shared/js/qr.js (the real renderRelayQr) is tested in
+// isolation by tests/js/qr_harness.mjs — its encoder is a pure function and
+// its DOM output doesn't need re-verifying here. This harness only asserts
+// the WIRING: that renderRelayCapture calls renderRelayQr with the right
+// container and the exact href, per "assert on its input, not on pixel
+// output."
+const relayQrCalls = [];
+function spyRenderRelayQr(container, text) {
+  relayQrCalls.push({ container, text });
+}
+function resetRelayQrCalls() { relayQrCalls.length = 0; }
+function lastRelayQrCall() { return relayQrCalls[relayQrCalls.length - 1] || null; }
+
 // Evaluate using the Function constructor so DOM globals are in scope
 const runner = new Function(
   "document", "window", "fetch", "globalThis", "console",
   "setTimeout", "clearTimeout", "setInterval", "clearInterval",
-  "AudioContext", "AudioWorkletNode", "URL",
+  "AudioContext", "AudioWorkletNode", "URL", "renderRelayQr",
   `${preamble}\n${source}`,
 );
 
@@ -505,6 +520,7 @@ runner(
   FakeAudioContext,
   FakeAudioWorkletNode,
   { createObjectURL() { return "blob:fake"; }, revokeObjectURL() {} },
+  spyRenderRelayQr,
 );
 
 const {
@@ -545,6 +561,7 @@ const {
   getEnvelopeFetchCount,
   setWizardActionInFlight,
   setRelayMode,
+  renderRelayCapture,
   setRelayConfigured,
   getRelayMode,
   getRunTransportLocked,
@@ -2615,9 +2632,49 @@ await (async () => {
     "button inside a hidden section: banner reset remains visible even with another host section shown");
 }
 
+// 44. renderRelayCapture wires the phone-capture QR hand-off (deploy/assets/
+//     shared/js/qr.js's renderRelayQr — encoding/DOM correctness is pinned
+//     independently by tests/js/qr_harness.mjs) into the same relay-qr
+//     container the tap link uses, passing the EXACT href — fragment
+//     included, since the capture key rides there — and clearing it
+//     whenever there is no live awaiting_phone link to encode.
+{
+  const relayQrEl = getOrMake("relay-qr");
+  const tapLink =
+    "https://capture.jasper.tech/#s=cap_test&u=upload&k=SECRETKEY&a=mac";
+
+  resetRelayQrCalls();
+  renderRelayCapture({ status: "awaiting_phone", tap_link: tapLink });
+  assert(lastRelayQrCall() && lastRelayQrCall().container === relayQrEl,
+    "an awaiting_phone relay renders the QR into the relay-qr container");
+  assert(lastRelayQrCall() && lastRelayQrCall().text === tapLink,
+    "the QR is handed the exact tap_link, fragment included",
+    { got: lastRelayQrCall() && lastRelayQrCall().text });
+
+  resetRelayQrCalls();
+  renderRelayCapture(null);
+  assert(lastRelayQrCall() && lastRelayQrCall().container === relayQrEl &&
+      lastRelayQrCall().text === null,
+    "no relay clears the QR container", { got: lastRelayQrCall() });
+
+  resetRelayQrCalls();
+  renderRelayCapture({ status: "starting" });
+  assert(lastRelayQrCall() && lastRelayQrCall().text === null,
+    "a relay without a ready tap_link (starting) shows no QR yet",
+    { got: lastRelayQrCall() });
+
+  resetRelayQrCalls();
+  renderRelayCapture({ status: "complete", tap_link: tapLink });
+  assert(lastRelayQrCall() && lastRelayQrCall().text === null,
+    "a completed relay clears the QR — the hand-off step is over",
+    { got: lastRelayQrCall() });
+
+  resetRelayQrCalls();
+}
+
 resetEnvelopeBookkeeping();
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 62 }));
+console.log(JSON.stringify({ ok: true, tests: 63 }));

@@ -20,6 +20,7 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 // its own `|| 'fallback'`, so no falsy non-string reaches it — output is
 // unchanged.
 import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
+import { renderRelayQr } from "/assets/shared/js/qr.js";
 (function () {
   'use strict';
 
@@ -43,6 +44,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var relayStatus = document.getElementById('relay-status');
   var relayLinkRow = document.getElementById('relay-link-row');
   var relayTapLink = document.getElementById('relay-tap-link');
+  var relayQr = document.getElementById('relay-qr');
   var localCaptureFallbackBtn = document.getElementById('local-capture-fallback');
   var inputDeviceSelect = document.getElementById('input-device-select');
   var refreshInputsBtn = document.getElementById('refresh-inputs');
@@ -315,15 +317,18 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (!relay) {
       hideEl(relayLinkRow, true);
       if (relayTapLink) relayTapLink.href = '#';
+      renderRelayQr(relayQr, null);
       return;
     }
     var tapLink = relay.tap_link || '';
     if (relay.status === 'awaiting_phone' && tapLink && relayTapLink) {
       relayTapLink.href = tapLink;
       hideEl(relayLinkRow, false);
+      renderRelayQr(relayQr, tapLink);
     } else {
       hideEl(relayLinkRow, true);
       if (relayTapLink) relayTapLink.href = '#';
+      renderRelayQr(relayQr, null);
     }
     if (relay.status === 'complete') {
       setRelayStatus('Phone capture received. Wait for the next instruction on this page.', 'ok');
