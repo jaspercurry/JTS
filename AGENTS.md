@@ -1771,7 +1771,7 @@ ssh pi@jts.local 'sudo rm -f /var/lib/jasper-intsecrets/home_assistant.env \
 
 The user-driven Voice assistant Pause control stops wake detection and JTS
 voice capture. It is not a hardware-wide microphone mute: an explicitly
-enabled “Use JTS as a Mac microphone” export continues independently.
+enabled “Use JTS as a computer microphone” export continues independently.
 State persists to `/var/lib/jasper/mic_mute.env`
 (`JASPER_MIC_MUTED=0|1`, mode 0644, atomic tempfile+rename) so it
 survives every daemon restart — deploys, web-wizard saves, watchdog
@@ -2574,9 +2574,9 @@ that first for anything touching gadget composition, ConfigFS, or the
 `jasper-usbgadget.service`). This section stays scoped to the audio
 source itself.
 
-**Optional Mac microphone direction:** when USB Audio Input is already On and
-an echo-cancelled input profile is active, `/wake/` exposes a separate “Use JTS
-as a Mac microphone” switch. Intent lives in
+**Optional computer microphone direction:** when USB Audio Input is already On
+and an echo-cancelled input profile is active, `/wake/` exposes a separate “Use
+JTS as a computer microphone” switch. Intent lives in
 `/var/lib/jasper/usb_mic.env` (off by default). Gadget composition owns the
 UAC2 `p_chmask`/descriptor revision; `jasper-aec-bridge` duplicates its final
 clean stream on dedicated localhost UDP `:9894`; `jasper-usbmic.service` owns
@@ -2650,7 +2650,7 @@ PY
 **Common failure modes**:
 - *Mac sees "Playback Inactive"*: cosmetic kernel bug in
   `f_uac2.c`; music still plays. The same applies to "Capture Inactive" for
-  the optional Mac input. A gadget restart should rebuild the schema-3
+  the optional computer input. A gadget restart should rebuild the schema-3
   name-patched module; `jasper-doctor` reports stale patches in its
   `usbsink name` check.
 - *No volume response*: check `amixer -c UAC2Gadget controls` —

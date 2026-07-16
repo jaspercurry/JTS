@@ -17,6 +17,7 @@ def test_usb_mic_service_is_dependency_enabled_and_gadget_scoped() -> None:
     text = UNIT.read_text()
     assert "ExecCondition=/opt/jasper/.venv/bin/jasper-usbmic --check-ready" in text
     assert "ExecStart=/opt/jasper/.venv/bin/jasper-usbmic" in text
+    assert "After=jasper-usbgadget.service jasper-aec-bridge.service" in text
     assert (
         "PartOf=jasper-usbgadget.service jasper-aec-bridge.service" in text
     )

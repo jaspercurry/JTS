@@ -177,9 +177,9 @@ forwards the selected hardware-AEC chip beam over that carrier. It
 runs automatically only when the configured AEC mic is present with
 6-channel firmware — see § below.
 When USB Audio Input is enabled, an independent switch on `/wake/` can also
-export that same cleaned microphone to the connected Mac. It uses a dedicated
-local carrier and relay, so voice keeps its normal mic stream while the Mac
-gets a mono USB input.
+export that same cleaned microphone to the connected computer. It uses a
+dedicated local carrier and relay, so voice keeps its normal mic stream while
+the computer gets a mono USB input.
 
 ---
 
@@ -314,10 +314,10 @@ gets a mono USB input.
   helper remains bounded. See
   [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md) for the full
   design.
-- ✅ **USB microphone for the connected Mac** (`jasper-usbmic`) — an optional
+- ✅ **USB microphone for the connected computer** (`jasper-usbmic`) — an optional
   reverse direction on that same USB audio device. With USB Audio Input and an
   echo-cancelled mic profile active, the switch at `http://jts.local/wake/`
-  makes JTS appear as a mono Mac input; switching it off removes the input.
+  makes JTS appear as a mono computer input; switching it off removes the input.
   The Voice assistant Pause control does not silence this explicitly enabled
   export; the `/wake/` switch is its sole end-user authority. Voice remains
   available because the relay uses its own AEC-bridge carrier. Changing the

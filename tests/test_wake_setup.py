@@ -434,6 +434,8 @@ def test_index_html_renders_all_registry_entries():
     for entry in wake_models.REGISTRY:
         assert entry.label in html, f"{entry.label!r} missing from rendered page"
         assert f'value="{entry.key}"' in html
+    assert "Use JTS as a computer microphone" in html
+    assert "Use JTS as a Mac microphone" not in html
 
 
 def test_index_html_marks_active_row(monkeypatch):

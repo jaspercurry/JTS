@@ -33,7 +33,7 @@ host -> UAC2 gadget -> jasper-fanin USB DIRECT lane -> summed music -> CamillaDS
 ```
 
 That statement is specifically the **host-to-speaker source** data plane. The
-optional `/wake/` “Use JTS as a Mac microphone” switch adds the reverse
+optional `/wake/` “Use JTS as a computer microphone” switch adds the reverse
 Pi-to-host direction to the same UAC2 function through the independent
 `jasper-usbmic` relay; it does not change fan-in ownership. Descriptor and relay
 truth are canonical in [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md).

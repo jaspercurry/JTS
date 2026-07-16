@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+from array import array
 from collections import deque
 from dataclasses import dataclass
 import fcntl
@@ -15,18 +16,25 @@ from pathlib import Path
 import re
 import signal
 import socket
+import struct
 import subprocess
+import termios
 import threading
 import time
-from typing import Any
+from typing import Any, Iterable
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
+from jasper.percentiles import nearest_rank_percentile
 from jasper.usb_mic import (
     GADGET_PATH,
     INTENT_PATH,
     RELAY_STATUS_PATH,
     USB_HOST_MIC_UDP_PORT,
+    USB_MIC_HEADER_BYTES,
+    USB_MIC_HEADER_STRUCT,
+    USB_MIC_PACKET_MAGIC,
+    USB_MIC_PACKET_VERSION,
     usb_mic_enabled,
 )
 
@@ -38,13 +46,18 @@ SAMPLE_BYTES = 2
 PERIOD_FRAMES = 320
 PERIOD_BYTES = PERIOD_FRAMES * SAMPLE_BYTES
 # The bridge's dedicated USB-mic leg emits one native AEC frame (20 ms).
-# Accept the old 80 ms packet during rolling upgrades, but never emit it from
-# current code. Both shapes split into the same bounded 20 ms sink periods.
+# This new relay accepts the old raw 20 ms and 80 ms shapes during a coupled
+# upgrade, but an old relay cannot decode v2. All accepted shapes split into
+# the same bounded 20 ms sink periods.
 PACKET_BYTES = PERIOD_BYTES
 LEGACY_PACKET_BYTES = 1280 * SAMPLE_BYTES
-ACCEPTED_PACKET_BYTES = frozenset((PACKET_BYTES, LEGACY_PACKET_BYTES))
+V2_PACKET_BYTES = USB_MIC_HEADER_BYTES + PACKET_BYTES
+ACCEPTED_PACKET_BYTES = frozenset(
+    (PACKET_BYTES, LEGACY_PACKET_BYTES, V2_PACKET_BYTES)
+)
 QUEUE_PERIODS = 2
 PIPE_BYTES = 4096
+SOURCE_AGE_WINDOW_PERIODS = 512
 UAC2_DEVICE = "plughw:CARD=UAC2Gadget,DEV=0"
 # The UAC2 gadget fixes the playback ring at four periods on the current Pi
 # kernel. A 10 ms period is therefore the value that realizes the 40 ms
@@ -60,25 +73,34 @@ class RelayError(RuntimeError):
     """An expected relay failure that systemd should restart."""
 
 
+@dataclass(frozen=True)
+class QueuedFrame:
+    """One native AEC frame plus bridge-emit metadata."""
+
+    t_capture_ns: int
+    seq: int | None
+    pcm: bytes
+
+
 class LatestAudioQueue:
     """Two-period drop-oldest queue: bounded memory and stale latency."""
 
     def __init__(self, max_periods: int = QUEUE_PERIODS) -> None:
-        self._items: deque[bytes] = deque()
+        self._items: deque[QueuedFrame] = deque()
         self._max_periods = max_periods
         self._condition = threading.Condition()
         self._closed = False
         self.dropped = 0
 
-    def put(self, payload: bytes) -> None:
+    def put(self, frame: QueuedFrame) -> None:
         with self._condition:
             while len(self._items) >= self._max_periods:
                 self._items.popleft()
                 self.dropped += 1
-            self._items.append(payload)
+            self._items.append(frame)
             self._condition.notify()
 
-    def get(self, timeout: float) -> bytes | None:
+    def get(self, timeout: float) -> QueuedFrame | None:
         with self._condition:
             if not self._items and not self._closed:
                 self._condition.wait(timeout)
@@ -103,6 +125,10 @@ class AplaySink:
         self.last_progress_monotonic = 0.0
         self.error = ""
         self._progress_lock = threading.Lock()
+        self._source_ages_ms: deque[float] = deque(
+            maxlen=SOURCE_AGE_WINDOW_PERIODS
+        )
+        self._pipe_baseline_logged = False
         self.process = subprocess.Popen(
             [
                 "aplay", "-q", "-D", UAC2_DEVICE, "-t", "raw",
@@ -116,26 +142,54 @@ class AplaySink:
         if self.process.stdin is None:
             self.process.kill()
             raise RelayError("aplay did not expose an input pipe")
+        fd = self.process.stdin.fileno()
+        configure_error = ""
         try:
-            fcntl.fcntl(self.process.stdin.fileno(), fcntl.F_SETPIPE_SZ, PIPE_BYTES)
-        except OSError:
-            pass
+            fcntl.fcntl(fd, fcntl.F_SETPIPE_SZ, PIPE_BYTES)
+        except (AttributeError, OSError) as exc:
+            configure_error = f"{type(exc).__name__}: {exc}"
+        try:
+            actual_pipe_bytes = int(fcntl.fcntl(fd, fcntl.F_GETPIPE_SZ))
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            actual_pipe_bytes = 0
+            if not configure_error:
+                configure_error = f"{type(exc).__name__}: {exc}"
+        log_event(
+            logger,
+            "usb_mic.pipe_configured",
+            requested=PIPE_BYTES,
+            actual=actual_pipe_bytes,
+            error=configure_error,
+        )
         self._thread = threading.Thread(target=self._write_loop, daemon=True)
         self._thread.start()
 
     def _write_loop(self) -> None:
         assert self.process.stdin is not None
         while True:
-            payload = self.queue.get(timeout=0.2)
-            if payload is None:
+            frame = self.queue.get(timeout=0.2)
+            if frame is None:
                 if self.process.poll() is not None or self.queue._closed:
                     return
                 continue
+            source_age_ms = max(
+                0.0,
+                (
+                    time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+                    - frame.t_capture_ns
+                ) / 1_000_000.0,
+            )
             try:
-                self.process.stdin.write(payload)
+                self.process.stdin.write(frame.pcm)
                 self.process.stdin.flush()
                 with self._progress_lock:
-                    self.frames_written += len(payload) // SAMPLE_BYTES
+                    # Raw v1/legacy packets use receive time only to preserve
+                    # queue shape during a coupled upgrade. They are excluded
+                    # from emit-age telemetry so they cannot report a false
+                    # near-zero latency baseline.
+                    if frame.seq is not None:
+                        self._source_ages_ms.append(source_age_ms)
+                    self.frames_written += len(frame.pcm) // SAMPLE_BYTES
                     self.last_progress_monotonic = time.monotonic()
                     self.last_progress_epoch_sec = time.time()
             except (BrokenPipeError, OSError, ValueError) as exc:
@@ -165,6 +219,42 @@ class AplaySink:
                 self.last_progress_epoch_sec,
             )
 
+    def source_ages_ms(self) -> tuple[float, ...]:
+        """Return a stable snapshot of recent bridge-emit-to-dequeue ages."""
+
+        with self._progress_lock:
+            return tuple(self._source_ages_ms)
+
+    def log_pipe_baseline_once(self) -> None:
+        """Log one transitional measurement of aplay's opaque stdin pipe."""
+
+        if self._pipe_baseline_logged:
+            return
+        self._pipe_baseline_logged = True
+        assert self.process.stdin is not None
+        fd = self.process.stdin.fileno()
+        capacity_bytes = 0
+        pending_bytes = 0
+        baseline_error = ""
+        try:
+            capacity_bytes = int(fcntl.fcntl(fd, fcntl.F_GETPIPE_SZ))
+            pending = array("I", [0])
+            fcntl.ioctl(fd, termios.FIONREAD, pending, True)
+            pending_bytes = max(0, int(pending[0]))
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            baseline_error = f"{type(exc).__name__}: {exc}"
+        pending_ms = (
+            pending_bytes / (SOURCE_RATE * CHANNELS * SAMPLE_BYTES) * 1000.0
+        )
+        log_event(
+            logger,
+            "usb_mic.pipe_baseline",
+            capacity_bytes=capacity_bytes,
+            pending_bytes=pending_bytes,
+            pending_ms=round(pending_ms, 1),
+            error=baseline_error,
+        )
+
     def close(self) -> None:
         self.queue.close()
         if self.process.poll() is None:
@@ -180,6 +270,68 @@ class AplaySink:
                 self.process.stdin.close()
             except OSError:
                 pass
+
+
+def _decode_audio_packet(
+    payload: bytes,
+    *,
+    received_monotonic_ns: int,
+) -> tuple[QueuedFrame, ...] | None:
+    """Decode one supported relay datagram; return ``None`` if malformed."""
+
+    if len(payload) == V2_PACKET_BYTES:
+        try:
+            magic, version, _flags, seq, t_capture_ns = struct.unpack(
+                USB_MIC_HEADER_STRUCT,
+                payload[:USB_MIC_HEADER_BYTES],
+            )
+        except struct.error:
+            return None
+        if magic != USB_MIC_PACKET_MAGIC or version != USB_MIC_PACKET_VERSION:
+            return None
+        return (
+            QueuedFrame(
+                t_capture_ns=t_capture_ns,
+                seq=seq,
+                pcm=payload[USB_MIC_HEADER_BYTES:],
+            ),
+        )
+    if len(payload) == PACKET_BYTES:
+        return (QueuedFrame(received_monotonic_ns, None, payload),)
+    if len(payload) == LEGACY_PACKET_BYTES:
+        return tuple(
+            QueuedFrame(
+                received_monotonic_ns,
+                None,
+                payload[offset : offset + PERIOD_BYTES],
+            )
+            for offset in range(0, len(payload), PERIOD_BYTES)
+        )
+    return None
+
+
+def _sequence_gap(last_seq: int | None, seq: int) -> int:
+    """Return forward u32 sequence loss without inflating resets/reordering."""
+
+    if last_seq is None:
+        return 0
+    expected = (last_seq + 1) & 0xFFFFFFFF
+    gap = (seq - expected) & 0xFFFFFFFF
+    return gap if 0 < gap < 0x80000000 else 0
+
+
+def _source_age_percentiles(samples_ms: Iterable[float]) -> dict[str, float | None]:
+    values = tuple(samples_ms)
+
+    def percentile(fraction: float) -> float | None:
+        value = nearest_rank_percentile(values, fraction)
+        return round(value, 1) if value is not None else None
+
+    return {
+        "source_age_ms_p50": percentile(0.50),
+        "source_age_ms_p95": percentile(0.95),
+        "source_age_ms_p99": percentile(0.99),
+    }
 
 
 @dataclass(frozen=True)
@@ -217,21 +369,23 @@ class HostProgressTracker:
         *,
         now_monotonic: float,
         now_epoch_sec: float,
-    ) -> None:
-        if snapshot.running and not self._previous.running:
-            self._running_since_monotonic = now_monotonic
-        if (
+    ) -> bool:
+        advanced = bool(
             snapshot.running
             and self._previous.running
             and snapshot.hw_ptr is not None
             and self._previous.hw_ptr is not None
             and snapshot.hw_ptr != self._previous.hw_ptr
-        ):
+        )
+        if snapshot.running and not self._previous.running:
+            self._running_since_monotonic = now_monotonic
+        if advanced:
             self.last_progress_monotonic = now_monotonic
             self.last_progress_epoch_sec = now_epoch_sec
         if not snapshot.running:
             self._running_since_monotonic = 0.0
         self._previous = snapshot
+        return advanced
 
     def progress_age(self, now_monotonic: float) -> float | None:
         if not self._previous.running:
@@ -249,6 +403,22 @@ class HostProgressTracker:
             and self.last_progress_monotonic >= self._running_since_monotonic
             and self.last_progress_monotonic > 0.0
         )
+
+
+@dataclass
+class DropRegimeCounters:
+    """Cumulative queue drops split by whether the host clock advances."""
+
+    streaming: int = 0
+    idle: int = 0
+
+    def record(self, count: int, *, host_clock_advancing: bool) -> None:
+        if count <= 0:
+            return
+        if host_clock_advancing:
+            self.streaming += count
+        else:
+            self.idle += count
 
 
 def _audio_health_snapshot(
@@ -348,9 +518,9 @@ def _ready(
 
 def _write_status(path: str, payload: dict[str, Any]) -> None:
     payload = {
-        "schema_version": 2,
-        "updated_epoch_sec": time.time(),
         **payload,
+        "schema_version": 3,
+        "updated_epoch_sec": time.time(),
     }
     atomic_write_text(path, json.dumps(payload, sort_keys=True) + "\n", mode=0o644)
 
@@ -374,15 +544,22 @@ def run_relay(
     sock.settimeout(0.2)
     sink = AplaySink()
     packets = 0
+    v2_packets = 0
+    v1_packets = 0
+    legacy_packets = 0
     periods = 0
     malformed_packets = 0
+    packets_lost = 0
+    last_seq: int | None = None
     started_monotonic = time.monotonic()
     last_packet_monotonic = 0.0
     last_packet_epoch_sec = 0.0
     last_status = 0.0
     last_status_drops = 0
+    drop_regimes = DropRegimeCounters()
     drop_streak = 0
     host_progress = HostProgressTracker()
+    last_host_clock_advancing = False
     last_audio_stalled: bool | None = None
     log_event(logger, "usb_mic.started", udp_port=udp_port)
     try:
@@ -392,21 +569,43 @@ def run_relay(
                 payload, _address = sock.recvfrom(65_536)
             except socket.timeout:
                 payload = b""
-            if len(payload) in ACCEPTED_PACKET_BYTES:
-                packets += 1
-                last_packet_monotonic = time.monotonic()
-                last_packet_epoch_sec = time.time()
-                for offset in range(0, len(payload), PERIOD_BYTES):
-                    chunk = payload[offset : offset + PERIOD_BYTES]
-                    sink.queue.put(chunk)
-                    periods += 1
-            elif payload:
-                malformed_packets += 1
+            if payload:
+                if len(payload) not in ACCEPTED_PACKET_BYTES:
+                    malformed_packets += 1
+                else:
+                    received_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+                    frames = _decode_audio_packet(
+                        payload,
+                        received_monotonic_ns=received_ns,
+                    )
+                    if frames is None:
+                        malformed_packets += 1
+                    else:
+                        packets += 1
+                        if len(payload) == V2_PACKET_BYTES:
+                            v2_packets += 1
+                        elif len(payload) == PACKET_BYTES:
+                            v1_packets += 1
+                        else:
+                            legacy_packets += 1
+                        last_packet_monotonic = time.monotonic()
+                        last_packet_epoch_sec = time.time()
+                        packet_seq = frames[0].seq
+                        if packet_seq is None:
+                            last_seq = None
+                        else:
+                            packets_lost += _sequence_gap(last_seq, packet_seq)
+                            last_seq = packet_seq
+                        for frame in frames:
+                            sink.queue.put(frame)
+                            periods += 1
             now = time.monotonic()
             if now - last_status >= 0.5:
                 now_epoch = time.time()
+                if now - started_monotonic >= 0.5:
+                    sink.log_pipe_baseline_once()
                 host_snapshot = _read_host_pcm_status()
-                host_progress.observe(
+                host_clock_advanced = host_progress.observe(
                     host_snapshot,
                     now_monotonic=now,
                     now_epoch_sec=now_epoch,
@@ -418,14 +617,8 @@ def run_relay(
                 periods_dropped = sink.queue.dropped
                 drops_since_status = max(0, periods_dropped - last_status_drops)
                 status_interval = max(0.001, now - last_status) if last_status else 0.5
-                current_host_progress_age = host_progress.progress_age(now)
-                if (
-                    host_snapshot.running
-                    and host_progress.has_progressed
-                    and current_host_progress_age is not None
-                    and current_host_progress_age <= AUDIO_PROGRESS_FRESH_SECONDS
-                    and drops_since_status
-                ):
+                last_host_clock_advancing = host_clock_advanced
+                if host_clock_advanced and drops_since_status:
                     drop_streak += 1
                 else:
                     drop_streak = 0
@@ -439,6 +632,12 @@ def run_relay(
                     host_progress=host_progress,
                     sustained_drops=sustained_drops,
                 )
+                drop_regimes.record(
+                    drops_since_status,
+                    host_clock_advancing=host_clock_advanced,
+                )
+                source_ages_ms = sink.source_ages_ms()
+                age_percentiles = _source_age_percentiles(source_ages_ms)
                 audio_stalled = bool(health["audio_stalled"])
                 if audio_stalled != last_audio_stalled:
                     log_event(
@@ -454,9 +653,15 @@ def run_relay(
                 _write_status(status_path, {
                     "state": "running",
                     "packets_received": packets,
+                    "v2_packets_received": v2_packets,
+                    "v1_packets_received": v1_packets,
+                    "legacy_packets_received": legacy_packets,
                     "malformed_packets": malformed_packets,
+                    "packets_lost": packets_lost,
                     "periods_queued": periods,
                     "periods_dropped": periods_dropped,
+                    "periods_dropped_streaming": drop_regimes.streaming,
+                    "periods_dropped_idle": drop_regimes.idle,
                     "periods_dropped_since_status": drops_since_status,
                     "drop_rate_periods_per_sec": round(
                         drops_since_status / status_interval, 1,
@@ -470,6 +675,9 @@ def run_relay(
                     ),
                     "host_pcm_running": host_snapshot.running,
                     "host_hw_ptr": host_snapshot.hw_ptr,
+                    "source_age_basis": "bridge_emit_monotonic_v2",
+                    "source_age_sample_count": len(source_ages_ms),
+                    **age_percentiles,
                     **health,
                     "udp_port": udp_port,
                 })
@@ -478,13 +686,28 @@ def run_relay(
     finally:
         sink.close()
         sock.close()
+        residual_drops = max(0, sink.queue.dropped - last_status_drops)
+        drop_regimes.record(
+            residual_drops,
+            host_clock_advancing=last_host_clock_advancing,
+        )
+        final_source_ages_ms = sink.source_ages_ms()
         _write_status(status_path, {
             "state": "stopped",
             "packets_received": packets,
+            "v2_packets_received": v2_packets,
+            "v1_packets_received": v1_packets,
+            "legacy_packets_received": legacy_packets,
             "malformed_packets": malformed_packets,
+            "packets_lost": packets_lost,
             "periods_queued": periods,
             "periods_dropped": sink.queue.dropped,
+            "periods_dropped_streaming": drop_regimes.streaming,
+            "periods_dropped_idle": drop_regimes.idle,
             "frames_written": sink.progress()[0],
+            "source_age_basis": "bridge_emit_monotonic_v2",
+            "source_age_sample_count": len(final_source_ages_ms),
+            **_source_age_percentiles(final_source_ages_ms),
             "host_streaming": False,
             "audio_healthy": False,
             "audio_stalled": False,

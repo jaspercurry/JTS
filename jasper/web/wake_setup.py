@@ -371,7 +371,7 @@ def _mic_status_card_html() -> str:
     <div class="mic-status-warning" id="mic-status-warning" hidden></div>
     <div class="usb-mic-row is-disabled" id="usb-mic-row">
       <div class="usb-mic-copy">
-        <div class="usb-mic-name">Use JTS as a Mac microphone</div>
+        <div class="usb-mic-name">Use JTS as a computer microphone</div>
         <div class="usb-mic-desc">
           Adds the echo-cancelled microphone to the same USB connection.
         </div>
@@ -731,7 +731,7 @@ def _apply_usb_mic(
     control_base: str,
     headers: dict[str, str] | None = None,
 ) -> tuple[int, bytes]:
-    """Forward the Mac-microphone switch to jasper-control."""
+    """Forward the computer-microphone switch to jasper-control."""
 
     return proxy_post(
         "/aec/usb-mic",
