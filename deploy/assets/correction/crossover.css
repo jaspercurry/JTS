@@ -9,6 +9,77 @@
   margin-bottom: 0.25rem;
 }
 
+/* Step indicator + homeowner nudges — mirrors correction.css's `.wizard-step`
+ * / `.wizard-nudge` block (the room flow's page_css). Crossover renders the
+ * same wizard-steps/wizard-nudges markup (crossover/main.js renderSteps() /
+ * renderNudges()) but this page's CSS never carried the rules, so the spine
+ * and nudge banners rendered unstyled. The in-progress step's class comes
+ * straight from the server (crossover_envelope.py's `_step_payload`: "active"
+ * for the current step), so this uses `.active` rather than the room page's
+ * `.current` — matching the existing server/JS value instead of adding a
+ * rename on either side. */
+.wizard-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  counter-reset: wizard-step;
+}
+.wizard-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  counter-increment: wizard-step;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.wizard-step__dot {
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--border-strong);
+  background: var(--surface);
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.wizard-step__dot::before { content: counter(wizard-step); }
+.wizard-step.done { color: var(--text); }
+.wizard-step.done .wizard-step__dot {
+  border-color: transparent;
+  background: color-mix(in oklab, var(--status-ok) 24%, transparent);
+  color: var(--text);
+}
+.wizard-step.active { color: var(--text); font-weight: 600; }
+.wizard-step.active .wizard-step__dot {
+  border-color: transparent;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.wizard-step__label { white-space: nowrap; }
+
+.wizard-nudges { display: flex; flex-direction: column; gap: 0.45rem; }
+.wizard-nudge {
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+.wizard-nudge.info {
+  background: color-mix(in oklab, var(--status-ok) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-ok) 30%, transparent);
+}
+.wizard-nudge.warn {
+  background: color-mix(in oklab, var(--status-warn) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 38%, transparent);
+}
+
 .section-head {
   display: flex;
   gap: 1rem;
@@ -114,4 +185,9 @@
     grid-template-columns: 1fr;
     width: 100%;
   }
+}
+
+/* Narrow screens collapse step labels to dots (mirrors correction.css). */
+@media (max-width: 30rem) {
+  .wizard-step__label { display: none; }
 }

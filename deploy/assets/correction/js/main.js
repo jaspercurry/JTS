@@ -1296,6 +1296,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       } else if (ep === '/repeat-position') {
         await repeatMainSeat();
       } else if (ep === '/local-capture/setup') {
+        // The OS permission dialog can take a moment to appear (or need a
+        // second tap to bring the browser forward); say so immediately so
+        // the tap doesn't look like it did nothing.
+        if (wizardVerdict) {
+          wizardVerdict.textContent = "Waiting for the browser's permission prompt…";
+        }
         await startMicCapture();
       } else if (ep === '/autolevel/start') {
         if (!(await ensureLocalCaptureReady())) {
@@ -3198,6 +3204,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // the UI without SSH. The server-side watchdog also auto-recovers after
   // ~2 min; this is the instant manual path.
   async function cancelMeasurement() {
+    // Disable immediately, before the confirm dialog even opens — a fast
+    // double-tap could otherwise fire this handler twice and stack two
+    // confirms. Re-enable if the operator backs out below.
+    cancelMeasureBtn.disabled = true;
     // Active audio is an emergency control: the first tap must dispatch the
     // server-side stop/reap path immediately. Parked-state cancellation keeps
     // its destructive confirmation because no audio needs urgent silencing.
@@ -3205,12 +3215,17 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       'Cancel this measurement and restore the speaker?',
       {danger: true},
     ))) {
+      cancelMeasureBtn.disabled = false;
       return;
     }
-    cancelMeasureBtn.disabled = true;
     setStateBadge('idle', 'cancelling…');
     try {
       await postJson('reset', {});
+      // A pending mic-permission prompt (startMicCapture's getUserMedia
+      // await) can outlive this cancel — clear the in-flight latch and force
+      // a fresh render so the primary action isn't stranded hidden behind a
+      // flag that may never otherwise clear.
+      wizardActionInFlight = false;
     } catch (e) {
       setStateBadge('failed', e.message);
       showHomeownerFailure(e);
@@ -3218,6 +3233,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       cancelMeasureBtn.disabled = false;
     }
     pollState();
+    envelopeRetryArmed = true;   // a fresh trigger grants one retry credit
+    refreshEnvelope();
     refreshCurrentCorrection();
   }
 
