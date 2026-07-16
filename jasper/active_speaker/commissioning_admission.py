@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import math
 import os
@@ -38,6 +39,7 @@ from jasper.audio_measurement.evidence_identity import (
     json_fingerprint,
 )
 from jasper.audio_measurement.excitation_admission import (
+    ExcitationRefusalReason,
     ProtectionEvidence,
     admit_excitation,
 )
@@ -59,7 +61,7 @@ from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
 from . import graph_safety as gs
-from .bundles import open_bundle_admission_authority
+from .bundles import BUNDLE_FILE_MODE, open_bundle_admission_authority
 from .camilla_yaml import (
     COMMISSIONING_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
@@ -801,6 +803,62 @@ def persist_synchronized_stimulus_once(
     return bind_generated_excitation_wav(generation, artifact)
 
 
+def _record_stale_protection_report(
+    directory: Path,
+    *,
+    admission_id: str,
+    target_id: str,
+    target_fingerprint: str,
+    report: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Name the failing live-protection sub-checks; never mask the refusal.
+
+    Before this, ``passed=False`` on the live protection report left no
+    record of which of its ~11 named boolean sub-checks failed: no event
+    named the failing keys, and the report JSON was never written anywhere,
+    so diagnosing the actual admission wall required re-running the sweep
+    and guessing. This is observability only — it never changes the
+    admission outcome, and a persistence failure here is WARN-logged and
+    swallowed rather than masking the caller's real refusal.
+    """
+
+    checks = report.get("checks")
+    failed_checks = tuple(
+        sorted(
+            name
+            for name, passed in (checks.items() if isinstance(checks, Mapping) else ())
+            if not passed
+        )
+    )
+    log_event(
+        logger,
+        "active_speaker.driver_capture_protection_evidence_stale",
+        level=logging.WARNING,
+        admission_id=admission_id,
+        target_id=target_id,
+        target_fingerprint=target_fingerprint,
+        graph_fingerprint=report.get("graph_fingerprint"),
+        failed_checks=",".join(failed_checks),
+    )
+    try:
+        path = directory / "protection_report.json"
+        tmp_path = path.with_suffix(".json.tmp")
+        tmp_path.write_text(
+            json.dumps(dict(report), indent=2, default=str, sort_keys=True)
+        )
+        tmp_path.chmod(BUNDLE_FILE_MODE)
+        tmp_path.replace(path)
+    except OSError as exc:
+        log_event(
+            logger,
+            "active_speaker.driver_capture_protection_report_persist_failed",
+            level=logging.WARNING,
+            admission_id=admission_id,
+            error=str(exc),
+        )
+    return failed_checks
+
+
 async def play_admitted_driver_capture(
     *,
     topology: OutputTopology,
@@ -855,7 +913,7 @@ async def play_admitted_driver_capture(
     )
     admission_id = uuid.uuid4().hex
     initial_volume = await read_main_volume_db()
-    initial_evidence, _initial_report = issue_protection_evidence(
+    initial_evidence, initial_report = issue_protection_evidence(
         topology=topology,
         safety_profile=safety_profile,
         prepared=prepared,
@@ -871,10 +929,26 @@ async def play_admitted_driver_capture(
         protection_evidence=initial_evidence,
     )
     if not decision.allowed:
-        reasons = ",".join(reason.value for reason in decision.refusal_reasons)
-        raise ActiveCommissioningAdmissionError(
-            f"driver excitation generation refused: {reasons}"
+        detail = (
+            "driver excitation generation refused: "
+            f"{','.join(reason.value for reason in decision.refusal_reasons)}"
         )
+        if not initial_evidence.current:
+            failed_checks = _record_stale_protection_report(
+                authority.directory,
+                admission_id=admission_id,
+                target_id=prepared.target_id,
+                target_fingerprint=prepared.requested_plan.target_fingerprint,
+                report=initial_report,
+            )
+            if decision.refusal_reasons == (
+                ExcitationRefusalReason.PROTECTION_EVIDENCE_STALE,
+            ):
+                detail = (
+                    f"{detail} (protection checks failing: "
+                    f"{', '.join(failed_checks)})"
+                )
+        raise ActiveCommissioningAdmissionError(detail)
     generation = persist_generation_admission(
         authority,
         admission_id=admission_id,

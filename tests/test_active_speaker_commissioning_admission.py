@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -546,3 +548,152 @@ def test_playback_readmission_refuses_context_drift(tmp_path, monkeypatch):
                 timeout_s=9.0,
             )
         )
+
+
+_ADMISSION_LOGGER_NAME = "jasper.active_speaker.commissioning_admission"
+
+
+def test_stale_protection_report_names_failed_checks_and_persists_report(
+    tmp_path, monkeypatch, caplog
+):
+    """Punch #19: a bare 'protection_evidence_stale' refusal named nothing.
+
+    This pins the fix: the refusal now logs the exact failing check name(s)
+    and writes the full live protection report into the session bundle
+    directory, so the wall no longer requires re-running the sweep to
+    diagnose.
+    """
+
+    topology, profile, _targets, comparison, applied, raw, load_payload = _context(
+        tmp_path, monkeypatch
+    )
+    ceiling_drift = yaml.safe_load(raw)
+    ceiling_drift["devices"]["volume_limit"] = 0.0
+    drifted_raw = yaml.safe_dump(ceiling_drift)
+
+    async def read_running():
+        return drifted_raw
+
+    async def read_volume():
+        return -4.0
+
+    with caplog.at_level(logging.INFO, logger=_ADMISSION_LOGGER_NAME):
+        with pytest.raises(
+            ActiveCommissioningAdmissionError, match="protection_evidence_stale"
+        ) as excinfo:
+            asyncio.run(
+                play_admitted_driver_capture(
+                    topology=topology,
+                    safety_profile=profile,
+                    comparison_set=comparison,
+                    applied_profile=applied,
+                    speaker_group_id="mono",
+                    role="woofer",
+                    commissioning_gain_db=-50.0,
+                    expected_main_volume_db=-4.0,
+                    load_payload=load_payload,
+                    read_running_config=read_running,
+                    read_main_volume_db=read_volume,
+                    load_current_context=lambda: (
+                        topology,
+                        profile,
+                        comparison,
+                        applied,
+                    ),
+                    alsa_device="correction_substream",
+                    timeout_s=9.0,
+                )
+            )
+
+    assert "protection checks failing: graph_volume_ceiling" in str(excinfo.value)
+    assert (
+        "event=active_speaker.driver_capture_protection_evidence_stale"
+        in caplog.text
+    )
+    assert "failed_checks=graph_volume_ceiling" in caplog.text
+
+    report_path = (
+        tmp_path / comparison["bundle_session_id"] / "protection_report.json"
+    )
+    assert report_path.exists()
+    persisted = json.loads(report_path.read_text())
+    assert persisted["checks"]["graph_volume_ceiling"] is False
+    assert persisted["passed"] is False
+
+
+def test_successful_admission_does_not_log_or_persist_protection_report(
+    tmp_path, monkeypatch, caplog
+):
+    """No success-path noise: the report is only logged/persisted on failure."""
+
+    topology, profile, _targets, comparison, applied, raw, load_payload = _context(
+        tmp_path, monkeypatch
+    )
+    import jasper.active_speaker.commissioning_admission as admission_module
+
+    async def fake_play(
+        stimulus_bundle_dir,
+        *,
+        stimulus,
+        authority,
+        generation,
+        issue_current_inputs,
+        alsa_device,
+        timeout_s,
+    ):
+        del timeout_s
+        current = await issue_current_inputs()
+        result = readmit_and_persist_playback_admission(
+            authority,
+            generation,
+            current_limits=current.limits,
+            current_protection_evidence=current.protection_evidence,
+        )
+        return AdmittedPlaybackResult(
+            playback=PlaybackResult(
+                wav_path=Path(stimulus_bundle_dir, stimulus.artifact.relative_path),
+                alsa_device=alsa_device,
+                returncode=0,
+            ),
+            admission=result.artifact,
+        )
+
+    monkeypatch.setattr(admission_module, "play_admitted_wav", fake_play)
+
+    async def no_cooldown(_delay_s):
+        return None
+
+    monkeypatch.setattr(admission_module.asyncio, "sleep", no_cooldown)
+
+    async def read_running():
+        return raw
+
+    async def read_volume():
+        return -4.0
+
+    with caplog.at_level(logging.INFO, logger=_ADMISSION_LOGGER_NAME):
+        asyncio.run(
+            play_admitted_driver_capture(
+                topology=topology,
+                safety_profile=profile,
+                comparison_set=comparison,
+                applied_profile=applied,
+                speaker_group_id="mono",
+                role="woofer",
+                commissioning_gain_db=-50.0,
+                expected_main_volume_db=-4.0,
+                load_payload=load_payload,
+                read_running_config=read_running,
+                read_main_volume_db=read_volume,
+                load_current_context=lambda: (topology, profile, comparison, applied),
+                alsa_device="correction_substream",
+                timeout_s=9.0,
+            )
+        )
+
+    assert "protection_evidence_stale" not in caplog.text
+    assert "protection_report_persist_failed" not in caplog.text
+    report_path = (
+        tmp_path / comparison["bundle_session_id"] / "protection_report.json"
+    )
+    assert not report_path.exists()
