@@ -82,6 +82,9 @@ class BassExtensionRefusal(StrEnum):
 
 @dataclass(frozen=True)
 class BassExtensionProfile:
+    # NOTE (wave-1 rev 2): for ported/PR profiles the `natural`
+    # payload includes the fit's resampled `natural_curve` (96-point
+    # log grid) — it is part of the plant model, not display data.
     # fields exactly mirroring plan §5.1 (profile_id, created_at,
     # algorithm_version, baseline_fingerprint, topology_id,
     # topology_fingerprint, bass_owner, enclosure, mic_calibration_id,

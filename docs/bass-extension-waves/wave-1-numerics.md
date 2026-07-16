@@ -1,5 +1,12 @@
 # Wave 1 — numerics core (Codex implementation prompt)
 
+> **Revision 2 (2026-07-16).** The first implementation attempt's
+> adversarial review found six contract contradictions in revision 1;
+> this revision resolves them. Deltas are listed in the changelog at
+> the bottom. If you are continuing the existing
+> `codex/bass-ext-wave-1-numerics` branch: re-read this file fully
+> and reconcile the implementation to it before re-running the gate.
+
 Read `docs/bass-extension-waves/README.md` (the charter) first; it is
 binding. Then read this file completely before writing code.
 
@@ -93,12 +100,25 @@ def butterworth_highpass_db(freqs_hz, corner_hz, order: int) -> np.ndarray
 
 def boost_headroom_db(target_chain_db: np.ndarray,
                       natural_chain_db: np.ndarray) -> float:
-    """max(target - natural) over the grid, floored at 0.0."""
+    """max(target - natural) over the grid, floored at 0.0.
+    ALWAYS computed on a dense log grid (>= 480 points, 10-500 Hz) —
+    never from the 40*log10 formula alone: when qp > q0 the LT grows
+    a peak near fp that EXCEEDS the DC boost, and the grid max must
+    capture it (pinned by test)."""
+
+def peaking_response_db(freqs_hz, f0_hz, q, gain_db) -> np.ndarray:
+    """RBJ peaking-EQ analog prototype magnitude in dB."""
+
+def low_shelf_response_db(freqs_hz, f0_hz, q, gain_db) -> np.ndarray:
+    """RBJ low-shelf analog prototype magnitude in dB."""
 ```
 
-Analytic (analog-prototype) magnitudes are the spec: CamillaDSP owns
-the digital realization, and the bilinear error at <500 Hz / 48 kHz
-is far below our tolerances. Do not implement bilinear transforms.
+Analytic (analog-prototype) magnitudes are the spec — including for
+the shaping biquads via the two RBJ helpers above, which is how
+adapters evaluate `Peaking`/`Lowshelf` members without any digital
+math. CamillaDSP owns the digital realization, and the prototype-vs-
+bilinear error at <500 Hz / 48 kHz is far below our tolerances. Do
+not implement bilinear transforms or digital biquads.
 
 ### `adapters/base.py`
 
@@ -117,8 +137,13 @@ class MagnitudeCurve:
 class CabinetInfo:                   # from driver_safety cabinet block
     enclosure_kind: str
     radiator_count: int | None
-    effective_radiating_diameter_mm: float | None
+    effective_radiating_diameter_mm: float | None   # the powered driver's
     baffle_width_mm: float | None
+    passive_radiator_diameter_mm: float | None = None
+        # PR only; wizard-entered later (Wave 4). None => PR nearfield
+        # used unscaled, recorded as a fit note.
+
+COMMISSION_FLOOR_HZ = 20.0   # no target corner below this, any adapter
 
 @dataclass(frozen=True)
 class FitRefusal:
@@ -137,10 +162,19 @@ class TargetSpec:
     limiter_threshold_dbfs: float | None = None   # frozen at accept (Wave 4)
 ```
 
-Plant fits: `SealedPlantFit(f0_hz, q0, fit_rms_db)`,
-`PortedPlantFit(fb_hz, knee_hz, knee_slope_db_oct, fit_rms_db)`,
-`PassiveRadiatorPlantFit(= ported fields + notch_hz)`. Each frozen,
-each with `adapter_id`, `adapter_version`, `to_dict()`/`from_dict()`
+Plant fits: `SealedPlantFit(f0_hz, q0, fit_rms_db)` (parametric —
+carries no curve), `PortedPlantFit(fb_hz, knee_hz, knee_slope_db_oct,
+fit_rms_db, natural_curve)`, `PassiveRadiatorPlantFit(= ported fields
++ notch_hz)`. For ported/PR the measured curve IS the model:
+`natural_curve: MagnitudeCurve` is the woofer-dominant measured
+magnitude resampled onto a fixed 96-point log grid over
+[10, 500] Hz (via `analysis.resample_log`), shape-normalized so the
+200–400 Hz mean is 0 dB — this is what `predicted_response` adds the
+member's filters to, and what Wave 2 persists in the profile's
+`natural` payload. Every fit variant additionally carries
+`notes: tuple[str, ...] = ()` for non-fatal fit annotations (e.g.
+`"pr_nearfield_unscaled"`, `"already_at_floor"`). Each frozen, each
+with `adapter_id`, `adapter_version`, `to_dict()`/`from_dict()`
 (strict round-trip, reject unknown keys).
 
 ```python
@@ -161,8 +195,14 @@ def adapter_for_enclosure(enclosure_kind: str) -> EnclosureAdapter | None
 `generate_family` invariants (assert in tests): deepest first; the
 LAST member is always the natural target (`filters == ()`,
 `boost_headroom_db == 0.0`); every member carries the subsonic spec
-(sealed included); members are strictly ordered by
-`boost_headroom_db` descending.
+(sealed included); ordering is deepest-first with primary key
+`boost_headroom_db` **non-increasing** (ties are legal — ported/PR
+retreat members that only raise the HP corner all have boost 0.0)
+and tie-break = effective high-pass/subsonic corner **ascending**
+(lower corner = deeper = earlier); `target_id`s unique. Degenerate
+case: when no meaningful extension exists (see the sealed floor rule
+below), the family is exactly `(natural,)` and callers treat a
+single-member family as "no extension available" — never an error.
 
 ### `targets.py`
 
@@ -228,10 +268,17 @@ def interpolate_anchors(targets: tuple[TargetSpec, ...],
   Butterworth-highpass magnitude (same free f0/level, fixed shape);
   if its RMS beats the 2nd-order fit by > 0.5 dB, refuse with the
   leakage hint in `detail`.
-- `generate_family`: deepest `fp = max(20.0, f0 / 10**(margin.boost_cap_db/40))`,
+- `generate_family`: deepest
+  `fp = max(COMMISSION_FLOOR_HZ, f0 / 10**(margin.boost_cap_db/40))`,
   `qp = 0.65`; intermediates spaced ~3 dB of boost apart (equal
   ratios in fp); natural member last. Subsonic:
   `ButterworthHighpass, freq = 0.5·fp_deepest (floor 15 Hz), order 2`.
+  **Floor rule:** when `fp_deepest >= 0.99·f0` (the speaker's natural
+  corner is already at/below the commission floor, or the boost cap
+  buys no meaningful extension), return the degenerate `(natural,)`
+  family with note `"already_at_floor"` — `linkwitz_transform_params`
+  keeps its `fp <= f0` validation and is simply never called with an
+  inverted pair.
 - `predicted_response`: natural 2nd-order HP × LT × subsonic, in dB.
 
 ### `adapters/ported.py` (`ported_v1`)
@@ -260,24 +307,34 @@ def interpolate_anchors(targets: tuple[TargetSpec, ...],
   shallower members halve then drop the shelf gain). Natural member
   last: no shaping filters, subsonic HP at the margin corner
   (the subsonic never retreats away — it is protective).
-- `predicted_response`: empirical natural curve (resampled) + the
-  member's filters, in dB. (For ported we predict *relative to the
-  measured natural curve*, not a parametric box model.)
+- `predicted_response`: the fit's stored `natural_curve`
+  (interpolated onto the caller's grid) + the member's filters
+  evaluated via the alignment.py response helpers, in dB. (For
+  ported we predict *relative to the measured natural curve*, not a
+  parametric box model — which is exactly why the curve lives on the
+  fit.)
 
 ### `adapters/passive_radiator.py` (`passive_radiator_v1`)
 
 Subclass-by-composition of ported (share helpers via module-level
 functions, not inheritance gymnastics): requires `PR_NEARFIELD`.
 Additional landmark: `notch_hz` = the frequency below `0.9·fb` where
-the diameter-ratio-scaled PR magnitude and the woofer magnitude are
-closest (magnitude crossover — the cancellation-region proxy; the
-scale factor is `effective_radiating_diameter_mm` ratio when the
-cabinet provides it, else unscaled with a `detail` note). Refuse
+the scaled PR magnitude and the woofer magnitude are closest
+(magnitude crossover — the cancellation-region proxy). Scale factor =
+`passive_radiator_diameter_mm / effective_radiating_diameter_mm` when
+the cabinet provides both; else unscaled with fit note
+`"pr_nearfield_unscaled"`. Refuse
 `"bass_extension_pr_notch_not_located"` when no approach within 3 dB
-exists in [10, 0.9·fb]. Constraints on the family: subsonic corner ≥
-`1.1 × notch_hz` (overrides the margin ratio when higher); no shaping
-filter may have positive gain at or below `notch_hz`. Tolerance on
-this estimator is provisional (`algorithm_version` rides it); the
+exists in [10, 0.9·fb]. Constraints on the PR family: subsonic corner
+≥ `1.1 × notch_hz` (overrides the margin ratio when higher); shaping
+is **Peaking biquads only — no Lowshelf** (a positive low shelf
+boosts everything below its corner, straight through the notch;
+Peaking skirts decay), Q ∈ [0.7, 1.5], gain [0, +6] dB; and the
+binding constraint is **composite**, not per-filter: each member's
+`predicted_response − natural_curve` must be ≤ +0.5 dB at every grid
+point at/below `notch_hz` (evaluate with the alignment.py helpers;
+assert at generation, refuse the member otherwise). Tolerance on the
+notch estimator is provisional (`algorithm_version` rides it); the
 synthetic test below pins today's behavior.
 
 ### `deconv.py` additions (append-only)
@@ -351,9 +408,21 @@ def tracking_error_db(freqs, measured_db, predicted_db,
 - Sealed order-sanity: a synthetic 3rd-order rolloff refuses with the
   leakage detail; a clean 2nd-order does not.
 - Family invariants (all adapters): natural-last, deepest-first,
-  monotone boost, subsonic always present, ported/PR contain no
-  `LinkwitzTransform` dict, PR shaping gain ≤ 0 at/below notch,
-  PR subsonic ≥ 1.1×notch.
+  non-increasing boost with corner tie-break, unique target_ids,
+  subsonic always present, ported/PR contain no `LinkwitzTransform`
+  dict, PR shaping is Peaking-only with composite boost ≤ +0.5 dB
+  at/below notch, PR subsonic ≥ 1.1×notch.
+- Sealed floor rule: f0 = 18 Hz (fit bounds permit it) → degenerate
+  `(natural,)` family with note `"already_at_floor"`; f0 = 24 Hz with
+  conservative cap → whatever extension the cap allows, all corners ≥
+  `COMMISSION_FLOOR_HZ`.
+- Low-Q headroom pin: for f0 = 60, q0 = 0.5 → fp = 40, qp = 0.65, the
+  grid-computed `boost_headroom_db` EXCEEDS `lt_boost_db(60, 40)`
+  (the qp > q0 peak near fp must be captured; a formula-only
+  implementation fails this test).
+- Ported/PR `predicted_response` round-trip: natural member's
+  predicted response equals the stored `natural_curve` (interpolated)
+  within 0.1 dB.
 - Ported fb: synthetic 4th-order vented magnitude (construct from two
   resonators or a published-shape polynomial — your choice, keep it
   in a test helper) with known fb → located within ±3 %; port-curve
@@ -388,7 +457,10 @@ def tracking_error_db(freqs, measured_db, predicted_db,
 ## Anti-overengineering fences (wave-specific)
 
 Do NOT build: a filter-design framework; digital/bilinear biquad
-math; caching/memoization; plotting; CLI entry points; logging;
+realizations (analytic s-domain prototype evaluation via the
+alignment.py helpers is the required approach — the fence bans
+implementing digital filters, not evaluating prototype responses);
+caching/memoization; plotting; CLI entry points; logging;
 dataclass base classes or a "Curve" utility library; adapter
 auto-discovery (the `ADAPTERS` dict is literal); phase handling
 (magnitude-only is the v1 contract); any file I/O. If scipy's
@@ -410,3 +482,24 @@ scripts/test-fast
 Also include in the PR description the family/anchor table your code
 produces for the worked example (sealed f0=61 Hz, q0=0.72, normal
 margin) — it should resemble plan §1.1's shape.
+
+## Changelog
+
+- **Rev 2 (2026-07-16)** — resolves the six contract contradictions
+  found by the first implementation's adversarial review:
+  (1) `PortedPlantFit`/`PassiveRadiatorPlantFit` now carry
+  `natural_curve` (96-point log grid, 200–400 Hz-mean-normalized) —
+  the empirical model `predicted_response` needs; (2) `CabinetInfo`
+  gains optional `passive_radiator_diameter_mm`, and all fits gain
+  `notes`; (3) `COMMISSION_FLOOR_HZ` + the sealed floor rule define
+  the low-f0 degenerate `(natural,)` family; (4) PR shaping is
+  Peaking-only with a composite ≤ +0.5 dB at/below-notch constraint,
+  and the family ordering invariant is non-increasing boost with a
+  corner tie-break (strict ordering was unsatisfiable for
+  corner-only retreat members); (5) no allowlist change — spec files
+  are never the implementer's to edit; stop-and-report was correct;
+  (6) `peaking_response_db`/`low_shelf_response_db` added to
+  alignment.py and the digital-math fence reworded to make prototype
+  evaluation explicitly the required approach. Plus new pinned tests:
+  low-Q (qp > q0) headroom-peak capture, floor-rule degeneracy,
+  ported/PR natural-member round-trip.

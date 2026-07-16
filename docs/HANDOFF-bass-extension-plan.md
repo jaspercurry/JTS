@@ -346,8 +346,10 @@ back as a decision input.
   // ---- the fitted plant (adapter-specific payload, versioned)
   "natural": {
      // sealed:            {"f0_hz": 61.2, "q0": 0.72, "fit_rms_db": 0.4}
-     // ported:            {"fb_hz": 43.1, "knee_hz": 55.0, "knee_slope_db_oct": 21.0}
-     // passive_radiator:  {"fb_hz": 41.0, "notch_hz": 24.5, ...}
+     // ported:            {"fb_hz": 43.1, "knee_hz": 55.0, "knee_slope_db_oct": 21.0,
+     //                     "natural_curve": { /* 96-pt log-grid resample — the
+     //                        empirical model predicted_response builds on */ }}
+     // passive_radiator:  {"fb_hz": 41.0, "notch_hz": 24.5, natural_curve, ...}
   },
   // ---- the commissioned family, deepest first; target 0 is ALWAYS
   //      the natural/safest member (the fallback identity target)
