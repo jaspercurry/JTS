@@ -91,12 +91,40 @@ export function makeR2Store(bucket) {
     async deleteBlob(id) {
       await bucket.delete(`blob/${id}`);
     },
+    // Phone-owned control envelope — its OWN key so a phone POST /event can
+    // never read-modify-write the Pi's host_event (see postEvent/postHostEvent
+    // below for the clobber this eliminates).
+    async getEvent(id) {
+      const obj = await bucket.get(`event/${id}`);
+      if (!obj) return null;
+      return JSON.parse(await obj.text());
+    },
+    async putEvent(id, event) {
+      await bucket.put(`event/${id}`, JSON.stringify(event));
+    },
+    async deleteEvent(id) {
+      await bucket.delete(`event/${id}`);
+    },
+    // Pi-owned control envelope — its OWN key, symmetric with getEvent above.
+    async getHostEvent(id) {
+      const obj = await bucket.get(`hostevent/${id}`);
+      if (!obj) return null;
+      return JSON.parse(await obj.text());
+    },
+    async putHostEvent(id, event) {
+      await bucket.put(`hostevent/${id}`, JSON.stringify(event));
+    },
+    async deleteHostEvent(id) {
+      await bucket.delete(`hostevent/${id}`);
+    },
   };
 }
 
 export function makeMemoryStore() {
   const meta = new Map();
   const blob = new Map();
+  const event = new Map();
+  const hostEvent = new Map();
   return {
     async getMeta(id) {
       const v = meta.get(id);
@@ -118,9 +146,31 @@ export function makeMemoryStore() {
     async deleteBlob(id) {
       blob.delete(id);
     },
+    async getEvent(id) {
+      const v = event.get(id);
+      return v ? JSON.parse(v) : null;
+    },
+    async putEvent(id, e) {
+      event.set(id, JSON.stringify(e));
+    },
+    async deleteEvent(id) {
+      event.delete(id);
+    },
+    async getHostEvent(id) {
+      const v = hostEvent.get(id);
+      return v ? JSON.parse(v) : null;
+    },
+    async putHostEvent(id, e) {
+      hostEvent.set(id, JSON.stringify(e));
+    },
+    async deleteHostEvent(id) {
+      hostEvent.delete(id);
+    },
     // Test-only introspection.
     _rawMeta: meta,
     _rawBlob: blob,
+    _rawEvent: event,
+    _rawHostEvent: hostEvent,
   };
 }
 
@@ -224,9 +274,36 @@ async function loadLive(store, id, env) {
   if (nowMs(env) > meta.expires_at) {
     await store.deleteMeta(id);
     await store.deleteBlob(id);
+    await store.deleteEvent(id);
+    await store.deleteHostEvent(id);
     return null;
   }
   return meta;
+}
+
+// --- Split-field readers (event / host_event) ---------------------------------
+//
+// event and host_event are written to their OWN keys (see putEvent/
+// putHostEvent below) so a phone POST /event and a Pi POST /host-event can
+// never read-modify-write the same meta object and clobber each other — the
+// root cause of the 2026-07-15 JTS3 false phone timeout (mitigated, not
+// fixed, by the Pi's #1507 terminal re-post latch).
+//
+// COMPAT WINDOW: a session registered by pre-deploy code still carries the
+// value embedded in meta (the old registerSession/postEvent/postHostEvent
+// wrote there), with no split key ever created for it. Prefer the split key;
+// fall back to the legacy meta field only when the split key is absent. Once
+// any post-deploy write lands, the split key exists and wins from then on.
+// No version flag or migration step is needed — every session's TTL is
+// <=3600s (MAX_TTL_S), so the legacy shape naturally retires within an hour
+// of deploy.
+async function readEvent(store, meta, id) {
+  const v = await store.getEvent(id);
+  return v !== null ? v : (meta.event ?? null);
+}
+async function readHostEvent(store, meta, id) {
+  const v = await store.getHostEvent(id);
+  return v !== null ? v : (meta.host_event ?? null);
 }
 
 // Module-level, per-isolate fallback rate state. Used ONLY when the
@@ -339,8 +416,9 @@ async function registerSession(request, store, env, cors) {
     expires_at: now + ttl * 1000,
     max_upload_bytes: cap,
     state: "pending",
-    event: null,
-    host_event: null,
+    // event / host_event deliberately NOT stored here — they live in their
+    // own keys (see readEvent/readHostEvent). A freshly-registered session
+    // has neither key yet; readers default to null via the ?? fallback.
     integrity: null,
     size: 0,
   };
@@ -377,9 +455,10 @@ async function postEvent(request, store, meta, id, env, cors) {
     return json({ error: "event_must_be_object" }, 400, cors);
   }
   // The event is the relay's own control envelope (NOT a capture payload). We
-  // relay it verbatim; the Pi interprets fields like `armed`.
-  meta.event = event;
-  await store.putMeta(id, meta);
+  // relay it verbatim; the Pi interprets fields like `armed`. Written to its
+  // OWN key — NEVER read-modify-write meta, which is what let a phone event
+  // post clobber a concurrently-landing Pi host_event (see readEvent above).
+  await store.putEvent(id, event);
   return json({ ok: true }, 200, cors);
 }
 
@@ -400,8 +479,9 @@ async function postHostEvent(request, store, meta, id, env, cors) {
   if (typeof event !== "object" || event === null) {
     return json({ error: "event_must_be_object" }, 400, cors);
   }
-  meta.host_event = event;
-  await store.putMeta(id, meta);
+  // Own key, symmetric with postEvent above — the Pi's terminal write can
+  // never be reverted by an interleaved phone event post.
+  await store.putHostEvent(id, event);
   return json({ ok: true }, 200, cors);
 }
 
@@ -446,14 +526,18 @@ async function putBlob(request, store, meta, id, env, cors) {
   return json({ ok: true, state: "ready", size: buf.length }, 200, cors);
 }
 
-function getStatus(meta, cors) {
+async function getStatus(store, meta, id, cors) {
+  const [event, hostEvent] = await Promise.all([
+    readEvent(store, meta, id),
+    readHostEvent(store, meta, id),
+  ]);
   return json(
     {
       state: meta.state,
       size: meta.size,
       integrity: meta.integrity,
-      event: meta.event,
-      host_event: meta.host_event,
+      event,
+      host_event: hostEvent,
       expires_at: meta.expires_at,
     },
     200,
@@ -461,11 +545,12 @@ function getStatus(meta, cors) {
   );
 }
 
-function getPhoneStatus(meta, cors) {
+async function getPhoneStatus(store, meta, id, cors) {
+  const hostEvent = await readHostEvent(store, meta, id);
   return json(
     {
       state: meta.state,
-      host_event: meta.host_event,
+      host_event: hostEvent,
       expires_at: meta.expires_at,
     },
     200,
@@ -496,6 +581,8 @@ async function getBlob(meta, store, id, cors) {
 async function deleteSession(store, id, cors) {
   await store.deleteBlob(id);
   await store.deleteMeta(id);
+  await store.deleteEvent(id);
+  await store.deleteHostEvent(id);
   return new Response(null, { status: 204, headers: cors });
 }
 
@@ -548,7 +635,7 @@ export async function handle(request, store, env) {
       if (!(await authorize(meta, request, "pull"))) {
         return json({ error: "unauthorized" }, 401, cors);
       }
-      return getStatus(meta, cors);
+      return getStatus(store, meta, id, cors);
     }
 
     // POST /sessions/:id/host-event  (pull_token)
@@ -581,7 +668,7 @@ export async function handle(request, store, env) {
         return json({ error: "rate_limited" }, 429, cors);
       }
       if (sub === "spec") return getSpec(meta, store, id, env, cors);
-      if (sub === "phone-status") return getPhoneStatus(meta, cors);
+      if (sub === "phone-status") return getPhoneStatus(store, meta, id, cors);
       if (sub === "event") return postEvent(request, store, meta, id, env, cors);
       if (sub === "blob") return putBlob(request, store, meta, id, env, cors);
     }

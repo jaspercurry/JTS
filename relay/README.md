@@ -34,13 +34,13 @@ the encryption key.
 |---|---|---|
 | `POST /sessions` | optional registration secret | Pi registers `{session_id, capture_spec (opaque string), upload_token, pull_token, ttl_s, max_upload_bytes}`. Tokens stored as SHA-256 hashes. If Worker secret `RELAY_REGISTRATION_TOKEN` is set, the Pi must send matching header `X-JTS-Relay-Registration-Token`. |
 | `GET /sessions/:id/spec` | upload | Phone fetches the opaque spec (served verbatim). |
-| `POST /sessions/:id/event` | upload | Phone posts the relay-control envelope, e.g. `{armed:true}`. |
+| `POST /sessions/:id/event` | upload | Phone posts the relay-control envelope, e.g. `{armed:true}`, to its OWN `event/<id>` object (see "Storage layout" below). |
 | `GET /sessions/:id/phone-status` | upload | Phone polls `{state, host_event, expires_at}` (backs `fetchPhoneStatus` in `capture-page/js/relay-client.js`). |
 | `PUT /sessions/:id/blob` | upload | Phone uploads `IV‖ciphertext` (octet-stream) + `X-Plaintext-Length` / `X-Plaintext-Sha256` integrity headers. |
-| `GET /sessions/:id/status` | pull | Pi polls `{state, size, integrity, event, expires_at}`. |
-| `POST /sessions/:id/host-event` | pull | Pi posts a host-side control event back into the session. |
+| `GET /sessions/:id/status` | pull | Pi polls `{state, size, integrity, event, host_event, expires_at}`. |
+| `POST /sessions/:id/host-event` | pull | Pi posts a host-side control event to its OWN `hostevent/<id>` object. |
 | `GET /sessions/:id/blob` | pull | Pi pulls ciphertext (+ integrity headers). Non-destructive. |
-| `DELETE /sessions/:id` | pull | Pi purges after a verified decrypt. |
+| `DELETE /sessions/:id` | pull | Pi purges after a verified decrypt (meta + blob + event + host_event). |
 
 `GET /healthz` → `ok`. Sessions auto-expire at `ttl_s` (default 900 s, clamped
 60–3600) and self-delete on the next access past expiry.
@@ -130,13 +130,56 @@ Runs in CI through `tests/test_relay_worker_js.py` (pytest) and
 `scripts/check-js-syntax.sh` (`node --check`). No Cloudflare account needed — the
 router is exercised against an in-memory store.
 
-## Storage consistency note
+## Storage layout — one R2 object per session, plus two split control fields
 
-R2 gives strong read-after-write consistency per object, which covers the Pi's
-poll loop (it reads `meta/<id>` after the phone wrote it) and the phone's
-`phone-status` poll of `host_event` (it reads `meta/<id>` after the Pi wrote it
-via `host-event`). Phone-side mutations (event, blob) are sequential, so the
-`armed`/`ready` state never races. If a
-future build wants to tighten the ~1 s poll latency to real-time, the upgrade is
-Durable Objects / long-poll (plan §5) — layered on this same session/spec
-machinery, no relay-contract change.
+Each session has up to four objects, all keyed by the same `<id>`:
+
+| Object | Written by | Read by |
+|---|---|---|
+| `meta/<id>` | `registerSession` (create), `putBlob` (state/integrity/size) | every handler that needs session state |
+| `blob/<id>` | phone `PUT /blob` | Pi `GET /blob` |
+| `event/<id>` | phone `POST /event` (sole writer) | Pi `GET /status` (`event` field) |
+| `hostevent/<id>` | Pi `POST /host-event` (sole writer) | Pi/phone `GET /status` / `GET /phone-status` (`host_event` field) |
+
+`event` and `host_event` are **not** stored inside `meta/<id>`. They used to
+be, and that was the bug: `postEvent`/`postHostEvent` each read the whole
+`meta/<id>` object at request start and wrote the whole object back
+(`putMeta`) — last-write-wins on the ENTIRE object, not just the field being
+set. A phone `POST /event` whose request-start read predated the Pi's
+terminal `POST /host-event` would land afterward and silently revert
+`host_event` to the phone's stale snapshot. This is exactly what happened on
+JTS3 on 2026-07-15 (see
+[`docs/HANDOFF-correction.md`](../docs/HANDOFF-correction.md)): a locked
+level-match ramp's terminal host-event was reverted by an interleaved phone
+event post, and the phone's own deadline fired even though the server had
+already succeeded. The Pi's terminal re-post latch (5 attempts) made a lost
+terminal *unlikely* but not impossible. Splitting `event`/`host_event` into
+their own keys makes the clobber **structurally impossible** — `postEvent`
+never touches `hostevent/<id>` and vice versa, regardless of request timing.
+
+**Compat window for in-flight sessions.** A session registered by pre-deploy
+code may still carry `event`/`host_event` embedded in its `meta/<id>` object
+(the old write path), with no split key ever created for it. The status
+readers (`GET /status`, `GET /phone-status`) prefer the split key and fall
+back to the legacy `meta.event` / `meta.host_event` field only when the split
+key is absent. Once any post-deploy write lands, the split key exists and
+wins from then on. No version flag or migration step — every session's TTL
+is <=3600 s (`MAX_TTL_S`), so the legacy shape retires on its own within an
+hour of deploy.
+
+**Lifecycle/cleanup covers all four objects.** The on-access self-delete in
+`loadLive` (past `expires_at`) and the explicit `DELETE /sessions/:id` path
+both purge `meta`, `blob`, `event`, and `hostevent` for the id — no orphaned
+objects. The R2 bucket lifecycle rule set up below uses an empty `--prefix`,
+i.e. it already applies bucket-wide, so `event/` and `hostevent/` are covered
+by the same 1-day backstop as `meta/` and `blob/` with no dashboard change.
+
+**Consistency.** R2 gives strong read-after-write consistency per object,
+which covers the Pi's poll loop (it reads `event/<id>` after the phone wrote
+it) and the phone's `phone-status` poll of `host_event` (it reads
+`hostevent/<id>` after the Pi wrote it via `host-event`). Each of the four
+objects above is an independent read-modify-write unit, so a write to one can
+never revert a concurrent write to another. If a future build wants to
+tighten the ~1 s poll latency to real-time, the upgrade is Durable Objects /
+long-poll (plan §5) — layered on this same session/spec machinery, no
+relay-contract change.

@@ -601,6 +601,212 @@ async function testTtlExpiry() {
   ok("TTL expiry self-cleans");
 }
 
+async function testEventDoesNotClobberHostEvent() {
+  // THE RACE, pinned. Reproduces the 2026-07-15 JTS3 false phone timeout:
+  // request handling reads `meta` at request start; pre-fix, postEvent and
+  // postHostEvent each wrote the WHOLE meta object back, so a phone POST
+  // /event whose request-start read predates the Pi's terminal POST
+  // /host-event erases that terminal when the phone's (stale) write lands
+  // afterward. Structural fix: event/host_event now live in their own keys,
+  // so postEvent never touches host_event at all, regardless of timing.
+  //
+  // Deterministic construction (no real concurrency needed): wrap the store
+  // so the phone's request-start `getMeta` call captures its snapshot NOW
+  // (before the Pi writes), but does not RETURN that snapshot until the test
+  // releases a gate. While the gate is held, the Pi's POST /host-event runs
+  // to completion against the real store. Releasing the gate then lets the
+  // phone's POST /event proceed using a meta snapshot that predates the
+  // Pi's write — exactly the race window.
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration();
+  await register(store, env, reg);
+
+  let armPhoneRead = false;
+  let releaseGate;
+  const gate = new Promise((resolve) => {
+    releaseGate = resolve;
+  });
+  const racingStore = {
+    ...store,
+    async getMeta(id) {
+      if (armPhoneRead && id === reg.session_id) {
+        armPhoneRead = false;
+        const snapshot = await store.getMeta(id); // read BEFORE the Pi's write
+        await gate; // held until the test releases it, below
+        return snapshot; // stale: predates the Pi's host-event write
+      }
+      return store.getMeta(id);
+    },
+  };
+
+  armPhoneRead = true;
+  const phonePromise = handle(
+    req("POST", `/sessions/${reg.session_id}/event`, {
+      token: reg.upload_token,
+      body: { armed: true },
+    }),
+    racingStore,
+    env,
+  );
+
+  // The Pi's terminal host-event completes fully while the phone's request
+  // is blocked holding its stale snapshot.
+  const hostRes = await handle(
+    req("POST", `/sessions/${reg.session_id}/host-event`, {
+      token: reg.pull_token,
+      body: { phase: "sweep_complete", terminal: true },
+    }),
+    store,
+    env,
+  );
+  assert.equal(hostRes.status, 200, "Pi host-event lands first");
+
+  releaseGate();
+  const phoneRes = await phonePromise;
+  assert.equal(phoneRes.status, 200, "phone event also lands");
+
+  const res = await handle(
+    req("GET", `/sessions/${reg.session_id}/status`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  const j = await res.json();
+  assert.deepEqual(
+    j.host_event,
+    { phase: "sweep_complete", terminal: true },
+    "Pi's terminal host_event survives the interleaved phone event post",
+  );
+  assert.deepEqual(j.event, { armed: true }, "phone event still lands in its own key");
+  ok("race: interleaved phone event does not clobber Pi host_event");
+}
+
+async function testLegacyMetaFallback() {
+  // Read-fallback for the <=900s compat window: a session created by
+  // pre-deploy code has event/host_event embedded directly in meta (no split
+  // key was ever written for it). Both pull-side /status and phone-side
+  // /phone-status must still surface those values.
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration();
+  await register(store, env, reg);
+  const meta = await store.getMeta(reg.session_id);
+  meta.event = { armed: true, legacy: true };
+  meta.host_event = { phase: "sweep_complete", legacy: true };
+  await store.putMeta(reg.session_id, meta);
+
+  let res = await handle(
+    req("GET", `/sessions/${reg.session_id}/status`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  let j = await res.json();
+  assert.deepEqual(
+    j.host_event,
+    { phase: "sweep_complete", legacy: true },
+    "status falls back to legacy meta.host_event when no split key exists",
+  );
+  assert.deepEqual(
+    j.event,
+    { armed: true, legacy: true },
+    "status falls back to legacy meta.event when no split key exists",
+  );
+
+  res = await handle(
+    req("GET", `/sessions/${reg.session_id}/phone-status`, {
+      token: reg.upload_token,
+      origin: ORIGIN,
+    }),
+    store,
+    env,
+  );
+  j = await res.json();
+  assert.deepEqual(
+    j.host_event,
+    { phase: "sweep_complete", legacy: true },
+    "phone-status falls back to legacy meta.host_event",
+  );
+
+  // A post-deploy write creates the split key, which then wins over the
+  // stale legacy meta field for good — no version flag needed, TTL retires
+  // the legacy shape.
+  await handle(
+    req("POST", `/sessions/${reg.session_id}/host-event`, {
+      token: reg.pull_token,
+      body: { phase: "new_terminal" },
+    }),
+    store,
+    env,
+  );
+  res = await handle(
+    req("GET", `/sessions/${reg.session_id}/status`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  j = await res.json();
+  assert.deepEqual(
+    j.host_event,
+    { phase: "new_terminal" },
+    "split key takes precedence once any post-deploy write lands",
+  );
+  ok("legacy meta fallback for event/host_event");
+}
+
+async function testExpiryPurgesSplitKeys() {
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration({ ttl_s: 60 });
+  await register(store, env, reg);
+  await handle(
+    req("POST", `/sessions/${reg.session_id}/event`, { token: reg.upload_token, body: { armed: true } }),
+    store,
+    env,
+  );
+  await handle(
+    req("POST", `/sessions/${reg.session_id}/host-event`, { token: reg.pull_token, body: { phase: "x" } }),
+    store,
+    env,
+  );
+  assert.ok(store._rawEvent.has(reg.session_id), "event key exists before expiry");
+  assert.ok(store._rawHostEvent.has(reg.session_id), "hostevent key exists before expiry");
+
+  env._setNow(1_000_000 + 61_000);
+  const res = await handle(
+    req("GET", `/sessions/${reg.session_id}/status`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  assert.equal(res.status, 404, "expired session is gone");
+  assert.equal(store._rawEvent.has(reg.session_id), false, "expired event key purged");
+  assert.equal(store._rawHostEvent.has(reg.session_id), false, "expired hostevent key purged");
+  ok("expiry purges split event/host_event keys");
+}
+
+async function testDeleteSessionPurgesSplitKeys() {
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration();
+  await register(store, env, reg);
+  await handle(
+    req("POST", `/sessions/${reg.session_id}/event`, { token: reg.upload_token, body: { armed: true } }),
+    store,
+    env,
+  );
+  await handle(
+    req("POST", `/sessions/${reg.session_id}/host-event`, { token: reg.pull_token, body: { phase: "x" } }),
+    store,
+    env,
+  );
+  await handle(
+    req("DELETE", `/sessions/${reg.session_id}`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  assert.equal(store._rawEvent.has(reg.session_id), false, "DELETE purges event key");
+  assert.equal(store._rawHostEvent.has(reg.session_id), false, "DELETE purges hostevent key");
+  ok("DELETE purges split event/host_event keys");
+}
+
 async function testRegistrationGuards() {
   const store = makeMemoryStore();
   const env = fixedEnv();
@@ -677,6 +883,10 @@ const tests = [
   testRegistrationRateLimited,
   testEventRequiresContentLength,
   testTtlExpiry,
+  testEventDoesNotClobberHostEvent,
+  testLegacyMetaFallback,
+  testExpiryPurgesSplitKeys,
+  testDeleteSessionPurgesSplitKeys,
   testRegistrationGuards,
   testMethodAndPath,
   testCors,

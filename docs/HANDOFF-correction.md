@@ -350,11 +350,14 @@
   computes it from the SAME `MeasurementRamp` config `run_level_match`
   executes plus `crossover_level_run.PHONE_TRANSPORT_GRACE_S` (30 s), so the
   client budget tracks env-tuned ramp knobs instead of a flat constant.
-  Residual (flagged, not fixed): the durable fix for the revert race is
-  per-field storage in the relay worker (separate keys for `event` /
-  `host_event`) — a relay deploy, tracked separately; and Room's
-  listening-position spec still carries the flat `hard_timeout_ms` default
-  (benign under the per-phase re-arm, which Room shares).
+  The durable fix for the revert race — per-field storage in the relay worker,
+  separate R2 keys `event/<id>` / `hostevent/<id>` instead of both living
+  inside `meta/<id>` — has landed in code
+  ([`relay/src/worker.js`](../relay/src/worker.js); see "Storage layout" in
+  [`relay/README.md`](../relay/README.md)), pending the relay Worker deploy
+  (tracked separately from a JTS Pi deploy). Residual (flagged, not fixed):
+  Room's listening-position spec still carries the flat `hard_timeout_ms`
+  default (benign under the per-phase re-arm, which Room shares).
   Design of record:
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §3.1.
 - 🧪 **P4 — deterministic verify-acceptance loop (hardware-free complete,
