@@ -2693,7 +2693,15 @@ async def play_driver_capture_sweep(
                         read_main_volume_db=read_main_volume_db,
                         load_current_context=load_current_context,
                         alsa_device=COMMISSION_TONE_ALSA_DEVICE,
-                        timeout_s=12.0,
+                        # Margin over the *realized* sweep duration, not a fixed
+                        # literal -- mirrors _play_capture_sweep's
+                        # duration_s + 5.0 above. A hardcoded timeout here
+                        # (previously 12.0) is decoupled from the actual
+                        # generated stimulus length and can leave near-zero or
+                        # negative margin for aplay spawn + ALSA open + EOF
+                        # drain once the sweep kernel's phase-closure rounding
+                        # lands close to the nominal request.
+                        timeout_margin_s=5.0,
                     )
                     sweep_meta = admitted.sweep_meta.to_dict()
                     excitation = _played_excitation_ledger(
