@@ -255,6 +255,25 @@ function renderRelay(relay) {
   }
 }
 
+function relayIsActive(relay) {
+  return Boolean(relay && RELAY_IN_FLIGHT.has(relay.status));
+}
+
+// Sole authority for what the action row shows given an envelope. Every
+// call-site (render, stopRelay's finally, runAction's finally) routes
+// through this so the relay-in-flight gate can't be forgotten or duplicated
+// at one of them — the 2026-07-16 two-primary-buttons bug was exactly that:
+// runAction's finally re-rendered envelope.next_action ungated, so a second
+// primary button could appear beside the "Open phone capture" relay link.
+function renderActionRow(env) {
+  if (!env) return;
+  const relayActive = relayIsActive(env.relay);
+  renderActions(
+    relayActive ? null : env.next_action,
+    relayActive ? [] : env.alternate_actions,
+  );
+}
+
 function render(env) {
   envelope = env;
   els.verdict.textContent = env.verdict_text || '';
@@ -262,12 +281,8 @@ function render(env) {
   renderNudges(env.nudges);
   renderCandidateReview(env.candidate_review);
   renderRelay(env.relay);
-  const relayActive = env.relay && RELAY_IN_FLIGHT.has(env.relay.status);
-  renderActions(
-    relayActive ? null : env.next_action,
-    relayActive ? [] : env.alternate_actions,
-  );
-  schedulePoll(relayActive ? POLL_MS : null);
+  renderActionRow(env);
+  schedulePoll(relayIsActive(env.relay) ? POLL_MS : null);
 }
 
 async function stopRelay() {
@@ -287,13 +302,7 @@ async function stopRelay() {
   } finally {
     busy = false;
     stopInFlight = false;
-    if (envelope) {
-      const relayActive = envelope.relay && RELAY_IN_FLIGHT.has(envelope.relay.status);
-      renderActions(
-        relayActive ? null : envelope.next_action,
-        relayActive ? [] : envelope.alternate_actions,
-      );
-    }
+    renderActionRow(envelope);
   }
 }
 
@@ -311,7 +320,10 @@ async function runAction(action, button) {
     relayStarted = Boolean(response && response.relay);
     if (relayStarted) {
       renderRelay(response.relay);
-      renderActions(null);
+      // The response's relay hasn't landed in `envelope` yet (that happens
+      // inside refresh() below) — hide the action row immediately against
+      // the relay we just started rather than waiting a round trip.
+      renderActionRow({relay: response.relay, next_action: null, alternate_actions: []});
       schedulePoll(POLL_MS);
     }
     setStatus(response && response.relay ? 'Phone capture is ready.' : 'Updated.', 'ok');
@@ -348,8 +360,11 @@ async function runAction(action, button) {
     busy = false;
     // If relay registration succeeded but refresh failed, keep the old action
     // hidden. Showing it beside a live phone link would permit a second run.
-    if (!relayStarted && envelope) {
-      renderActions(envelope.next_action, envelope.alternate_actions);
+    // renderActionRow re-applies the relay gate against the latest known
+    // envelope. The prior version of this block rendered envelope.next_action
+    // directly, without that gate — the 2026-07-16 two-primary-buttons bug.
+    if (!relayStarted) {
+      renderActionRow(envelope);
     }
   }
 }

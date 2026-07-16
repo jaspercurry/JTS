@@ -1941,15 +1941,32 @@ def test_crossover_module_is_a_thin_server_envelope_renderer():
     assert "refreshQueued" in source
     assert "renderEpoch" in source
     assert "visibilitychange" in source
-    assert "schedulePoll(relayActive ? POLL_MS : null)" in source
+    assert "schedulePoll(relayIsActive(env.relay) ? POLL_MS : null)" in source
     assert "postJSON('/correction/crossover/relay-cancel', {})" in source
-    assert "RELAY_IN_FLIGHT.has(env.relay.status)" in source
-    assert "renderActions(null);" in source
     assert "env.alternate_actions" in source
     assert "baseline_candidate_fingerprint_mismatch" in source
     assert "candidateChanged" in source
     assert "A failed mutation may still have advanced durable authority" in source
     assert "await refresh();" in source
+
+    # Single render authority for the action row (2026-07-16 hardware bug: a
+    # primary action button rendered ungated in runAction()'s finally, so it
+    # could appear beside the relay's own "Open phone capture" primary link).
+    # renderActions() must have exactly one call site — inside
+    # renderActionRow(), the sole function permitted to decide what the
+    # action row shows — plus its own definition.
+    assert source.count("renderActions(") == 2
+    assert "function renderActionRow(env)" in source
+    # render(), stopRelay()'s finally, and both of runAction()'s relay
+    # touch-points (the optimistic hide, and the finally re-render) all route
+    # through the one authority: definition + 4 call sites.
+    assert source.count("renderActionRow(") == 5
+    # The relay-in-flight predicate is centralized in one helper for the
+    # action-row gate (renderRelay() keeps its own separate RELAY_IN_FLIGHT
+    # check to decide the relay panel/QR/stop-button visibility — a different
+    # DOM region, not the two-primary-buttons bug this test guards).
+    assert "function relayIsActive(relay)" in source
+    assert source.count("RELAY_IN_FLIGHT.has(") == 2
 
 
 def test_fast_terminal_stop_reenables_the_authoritative_next_action():
@@ -1982,6 +1999,22 @@ def test_hidden_tab_slows_polling_instead_of_stopping():
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout.strip().splitlines()[-1])
     assert result == {"ok": True, "passed": 6}
+
+
+def test_action_row_has_a_single_render_authority():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not on PATH")
+    harness = Path("tests/js/crossover_action_row_authority_test.mjs")
+    proc = subprocess.run(
+        [node, str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result == {"ok": True, "passed": 15}
 
 
 # --- passive-gating: Layer A hidden for a full-range passive speaker ----------
