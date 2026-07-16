@@ -116,15 +116,22 @@ function renderCandidateReview(review) {
       ]),
     ]));
   });
+  // Raw content hashes and the algorithm id/version are provenance for
+  // support/debugging, not primary copy a household member needs to judge
+  // the candidate — collapse them behind a disclosure so the plain-language
+  // region/driver rows above stay the first thing read.
   const evidence = review.evidence || {};
   const isolated = evidence.isolated_artifact || {};
   const summed = evidence.summed_artifact || {};
-  rows.push(el('p', {
-    class: 'measurement-row__meta candidate-provenance',
-    text: `Evidence ${isolated.fingerprint || 'unavailable'} (drivers), ` +
-      `${summed.fingerprint || 'unavailable'} (combined); ` +
-      `${evidence.algorithm_id || 'unknown'} v${evidence.algorithm_version || '?'}.`,
-  }));
+  rows.push(el('details', {class: 'candidate-provenance'}, [
+    el('summary', {text: 'Technical details'}),
+    el('p', {
+      class: 'measurement-row__meta',
+      text: `Evidence ${isolated.fingerprint || 'unavailable'} (drivers), ` +
+        `${summed.fingerprint || 'unavailable'} (combined); ` +
+        `${evidence.algorithm_id || 'unknown'} v${evidence.algorithm_version || '?'}.`,
+    }),
+  ]));
   els.reviewBody.replaceChildren(
     el('div', {class: 'measurement-list'}, rows),
   );

@@ -75,6 +75,16 @@
   overflow-wrap: anywhere;
 }
 
+.candidate-provenance > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.candidate-provenance > p {
+  margin: 0.4rem 0 0;
+}
+
 .capture-status[data-tone="bad"],
 #mic-support[data-tone="bad"] .form-hint {
   color: var(--status-danger);
