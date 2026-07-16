@@ -272,6 +272,7 @@ source = source.replace(
     startMicCapture,
     applyButtonPolicy,
     cancelMeasurement,
+    resetCorrection,
     autolevelAutoLockEligible,
     // P6 tuning-assistant surfaces (IIFE-local).
     renderTuning,
@@ -519,6 +520,7 @@ const {
   startMicCapture,
   applyButtonPolicy,
   cancelMeasurement,
+  resetCorrection,
   autolevelAutoLockEligible,
   renderTuning,
   renderTuningProposals,
@@ -2443,9 +2445,42 @@ await (async () => {
     "autolevel: missing measured ambient fails closed");
 })();
 
+// 38. resetCorrection is destructive (discards an applied+verified room
+//     correction) and must confirm before posting /reset, matching the
+//     jtsConfirm({danger:true}) convention used by the other destructive
+//     actions on this page.
+{
+  const reset = getOrMake("reset-correction");
+  setFetchRoute("/reset", () => ({}));
+
+  resetFetchCounts();
+  globalThis.__confirmCalls = 0;
+  globalThis.__confirmReturn = false;
+  await resetCorrection();
+  assert(globalThis.__confirmCalls === 1,
+    "resetCorrection asks for confirmation before doing anything else");
+  assert(fetchCountFor("/reset") === 0,
+    "declining the confirm never posts /reset");
+  assert(reset.disabled === false,
+    "a declined confirm leaves the button untouched (no state change occurred)");
+
+  resetFetchCounts();
+  globalThis.__confirmCalls = 0;
+  globalThis.__confirmReturn = true;
+  await resetCorrection();
+  assert(globalThis.__confirmCalls === 1,
+    "accepting the confirm proceeds through resetCorrection normally");
+  assert(fetchCountFor("/reset") === 1,
+    "confirming the reset dispatches /reset",
+    { got: fetchCountFor("/reset") });
+  assert(reset.disabled === false,
+    "the button re-enables once the confirmed reset completes");
+  globalThis.__confirmReturn = undefined;
+}
+
 resetEnvelopeBookkeeping();
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 56 }));
+console.log(JSON.stringify({ ok: true, tests: 57 }));
