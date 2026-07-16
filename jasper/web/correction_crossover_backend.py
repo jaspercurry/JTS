@@ -1721,6 +1721,18 @@ def status_payload() -> dict[str, Any]:
             )
         except (OSError, RuntimeError, TypeError, ValueError):
             payload["driver_safety_profile_evaluation"] = None
+        # The envelope's "speaker_setup" gate needs to tell "anchored
+        # mid-sequence by design" (PR #1523's crash-safe staged-config
+        # posture between capture attempts) apart from "setup genuinely
+        # unfinished". The capture-entry stash's presence IS that sequence
+        # boundary — see capture_entry_anchor's module docstring and
+        # crossover_envelope._setup_ready. pending_entry() is fail-soft
+        # (returns None on an unreadable/malformed stash), so a read
+        # failure here degrades to the pre-#1523 strict gate rather than a
+        # false bypass.
+        from jasper.active_speaker.capture_entry_anchor import pending_entry
+
+        payload["capture_entry_pending"] = pending_entry() is not None
     # Level evidence is tied to the immutable profile that is actually loaded,
     # not the mutable next-design candidate. Capturing the first driver updates
     # candidate evidence and must not invalidate the safe active graph or its

@@ -2022,6 +2022,26 @@ def test_status_active_flag_false_for_passive_speaker(monkeypatch):
     assert payload["active"] is False
 
 
+def test_status_payload_reports_capture_entry_pending(monkeypatch, tmp_path):
+    # Wires jasper.active_speaker.capture_entry_anchor.pending_entry() into
+    # the envelope's inputs (see crossover_envelope._setup_ready) — the
+    # capture-entry stash's own read fixture is autouse-isolated per test
+    # (tests/conftest.py: _isolate_capture_entry_anchor).
+    from jasper.active_speaker import capture_entry_anchor
+
+    _status_with_targets(
+        monkeypatch,
+        drivers=[{"target_id": "mono:woofer"}],
+        summed=[{"speaker_group_id": "mono"}],
+    )
+
+    assert backend.status_payload()["capture_entry_pending"] is False
+
+    capture_entry_anchor.record_entry(str(tmp_path / "production.yml"))
+
+    assert backend.status_payload()["capture_entry_pending"] is True
+
+
 def test_new_level_run_drops_prior_in_memory_comparison_context(monkeypatch):
     lease = backend.CrossoverLevelLease()
     invalidations = []
@@ -2835,6 +2855,109 @@ def test_crossover_envelope_authorized_driver_safety_profile_is_unchanged():
     authorized_env = crossover_envelope.build_crossover_envelope(authorized_status)
 
     assert authorized_env == baseline_env
+
+
+def test_crossover_envelope_mid_sequence_anchor_is_not_unfinished_setup():
+    # THE REPRO — JTS3 punch #24. PR #1523 intentionally keeps the persisted
+    # CamillaDSP path anchored on the all-muted staged config *between*
+    # capture attempts within one automatic measurement sequence (crash-safe
+    # posture). read_active_speaker_setup_status() correctly reports
+    # setup blocked/active_speaker_commissioning_config_loaded while
+    # anchored -- but composed literally with #1511's gate, that forced
+    # screen=speaker_setup permanently after the very first driver lock,
+    # with no flow-owned recovery (only exit invalidated the locks already
+    # captured). Mirrors test_crossover_envelope_walks_level_drivers_apply_room's
+    # "after woofer lock 1" step, but with the mid-sequence-anchored setup
+    # status instead of "ready".
+    #
+    # Confirmed FAILING before the fix: without the capture_entry_pending
+    # carve-out in crossover_envelope._setup_ready, this instead asserts
+    # env["screen"] == "speaker_setup" (verified by running this test
+    # against the pre-fix _setup_ready).
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["setup"]["status"] = "blocked"
+    status["setup"]["reason"] = "active_speaker_commissioning_config_loaded"
+    status["capture_entry_pending"] = True
+    _locked_level(status)
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "driver"
+    assert env["next_action"]["body"] == {
+        "kind": "driver",
+        "speaker_group_id": "mono",
+        "role": "woofer",
+    }
+    step_by_id = {step["id"]: step for step in env["steps"]}
+    assert step_by_id["speaker_setup"]["status"] == "done"
+
+
+def test_crossover_envelope_commissioning_config_loaded_without_stash_still_gates():
+    # Same blocked reason as the repro, but with no pending capture-entry
+    # stash (a speaker that never de-anchored, or a caller/test that
+    # predates this key) -- must gate exactly as before the fix.
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["setup"]["status"] = "blocked"
+    status["setup"]["reason"] = "active_speaker_commissioning_config_loaded"
+    _locked_level(status)
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "speaker_setup"
+    assert env["next_action"] == {
+        "id": "speaker_setup",
+        "label": "Finish speaker setup",
+        "href": "/sound/",
+    }
+
+
+def test_crossover_envelope_different_blocked_reason_with_stash_still_gates():
+    # The carve-out is scoped to the exact
+    # active_speaker_commissioning_config_loaded reason. Any other blocked
+    # reason gates normally even with a capture-entry stash pending -- a
+    # pending stash from a prior sequence must never paper over a
+    # genuinely-unfinished setup.
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["setup"]["status"] = "blocked"
+    status["setup"]["reason"] = "active_baseline_profile_unreadable"
+    status["capture_entry_pending"] = True
+    _locked_level(status)
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "speaker_setup"
+    assert env["next_action"]["id"] == "speaker_setup"
+
+
+def test_crossover_envelope_mid_sequence_anchor_still_gates_on_incomplete_driver_safety():
+    # The mid-sequence-anchor carve-out only bypasses the setup-status
+    # check; #1511's driver-safety-profile gate is untouched (per the task
+    # scope -- do not touch it) and still wins even while a capture-entry
+    # stash is pending, matching
+    # test_crossover_envelope_gates_on_incomplete_driver_safety_profile.
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["setup"]["status"] = "blocked"
+    status["setup"]["reason"] = "active_speaker_commissioning_config_loaded"
+    status["capture_entry_pending"] = True
+    status["driver_safety_profile_evaluation"] = _incomplete_driver_safety_evaluation()
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "speaker_setup"
+    assert env["next_action"] == {
+        "id": "speaker_setup",
+        "label": "Finish speaker setup",
+        "href": "/sound/",
+    }
+    assert env["alternate_actions"] == []
 
 
 def test_crossover_apply_requires_explicit_owner(monkeypatch):
