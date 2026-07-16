@@ -92,15 +92,15 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260715.6",
+        "capture_page_build": "20260716.1",
     }
-    assert "main.js?v=20260715-4" in index_html
+    assert "main.js?v=20260716-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
     assert 'from "./constraints.js?v=20260711-4"' in main_js
     assert 'from "./relay-client.js?v=20260715-3"' in main_js
-    assert 'from "./level-events.js?v=20260715-5"' in main_js
+    assert 'from "./level-events.js?v=20260716-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
 
 
@@ -172,7 +172,7 @@ def test_capture_page_level_ramp_uses_meter_protocol_without_wav_upload():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     assert (
-        'import { runLevelRampProtocol } from "./level-events.js?v=20260715-5"'
+        'import { runLevelRampProtocol } from "./level-events.js?v=20260716-1"'
         in main_js
     )
     assert 'spec.kind === "level_ramp"' in main_js
@@ -269,9 +269,51 @@ def test_capture_page_rejects_oversize_calibration_and_unproven_agc():
     assert "file.size" in main_js
     assert "utf8Size(content)" in main_js
     assert "smaller than 256 KiB" in main_js
-    assert "capture.settings.autoGainControl !== false" in main_js
     assert 'reason: "agc_not_proven_off"' in main_js
     assert "JTS will not play the level tone" in main_js
+
+
+def test_capture_page_level_ramp_agc_gate_only_refuses_explicit_on():
+    """iOS/WebKit never reports autoGainControl (getSettings() omits the key),
+    so gating on `!== false` refused every iPhone. Only an explicit `true`
+    (the browser affirmatively reports AGC on) refuses now; undefined/null
+    proceeds as unattested and is empirically verified server-side from the
+    ramp's own staircase (jasper/audio_measurement/ramp.py) instead."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    start = main_js.index("async function onLevelRampStart")
+    end = main_js.index("async function waitForSweepComplete", start)
+    level_path = main_js[start:end]
+
+    assert "capture.settings.autoGainControl !== false" not in level_path
+    assert "const realizedAgc = capture.settings.autoGainControl;" in level_path
+    assert "if (realizedAgc === true) {" in level_path
+    assert "const agcAttested = realizedAgc === false;" in level_path
+    assert "agcFrozen: agcAttested," in level_path
+    assert "agcUnattested: !agcAttested," in level_path
+    # The explicit-on refusal copy is unchanged — only the gate condition
+    # narrowed from "not proven false" to "proven true".
+    assert (
+        "This browser cannot prove automatic microphone gain is off, so JTS "
+        "will not play the level tone." in level_path
+    )
+
+
+def test_capture_page_level_ramp_shows_friendly_agc_suspected_copy():
+    """The Pi's empirical slope-verification failure (agc_suspected) gets a
+    phone-facing explanation instead of the raw server error code."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    start = main_js.index("function renderLevelRampComplete")
+    end = main_js.index("async function enumerateAudioInputs", start)
+    ramp_complete = main_js[start:end]
+
+    assert 'terminalError === "agc_suspected"' in ramp_complete
+    assert (
+        "Your phone is adjusting microphone levels automatically, which "
+        "prevents accurate measurement. Try a different phone or a USB "
+        "measurement microphone." in ramp_complete
+    )
 
 
 def test_capture_page_infers_calibration_from_pi_registry_without_serial():

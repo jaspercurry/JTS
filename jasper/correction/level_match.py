@@ -14,8 +14,9 @@ that the kernel deliberately does not know about, per
     of the relay ``status`` event. The relay ``event`` slot is last-write-wins
     and the phone streams into it continuously, so ramp control is robust by
     construction, not by one-shot posts: the phone's every level batch carries
-    its own ``armed`` / ``aborted`` / ``agc_frozen`` state as a SUPERSET
-    envelope (a clobbered one-shot host event never strands the flow), Pi-side
+    its own ``armed`` / ``aborted`` / ``agc_frozen`` / ``agc_unattested`` state
+    as a SUPERSET envelope (a clobbered one-shot host event never strands the
+    flow), Pi-side
     abort acks re-post each tick while the ramp exits, and the terminal ramp
     state is re-posted until the relay's ``/status`` echoes it back (the Pi's
     pull-token status includes ``host_event``, so the read-modify-write revert
@@ -194,7 +195,17 @@ class MeasurementLevelLock:
 
     @classmethod
     def from_ramp(cls, geometry: str, data: RampData) -> MeasurementLevelLock:
-        """Build a lock from a terminal ``LOCKED`` ramp result."""
+        """Build a lock from a terminal ``LOCKED`` ramp result.
+
+        ``agc_frozen`` here is sourced from ``data.agc_trusted``, not the raw
+        wire-level ``data.agc_frozen`` — the two agree for an ordinary
+        browser-attested run, but an unattested (iOS/WebKit) run that passed
+        the empirical slope check has ``agc_frozen=False`` at the wire level
+        (by design, for mixed-version safety) while ``agc_trusted`` is True.
+        Sourcing from ``agc_trusted`` is what makes a verified-unattested lock
+        behave identically to an attested one for every downstream consumer of
+        this field (the drift check below, the bounded-low-lock policy).
+        """
         volume = (
             data.locked_main_volume_db
             if data.locked_main_volume_db is not None
@@ -210,7 +221,7 @@ class MeasurementLevelLock:
             settled_snr_db=data.settled_snr_db,
             window_shortfall_db=data.window_shortfall_db,
             settled_spread_db=data.settled_spread_db,
-            agc_frozen=data.agc_frozen,
+            agc_frozen=data.agc_trusted,
         )
 
 
@@ -459,10 +470,11 @@ def parse_level_batch(
             )
         return []
     out: list[LevelSample] = []
-    # The phone's per-event agc_frozen/abort envelope is a superset that survives
-    # a lost host-event round trip; apply the batch-level agc_frozen to any sample
-    # that omitted it.
+    # The phone's per-event agc_frozen/agc_unattested/abort envelope is a
+    # superset that survives a lost host-event round trip; apply the
+    # batch-level flags to any sample that omitted them.
     batch_agc = batch.get("agc_frozen")
+    batch_unattested = batch.get("agc_unattested")
     for raw in raw_samples:
         if not isinstance(raw, dict):
             continue
@@ -470,14 +482,21 @@ def parse_level_batch(
             sample = LevelSample.from_dict(raw)
         except (KeyError, TypeError, ValueError):
             continue
-        if batch_agc is False and "agc_frozen" not in raw:
+        agc_frozen = False if (batch_agc is False and "agc_frozen" not in raw) else sample.agc_frozen
+        agc_unattested = (
+            True
+            if (batch_unattested is True and "agc_unattested" not in raw)
+            else sample.agc_unattested
+        )
+        if agc_frozen != sample.agc_frozen or agc_unattested != sample.agc_unattested:
             sample = LevelSample(
                 seq=sample.seq,
                 t_client_ms=sample.t_client_ms,
                 rms_dbfs=sample.rms_dbfs,
                 peak_dbfs=sample.peak_dbfs,
                 clip=sample.clip,
-                agc_frozen=False,
+                agc_frozen=agc_frozen,
+                agc_unattested=agc_unattested,
             )
         out.append(sample)
     return out

@@ -213,6 +213,47 @@ function setupBinding(id = "flow-123456789012") {
   ok();
 }
 
+// --- agcUnattested rides alongside agcFrozen:false, never agcFrozen:true ----
+// (an undefined-AGC phone — every WebKit build — proceeds unattested instead
+// of refusing; the server empirically verifies chain linearity)
+
+{
+  const clock = makeClock();
+  const posts = [];
+  const streamer = new LevelStreamer({
+    now: clock.now,
+    postEvent: async (e) => posts.push(e),
+    blockMs: 100,
+    postIntervalMs: 100,
+    agcFrozen: false,
+    agcUnattested: true,
+  });
+  const blockSamples = Math.round((100 / 1000) * 48000);
+  await streamer.addFrame(new Float32Array(blockSamples).fill(0.05));
+  clock.advance(200);
+  await streamer.addFrame(new Float32Array(blockSamples).fill(0.05));
+  assert.ok(posts.length >= 1);
+  const b = posts[posts.length - 1].level_batch;
+  assert.equal(b.agc_frozen, false);
+  assert.equal(b.agc_unattested, true);
+  for (const s of b.samples) {
+    assert.equal(s.agc_frozen, false);
+    assert.equal(s.agc_unattested, true);
+  }
+  ok();
+
+  // The default (agcUnattested omitted) is false.
+  const defaultPosts = [];
+  const defaultStreamer = new LevelStreamer({
+    postEvent: async (e) => defaultPosts.push(e),
+    blockMs: 100,
+    postIntervalMs: 100,
+  });
+  await defaultStreamer.addFrame(new Float32Array(4800).fill(0.05));
+  assert.equal(defaultPosts[defaultPosts.length - 1].level_batch.agc_unattested, false);
+  ok();
+}
+
 // --- run token rides every batch ---------------------------------------------
 
 {
@@ -457,6 +498,53 @@ function setupBinding(id = "flow-123456789012") {
     post.level_batch.context.device.device_id === "external-1"
   )));
   assert.deepEqual(progress, ["climbing", "locked"]);
+  ok();
+}
+
+// --- runLevelRampProtocol threads agcUnattested to its internal streamer ----
+
+{
+  const posts = [];
+  let statusReads = 0;
+  const client = {
+    async postEvent(event) {
+      posts.push(JSON.parse(JSON.stringify(event)));
+    },
+    async fetchPhoneStatus() {
+      statusReads += 1;
+      return {
+        host_event: {
+          ramp: { state: statusReads < 2 ? "climbing" : "locked", run_token: "run-unattested" },
+        },
+      };
+    },
+  };
+  const recorder = {
+    start() {},
+    async stop() {
+      return new Float32Array(4800).fill(0.1);
+    },
+  };
+  const ramp = await runLevelRampProtocol({
+    client,
+    recorder,
+    spec: {
+      kind: "level_ramp",
+      run_token: "run-unattested",
+      duration_ms: 5000,
+      sample_rate_hz: 48000,
+    },
+    blockMs: 100,
+    delay: async () => {},
+    agcFrozen: false,
+    agcUnattested: true,
+  });
+  assert.deepEqual(ramp, { state: "locked", terminal: true });
+  assert.ok(posts.length >= 1);
+  for (const post of posts) {
+    assert.equal(post.level_batch.agc_frozen, false);
+    assert.equal(post.level_batch.agc_unattested, true);
+  }
   ok();
 }
 

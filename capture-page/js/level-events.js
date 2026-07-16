@@ -103,7 +103,18 @@ export class LevelStreamer {
   //   postIntervalMs    — min gap between relay posts (default 500 → <=2 Hz).
   //   windowMs          — rolling window kept in each batch (default 3000).
   //   sampleRate        — mic sample rate (default 48000).
-  //   agcFrozen         — realized autoGainControl:false (false = iOS ignored it).
+  //   agcFrozen         — realized autoGainControl:false (false = the browser
+  //                       either reported AGC on, or never reports the
+  //                       setting at all — see agcUnattested).
+  //   agcUnattested     — true when the browser could not attest autoGainControl
+  //                       either way (undefined/null — every WebKit build
+  //                       today). Rides alongside agcFrozen:false (never
+  //                       agcFrozen:true) so an older Pi that does not know
+  //                       this field still falls back to its pre-existing
+  //                       "never trust" handling instead of silently trusting
+  //                       an unproven chain. A new-Pi server verifies chain
+  //                       linearity from the ramp's own staircase instead of
+  //                       requiring the browser flag — see ramp.py.
   //   context           — optional compact JSON metadata repeated in every
   //                       batch (validated setup identity + realized device).
   //                       Raw serials/calibration text are forbidden here.
@@ -119,6 +130,7 @@ export class LevelStreamer {
     this._windowMs = opts.windowMs || 3000;
     this._sampleRate = opts.sampleRate || 48000;
     this._agcFrozen = opts.agcFrozen !== false;
+    this._agcUnattested = Boolean(opts.agcUnattested);
     this._context = compactLevelContext(opts.context);
     this._onLevel = typeof opts.onLevel === "function" ? opts.onLevel : () => {};
 
@@ -170,6 +182,7 @@ export class LevelStreamer {
         peak_dbfs: round1(level.peak_dbfs),
         clip: level.clip,
         agc_frozen: this._agcFrozen,
+        agc_unattested: this._agcUnattested,
       });
       this._trimWindow();
     }
@@ -209,6 +222,7 @@ export class LevelStreamer {
       run_token: this._runToken,
       samples: this._window.slice(),
       agc_frozen: this._agcFrozen,
+      agc_unattested: this._agcUnattested,
       armed: this._armed,
       aborted: this._aborted,
       abort_reason: this._abortReason,
@@ -303,6 +317,7 @@ export function rampEventFromStatus(status, runToken = "") {
 //   recorder           — createMonoRecorder() result.
 //   spec               — kind=level_ramp capture spec.
 //   agcFrozen          — realized autoGainControl:false.
+//   agcUnattested      — true when the browser could not attest AGC either way.
 //   context            — selected setup + realized capture device metadata.
 //   onLevel(level)     — optional display callback.
 //   onProgress(event)  — optional Pi progress callback.
@@ -347,6 +362,7 @@ export async function runLevelRampProtocol(opts = {}) {
     postIntervalMs: Math.max(250, Number(spec.progress_poll_ms) || 500),
     sampleRate: Number(spec.sample_rate_hz) || 48000,
     agcFrozen: opts.agcFrozen !== false,
+    agcUnattested: Boolean(opts.agcUnattested),
     context: opts.context,
     onLevel: opts.onLevel,
     now,

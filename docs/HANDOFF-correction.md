@@ -307,8 +307,32 @@
   this is per-run — an overlapping run is refused, never a stomped
   slot) and exposes `lock_level_match` / `cancel_level_match`, so a
   manual controller seams remain available to trusted adapters, while the
-  shipped phone flow refuses *before playing a tone* when the browser cannot
-  prove AGC is disabled. The relay validates the selected mic/calibration once,
+  shipped phone flow refuses *before playing a tone* only when the browser
+  AFFIRMATIVELY reports AGC on (`autoGainControl === true`). A browser that
+  never reports the setting either way (`undefined`/`null` — every WebKit/iOS
+  build; `getSettings()` omits the key) is no longer refused: it proceeds as
+  *unattested*, posting `agc_frozen=false` + `agc_unattested=true` on every
+  level batch, and `RampController` verifies chain linearity **empirically**
+  from the ramp's own quiet-start staircase instead of trusting a browser flag
+  iOS never supplies — regress reported `rms_dbfs` against the commanded
+  `main_volume_db` (both dB) once evidence spans `agc_slope_min_steps`
+  (default 3) distinct commanded levels; a slope `>= agc_slope_threshold`
+  (default 0.7) verifies the chain (`RampData.agc_verified = True`, lock
+  semantics identical to attested — see `RampData.agc_trusted`); a lower slope
+  aborts immediately with a NEW terminal code, `error="agc_suspected"`, before
+  the ramp ever nears the target window; too few distinct steps by lock time
+  (INDETERMINATE, e.g. a driver capped early) also fails closed to that same
+  code for an ordinary window lock, or to the pre-existing
+  `bounded_low_evidence_insufficient` `MAXED_OUT` for the degraded cap policy
+  — never a silently-trusted lock either way. `agc_unattested=true` is encoded
+  ALONGSIDE `agc_frozen=false` (never `agc_frozen=true`) specifically so an
+  older Pi that has not learned the new field still falls back to its
+  pre-existing "never trust an AGC-compressed sample" behavior instead of
+  silently trusting an unproven chain — the capture page and the Pi deploy
+  independently, and this is what keeps a new-page/old-server window safe (an
+  old-page/new-server window is trivially safe too, since the old page still
+  refuses undefined-AGC client-side before ever posting a batch). The relay
+  validates the selected mic/calibration once,
   freezes a compact setup binding, and waits for a token-scoped rolling ambient
   median (ten finite 200 ms samples / two seconds) before the tone starts. A
   failed ramp exposes received/finite/trusted/drop counts plus maximum observed
@@ -2749,7 +2773,15 @@ Internal:
 
 ---
 
-Last verified: 2026-07-15 (Room upload acknowledgement, envelope-only result
+Last verified: 2026-07-16 (empirical AGC slope verification for unattested
+level-ramp chains — undefined `autoGainControl` on iOS/WebKit no longer
+refuses client-side; `RampController` regresses the staircase's reported vs
+commanded dB and locks only once verified, aborting `agc_suspected` on a
+failed or indeterminate verdict — checked against `jasper.audio_measurement
+.ramp.RampController`, `jasper.correction.level_match.MeasurementLevelLock
+.from_ramp`, `capture-page/js/{main,level-events}.js`, and hardware-free
+tests; no hardware behavior revalidated). Prior 2026-07-15 (Room upload
+acknowledgement, envelope-only result
 presentation, and single-pass server-smoothed chart rendering checked against
 `correction_setup._handle_upload_capture`, `jasper.correction.envelope`,
 `deploy/assets/correction/js/main.js`, and focused contract tests; proposal /
