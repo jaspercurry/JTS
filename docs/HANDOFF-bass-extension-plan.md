@@ -1064,7 +1064,7 @@ wave keeps out of the god-files. Every implementation PR runs
 
 | Wave | Prompt | Status |
 |---|---|---|
-| 0 | [wave-0](bass-extension-waves/wave-0-hardware-spikes.md) | not started |
+| 0 | [wave-0](bass-extension-waves/wave-0-hardware-spikes.md) | spikes 1–3 done 2026-07-16 — **R1 confirmed** ([memo](research/2026-07-16-bass-extension-spikes/README.md)); spike 4 + ears-on listen with operator |
 | 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | not started |
 | 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | not started |
 | 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | not started |
