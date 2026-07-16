@@ -459,7 +459,7 @@ def test_driver_attempt_persists_unique_generation_playback_and_wav(
             read_main_volume_db=read_volume,
             load_current_context=current_context,
             alsa_device="correction_substream",
-            timeout_s=9.0,
+            timeout_margin_s=9.0,
         )
 
     first = asyncio.run(run_once())
@@ -491,6 +491,97 @@ def test_driver_attempt_persists_unique_generation_playback_and_wav(
             speaker_group_id="mono",
             role="woofer",
         )
+
+
+def test_driver_capture_playback_timeout_derives_from_sweep_duration(
+    tmp_path, monkeypatch
+):
+    """The aplay deadman must scale with the realized stimulus duration.
+
+    Hardware evidence (JTS3 punch #27): a subwoofer/woofer sweep measured
+    574,520 frames @ 48 kHz = 11.969 s while the caller passed a hardcoded
+    ``timeout_s=12.0`` -- ~31 ms (or negative) margin for aplay spawn + ALSA
+    open + EOF drain, so playback always timed out. Reproduced in-repo: the
+    same duration_approx_s=12.0 synchronized-sweep search
+    (``jasper.audio_measurement.sweep.synchronized_sweep_metadata``) lands at
+    ~11.97 s for a low band (f1=20, f2=200) -- the same shape, because the
+    kernel's phase-closure rounding can land on either side of the request.
+
+    A budget derived from the artifact's own ``SweepMeta.duration_s`` (like
+    the sibling call sites at ``_play_capture_sweep``/``play_sweep``) cannot
+    go negative-margin this way; a hardcoded literal decoupled from the
+    generated duration always can.
+    """
+    topology, profile, _targets, comparison, applied, raw, load_payload = _context(
+        tmp_path, monkeypatch
+    )
+    seen_timeout: dict[str, float] = {}
+
+    async def fake_play(
+        stimulus_bundle_dir,
+        *,
+        stimulus,
+        authority,
+        generation,
+        issue_current_inputs,
+        alsa_device,
+        timeout_s,
+    ):
+        seen_timeout["value"] = timeout_s
+        current = await issue_current_inputs()
+        result = readmit_and_persist_playback_admission(
+            authority,
+            generation,
+            current_limits=current.limits,
+            current_protection_evidence=current.protection_evidence,
+        )
+        return AdmittedPlaybackResult(
+            playback=PlaybackResult(
+                wav_path=Path(stimulus_bundle_dir, stimulus.artifact.relative_path),
+                alsa_device=alsa_device,
+                returncode=0,
+            ),
+            admission=result.artifact,
+        )
+
+    import jasper.active_speaker.commissioning_admission as admission_module
+
+    monkeypatch.setattr(admission_module, "play_admitted_wav", fake_play)
+
+    async def read_running():
+        return raw
+
+    async def read_volume():
+        return -4.0
+
+    def current_context():
+        return topology, profile, comparison, applied
+
+    admitted = asyncio.run(
+        play_admitted_driver_capture(
+            topology=topology,
+            safety_profile=profile,
+            comparison_set=comparison,
+            applied_profile=applied,
+            speaker_group_id="mono",
+            role="woofer",
+            commissioning_gain_db=-50.0,
+            expected_main_volume_db=-4.0,
+            load_payload=load_payload,
+            read_running_config=read_running,
+            read_main_volume_db=read_volume,
+            load_current_context=current_context,
+            alsa_device="correction_substream",
+            timeout_margin_s=5.0,
+        )
+    )
+
+    assert seen_timeout["value"] == pytest.approx(
+        admitted.sweep_meta.duration_s + 5.0
+    )
+    # The bug this guards against: a hardcoded literal (12.0 in production)
+    # decoupled from the actual generated duration.
+    assert seen_timeout["value"] != 12.0
 
 
 def test_driver_cooldown_cancellation_never_reaches_playback(tmp_path, monkeypatch):
@@ -540,7 +631,7 @@ def test_driver_cooldown_cancellation_never_reaches_playback(tmp_path, monkeypat
                     applied,
                 ),
                 alsa_device="correction_substream",
-                timeout_s=9.0,
+                timeout_margin_s=9.0,
             )
         )
     assert playback_called is False
@@ -639,7 +730,7 @@ def test_post_playback_volume_drift_consumes_attempt_without_capture_handoff(
                     applied,
                 ),
                 alsa_device="correction_substream",
-                timeout_s=9.0,
+                timeout_margin_s=9.0,
             )
         )
     assert caught.value.audio_may_have_started is True
@@ -704,7 +795,7 @@ def test_playback_readmission_refuses_context_drift(tmp_path, monkeypatch):
                 read_main_volume_db=read_volume,
                 load_current_context=lambda: (topology, profile, stale, applied),
                 alsa_device="correction_substream",
-                timeout_s=9.0,
+                timeout_margin_s=9.0,
             )
         )
 
@@ -760,7 +851,7 @@ def test_stale_protection_report_names_failed_checks_and_persists_report(
                         applied,
                     ),
                     alsa_device="correction_substream",
-                    timeout_s=9.0,
+                    timeout_margin_s=9.0,
                 )
             )
 
@@ -846,7 +937,7 @@ def test_successful_admission_does_not_log_or_persist_protection_report(
                 read_main_volume_db=read_volume,
                 load_current_context=lambda: (topology, profile, comparison, applied),
                 alsa_device="correction_substream",
-                timeout_s=9.0,
+                timeout_margin_s=9.0,
             )
         )
 

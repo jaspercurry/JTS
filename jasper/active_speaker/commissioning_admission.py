@@ -896,13 +896,22 @@ async def play_admitted_driver_capture(
         ],
     ],
     alsa_device: str,
-    timeout_s: float,
+    timeout_margin_s: float,
 ) -> ActiveDriverCapturePlayback:
     """Persist, independently re-admit, and play one exact driver WAV.
 
     The caller must hold the shared DSP writer lock for this entire await.
     Every call mints a new server-side identity; retries cannot reuse a consumed
     generation or playback admission.
+
+    ``timeout_margin_s`` is added to the *realized* sweep duration
+    (``meta.duration_s``, already phase-rounded by
+    ``synchronized_sweep_metadata``) to bound the aplay deadman -- never a
+    fixed literal. A duration-decoupled literal can leave near-zero (or
+    negative) margin for process spawn + ALSA open + EOF drain once the
+    kernel's phase-closure rounding lands close to the nominal request, which
+    is exactly what made this sweep time out on every hardware run before
+    the derivation moved here.
     """
 
     initial_raw = await read_running_config()
@@ -1030,7 +1039,7 @@ async def play_admitted_driver_capture(
         generation=generation,
         issue_current_inputs=issue_current_inputs,
         alsa_device=alsa_device,
-        timeout_s=timeout_s,
+        timeout_s=meta.duration_s + timeout_margin_s,
     )
     try:
         post_playback_volume = await read_main_volume_db()

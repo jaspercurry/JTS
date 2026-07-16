@@ -250,7 +250,7 @@ def test_production_driver_captures_build_exact_complete_isolated_evidence(
                 applied,
             ),
             alsa_device="correction_substream",
-            timeout_s=9.0,
+            timeout_margin_s=9.0,
         )
         effective = playback.handoff.admission["request"]["effective_peak_dbfs"]
         excitation = {
