@@ -787,6 +787,52 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
         )
 
 
+def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:
+    """JTS3 hardware punch #14: a B&C DE250-8 compression tweeter with a real
+    ~1.8-2.5 kHz crossover plan. Before driver_style is declared the tweeter
+    reads as unknown-style, the conservative 5000 Hz floor rejects the plan
+    outright, and no coherent crossover exists against a woofer/tweeter pair
+    that must cross in that range -- a permanent deadlock on real hardware.
+    Declaring compression_driver lowers the floor to 2000 Hz, which the plan
+    clears.
+    """
+    jts3_manual = _manual_settings()
+    tweeter = jts3_manual["drivers"][1]
+    tweeter["hard_excitation_band_hz"] = [1500.0, 22000.0]
+    tweeter["measurement_band_hz"] = [1700.0, 20000.0]
+    tweeter["crossover_search_band_hz"] = [1800.0, 2500.0]
+    tweeter["required_protection_filters"][0]["cutoff_hz"] = 2000.0
+
+    undeclared = mono_output_topology(card_id=None)
+    with pytest.raises(
+        DriverSafetyProfileError,
+        match="highpass_below_code_policy",
+    ):
+        build_driver_safety_profile(
+            undeclared,
+            manual_settings=jts3_manual,
+            driver_research=None,
+            confirm=True,
+            confirmed_at="2026-07-16T12:00:00Z",
+        )
+
+    declared = _topology_with_tweeter_style("compression_driver")
+    profile = build_driver_safety_profile(
+        declared,
+        manual_settings=jts3_manual,
+        driver_research=None,
+        confirm=True,
+        confirmed_at="2026-07-16T12:00:00Z",
+    )
+    assert profile["status"] == "confirmed"
+    tweeter_target = next(t for t in profile["targets"] if t["role"] == "tweeter")
+    assert tweeter_target["driver_style"] == "compression_driver"
+    assert tweeter_target["code_owned_policy"]["min_highpass_hz"] == 2000.0
+    evaluation = evaluate_driver_safety_profile(profile, declared)
+    assert evaluation.status == "confirmed"
+    assert evaluation.confirmed_and_current is True
+
+
 def test_driver_style_stales_only_safety_binding_not_measurement_identity() -> None:
     compression = _topology_with_tweeter_style("compression_driver")
     ribbon = _topology_with_tweeter_style("ribbon_tweeter")

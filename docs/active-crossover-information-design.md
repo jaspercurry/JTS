@@ -1099,6 +1099,23 @@ older code-owned `driver_protection_profile` tone/ramp envelope and from
 `/sound/active-speaker/channel-protection`'s physical/software-guard fact. Later
 playback must satisfy all applicable layers; none may be relabeled as another.
 
+A tweeter's declared `driver_style` (dome, AMT, planar, ribbon, compression
+driver, supertweeter) sets `driver_protection_profile`'s minimum protective
+high-pass floor — 2000 Hz for a compression driver versus the 5000 Hz
+conservative default for an undeclared/unrecognised style. `driver_style` is
+topology-owned, not part of the research/manual-settings schema: it lives on
+`SpeakerChannel` next to `physical_output_index`, set on the layout step's DAC
+output card (tweeter roles only) and saved through the existing
+`/output-topology` writer, the same one that owns every other topology field.
+`build_driver_safety_profile` reads it straight off the topology channel, so
+it folds into the safety profile's confirmation fingerprint automatically —
+changing it invalidates a prior `operator_reviewed_visible_values`
+confirmation exactly like any other topology/output change, and the declared
+style (or its absence) is rendered on the driver research/review card before
+that confirmation. An undeclared style is fail-safe: it behaves identically
+to today's pre-existing conservative floor, never a stricter or looser one by
+accident.
+
 The protected starting graph, excitation plans, captures, candidates, apply
 records, verification records, and downstream eligibility receipt all reference
 that fingerprint. Research may recommend a conservative starting crossover,

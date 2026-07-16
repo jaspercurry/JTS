@@ -950,7 +950,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           output_index: channel.physical_output_index,
           output_label: channel.human_output_label ||
             (channel.physical_output_index == null ? 'Unassigned output' :
-              physicalOutputLabel(topology, channel.physical_output_index))
+              physicalOutputLabel(topology, channel.physical_output_index)),
+          driver_style: channel.driver_style || null
         });
       });
     });
@@ -1044,6 +1045,48 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       tweeter: 'Tweeter / high-frequency driver',
       subwoofer: 'Subwoofer'
     }[role] || humanRole(role);
+  }
+  // Operator-facing catalog of tweeter driver styles. Display-only: the
+  // authoritative style -> protective high-pass floor table lives in
+  // jasper/active_speaker/driver_protection.py (_STYLE_HIGH_PASS_HZ). Keep the
+  // floor_hz values here in sync with that table if it changes.
+  // "horn_compression_driver" is a valid style value (same 2000 Hz floor as
+  // compression_driver) but is not offered as a separate option here — one
+  // driver type should not appear twice in the picker.
+  function hfDriverStyles() {
+    return [
+      {value: 'dome_tweeter', label: 'Dome tweeter', floor_hz: 3000},
+      {value: 'amt_tweeter', label: 'AMT tweeter (Air Motion Transformer)', floor_hz: 3000},
+      {value: 'planar_tweeter', label: 'Planar-magnetic tweeter', floor_hz: 3500},
+      {value: 'ribbon_tweeter', label: 'Ribbon tweeter', floor_hz: 5000},
+      {value: 'compression_driver', label: 'Compression driver (horn-loaded)', floor_hz: 2000},
+      {value: 'supertweeter', label: 'Supertweeter', floor_hz: 8000}
+    ];
+  }
+  function hfDriverStyleEntry(style) {
+    return hfDriverStyles().filter(function(item) { return item.value === style; })[0] || null;
+  }
+  function driverStyleLabel(style) {
+    var entry = hfDriverStyleEntry(style);
+    return entry ? entry.label : String(style || '').replace(/_/g, ' ');
+  }
+  // One-sentence restatement of the confirmed tweeter style(s) + floor for
+  // the safety-confirmation toast. Floor is only stated for styles the local
+  // table knows; anything else stays label-only (server is the authority).
+  function tweeterStyleConfirmNote() {
+    var notes = [];
+    var seen = {};
+    driverResearchTargets(currentOutputTopology()).forEach(function(target) {
+      if (target.role !== 'tweeter') return;
+      var entry = hfDriverStyleEntry(target.driver_style);
+      var note = entry
+        ? entry.label + ', ' + entry.floor_hz + ' Hz protective floor'
+        : (target.driver_style
+          ? driverStyleLabel(target.driver_style)
+          : 'style not set, conservative 5000 Hz protective floor');
+      if (!seen[note]) { seen[note] = true; notes.push(note); }
+    });
+    return notes.length ? ' Tweeter: ' + notes.join('; ') + '.' : '';
   }
   function activeCrossoverPairs(topology) {
     var pairs = [];
@@ -2431,6 +2474,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<input type="text" data-driver-target="' + escapeHtml(targetId) + '" value="' +
             escapeHtml(targetModel(target, topology)) + '" placeholder="Manufacturer and model">' +
         '</label>' +
+        (role === 'tweeter' ? '<p class="setting-row__hint">' + (
+          target.driver_style
+            // A style the picker doesn't know (set via API or a newer build)
+            // renders label-only: never show a guessed floor — the server's
+            // safety evaluation is the floor authority.
+            ? 'Tweeter style: ' + escapeHtml(driverStyleLabel(target.driver_style)) +
+              (hfDriverStyleEntry(target.driver_style)
+                ? ' — protective high-pass floor ' +
+                  escapeHtml(String(hfDriverStyleEntry(target.driver_style).floor_hz)) +
+                  ' Hz.'
+                : '.')
+            : 'Tweeter style not set — using the conservative 5000 Hz floor. ' +
+              'Set it on the speaker layout step.'
+        ) + '</p>' : '') +
         '<label class="driver-research__field">' +
           '<span>Sensitivity</span>' +
           '<input type="number" inputmode="decimal" data-manual-driver="' + escapeHtml(targetId) + '" ' +
@@ -3044,6 +3101,26 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
               selectOptions +
             '</select>' +
           '</label>' +
+          (channel.role === 'tweeter' ?
+            '<label class="output-role__select">' +
+              '<span>Tweeter style</span>' +
+              '<select data-driver-style data-group-id="' + escapeHtml(group.id || '') +
+                '" data-role="' + escapeHtml(channel.role || '') + '">' +
+                '<option value=""' + (channel.driver_style ? '' : ' selected') + '>' +
+                  'Not sure (conservative default)</option>' +
+                // A stored style the picker doesn't know (set via API or a
+                // newer build) gets its own selected option so the select
+                // never misreports it as "Not sure".
+                (channel.driver_style && !hfDriverStyleEntry(channel.driver_style) ?
+                  '<option value="' + escapeHtml(channel.driver_style) + '" selected>' +
+                    escapeHtml(driverStyleLabel(channel.driver_style)) + '</option>' : '') +
+                hfDriverStyles().map(function(item) {
+                  return '<option value="' + escapeHtml(item.value) + '"' +
+                    (channel.driver_style === item.value ? ' selected' : '') + '>' +
+                    escapeHtml(item.label) + '</option>';
+                }).join('') +
+              '</select>' +
+            '</label>' : '') +
           '<div class="output-role__actions">' +
             renderOutputRoleToneControls(group, channel) +
             '<button type="button" class="btn btn--ghost output-role__action" ' +
@@ -4242,6 +4319,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       );
       return;
     }
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-style')) {
+      setOutputChannelDriverStyle(
+        ev.target.getAttribute('data-group-id') || '',
+        ev.target.getAttribute('data-role') || '',
+        ev.target.value
+      );
+      return;
+    }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-sub-crossover-fc')) {
       // Commit on change (not every keystroke) — setOutputDraft re-renders.
       setSubwooferCrossoverFc(ev.target.value);
@@ -4812,6 +4897,36 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     setOutputDraft(next);
     status('Channel assignment updated. Save before confirming the wiring.');
   }
+  // Sets the safety-relevant driver_style on a topology channel (the same
+  // single writer as physical_output_index — see setOutputChannelAssignment
+  // above). driver_style is topology-owned, not part of manual_settings /
+  // driver_research: build_driver_safety_profile reads it straight off the
+  // topology channel, so a style change here folds into the safety profile's
+  // fingerprint and requires re-confirmation, the same as any other
+  // topology/output change (docs/active-crossover-information-design.md,
+  // "Hardware research and confirmed safety profile").
+  function setOutputChannelDriverStyle(groupId, role, rawValue) {
+    var topology = currentOutputTopology();
+    if (!topology) return;
+    var next = baseOutputDraft(topology);
+    if (!next) return;
+    var targetChannel = null;
+    outputGroups(next).forEach(function(group) {
+      if ((group.id || '') !== groupId) return;
+      (group.channels || []).forEach(function(channel) {
+        if ((channel.role || '') === role) targetChannel = channel;
+      });
+    });
+    if (!targetChannel) {
+      status('Could not find that driver in the speaker layout.', true);
+      return;
+    }
+    var value = String(rawValue || '').trim();
+    if (value) targetChannel.driver_style = value;
+    else delete targetChannel.driver_style;
+    setOutputDraft(next);
+    status('Tweeter style updated. Save before confirming outputs.');
+  }
   function outputChannel(role, index) {
     var tweeter = role === 'tweeter';
     return {
@@ -5319,7 +5434,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       crossoverPreview.error = '';
       if (options.nextStep) outputStepOverride = options.nextStep;
       if (options.confirmSafetyProfile) {
-        status('Safety limits confirmed for the current physical outputs. This still does not authorize sound.');
+        status('Safety limits confirmed for the current physical outputs.' +
+          tweeterStyleConfirmNote() + ' This still does not authorize sound.');
       } else if (!options.forPreview) {
         status(importWarning
           ? 'Working setup updated from visible fields. Imported JSON was not saved.'
