@@ -331,7 +331,15 @@ export async function runLevelRampProtocol(opts = {}) {
   const isAborted = typeof opts.isAborted === "function" ? opts.isAborted : () => false;
   const blockMs = Math.max(100, Math.min(500, Number(opts.blockMs) || 200));
   const durationMs = Math.max(1000, Number(spec.duration_ms) || 75000);
-  const deadline = now() + durationMs;
+  // The deadline is a per-PHASE budget, not a single tap-anchored one. It is
+  // armed at Start for the pre-ramp phase (setup echo, the Pi's ambient
+  // baseline and DSP commissioning load) and RE-ARMED once when the Pi's ramp
+  // first becomes visible for this run token. The server's own safety timeout
+  // (MeasurementRamp.safety_timeout) is anchored at ramp start, so a deadline
+  // anchored at the Start tap silently shrinks the ramp's budget by however
+  // long the pre-ramp phase took — the 2026-07-15 JTS3 false-timeout class.
+  let deadline = now() + durationMs;
+  let rampSeen = false;
   const streamer = opts.streamer || new LevelStreamer({
     postEvent: (event) => client.postEvent(event),
     runToken: spec.run_token || "",
@@ -364,6 +372,10 @@ export async function runLevelRampProtocol(opts = {}) {
         continue;
       }
       const ramp = rampEventFromStatus(phoneStatus, spec.run_token || "");
+      if (ramp && !rampSeen) {
+        rampSeen = true;
+        deadline = now() + durationMs;
+      }
       if (ramp && typeof opts.onProgress === "function") opts.onProgress(ramp);
       if (ramp && ramp.terminal) {
         await streamer.close();
@@ -376,7 +388,10 @@ export async function runLevelRampProtocol(opts = {}) {
   }
 
   await streamer.abort("phone_timeout");
-  throw new Error("speaker did not finish the level check before the timeout");
+  throw new Error(
+    "timed out waiting for the speaker's level-check result — this is a " +
+      "phone/relay timeout, not a failed measurement",
+  );
 }
 
 function cloneJsonObject(value) {

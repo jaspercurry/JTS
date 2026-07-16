@@ -534,4 +534,95 @@ function setupBinding(id = "flow-123456789012") {
   ok();
 }
 
+// The phone's own hard deadline (spec.duration_ms) elapsing without ever
+// observing a Pi terminal ramp state is a genuine phone/relay-side timeout,
+// not a failed measurement — the Pi may still be legitimately mid-ramp (the
+// 2026-07-15 JTS3 crossover level-ramp incident: the phone declared a false
+// timeout failure while the Pi's ramp was still running). The failure copy
+// must say so, and the phone must still post an aborted superset so the Pi
+// is not left blind-waiting.
+{
+  const clock = makeClock();
+  const posts = [];
+  const client = {
+    async postEvent(event) {
+      posts.push(JSON.parse(JSON.stringify(event)));
+    },
+    async fetchPhoneStatus() {
+      return { host_event: { ramp: { state: "climbing", run_token: "run-deadline" } } };
+    },
+  };
+  const recorder = {
+    start() {},
+    async stop() {
+      return new Float32Array(4800).fill(0.05);
+    },
+  };
+  await assert.rejects(
+    runLevelRampProtocol({
+      client,
+      recorder,
+      spec: {
+        kind: "level_ramp",
+        run_token: "run-deadline",
+        duration_ms: 1000,
+        sample_rate_hz: 48000,
+      },
+      blockMs: 100,
+      now: clock.now,
+      delay: async (ms) => clock.advance(ms),
+    }),
+    /timed out waiting for the speaker's level-check result/,
+  );
+  const last = posts[posts.length - 1];
+  assert.equal(last.level_batch.aborted, true);
+  assert.equal(last.level_batch.abort_reason, "phone_timeout");
+  ok();
+}
+
+// Pre-ramp server overhead must not burn the ramp's own budget. The deadline
+// is re-armed when the Pi's ramp first becomes visible: a run whose arming
+// phase plus ramp jointly exceed a single tap-anchored budget — while each
+// phase individually fits — must complete, not false-timeout (the 2026-07-15
+// JTS3 class: the server's safety timeout anchors at ramp_start, so a
+// tap-anchored client deadline silently shrinks the ramp budget by the
+// arming overhead).
+{
+  const clock = makeClock();
+  const client = {
+    async postEvent() {},
+    async fetchPhoneStatus() {
+      const t = clock.now();
+      if (t < 4000) return {}; // arming: ambient/DSP load, no ramp yet
+      if (t < 8000) {
+        return { host_event: { ramp: { state: "climbing", run_token: "run-rearm" } } };
+      }
+      return { host_event: { ramp: { state: "locked", run_token: "run-rearm" } } };
+    },
+  };
+  const recorder = {
+    start() {},
+    async stop() {
+      return new Float32Array(4800).fill(0.05);
+    },
+  };
+  // Budget 5000 ms: arming ends at 4000 (< 5000), ramp locks 4000 ms after it
+  // becomes visible (< 5000), but total 8000 > 5000 — only the re-arm passes.
+  const ramp = await runLevelRampProtocol({
+    client,
+    recorder,
+    spec: {
+      kind: "level_ramp",
+      run_token: "run-rearm",
+      duration_ms: 5000,
+      sample_rate_hz: 48000,
+    },
+    blockMs: 100,
+    now: clock.now,
+    delay: async (ms) => clock.advance(ms),
+  });
+  assert.deepEqual(ramp, { state: "locked", terminal: true });
+  ok();
+}
+
 console.log(JSON.stringify({ ok: true, passed }));

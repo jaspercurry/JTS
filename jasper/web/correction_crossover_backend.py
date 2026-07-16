@@ -34,6 +34,7 @@ from jasper.active_speaker.capture_geometry import (
 from jasper.active_speaker.crossover_level_run import (
     CrossoverLevelRunError,
     CrossoverLevelRunPhase,
+    PHONE_TRANSPORT_GRACE_S,
     state_path as _level_run_state_path,
 )
 from jasper.atomic_io import atomic_write_text
@@ -450,6 +451,22 @@ class CrossoverLevelLease:
                 else {}
             ),
         )
+
+    def phone_hard_timeout_ms(self, geometry: str) -> int:
+        """The phone's hard capture deadline for this geometry, in ms.
+
+        Derived from the SAME ramp config ``run_level_match`` actually
+        executes (``_ramp_config_for_geometry``), so the phone's deadline can
+        never undercut the server's real ``MeasurementRamp.safety_timeout`` —
+        a flat client-side constant sized against today's defaults would
+        silently drift out of sync the moment the ramp config (env-tuned
+        knobs, geometry-specific caps) changes. ``PHONE_TRANSPORT_GRACE_S``
+        is the same margin ``crossover_level_run.build_level_run_request``
+        uses for its (currently unwired) exact-run ``phone_hard_timeout_ms``.
+        """
+
+        safety_timeout_s = self._ramp_config_for_geometry(geometry).safety_timeout
+        return math.ceil((safety_timeout_s + PHONE_TRANSPORT_GRACE_S) * 1000.0)
 
     def claim_level_match_run(
         self,
