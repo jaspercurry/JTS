@@ -691,7 +691,21 @@ def issue_protection_evidence(
             load_target.get("speaker_group_id") == target.get("speaker_group_id")
             and load_target.get("role") == target.get("role")
         ),
-        "required_filters_present": bool(filter_checks) and all(filter_checks),
+        # An empty required-filter list is a legitimate, operator-confirmed
+        # profile state (fingerprint-bound) — e.g. a woofer target that
+        # declares zero protective filters because protective high-passes
+        # are tweeter machinery. Playback protection for such a target rides
+        # the limiter/headroom/mask checks elsewhere in this same report,
+        # which are computed independently and unaffected here. So
+        # ``all(filter_checks)`` is vacuously True when zero requirements
+        # were declared for this target; it stays a hard refusal only when
+        # requirements ARE declared but can't be verified (no resolved
+        # output index to check against).
+        "required_filters_present": (
+            False
+            if filter_requirements and output_index is None
+            else all(filter_checks)
+        ),
         "target_limiter_present": limiter_ok,
         "capture_route_current": (
             devices.get("samplerate") == DEFAULT_SAMPLE_RATE
