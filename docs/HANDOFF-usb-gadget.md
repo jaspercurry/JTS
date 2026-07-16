@@ -201,7 +201,14 @@ rapid changes. The apply job restarts `jasper-aec-bridge.service` plus
 duplicate, the gadget changes `p_chmask` and `bcdDevice`, and systemd
 starts/stops the dependency-enabled `jasper-usbmic.service`. The grace lets a
 request arriving over USB NCM finish before descriptor re-enumeration briefly
-drops that link.
+drops that link. The POST returns HTTP 200 only after systemd accepts the apply
+job; if scheduling fails, it returns a structured 502 while reporting that the
+durable intent was already saved. Once accepted, a failed bridge/gadget apply
+is retried three times with a two-second backoff (four total attempts); the
+hard start limit prevents an unbounded recompose loop, and the stable
+`event=usb_mic.recompose_failed` plus doctor drift remain the operator surface
+if all attempts fail. A later explicit switch action resets that bounded retry
+budget before scheduling its new desired state.
 
 The relay's Python queue is bounded to two 20 ms periods and drops oldest audio
 if the host is not consuming. It uses ALSA's blocking 16→48 kHz conversion
@@ -704,7 +711,9 @@ Each item names the specific claim above it verifies.
 
 ---
 
-Last verified: 2026-07-16 (the Windows UAC2 support envelope was rechecked
+Last verified: 2026-07-16 (the USB-microphone switch's scheduler acknowledgement
+and bounded accepted-apply retry contract were rechecked against the control
+endpoint, systemd unit, README wording, and focused tests; the Windows UAC2 support envelope was rechecked
 against Microsoft's current class-driver documentation; live `jts` probes
 separated a genuine-recording ~50 ms pipe / 30–40 ms gadget-ring baseline from
 history-dependent frozen idle residuals, so the prior continuity result is no

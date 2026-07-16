@@ -46,13 +46,25 @@ def test_usb_mic_apply_is_durable_delayed_and_naturally_debounced() -> None:
     assert "event=usb_mic.recompose_applied" in text
     assert "ExecStopPost=/usr/local/sbin/jasper-usbmic-apply-result" in text
     assert "TimeoutStartSec=" in text
-    assert "Restart=" not in text
+
+
+def test_usb_mic_apply_retries_accepted_failures_with_a_hard_bound() -> None:
+    text = APPLY_UNIT.read_text()
+    assert "StartLimitIntervalSec=5min" in text
+    assert "StartLimitBurst=4" in text
+    assert "Restart=on-failure" in text
+    assert "RestartSec=2s" in text
+    assert (
+        "ExecStartPost=/usr/bin/systemctl restart "
+        "jasper-aec-bridge.service jasper-usbgadget.service"
+    ) in text
 
 
 def test_usb_mic_apply_failure_helper_emits_only_for_failure() -> None:
     text = APPLY_RESULT.read_text()
     assert '${SERVICE_RESULT:-unknown}" = "success"' in text
     assert "event=usb_mic.recompose_failed" in text
+    assert "phase=apply" in text
     assert "result=${SERVICE_RESULT:-unknown}" in text
     assert "exit_code=${EXIT_CODE:-unknown}" in text
     assert "exit_status=${EXIT_STATUS:-unknown}" in text

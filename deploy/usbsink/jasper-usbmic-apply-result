@@ -12,6 +12,6 @@ if [ "${SERVICE_RESULT:-unknown}" = "success" ]; then
 fi
 
 /usr/bin/logger --tag jasper-usbmic-apply \
-    "event=usb_mic.recompose_failed unit=jasper-usbmic-apply.service result=${SERVICE_RESULT:-unknown} exit_code=${EXIT_CODE:-unknown} exit_status=${EXIT_STATUS:-unknown}"
+    "event=usb_mic.recompose_failed unit=jasper-usbmic-apply.service phase=apply result=${SERVICE_RESULT:-unknown} exit_code=${EXIT_CODE:-unknown} exit_status=${EXIT_STATUS:-unknown}"
 
 exit 0

@@ -1097,7 +1097,7 @@ def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
     monkeypatch.setattr(
         srv_mod,
         "_schedule_usb_gadget_recompose",
-        lambda: recomposes.append(True),
+        lambda: recomposes.append(True) or True,
     )
 
     status, body = _post(f"{base}/aec/usb-mic", {"enabled": True})
@@ -1106,6 +1106,47 @@ def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
     assert body["usb_mic"] == {"enabled": True, "state": "starting"}
     assert writes == [True]
     assert recomposes == [True]
+
+
+def test_usb_mic_schedule_failure_returns_structured_502(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    usb_mic = {
+        "enabled": True,
+        "state": "starting",
+        "toggle_enabled": True,
+    }
+    writes: list[bool] = []
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {"usb_mic": usb_mic},
+    )
+    monkeypatch.setattr(srv_mod, "write_usb_mic_enabled", writes.append)
+    monkeypatch.setattr(
+        srv_mod,
+        "_schedule_usb_gadget_recompose",
+        lambda: False,
+    )
+
+    status, body = _post(f"{base}/aec/usb-mic", {"enabled": True})
+
+    assert status == 502
+    assert body == {
+        "error": (
+            "USB microphone preference was saved, but its hardware update "
+            "could not be scheduled."
+        ),
+        "code": "usb_mic_recompose_schedule_failed",
+        "intent_saved": True,
+        "requested_enabled": True,
+        "usb_mic": usb_mic,
+    }
+    assert writes == [True]
 
 
 def test_usb_mic_refuses_enable_when_status_gate_is_closed(
@@ -1165,16 +1206,21 @@ def test_usb_mic_recompose_is_handed_to_durable_systemd_job(monkeypatch):
         lambda _logger, event, **fields: events.append((event, fields)),
     )
 
-    srv_mod._schedule_usb_gadget_recompose()
+    assert srv_mod._schedule_usb_gadget_recompose() is True
 
-    assert commands == [[
-        "systemctl", "restart", "--no-block", "jasper-usbmic-apply.service",
-    ]]
+    assert commands == [
+        ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
+        [
+            "systemctl", "restart", "--no-block",
+            "jasper-usbmic-apply.service",
+        ],
+    ]
     assert events == [(
         "usb_mic.recompose_scheduled",
         {
             "unit": "jasper-usbmic-apply.service",
             "grace_ms": 350,
+            "max_attempts": 4,
         },
     )]
 
@@ -1185,23 +1231,30 @@ def test_usb_mic_recompose_schedule_failure_is_observable(monkeypatch):
     events = []
 
     class Result:
-        returncode = 1
-        stderr = "access denied\n"
-        stdout = ""
+        def __init__(self, returncode=0, stderr=""):
+            self.returncode = returncode
+            self.stderr = stderr
+            self.stdout = ""
 
-    monkeypatch.setattr(srv_mod.subprocess, "run", lambda *_a, **_kw: Result())
+    def run(command, **_kwargs):
+        if "restart" in command:
+            return Result(1, "access denied\n")
+        return Result()
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", run)
     monkeypatch.setattr(
         srv_mod,
         "log_event",
         lambda _logger, event, **fields: events.append((event, fields)),
     )
 
-    srv_mod._schedule_usb_gadget_recompose()
+    assert srv_mod._schedule_usb_gadget_recompose() is False
 
     assert events == [(
         "usb_mic.recompose_failed",
         {
             "unit": "jasper-usbmic-apply.service",
+            "phase": "enqueue",
             "returncode": 1,
             "detail": "access denied",
             "level": srv_mod.logging.ERROR,

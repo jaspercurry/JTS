@@ -317,7 +317,10 @@ the computer gets a mono USB input.
 - ✅ **USB microphone for the connected computer** (`jasper-usbmic`) — an optional
   reverse direction on that same USB audio device. With USB Audio Input and an
   echo-cancelled mic profile active, the switch at `http://jts.local/wake/`
-  makes JTS appear as a mono computer input; switching it off removes the input.
+  makes JTS appear as a mono computer input; switching it off removes the input
+  after the bounded descriptor apply completes. The request reports an error if
+  that apply cannot be scheduled, and an accepted apply retries up to three
+  transient failures before remaining loudly failed for doctor/log diagnosis.
   The Voice assistant Pause control does not silence this explicitly enabled
   export; the `/wake/` switch is its sole end-user authority. Voice remains
   available because the relay uses its own AEC-bridge carrier. Changing the
