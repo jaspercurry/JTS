@@ -427,3 +427,55 @@ def test_find_stored_calibration_respects_orientation(tmp_path: Path):
         provider="minidsp", model_key="minidsp_umik1", serial="7001234",
         orientation="90deg", root=tmp_path,
     ) is None
+
+
+# --- household-mic persistence: additive content-hash lookup for uploads ----
+# A manual upload is stored with `serial=None` (store_calibration(provider=
+# "manual_upload", ...)), so `find_stored_calibration` above — keyed by
+# serial_hash + model + orientation — can never reach it again. This is the
+# additive counterpart jasper.correction.household_mic relies on to make an
+# uploaded calibration findable purely from its content hash.
+def test_find_stored_calibration_by_content_hash_resolves_upload_with_no_serial(
+    tmp_path: Path,
+):
+    record = calibration.store_calibration(
+        text=SAMPLE_CAL,
+        provider="manual_upload",
+        model="other",
+        label="Lab mic",
+        source="uploaded:lab.txt",
+        root=tmp_path,
+    )
+    assert record.serial_hash is None  # the upload path never has a serial
+
+    found = calibration.find_stored_calibration_by_content_hash(
+        file_sha256=record.file_sha256, root=tmp_path,
+    )
+    assert found is not None
+    assert found.calibration_id == record.calibration_id
+
+
+def test_find_stored_calibration_by_content_hash_also_resolves_vendor_records(
+    tmp_path: Path,
+):
+    # Not upload-only: any stored calibration (vendor OR upload) can be
+    # found again purely from its content hash.
+    record = calibration.store_calibration(
+        text="20 -1\n1000 0\n20000 1\n", provider="minidsp",
+        model="minidsp_umik1", label="UMIK-1", source="vendor",
+        serial="7001234", orientation="0deg", root=tmp_path,
+    )
+    found = calibration.find_stored_calibration_by_content_hash(
+        file_sha256=record.file_sha256, root=tmp_path,
+    )
+    assert found is not None
+    assert found.calibration_id == record.calibration_id
+
+
+def test_find_stored_calibration_by_content_hash_misses_are_none(tmp_path: Path):
+    assert calibration.find_stored_calibration_by_content_hash(
+        file_sha256="0" * 64, root=tmp_path,
+    ) is None
+    assert calibration.find_stored_calibration_by_content_hash(
+        file_sha256="", root=tmp_path,
+    ) is None

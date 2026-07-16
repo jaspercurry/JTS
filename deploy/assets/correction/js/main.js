@@ -59,6 +59,11 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   var uploadCalibrationBtn = document.getElementById('upload-calibration');
   var calibrationStatus = document.getElementById('calibration-status');
   var calibrationPreview = document.getElementById('calibration-preview');
+  // Household-mic prefill (Wave-2 persistence) — server-rendered default
+  // selection from a prior session's successful calibration.
+  var householdMicBanner = document.getElementById('household-mic-banner');
+  var householdMicBannerText = document.getElementById('household-mic-banner-text');
+  var householdMicChangeBtn = document.getElementById('household-mic-change');
   var currentCorrectionBanner = document.getElementById('current-correction');
   var currentCorrectionLabel = document.getElementById('current-correction-label');
   var currentCorrectionResetBtn = document.getElementById('current-correction-reset');
@@ -545,6 +550,58 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       calibrationPreview.classList.remove('hidden');
     }
   }
+
+  // Household-mic prefill (Wave-2 persistence): the server embeds the
+  // household's remembered mic + calibration as a JSON data island
+  // (#household-mic-data) when jasper/correction/household_mic.py has a
+  // record whose calibration still resolves on disk. Applied once at page
+  // load, before any device/permission flow runs, so the household need not
+  // re-enter a serial or re-upload a file it already gave JTS. Deliberately
+  // does NOT call updateMicCalibrationRows() — that resets
+  // selectedCalibrationId to null and can trigger a per-browser
+  // localStorage-remembered-serial auto-fetch (loadSavedSerial), neither of
+  // which is wanted when the server has already resolved the exact
+  // calibration file. "Change" clears the prefill and falls back to the
+  // ordinary blank-state flow (model reset, rows hidden, no auto-fetch).
+  function applyHouseholdMicPrefill() {
+    var island = document.getElementById('household-mic-data');
+    if (!island) return;
+    var data;
+    try {
+      data = JSON.parse(island.textContent || 'null');
+    } catch (e) {
+      return;
+    }
+    if (!data || !data.calibration) return;
+    var modelKey = data.model_key || '';
+    var hasOption = modelKey === 'other' || Array.prototype.some.call(
+      micModelSelect.options,
+      function (o) { return o.value === modelKey; }
+    );
+    if (!hasOption) return;  // registry drifted since the record was saved
+    micModelSelect.value = modelKey;
+    if (!modelKey) {
+      serialRow.classList.add('hidden');
+      uploadRow.classList.add('hidden');
+    } else if (modelKey === 'other') {
+      serialRow.classList.add('hidden');
+      uploadRow.classList.remove('hidden');
+    } else {
+      serialRow.classList.remove('hidden');
+      uploadRow.classList.remove('hidden');
+    }
+    showCalibrationLoaded(data);
+    if (!selectedCalibrationId) return;
+    householdMicBannerText.textContent =
+      'Using ' + selectedCalibrationMeta.label + ' — remembered from your last measurement.';
+    householdMicBanner.classList.remove('hidden');
+  }
+
+  householdMicChangeBtn.addEventListener('click', function () {
+    householdMicBanner.classList.add('hidden');
+    micModelSelect.value = '';
+    updateMicCalibrationRows();
+  });
 
   async function fetchCalibration() {
     var model = micModelSelect.value;
@@ -3395,6 +3452,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   }
   pollState();
   updateMicCalibrationRows();
+  applyHouseholdMicPrefill();
   refreshCurrentCorrection();
   // Initial paint of the stepped-wizard chrome from the server envelope.
   // (Both landing paths reach here; the plain-HTTP deep-link fallback above

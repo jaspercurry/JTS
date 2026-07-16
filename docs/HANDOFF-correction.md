@@ -15,6 +15,35 @@
 
 ## Status
 
+- 🧱 **Wave-2 household-mic persistence (Pi-side; phone confirm UI is a
+  follow-up).** Before this, nothing about the measurement mic survived
+  across sessions: the phone relay's setup validates against a per-run
+  `setup_binding_id` (a fresh `session_id`/`context_id` every run), and an
+  uploaded calibration is stored with `serial=None`
+  (`store_calibration(provider="manual_upload", ...)`), so the vendor-cache
+  lookup keyed by `serial_hash` + model + orientation could never reach it.
+  Every session made the household re-type a serial or re-upload a file.
+  `jasper.correction.household_mic` now owns one durable record —
+  `/var/lib/jasper/correction/household_mic.json`, atomic tempfile+rename,
+  mode 0644, no secrets (a `serial_hash` plus an optional last-4
+  `serial_display`) — written after every SUCCESSFULLY established
+  calibration from both the phone-relay flow (room and crossover share
+  `_relay_calibration_from_setup` in `jasper/web/correction_setup.py`) and
+  the local/laptop flow (`/calibration/fetch`, `/calibration/upload`).
+  `jasper.audio_measurement.calibration.find_stored_calibration_by_content_hash`
+  is the additive lookup that makes an upload (no serial) resolvable again
+  purely from its content hash. Two consumers read the record: the
+  `CaptureSpec.default_setup.calibration` OPTIONAL prefill hint
+  (`jasper/capture_relay/spec.py`) — inert on the current capture page,
+  which parses the spec as an opaque JSON object and never rejects unknown
+  top-level keys — and the local `/correction/` wizard's server-rendered
+  "Using {label} — change" banner. A session that establishes a DIFFERENT
+  mic is never blocked; the new success replaces the record
+  (`event=correction.household_mic_replaced`). The phone page's matching
+  one-tap confirm UI (reading `default_setup`) is the follow-up that makes
+  the hint actionable on that surface; until it ships, the phone flow is
+  unaffected and the local wizard is the only surface where the household
+  visibly benefits.
 - 🧱 **Wave 2 playback core extracted; Room behavior retained.**
   `jasper.audio_measurement.playback` now owns policy-free WAV-process cleanup
   and deterministic sine-WAV generation. This Room module keeps
@@ -1136,7 +1165,13 @@
     device label (`iMM-6`/`UMM-6`/`UMIK`), and remembers the serial of a
     successful fetch in the browser's `localStorage` (raw serials stay off the
     Pi) — auto-filling and auto-fetching it next time so a repeat measurement
-    needs no re-typing or Fetch tap.
+    needs no re-typing or Fetch tap. This `localStorage` memory is
+    per-browser and serial-only; it predates and is now supplemented by the
+    server-side, cross-browser, cross-session household-mic record
+    described in Status above, which additionally covers uploaded
+    calibrations (never serial-keyed) and pre-selects the model + shows a
+    "Using {label} — change" banner on landing when a household default
+    exists.
   - **Relay guided-setup preflight.** The public capture page still cannot talk
     directly to `jts.local`; it posts `{setup_validate:true, setup:{...}}` through
     the relay and waits for the Pi to answer with
