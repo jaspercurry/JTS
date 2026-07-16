@@ -233,6 +233,39 @@ function testHappyPathStructure() {
   ok();
 }
 
+function testStopActionRendersDangerStyledAndWired() {
+  const doc = makeDoc();
+  const root = doc.createElement("div");
+  let stopped = 0;
+  const spec = {
+    ui: {
+      screen: [
+        { type: "heading", text: "Crossover — Woofer driver" },
+        { type: "button", label: "Start", action: "begin_capture" },
+        { type: "button", label: "Stop", action: "stop" },
+      ],
+    },
+  };
+  const refs = renderScreen(root, spec, {
+    doc,
+    handlers: { begin_capture: () => {}, stop: () => (stopped += 1) },
+  });
+
+  assert.equal(refs.buttons.length, 2);
+  const stopBtn = refs.buttons[1];
+  assert.equal(stopBtn.action, "stop");
+  assert.equal(stopBtn.el.getAttribute("data-action"), "stop");
+  assert.equal(
+    stopBtn.el.className,
+    "cap-button cap-button--danger",
+    "the stop action gets danger styling, unlike every other button",
+  );
+  assert.equal(refs.buttons[0].el.className, "cap-button");
+  stopBtn.el.dispatch("click");
+  assert.equal(stopped, 1, "host-provided stop handler fired");
+  ok();
+}
+
 function testUnknownButtonActionNotWired() {
   const doc = makeDoc();
   const root = doc.createElement("div");
@@ -313,6 +346,7 @@ const tests = [
   testHostilePayloadIsInert,
   testRawCssThemeRejected,
   testHappyPathStructure,
+  testStopActionRendersDangerStyledAndWired,
   testUnknownButtonActionNotWired,
   testAcknowledgementGatesStartAndRendersInertText,
 ];

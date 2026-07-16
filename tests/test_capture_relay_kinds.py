@@ -266,6 +266,30 @@ def test_crossover_deadline_and_copy_include_stored_ambient_window():
     assert "measures the room noise" in steps["items"][1]
 
 
+def test_crossover_sweep_and_level_ramp_both_offer_a_stop_button():
+    # Fix 3 (2026-07-16): the phone had no user-tappable Stop during a driver
+    # sweep or a level ramp. Both server-driven screens now declare a "stop"
+    # button alongside "begin_capture" — the client wires it to the SAME
+    # abort() path the visibility-abort case already exercises.
+    from jasper.capture_relay.spec import build_level_ramp_spec
+
+    xover = build_crossover_sweep_spec()
+    ramp = build_level_ramp_spec()
+    for spec in (xover, ramp):
+        buttons = [c for c in spec.screen if c["type"] == "button"]
+        actions = [b["action"] for b in buttons]
+        assert "begin_capture" in actions
+        assert "stop" in actions
+        stop_button = next(b for b in buttons if b["action"] == "stop")
+        assert stop_button["label"] == "Stop"
+        # Round-trips through the wire contract like every other button.
+        round_tripped = CaptureSpec.from_dict(spec.to_dict())
+        round_tripped_actions = [
+            c["action"] for c in round_tripped.screen if c["type"] == "button"
+        ]
+        assert "stop" in round_tripped_actions
+
+
 def test_legal_45_second_pcm16_capture_fits_single_crossover_size_contract():
     from jasper.active_speaker.test_signal_plan import (
         CROSSOVER_CAPTURE_HARD_TIMEOUT_S,

@@ -1549,8 +1549,10 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
   fresh alignment evidence, never unconditionally).
 - ~~The relay-guided automatic flow takes one accepted near-field sweep per
   driver.~~ Closed (Lane D): each role uses its own bounded sweep length after
-  a 14-second controlled pre-sweep quiet interval, then the server admits
-  three stationary
+  a controlled pre-sweep quiet interval sized to that same sweep length
+  (2026-07-16: right-sized per driver — that driver's own sweep length + 2 s,
+  14 s woofer/subwoofer down to 6 s tweeter — rather than a fixed 14 s pause
+  every driver used to sit through), then the server admits three stationary
   repeats with at most one bounded fourth attempt and at least two accepted.
   The safe level probe chooses non-clipping playback headroom only; acoustic
   accept/reduce/refuse comes from per-band SNR after the signal and ambient
