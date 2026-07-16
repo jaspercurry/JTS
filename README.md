@@ -948,6 +948,14 @@ reference. Currently:
   **Historical completed P-track plan.** H1 carries into the Room hardware
   track; the rest is layered-pipeline rationale and program archaeology, not
   current behavior or current planning authority.
+- [`HANDOFF-bass-extension-plan.md`](docs/HANDOFF-bass-extension-plan.md) —
+  **Planning brief / execution plan of record** for Bass Extension:
+  commissioned, volume-scheduled low-frequency alignment (Linkwitz-Transform
+  families for sealed boxes, bounded EQ + subsonic-protection families for
+  ported/passive-radiator) that retreats toward the natural response as
+  listening level rises. Profile schema, enclosure-adapter contract,
+  level-ladder commissioning, CamillaDSP runtime mechanism candidates, and
+  the phased wave plan. No code exists yet — read before starting any wave.
 - [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — HTTPS
   correction measurement hub at `/correction/`: room correction,
   active-crossover mic measurement, and bass/subwoofer tuning surfaces;

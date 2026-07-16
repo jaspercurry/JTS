@@ -753,6 +753,7 @@ docs = [
   "docs/room-correction-information-design.md",
   "docs/HANDOFF-multiroom.md",
   "docs/HANDOFF-correction-revision-plan.md",
+  "docs/HANDOFF-bass-extension-plan.md",
   "docs/HANDOFF-calibration-agent.md",
   "docs/HANDOFF-active-speaker-dsp.md",
   "docs/HANDOFF-dsp-graph-carrier.md",
