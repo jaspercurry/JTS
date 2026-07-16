@@ -235,9 +235,14 @@ class IdleShutdownTracker:
                     idle, self._idle_threshold,
                 )
                 if self._on_idle_exit is not None:
+                    # Same specific tuple the service-start claim boundary
+                    # catches around this hook's restore (correction_setup):
+                    # _run_async timeouts are TimeoutError (an OSError), and
+                    # CamillaUnavailable is a RuntimeError. Hooks are expected
+                    # to be fail-soft themselves; os._exit below still runs.
                     try:
                         self._on_idle_exit()
-                    except Exception:  # noqa: BLE001 - the exit must proceed.
+                    except (OSError, RuntimeError, ValueError):
                         log.exception("idle-exit hook failed; exiting anyway")
                 notify_stopping()
                 # os._exit, not sys.exit — see class docstring.
