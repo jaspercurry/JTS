@@ -3165,6 +3165,367 @@ def test_relay_setup_position_count_is_never_phone_authority():
     assert sess.mic_calibration is None
 
 
+# --- Wave-2 household-mic persistence -----------------------------------------
+#
+# jasper/correction/household_mic.py: nothing about the measurement mic used
+# to persist across sessions. These tests pin the write points (relay flow —
+# shared by room and crossover — and the local/laptop flow), the
+# never-blocks-on-mismatch replace behavior, the capture-spec prefill hint,
+# and the room wizard's server-rendered banner.
+
+
+def test_relay_calibration_success_saves_household_mic_shared_by_room_and_crossover(
+    tmp_path, monkeypatch, caplog,
+):
+    """Room and crossover both drive their level match through
+    `_run_relay_level_match`, which calls `_apply_relay_setup_to_session` ->
+    `_relay_calibration_from_setup` for BOTH flows (see that function's
+    docstring). Exercising this one shared entry point exercises the write
+    for both flows at once — there is no separate room-only or
+    crossover-only write path."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+
+    sess = SimpleNamespace(
+        current_position=0, total_positions=5, mic_calibration=None,
+    )
+    correction_setup._apply_relay_setup_to_session(
+        sess,
+        {
+            "calibration": {
+                "mode": "upload",
+                "filename": "lab.txt",
+                "content": "20 -1\n100 0\n1000 1\n",
+                "label": "Lab mic",
+                "model": "other",
+            },
+        },
+    )
+    assert sess.mic_calibration is not None
+
+    from jasper.correction.household_mic import read_household_mic
+
+    record = read_household_mic(path=household_path)
+    assert record is not None
+    assert record.model_key == "other"
+    assert record.calibration_id == sess.mic_calibration.calibration_id
+    assert "event=correction.household_mic_saved" in caplog.text
+    assert "model=other" in caplog.text
+
+
+def test_relay_calibration_mismatch_replaces_household_mic_never_blocks(
+    tmp_path, monkeypatch, caplog,
+):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+
+    first = SimpleNamespace(
+        current_position=0, total_positions=5, mic_calibration=None,
+    )
+    correction_setup._apply_relay_setup_to_session(
+        first,
+        {
+            "calibration": {
+                "mode": "upload",
+                "filename": "lab.txt",
+                "content": "20 -1\n100 0\n1000 1\n",
+                "label": "Lab mic",
+                "model": "other",
+            },
+        },
+    )
+
+    caplog.clear()
+    second = SimpleNamespace(
+        current_position=0, total_positions=1, mic_calibration=None,
+    )
+    correction_setup._apply_relay_setup_to_session(
+        second,
+        {
+            "calibration": {
+                "mode": "upload",
+                "filename": "lab2.txt",
+                "content": "20 -2\n100 0\n1000 2\n",
+                "label": "New lab mic",
+                "model": "dayton_imm6",
+            },
+        },
+    )
+
+    # Never blocked: the second, DIFFERENT mic still established successfully.
+    assert second.mic_calibration is not None
+
+    from jasper.correction.household_mic import read_household_mic
+
+    record = read_household_mic(path=household_path)
+    assert record is not None
+    assert record.model_key == "dayton_imm6"  # replaced, not merged or refused
+    assert "event=correction.household_mic_replaced" in caplog.text
+    assert "old_model=other" in caplog.text
+    assert "new_model=dayton_imm6" in caplog.text
+
+
+def test_same_model_different_serial_also_replaces_household_mic(
+    tmp_path, monkeypatch, caplog,
+):
+    """Within one model, a different physical unit (serial_hash) is still a
+    mic swap: the record is replaced and household_mic_replaced fires with a
+    `changed=serial` discriminator — while the serial hashes themselves stay
+    out of the log line."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+
+    from jasper.audio_measurement import calibration
+
+    def fake_fetch(*, model_key, serial, orientation, root, opener=None):
+        return calibration.store_calibration(
+            text=f"20 -1\n100 0\n1000 1\n# unit {serial}\n",
+            provider="minidsp",
+            model=model_key,
+            label="miniDSP UMIK-2",
+            source="https://vendor.example/cal.txt",
+            serial=serial,
+            orientation=orientation,
+            root=root,
+        )
+
+    monkeypatch.setattr(calibration, "fetch_vendor_calibration", fake_fetch)
+
+    for serial in ("810-1111", "810-2222"):
+        sess = SimpleNamespace(
+            current_position=0, total_positions=5, mic_calibration=None,
+        )
+        correction_setup._apply_relay_setup_to_session(
+            sess,
+            {
+                "calibration": {
+                    "mode": "serial",
+                    "model": "minidsp_umik2",
+                    "serial": serial,
+                },
+            },
+        )
+        assert sess.mic_calibration is not None
+
+    from jasper.audio_measurement.calibration import serial_hash
+    from jasper.correction.household_mic import read_household_mic
+
+    record = read_household_mic(path=household_path)
+    assert record is not None
+    assert record.serial_hash == serial_hash("810-2222")
+    assert "event=correction.household_mic_replaced" in caplog.text
+    assert "changed=serial" in caplog.text
+    # Hashes never ride the event line.
+    assert serial_hash("810-1111") not in caplog.text
+    assert serial_hash("810-2222") not in caplog.text
+
+
+def test_household_mic_write_failure_never_blocks_the_calibration(
+    tmp_path, monkeypatch, caplog,
+):
+    """The documented never-block invariant: persisting the household record
+    is best-effort. A write failure logs one WARN and the calibration that
+    triggered it still establishes successfully."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.WARNING, logger="jasper.web.correction_setup")
+
+    from jasper.correction import household_mic
+
+    def boom(record, *, path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(household_mic, "write_household_mic", boom)
+
+    sess = SimpleNamespace(
+        current_position=0, total_positions=5, mic_calibration=None,
+    )
+    correction_setup._apply_relay_setup_to_session(
+        sess,
+        {
+            "calibration": {
+                "mode": "upload",
+                "filename": "lab.txt",
+                "content": "20 -1\n100 0\n1000 1\n",
+                "label": "Lab mic",
+                "model": "other",
+            },
+        },
+    )
+
+    assert sess.mic_calibration is not None  # calibration still established
+    assert not household_path.exists()
+    assert "failed to persist household mic record" in caplog.text
+
+
+def test_e2e_calibration_fetch_success_saves_household_mic(tmp_path, monkeypatch):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+
+    from jasper.audio_measurement import calibration
+
+    def fake_fetch_vendor_calibration(
+        *, model_key, serial, orientation, root, opener=None,
+    ):
+        return calibration.store_calibration(
+            text="20 -1\n100 0\n1000 1\n",
+            provider="dayton_audio",
+            model=model_key,
+            label="Dayton Audio iMM-6 / iMM-6C",
+            source="https://vendor.example/cal.txt",
+            serial=serial,
+            orientation=orientation,
+            root=root,
+        )
+
+    monkeypatch.setattr(
+        calibration, "fetch_vendor_calibration", fake_fetch_vendor_calibration,
+    )
+
+    server, base = _start_server()
+    try:
+        payload = json.dumps({
+            "model": "dayton_imm6",
+            "serial": "700-1234",
+            "orientation": "0deg",
+        }).encode()
+        resp = request_with_csrf(
+            base,
+            "/calibration/fetch",
+            payload,
+            content_type="application/json",
+        )
+        assert resp.status == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    from jasper.correction.household_mic import read_household_mic
+
+    record = read_household_mic(path=household_path)
+    assert record is not None
+    assert record.model_key == "dayton_imm6"
+    assert record.provider == "dayton_audio"
+    assert record.serial_display == "1234"
+
+
+def test_e2e_calibration_upload_success_saves_household_mic(tmp_path, monkeypatch):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+
+    server, base = _start_server()
+    try:
+        payload = json.dumps({
+            "filename": "lab.txt",
+            "content": "20 -1\n100 0\n1000 1\n",
+            "model": "other",
+            "label": "Lab mic",
+            "sign_convention": "correction",
+        }).encode()
+        resp = request_with_csrf(
+            base,
+            "/calibration/upload",
+            payload,
+            content_type="application/json",
+        )
+        assert resp.status == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    from jasper.correction.household_mic import read_household_mic
+
+    record = read_household_mic(path=household_path)
+    assert record is not None
+    assert record.model_key == "other"
+    assert record.provider == "manual_upload"
+    assert record.serial_display is None  # uploads never carry a serial
+
+
+def test_default_setup_calibration_for_spec_present_and_absent(tmp_path, monkeypatch):
+    cal_root = tmp_path / "cal"
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(cal_root))
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+
+    assert correction_setup._default_setup_calibration_for_spec() is None
+
+    from jasper.audio_measurement.calibration import store_calibration
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        write_household_mic,
+    )
+
+    record = store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="minidsp",
+        model="minidsp_umik2",
+        label="miniDSP UMIK-2",
+        source="https://vendor.example/cal.txt",
+        serial="810-8494",
+        root=cal_root,
+    )
+    write_household_mic(
+        household_mic_from_calibration(record, serial="810-8494"),
+        path=household_path,
+    )
+
+    hint = correction_setup._default_setup_calibration_for_spec()
+    assert hint is not None
+    assert hint.mode == "serial"
+    assert hint.model == "minidsp_umik2"
+    assert hint.serial_display == "8494"
+    assert hint.calibration_id == record.calibration_id
+
+
+def test_render_page_omits_household_mic_island_data_when_absent(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv(
+        "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
+    )
+    body = correction_setup._render_page("acoustic-lab.local").decode()
+    assert '<script type="application/json" id="household-mic-data">null</script>' in body
+
+
+def test_render_page_prefills_household_mic_when_record_exists(tmp_path, monkeypatch):
+    cal_root = tmp_path / "cal"
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(cal_root))
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+
+    from jasper.audio_measurement.calibration import store_calibration
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        write_household_mic,
+    )
+
+    record = store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="manual_upload",
+        model="other",
+        label="Living Room UMIK",
+        source="uploaded:umik.txt",
+        root=cal_root,
+    )
+    write_household_mic(household_mic_from_calibration(record), path=household_path)
+
+    body = correction_setup._render_page("acoustic-lab.local").decode()
+    assert "Living Room UMIK" in body
+    assert record.calibration_id in body
+    assert 'id="household-mic-banner"' in body
+    assert 'id="household-mic-data"' in body
+
+
 def test_e2e_upload_quality_failure_returns_422(tmp_path, monkeypatch):
     from jasper.audio_measurement import quality
     from jasper.correction.session import SessionState

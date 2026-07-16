@@ -711,6 +711,43 @@ def find_stored_calibration(
     return best
 
 
+def find_stored_calibration_by_content_hash(
+    *,
+    file_sha256: str,
+    root: Path = DEFAULT_CALIBRATION_DIR,
+) -> CalibrationRecord | None:
+    """Return a previously-stored calibration matching this content hash,
+    regardless of provider, model, or serial.
+
+    ``find_stored_calibration`` (above) makes a vendor-serial calibration
+    reachable again across sessions, keyed by serial_hash + model +
+    orientation. A manual upload carries no serial, so that lookup can never
+    reach it — this is the additive counterpart: any stored calibration
+    (vendor OR upload) can be found again from nothing but the content hash
+    of the file that produced it. Used by
+    ``jasper.correction.household_mic`` to resolve a remembered upload back
+    to its stored file on a later run. Corrupt records are skipped, not
+    fatal. Returns the most recently fetched match.
+    """
+    if not file_sha256:
+        return None
+    best: CalibrationRecord | None = None
+    for path in root.glob("*/*/*.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if data.get("file_sha256") != file_sha256:
+            continue
+        try:
+            rec = CalibrationRecord.from_dict(data)
+        except (KeyError, ValueError, TypeError):
+            continue
+        if best is None or rec.fetched_at > best.fetched_at:
+            best = rec
+    return best
+
+
 def fetch_vendor_calibration(
     *,
     model_key: str,

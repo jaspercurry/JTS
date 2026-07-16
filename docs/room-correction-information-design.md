@@ -42,8 +42,15 @@
 > one, three, or six positions and safe or balanced strategy. Relay is preferred
 > when configured, the phone's position count is not authority, and follow-up
 > capture-only sweeps authenticate the level-check microphone before sound.
-> Returning-user preferences and one persistent phone handoff remain Wave 3
-> target behavior. Active's evidence identities, excitation admission, and exact
+> Returning-user preferences (position count/target/strategy, via the
+> still-unbuilt `preferences.json`) and one persistent phone handoff remain
+> Wave 3 target behavior. The mic/calibration slice of returning-user state
+> has landed ahead of that Wave, Pi-side only: `jasper.correction.household_mic`
+> persists the last successfully-established mic/calibration and the local
+> `/correction/` wizard pre-fills from it; the matching phone-side one-tap
+> confirm UI (reading the capture spec's `default_setup` hint) is a follow-up.
+> See `HANDOFF-correction.md` Status for the operational detail. Active's
+> evidence identities, excitation admission, and exact
 > automatic eligibility receipt are now production-wired authority.
 > Active now also exposes a versioned Room decision that distinguishes an
 > explicitly applied manual profile from automatic commissioning. Room consumes
@@ -652,4 +659,7 @@ The serialized hardware track must still perform:
 No Pi deployment, microphone use, phone publication, or audible acceptance is
 implied by a hardware-free merge.
 
-Last verified: 2026-07-15
+Last verified: 2026-07-16 (noted the Wave-2 household-mic persistence slice
+landing ahead of the broader Wave 3 returning-user preferences target; see
+the implementation-boundary blockquote above and `HANDOFF-correction.md`
+Status)

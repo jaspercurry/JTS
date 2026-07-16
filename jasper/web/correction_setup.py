@@ -75,6 +75,7 @@ from ._common import (
     canonical_page,
     guard_mutating_request,
     guard_read_request,
+    json_island,
     reject_csrf,
     send_html_response,
 )
@@ -1073,6 +1074,11 @@ __TABS__
       </select>
     </label>
 
+    <p id="household-mic-banner" class="mic-status hidden" role="status">
+      <span id="household-mic-banner-text"></span>
+      <button id="household-mic-change" type="button" class="btn btn--ghost">Change</button>
+    </p>
+
     <div id="serial-row" class="mic-row hidden">
       <label for="mic-serial">Serial number
         <input id="mic-serial" type="text" inputmode="text" autocomplete="off"
@@ -1210,6 +1216,7 @@ __TABS__
 </section>
 </div>
 </main>
+__HOUSEHOLD_MIC_ISLAND__
 <script type="module" src="/assets/correction/js/main.js"></script>
 """
 
@@ -1330,6 +1337,9 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
     repeat_main_position_disclosure = ""
     from jasper.capture_relay import correction_adapter
     capture_relay_enabled = correction_adapter.relay_enabled()
+    household_mic_island = json_island(
+        "household-mic-data", _household_mic_prefill_payload()
+    )
     # Absolute http:// back link: /correction/ is HTTPS but the dashboard at /
     # is plain HTTP, so a relative "/" would try HTTPS on the root and fail.
     header = canonical_header(
@@ -1364,6 +1374,7 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         .replace("__MIC_MODEL_OPTIONS__", mic_model_options)
         .replace("__TARGET_PROFILE_OPTIONS__", target_profile_options_html)
         .replace("__CORRECTION_STRATEGY_OPTIONS__", correction_strategy_options_html)
+        .replace("__HOUSEHOLD_MIC_ISLAND__", household_mic_island)
     )
     return canonical_page(
         "Room correction — JTS speaker",
@@ -1423,6 +1434,146 @@ def _calibration_root() -> Path:
             "/var/lib/jasper/correction/calibration_mics",
         )
     )
+
+
+def _household_mic_path() -> Path:
+    return Path(
+        os.environ.get(
+            "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH",
+            "/var/lib/jasper/correction/household_mic.json",
+        )
+    )
+
+
+def _save_household_mic(record: Any, *, serial: str | None = None) -> None:
+    """Persist a just-established calibration as the household's default
+    measurement mic (Wave-2 household-mic persistence,
+    ``jasper.correction.household_mic``).
+
+    Called from every point a calibration is NEWLY and SUCCESSFULLY
+    established: the phone relay flow (``_relay_calibration_from_setup``,
+    shared by the room and crossover flows) and the local/laptop flow
+    (``_handle_calibration_fetch`` / ``_handle_calibration_upload``, below).
+    Handlers that merely load an already-established ``calibration_id``
+    (``_handle_start``, ``_handle_local_capture_setup``) do not call this —
+    the household record only moves when a NEW calibration succeeds.
+
+    Fail-soft: a write failure must never block the calibration that
+    triggered it. A different mic than the currently-remembered one is
+    never refused — the new success simply replaces the record (the
+    cross-session staleness guard, item 6): logged as
+    ``correction.household_mic_replaced`` rather than blocked.
+    """
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        read_household_mic,
+        write_household_mic,
+    )
+
+    path = _household_mic_path()
+    try:
+        new_record = household_mic_from_calibration(record, serial=serial)
+        previous = read_household_mic(path=path)
+        write_household_mic(new_record, path=path)
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning(
+            "failed to persist household mic record: %r", exc, exc_info=True,
+        )
+        return
+    # A replace is any change of mic IDENTITY: the model, or — within the
+    # same model — a different physical unit (serial_hash). The hashes
+    # themselves stay out of the log line (they are stable per-unit
+    # identifiers; the event only needs to say WHAT kind of change
+    # happened), so `changed=` is the minimal discriminator.
+    changed: list[str] = []
+    if previous is not None:
+        if previous.model_key != new_record.model_key:
+            changed.append("model")
+        if previous.serial_hash != new_record.serial_hash:
+            changed.append("serial")
+    if previous is not None and changed:
+        log_event(
+            logger,
+            "correction.household_mic_replaced",
+            old_model=previous.model_key,
+            new_model=new_record.model_key,
+            changed="+".join(changed),
+        )
+    else:
+        log_event(
+            logger,
+            "correction.household_mic_saved",
+            model=new_record.model_key,
+        )
+
+
+def _resolved_household_mic() -> tuple[Any, Any] | None:
+    """Read + resolve the household mic record in one fail-soft step.
+
+    Returns ``(HouseholdMicRecord, CalibrationRecord)`` when a household
+    default exists AND its calibration is still resolvable on disk, else
+    ``None``. Shared by the spec prefill hint and the room wizard's
+    server-rendered banner so both degrade identically when the record is
+    absent or its calibration has been removed from under it.
+    """
+    from jasper.correction.household_mic import (
+        read_household_mic,
+        resolve_household_mic_calibration,
+    )
+
+    household = read_household_mic(path=_household_mic_path())
+    if household is None:
+        return None
+    resolved = resolve_household_mic_calibration(household, root=_calibration_root())
+    if resolved is None:
+        return None
+    return household, resolved
+
+
+def _default_setup_calibration_for_spec() -> Any | None:
+    """Build the capture spec's OPTIONAL ``default_setup.calibration`` hint
+    from the household's remembered mic (Wave-2 household-mic persistence).
+
+    Never binding — the current capture page ignores unknown spec fields
+    (see `DefaultSetupCalibration`'s docstring), so this is a
+    forward-compatible no-op until the phone one-tap-confirm follow-up reads
+    it. Fail-soft: any resolution miss yields no hint rather than blocking
+    the capture.
+    """
+    from jasper.capture_relay.spec import DefaultSetupCalibration
+
+    found = _resolved_household_mic()
+    if found is None:
+        return None
+    household, resolved = found
+    mode = "upload" if household.provider == "manual_upload" else "serial"
+    return DefaultSetupCalibration(
+        mode=mode,
+        model=household.model_key,
+        serial_display=household.serial_display or "",
+        calibration_id=resolved.calibration_id,
+    )
+
+
+def _household_mic_prefill_payload() -> dict[str, Any] | None:
+    """Server-rendered prefill for the room wizard's local mic/calibration
+    UI (Wave-2 household-mic persistence). ``None`` when there is no
+    household default, or its calibration is no longer resolvable — the page
+    then renders exactly as it did before this feature. Reuses
+    ``_calibration_payload``'s shape (``{"calibration": ..., "preview":
+    ...}``) so the page's existing `showCalibrationLoaded` renderer can
+    consume it unmodified; `model_key` additionally selects the right
+    `<option>` in the model picker.
+
+    The crossover flow has no equivalent local UI — its mic setup runs
+    entirely through the phone relay page, covered by the spec
+    `default_setup` hint above.
+    """
+    found = _resolved_household_mic()
+    if found is None:
+        return None
+    household, resolved = found
+    return {"model_key": household.model_key, **_calibration_payload(resolved)}
 
 
 def _short_text(value: Any) -> str | None:
@@ -2903,6 +3054,7 @@ def _handle_calibration_fetch(
         orientation=orientation,
         root=_calibration_root(),
     )
+    _save_household_mic(record, serial=serial)
     return _calibration_payload(record)
 
 
@@ -2934,6 +3086,7 @@ def _handle_calibration_upload(
         sign_convention=sign_convention,
         root=_calibration_root(),
     )
+    _save_household_mic(record)
     return _calibration_payload(record)
 
 
@@ -2944,6 +3097,13 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
     relay event that arms the sweep. This mirrors the local `/calibration/*`
     handlers and returns the stored calibration record, or None for phone/no
     calibration.
+
+    Shared by BOTH the room and crossover flows (both drive their level
+    match through `_run_relay_level_match`, which calls this via
+    `_apply_relay_setup_to_session`) — this is the ONE point where a
+    successfully-established relay calibration is persisted as the
+    household's default mic (`_save_household_mic`, Wave-2 household-mic
+    persistence).
     """
     calibration = setup.get("calibration") if isinstance(setup, dict) else None
     if not isinstance(calibration, dict):
@@ -2954,18 +3114,21 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
     if mode == "serial":
         from jasper.audio_measurement.calibration import fetch_vendor_calibration
 
-        return fetch_vendor_calibration(
+        serial = str(calibration.get("serial") or "").strip()
+        record = fetch_vendor_calibration(
             model_key=str(calibration.get("model") or "").strip(),
-            serial=str(calibration.get("serial") or "").strip(),
+            serial=serial,
             orientation=str(calibration.get("orientation") or "unknown").strip()
             or "unknown",
             root=_calibration_root(),
         )
+        _save_household_mic(record, serial=serial)
+        return record
     if mode == "upload":
         from jasper.audio_measurement.calibration import store_calibration
 
         filename = str(calibration.get("filename") or "uploaded-calibration.txt")
-        return store_calibration(
+        record = store_calibration(
             text=str(calibration.get("content") or ""),
             provider="manual_upload",
             model=str(calibration.get("model") or "other").strip() or "other",
@@ -2980,6 +3143,8 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
             ),
             root=_calibration_root(),
         )
+        _save_household_mic(record)
+        return record
     raise ValueError(f"unknown calibration mode: {mode}")
 
 
@@ -4348,6 +4513,7 @@ def _handle_relay_level_match(handler: BaseHTTPRequestHandler) -> dict[str, Any]
                 run_token=run_token,
                 setup_binding_id=setup_binding_id,
                 setup_collect_positions=False,
+                default_setup_calibration=_default_setup_calibration_for_spec(),
             ),
             relay_base=base,
             capture_origin=capture_origin,
@@ -4736,6 +4902,7 @@ def _handle_crossover_relay_level_match(
                 run_token=run_token,
                 setup_binding_id=setup_binding_id,
                 setup_collect_positions=False,
+                default_setup_calibration=_default_setup_calibration_for_spec(),
             ),
             relay_base=base,
             capture_origin=capture_origin,

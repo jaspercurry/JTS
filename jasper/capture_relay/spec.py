@@ -76,6 +76,16 @@ CALIBRATION_MODEL_KEYS = ("key", "label", "aliases")
 CLEAN_CAPTURE_POLICIES = ("refuse", "warn")
 CLOCK_DRIFT_MODES = ("ignore", "single_window", "critical")
 
+# `default_setup.calibration.mode` vocabulary — mirrors the phone relay's own
+# setup.calibration.mode values (jasper/web/correction_setup.py's
+# `_relay_calibration_from_setup`): "serial" for a vendor lookup, "upload"
+# for a bring-your-own file. There is no "none" here — a household record is
+# only ever written after a calibration successfully established, so the
+# hint is either present and actionable or absent entirely (`default_setup`
+# stays `None`).
+DEFAULT_SETUP_CALIBRATION_MODES = ("serial", "upload")
+DEFAULT_SETUP_CALIBRATION_KEYS = ("mode", "model", "serial_display", "calibration_id")
+
 # The Pi is the only stimulus player today; the phone never plays anything.
 STIMULUS_PLAYERS = ("pi",)
 
@@ -236,6 +246,52 @@ class CaptureAcknowledgement:
         )
 
 
+@dataclass(frozen=True)
+class DefaultSetupCalibration:
+    """A household's remembered measurement-mic calibration, offered to the
+    phone page as an OPTIONAL prefill hint — never binding.
+
+    Populated from ``jasper.correction.household_mic`` (Wave-2 household-mic
+    persistence) when a prior session on this speaker established a
+    calibration. The CURRENT capture page (2026-07) does not read
+    ``default_setup`` at all — it parses the spec as an opaque JSON object
+    and never rejects unknown top-level keys (see
+    ``capture-page/js/transport-integrity.js``'s ``verifyAndParseCaptureSpec``,
+    which only checks it is a non-array object) — so shipping this field now
+    is inert on today's page and forward-compatible with the one-tap
+    "Using {label} — change" confirm UI, which is a follow-up page PR.
+    """
+
+    mode: str
+    model: str = ""
+    serial_display: str = ""
+    calibration_id: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "mode": self.mode,
+            "model": self.model,
+            "serial_display": self.serial_display,
+            "calibration_id": self.calibration_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> DefaultSetupCalibration:
+        if not isinstance(data, Mapping):
+            raise CaptureSpecError("default_setup.calibration must be an object")
+        extra = set(data) - set(DEFAULT_SETUP_CALIBRATION_KEYS)
+        if extra:
+            raise CaptureSpecError(
+                f"default_setup.calibration has unknown keys: {sorted(extra)}"
+            )
+        return cls(
+            mode=str(data.get("mode") or ""),
+            model=str(data.get("model") or ""),
+            serial_display=str(data.get("serial_display") or ""),
+            calibration_id=str(data.get("calibration_id") or ""),
+        )
+
+
 # --- Server-driven-UI builders (data, never markup) ---------------------------
 
 
@@ -318,6 +374,9 @@ class CaptureSpec:
     # level_batch so the Pi's feed can distinguish THIS run's events from a
     # previous run's persisted relay slot (see level_match.RelayLevelFeed).
     run_token: str = ""
+    # Optional household-mic prefill hint (Wave-2 persistence). See
+    # `DefaultSetupCalibration` — never binding, ignored by the current page.
+    default_setup_calibration: DefaultSetupCalibration | None = None
     capture_protocol_version: int = CAPTURE_PROTOCOL_VERSION
     schema_version: int = SCHEMA_VERSION
 
@@ -374,6 +433,15 @@ class CaptureSpec:
                 self.acknowledgement.to_dict() if self.acknowledgement else None
             ),
             "run_token": self.run_token,
+            **(
+                {
+                    "default_setup": {
+                        "calibration": self.default_setup_calibration.to_dict()
+                    }
+                }
+                if self.default_setup_calibration is not None
+                else {}
+            ),
             "output": {"format": self.output_format},
             "max_upload_bytes": self.max_upload_bytes,
         }
@@ -407,6 +475,21 @@ class CaptureSpec:
             acknowledgement_raw, Mapping
         ):
             raise CaptureSpecError("acknowledgement must be an object or null")
+        default_setup_raw = data.get("default_setup")
+        default_setup_calibration: DefaultSetupCalibration | None = None
+        if default_setup_raw is not None:
+            if not isinstance(default_setup_raw, Mapping):
+                raise CaptureSpecError("default_setup must be an object")
+            extra_default_setup = set(default_setup_raw) - {"calibration"}
+            if extra_default_setup:
+                raise CaptureSpecError(
+                    f"default_setup has unknown keys: {sorted(extra_default_setup)}"
+                )
+            calibration_raw = default_setup_raw.get("calibration")
+            if calibration_raw is not None:
+                default_setup_calibration = DefaultSetupCalibration.from_dict(
+                    calibration_raw
+                )
         spec = cls(
             kind=str(data.get("kind", "")),
             duration_ms=_as_int(data, "duration_ms"),
@@ -459,6 +542,7 @@ class CaptureSpec:
                 else None
             ),
             run_token=str(data.get("run_token") or ""),
+            default_setup_calibration=default_setup_calibration,
             capture_protocol_version=_as_int(
                 data,
                 "capture_protocol_version",
@@ -585,6 +669,7 @@ class CaptureSpec:
             )
         _validate_validity(self.validity)
         _validate_calibration_models(self.calibration_models)
+        _validate_default_setup_calibration(self.default_setup_calibration)
         _validate_theme(self.theme)
         _validate_screen(self.screen)
         if self.acknowledgement is not None and not any(
@@ -659,6 +744,23 @@ def _validate_calibration_models(models: Sequence[Mapping[str, Any]]) -> None:
             raise CaptureSpecError(
                 f"calibration_models[{index}].aliases must be a list of strings"
             )
+
+
+def _validate_default_setup_calibration(
+    default_setup_calibration: DefaultSetupCalibration | None,
+) -> None:
+    if default_setup_calibration is None:
+        return
+    if default_setup_calibration.mode not in DEFAULT_SETUP_CALIBRATION_MODES:
+        raise CaptureSpecError(
+            "default_setup.calibration.mode must be one of "
+            f"{DEFAULT_SETUP_CALIBRATION_MODES}, "
+            f"got {default_setup_calibration.mode!r}"
+        )
+    if not default_setup_calibration.calibration_id:
+        raise CaptureSpecError(
+            "default_setup.calibration.calibration_id is required"
+        )
 
 
 def _validate_theme(theme: Mapping[str, str]) -> None:
@@ -1181,6 +1283,7 @@ def build_level_ramp_spec(
     calibration_models: Sequence[Mapping[str, Any]] | None = None,
     setup_binding_id: str = "",
     setup_collect_positions: bool = False,
+    default_setup_calibration: DefaultSetupCalibration | None = None,
 ) -> CaptureSpec:
     """`kind="level_ramp"` — the relay-closed level-match ramp (§3.1, P2).
 
@@ -1211,6 +1314,13 @@ def build_level_ramp_spec(
     listening-position step. ``placement_instruction`` optionally supplies the
     exact Pi-owned geometry copy; the page renders that same instruction after
     microphone setup instead of inventing a second placement description.
+
+    ``default_setup_calibration`` is the OPTIONAL household-mic prefill hint
+    (Wave-2 persistence, ``jasper.correction.household_mic``) — see
+    ``DefaultSetupCalibration``. Omitted by default so existing callers are
+    unaffected; the room and crossover level-match handlers in
+    ``jasper/web/correction_setup.py`` pass one when a household record
+    exists.
     """
     duration_ms = max(pre_roll_ms + post_roll_ms + 1000, int(hard_timeout_ms))
     if calibration_models is None:
@@ -1254,6 +1364,7 @@ def build_level_ramp_spec(
         setup_validation=True,
         setup_binding_id=(setup_binding_id or (f"level-{run_token}" if run_token else "")),
         setup_collect_positions=setup_collect_positions,
+        default_setup_calibration=default_setup_calibration,
         max_upload_bytes=max_upload_bytes,
         capture_protocol_version=2,
     ).validate()
