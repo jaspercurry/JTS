@@ -7590,6 +7590,121 @@ def test_crossover_relay_endpoint_inert_when_unconfigured(monkeypatch):
         )
 
 
+def _mid_sequence_sweep_status() -> dict:
+    """Envelope-shaped status mid-sequence: anchored (blocked) + stash
+    pending, with a locked level so the envelope's server-owned next step is
+    the woofer driver sweep this endpoint is asked to run."""
+    status = _envelope_status()
+    status["setup"]["status"] = "blocked"
+    status["setup"]["reason"] = "active_speaker_commissioning_config_loaded"
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
+    status["capture_entry_pending"] = True
+    _locked_level(status)
+    return status
+
+
+def test_crossover_sweep_endpoint_admits_mid_sequence_anchor(monkeypatch):
+    # Run-10 sweep-handler equivalent of the level-match repro: the first
+    # driver sweep POST arrives while the persisted config is (by #1523
+    # design) the all-muted staged anchor, so the raw `status != "ready"`
+    # gate refused the very sweep the envelope was offering. Mid-sequence
+    # (blocked + in-sequence reason + stash pending) the endpoint must
+    # register the relay capture instead.
+    #
+    # Confirmed FAILING pre-fix: without the shared predicate at this gate,
+    # this raises ValueError "protected speaker setup is no longer ready"
+    # (verified by running this test against the pre-fix gate).
+    import jasper.output_topology as output_topology
+    from jasper.web import correction_setup
+
+    status = _mid_sequence_sweep_status()
+    monkeypatch.setattr(backend, "status_payload", lambda: status)
+    monkeypatch.setattr(
+        backend,
+        "level_lease",
+        lambda: SimpleNamespace(unresolved_volume_safety=None),
+    )
+    monkeypatch.setattr(
+        output_topology,
+        "load_output_topology",
+        lambda: SimpleNamespace(topology_id="topology-1"),
+    )
+    monkeypatch.setattr(
+        correction_setup, "_require_relay_base", lambda: "https://relay.test"
+    )
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    registered = {}
+
+    def run_relay(kind, relay_base, *, return_url):
+        registered.update(label=kind.label, relay_base=relay_base)
+        return {"status": "awaiting_phone"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", run_relay)
+
+    response = correction_setup._handle_crossover_relay_capture(
+        _json_handler(
+            {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"}
+        )
+    )
+
+    assert response["relay"]["status"] == "awaiting_phone"
+    assert registered["label"] == "crossover_sweep:driver"
+
+
+@pytest.mark.parametrize(
+    ("reason", "capture_entry_pending"),
+    (
+        ("active_baseline_profile_unreadable", True),
+        ("active_speaker_commissioning_config_loaded", False),
+    ),
+)
+def test_crossover_sweep_endpoint_still_refuses_other_blocked_setups(
+    monkeypatch, reason, capture_entry_pending
+):
+    # The carve-out is exactly (in-sequence reason AND stash pending). A
+    # different blocked reason with the stash, or the in-sequence reason
+    # without the stash, refuses at this endpoint exactly as before.
+    import jasper.output_topology as output_topology
+    from jasper.web import correction_setup
+
+    status = _mid_sequence_sweep_status()
+    status["setup"]["reason"] = reason
+    status["capture_entry_pending"] = capture_entry_pending
+    monkeypatch.setattr(backend, "status_payload", lambda: status)
+    monkeypatch.setattr(
+        backend,
+        "level_lease",
+        lambda: SimpleNamespace(unresolved_volume_safety=None),
+    )
+    monkeypatch.setattr(
+        output_topology,
+        "load_output_topology",
+        lambda: SimpleNamespace(topology_id="topology-1"),
+    )
+    monkeypatch.setattr(
+        correction_setup, "_require_relay_base", lambda: "https://relay.test"
+    )
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_relay_capture",
+        lambda *_args, **_kwargs: pytest.fail("must fail before relay registration"),
+    )
+
+    with pytest.raises(
+        ValueError, match="protected speaker setup is no longer ready"
+    ):
+        correction_setup._handle_crossover_relay_capture(
+            _json_handler(
+                {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"}
+            )
+        )
+
+
 @pytest.mark.parametrize(
     "route",
     (
