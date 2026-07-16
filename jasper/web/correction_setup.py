@@ -7422,8 +7422,25 @@ def make_server(
 def _claim_crossover_state_owners() -> None:
     """Retire prior-process Active work before this service accepts requests."""
 
-    from jasper.active_speaker import repeat_admission
+    from jasper.active_speaker import repeat_admission, web_commissioning
     from . import correction_crossover_backend
+
+    def _restore_capture_entry() -> None:
+        # An automatic capture sequence leaves the persisted CamillaDSP path
+        # on the all-muted staged anchor between attempts; the production path
+        # is stashed durably (capture_entry_anchor). A sequence the previous
+        # process abandoned (browser gone, daemon restart, reboot) therefore
+        # converges back to production here — the same single-owner lifecycle
+        # boundary that retires its repeat reservations. Fail direction if
+        # this cannot run (CamillaDSP unreachable): the speaker stays on the
+        # all-muted anchor — muted, never loud — and the stash is retained
+        # for the next opportunity.
+        _run_async(
+            web_commissioning.restore_pending_capture_entry_config(
+                camilla_factory=_camilla,
+            ),
+            timeout=15.0,
+        )
 
     claims = (
         (
@@ -7437,6 +7454,10 @@ def _claim_crossover_state_owners() -> None:
         (
             "correction.active_commissioning_run_unavailable",
             correction_crossover_backend.claim_commissioning_run_owner,
+        ),
+        (
+            "correction.capture_entry_restore_unavailable",
+            _restore_capture_entry,
         ),
     )
     for event, claim in claims:

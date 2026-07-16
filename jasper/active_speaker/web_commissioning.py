@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from jasper.active_speaker import capture_entry_anchor
 from jasper.active_speaker.calibration_level import (
     AUDIBLE_RAMP_STEP_DB,
     calibration_level_payload,
@@ -1940,6 +1941,16 @@ async def _load_driver_commissioning_config_for_level(
     transaction_payload = {"measurement_transaction": transaction}
     try:
         staged = load_staged_startup_config()
+        # De-anchoring live production? Stash its path durably FIRST (before
+        # the anchor reload can replace it), so the sequence-level restore
+        # (restore_pending_capture_entry_config) has a crash-safe target. On
+        # later loads in the same sequence the entry path IS the anchor, this
+        # writer is skipped, and the stash keeps the original production path.
+        staged_anchor_path = (staged.get("config") or {}).get("path")
+        if not staged_anchor_path or not _config_paths_match(
+            entry_config_path, staged_anchor_path
+        ):
+            capture_entry_anchor.record_entry(entry_config_path)
         startup_setup = await _ensure_commission_startup_anchor(
             group=speaker_group_id,
             role=role,
@@ -2115,6 +2126,158 @@ async def _restore_automatic_driver_entry_config_resilient(
     return await _await_restore_task_resilient(restore_task)
 
 
+async def _rollback_capture_attempt_to_anchor(
+    load_payload: dict[str, Any],
+    *,
+    camilla_factory: CamillaFactory,
+    acquire_lock: bool = True,
+) -> dict[str, Any]:
+    """Re-mute one automatic capture attempt WITHOUT restoring production.
+
+    Reloads the all-muted staged anchor into the RUNNING graph and leaves the
+    persisted config path anchored. The production entry path stays stashed in
+    ``capture_entry_anchor`` for the sequence-level restore
+    (:func:`restore_pending_capture_entry_config`); restoring production after
+    every attempt is exactly the rapid double-config-swap churn that starved
+    the fan-in -> loopback -> CamillaDSP measurement transport (JTS3
+    2026-07-16 deterministic ``aplay`` timeouts). Staying anchored between
+    attempts also matches the crash posture ``startup_load``'s S3 guard
+    enforces during loads — the durable config points at the all-muted staged
+    anchor, so a crash/reboot anywhere in the sequence comes back muted.
+    """
+
+    transaction = _dict_value(load_payload.get("measurement_transaction"))
+    entry_path = str(transaction.get("entry_config_path") or "")
+    if transaction.get("restored") is True:
+        return {"status": "already_restored", "config_path": entry_path}
+    inner_rollback = await _rollback_summed_commissioning_config(
+        camilla_factory=camilla_factory,
+        acquire_lock=acquire_lock,
+    )
+    rollback_state = _dict_value(inner_rollback.get("rollback"))
+    status = str(rollback_state.get("status") or inner_rollback.get("status") or "")
+    # "blocked" = no loaded per-driver commissioning state, i.e. the running
+    # graph is already the anchor — nothing audible to re-mute. Anything but
+    # rolled_back/blocked may leave the driver audible: fail loudly so the
+    # caller flips the attempt to failed (same contract as the entry restore).
+    if status not in {"rolled_back", "blocked"}:
+        log_event(
+            logger,
+            "active_speaker.automatic_driver_config_restore",
+            level=logging.WARNING,
+            status="failed",
+            action="anchor_rollback",
+            inner_rollback_status=status or "unknown",
+        )
+        raise AutomaticDriverConfigRestoreError(
+            "could not re-mute the automatic capture path back to the staged anchor"
+        )
+    transaction["restored"] = True
+    return {
+        "status": "anchored",
+        "inner_rollback": inner_rollback,
+        "pending_entry_config_path": entry_path or None,
+    }
+
+
+async def _rollback_capture_attempt_to_anchor_resilient(
+    load_payload: dict[str, Any],
+    *,
+    camilla_factory: CamillaFactory,
+    acquire_lock: bool = True,
+) -> dict[str, Any]:
+    """Finish the anchor re-mute even while the caller is being cancelled."""
+    restore_task = asyncio.create_task(
+        _rollback_capture_attempt_to_anchor(
+            load_payload,
+            camilla_factory=camilla_factory,
+            acquire_lock=acquire_lock,
+        )
+    )
+    return await _await_restore_task_resilient(restore_task)
+
+
+async def restore_pending_capture_entry_config(
+    *,
+    camilla_factory: CamillaFactory,
+) -> dict[str, Any]:
+    """Restore the stashed production entry config once, at sequence exit.
+
+    The counterpart of ``capture_entry_anchor.record_entry``: automatic
+    capture attempts leave the persisted CamillaDSP path on the all-muted
+    staged anchor between attempts, and this converges it back to the
+    production config from sequence entry. Called from recovery surfaces
+    (jasper-correction-web's service-start claim boundary). Outcomes:
+
+    - ``idle``: no stash — nothing pending.
+    - ``deferred``: CamillaDSP unreachable; stash retained (muted-safe) so a
+      later surface can converge.
+    - ``superseded``: the persisted path is no longer the staged anchor —
+      another owner (a crossover apply, an operator) repointed production;
+      the stash is obsolete and cleared without touching CamillaDSP.
+    - ``entry_missing``: the stashed config file no longer exists; stash
+      cleared, speaker stays on the anchor (muted, never loud).
+    - ``restored``: production reloaded, stash cleared.
+    """
+
+    entry = capture_entry_anchor.pending_entry()
+    if not entry:
+        return {"status": "idle"}
+    cam = camilla_factory()
+    current, current_error = await read_current_config_path(cam)
+    if current_error is not None or not current:
+        log_event(
+            logger,
+            "active_speaker.capture_entry_restore",
+            level=logging.WARNING,
+            status="deferred",
+            reason=current_error or "current_config_unknown",
+        )
+        return {
+            "status": "deferred",
+            "reason": current_error or "current_config_unknown",
+        }
+    staged = load_staged_startup_config()
+    staged_anchor_path = (staged.get("config") or {}).get("path")
+    if not staged_anchor_path or not _config_paths_match(current, staged_anchor_path):
+        capture_entry_anchor.clear()
+        log_event(
+            logger,
+            "active_speaker.capture_entry_restore",
+            status="superseded",
+            current_config_path=current,
+        )
+        return {"status": "superseded", "current_config_path": current}
+    if not Path(entry).exists():
+        capture_entry_anchor.clear()
+        log_event(
+            logger,
+            "active_speaker.capture_entry_restore",
+            level=logging.WARNING,
+            status="entry_missing",
+            entry_config_path=entry,
+        )
+        return {"status": "entry_missing", "entry_config_path": entry}
+    restored = await cam.set_config_file_path(entry, best_effort=False)
+    if restored is not True:
+        log_event(
+            logger,
+            "active_speaker.capture_entry_restore",
+            level=logging.WARNING,
+            status="failed",
+            entry_config_path=entry,
+        )
+        return {"status": "failed", "entry_config_path": entry}
+    capture_entry_anchor.clear()
+    log_event(
+        logger,
+        "active_speaker.capture_entry_restore",
+        status="restored",
+        entry_config_path=entry,
+    )
+    return {"status": "restored", "config_path": entry}
+
+
 async def prepare_automatic_driver_level_match(
     topology: OutputTopology,
     *,
@@ -2181,9 +2344,17 @@ async def prepare_automatic_driver_level_match(
 async def restore_automatic_driver_level_match(
     prepared: dict[str, Any], *, camilla_factory: CamillaFactory
 ) -> dict[str, Any]:
-    """Restore the exact production graph saved before a driver level tone."""
+    """Re-mute the level-tone path back to the all-muted staged anchor.
 
-    return await _restore_automatic_driver_entry_config_resilient(
+    Deliberately does NOT restore the production entry graph: the level match
+    is the first step of the automatic measurement sequence, and the sweep
+    attempts that follow reuse the same staged anchor (the anchor fast path in
+    ``_ensure_commission_startup_anchor``). The production path from sequence
+    entry stays stashed in ``capture_entry_anchor`` until
+    :func:`restore_pending_capture_entry_config` runs at sequence exit.
+    """
+
+    return await _rollback_capture_attempt_to_anchor_resilient(
         _dict_value(prepared.get("load")), camilla_factory=camilla_factory
     )
 
@@ -2622,9 +2793,14 @@ async def play_driver_capture_sweep(
                     load_payload.get("measurement_transaction")
                 )
                 if transaction.get("entry_config_path"):
+                    # Per-attempt teardown re-mutes to the staged anchor ONLY.
+                    # Production stays stashed in capture_entry_anchor so an
+                    # immediate retry hits the anchor fast path instead of
+                    # paying the double config swap that starved the sweep
+                    # transport (JTS3 2026-07-16).
                     try:
                         rollback = (
-                            await _restore_automatic_driver_entry_config_resilient(
+                            await _rollback_capture_attempt_to_anchor_resilient(
                                 load_payload,
                                 camilla_factory=camilla_factory,
                                 acquire_lock=False,

@@ -526,7 +526,7 @@ def test_public_surface_present():
 
 
 def test_service_start_claims_all_crossover_state_owners(monkeypatch):
-    from jasper.active_speaker import repeat_admission
+    from jasper.active_speaker import repeat_admission, web_commissioning
     from jasper.web import correction_crossover_backend
 
     claims = []
@@ -544,9 +544,23 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
         lambda: claims.append("commissioning"),
     )
 
+    # The abandoned-sequence convergence hook: a capture sequence the previous
+    # process left on the all-muted staged anchor must be offered its
+    # production restore at this same single-owner lifecycle boundary.
+    async def restore_capture_entry(*, camilla_factory):
+        del camilla_factory
+        claims.append("capture_entry")
+        return {"status": "idle"}
+
+    monkeypatch.setattr(
+        web_commissioning,
+        "restore_pending_capture_entry_config",
+        restore_capture_entry,
+    )
+
     correction_setup._claim_crossover_state_owners()
 
-    assert claims == ["repeat", "level", "commissioning"]
+    assert claims == ["repeat", "level", "commissioning", "capture_entry"]
 
 
 def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
