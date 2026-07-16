@@ -532,6 +532,48 @@ def _latest_current_driver_records(
     return latest_near_field, latest_reference_axis, stale_count
 
 
+def _latest_current_driver_confirmations(
+    records: list[dict[str, Any]],
+    targets: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Latest by-ear driver confirmation per target, immune to sweep evidence.
+
+    ``record_driver_measurement`` is the single writer for both the operator
+    by-ear floor-confirmation path (no ``acoustic`` block -- the guided ramp
+    ack in ``sound_setup.py`` / ``web_commissioning.confirm_driver_test``) and
+    the sweep+analyze commissioning path (``acoustic`` populated by
+    ``commissioning_capture.record_driver_acoustic_capture``). Both append to
+    the same durable ``driver_measurements`` list, and
+    :func:`_latest_current_driver_records` picks whichever is newest per
+    target regardless of which kind it is -- so a sweep capture recorded
+    seconds after a healthy confirmation can become "the confirmation"
+    :func:`current_driver_floor_evidence` validates, even when that sweep
+    capture failed its OWN, structurally different floor-confirmation check
+    (its own fresh per-capture playback id can never equal the original
+    confirmation's) and recorded ``captured: False`` (JTS3 run 13 -> run 14:
+    a woofer sweep clobbered the healthy ear-check record, then run 14 was
+    refused pre-playback with "the saved driver confirmation is incomplete").
+    This index only ever considers confirmation-kind records (no ``acoustic``
+    block), so the operator's actual ear-check remains discoverable no matter
+    how much sweep evidence has been recorded since -- mirroring
+    ``_record_summed_kind``'s acoustic-block partition for summed validations
+    (see its docstring for the analogous Slice-2 fix).
+    """
+    target_by_id = {target["target_id"]: target for target in targets}
+    latest: dict[str, dict[str, Any]] = {}
+    for record in reversed(records):
+        target_id = record.get("target_id")
+        if not isinstance(target_id, str) or target_id not in target_by_id:
+            continue
+        if isinstance(record.get("acoustic"), Mapping):
+            continue
+        target = target_by_id[target_id]
+        if record.get("target_fingerprint") != target.get("target_fingerprint"):
+            continue
+        latest.setdefault(target_id, record)
+    return latest
+
+
 def _latest_current_summed_records(
     records: list[dict[str, Any]],
     targets: list[dict[str, Any]],
@@ -790,7 +832,11 @@ def current_driver_floor_evidence(
     target_id = _target_id(group_id, role_id)
     target = _target_lookup(topology).get(target_id)
     summary = measurements.get("summary")
-    latest = summary.get("latest_driver_measurements") if isinstance(summary, Mapping) else None
+    # Confirmation-only latest -- never `latest_driver_measurements`, which is
+    # newest-record-wins across BOTH the by-ear confirmation and sweep-evidence
+    # writers. Recording sweep evidence must not be able to invalidate the
+    # operator's confirmation here; see `_latest_current_driver_confirmations`.
+    latest = summary.get("latest_driver_confirmations") if isinstance(summary, Mapping) else None
     record = latest.get(target_id) if isinstance(latest, Mapping) else None
     source = "durable_current_driver_measurement"
 
@@ -867,6 +913,10 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         state.get("driver_measurements", []),
         driver_targets,
     )
+    latest_driver_confirmations_by_target = _latest_current_driver_confirmations(
+        state.get("driver_measurements", []),
+        driver_targets,
+    )
     latest_summed_by_group, latest_summed_pairs_by_group, stale_summed_count = (
         _latest_current_summed_records(
             state.get("summed_validations", []),
@@ -928,6 +978,12 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         "latest_reference_axis_driver_measurements": (
             latest_reference_axis_by_target
         ),
+        # Confirmation-kind-only view of the same records -- what
+        # `current_driver_floor_evidence` validates. Never read this as the
+        # acoustic/level-trim surface; use `latest_driver_measurements` for
+        # that (it intentionally still reflects whichever record is newest,
+        # sweep evidence included).
+        "latest_driver_confirmations": latest_driver_confirmations_by_target,
         "latest_summed_tests": latest_summed_tests_by_group,
         "latest_summed_validations": latest_summed_by_group,
         "latest_summed_pairs_by_group": latest_summed_pairs_by_group,
@@ -1052,7 +1108,11 @@ def confirmed_driver_roles(
         return []
     state = load_measurement_state(topology, state_path=state_path)
     summary = state.get("summary") if isinstance(state.get("summary"), Mapping) else {}
-    latest = summary.get("latest_driver_measurements")
+    # Confirmation-only latest, same reasoning as `current_driver_floor_evidence`:
+    # this reports which roles the operator has confirmed by ear, and must not
+    # flip to "unconfirmed" just because a later sweep capture recorded its own
+    # (differently-gated) evidence for the same target.
+    latest = summary.get("latest_driver_confirmations")
     if not isinstance(latest, Mapping):
         return []
 

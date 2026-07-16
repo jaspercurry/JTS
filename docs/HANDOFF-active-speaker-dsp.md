@@ -1225,10 +1225,19 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   expires, but only through `measurement.current_driver_floor_evidence`: the
   record must remain captured and blocker-free, then independently exact-match
   the current topology's target id, fingerprint, group, role, output, playback
-  id, and accepted embedded confirmation. The automatic post-capture record
-  boundary re-runs this check and has no volatile safe-session fallback, so a
-  topology change between play and upload rejects the acoustic record. Stale or
-  malformed embedded confirmation still refuses before audio. Automatic driver
+  id, and accepted embedded confirmation. This record is resolved from a
+  confirmation-only index (`_latest_current_driver_confirmations`, records with
+  no `acoustic` block) rather than "whichever driver-measurement record is
+  newest" — recording sweep evidence for a driver must never invalidate its
+  own by-ear confirmation. Before this fix both kinds shared one latest-wins
+  slot, so a sweep capture recorded after a healthy confirmation (its own
+  per-capture playback id can never match the original confirmation's, so it
+  is itself recorded `captured: False`) silently became "the confirmation"
+  and refused every later measurement pre-playback (JTS3 run 13 -> run 14).
+  The automatic post-capture record boundary re-runs this check and has no
+  volatile safe-session fallback, so a topology change between play and
+  upload rejects the acoustic record. Stale or malformed embedded
+  confirmation still refuses before audio. Automatic driver
   capture is an outer DSP transaction: it may use the all-muted staged graph as
   the inner commissioning rollback anchor, but it restores the file-backed
   production config path from entry after success, playback failure, exception,

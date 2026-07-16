@@ -216,6 +216,12 @@ def test_driver_capture_sweep_accepts_durable_confirmation_after_session_expiry(
             "latest_driver_measurements": {
                 "mono:woofer": _durable_driver_record(topology),
             },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
         },
     }
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
@@ -292,6 +298,7 @@ def test_driver_capture_refuses_malformed_durable_floor_confirmation(
     measurements = {
         "summary": {
             "latest_driver_measurements": {"mono:woofer": record},
+            "latest_driver_confirmations": {"mono:woofer": record},
         },
     }
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
@@ -649,6 +656,15 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
                     test_level_dbfs=legacy_floor_dbfs,
                 ),
             },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(
+                    topology,
+                    test_level_dbfs=legacy_floor_dbfs,
+                ),
+            },
         },
     }
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
@@ -789,6 +805,12 @@ def _driver_capture_sweep_boundary(monkeypatch, *, play_admitted=None):
         "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
                 "mono:woofer": _durable_driver_record(topology),
             },
         },
@@ -958,6 +980,12 @@ def test_driver_capture_post_play_failure_reports_consumed_attempt_and_reason(
         "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
                 "mono:woofer": _durable_driver_record(topology),
             },
         },
@@ -1907,6 +1935,12 @@ def test_automatic_driver_load_failure_restores_entry_graph(
             "latest_driver_measurements": {
                 "mono:woofer": _durable_driver_record(topology),
             },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
         },
     }
     entry_path = "/var/lib/camilladsp/configs/sound_current.yml"
@@ -2004,6 +2038,15 @@ def test_driver_capture_sweep_refuses_before_loading_when_applied_gain_is_stale(
                     test_level_dbfs=-60.0,
                 ),
             },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(
+                    topology,
+                    test_level_dbfs=-60.0,
+                ),
+            },
         },
     }
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
@@ -2046,6 +2089,12 @@ def test_driver_capture_sweep_uses_frozen_applied_preset_not_mutable_draft(
         "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
                 "mono:woofer": _durable_driver_record(topology),
             },
         },
@@ -2100,6 +2149,12 @@ def test_driver_capture_sweep_uses_explicit_geometry_lock_in_excitation(monkeypa
             "latest_driver_measurements": {
                 "mono:woofer": _durable_driver_record(topology),
             },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
         },
     }
     applied = _applied_excitation_profile(topology=topology, gain_db=-9.0)
@@ -2144,6 +2199,12 @@ def test_driver_capture_holds_one_writer_lock_through_restore(monkeypatch, cance
         "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
                 "mono:woofer": _durable_driver_record(topology),
             },
         },
@@ -2232,6 +2293,12 @@ def test_driver_capture_writer_timeout_refuses_before_graph_load(monkeypatch):
             "latest_driver_measurements": {
                 "mono:woofer": _durable_driver_record(topology),
             },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
         },
     }
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
@@ -2280,6 +2347,12 @@ def test_driver_capture_sweep_refuses_invalid_explicit_geometry_lock(
         "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
                 "mono:woofer": _durable_driver_record(topology),
             },
         },
