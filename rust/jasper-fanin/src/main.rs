@@ -25,6 +25,7 @@
 //! in steady state. If future measurement shows audible source-handover
 //! clicks, add ramping in the mixer with tests and doctor visibility.
 
+mod assistant_reference;
 mod config;
 mod host_clock;
 mod host_compliance;
@@ -134,6 +135,23 @@ fn main() -> Result<()> {
         .context("spawning xrun-log writer thread")?;
 
     let (tts_input, tts_metrics) = if let Some(socket_path) = &config.tts_socket_path {
+        let assistant_reference = crate::assistant_reference::load(std::path::Path::new(
+            &config.assistant_reference_path,
+        ));
+        let (assistant_reference_tx, _assistant_reference_writer) =
+            match crate::assistant_reference::spawn_writer(
+                PathBuf::from(&config.assistant_reference_path),
+                assistant_reference,
+            ) {
+                Ok((tx, handle)) => (Some(tx), Some(handle)),
+                Err(error) => {
+                    warn!(
+                        "event=fanin.assistant_reference.writer_unavailable path={} detail={}",
+                        config.assistant_reference_path, error
+                    );
+                    (None, None)
+                }
+            };
         let (tts_tx, tts_rx, tts_flush_tx, tts_flush_rx, metrics, epoch) =
             tts_channels(config.tts_max_pending_frames);
         spawn_tts_server(
@@ -151,6 +169,8 @@ fn main() -> Result<()> {
                 max_pending_frames: config.tts_max_pending_frames,
                 program_duck_db: config.tts_program_duck_db,
                 assistant_loudness: config.assistant_loudness,
+                assistant_reference,
+                assistant_reference_tx,
             }),
             Some(metrics),
         )

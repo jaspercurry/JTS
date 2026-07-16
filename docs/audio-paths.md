@@ -289,8 +289,11 @@ boundary: `jasper-fanin`.
    baseline tracks the renderer content level rather than the temporary
    ducked level.
 2. At wake turn start, `jasper-voice` sends `PREPARE_ASSISTANT` with
-   the active provider/model/voice and a conservative silence target
-   derived from `listening_level`.
+   the active provider/model/voice, a conservative first-use speaker target
+   derived from `listening_level`, and one absolute volume context
+   (`canonical_db`, downstream Camilla dB, mute). Treating the fallback as a
+   speaker target is load-bearing: fan-in subtracts downstream attenuation
+   before gain calculation, so Camilla cannot attenuate the target twice.
 3. The mix owner snapshots the current content loudness before ducking,
    then ignores content-meter updates while the voice turn or correction
    measurement window is active.
@@ -309,15 +312,25 @@ boundary: `jasper-fanin`.
    "fast-forward" audio. A contract test
    (`tests/test_tts_ipc_pacing.py`) pins the watermark against the
    Rust budget.
-5. The mix owner chooses final gain at the mix boundary:
-   `target_lufs = content_baseline_lufs + assistant_offset_lu`.
-   The default offset is `+1.5 LU`.
+5. The mix owner chooses one reference, in order: qualified live music,
+   held most-recent music, held most-recent achieved assistant, then the safe
+   first-use fallback. A music reference is held only after a full 3 s
+   short-term window while the current period is audible; silence and brief
+   cues cannot overwrite it. Music gets the default `+1.5 LU` assistant
+   offset. A held assistant already includes the achieved offset/peak cap, so
+   the offset is not applied again.
 6. Hearing safety is peak-aware and enforced at that boundary: the
    requested loudness gain is capped so the profiled source peak stays
    below the configured assistant peak ceiling (default `-3 dBFS`),
    then passed through the malformed-value floor. There is intentionally
    no fixed source-gain ceiling; the positive side is governed by the
    dynamic peak cap plus validated/fallback source-profile metadata.
+7. While speech is queued, each absolute `VOLUME_CONTEXT` update produces the
+   generic residual `canonical delta - downstream delta`. Fan-in applies it
+   at dequeue with a 100 ms ramp, mute override, and the original peak cap.
+   This makes Camilla-master edits cancel to zero at the mixer while push-mode
+   edits adjust TTS directly. A completed assistant segment records its actual
+   achieved speaker LUFS + canonical dB for the next silent turn.
 
 Python owns only provider source profiles:
 
@@ -374,6 +387,7 @@ JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS=-24.0
 JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS=-6.0
 JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS=-41.0
 JASPER_OUTPUTD_CONTENT_SILENCE_LUFS=-60.0
+JASPER_FANIN_ASSISTANT_REFERENCE_PATH=/var/lib/jasper/assistant_volume_reference.json
 ```
 
 When a cue/chirp/assistant segment arrives without a prepared wake-turn
@@ -389,8 +403,9 @@ active mix owner:
 
 ```
 event=fanin.assistant_loudness kind=assistant provider=openai
-  model=gpt-realtime-2 voice=verse calibrated=true confidence=0.82
-  baseline_lufs=-29.4 target_lufs=-27.9 source_lufs=-18.2
+  model=gpt-realtime-2 voice=verse reference=held_assistant
+  calibrated=true confidence=0.82 baseline_lufs=-29.4 target_lufs=-27.9
+  target_speaker_lufs=-39.5 source_lufs=-18.2
   source_peak_dbfs=-2.5 requested_gain_db=-9.7 peak_cap_gain_db=-0.5
   final_gain_db=-9.7 reason=target
 ```
@@ -400,7 +415,8 @@ event=fanin.assistant_loudness kind=assistant provider=openai
 `jasper-doctor` warns if that telemetry is missing or malformed. Use
 that surface first when debugging a provider loudness report; it shows
 whether the system used a calibrated profile, what content baseline it
-matched, and which decision path applied (`target`, `peak_cap`,
+matched, which reference won (`live_content`, `held_content`,
+`held_assistant`, or `first_use_fallback`), and which clamp path applied (`target`, `peak_cap`,
 `fallback_profile`, or `gain_floor`).
 
 ## End-of-turn drain — when is the speaker actually silent?
@@ -625,7 +641,7 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-07-15 (DAC8x/two-way automatic crossover-commissioning
+Last verified: 2026-07-16 (assistant reference priority, speaker-domain fallback compensation, persistence, and live volume adjustment rechecked against shared loudness and fan-in tests; prior 2026-07-15 DAC8x/two-way automatic crossover-commissioning
 launch gate rechecked; source-lifecycle ownership and add-a-source
 integration points rechecked against `jasper.source_intent` and
 `jasper.local_sources`; prior 2026-07-07 ring/default path text rechecked against

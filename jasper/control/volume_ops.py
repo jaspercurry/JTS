@@ -183,8 +183,9 @@ async def _with_coordinator(
     (callers that write camilla via the dial/web path), the
     coordinator defers its camilla write iff the probe returns True.
     See `_make_duck_active_probe` for the wire details and
-    docs/HANDOFF-volume.md "Cross-daemon defer signal" for the why."""
+    docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal" for the why."""
     from ..camilla import CamillaController
+    from ..assistant_volume import volume_context_publisher_for_runtime
     from ..renderer import RendererClient
     from ..speaker_name import runtime_name as _speaker_runtime_name
     from ..volume_coordinator import VolumeCoordinator
@@ -214,6 +215,7 @@ async def _with_coordinator(
         spotify_router=spotify_router,
         spotify_device_name=_speaker_runtime_name(),
         duck_active_probe=duck_active_probe,
+        volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
     )
     coord.load_persisted_level()
     try:
@@ -233,7 +235,7 @@ def _make_duck_active_probe(
     *,
     voice_socket_command: Callable[..., Awaitable[dict]] = _voice_socket_command,
 ) -> Callable[[], Awaitable[Optional[bool]]]:
-    """Build the cross-daemon duck-active probe consumed by
+    """Build the cross-daemon Camilla-ownership probe consumed by
     VolumeCoordinator._set_camilla in the per-request coordinators here.
 
     The probe asks jasper-voice over UDS whether the Ducker is
@@ -248,7 +250,7 @@ def _make_duck_active_probe(
     Tight 1 s timeout: STATUS is a synchronous attribute read in
     voice_daemon (no I/O). If it doesn't return in 1 s the daemon
     is wedged and we'd rather fail-open than block dial input. See
-    docs/HANDOFF-volume.md "Cross-daemon defer signal"."""
+    docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal"."""
     async def probe() -> Optional[bool]:
         try:
             response = await voice_socket_command(
@@ -263,6 +265,11 @@ def _make_duck_active_probe(
             ValueError,
         ):
             return None
+        camilla_locked = response.get("camilla_volume_locked")
+        if isinstance(camilla_locked, bool):
+            return camilla_locked
+        # Rolling-upgrade compatibility with a voice daemon that predates the
+        # explicit lock field. Its only duck transport owned Camilla.
         duck_active = response.get("duck_active")
         if isinstance(duck_active, bool):
             return duck_active

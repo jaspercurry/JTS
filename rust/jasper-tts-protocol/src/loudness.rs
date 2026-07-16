@@ -11,7 +11,9 @@
 
 use std::collections::VecDeque;
 
-use crate::{assistant_profile_confidence_in_range, assistant_profile_db_in_range, CHANNELS};
+use crate::{
+    assistant_profile_confidence_in_range, assistant_profile_db_in_range, VolumeContext, CHANNELS,
+};
 pub use crate::{AssistantProfile, SegmentKind};
 
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -55,6 +57,34 @@ pub struct AssistantContext {
     pub voice: String,
     pub baseline_lufs: Option<f32>,
     pub silence_target_lufs: f32,
+    pub volume_context: Option<VolumeContext>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceKind {
+    LiveContent,
+    HeldContent,
+    HeldAssistant,
+    FirstUseFallback,
+}
+
+impl ReferenceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LiveContent => "live_content",
+            Self::HeldContent => "held_content",
+            Self::HeldAssistant => "held_assistant",
+            Self::FirstUseFallback => "first_use_fallback",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeldLoudnessReference {
+    /// Achieved loudness after downstream Camilla attenuation.
+    pub speaker_lufs: f32,
+    /// Canonical user-volume dB when ``speaker_lufs`` was achieved.
+    pub canonical_db: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +102,9 @@ pub struct AssistantGainDecision {
     pub peak_cap_gain_db: f32,
     pub final_gain_db: f32,
     pub clamp_reason: &'static str,
+    pub reference_kind: ReferenceKind,
+    pub target_speaker_lufs: Option<f32>,
+    pub volume_context: Option<VolumeContext>,
 }
 
 pub struct AssistantLoudness {
@@ -79,6 +112,10 @@ pub struct AssistantLoudness {
     content: KWeightedWindow,
     pending_context: Option<AssistantContext>,
     last_decision: Option<AssistantGainDecision>,
+    current_volume_context: Option<VolumeContext>,
+    held_content: Option<HeldLoudnessReference>,
+    held_assistant: Option<HeldLoudnessReference>,
+    content_currently_audible: bool,
 }
 
 impl AssistantLoudness {
@@ -88,11 +125,32 @@ impl AssistantLoudness {
             content: KWeightedWindow::new(CONTENT_ANCHOR_FRAMES),
             pending_context: None,
             last_decision: None,
+            current_volume_context: None,
+            held_content: None,
+            held_assistant: None,
+            content_currently_audible: false,
         }
     }
 
     pub fn observe_content_period(&mut self, samples: &[i16]) {
-        self.content.push_interleaved(samples);
+        let period_lufs = self.content.push_interleaved(samples);
+        self.content_currently_audible = period_lufs
+            .is_some_and(|value| value.is_finite() && value >= self.config.content_silence_lufs);
+        if !self.content_currently_audible {
+            return;
+        }
+        let (Some(context), Some(content_lufs)) =
+            (self.current_volume_context, self.content.full_short_lufs())
+        else {
+            return;
+        };
+        if context.muted {
+            return;
+        }
+        self.held_content = Some(HeldLoudnessReference {
+            speaker_lufs: content_lufs + context.downstream_db,
+            canonical_db: context.canonical_db,
+        });
     }
 
     pub fn prepare_context(
@@ -102,14 +160,56 @@ impl AssistantLoudness {
         voice: String,
         silence_target_lufs: f32,
     ) {
-        let baseline_lufs = self.observed_content_lufs();
+        self.prepare_context_with_volume(provider, model, voice, silence_target_lufs, None);
+    }
+
+    pub fn prepare_context_with_volume(
+        &mut self,
+        provider: String,
+        model: String,
+        voice: String,
+        silence_target_lufs: f32,
+        volume_context: Option<VolumeContext>,
+    ) {
+        if let Some(context) = volume_context {
+            self.update_volume_context(context);
+        }
+        let baseline_lufs = if self.content_currently_audible {
+            self.observed_content_lufs()
+        } else {
+            None
+        };
         self.pending_context = Some(AssistantContext {
             provider,
             model,
             voice,
             baseline_lufs,
             silence_target_lufs,
+            volume_context: self.current_volume_context,
         });
+    }
+
+    pub fn update_volume_context(&mut self, context: VolumeContext) {
+        if context.canonical_db.is_finite() && context.downstream_db.is_finite() {
+            self.current_volume_context = Some(context);
+        }
+    }
+
+    pub fn set_held_assistant(&mut self, reference: Option<HeldLoudnessReference>) {
+        self.held_assistant = reference
+            .filter(|value| value.speaker_lufs.is_finite() && value.canonical_db.is_finite());
+    }
+
+    pub fn held_assistant(&self) -> Option<HeldLoudnessReference> {
+        self.held_assistant
+    }
+
+    pub fn held_content(&self) -> Option<HeldLoudnessReference> {
+        self.held_content
+    }
+
+    pub fn current_volume_context(&self) -> Option<VolumeContext> {
+        self.current_volume_context
     }
 
     pub fn clear_context(&mut self) {
@@ -123,18 +223,70 @@ impl AssistantLoudness {
         profile: Option<AssistantProfile>,
     ) -> AssistantGainDecision {
         let context = self.pending_context.clone();
-        let observed_baseline_lufs = context
-            .as_ref()
-            .and_then(|ctx| ctx.baseline_lufs)
-            .or_else(|| self.observed_content_lufs());
-        let baseline_lufs = observed_baseline_lufs.unwrap_or_else(|| {
+        let observed_baseline_lufs =
             context
                 .as_ref()
-                .map_or(self.config.default_silence_target_lufs, |ctx| {
-                    ctx.silence_target_lufs
-                })
-        });
-        let target_lufs = baseline_lufs + self.config.assistant_offset_lu;
+                .and_then(|ctx| ctx.baseline_lufs)
+                .or_else(|| {
+                    if self.content_currently_audible {
+                        self.observed_content_lufs()
+                    } else {
+                        None
+                    }
+                });
+        let volume_context = context
+            .as_ref()
+            .and_then(|ctx| ctx.volume_context)
+            .or(self.current_volume_context);
+        let (baseline_lufs, target_lufs, target_speaker_lufs, reference_kind) =
+            if let Some(baseline) = observed_baseline_lufs {
+                let target = baseline + self.config.assistant_offset_lu;
+                (
+                    baseline,
+                    target,
+                    volume_context.map(|ctx| target + ctx.downstream_db),
+                    ReferenceKind::LiveContent,
+                )
+            } else if let (Some(reference), Some(current)) = (self.held_content, volume_context) {
+                let target_speaker = reference.speaker_lufs
+                    + (current.canonical_db - reference.canonical_db)
+                    + self.config.assistant_offset_lu;
+                let target = target_speaker - current.downstream_db;
+                (
+                    target - self.config.assistant_offset_lu,
+                    target,
+                    Some(target_speaker),
+                    ReferenceKind::HeldContent,
+                )
+            } else if let (Some(reference), Some(current)) = (self.held_assistant, volume_context) {
+                // The held assistant value is already the achieved speaker
+                // loudness. Do not re-apply the content-relative offset.
+                let target_speaker =
+                    reference.speaker_lufs + (current.canonical_db - reference.canonical_db);
+                let target = target_speaker - current.downstream_db;
+                (
+                    target,
+                    target,
+                    Some(target_speaker),
+                    ReferenceKind::HeldAssistant,
+                )
+            } else {
+                let baseline = context
+                    .as_ref()
+                    .map_or(self.config.default_silence_target_lufs, |ctx| {
+                        ctx.silence_target_lufs
+                    });
+                let target_speaker = baseline + self.config.assistant_offset_lu;
+                let target = volume_context.map_or(target_speaker, |current| {
+                    target_speaker - current.downstream_db
+                });
+                (
+                    baseline,
+                    target,
+                    volume_context.map(|_| target_speaker),
+                    ReferenceKind::FirstUseFallback,
+                )
+            };
         let confidence = profile.as_ref().map_or(0.0, |p| {
             if assistant_profile_confidence_in_range(p.confidence) {
                 p.confidence
@@ -189,6 +341,9 @@ impl AssistantLoudness {
             peak_cap_gain_db: peak_cap_gain,
             final_gain_db: final_gain,
             clamp_reason,
+            reference_kind,
+            target_speaker_lufs,
+            volume_context,
         };
         self.last_decision = Some(decision.clone());
         decision
@@ -204,6 +359,42 @@ impl AssistantLoudness {
 
     pub fn last_decision(&self) -> Option<&AssistantGainDecision> {
         self.last_decision.as_ref()
+    }
+
+    /// Residual mixer gain needed after an absolute user-volume update.
+    ///
+    /// If Camilla already carried the user change, canonical and downstream
+    /// deltas cancel to zero. Push-mode sources leave downstream at 0 dB, so
+    /// fan-in carries the canonical delta while TTS is active.
+    pub fn live_gain_delta_db(&self, decision: &AssistantGainDecision) -> f32 {
+        let (Some(initial), Some(current)) = (decision.volume_context, self.current_volume_context)
+        else {
+            return 0.0;
+        };
+        (current.canonical_db - initial.canonical_db)
+            - (current.downstream_db - initial.downstream_db)
+    }
+
+    /// Capture only completed assistant speech as the no-music reference.
+    /// Cues and chirps never call this method.
+    pub fn complete_assistant_segment(
+        &mut self,
+        decision: &AssistantGainDecision,
+        effective_gain_db: f32,
+    ) -> Option<HeldLoudnessReference> {
+        let current = self.current_volume_context?;
+        if current.muted || !effective_gain_db.is_finite() {
+            return None;
+        }
+        let reference = HeldLoudnessReference {
+            speaker_lufs: decision.source_lufs + effective_gain_db + current.downstream_db,
+            canonical_db: current.canonical_db,
+        };
+        if !reference.speaker_lufs.is_finite() {
+            return None;
+        }
+        self.held_assistant = Some(reference);
+        Some(reference)
     }
 
     fn observed_content_lufs(&self) -> Option<f32> {
@@ -257,10 +448,10 @@ impl KWeightedWindow {
         }
     }
 
-    fn push_interleaved(&mut self, samples: &[i16]) {
+    fn push_interleaved(&mut self, samples: &[i16]) -> Option<f32> {
         debug_assert_eq!(samples.len() % (CHANNELS as usize), 0);
         if samples.is_empty() {
-            return;
+            return None;
         }
         let mut energy = 0.0f64;
         for frame in samples.chunks_exact(CHANNELS as usize) {
@@ -280,11 +471,19 @@ impl KWeightedWindow {
             self.total_frames = self.total_frames.saturating_sub(oldest.frames);
             self.total_energy -= oldest.energy;
         }
+        lufs_from_energy(energy, frames)
     }
 
     fn short_lufs(&self) -> Option<f32> {
         self.window_lufs(SHORT_TERM_FRAMES)
             .or_else(|| self.window_lufs(MOMENTARY_FRAMES))
+    }
+
+    fn full_short_lufs(&self) -> Option<f32> {
+        if self.total_frames < SHORT_TERM_FRAMES {
+            return None;
+        }
+        self.window_lufs(SHORT_TERM_FRAMES)
     }
 
     fn anchor_lufs(&self) -> Option<f32> {
@@ -637,6 +836,117 @@ mod tests {
     fn tts_gain_sanitize_preserves_safe_range_and_floor() {
         assert_eq!(sanitize_tts_gain_db(-12.5), -12.5);
         assert_eq!(sanitize_tts_gain_db(-100.0), MIN_TTS_GAIN_DB);
+    }
+
+    fn profile(source_lufs: f32, source_peak_dbfs: f32) -> AssistantProfile {
+        AssistantProfile {
+            provider: "openai".to_string(),
+            model: "gpt-realtime-2".to_string(),
+            voice: "marin".to_string(),
+            source_lufs: Some(source_lufs),
+            source_peak_dbfs: Some(source_peak_dbfs),
+            confidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn first_use_fallback_compensates_downstream_at_the_speaker_boundary() {
+        let mut loudness = AssistantLoudness::new(AssistantLoudnessConfig::default());
+        let context = VolumeContext {
+            canonical_db: -36.4,
+            downstream_db: -36.4,
+            muted: false,
+        };
+        loudness.prepare_context_with_volume(
+            "openai".to_string(),
+            "gpt-realtime-2".to_string(),
+            "marin".to_string(),
+            -46.7,
+            Some(context),
+        );
+        let decision =
+            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+
+        assert_eq!(decision.reference_kind, ReferenceKind::FirstUseFallback);
+        assert!((decision.target_speaker_lufs.unwrap() - -45.2).abs() < 0.01);
+        assert!((decision.target_lufs - -8.8).abs() < 0.01);
+        let achieved = decision.source_lufs + decision.final_gain_db + context.downstream_db;
+        assert!((achieved - -45.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn held_assistant_repeats_without_reapplying_offset_and_tracks_user_delta() {
+        let mut loudness = AssistantLoudness::new(AssistantLoudnessConfig::default());
+        loudness.set_held_assistant(Some(HeldLoudnessReference {
+            speaker_lufs: -39.0,
+            canonical_db: -30.0,
+        }));
+        loudness.prepare_context_with_volume(
+            "openai".to_string(),
+            "gpt-realtime-2".to_string(),
+            "marin".to_string(),
+            -41.0,
+            Some(VolumeContext {
+                canonical_db: -24.0,
+                downstream_db: 0.0,
+                muted: false,
+            }),
+        );
+        let decision =
+            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-24.0, -30.0)));
+
+        assert_eq!(decision.reference_kind, ReferenceKind::HeldAssistant);
+        assert_eq!(decision.target_speaker_lufs, Some(-33.0));
+        assert_eq!(decision.target_lufs, -33.0);
+    }
+
+    #[test]
+    fn content_reference_requires_three_seconds_and_silence_cannot_overwrite_it() {
+        let mut loudness = AssistantLoudness::new(AssistantLoudnessConfig::default());
+        loudness.update_volume_context(VolumeContext {
+            canonical_db: -20.0,
+            downstream_db: -20.0,
+            muted: false,
+        });
+        loudness.observe_content_period(&stereo_sine(0.08, (SAMPLE_RATE as usize) * 29 / 10));
+        assert_eq!(loudness.held_content(), None);
+        loudness.observe_content_period(&stereo_sine(0.08, (SAMPLE_RATE as usize) / 10));
+        let held = loudness.held_content().expect("qualified music reference");
+
+        let silence = vec![0i16; (SAMPLE_RATE as usize) * 12 * (CHANNELS as usize)];
+        loudness.observe_content_period(&silence);
+        assert_eq!(loudness.held_content(), Some(held));
+    }
+
+    #[test]
+    fn live_gain_delta_cancels_when_camilla_carries_the_user_change() {
+        let mut loudness = AssistantLoudness::new(AssistantLoudnessConfig::default());
+        loudness.prepare_context_with_volume(
+            "openai".to_string(),
+            "gpt-realtime-2".to_string(),
+            "marin".to_string(),
+            -41.0,
+            Some(VolumeContext {
+                canonical_db: -30.0,
+                downstream_db: -30.0,
+                muted: false,
+            }),
+        );
+        let decision =
+            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-24.0, -12.0)));
+        loudness.update_volume_context(VolumeContext {
+            canonical_db: -24.0,
+            downstream_db: -24.0,
+            muted: false,
+        });
+        assert_eq!(loudness.live_gain_delta_db(&decision), 0.0);
+
+        loudness.update_volume_context(VolumeContext {
+            canonical_db: -18.0,
+            downstream_db: -24.0,
+            muted: false,
+        });
+        assert_eq!(loudness.live_gain_delta_db(&decision), 6.0);
     }
 
     #[test]

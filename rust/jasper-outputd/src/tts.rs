@@ -490,7 +490,9 @@ impl TtsBridge {
             // always safe.
             let is_restore = matches!(
                 &queued.command,
-                TtsCommand::ProgramDuckOff | TtsCommand::ContentMeterResume
+                TtsCommand::ProgramDuckOff
+                    | TtsCommand::ContentMeterResume
+                    | TtsCommand::VolumeContext(_)
             );
             if queued.epoch != self.active_epoch && !is_restore {
                 continue; // pre-flush stale command
@@ -504,9 +506,17 @@ impl TtsBridge {
                     model,
                     voice,
                     silence_target_lufs,
+                    volume_context,
                 } => {
-                    core.prepare_assistant_context(provider, model, voice, silence_target_lufs);
+                    core.prepare_assistant_context(
+                        provider,
+                        model,
+                        voice,
+                        silence_target_lufs,
+                        volume_context,
+                    );
                 }
+                TtsCommand::VolumeContext(context) => core.update_volume_context(context),
                 TtsCommand::ContentMeterPause => core.pause_content_meter(),
                 TtsCommand::ContentMeterResume => core.resume_content_meter(),
                 TtsCommand::ProgramDuckOn => self.duck_active = true,

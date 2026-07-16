@@ -167,6 +167,10 @@ pub struct Config {
     /// Assistant loudness policy for the pre-DSP TTS socket.
     pub assistant_loudness: AssistantLoudnessConfig,
 
+    /// Versioned last-achieved assistant loudness. Separate from the
+    /// canonical speaker-volume record because fan-in is the sole writer.
+    pub assistant_reference_path: String,
+
     /// fan-in → CamillaDSP coupling transport. `Loopback` (the default) writes
     /// the ALSA snd-aloop substream `output_pcm` exactly as today; CamillaDSP
     /// dsnoop-captures it — byte-identical to the pre-coupling daemon. `ShmRing`
@@ -855,6 +859,10 @@ impl Config {
                     loudness_defaults.content_silence_lufs,
                 )?,
             },
+            assistant_reference_path: env_str(
+                "JASPER_FANIN_ASSISTANT_REFERENCE_PATH",
+                "/var/lib/jasper/assistant_volume_reference.json",
+            ),
             camilla_coupling,
             ring_path,
             ring_slots,
@@ -1080,6 +1088,7 @@ mod tests {
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS", None),
                 ("JASPER_OUTPUTD_CONTENT_SILENCE_LUFS", None),
+                ("JASPER_FANIN_ASSISTANT_REFERENCE_PATH", None),
                 ("JASPER_DUCK_DB", None),
             ],
             || {
@@ -1104,6 +1113,10 @@ mod tests {
                 assert_eq!(cfg.assistant_loudness.assistant_offset_lu, 1.5);
                 assert_eq!(cfg.assistant_loudness.max_peak_dbfs, -3.0);
                 assert_eq!(cfg.assistant_loudness.default_silence_target_lufs, -41.0);
+                assert_eq!(
+                    cfg.assistant_reference_path,
+                    "/var/lib/jasper/assistant_volume_reference.json"
+                );
                 // Per-input adaptive resampler is DEFAULT-OFF — the whole point
                 // of the feature flag (HIGH-RISK real-time path).
                 assert!(

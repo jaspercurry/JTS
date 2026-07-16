@@ -1275,6 +1275,52 @@ async def test_set_camilla_deferred_during_voice_session(tmp_path):
     assert cam.set_calls and cam.set_calls[-1] == pytest.approx(percent_to_db(50))
 
 
+async def test_fanin_voice_session_keeps_live_camilla_volume_control(tmp_path):
+    """Fan-in owns program ducking, not Camilla, so an in-session dial edit
+    must land immediately while source transitions remain session-gated."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-25.0)
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+        spotify_router=None,
+    )
+    coord.note_voice_session(True, camilla_volume_locked=False)
+
+    await coord.set_listening_level(46)
+
+    assert cam.set_calls[-1] == pytest.approx(percent_to_db(46))
+    before_transition = list(cam.set_calls)
+    await coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY)
+    assert cam.set_calls == before_transition
+
+
+async def test_dispatch_publishes_absolute_canonical_and_downstream_facts(tmp_path):
+    published = []
+
+    async def publish(context):
+        published.append(context)
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    coord = _RecordingCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={"spotactive": True}),
+        spotify_router=None,
+        volume_context_publisher=publish,
+        handoff_settle_sec=0.0,
+    )
+
+    await coord.set_listening_level(46)
+
+    assert len(published) == 1
+    assert published[0].canonical_db == pytest.approx(percent_to_db(46))
+    assert published[0].downstream_db == pytest.approx(0.0)
+    assert published[0].muted is False
+
+
 # ---- cross-daemon duck-active probe -------------------------------------
 #
 # jasper-control builds a fresh VolumeCoordinator per HTTP request, so the
@@ -1289,7 +1335,7 @@ async def test_set_camilla_deferred_during_voice_session(tmp_path):
 # Replaces the prior dB-comparison heuristic that conflated "user spinning
 # fast" with "duck active" (a fast 3-detent dial spin = +6 dB request,
 # above the old 5 dB threshold, used to defer spuriously and poison
-# listening_level — see docs/HANDOFF-volume.md "Cross-daemon defer signal").
+# listening_level — see docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal").
 
 
 async def test_set_camilla_deferred_when_probe_returns_true(tmp_path):

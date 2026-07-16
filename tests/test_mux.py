@@ -51,6 +51,7 @@ class _FakeVolumeCoordinator:
         self.prepared: list[tuple[Source, Source, str]] = []
         self.finalized: list[_FakeHandoff] = []
         self.events: list[str] = []
+        self.volume_context_publishes = 0
         self.next_result = "ok"
 
     async def prepare_source_handoff(self, prev, current, *, reason):
@@ -62,6 +63,10 @@ class _FakeVolumeCoordinator:
         self.finalized.append(handoff)
         self.events.append(f"finalize:{handoff.current_source.value}")
         return True
+
+    async def publish_volume_context(self):
+        self.volume_context_publishes += 1
+        self.events.append("publish_volume_context")
 
     async def aclose(self):
         pass
@@ -1105,6 +1110,7 @@ async def test_select_source_prepares_volume_before_fanin_gate(
         "prepare:airplay",
         "select:airplay",
         "finalize:airplay",
+        "publish_volume_context",
     ]
 
 
@@ -1198,6 +1204,7 @@ async def test_auto_spotify_to_airplay_prepares_volume_before_fanin_gate(
         "prepare:airplay",
         "select:airplay",
         "finalize:airplay",
+        "publish_volume_context",
     ]
     mux._pause.assert_awaited_with(Source.SPOTIFY)
     assert mux._winner is Source.AIRPLAY

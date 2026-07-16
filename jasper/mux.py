@@ -1014,6 +1014,7 @@ class Mux:
         if self._volume_coordinator is not None:
             return self._volume_coordinator
         from .camilla import CamillaController
+        from .assistant_volume import volume_context_publisher_for_runtime
         from .renderer import RendererClient
         from .speaker_name import runtime_name as speaker_runtime_name
         from .volume_coordinator import VolumeCoordinator
@@ -1037,6 +1038,7 @@ class Mux:
             spotify_router=self._ensure_spotify_router(),
             spotify_device_name=speaker_runtime_name(),
             duck_active_probe=_make_duck_active_probe(),
+            volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
             handoff_settle_sec=float(os.environ.get(
                 "JASPER_SOURCE_HANDOFF_SETTLE_SEC", "0.45",
             )),
@@ -1133,6 +1135,8 @@ class Mux:
                 },
                 level=logging.WARNING,
             )
+        if finalized:
+            await coordinator.publish_volume_context()
         result = handoff.result if finalized else "finalize_failed"
         self._record_handoff(
             handoff, started, handoff_id=handoff_id, result=result,
@@ -1782,6 +1786,9 @@ def _make_duck_active_probe() -> Any:
             json.JSONDecodeError,
         ):
             return None
+        camilla_locked = response.get("camilla_volume_locked")
+        if isinstance(camilla_locked, bool):
+            return camilla_locked
         duck_active = response.get("duck_active")
         return duck_active if isinstance(duck_active, bool) else None
 

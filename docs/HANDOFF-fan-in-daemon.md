@@ -514,6 +514,7 @@ JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024                           # ~21 ms output
 JASPER_FANIN_TTS_SOCKET=/run/jasper-fanin/tts.sock                # production TTS IPC; "disabled" is rollback/lab only
 JASPER_FANIN_TTS_MAX_PENDING_FRAMES=96000                         # 2 s at 48 kHz
 JASPER_FANIN_TTS_PROGRAM_DUCK_DB=${JASPER_DUCK_DB:--25}           # override only for lab retuning
+JASPER_FANIN_ASSISTANT_REFERENCE_PATH=/var/lib/jasper/assistant_volume_reference.json # last achieved assistant speaker loudness; fan-in is sole writer
 JASPER_FANIN_INPUT_RESAMPLER=                                     # DEFAULT-OFF per-input adaptive resampler on the clock-crossing (USB) lane; only "enabled" arms it. See "Per-input resampler" below.
 JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink                         # which lane label the resampler arms on when enabled
 JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512                    # base ring-fill target for the armed lane (~10.7 ms at 48 k)
@@ -530,15 +531,19 @@ entries. Discovered via the chunk 2 smoke test; regression-tested
 in `config::tests::pipe_delimiter_preserves_commas_inside_hw_pcm_names`.
 
 The TTS socket speaks the same line protocol as outputd's TTS
-socket (`GAIN`, `PREPARE_ASSISTANT`, `SEGMENT_START`, `AUDIO`,
+socket (`GAIN`, `PREPARE_ASSISTANT`, `VOLUME_CONTEXT`, `SEGMENT_START`, `AUDIO`,
 `FLUSH_SYNC`, `CLOSE`) plus `PROGRAM_DUCK_ON/OFF`. Fan-in drains those
 commands at period boundaries, drops excess queued audio over the
 pending-frame budget, applies program ducking only to renderer lanes,
 then mixes TTS/cues into the summed buffer before writing toward
 CamillaDSP. `PREPARE_ASSISTANT` and profile-bearing `SEGMENT_START`
 drive the same content-loudness/profile/peak-cap gain decision used by
-outputd; the latest values are exposed under `tts.assistant_loudness` in
-the STATUS response alongside `tts.program_duck_active`. Voice's current
+outputd. `VOLUME_CONTEXT` supplies absolute canonical-user,
+downstream-Camilla, and mute facts; fan-in applies their residual delta to
+already-queued raw assistant blocks with a 100 ms ramp and the existing
+per-segment peak cap. The latest decision, including `reference_kind` and
+`target_speaker_lufs`, is exposed under `tts.assistant_loudness` in the STATUS
+response alongside `tts.program_duck_active`. Voice's current
 fanin ducker is intentionally one-shot — it sends `PROGRAM_DUCK_ON` and
 closes, then sends `PROGRAM_DUCK_OFF` from a later connection — so fan-in
 does **not** treat TTS socket EOF as duck ownership release. A stuck
@@ -548,6 +553,12 @@ pending and no duck refresh has arrived for the idle TTL, fan-in logs
 duck. `PROGRAM_DUCK_OFF` is still allowed to release a duck even after an
 audio flush advances the TTS epoch; stale `PROGRAM_DUCK_ON` is not
 allowed to relatch after a flush.
+
+The no-music assistant reference is a separate versioned record at
+`JASPER_FANIN_ASSISTANT_REFERENCE_PATH`. Fan-in loads it fail-soft at boot and
+persists atomically from a non-audio writer thread only after a completed
+assistant segment materially changes achieved speaker loudness. Cues, chirps,
+muted speech, and flushed/unheard tails never overwrite it.
 
 On an active multiroom bond member, voice bypasses this socket
 entirely: the grouping reconciler points it at outputd's TTS server
@@ -1182,7 +1193,7 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-07-14 (automatic coupling profile gate rechecked: streambox
+Last verified: 2026-07-16 (assistant held-reference persistence, absolute volume context, bounded raw-block queue, live gain ramp, and STATUS decision telemetry checked against Linux fan-in tests; prior 2026-07-14 automatic coupling profile gate rechecked: streambox
 stays loopback while the independent USB DIRECT decision still runs;
 librespot Tier-2 recovery final mutation rechecked
 as active-only `try-restart`, including concurrent Off/role parking;

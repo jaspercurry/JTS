@@ -1157,6 +1157,18 @@ impl StateServer {
                 push_kv_f64_opt(&mut buf, "peak_cap_gain_db", loudness.peak_cap_gain_db, 1);
                 buf.push(',');
                 push_kv_f64_opt(&mut buf, "final_gain_db", loudness.final_gain_db, 1);
+                buf.push(',');
+                push_kv_f64_opt(
+                    &mut buf,
+                    "target_speaker_lufs",
+                    loudness.target_speaker_lufs,
+                    1,
+                );
+                buf.push(',');
+                match loudness.reference_kind {
+                    Some(kind) => push_kv_str(&mut buf, "reference_kind", kind),
+                    None => buf.push_str(r#""reference_kind":null"#),
+                }
                 buf.push('}');
             }
             None => {
@@ -1800,6 +1812,7 @@ mod tests {
         assert!(j.contains(r#""assistant_loudness":{"content_short_lufs":null"#));
         assert!(j.contains(r#""decision_seen":false"#));
         assert!(j.contains(r#""final_gain_db":null"#));
+        assert!(j.contains(r#""reference_kind":null"#));
     }
 
     #[test]

@@ -377,3 +377,16 @@ def test_session_status_surfaces_usage_tracking_degraded():
 
     wl._usage_store = _DegradedStore()
     assert wl.session_status()["usage_tracking_degraded"] is True
+
+
+def test_session_status_distinguishes_fanin_duck_from_camilla_lock():
+    from jasper.voice_daemon import FanInDucker
+
+    wl = WakeLoop.for_tests()
+    ducker = FanInDucker("/tmp/unused.sock", -25.0)
+    ducker._ducked = True
+    wl._ducker = ducker
+
+    status = wl.session_status()
+    assert status["duck_active"] is True
+    assert status["camilla_volume_locked"] is False

@@ -286,6 +286,35 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
     assert segment["source_profile"].provider == "jts"
 
 
+async def test_fanin_prepare_carries_absolute_volume_context() -> None:
+    from jasper.assistant_volume import EffectiveVolumeContext
+    from jasper.voice_daemon import WakeLoop
+
+    prepares = []
+
+    class _Tts:
+        async def prepare_assistant_context(self, **kwargs) -> None:
+            prepares.append(kwargs)
+
+    class _Volume:
+        def get_listening_level(self) -> int:
+            return 50
+
+        async def effective_volume_context(self):
+            return EffectiveVolumeContext(-25.0, -25.0, False)
+
+    wl = WakeLoop.for_tests()
+    wl._cfg.duck_transport = "fanin"
+    wl._tts = _Tts()
+    wl._volume_coordinator = _Volume()
+
+    await wl._prepare_assistant_loudness_context()
+
+    assert prepares[0]["canonical_volume_db"] == -25.0
+    assert prepares[0]["downstream_volume_db"] == -25.0
+    assert prepares[0]["muted"] is False
+
+
 async def test_mute_click_skips_when_output_active() -> None:
     from jasper.voice_daemon import WakeLoop
 

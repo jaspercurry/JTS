@@ -3586,11 +3586,11 @@ def test_session_endpoint_503_when_voice_socket_missing(server_with_coordinator)
     assert "voice_daemon" in body["error"]
 
 
-# --- _make_duck_active_probe (cross-daemon defer signal) -----------------
+# --- _make_duck_active_probe (cross-daemon Camilla ownership) ------------
 #
 # Unit tests for the probe factory consumed by per-request
 # VolumeCoordinators. Validates the wire format and the fail-open
-# error envelope. See docs/HANDOFF-volume.md "Cross-daemon defer signal".
+# error envelope. See docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal".
 
 
 def test_duck_active_probe_returns_true_when_voice_reports_ducked(monkeypatch):
@@ -3612,6 +3612,24 @@ def test_duck_active_probe_returns_false_when_voice_reports_no_duck(monkeypatch)
 
     async def fake_command(socket_path, cmd, *, timeout=5.0):
         return {"state": "IDLE", "duck_active": False}
+
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
+    probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")
+    assert asyncio.run(probe()) is False
+
+
+def test_duck_probe_prefers_explicit_camilla_lock_over_fanin_duck(monkeypatch):
+    """Fan-in can be actively ducking music while Camilla remains the live
+    master-volume surface; the explicit ownership fact wins."""
+    import asyncio
+    import jasper.control.server as srv_mod
+
+    async def fake_command(socket_path, cmd, *, timeout=5.0):
+        return {
+            "state": "LISTENING",
+            "duck_active": True,
+            "camilla_volume_locked": False,
+        }
 
     monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
     probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")

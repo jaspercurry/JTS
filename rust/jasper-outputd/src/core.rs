@@ -9,6 +9,7 @@ use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEG
 use crate::loudness::{AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig};
 use crate::mixer::{gain_db_to_linear, mix_i16_saturating, sanitize_tts_gain_db};
 use crate::types::{AssistantProfile, AudioFormat, SegmentKind, CHANNELS, SAMPLE_RATE};
+use jasper_tts_protocol::VolumeContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeriodReport {
@@ -264,9 +265,19 @@ impl OutputCore {
         model: String,
         voice: String,
         silence_target_lufs: f32,
+        volume_context: Option<VolumeContext>,
     ) {
-        self.loudness
-            .prepare_context(provider, model, voice, silence_target_lufs);
+        self.loudness.prepare_context_with_volume(
+            provider,
+            model,
+            voice,
+            silence_target_lufs,
+            volume_context,
+        );
+    }
+
+    pub fn update_volume_context(&mut self, context: VolumeContext) {
+        self.loudness.update_volume_context(context);
     }
 
     pub fn pause_content_meter(&mut self) {
@@ -490,6 +501,7 @@ mod tests {
             "gpt-realtime-2".to_string(),
             "marin".to_string(),
             -20.0,
+            None,
         );
         core.resume_content_meter();
 

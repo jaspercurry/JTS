@@ -701,12 +701,19 @@ async def run() -> None:
                 "linked yet — visit %s to add one",
                 cfg.google_setup_url,
             )
+    from ..assistant_volume import make_volume_context_publisher
+
     volume_coordinator = VolumeCoordinator(
         camilla=camilla,
         persistence=volume_persistence,
         backend=renderer,
         spotify_router=volume_spotify_router,
         spotify_device_name=cfg.spotify_device_name,
+        volume_context_publisher=(
+            make_volume_context_publisher(cfg.tts_outputd_socket)
+            if cfg.duck_transport == "fanin"
+            else None
+        ),
     )
     # Ducker built after the coordinator so restore follows the active
     # output topology. Current production routes TTS/cues into fan-in

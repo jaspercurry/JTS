@@ -106,6 +106,19 @@ pub struct AssistantProfile {
     pub confidence: f32,
 }
 
+/// Absolute speaker-volume facts supplied by the canonical volume owner.
+///
+/// ``canonical_db`` tracks user intent. ``downstream_db`` is attenuation
+/// applied after the TTS mixer (CamillaDSP today). Keeping both absolute
+/// makes updates idempotent and lets the mixer compensate across source
+/// handoffs without knowing which renderer is active.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VolumeContext {
+    pub canonical_db: f32,
+    pub downstream_db: f32,
+    pub muted: bool,
+}
+
 pub const MIN_ASSISTANT_PROFILE_DB: f32 = -120.0;
 pub const MAX_ASSISTANT_PROFILE_DB: f32 = 0.0;
 
@@ -125,7 +138,9 @@ pub enum TtsCommand {
         model: String,
         voice: String,
         silence_target_lufs: f32,
+        volume_context: Option<VolumeContext>,
     },
+    VolumeContext(VolumeContext),
     ContentMeterPause,
     ContentMeterResume,
     ProgramDuckOn,
@@ -146,6 +161,7 @@ pub fn command_name(command: &TtsCommand) -> &'static str {
     match command {
         TtsCommand::GainDb(_) => "gain",
         TtsCommand::PrepareAssistant { .. } => "prepare_assistant",
+        TtsCommand::VolumeContext(_) => "volume_context",
         TtsCommand::ContentMeterPause => "content_meter_pause",
         TtsCommand::ContentMeterResume => "content_meter_resume",
         TtsCommand::ProgramDuckOn => "program_duck_on",
@@ -182,6 +198,35 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
             .parse::<f32>()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid GAIN value"))?;
         return Ok(Some(TtsCommand::GainDb(gain)));
+    }
+    if let Some(rest) = line.strip_prefix("VOLUME_CONTEXT ") {
+        let mut parts = rest.split(' ');
+        let canonical_db = parts.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing VOLUME_CONTEXT canonical dB",
+            )
+        })?;
+        let downstream_db = parts.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing VOLUME_CONTEXT downstream dB",
+            )
+        })?;
+        let muted = parts.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing VOLUME_CONTEXT mute")
+        })?;
+        if parts.next().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "VOLUME_CONTEXT expects exactly three arguments",
+            ));
+        }
+        return Ok(Some(TtsCommand::VolumeContext(VolumeContext {
+            canonical_db: parse_required_f32(canonical_db, "VOLUME_CONTEXT canonical dB")?,
+            downstream_db: parse_required_f32(downstream_db, "VOLUME_CONTEXT downstream dB")?,
+            muted: parse_bool_token(muted, "VOLUME_CONTEXT mute")?,
+        })));
     }
     if let Some(rest) = line.strip_prefix("AUDIO ") {
         let byte_len = rest
@@ -318,10 +363,35 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
                 "missing PREPARE_ASSISTANT silence target",
             )
         })?;
+        let volume_context = match parts.next() {
+            None => None,
+            Some(canonical_db) => {
+                let downstream_db = parts.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "missing PREPARE_ASSISTANT downstream dB",
+                    )
+                })?;
+                let muted = parts.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "missing PREPARE_ASSISTANT mute")
+                })?;
+                Some(VolumeContext {
+                    canonical_db: parse_required_f32(
+                        canonical_db,
+                        "PREPARE_ASSISTANT canonical dB",
+                    )?,
+                    downstream_db: parse_required_f32(
+                        downstream_db,
+                        "PREPARE_ASSISTANT downstream dB",
+                    )?,
+                    muted: parse_bool_token(muted, "PREPARE_ASSISTANT mute")?,
+                })
+            }
+        };
         if parts.next().is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "PREPARE_ASSISTANT expects exactly four arguments",
+                "PREPARE_ASSISTANT expects four or seven arguments",
             ));
         }
         validate_token(provider, "PREPARE_ASSISTANT provider")?;
@@ -335,6 +405,7 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
                 silence_target,
                 "PREPARE_ASSISTANT silence target",
             )?,
+            volume_context,
         }));
     }
     Err(io::Error::new(
@@ -399,6 +470,17 @@ fn parse_required_f32(value: &str, field: &str) -> io::Result<f32> {
     Ok(parsed)
 }
 
+fn parse_bool_token(value: &str, field: &str) -> io::Result<bool> {
+    match value {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid {field}; expected 0 or 1"),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +537,34 @@ mod tests {
                 assert_eq!(p.source_lufs, Some(-16.5));
                 assert_eq!(p.source_peak_dbfs, None); // "-"
                 assert_eq!(p.confidence, 0.8);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_accepts_absolute_volume_context_and_extended_prepare() {
+        let cmds = parse_all(
+            b"VOLUME_CONTEXT -36.4 -36.4 0\nPREPARE_ASSISTANT openai m v -45.2 -36.4 -36.4 1\n",
+        );
+        assert_eq!(
+            cmds[0],
+            TtsCommand::VolumeContext(VolumeContext {
+                canonical_db: -36.4,
+                downstream_db: -36.4,
+                muted: false,
+            })
+        );
+        match &cmds[1] {
+            TtsCommand::PrepareAssistant { volume_context, .. } => {
+                assert_eq!(
+                    *volume_context,
+                    Some(VolumeContext {
+                        canonical_db: -36.4,
+                        downstream_db: -36.4,
+                        muted: true,
+                    })
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
