@@ -103,8 +103,10 @@
 > server-computed twice (refused at POST while room/balance/sync is active,
 > re-checked at armed time); the `crossover_sweep` spec floors the phone's hard
 > recording deadline at 30 s (`hard_timeout_ms`, the `room_sweep` contract).
-> Lane D raises the crossover-only floor to 45 s so its controlled 14 s quiet
-> capture, per-driver sweep, config load, and `sweep_complete` round trip cannot
+> Lane D raises the crossover-only floor to 45 s so its controlled quiet
+> capture (per-driver: that role's sweep + 2 s, worst case 14 s for
+> woofer/subwoofer), per-driver sweep, config load, and `sweep_complete`
+> round trip cannot
 > race the phone deadline; the room and sync relay floors remain 30 s. The
 > preceding near-field level step owns microphone
 > and calibration setup; its identity is bound to the protected applied speaker

@@ -70,6 +70,20 @@ ANALYSIS_LO_HZ = 40.0
 ANALYSIS_HI_HZ = 18000.0
 DEFAULT_SMOOTHING_FRACTION = 24
 
+# How far before the located sweep arrival the equal-length quiet reference
+# begins, beyond the sweep's own length: ``_capture_to_magnitude`` selects
+# ``ambient_start = arrival - len(reference) - AMBIENT_CONTROLLED_LEAD_S`` and
+# refuses the capture when that start precedes the controlled (host-paused)
+# interval. This is therefore the analyzer's REAL minimum ambient requirement:
+# ambient_duration_s >= kernel sweep duration + this lead. The host-side quiet
+# window (``test_signal_plan.AMBIENT_DURATION_MARGIN_S``, 2.0 s over the
+# *requested* sweep) must stay above this lead plus the synchronized-sweep
+# kernel's phase-rounding growth (~0.09 s); the contract test in
+# tests/test_active_speaker_test_signal_plan.py imports this constant and
+# fails loudly if a future margin reduction would make the analyzer reject
+# every capture at runtime.
+AMBIENT_CONTROLLED_LEAD_S = 1.0
+
 # Verdict thresholds (all differential, so the unknown absolute calibration of
 # the deconvolved magnitude cancels out). The driver-specific ones are aliased
 # from the shared DRIVER QualityModel profile so the forked constant lives in
@@ -449,7 +463,9 @@ def _capture_to_magnitude(
         tail = int(round(0.500 * sr))
         signal_start = arrival_sample - pre_guard
         signal_end = arrival_sample + len(reference) + tail
-        ambient_start = arrival_sample - len(reference) - int(round(1.000 * sr))
+        ambient_start = arrival_sample - len(reference) - int(
+            round(AMBIENT_CONTROLLED_LEAD_S * sr)
+        )
         ambient_end = arrival_sample - pre_guard
         controlled_start = arrival_sample - int(round(float(ambient_duration_s) * sr))
         if (

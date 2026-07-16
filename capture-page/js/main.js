@@ -874,8 +874,12 @@ function updateLevelMeters(ctx, level) {
 
 function setCaptureButtonsDisabled(ctx, disabled) {
   const buttons = (ctx.captureRefs && ctx.captureRefs.buttons) || [];
-  // Stop must stay tappable while everything else is disabled mid-capture —
-  // it is the one control meant to work DURING the disabled window.
+  // Only the level-ramp leg (onLevelRampStart) calls this; it disables
+  // Start/Back for the ramp's duration, and Stop is skipped so it stays
+  // tappable through that window. The sweep leg (onStart) never calls it —
+  // its Start stays enabled during capture (pre-existing behavior; the
+  // sweep-leg interaction model is being redesigned in Wave 2's
+  // session-spanning work, so no new disable logic here).
   for (const ref of buttons) {
     if (ref.action === "stop") continue;
     ref.el.disabled = Boolean(disabled);

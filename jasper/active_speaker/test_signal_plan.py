@@ -95,10 +95,11 @@ def driver_ambient_duration_s(role: str) -> float:
     A fixed worst-case pause (``CROSSOVER_AMBIENT_DURATION_S``, sized to the
     longest driver) forced every driver — including a 4 s tweeter sweep — to
     sit through the SAME 14 s of silence before its tone started. Per-driver
-    sizing keeps the analyzer's pairing invariant (the quiet reference must be
-    at least this driver's own sweep length, see
-    ``driver_acoustics._capture_to_magnitude``'s ``controlled_start`` check)
-    while cutting the wait for every driver shorter than the longest one.
+    sizing keeps the analyzer's pairing invariant — the controlled window must
+    cover the kernel sweep length plus
+    ``driver_acoustics.AMBIENT_CONTROLLED_LEAD_S`` (the ``controlled_start``
+    check in ``driver_acoustics._capture_to_magnitude``) — while cutting the
+    wait for every driver shorter than the longest one.
     """
 
     return driver_sweep_duration_s(role) + AMBIENT_DURATION_MARGIN_S

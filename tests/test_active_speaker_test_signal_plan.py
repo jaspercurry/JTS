@@ -255,9 +255,21 @@ def test_driver_ambient_duration_is_right_sized_per_driver_not_worst_case() -> N
         == CROSSOVER_AMBIENT_DURATION_S
     )
 
-    # The analyzer's pairing invariant (ambient window >= this driver's own
-    # sweep length + a strictly positive guard) stays satisfied for every
-    # driver — see driver_acoustics._capture_to_magnitude's controlled_start
-    # check, which raises when ambient_start < controlled_start.
+    # The analyzer's REAL pairing requirement, pinned to its own named
+    # constant: _capture_to_magnitude selects the quiet crop starting
+    # AMBIENT_CONTROLLED_LEAD_S before the sweep-length window and raises when
+    # that start precedes the controlled interval — so it effectively requires
+    # ambient_duration >= kernel sweep duration + AMBIENT_CONTROLLED_LEAD_S.
+    # The kernel sweep runs slightly LONGER than the requested duration (the
+    # synchronized-sweep kernel rounds ~12.0 s up to ~12.09 s so its phase
+    # closes cleanly); ROUNDING_ALLOWANCE covers that growth with headroom.
+    # Importing the analyzer's constant means a future margin reduction below
+    # its requirement fails HERE instead of silently rejecting every capture
+    # at runtime.
+    from jasper.active_speaker.driver_acoustics import AMBIENT_CONTROLLED_LEAD_S
+
+    ROUNDING_ALLOWANCE_S = 0.25  # synchronized-sweep kernel phase-rounding (~0.09 s)
     for role, sweep_s in DRIVER_SWEEP_DURATIONS_S.items():
-        assert driver_ambient_duration_s(role) > sweep_s
+        assert driver_ambient_duration_s(role) >= (
+            sweep_s + AMBIENT_CONTROLLED_LEAD_S + ROUNDING_ALLOWANCE_S
+        )
