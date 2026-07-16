@@ -1602,7 +1602,9 @@ mod tests {
         assert!(mixer.prepare_period());
         mixer.mix_period(&mut sum);
 
-        let expected = apply_gain_i16(10_000, gain_db_to_linear(-15.5)) as i32;
+        // First-use quiet-room speech lands exactly on the envelope. The
+        // ordinary music-relative assistant offset does not apply here.
+        let expected = apply_gain_i16(10_000, gain_db_to_linear(-17.0)) as i32;
         assert_eq!(sum, vec![expected, -expected, expected, -expected]);
         assert_eq!(metrics.pending_frames(), 0);
         assert!(metrics.loudness_snapshot().decision_seen);
@@ -1658,12 +1660,12 @@ mod tests {
         assert!(mixer.prepare_period());
         mixer.mix_period(&mut sum);
 
-        let expected = apply_gain_i16(10_000, gain_db_to_linear(-11.5)) as i32;
+        let expected = apply_gain_i16(10_000, gain_db_to_linear(-13.0)) as i32;
         assert_eq!(sum, vec![expected, -expected]);
         let loudness = metrics.loudness_snapshot();
         assert!(loudness.decision_seen);
         assert!(loudness.calibrated);
-        assert_eq!(loudness.final_gain_db, Some(-11.5));
+        assert_eq!(loudness.final_gain_db, Some(-13.0));
     }
 
     #[test]
@@ -1678,7 +1680,7 @@ mod tests {
             program_duck_db: -25.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: Some(HeldLoudnessReference {
-                speaker_lufs: -30.0,
+                speaker_lufs: -41.0,
                 canonical_db: -30.0,
                 calibration_offset_lu: 0.0,
             }),
@@ -1714,7 +1716,7 @@ mod tests {
                     provider: "openai".to_string(),
                     model: "gpt-realtime-2".to_string(),
                     voice: "marin".to_string(),
-                    source_lufs: Some(-30.0),
+                    source_lufs: Some(-41.0),
                     source_peak_dbfs: Some(-20.0),
                     confidence: 1.0,
                 }),
@@ -1753,14 +1755,16 @@ mod tests {
         mixer.mix_period(&mut second);
 
         assert!(
-            second[0] > 10_000,
+            (second[0] - 10_000).abs() <= 1,
             "ramp starts without a step discontinuity"
         );
-        assert!((second[second.len() - 1] - 19_953).abs() <= 2);
+        assert!(second[200] > 10_000, "ramp makes audible progress");
+        let expected_last = apply_gain_i16(10_000, gain_db_to_linear(1.56)) as i32;
+        assert!((second[second.len() - 1] - expected_last).abs() <= 2);
         let reference = reference_rx
             .try_recv()
             .expect("completed assistant reference");
-        assert!((reference.speaker_lufs - -24.0).abs() < 0.02);
+        assert!((reference.speaker_lufs - -39.44).abs() < 0.02);
         assert_eq!(reference.canonical_db, -24.0);
     }
 
