@@ -347,10 +347,18 @@ def extract_harmonic_ir(full_ir: np.ndarray, sample_rate: int,
                         direct_peak_idx: int, meta: SweepMeta,
                         order: int) -> np.ndarray:
     """Window the order-N harmonic image out of the unwindowed IR.
-    Center = direct_peak_idx - round(advance*fs); half-width = 40% of
-    the gap to the nearest neighboring image (orders N±1), Hann
-    tapered. Raises ValueError if the window would cross t=0 or the
-    linear IR window."""
+    Predicted center = direct_peak_idx - round(advance*fs), REFINED to
+    the local |full_ir| argmax within ±2 ms of the prediction — the
+    L*ln(n) formula is asymptotically exact for full-band sweeps but
+    deviates by up to ~1 ms on narrow low-f1 bass sweeps (Wave 0
+    measured 36 samples on a 10–500 Hz sweep), and the ladder's
+    sweeps ARE narrow bass sweeps. Half-width = 40% of the gap to the
+    nearest neighboring image (orders N±1), Hann tapered. ALSO used
+    to extract the order-1 (fundamental) image: the same window shape
+    MUST be applied to every order being ratioed — mixing window
+    shapes biased recovered ratios by ~6 dB in the Wave 0 spike.
+    Raises ValueError if the window would cross t=0 or overlap a
+    neighboring order's window."""
 
 def harmonic_magnitude_response(harmonic_ir, sample_rate, order,
                                 n_fft=None) -> tuple[np.ndarray, np.ndarray]:
@@ -371,10 +379,20 @@ def band_levels_from_magnitude(freqs, magnitude_db, bands) -> tuple[float, ...]
     # otherwise implement locally — do NOT modify snr_policy.
 
 def thd_curve(fund_freqs, fund_db, harmonics: Mapping[int, tuple[np.ndarray, np.ndarray]],
-              band=(20.0, 200.0)) -> tuple[np.ndarray, np.ndarray]:
+              band=(20.0, 200.0),
+              noise_floor: tuple[np.ndarray, np.ndarray] | None = None,
+              min_fund_snr_db: float = 10.0) -> tuple[np.ndarray, np.ndarray]:
     """(freqs, thd_ratio) where thd = sqrt(sum_n mag_n^2)/mag_1,
     all interpolated onto the fundamental's excitation-frequency grid
-    within band."""
+    within band. The fundamental input must come from the SAME
+    windowed extractor as the harmonics (see extract_harmonic_ir).
+    SNR MASK (Wave 0 finding — a design requirement): where
+    noise_floor is given, grid points whose fundamental magnitude is
+    within min_fund_snr_db of the floor return NaN — near the sweep's
+    own band edges the fundamental collapses and harmonic ratios read
+    physically-impossible values (+8.7 dB "H2" observed on a real
+    capture). Consumers (Wave 4 rung verdicts) evaluate unmasked
+    points only."""
 
 def compression_curve(rungs: Sequence[tuple[float, tuple[float, ...]]],
                       ) -> tuple[tuple[float, ...], ...]:
@@ -444,12 +462,21 @@ def tracking_error_db(freqs, measured_db, predicted_db,
   change-detector test — thresholds ride `algorithm_version`).
 
 `test_audio_measurement_harmonics.py`:
-- Build a synchronized sweep (`synchronized_swept_sine`, 8 s, 10 Hz –
-  500 Hz, fs 48 k); pass it through `y = x + 0.03·x²` (and a variant
-  with `0.01·x³`); deconvolve with `regularized_deconvolution_full`;
-  assert the H2 (H3) image peak sits at `direct_peak −
-  round(fs·L·ln(2 or 3))` within ±2 samples; recovered H2 ratio via
-  `thd_curve` is within ±1 dB of the injected level across 30–150 Hz.
+- Full-band case (production sweep shape, 20 Hz – 20 kHz, 10 s):
+  H2/H3 image peaks sit at `direct_peak − round(fs·L·ln(n))` within
+  ±2 samples (the formula is exact here).
+- Narrow bass sweep case (8 s, 10 – 500 Hz — the ladder's shape):
+  the ±2 ms refinement finds the true image peak even though the raw
+  formula is tens of samples off (assert the refined center differs
+  from the naive prediction AND the recovered ratio still meets
+  tolerance).
+- Both cases: `y = x + 0.03·x²` (and `0.01·x³` variant); recovered
+  H2 ratio via `thd_curve` within ±1 dB of injected across
+  30–150 Hz, with the fundamental extracted through the SAME
+  windowed path as the harmonics.
+- SNR mask: a synthetic case with an elevated noise floor near f1
+  masks (NaN) the affected grid points and leaves mid-band points
+  intact.
 - `extract_harmonic_ir` window-collision ValueError case.
 - `compression_curve` on synthetic soft-clipped rung levels;
   `tracking_error_db` offset-invariance.
@@ -485,6 +512,15 @@ margin) — it should resemble plan §1.1's shape.
 
 ## Changelog
 
+- **Rev 3 (2026-07-16)** — folds in the Wave 0 Spike-3 measured
+  findings (see `docs/research/2026-07-16-bass-extension-spikes/`):
+  `extract_harmonic_ir` refines its window center by local peak
+  search (the L·ln(n) formula deviates ~1 ms on narrow bass sweeps)
+  and is used for the fundamental too (window symmetry — mixed
+  window shapes bias ratios ~6 dB); `thd_curve` gains a mandatory
+  fundamental-SNR mask (band-edge harmonic ratios are garbage
+  without it); harmonic tests split into full-band exact-offset and
+  narrow-sweep refinement cases plus an SNR-mask case.
 - **Rev 2 (2026-07-16)** — resolves the six contract contradictions
   found by the first implementation's adversarial review:
   (1) `PortedPlantFit`/`PassiveRadiatorPlantFit` now carry

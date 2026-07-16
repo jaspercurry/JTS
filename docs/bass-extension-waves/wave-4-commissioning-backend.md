@@ -117,7 +117,9 @@ numerics with the `MarginPolicy` thresholds — the web layer never
 computes a verdict.
 
 Stop-conditions per rung (from plan §7.5, via `MarginPolicy`):
-compression, THD, capture clip, repeat spread > 2 dB, SNR
+compression, THD (evaluated on `thd_curve`'s unmasked/SNR-valid grid
+points only — band-edge masking is expected and is not a failure;
+Wave 0 finding), capture clip, repeat spread > 2 dB, SNR
 insufficient, digital ceiling, mic-moved coherence check
 (150–400 Hz band correlation on gain-normalized consecutive rungs —
 implement in `ladder.py` using Wave 1 band helpers; threshold 0.98
