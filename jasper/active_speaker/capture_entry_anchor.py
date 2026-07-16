@@ -24,9 +24,15 @@ exactly once from this stash at sequence exit / recovery surfaces
 (``web_commissioning.restore_pending_capture_entry_config``).
 
 Fail direction: a stash that is never restored leaves the speaker on the
-all-muted staged anchor — muted, never loud. Recovery surfaces: the
-jasper-correction-web service-start claim boundary, and any later crossover
-apply (which repoints production itself and makes the stash inert).
+all-muted staged anchor — muted, never loud. Recovery surfaces:
+jasper-correction-web's own idle shutdown (the common abandon — the user
+closes the tab and the wizard idles out minutes later), the service-start
+claim boundary (a process that crashed/restarted mid-sequence), and any later
+crossover apply (which repoints production itself and makes the stash inert).
+After those, the only stranded-muted case left is a hard crash/reboot
+mid-sequence — unchanged from before this stash existed, and exactly the
+crash-recovery-MUTED posture the startup-load S3 guard prescribes; it
+converges at the next correction-web start.
 """
 
 from __future__ import annotations

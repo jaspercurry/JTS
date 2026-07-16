@@ -1400,6 +1400,105 @@ def test_capture_retry_reuses_staged_anchor_without_reanchoring(monkeypatch):
     assert load_driver_call["load_config"] is not None
 
 
+def test_level_match_teardown_leaves_anchor_for_first_sweep_attempt(monkeypatch):
+    """Sweep attempt 1 after a same-session level lock does ZERO SetConfigFilePath.
+
+    The level-match prepare loaded the staged anchor once (the sequence's only
+    persisted-path write); its teardown re-mutes via the INLINE rollback
+    (``commission_load_config`` = CamillaDSP ``SetConfig``, persisted path
+    untouched) and deliberately does not restore production. The first sweep
+    attempt therefore finds persisted==anchor and takes the real anchor fast
+    path — the run-8 wedge shape (level teardown -> production -> sweep
+    re-anchor double SetConfig) no longer exists. The only double config swap
+    left in the sequence is at level-match START, which never wedged (arming
+    waits on the phone; seconds of settle before any tone).
+    """
+
+    from jasper.active_speaker import capture_entry_anchor
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    production_path = "/var/lib/camilladsp/configs/sound_current.yml"
+
+    set_calls = []
+
+    class Cam:
+        # After level-match prepare, the persisted path IS the staged anchor
+        # (commission loads are inline and never repoint it).
+        async def get_config_file_path(self, *, best_effort):
+            return staged_path
+
+        async def set_config_file_path(self, path, *, best_effort):
+            set_calls.append(path)
+            return True
+
+    # The state the level-match prepare left behind: stash = production,
+    # transaction entry = production.
+    capture_entry_anchor.record_entry(production_path)
+    prepared = {
+        "load": {
+            "load": {"status": "loaded"},
+            "measurement_transaction": {
+                "kind": "automatic_driver_capture",
+                "entry_config_path": production_path,
+                "restored": False,
+            },
+        },
+    }
+
+    async def inner_rollback(**_kwargs):
+        # rollback_driver_commissioning_config through the INLINE seam.
+        return {"rollback": {"status": "rolled_back"}}
+
+    monkeypatch.setattr(web, "_rollback_summed_commissioning_config", inner_rollback)
+
+    teardown = asyncio.run(
+        web.restore_automatic_driver_level_match(prepared, camilla_factory=Cam)
+    )
+    assert teardown["status"] == "anchored"
+    assert set_calls == []  # teardown never repoints the persisted path
+
+    monkeypatch.setattr(
+        web,
+        "load_staged_startup_config",
+        lambda: {"status": "staged", "config": {"path": staged_path}},
+    )
+    monkeypatch.setattr(
+        web,
+        "write_commission_path_safety",
+        lambda *_args, **_kwargs: "/tmp/path-safety.json",
+    )
+    monkeypatch.setattr(
+        web,
+        "commission_seams",
+        lambda _cam: (object(), object(), object()),
+    )
+
+    async def load_driver(*_args, **_kwargs):
+        return {"load": {"status": "loaded"}}
+
+    monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
+
+    payload = asyncio.run(
+        web._load_driver_commissioning_config_for_level(
+            topology=_topology(),
+            speaker_group_id="mono",
+            role="woofer",
+            level_dbfs=0.0,
+            volume_limit_db=-4.0,
+            startup_gate_calibration_level={"status": "floor"},
+            preset=object(),
+            crossover_preview=None,
+            camilla_factory=Cam,
+        )
+    )
+
+    # Attempt 1 rides the real anchor fast path: still zero SetConfigFilePath
+    # across teardown + sweep load, stash intact for the sequence restore.
+    assert payload["startup_setup"]["status"] == "already_loaded"
+    assert set_calls == []
+    assert capture_entry_anchor.pending_entry() == production_path
+
+
 def test_restore_pending_capture_entry_config_restores_exactly_once(monkeypatch, tmp_path):
     from jasper.active_speaker import capture_entry_anchor
 

@@ -563,6 +563,84 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
     assert claims == ["repeat", "level", "commissioning", "capture_entry"]
 
 
+def test_idle_shutdown_invokes_capture_entry_restore(monkeypatch):
+    """The idle exit converges an abandoned capture sequence to production.
+
+    The common abandon is the user closing the tab mid-sequence:
+    correction-web idles out minutes later, and (being socket-activated) will
+    not run again until someone revisits /correction/. Without this hook the
+    speaker would stay parked on the all-muted staged anchor until then.
+    """
+
+    from jasper.active_speaker import web_commissioning
+
+    calls = []
+
+    async def restore(*, camilla_factory):
+        del camilla_factory
+        calls.append("restore")
+        return {"status": "restored", "config_path": "/tmp/prod.yml"}
+
+    monkeypatch.setattr(
+        web_commissioning, "restore_pending_capture_entry_config", restore
+    )
+
+    correction_setup._idle_exit_restore_capture_entry()
+    assert calls == ["restore"]
+
+    # A failing restore is swallowed (the process is about to exit; the
+    # durable stash survives for the service-start claim boundary).
+    async def broken(*, camilla_factory):
+        del camilla_factory
+        calls.append("broken")
+        raise RuntimeError("camilla went away")
+
+    monkeypatch.setattr(
+        web_commissioning, "restore_pending_capture_entry_config", broken
+    )
+    correction_setup._idle_exit_restore_capture_entry()
+    assert calls == ["restore", "broken"]
+
+
+def test_main_wires_idle_tracker_to_capture_entry_restore(monkeypatch):
+    """main() hands the capture-entry restore to the IdleShutdownTracker."""
+
+    from jasper.web import _systemd
+
+    captured = {}
+
+    class FakeTracker:
+        def __init__(self, *_args, **kwargs):
+            captured.update(kwargs)
+
+        def start(self):
+            pass
+
+    class FakeServer:
+        RequestHandlerClass = object
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        correction_setup, "_claim_crossover_state_owners", lambda: None
+    )
+    monkeypatch.setattr(
+        correction_setup, "make_server", lambda *_a, **_kw: FakeServer()
+    )
+    monkeypatch.setattr(_systemd, "adopt_systemd_sockets", lambda: [])
+    monkeypatch.setattr(_systemd, "IdleShutdownTracker", FakeTracker)
+    monkeypatch.setattr(_systemd, "install_request_idle_bump", lambda *_a: None)
+    monkeypatch.setattr(_systemd, "notify_ready", lambda: None)
+    monkeypatch.setattr(_systemd, "notify_stopping", lambda: None)
+
+    assert correction_setup.main(["--host", "127.0.0.1", "--port", "0"]) == 0
+    assert (
+        captured.get("on_idle_exit")
+        is correction_setup._idle_exit_restore_capture_entry
+    )
+
+
 def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
     from jasper.active_speaker import repeat_admission
     from jasper.web import correction_crossover_backend

@@ -170,6 +170,7 @@ class IdleShutdownTracker:
         self,
         idle_threshold_sec: float = DEFAULT_IDLE_SHUTDOWN_SEC,
         watchdog_period_sec: float = DEFAULT_WATCHDOG_NOTIFY_SEC,
+        on_idle_exit=None,
     ) -> None:
         self._lock = threading.Lock()
         self._last_request = time.monotonic()
@@ -177,6 +178,12 @@ class IdleShutdownTracker:
         self._idle_threshold = idle_threshold_sec
         self._watchdog_period = watchdog_period_sec
         self._stopped = False
+        # Optional zero-arg callable run once, exception-guarded, after the
+        # idle decision and before os._exit — the wizard's last in-process
+        # chance to converge state it left mid-flow (e.g. correction-web's
+        # abandoned-capture production restore). Keep hooks bounded: the
+        # process is exiting and a slow hook delays the socket rearm.
+        self._on_idle_exit = on_idle_exit
         self._thread = threading.Thread(
             target=self._run, name="jasper-web-idle", daemon=True,
         )
@@ -227,6 +234,11 @@ class IdleShutdownTracker:
                     "systemd idle-exit: no requests for %.0fs (threshold %.0fs)",
                     idle, self._idle_threshold,
                 )
+                if self._on_idle_exit is not None:
+                    try:
+                        self._on_idle_exit()
+                    except Exception:  # noqa: BLE001 - the exit must proceed.
+                        log.exception("idle-exit hook failed; exiting anyway")
                 notify_stopping()
                 # os._exit, not sys.exit — see class docstring.
                 os._exit(0)
