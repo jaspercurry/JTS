@@ -677,6 +677,12 @@ class RampData:
     max_observed_peak_dbfs: float | None = None
     max_signal_over_noise_db: float | None = None
     error: str | None = None
+    # Extra homeowner-facing specifics beyond the stable `error` code (e.g.
+    # agc_suspected's measured slopes + step counts). None for every terminal
+    # that doesn't have anything to add beyond its own `error` sentence — see
+    # jasper.correction.level_match.describe_ramp_refusal, the single place
+    # a terminal (error, error_detail) pair becomes homeowner copy.
+    error_detail: str | None = None
     # Idempotency guard for terminal-state listening-level restore.
     restored: bool = False
 
@@ -750,6 +756,7 @@ class RampData:
             "max_observed_peak_dbfs": r(self.max_observed_peak_dbfs),
             "max_signal_over_noise_db": r(self.max_signal_over_noise_db),
             "error": self.error,
+            "error_detail": self.error_detail,
             "restored": self.restored,
         }
 
@@ -791,6 +798,15 @@ class _LoopVars:
     # rationale where this is populated in run()), for the empirical AGC slope
     # check. Unused (stays empty) for an attested/explicitly-AGC-on run.
     agc_evidence: list[tuple[float, float]] = field(default_factory=list)
+    # (slope, distinct_step_count) recorded the first time the AGC slope
+    # check fails the threshold. A single marginal estimate is not enough
+    # evidence to refuse a measurement (the 2026-07-16 jts3 false-positive:
+    # 0.644 over 3 steps/6.65 dB span, the same mic clean at 4 steps in a
+    # different flow twenty minutes later) — the gate holds the verdict open
+    # for one more staircase step of evidence before a terminal fires. None
+    # means either no failing estimate has been seen yet, or (once set) that
+    # the one extension is already in flight.
+    agc_marginal: tuple[float, int] | None = None
 
 
 def _ols_slope(points: list[tuple[float, float]]) -> float | None:
@@ -1027,6 +1043,7 @@ class RampController:
             *,
             final_db: float | None,
             error: str | None = None,
+            error_detail: str | None = None,
             event: str | None = None,
             level: int = logging.INFO,
             **event_fields: Any,
@@ -1034,6 +1051,8 @@ class RampController:
             d.state = state
             if error is not None:
                 d.error = error
+            if error_detail is not None:
+                d.error_detail = error_detail
             if event is not None:
                 log_event(
                     logger,
@@ -1171,21 +1190,36 @@ class RampController:
                         d, v, cfg, [s.rms_dbfs for s in trusted]
                     )
                     if d.agc_verified is False:
-                        # Explicit slope failure: abort NOW, at whatever
-                        # (usually still-quiet) commanded level the staircase
-                        # has reached — never keep climbing an AGC-suspected
-                        # chain toward the window.
+                        # A CONFIRMED slope failure (the marginal-estimate
+                        # extension already ran and the extended evidence
+                        # still fails — see _update_agc_evidence): abort NOW,
+                        # at whatever (usually still-quiet) commanded level
+                        # the staircase has reached — never keep climbing an
+                        # AGC-suspected chain toward the window.
                         xs = [x for x, _ in v.agc_evidence]
+                        steps = len({round(x, 3) for x in xs})
+                        slopes: list[float] = []
+                        if v.agc_marginal is not None:
+                            slopes.append(v.agc_marginal[0])
+                        if d.agc_slope is not None:
+                            slopes.append(d.agc_slope)
                         return await _terminal(
                             RampState.ERROR,
                             final_db=d.original_main_volume_db,
                             error="agc_suspected",
+                            error_detail=(
+                                "slopes "
+                                + ", ".join(f"{s:.2f}" for s in slopes)
+                                + f" over {steps} steps"
+                                if slopes
+                                else None
+                            ),
                             event="ramp_agc_suspected",
                             level=logging.WARNING,
                             slope=(
                                 f"{d.agc_slope:.3f}" if d.agc_slope is not None else ""
                             ),
-                            steps=len({round(x, 3) for x in xs}),
+                            steps=steps,
                             span_db=(f"{max(xs) - min(xs):.2f}" if xs else "0"),
                         )
 
@@ -1471,11 +1505,21 @@ class RampController:
         primary gate — span is the regression's x-leverage; a few adjacent
         0.75 dB steps aren't enough to estimate the slope robustly under real
         mic jitter) AND ``agc_slope_min_steps`` distinct commanded levels (the
-        secondary floor), regresses reported rms against commanded dB and sets
-        ``agc_verified``. Leaves it ``None`` (indeterminate) while either
-        bound is unmet — the caller in ``run()`` treats a ``False`` verdict as
-        an immediate abort; ``None`` at lock time is handled separately (see
-        ``_tick_state`` and ``_bounded_low_level_is_usable``).
+        secondary floor), regresses reported rms against commanded dB.
+
+        A slope at/above ``agc_slope_threshold`` sets ``agc_verified = True``
+        immediately (unchanged — the pass path is single-shot). A slope BELOW
+        threshold is provisional, not terminal: a single marginal estimate at
+        the minimum evidence window is noisy (the 2026-07-16 jts3
+        false-positive — 0.644 over 3 steps/6.65 dB span, the same mic clean
+        at 4 steps in a different flow twenty minutes later), so the first
+        failing estimate is held in ``v.agc_marginal`` and ``agc_verified``
+        stays ``None`` — the caller in ``run()`` keeps calling this as more
+        staircase evidence arrives. Only a SECOND failing evaluation, with
+        strictly more distinct commanded levels than the first, sets
+        ``agc_verified = False`` (the caller's abort). ``None`` at lock time
+        (never reached a second, or any, evaluation) is handled separately —
+        see ``_tick_state`` and ``_bounded_low_level_is_usable``.
         """
         for rms in rms_values:
             v.agc_evidence.append((d.current_main_volume_db, rms))
@@ -1484,6 +1528,10 @@ class RampController:
             return
         span = max(x for x, _ in v.agc_evidence) - min(x for x, _ in v.agc_evidence)
         if span < cfg.agc_slope_min_span_db:
+            return
+        if v.agc_marginal is not None and len(steps) <= v.agc_marginal[1]:
+            # Holding for the one extension's extra step of evidence — the
+            # step count hasn't advanced since the marginal estimate yet.
             return
         slope = _ols_slope(v.agc_evidence)
         if slope is None:
@@ -1499,17 +1547,23 @@ class RampController:
                 steps=len(steps),
                 at_db=f"{d.current_main_volume_db:.1f}",
             )
-        else:
-            d.agc_verified = False
+            return
+        if v.agc_marginal is None:
+            v.agc_marginal = (slope, len(steps))
             log_event(
                 logger,
-                "ramp_agc_suspected",
-                level=logging.WARNING,
+                "ramp_agc_marginal",
+                level=logging.INFO,
                 session=self.session_id,
                 slope=f"{slope:.3f}",
                 steps=len(steps),
                 at_db=f"{d.current_main_volume_db:.1f}",
             )
+            return
+        # The one-step extension's evidence still fails: `run()` reads
+        # agc_verified is False and fires the ramp_agc_suspected terminal
+        # (the single emitter for that event — see run()'s AGC check).
+        d.agc_verified = False
 
     @staticmethod
     def _bounded_low_level_is_usable(

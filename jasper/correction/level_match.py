@@ -715,6 +715,146 @@ class LevelMatchOutcome:
         }
 
 
+# --- ramp terminal refusal copy -----------------------------------------------
+#
+# The 2026-07-16 jts3 finding: a level-match ramp terminal that didn't lock
+# (``agc_suspected`` and friends) reached the phone terminal and the
+# ``capture_relay.adapter_failed`` log as a bare ``ValueError`` carrying the
+# ramp's raw code — never translated, never explaining anything. Every
+# refusal now names its reason (the project rule): this is the single place
+# a ramp terminal's ``(error, error_detail)`` pair becomes homeowner copy.
+# Both the relay web adapter (``jasper.web.correction_setup``) and the Room
+# envelope (``jasper.correction.envelope``) call ``describe_ramp_refusal`` —
+# neither hand-rolls its own copy.
+
+
+@dataclass(frozen=True)
+class RampRefusal:
+    """One ramp terminal's homeowner-facing translation.
+
+    ``code`` is the stable, machine-readable reason (the ramp's own terminal
+    ``error`` string — already a short snake_case code for the known cases
+    like ``agc_suspected``, e.g. for `reason=` log fields). ``user_message``
+    is the sentence shown to the household.
+    """
+
+    code: str
+    user_message: str
+
+
+class LevelMatchRefused(RuntimeError):
+    """The level-match ramp ended without a lock; carries the homeowner copy.
+
+    Raised by the relay web adapter instead of a bare ``ValueError(detail)``
+    (see the module docstring above). ``str(exc)`` is the homeowner message,
+    so an unmigrated ``str(exc)`` caller still reads sensibly; ``.code`` and
+    ``.user_message`` are the structured pair for callers that want them
+    (log ``reason=``, the phone terminal's ``error`` field).
+    """
+
+    def __init__(self, refusal: RampRefusal) -> None:
+        super().__init__(refusal.user_message)
+        self.code = refusal.code
+        self.user_message = refusal.user_message
+
+
+# Known short ramp codes -> homeowner copy. Exact match only — most other
+# ramp terminals already carry a full sentence in `error` (handled by the
+# prefix table and the generic fallback below).
+_RAMP_REFUSAL_COPY: dict[str, str] = {
+    "agc_suspected": (
+        "The microphone kept adjusting its own level during the check, so "
+        "this measurement can't be trusted. Turn off the mic's automatic "
+        "gain if you can, or try a different device or browser, then retry."
+    ),
+    "agc_indeterminate": (
+        "The speaker couldn't collect enough evidence that the microphone's "
+        "level held steady during the check. Keep the phone still and the "
+        "room quiet, then retry."
+    ),
+    "no usable phone samples": (
+        "The speaker never heard a usable reading from the phone's "
+        "microphone. Check the phone is close enough and its microphone "
+        "isn't blocked, then retry."
+    ),
+    "tone ended before the ramp completed": (
+        "The test tone stopped before the check finished. Retry the level "
+        "check."
+    ),
+    "clip detected": (
+        "The microphone picked up a sound too loud to measure safely. Move "
+        "the phone or turn the volume down, then retry."
+    ),
+    "phone never armed": (
+        "The phone page never started the check. Reopen the measurement "
+        "link and tap Start."
+    ),
+}
+
+# (prefix, message) — matched in order for terminals whose `error` carries a
+# parameterized detail (a duration, a dB value) after a fixed lead-in.
+_RAMP_REFUSAL_PREFIX_COPY: tuple[tuple[str, str], ...] = (
+    (
+        "safety timeout",
+        "The check took too long and stopped for safety. Retry the level "
+        "check.",
+    ),
+    (
+        "phone feed lost",
+        "The speaker lost the phone's microphone feed partway through the "
+        "check. Keep the capture page open, then retry.",
+    ),
+    (
+        "safe cap reached below target window",
+        "The microphone is still too quiet at the safe volume limit. Raise "
+        "the external amplifier a little, then retry.",
+    ),
+    (
+        "non-finite pre-ramp main_volume",
+        "The speaker's starting volume was invalid. Retry the level check.",
+    ),
+)
+
+_NOT_LOCKED_MESSAGE = "The measurement level was not reached. Retry the level check."
+
+
+def describe_ramp_refusal(
+    error: str | None, detail: str | None = None
+) -> RampRefusal:
+    """Translate one ramp terminal's raw ``(error, error_detail)`` into
+    homeowner copy — the single place this mapping lives.
+
+    ``error`` is ``RampData.error`` (a stable short code for some terminals,
+    e.g. ``agc_suspected``; a full sentence for others, e.g. ``"clip
+    detected"`` or ``"phone feed lost (no samples for 8s)"``). A falsy
+    ``error`` (``outcome.locked`` is False but the ramp never set one) is the
+    generic "not locked" case. An unrecognized code always gets a generic
+    fallback that INCLUDES the raw code, never a silently-generic message —
+    most unrecognized codes are already a plain sentence, so echoing it
+    verbatim (title-cased, period-terminated) reads naturally. ``detail`` —
+    when the ramp attached one (``RampData.error_detail`` — currently only
+    ``agc_suspected``'s measured slopes/step count) — is appended in
+    parentheses so retries and support conversations can point at the exact
+    evidence, without changing the stable ``code`` used for log grouping.
+    """
+    code = str(error or "").strip()
+    if not code:
+        return RampRefusal(code="not_locked", user_message=_NOT_LOCKED_MESSAGE)
+    message: str | None = _RAMP_REFUSAL_COPY.get(code)
+    if message is None:
+        for prefix, prefix_message in _RAMP_REFUSAL_PREFIX_COPY:
+            if code.startswith(prefix):
+                message = prefix_message
+                break
+    if message is None:
+        text = code[0].upper() + code[1:]
+        message = text if text.endswith((".", "!", "?")) else f"{text}."
+    extra = str(detail or "").strip()
+    if extra:
+        message = f"{message} ({extra})"
+    return RampRefusal(code=code, user_message=message)
+
+
 class LevelMatchSession:
     """Wires the kernel ramp to the relay for ONE geometry step.
 

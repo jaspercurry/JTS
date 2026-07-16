@@ -31,11 +31,13 @@ from jasper.audio_measurement.ramp import (
 from jasper.correction.level_match import (
     DriftVerdict,
     LevelLockStore,
+    LevelMatchRefused,
     LevelMatchSession,
     MeasurementLevelLock,
     MicGeometry,
     RelayLevelFeed,
     check_level_drift,
+    describe_ramp_refusal,
     parse_level_batch,
     phone_reported_abort,
     phone_reported_armed,
@@ -480,6 +482,58 @@ def test_drift_env_knobs_override_thresholds(monkeypatch):
     ref = [70.0, 70.0, 70.0]
     cur = [66.0, 66.0, 66.0]  # uniform -4 dB, now below the 6 dB threshold
     assert check_level_drift(ref, cur, same_geometry=True).verdict == DriftVerdict.OK
+
+
+# --- ramp terminal refusal copy (2026-07-16 jts3: every refusal names its
+# reason — a raw "agc_suspected" reached the phone and the log untranslated) --
+
+
+def test_describe_ramp_refusal_agc_suspected_names_the_reason():
+    refusal = describe_ramp_refusal("agc_suspected")
+    assert refusal.code == "agc_suspected"
+    assert "automatic" in refusal.user_message.lower()
+    assert "gain" in refusal.user_message.lower()
+    # Jargon/vendor-agnostic: no provider or hardware-model names leak through.
+    for banned in ("gemini", "openai", "grok", "google", "webrtc", "dayton"):
+        assert banned not in refusal.user_message.lower()
+
+
+def test_describe_ramp_refusal_appends_the_measured_detail():
+    refusal = describe_ramp_refusal(
+        "agc_suspected", "slopes 0.64, 0.61 over 4 steps"
+    )
+    assert refusal.code == "agc_suspected"
+    assert "slopes 0.64, 0.61 over 4 steps" in refusal.user_message
+
+
+def test_describe_ramp_refusal_safety_timeout_prefix_match():
+    refusal = describe_ramp_refusal("safety timeout after 45s")
+    # The code stays the exact ramp string (log-groupable elsewhere would
+    # need normalization, but this exact string is what RampData.error holds).
+    assert refusal.code == "safety timeout after 45s"
+    assert "took too long" in refusal.user_message.lower()
+
+
+def test_describe_ramp_refusal_empty_code_is_the_generic_not_locked_case():
+    for empty in (None, "", "   "):
+        refusal = describe_ramp_refusal(empty)
+        assert refusal.code == "not_locked"
+        assert refusal.user_message  # never blank
+
+
+def test_describe_ramp_refusal_unknown_code_falls_back_but_includes_the_code():
+    refusal = describe_ramp_refusal("some brand new ramp failure mode")
+    assert refusal.code == "some brand new ramp failure mode"
+    assert "some brand new ramp failure mode" in refusal.user_message.lower()
+
+
+def test_level_match_refused_str_is_the_homeowner_message():
+    refusal = describe_ramp_refusal("agc_suspected")
+    exc = LevelMatchRefused(refusal)
+    assert str(exc) == refusal.user_message
+    assert exc.code == "agc_suspected"
+    assert exc.user_message == refusal.user_message
+    assert isinstance(exc, RuntimeError)  # caught by the existing except tuples
 
 
 # --- LevelMatchSession end-to-end with a fake relay ---------------------------

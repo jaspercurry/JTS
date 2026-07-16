@@ -37,6 +37,8 @@ The safety proof the panel probes:
 from __future__ import annotations
 
 import asyncio
+import inspect
+import logging
 import math
 import random
 
@@ -51,6 +53,7 @@ from jasper.audio_measurement.ramp import (
     RampData,
     RampLockKind,
     RampState,
+    _LoopVars,
 )
 
 # A fast test config: same shape as the defaults, shorter holds. Overshoot
@@ -577,13 +580,136 @@ async def test_agc_unattested_flat_chain_aborts_before_window_at_quiet_levels():
     assert data.agc_verified is False
     assert data.agc_slope is not None and data.agc_slope < cfg.agc_slope_threshold
     # Caught at deeply quiet levels: evidence starts at the -50 dB staircase
-    # start (the mic cleared the trust floor immediately), so the span-gated
-    # verdict lands at start + agc_slope_min_span_db (+ <=1 step of
-    # quantization) — commanded -44.0 dB here, 22.5 dB below the pre-window.
-    # Never kept climbing an AGC-suspected chain toward the target level.
-    assert max(chain.commanded) == pytest.approx(-50.0 + cfg.agc_slope_min_span_db)
+    # start (the mic cleared the trust floor immediately), so the first
+    # (marginal) span-gated estimate lands at start + agc_slope_min_span_db
+    # — commanded -44.0 dB. A single marginal estimate is not terminal: the
+    # gate holds for one more staircase step (+step_db) before confirming
+    # the refusal, so the actual abort lands one step further out, at
+    # -43.25 dB, still far below the pre-window. Never kept climbing an
+    # AGC-suspected chain toward the target level.
+    assert max(chain.commanded) == pytest.approx(
+        -50.0 + cfg.agc_slope_min_span_db + cfg.step_db
+    )
     assert max(chain.commanded) < cfg.pre_window - 20.0
     assert chain.commanded[-1] == pytest.approx(-50.0)  # restored
+    # The terminal detail names both the marginal and the confirming slope
+    # (identical here — a perfectly linear 0.2-fraction chain, no jitter —
+    # but both are still reported) plus the final step count.
+    assert data.error_detail is not None
+    assert "slopes 0.20, 0.20 over 10 steps" == data.error_detail
+
+
+# --- marginal-estimate retry (2026-07-16 jts3 false-positive) -----------------
+#
+# Hardware finding: a room-correction level ramp on jts3 refused with
+# agc_suspected on a 3-step/6.65 dB-span estimate at slope 0.644 — just under
+# the 0.70 threshold. The SAME mic passed the identical staircase-linearity
+# gate cleanly (slopes 0.892/0.970/1.075/1.015, 4 steps each) in the
+# crossover flow twenty minutes later: the 3-step estimate was noise, not a
+# real AGC chain. A single marginal estimate must not be terminal.
+
+
+def test_agc_marginal_estimate_holds_open_for_one_more_step():
+    """PRE-FIX FAILING REPRO: feeds the exact jts3 shape (slope 0.644 over 3
+    steps, 6.65 dB span) directly at the evidence-folding layer and asserts
+    the gate holds it open rather than terminating on the spot. Against the
+    unmodified kernel (a single evaluation immediately sets
+    ``agc_verified = False``), the first two assertions below fail."""
+    cfg = MeasurementRamp()  # unmodified thresholds: min_steps=3, min_span=6.0, threshold=0.70
+    controller = RampController(session_id="t", config=cfg)
+    data = RampData(current_main_volume_db=-50.0)
+    loop_vars = _LoopVars()
+
+    # Three distinct commanded levels spanning 6.65 dB, reported rms sitting
+    # exactly on the line y = 0.644x (a noiseless chain — OLS reproduces the
+    # slope exactly), reproducing the jts3 evidence verbatim.
+    levels = [-50.0, -46.675, -43.35]
+    for level in levels:
+        data.current_main_volume_db = level
+        controller._update_agc_evidence(data, loop_vars, cfg, [level * 0.644])
+
+    # The marginal estimate must NOT terminate the run.
+    assert data.agc_verified is None
+    assert loop_vars.agc_marginal is not None
+    marginal_slope, marginal_steps = loop_vars.agc_marginal
+    assert marginal_slope == pytest.approx(0.644, abs=1e-6)
+    assert marginal_steps == 3
+
+    # One more staircase step of evidence at the SAME (still flat) slope: the
+    # extension confirms the refusal rather than clearing it — the gate does
+    # not hold open indefinitely.
+    data.current_main_volume_db = -40.025  # levels[-1] + one more 3.325 dB step
+    controller._update_agc_evidence(data, loop_vars, cfg, [-40.025 * 0.644])
+    assert data.agc_verified is False
+    assert data.agc_slope == pytest.approx(0.644, abs=1e-6)
+
+
+def test_agc_marginal_estimate_that_clears_on_extension_verifies():
+    """The mirror case: a first estimate that reads marginal (0.644 over 3
+    steps, same as the jts3 finding) but the very next staircase step's
+    evidence pulls the regression comfortably above threshold — the gate
+    must verify, not refuse. This is the actual jts3 outcome: the identical
+    mic passed cleanly once the crossover flow gave it more steps."""
+    cfg = MeasurementRamp()
+    controller = RampController(session_id="t", config=cfg)
+    data = RampData(current_main_volume_db=-50.0)
+    loop_vars = _LoopVars()
+
+    levels = [-50.0, -46.675, -43.35]
+    for level in levels:
+        data.current_main_volume_db = level
+        controller._update_agc_evidence(data, loop_vars, cfg, [level * 0.644])
+    assert data.agc_verified is None  # held open, not refused
+
+    # One more step whose reading is steep enough that the FULL regression
+    # (all 4 points) clears the threshold.
+    data.current_main_volume_db = -40.025
+    controller._update_agc_evidence(
+        data, loop_vars, cfg, [(-43.35 * 0.644) + 1.5 * (-40.025 - -43.35)]
+    )
+    assert data.agc_verified is True
+    assert data.agc_slope is not None and data.agc_slope > cfg.agc_slope_threshold
+
+
+def test_ramp_agc_suspected_event_has_exactly_one_emitter():
+    """2026-07-16 jts3 finding: ramp_agc_suspected was logged TWICE per
+    terminal from two call sites with two different field orders
+    (session/slope/steps/at_db vs session/at_db/slope/steps/span_db). Only
+    the terminal's own emission in run() may name this event now —
+    _update_agc_evidence's marginal-hold branch logs the distinct
+    ramp_agc_marginal event instead."""
+    source = inspect.getsource(
+        __import__("jasper.audio_measurement.ramp", fromlist=["ramp"])
+    )
+    assert source.count('"ramp_agc_suspected"') == 1
+
+
+@pytest.mark.asyncio
+async def test_agc_suspected_terminal_logs_exactly_one_event(caplog):
+    """Behavioral companion to the source-scan pin above: drive a real
+    AGC-suspected terminal end to end and confirm exactly one
+    ramp_agc_suspected line reaches the log, not two."""
+    cfg = MeasurementRamp(settle_hold_s=0.5, max_loop_latency_s=0.5, safety_timeout_s=60.0)
+    chain = ChainModel(
+        gain_db=20.0,
+        start_vol=-50.0,
+        agc_frozen=False,
+        agc_unattested=True,
+        agc_gain_fraction=0.2,
+    )
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.ramp")
+    controller, data, tone = await _run(chain, cfg, original=-50.0)
+    assert data.state == RampState.ERROR
+    assert data.error == "agc_suspected"
+    suspected = [
+        r for r in caplog.records if "event=ramp_agc_suspected" in r.getMessage()
+    ]
+    assert len(suspected) == 1
+    # The held-open marginal estimate is a distinct, single-shot event too.
+    marginal = [
+        r for r in caplog.records if "event=ramp_agc_marginal" in r.getMessage()
+    ]
+    assert len(marginal) == 1
 
 
 @pytest.mark.asyncio

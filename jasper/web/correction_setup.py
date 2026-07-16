@@ -619,6 +619,35 @@ def _request_local_return_url(
     return f"http://{host}{clean_path}"
 
 
+def _relay_failure_reason(exc: BaseException) -> str:
+    """The stable log ``reason=`` for a relay-capture-lifecycle failure.
+
+    ``LevelMatchRefused`` (jasper.correction.level_match) carries the ramp's
+    own terminal code (e.g. ``agc_suspected``) — every refusal names its
+    reason, never a bare exception class. Every other exception keeps the
+    prior behavior: the exception class name.
+    """
+    from jasper.correction.level_match import LevelMatchRefused
+
+    if isinstance(exc, LevelMatchRefused):
+        return exc.code
+    return type(exc).__name__
+
+
+def _relay_failure_message(exc: BaseException) -> str:
+    """The phone/operator-facing text for a relay-capture-lifecycle failure.
+
+    ``LevelMatchRefused`` carries pre-translated homeowner copy (see
+    ``jasper.correction.level_match.describe_ramp_refusal``); every other
+    exception falls back to ``str(exc)`` unchanged (prior behavior).
+    """
+    from jasper.correction.level_match import LevelMatchRefused
+
+    if isinstance(exc, LevelMatchRefused):
+        return exc.user_message
+    return str(exc)
+
+
 def _run_relay_capture(
     kind: RelayCaptureKind,
     relay_base: str,
@@ -679,20 +708,22 @@ def _run_relay_capture(
                 # run_capture already logs event=capture_relay.failed with a
                 # traceback; this outer net also flips /status.relay to failed and
                 # carries the operator-facing reason (e.g. a device/calibration
-                # mismatch) so the jts3/jts5 status page can show why.
+                # mismatch, or the ramp's own translated refusal — see
+                # _relay_failure_reason/_relay_failure_message) so the jts3/jts5
+                # status page can show why.
                 log_event(
                     logger,
                     "capture_relay.adapter_failed",
                     level=logging.WARNING,
                     exc_info=True,
                     kind=kind.label,
-                    reason=type(exc).__name__,
+                    reason=_relay_failure_reason(exc),
                 )
                 _set_relay_capture({
                     "tap_link": rc.tap_link,
                     "status": "failed",
                     "kind": kind.label,
-                    "error": str(exc),
+                    "error": _relay_failure_message(exc),
                 })
 
         waiting = _publish_relay_waiting(kind.label, rc.tap_link)
@@ -3769,6 +3800,7 @@ async def _run_relay_level_match(
         purge,
     )
     from jasper.correction import coordinator, playback
+    from jasper.correction.level_match import LevelMatchRefused, describe_ramp_refusal
 
     cached_status: dict[str, Any] = {}
     outbound: list[dict[str, Any]] = []
@@ -4205,8 +4237,9 @@ async def _run_relay_level_match(
         if stop_requested is not None and stop_requested():
             raise CaptureStopped("capture stopped")
         if not outcome.locked:
-            detail = outcome.ramp.error or "safe measurement level was not reached"
-            raise ValueError(detail)
+            raise LevelMatchRefused(
+                describe_ramp_refusal(outcome.ramp.error, outcome.ramp.error_detail)
+            )
         mismatch = _relay_device_calibration_block(
             getattr(sess, "mic_calibration", None),
             getattr(sess, "input_device", None),
@@ -4243,7 +4276,7 @@ async def _run_relay_level_match(
                         "state": terminal_state,
                         "terminal": True,
                         "run_token": run_token,
-                        "error": str(exc),
+                        "error": _relay_failure_message(exc),
                     }
                 },
                 hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,

@@ -367,6 +367,53 @@ def _relay_confirmation_pending(session: Any) -> bool:
     )
 
 
+def _level_match_refusal_failure(session: Any) -> dict[str, Any] | None:
+    """The last relay level-match ramp's terminal refusal, in the envelope's
+    public-failure shape — or None when there is nothing to report.
+
+    A level-match ramp terminal (``agc_suspected``, a safety timeout, a lost
+    phone feed, ...) never advances ``session.state`` — it is a retryable
+    sub-step, not a session failure — so it falls outside every other
+    ``failure`` branch in :func:`build_envelope`. Before this, the phone
+    terminal echoed the raw ramp code and the Room page showed nothing at
+    all (the 2026-07-16 jts3 finding: the operator saw the level check
+    silently give up with no explanation). This translates the last
+    unlocked ramp's code through the single shared mapping
+    (:func:`jasper.correction.level_match.describe_ramp_refusal`) so the
+    homeowner always sees why, in the same code/text/retryable/
+    recovery_action shape the rest of the envelope already uses.
+
+    Scoped by ``ramp["error"]`` being non-empty, not by ``ramp["state"]``: a
+    plain user-initiated cancel and a safety-timeout terminal both land in
+    ``RampState.CANCELLED``, and only the timeout sets an ``error`` — an
+    ordinary cancel must stay silent here. A still-running ramp (climbing /
+    settling / confirming) never has ``error`` set either, so this is a
+    no-op mid-check. Once the level locks, :func:`_relay_level_ready`
+    short-circuits so a stale prior failure never lingers after a
+    successful retry.
+    """
+    if _relay_level_ready(session):
+        return None
+    level = _level_match_snapshot(session)
+    last = level.get("last") if isinstance(level, dict) else None
+    ramp = last.get("ramp") if isinstance(last, dict) else None
+    if not isinstance(ramp, dict):
+        return None
+    error_code = ramp.get("error")
+    if not error_code:
+        return None
+
+    from .level_match import describe_ramp_refusal
+
+    refusal = describe_ramp_refusal(error_code, ramp.get("error_detail"))
+    return {
+        "code": refusal.code,
+        "text": refusal.user_message,
+        "retryable": True,
+        "recovery_action": None,
+    }
+
+
 def _autolevel_snapshot(session: Any) -> dict[str, Any]:
     al = getattr(session, "autolevel", None)
     if al is None:
@@ -1280,6 +1327,8 @@ def build_envelope(
         failure = measurement_evidence_failure(
             getattr(session, "confidence_report", None),
         )
+    elif transport == "relay":
+        failure = _level_match_refusal_failure(session)
     if failure is not None and session.state.value != "failed":
         next_action = None
     tuning_llm = _tuning_llm(screen)
