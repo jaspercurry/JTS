@@ -558,7 +558,41 @@ the woofer's bottom octave is a NORMAL outcome in evening and urban rooms —
 residential noise is heavily low-frequency-weighted — so the shortfall path
 is ordinary product behavior, not an error state: name the actionable lever
 (quiet the room, accept reduced low-frequency confidence, or raise the level
-within the envelope).
+automatically within the envelope — see the closed-loop level solver below).
+
+**The closed-loop level solver (W2.1) chooses the sweep level automatically,
+before any tone plays.** Hardware session 2026-07-16 (jts3) measured driver
+sweeps running roughly 24 dB below the driver-safety effective-peak ceiling
+in a noisy room — worst-band SNR 11.0-16.1 dB against the 20 dB floor above,
+a deterministic "insufficient" result every time, even though every input
+needed to pick a louder, still-safe level was already known before the tone
+played. `jasper.audio_measurement.level_solver` closes that gap: given the
+driver's level-match lock (`gain_map_db`, the ramp's dynamic `cap_db`), the
+room's ambient noise (a per-band phone measurement when available, else the
+ramp's broadband `noise_floor_dbfs` plus a conservative low-frequency
+weighting margin — low-frequency room noise routinely reads louder than a
+broadband average suggests), and the confirmed driver-safety ceilings (the
+same `max_effective_peak_dbfs` admission itself enforces), it picks the
+QUIETEST `(main_volume_db, commissioning_gain_db)` pair that clears the 20 dB
+floor plus a 6 dB solver margin. `main_volume_db` climbs first, bounded by
+the ramp's cap; `commissioning_gain_db` only rises off its current baseline
+(never below it) when volume alone, at its cap, still cannot reach the
+target — the case an insensitive driver (e.g. a tweeter whose role gain
+already floors it well below the ceiling) needs. When even that best effort
+cannot clear the bare 20 dB floor, the solver refuses with a typed
+`room_too_noisy_for_safe_measurement` result BEFORE any tone plays, naming
+the failing band and the two levers (quiet the room, move the microphone
+closer) — this refusal does not invalidate the driver's level lock. If
+sweep 1's own measured SNR still misses despite the solve (the solver's
+ambient estimate was optimistic), a one-time "bounded correction" escalates
+the assumed ambient by the measured shortfall for the remaining repeats; a
+second miss becomes the typed refusal, never an open-ended retry ritual.
+`commissioning_gain_db` stays governed by the same non-positive,
+`DriverSweepGeneratorPlan`-validated invariant as before — the solver
+proposes, commissioning admission still validates every ceiling exactly as
+it always has (defense in depth). The phone-side per-band `ambient_stats`
+event is a follow-up page change; until it ships, every solve takes the
+broadband-fallback path.
 
 ### Measurement validity: gating and the low-frequency floor
 
@@ -1704,7 +1738,7 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-15 (Wave 2 reconstruction, measured-candidate input,
+Last verified: 2026-07-16 (added the closed-loop level solver — Wave 2 reconstruction, measured-candidate input,
 preparation-only safety, level-run correlation contracts and terminal-result
 liveness, permanent historical refusal, the reachable isolated-driver
 Shared-admission/playback adapter and bounded writer transaction,

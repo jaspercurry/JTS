@@ -1062,6 +1062,7 @@ def build_crossover_relay_run_and_consume(
     kind = relay_kind_from_raw(raw)
     group_id = str((raw or {}).get("speaker_group_id") or "").strip()
     role = str((raw or {}).get("role") or "").strip().lower()
+    capture_geometry = str((raw or {}).get("capture_geometry") or "near_field").strip().lower()
     # Stash the play response between on_armed (poll thread) and the post-capture
     # record so the record carries the exact sweep the Pi played.
     played: dict[str, Any] = {}
@@ -1140,7 +1141,11 @@ def build_crossover_relay_run_and_consume(
                             "the geometry-scoped driver level lock is unavailable"
                         )
                     return await backend.play_driver_capture_sweep(
-                        {"speaker_group_id": group_id, "role": role},
+                        {
+                            "speaker_group_id": group_id,
+                            "role": role,
+                            "capture_geometry": capture_geometry,
+                        },
                         camilla_factory=camilla_factory,
                         blocking_phase=phase,
                         applied_profile=(

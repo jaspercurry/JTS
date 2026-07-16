@@ -187,6 +187,54 @@ def _completed_insufficient_verdict(role: str, progress: Any) -> str:
     )
 
 
+def _active_level_solve_refusal(
+    status: Mapping[str, Any], target_id: str
+) -> Mapping[str, Any] | None:
+    """The closed-loop level solver's refusal (W2.1) for ``target_id``, if any.
+
+    Sourced from ``CrossoverLevelLease.level_match_snapshot()``'s
+    ``solve_refusal`` -- the single most-recent solve refusal, cleared by a
+    fresh ramp lock or a new level-match run. ``None`` when there is no
+    refusal, or it belongs to a different driver.
+    """
+
+    refusal = _mapping(_mapping(status.get("level_match")).get("solve_refusal"))
+    if not refusal or str(refusal.get("target_id") or "") != target_id:
+        return None
+    return refusal
+
+
+# Closed-loop level solver (W2.1) refusal copy. ONE mapping owns code -> user
+# copy, mirroring jasper.correction.level_match.describe_ramp_refusal (#1534)
+# -- neither this function nor any caller hand-rolls its own sentence.
+_LEVEL_SOLVE_REFUSAL_CODE_ROOM_TOO_NOISY = "room_too_noisy_for_safe_measurement"
+
+
+def _describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
+    band = refusal.get("failing_band_hz")
+    lo, hi = (
+        (band[0], band[1])
+        if isinstance(band, (list, tuple)) and len(band) == 2
+        else (None, None)
+    )
+    band_text = (
+        f"Room noise between {float(lo):.0f}–{float(hi):.0f} Hz"
+        if isinstance(lo, (int, float)) and isinstance(hi, (int, float))
+        else "Room noise in this driver's measurement band"
+    )
+    if str(refusal.get("code") or "") != _LEVEL_SOLVE_REFUSAL_CODE_ROOM_TOO_NOISY:
+        # Only one code exists today; an unrecognized future one still gets
+        # levers-naming copy rather than a bare technical string.
+        return (
+            f"{band_text} could not be measured reliably at a safe level. "
+            "Quiet the room or move the microphone closer, then measure again."
+        )
+    return (
+        f"{band_text} is too high to measure reliably at safe levels. Quiet "
+        "the room or move the microphone closer, then measure again."
+    )
+
+
 def _level_state(status: Mapping[str, Any]) -> tuple[bool, str, bool]:
     level = _mapping(status.get("level_match"))
     last = _mapping(level.get("last"))
@@ -448,9 +496,6 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     from .capture_geometry import comparison_set_valid
 
     comparison_set_ready = comparison_set_valid(active_comparison_set)
-    level_last = _mapping(_mapping(status.get("level_match")).get("last"))
-    level_ramp = _mapping(level_last.get("ramp"))
-    level_lock_kind = str(level_ramp.get("lock_kind") or "")
     setup_ready = _setup_ready(status)
     if "driver_safety_profile_evaluation" in status:
         driver_safety_evaluation = _mapping(
@@ -585,15 +630,6 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         done.update({"microphone", "drivers"})
 
     nudges: list[dict[str, str]] = []
-    # Collected provisionally and only attached to `nudges` once `active_step`
-    # is resolved below (this nudge is derived from the most recent persisted
-    # ramp, level_match.last, which can be stale relative to the screen the
-    # envelope actually renders — hardware-confirmed on 2026-07-16 to render
-    # on every screen, including driver/alignment/apply, until a different
-    # ramp overwrote it). Scoped to the microphone STEP
-    # (active_step == "microphone", which legitimately includes the
-    # waiting screen during a level ramp), not to one screen.
-    pending_bounded_low_nudge: dict[str, str] | None = None
     level_run = _level_run(status)
     level_run_phase = str(level_run.get("phase") or "")
     level_run_unavailable = level_run.get("terminal_reason") == "state_unavailable"
@@ -651,21 +687,6 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "Raise the external amplifier a little, then retry."
             ),
         })
-    elif level_ready and level_lock_kind == "bounded_low_level":
-        shortfall = level_ramp.get("window_shortfall_db")
-        shortfall_text = (
-            f" ({float(shortfall):.1f} dB below the preferred window)"
-            if isinstance(shortfall, (int, float))
-            else ""
-        )
-        pending_bounded_low_nudge = {
-            "code": "bounded_low_measurement_level",
-            "severity": "warn",
-            "text": (
-                "The microphone level is stable and safe but lower than preferred"
-                f"{shortfall_text}. JTS will verify each sweep before using it."
-            ),
-        }
 
     if durable_repeat.get("status") == "unavailable":
         level_ready = False
@@ -1059,6 +1080,25 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 },
             }
             active_step = "drivers"
+        elif (
+            solve_refusal := _active_level_solve_refusal(status, target_id)
+        ) is not None:
+            # Closed-loop level solver (W2.1): no safe sweep level clears even
+            # the bare SNR floor for this driver. Fired BEFORE any tone
+            # plays -- render the honest pre-flight terminal instead of
+            # letting a doomed sweep burn a bounded repeat attempt. The
+            # driver's level lock is untouched (see
+            # CrossoverLevelLease._acquire_sweep_volume); only the room or
+            # mic position needs to change before trying again.
+            screen = "level_solve_refused"
+            verdict = _describe_level_solve_refusal(solve_refusal)
+            action = {
+                "id": "level_match",
+                "label": f"Restart {role} driver level check",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {},
+            }
+            active_step = "microphone"
         else:
             progress = repeat_progress(
                 _mapping(status.get("level_match")).get("repeats"), target_id
@@ -1196,6 +1236,20 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                     "speaker_group_id": group_id,
                     "role": role,
                 },
+            }
+            active_step = "microphone"
+        elif (
+            solve_refusal := _active_level_solve_refusal(status, physical_target_id)
+        ) is not None:
+            # Closed-loop level solver (W2.1): same pre-flight refusal as the
+            # near-field branch above, for the fixed reference-axis sweep.
+            screen = "level_solve_refused"
+            verdict = _describe_level_solve_refusal(solve_refusal)
+            action = {
+                "id": "level_match",
+                "label": f"Restart {role} driver level check",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {},
             }
             active_step = "microphone"
         elif repeat_failure:
@@ -1597,9 +1651,6 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "body": {},
         }
         active_step = "microphone"
-
-    if active_step == "microphone" and pending_bounded_low_nudge is not None:
-        nudges.append(pending_bounded_low_nudge)
 
     return {
         "schema_version": CROSSOVER_ENVELOPE_SCHEMA_VERSION,

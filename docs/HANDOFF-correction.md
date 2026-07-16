@@ -635,7 +635,12 @@
   intentionally not published by this hardware-free lane, so that external
   release artifact remains pending.
   Crossover level and sweep volume transitions now use one durable backend
-  intent for both near-field and fixed-axis work. If restart or failed readback
+  intent for both near-field and fixed-axis work. For an isolated driver
+  sweep, the reasserted level is the closed-loop level solver's choice, not
+  necessarily the raw level-match lock — see
+  [active-crossover-information-design.md](active-crossover-information-design.md)
+  "Level control and SNR" (W2.1); the volume-transition/recovery machinery
+  below is unchanged. If restart or failed readback
   leaves the volume unconfirmed, `GET /crossover/envelope` exposes only
   **Recover safe listening volume**; `POST /crossover/recover-volume` attempts
   confirmed exact restore and then the −60 dB fallback. All other crossover

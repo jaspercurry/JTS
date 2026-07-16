@@ -535,7 +535,17 @@ create a second retention system.
   verification, and active-crossover adapters reassert the target only inside
   the serialized `measurement_window()` that owns playback, then restore it in
   that window's `finally` before renderers resume. The shared ensure/restore
-  transition lock makes concurrent cleanup idempotent and retryable. Room and
+  transition lock makes concurrent cleanup idempotent and retryable. **For an
+  isolated active-crossover driver sweep only (W2.1), "the target" reasserted
+  is no longer necessarily the raw ramp lock** — `CrossoverLevelLease`
+  (`jasper/web/correction_crossover_backend.py`) runs the closed-loop level
+  solver (`jasper.audio_measurement.level_solver`, documented in
+  [active-crossover-information-design.md](active-crossover-information-design.md)
+  "Level control and SNR") and reasserts its chosen `main_volume_db` when the
+  solve succeeds, falling back to the raw lock only when the solve cannot run
+  (no confirmed driver-safety ceilings, missing `gain_map_db`, and similar).
+  A summed sweep is unaffected — it still reasserts the raw quietest fixed-axis
+  lock across its required roles. Room and
   active-crossover adapters may accept the kernel's explicitly degraded
   `bounded_low_level` result only after its unchanged AGC, clip, liveness, SNR,
   spread, and shortfall gates pass; the relay establishes the SNR floor from a
@@ -635,7 +645,9 @@ create a second retention system.
   reference-axis attempts have distinct durable controller identities and
   geometry-scoped level locks; neither can continue or complete the other.
   The fixed-axis level uses the listening-position `+15 dB` / hard `0 dB` cap,
-  and its exact reasserted lock is part of the played excitation ledger.
+  and its exact reasserted lock is part of the played excitation ledger — or,
+  for an isolated driver sweep, the level solver's chosen level in that same
+  ledger position (see the relay-level-target bullet above).
   Request geometry is only a hint until the route proves it equals the
   envelope's next action; the relay acknowledgement policy is the authority at
   playback and analysis. Both geometry stages participate in the correction
@@ -1291,7 +1303,8 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-15 (bounded, cancellation-safe shared DSP-writer
+Last verified: 2026-07-16 (added the closed-loop level solver's isolated-driver
+reassert override, checked hardware-free; bounded, cancellation-safe shared DSP-writer
 admission and contention observability checked hardware-free; Wave 2 neutral artifact-manifest, playback,
 admission-artifact, and guarded-playback ownership; exact Room byte/schema/path
 compatibility; Room playback shim; Active receipt-backed Room admission;
