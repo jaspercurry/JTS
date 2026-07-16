@@ -86,6 +86,41 @@ def _reference_axis_driver_record(
     return _mapping(latest.get(key))
 
 
+def _driver_confirmed(status: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
+    """Whether the operator's by-ear driver confirmation is still intact.
+
+    Reads the confirmation-only latest index (immune to sweep evidence -- see
+    ``measurement._latest_current_driver_confirmations``) rather than the
+    mixed ``latest_driver_measurements`` surface every other helper here
+    uses: a missing driver whose confirmation was clobbered by a later sweep
+    capture (JTS3 run 13 -> run 14) needs a different next action than a
+    driver that has simply never been measured yet.
+
+    Legacy/test callers that predate this key omit it entirely (same
+    contract as ``driver_safety_profile_evaluation`` above); do not newly
+    block them here. Every production caller goes through
+    ``measurement.load_measurement_state`` / ``_summarise``, which always
+    sets this key.
+    """
+    summary = _summary(status)
+    if "latest_driver_confirmations" not in summary:
+        return True
+    latest = _mapping(summary.get("latest_driver_confirmations"))
+    key = f"{target.get('speaker_group_id') or ''}:{target.get('role') or ''}"
+    record = _mapping(latest.get(key))
+    if not record:
+        return False
+    return (
+        record.get("captured") is True
+        and record.get("outcome") == "heard_correct_driver"
+        and record.get("target_fingerprint") == target.get("target_fingerprint")
+        and not any(
+            isinstance(issue, Mapping) and issue.get("severity") == "blocker"
+            for issue in record.get("issues") or []
+        )
+    )
+
+
 def _usable_driver_acoustic(
     record: Mapping[str, Any],
     active_comparison_set: Mapping[str, Any],
@@ -964,76 +999,99 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         target = missing_drivers[0]
         role = str(target.get("role") or "driver")
         target_id = f"{target.get('speaker_group_id') or ''}:{role}"
-        progress = repeat_progress(
-            _mapping(status.get("level_match")).get("repeats"), target_id
-        )
-        repeat_failure = progress.failure
-        if repeat_failure:
-            nudges.append({
-                "code": "driver_repeat_capture_refused",
-                "severity": "warn",
-                "text": (
-                    "Too few repeat sweeps cleared the per-band SNR and clipping "
-                    "checks, or the service restarted mid-set. Quiet the room or "
-                    "adjust the external amplifier, then run the driver level "
-                    "check again before measuring."
-                ),
-            })
-        attempts = progress.attempts
-        repeat_copy = render_repeat_progress(progress)
-        if repeat_failure:
-            screen = "microphone"
-            verdict = (
-                f"The bounded repeat set for the {role} cannot continue. "
-                "Its attempts were preserved; run the driver level check to "
-                "start a fresh comparison-bound set."
-            )
-            action = {
-                "id": "level_match",
-                "label": f"Restart {role} driver level check",
-                "endpoint": "/correction/crossover/level-match",
-                "body": {},
-            }
-            active_step = "microphone"
-        elif progress.completed:
-            # The repeat set finished every bounded attempt and each was
-            # individually accepted, but the target is still in
-            # missing_drivers -- the accepted evidence itself is unusable
-            # (e.g. per-band SNR "insufficient"). Offering "repeat N+1" here
-            # is a dead end: repeat_admission.reserve() refuses a completed
-            # set (JTS3 run 13 hit exactly this, looping on an action that
-            # failed at reservation). Render the honest terminal instead.
-            screen = "microphone"
-            verdict = _completed_insufficient_verdict(role, progress)
-            action = {
-                "id": "level_match",
-                "label": f"Restart {role} driver level check",
-                "endpoint": "/correction/crossover/level-match",
-                "body": {},
-            }
-            active_step = "microphone"
-        else:
+        if not _driver_confirmed(status, target):
+            # The pre-sweep gate (measurement.current_driver_floor_evidence)
+            # will refuse this driver until it is re-confirmed by ear, no
+            # matter how many repeat attempts are offered -- offering
+            # "Measure {role}" here is a dead end that fails at the same
+            # gate every time. Route to the actual remedy instead.
             screen = "driver"
             verdict = (
-                f"Measure the {role}. {driver_placement_instruction(role)} "
-                "JTS will use the safe protected path and saved level."
-                f"{repeat_copy}"
+                f"The {role}'s driver confirmation needs to be redone -- "
+                "there is nothing to fix in the room. Confirm the "
+                f"{role} by ear, then measure it again."
             )
             action = {
-                "id": "measure_driver",
-                "label": (
-                    f"Measure {role} — repeat {attempts + 1}"
-                    if attempts
-                    else f"Position the mic, then measure {role}"
-                ),
-                "endpoint": "/correction/crossover/relay-capture",
+                "id": "confirm_driver",
+                "label": f"Confirm {role} by ear",
+                "endpoint": "/correction/crossover/driver-test",
                 "body": {
-                    "kind": "driver",
                     "speaker_group_id": str(target.get("speaker_group_id") or ""),
                     "role": role,
                 },
             }
             active_step = "drivers"
+        else:
+            progress = repeat_progress(
+                _mapping(status.get("level_match")).get("repeats"), target_id
+            )
+            repeat_failure = progress.failure
+            if repeat_failure:
+                nudges.append({
+                    "code": "driver_repeat_capture_refused",
+                    "severity": "warn",
+                    "text": (
+                        "Too few repeat sweeps cleared the per-band SNR and clipping "
+                        "checks, or the service restarted mid-set. Quiet the room or "
+                        "adjust the external amplifier, then run the driver level "
+                        "check again before measuring."
+                    ),
+                })
+            attempts = progress.attempts
+            repeat_copy = render_repeat_progress(progress)
+            if repeat_failure:
+                screen = "microphone"
+                verdict = (
+                    f"The bounded repeat set for the {role} cannot continue. "
+                    "Its attempts were preserved; run the driver level check to "
+                    "start a fresh comparison-bound set."
+                )
+                action = {
+                    "id": "level_match",
+                    "label": f"Restart {role} driver level check",
+                    "endpoint": "/correction/crossover/level-match",
+                    "body": {},
+                }
+                active_step = "microphone"
+            elif progress.completed:
+                # The repeat set finished every bounded attempt and each was
+                # individually accepted, but the target is still in
+                # missing_drivers -- the accepted evidence itself is unusable
+                # (e.g. per-band SNR "insufficient"). Offering "repeat N+1" here
+                # is a dead end: repeat_admission.reserve() refuses a completed
+                # set (JTS3 run 13 hit exactly this, looping on an action that
+                # failed at reservation). Render the honest terminal instead.
+                screen = "microphone"
+                verdict = _completed_insufficient_verdict(role, progress)
+                action = {
+                    "id": "level_match",
+                    "label": f"Restart {role} driver level check",
+                    "endpoint": "/correction/crossover/level-match",
+                    "body": {},
+                }
+                active_step = "microphone"
+            else:
+                screen = "driver"
+                verdict = (
+                    f"Measure the {role}. {driver_placement_instruction(role)} "
+                    "JTS will use the safe protected path and saved level."
+                    f"{repeat_copy}"
+                )
+                action = {
+                    "id": "measure_driver",
+                    "label": (
+                        f"Measure {role} — repeat {attempts + 1}"
+                        if attempts
+                        else f"Position the mic, then measure {role}"
+                    ),
+                    "endpoint": "/correction/crossover/relay-capture",
+                    "body": {
+                        "kind": "driver",
+                        "speaker_group_id": str(target.get("speaker_group_id") or ""),
+                        "role": role,
+                    },
+                }
+                active_step = "drivers"
     elif (
         not strict_isolated_complete
         and missing_reference_axis_drivers

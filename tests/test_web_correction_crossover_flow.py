@@ -408,6 +408,10 @@ def test_driver_capture_rejects_post_play_topology_change_even_with_old_session(
         lambda _topology: {
             "summary": {
                 "latest_driver_measurements": {"mono:tweeter": old_record},
+                # No acoustic block -- an accurate real-shaped by-ear
+                # confirmation record, so it belongs in the confirmation-only
+                # index too (see measurement._latest_current_driver_confirmations).
+                "latest_driver_confirmations": {"mono:tweeter": old_record},
             },
         },
     )
@@ -4066,6 +4070,71 @@ def test_completed_insufficient_woofer_repeat_set_renders_honest_terminal():
         assert banned not in lowered
 
 
+def test_missing_driver_with_clobbered_confirmation_offers_confirm_not_measure():
+    """JTS3 run 13 -> run 14 (punch #29): the woofer's driver confirmation
+    was clobbered by a later sweep capture, so ``current_driver_floor_evidence``
+    refuses every subsequent measurement pre-playback. Pre-fix, the envelope
+    kept offering "Position the mic, then measure woofer" -- a dead end that
+    fails at the same gate every time, and it blamed the room instead of the
+    stale confirmation. This must route to re-confirming the driver by ear
+    instead of another futile sweep attempt.
+    """
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {}
+    status["measurements"]["summary"]["latest_driver_confirmations"] = {}
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "driver"
+    assert env["next_action"] == {
+        "id": "confirm_driver",
+        "label": "Confirm woofer by ear",
+        "endpoint": "/correction/crossover/driver-test",
+        "body": {"speaker_group_id": "mono", "role": "woofer"},
+    }
+    verdict = env["verdict_text"]
+    assert "nothing to fix in the room" in verdict
+    assert "confirm" in verdict.lower()
+    # Language guide (docs/active-crossover-information-design.md): no
+    # internal vocabulary leaks into the plain-language copy.
+    lowered = verdict.lower()
+    for banned in (
+        "fingerprint", "authority", "candidate", "authorizes",
+        "ledger", "repeat_admission", "comparison set", "playback",
+    ):
+        assert banned not in lowered
+
+
+def test_missing_driver_with_intact_confirmation_still_offers_measure():
+    """Regression: a driver that has simply never been swept yet (confirmed
+    by ear, no acoustic evidence recorded) must still be offered the normal
+    "measure" action -- the new confirmation check must not block the
+    ordinary first-time measurement flow.
+    """
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {}
+    status["measurements"]["summary"]["latest_driver_confirmations"] = {
+        "mono:woofer": {
+            "captured": True,
+            "outcome": "heard_correct_driver",
+            "target_fingerprint": "6" * 64,
+            "issues": [],
+        },
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "driver"
+    assert env["next_action"]["id"] == "measure_driver"
+    assert env["next_action"]["label"] == "Position the mic, then measure woofer"
+
+
 def test_completed_insufficient_fixed_axis_repeat_set_renders_honest_terminal():
     """Same defect, fixed-axis geometry: the reference-axis repeat set can
     independently complete 3/3 accepted with insufficient SNR while
@@ -6243,30 +6312,37 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
             for target in active_driver_targets(topology)
             if target["role"] == "woofer"
         )
+        woofer_confirmation = {
+            "captured": True,
+            "target_id": "mono:woofer",
+            "target_fingerprint": driver_target["target_fingerprint"],
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "output_index": 0,
+            "outcome": "heard_correct_driver",
+            "playback_id": "play-woofer",
+            "test_level_dbfs": -72.0,
+            "floor_confirmation": {
+                "accepted": True,
+                "playback_id": "play-woofer",
+                "target": {
+                    "speaker_group_id": "mono",
+                    "role": "woofer",
+                    "output_index": 0,
+                },
+            },
+            "issues": [],
+        }
         measurements = {
             "summary": {
                 "latest_driver_measurements": {
-                    "mono:woofer": {
-                        "captured": True,
-                        "target_id": "mono:woofer",
-                        "target_fingerprint": driver_target["target_fingerprint"],
-                        "speaker_group_id": "mono",
-                        "role": "woofer",
-                        "output_index": 0,
-                        "outcome": "heard_correct_driver",
-                        "playback_id": "play-woofer",
-                        "test_level_dbfs": -72.0,
-                        "floor_confirmation": {
-                            "accepted": True,
-                            "playback_id": "play-woofer",
-                            "target": {
-                                "speaker_group_id": "mono",
-                                "role": "woofer",
-                                "output_index": 0,
-                            },
-                        },
-                        "issues": [],
-                    },
+                    "mono:woofer": woofer_confirmation,
+                },
+                # No acoustic block -- an accurate real-shaped by-ear
+                # confirmation record, so it belongs in the confirmation-only
+                # index too (see measurement._latest_current_driver_confirmations).
+                "latest_driver_confirmations": {
+                    "mono:woofer": woofer_confirmation,
                 },
             },
         }
