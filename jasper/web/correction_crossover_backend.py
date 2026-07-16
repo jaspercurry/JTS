@@ -1699,6 +1699,27 @@ def status_payload() -> dict[str, Any]:
     from jasper.active_speaker.setup_status import read_active_speaker_setup_status
 
     payload["setup"] = read_active_speaker_setup_status()
+    # The envelope gates the measurement flow on the driver safety profile's
+    # own confirmed-and-current verdict (evaluate_driver_safety_profile), not
+    # on "protected setup" readiness alone: JTS3 hardware evidence showed an
+    # operator admitted through level locks into driver sweeps while the
+    # profile still self-described as incomplete, only refused by the deep
+    # excitation admission after burning acceptance repeats. Load fresh (not
+    # the design draft's own stale save-time evaluation) so a topology change
+    # since the last save is honoured; unreadable is reported as None so the
+    # envelope fails closed rather than silently treating it as authorized.
+    if payload["active"]:
+        from jasper.active_speaker.design_draft import load_design_draft
+        from jasper.output_topology import load_output_topology
+
+        try:
+            safety_topology = load_output_topology()
+            safety_draft = load_design_draft(topology=safety_topology)
+            payload["driver_safety_profile_evaluation"] = safety_draft.get(
+                "driver_safety_profile_evaluation"
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            payload["driver_safety_profile_evaluation"] = None
     # Level evidence is tied to the immutable profile that is actually loaded,
     # not the mutable next-design candidate. Capturing the first driver updates
     # candidate evidence and must not invalidate the safe active graph or its

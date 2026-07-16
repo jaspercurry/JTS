@@ -2142,11 +2142,13 @@ def test_applied_candidate_keeps_exact_run_current_through_status_and_envelope(
     from jasper.active_speaker import (
         baseline_profile,
         crossover_envelope,
+        design_draft as design_draft_module,
         repeat_admission,
         setup_status,
         web_commissioning,
     )
     from jasper.active_speaker.commissioning_run import CommissioningRunStore
+    import jasper.output_topology as output_topology
 
     comparison = _commissioning_comparison()
     status = _envelope_status()
@@ -2157,6 +2159,24 @@ def test_applied_candidate_keeps_exact_run_current_through_status_and_envelope(
     )
     monkeypatch.setattr(backend, "_COMMISSIONING_RUN_STORE", store)
     backend.begin_commissioning_run(comparison)
+    monkeypatch.setattr(output_topology, "load_output_topology", lambda: _topology())
+    # A commissioning run cannot reach "current" (commissioning_service.py's
+    # own precondition) unless the driver safety profile was already
+    # confirmed-and-current; reflect that here rather than exercising the
+    # real design-draft file this sandbox does not have.
+    monkeypatch.setattr(
+        design_draft_module,
+        "load_design_draft",
+        lambda **_kwargs: {
+            "driver_safety_profile_evaluation": {
+                "status": "confirmed",
+                "confirmed_and_current": True,
+                "profile_fingerprint": "a" * 64,
+                "reasons": [],
+                "authorizes_playback": False,
+            }
+        },
+    )
     monkeypatch.setattr(
         web_measurement,
         "status_payload",
@@ -2629,6 +2649,91 @@ def test_crossover_envelope_requires_protected_setup_first():
     assert env["screen"] == "speaker_setup"
     assert env["next_action"]["href"] == "/sound/"
     assert env["next_action"]["id"] == "speaker_setup"
+
+
+def _incomplete_driver_safety_evaluation() -> dict:
+    # Mirrors the JTS3 hardware shape (docs/HANDOFF-active-crossover-...):
+    # status="incomplete", authorizes_playback=False, confirmation=None, with
+    # BLOCKER issues naming the missing woofer bands/limits.
+    return {
+        "status": "incomplete",
+        "confirmed_and_current": False,
+        "profile_fingerprint": "9" * 64,
+        "reasons": [
+            "woofer:hard_excitation_band_missing",
+            "woofer:measurement_band_missing",
+            "woofer:crossover_search_band_missing",
+            "woofer:level_duration_limits_missing",
+        ],
+        "authorizes_playback": False,
+    }
+
+
+def test_crossover_envelope_gates_on_incomplete_driver_safety_profile():
+    # JTS3 evidence: setup_ready (protected setup applied) was true while the
+    # driver safety profile self-described as incomplete/unauthorized. The
+    # envelope must not offer any measurement action in that state -- the
+    # deep excitation admission only refuses it later, after locks and
+    # acceptance repeats were already spent.
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["driver_safety_profile_evaluation"] = _incomplete_driver_safety_evaluation()
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "speaker_setup"
+    assert env["next_action"] == {
+        "id": "speaker_setup",
+        "label": "Finish speaker setup",
+        "href": "/sound/",
+    }
+    assert env["alternate_actions"] == []
+    step_by_id = {step["id"]: step for step in env["steps"]}
+    assert step_by_id["speaker_setup"]["status"] != "done"
+    assert any(
+        "Woofer" in nudge["text"] and "speaker setup" in nudge["text"]
+        for nudge in env["nudges"]
+    )
+    # Language guide: no internal vocabulary (field/status jargon) leaks into
+    # the plain-language copy.
+    for nudge in env["nudges"]:
+        lowered = nudge["text"].lower()
+        for banned in ("fingerprint", "authority", "candidate", "authorizes"):
+            assert banned not in lowered
+
+
+def test_crossover_envelope_gates_when_driver_safety_profile_missing():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["driver_safety_profile_evaluation"] = None
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "speaker_setup"
+    assert env["next_action"]["id"] == "speaker_setup"
+    assert env["alternate_actions"] == []
+
+
+def test_crossover_envelope_authorized_driver_safety_profile_is_unchanged():
+    # No-regression pin: a confirmed-and-current profile behaves exactly like
+    # a caller that omits the key entirely (legacy/pre-gate status shape).
+    from jasper.active_speaker import crossover_envelope
+
+    baseline_env = crossover_envelope.build_crossover_envelope(_envelope_status())
+
+    authorized_status = _envelope_status()
+    authorized_status["driver_safety_profile_evaluation"] = {
+        "status": "confirmed",
+        "confirmed_and_current": True,
+        "profile_fingerprint": "9" * 64,
+        "reasons": [],
+        "authorizes_playback": False,
+    }
+    authorized_env = crossover_envelope.build_crossover_envelope(authorized_status)
+
+    assert authorized_env == baseline_env
 
 
 def test_crossover_apply_requires_explicit_owner(monkeypatch):

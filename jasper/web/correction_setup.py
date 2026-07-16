@@ -4489,6 +4489,24 @@ def _handle_crossover_relay_level_match(
         raise ValueError(
             "finish and apply the protected active-speaker setup before measuring it"
         )
+    # Fail closed on the driver safety profile's own verdict before any level
+    # lease, relay, or repeat reservation is created -- mirrors the
+    # setup-readiness check above. Without this, a stale page (or a profile
+    # that went stale after this page loaded) could still start locks and
+    # burn acceptance repeats before the deep excitation admission refuses
+    # the eventual driver sweep. The key is always present from the real
+    # backend.status_payload() (None when unreadable, which also refuses
+    # here); it is only absent for legacy/test status doubles that predate
+    # this gate, which are not newly blocked.
+    if "driver_safety_profile_evaluation" in status:
+        raw_driver_safety = status.get("driver_safety_profile_evaluation")
+        driver_safety = (
+            raw_driver_safety if isinstance(raw_driver_safety, dict) else {}
+        )
+        if driver_safety.get("confirmed_and_current") is not True:
+            raise ValueError(
+                "confirm the driver safety details in speaker setup before measuring"
+            )
     blocking = _crossover_blocking_phase()
     if blocking is not None:
         raise ValueError(f"another measurement is in progress ({blocking})")

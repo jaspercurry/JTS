@@ -1567,6 +1567,62 @@ def test_crossover_level_start_refuses_unsafe_legacy_preservation(monkeypatch):
         correction_setup._handle_crossover_relay_level_match(handler)
 
 
+def test_crossover_level_start_refuses_unauthorized_driver_safety_profile(
+    monkeypatch,
+):
+    """JTS3 evidence: level-match must fail closed on the driver safety
+    profile's own verdict, mirroring the setup-readiness check right above
+    it, so a stale page cannot start locks -- or consume an acceptance
+    repeat -- for a profile the deep excitation admission would refuse
+    anyway once a driver sweep actually ran."""
+    from jasper.active_speaker import repeat_admission
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_setup
+
+    status = _legacy_crossover_level_status(preservation_ready=True)
+    status["driver_safety_profile_evaluation"] = {
+        "status": "incomplete",
+        "confirmed_and_current": False,
+        "profile_fingerprint": "9" * 64,
+        "reasons": ["woofer:hard_excitation_band_missing"],
+        "authorizes_playback": False,
+    }
+    monkeypatch.setattr(backend, "status_payload", lambda: status)
+    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
+    monkeypatch.setattr(
+        correction_setup,
+        "_crossover_blocking_phase",
+        lambda: pytest.fail("must fail before checking for a blocking phase"),
+    )
+    monkeypatch.setattr(
+        backend,
+        "apply_profile",
+        lambda **_kwargs: pytest.fail("an unauthorized profile must not apply"),
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_relay_capture",
+        lambda *_args, **_kwargs: pytest.fail("must fail before relay registration"),
+    )
+    monkeypatch.setattr(
+        repeat_admission,
+        "activate",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an unauthorized profile must not reach repeat reservation"
+        ),
+    )
+
+    with pytest.raises(
+        ValueError, match="confirm the driver safety details in speaker setup"
+    ):
+        body = json.dumps({"capture_geometry": "near_field"}).encode()
+        handler = SimpleNamespace(
+            headers={"Content-Length": str(len(body))},
+            rfile=io.BytesIO(body),
+        )
+        correction_setup._handle_crossover_relay_level_match(handler)
+
+
 def test_open_commissioning_bundle_for_level_match_forwards_calibration_id(
     monkeypatch,
 ) -> None:
