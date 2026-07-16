@@ -332,7 +332,7 @@ store, not a new Shared evidence bundle. A fresh production comparison set start
 one run only when it carries its bundle session id and exact comparison
 fingerprint. The store atomically persists bounded, fully validated
 session/run/process-owner-generation identity, immutable generation-bound target
-attempts, and a hash-chained journal of typed nine-state transitions. Every
+attempts, and a sequenced journal of typed nine-state transitions. Every
 public read revalidates the complete artifact. Correction-web claims the owner
 generation on service start, making prior-process handles stale, and exposes a
 safe `commissioning_run` projection on crossover status. A comparison must pass

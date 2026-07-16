@@ -265,7 +265,7 @@ def test_only_committed_transition_logs_and_polling_stays_silent(
     ]
 
 
-def test_journal_is_contiguous_hash_chained_and_tracks_current_state(
+def test_journal_is_contiguous_and_tracks_current_state(
     tmp_path: Path,
 ) -> None:
     store = CommissioningRunStore(path=tmp_path / "run.json", owner_id="3" * 32)
@@ -278,8 +278,8 @@ def test_journal_is_contiguous_hash_chained_and_tracks_current_state(
 
     assert current["lifecycle_state"] == "measured"
     assert [first["sequence"], second["sequence"]] == [1, 2]
-    assert first["previous_entry_fingerprint"] is None
-    assert second["previous_entry_fingerprint"] == first["fingerprint"]
+    assert "previous_entry_fingerprint" not in first
+    assert "previous_entry_fingerprint" not in second
 
 
 def test_transition_rejects_skipping_current_state_without_writing(
@@ -674,21 +674,33 @@ def test_semantically_malformed_state_fails_closed(
         store.snapshot()
 
 
-def test_rehashed_broken_journal_chain_still_fails_closed(tmp_path: Path) -> None:
+def test_mixed_legacy_and_new_journal_entries_load_and_append(
+    tmp_path: Path,
+) -> None:
+    """Entries written before the hash-chain field was dropped still load
+    and coexist with newly appended, chain-free entries in the same file."""
     path = tmp_path / "run.json"
     store = CommissioningRunStore(path=path, owner_id="3" * 32)
     handle = _start(store)
     assert store.transition(handle, _protection_transition())
-    assert store.transition(handle, _measurement_transition())
+
+    # Fabricate the pre-simplification on-disk shape for the first entry.
     raw = json.loads(path.read_text(encoding="utf-8"))
-    second = raw["current"]["transition_journal"][1]
-    second["previous_entry_fingerprint"] = "f" * 64
-    _recompute_fingerprint(second)
+    legacy_entry = raw["current"]["transition_journal"][0]
+    legacy_entry["previous_entry_fingerprint"] = None
+    _recompute_fingerprint(legacy_entry)
     _recompute_fingerprint(raw)
     path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(CommissioningRunError, match="chain is broken"):
-        store.snapshot()
+    loaded = store.snapshot()["current"]["transition_journal"]
+    assert loaded[0]["previous_entry_fingerprint"] is None
+
+    assert store.transition(handle, _measurement_transition())
+    journal = store.snapshot()["current"]["transition_journal"]
+
+    assert [entry["sequence"] for entry in journal] == [1, 2]
+    assert "previous_entry_fingerprint" in journal[0]
+    assert "previous_entry_fingerprint" not in journal[1]
 
 
 def test_duplicate_json_fields_fail_closed(tmp_path: Path) -> None:

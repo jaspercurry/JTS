@@ -10,13 +10,14 @@ It gives those later host adapters one fail-closed current-run authority:
 
 * an exact session/run/owner-generation identity,
 * immutable, unique attempt/target reservations,
-* a bounded hash-chained journal of :class:`CommissioningTransition` values,
+* a bounded, append-only, sequenced journal of
+  :class:`CommissioningTransition` values,
 * one bounded cross-process issuance CAS around each live DSP mutation,
 * atomic read-modify-write persistence under one advisory lock, and
 * stale-callback rejection after service restart.
 
 Every public read validates the complete schema, semantic invariants, nested
-fingerprints, journal chain, and whole-file fingerprint. Polling is silent.
+fingerprints, and whole-file fingerprint. Polling is silent.
 Successfully committed run creation/replacement, owner claims, attempt
 reservations, and lifecycle transitions emit stable events.
 """
@@ -585,7 +586,6 @@ def _journal_core(
     attempt_id: str | None,
     target_id: str | None,
     target_fingerprint: str | None,
-    previous_entry_fingerprint: str | None,
     transition: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -597,7 +597,6 @@ def _journal_core(
         "attempt_id": attempt_id,
         "target_id": target_id,
         "target_fingerprint": target_fingerprint,
-        "previous_entry_fingerprint": previous_entry_fingerprint,
         "transition": dict(transition),
     }
 
@@ -712,7 +711,6 @@ def _parse_journal_entry(
     *,
     expected_sequence: int,
     expected_from_state: CommissioningState,
-    expected_previous_fingerprint: str | None,
     attempts_by_id: Mapping[str, Mapping[str, Any]],
 ) -> tuple[dict[str, Any], CommissioningState]:
     expected = {
@@ -724,11 +722,19 @@ def _parse_journal_entry(
         "attempt_id",
         "target_id",
         "target_fingerprint",
-        "previous_entry_fingerprint",
         "transition",
         "fingerprint",
     }
-    if not isinstance(raw, Mapping) or set(raw) != expected:
+    if not isinstance(raw, Mapping):
+        raise CommissioningRunError(
+            "commissioning journal entry has unknown or missing fields"
+        )
+    # Entries written before the hash chain was dropped also carry
+    # `previous_entry_fingerprint`; tolerated on load, never written anew.
+    legacy = "previous_entry_fingerprint" in raw
+    if legacy:
+        expected = expected | {"previous_entry_fingerprint"}
+    if set(raw) != expected:
         raise CommissioningRunError(
             "commissioning journal entry has unknown or missing fields"
         )
@@ -749,11 +755,6 @@ def _parse_journal_entry(
         field_name="owner_generation",
         maximum=MAX_OWNER_GENERATION,
     )
-    previous = raw["previous_entry_fingerprint"]
-    if previous is not None:
-        previous = _sha256(previous, field_name="previous_entry_fingerprint")
-    if previous != expected_previous_fingerprint:
-        raise CommissioningRunError("commissioning journal chain is broken")
 
     attempt_id = raw["attempt_id"]
     target_id = raw["target_id"]
@@ -787,20 +788,33 @@ def _parse_journal_entry(
         ) from exc
     if transition.from_state != expected_from_state:
         raise CommissioningRunError("commissioning journal lifecycle chain is broken")
-    result = _journal_payload(
-        sequence=sequence,
-        occurred_at=occurred_at,
-        owner_generation=owner_generation,
-        attempt_id=attempt_id,
-        target_id=target_id,
-        target_fingerprint=target_fingerprint,
-        previous_entry_fingerprint=previous,
-        transition=transition.to_dict(),
-    )
-    if raw["fingerprint"] != result["fingerprint"]:
-        raise CommissioningRunError(
-            "declared commissioning journal fingerprint does not match payload"
-        )
+    entry_fields = {
+        "sequence": sequence,
+        "occurred_at": occurred_at,
+        "owner_generation": owner_generation,
+        "attempt_id": attempt_id,
+        "target_id": target_id,
+        "target_fingerprint": target_fingerprint,
+        "transition": transition.to_dict(),
+    }
+    if legacy:
+        previous = raw["previous_entry_fingerprint"]
+        if previous is not None:
+            previous = _sha256(previous, field_name="previous_entry_fingerprint")
+        # Not recomputed: that formula included the now-dropped chain field.
+        # The whole-file fingerprint the caller checks still covers this
+        # entry's content, so a format-checked pass-through is sufficient.
+        result = {
+            **_journal_core(**entry_fields),
+            "previous_entry_fingerprint": previous,
+            "fingerprint": _sha256(raw["fingerprint"], field_name="fingerprint"),
+        }
+    else:
+        result = _journal_payload(**entry_fields)
+        if raw["fingerprint"] != result["fingerprint"]:
+            raise CommissioningRunError(
+                "declared commissioning journal fingerprint does not match payload"
+            )
     return result, transition.to_state
 
 
@@ -862,17 +876,14 @@ def _parse_current(raw: Any) -> dict[str, Any]:
         )
     journal: list[dict[str, Any]] = []
     expected_state: CommissioningState = "unconfigured"
-    previous: str | None = None
     for sequence, item in enumerate(journal_raw, start=1):
         parsed, expected_state = _parse_journal_entry(
             item,
             expected_sequence=sequence,
             expected_from_state=expected_state,
-            expected_previous_fingerprint=previous,
             attempts_by_id=attempts_by_id,
         )
         journal.append(parsed)
-        previous = str(parsed["fingerprint"])
     if lifecycle_state != expected_state:
         raise CommissioningRunError(
             "commissioning lifecycle state does not match its transition journal"
@@ -2064,9 +2075,6 @@ class CommissioningRunStore:
                 target_id=attempt.target_id if attempt is not None else None,
                 target_fingerprint=(
                     attempt.target_fingerprint if attempt is not None else None
-                ),
-                previous_entry_fingerprint=(
-                    str(journal[-1]["fingerprint"]) if journal else None
                 ),
                 transition=transition.to_dict(),
             )

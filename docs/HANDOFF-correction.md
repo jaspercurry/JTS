@@ -62,7 +62,7 @@
   correction-web now starts one Active commissioning run bound to that exact
   session and comparison fingerprint. The bounded atomic store retains the run
   id, process-owner generation, immutable generation-bound attempt slots, and a
-  hash-chained nine-state transition journal. Service startup independently
+  sequenced nine-state transition journal. Service startup independently
   claims the repeat, level-run, and commissioning-run owners; a failure in one
   claim does not skip the others, and prior-generation callbacks are stale.
   `/crossover/status` exposes only safe `commissioning_run` status: `not_started`,

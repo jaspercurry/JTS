@@ -741,7 +741,7 @@
 > correction-web integration starts it only after the exact authoritative
 > comparison set has a fresh production-bundle session id and fingerprint. It
 > persists the exact session/run/process-owner-generation identity, immutable
-> generation-bound target attempts, and a bounded hash-chained journal of typed
+> generation-bound target attempts, and a bounded, sequenced journal of typed
 > nine-state transitions under an atomic, advisory-locked file. Service startup
 > claims the owner generation beside the repeat and level-run owners, so a prior
 > process's callbacks are stale. `/correction/crossover/status` exposes the safe
