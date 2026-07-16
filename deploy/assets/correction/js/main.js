@@ -1120,11 +1120,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // section that hosts it, so the persistent status banner defers to it —
   // the banner stays the reset home for every other state (e.g. idle with
   // an applied correction, where no wizard section hosts the button).
+  // Structural, not positional: renderSections MOVES the single button node
+  // between host sections, so "any host section visible" could false-positive
+  // while the button sits inside a hidden one (leaving ZERO visible resets).
+  // Walk the button's own ancestor chain instead.
   function isWizardResetVisible() {
-    if (resetBtn.classList.contains('hidden')) return false;
-    return !measurementReview.classList.contains('hidden') ||
-      !resultProof.classList.contains('hidden') ||
-      !sectionNodes['apply-status'].classList.contains('hidden');
+    for (var node = resetBtn; node; node = node.parentNode || null) {
+      if (node.classList && node.classList.contains('hidden')) return false;
+    }
+    return true;
   }
 
   function syncCurrentCorrectionReset() {

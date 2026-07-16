@@ -2592,9 +2592,32 @@ await (async () => {
     "apply-status: the banner section itself is not rendered, so it cannot overlap");
 }
 
+// 43. The wizard-reset predicate is structural (the button's own ancestor
+//     chain), not positional. #reset-correction is ONE node moved between
+//     host sections: parked un-hidden inside a hidden section while a
+//     DIFFERENT host section is visible must read as not-visible, so the
+//     banner reset REMAINS — never zero visible reset affordances.
+{
+  const wizardReset = getOrMake("reset-correction");
+  getOrMake("measurement-review").appendChild(wizardReset);
+  wizardReset.classList.remove("hidden");
+  getOrMake("measurement-review").classList.add("hidden");
+  getOrMake("apply-status").classList.remove("hidden");
+
+  renderCurrentCorrection(currentPresentation({
+    tone: "applied",
+    message_template: "Room correction on — 5 adjustments applied {applied_at}",
+    applied_at_epoch: 1718000000,
+    reset_allowed: true,
+  }));
+
+  assert(!resetBtn().classList.contains("hidden"),
+    "button inside a hidden section: banner reset remains visible even with another host section shown");
+}
+
 resetEnvelopeBookkeeping();
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 61 }));
+console.log(JSON.stringify({ ok: true, tests: 62 }));
