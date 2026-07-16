@@ -809,6 +809,26 @@ impl Config {
                 tts_program_duck_db
             );
         }
+        let held_content_ttl_sec = env_f32(
+            "JASPER_FANIN_HELD_CONTENT_TTL_SEC",
+            AssistantLoudnessConfig::default().held_content_ttl_sec,
+        )?;
+        if !(1.0..=86_400.0).contains(&held_content_ttl_sec) {
+            anyhow::bail!(
+                "JASPER_FANIN_HELD_CONTENT_TTL_SEC={} out of range 1..=86400",
+                held_content_ttl_sec
+            );
+        }
+        let assistant_envelope_offset_limit_lu = env_f32(
+            "JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU",
+            AssistantLoudnessConfig::default().assistant_envelope_offset_limit_lu,
+        )?;
+        if !(0.0..=24.0).contains(&assistant_envelope_offset_limit_lu) {
+            anyhow::bail!(
+                "JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU={} out of range 0..=24",
+                assistant_envelope_offset_limit_lu
+            );
+        }
 
         Ok(Self {
             output_pcm,
@@ -850,14 +870,16 @@ impl Config {
                     "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
                     loudness_defaults.fallback_source_peak_dbfs,
                 )?,
-                default_silence_target_lufs: env_f32(
-                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
-                    loudness_defaults.default_silence_target_lufs,
+                default_tts_envelope_lufs: env_f32(
+                    "JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS",
+                    loudness_defaults.default_tts_envelope_lufs,
                 )?,
                 content_silence_lufs: env_f32(
                     "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS",
                     loudness_defaults.content_silence_lufs,
                 )?,
+                held_content_ttl_sec,
+                assistant_envelope_offset_limit_lu,
             },
             assistant_reference_path: env_str(
                 "JASPER_FANIN_ASSISTANT_REFERENCE_PATH",
@@ -1086,7 +1108,7 @@ mod tests {
                 ("JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS", None),
-                ("JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS", None),
+                ("JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS", None),
                 ("JASPER_OUTPUTD_CONTENT_SILENCE_LUFS", None),
                 ("JASPER_FANIN_ASSISTANT_REFERENCE_PATH", None),
                 ("JASPER_DUCK_DB", None),
@@ -1112,7 +1134,12 @@ mod tests {
                 assert_eq!(cfg.tts_program_duck_db, -25.0);
                 assert_eq!(cfg.assistant_loudness.assistant_offset_lu, 1.5);
                 assert_eq!(cfg.assistant_loudness.max_peak_dbfs, -3.0);
-                assert_eq!(cfg.assistant_loudness.default_silence_target_lufs, -41.0);
+                assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -41.0);
+                assert_eq!(cfg.assistant_loudness.held_content_ttl_sec, 600.0);
+                assert_eq!(
+                    cfg.assistant_loudness.assistant_envelope_offset_limit_lu,
+                    8.0
+                );
                 assert_eq!(
                     cfg.assistant_reference_path,
                     "/var/lib/jasper/assistant_volume_reference.json"

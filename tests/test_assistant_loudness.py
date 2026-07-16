@@ -21,7 +21,7 @@ from jasper.assistant_loudness import (
     load_profile,
     measure_pcm_24k_mono,
     profile_for_outputd,
-    silence_target_lufs_for_level,
+    tts_envelope_lufs_for_level,
     update_profile_from_measurement,
 )
 
@@ -30,11 +30,11 @@ def _profile_path(tmp_path):
     return tmp_path / "assistant_loudness_profiles.json"
 
 
-def test_silence_target_tracks_user_level():
-    assert silence_target_lufs_for_level(0) == -54.0
-    assert silence_target_lufs_for_level(50) == -41.0
-    assert silence_target_lufs_for_level(100) == -28.0
-    assert silence_target_lufs_for_level("bad") == -41.0
+def test_tts_envelope_tracks_user_level():
+    assert tts_envelope_lufs_for_level(0) == -54.0
+    assert tts_envelope_lufs_for_level(50) == -41.0
+    assert tts_envelope_lufs_for_level(100) == -28.0
+    assert tts_envelope_lufs_for_level("bad") == -41.0
 
 
 def test_profile_round_trip_and_merge(tmp_path):

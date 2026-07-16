@@ -677,6 +677,33 @@ async def test_observe_spotify_same_level_clears_degraded_guard(tmp_path):
     assert record.main_volume_db == pytest.approx(0.0)
 
 
+async def test_equal_spotify_observation_publishes_only_when_guard_changes(tmp_path):
+    published = []
+
+    async def publish(context):
+        published.append(context)
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(100)
+    persistence.save_now(-25.0)
+    cam = _FakeCamilla(db=-25.0)
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={"spotactive": True}),
+        volume_context_publisher=publish,
+    )
+    coord._level = 100
+
+    await coord.observe_source_volume(Source.SPOTIFY, 100)
+    assert len(published) == 1
+    assert published[0].downstream_db == pytest.approx(0.0)
+
+    published.clear()
+    await coord.observe_source_volume(Source.SPOTIFY, 100)
+    assert published == []
+
+
 async def test_observe_spotify_clear_deferred_during_duck_keeps_guard(
     tmp_path, monkeypatch,
 ):
@@ -1319,6 +1346,111 @@ async def test_dispatch_publishes_absolute_canonical_and_downstream_facts(tmp_pa
     assert published[0].canonical_db == pytest.approx(percent_to_db(46))
     assert published[0].downstream_db == pytest.approx(0.0)
     assert published[0].muted is False
+
+
+async def test_persisted_mute_intent_wins_stale_unmuted_camilla(tmp_path):
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(59)
+    persistence.save_pre_mute_level(59)
+    cam = _FakeCamilla(db=percent_to_db(59))
+    cam.muted = False
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+    )
+
+    context = await coord.effective_volume_context()
+
+    assert context.canonical_db == pytest.approx(percent_to_db(59))
+    assert context.muted is True
+
+
+async def test_persisted_mute_intent_survives_unreadable_camilla(tmp_path):
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(59)
+    persistence.save_pre_mute_level(59)
+    coord = VolumeCoordinator(
+        camilla=_FakeCamilla(db=-20.0),
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+    )
+
+    async def unreadable():
+        return None, None
+
+    coord._read_camilla_volume_and_mute = unreadable
+    assert (await coord.effective_volume_context()).muted is True
+
+
+async def test_unmute_and_push_mode_nonzero_publish_unmuted_context(tmp_path):
+    published = []
+
+    async def publish(context):
+        published.append(context)
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(59)
+    persistence.save_pre_mute_level(59)
+    cam = _FakeCamilla(db=percent_to_db(59))
+    cam.muted = True
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+        volume_context_publisher=publish,
+    )
+    await coord.unmute()
+    assert published[-1].muted is False
+
+    push = VolumeCoordinator(
+        camilla=_FakeCamilla(db=0.0),
+        persistence=persistence,
+        backend=_FakeBackend(active={"spotactive": True}),
+    )
+    assert (await push.effective_volume_context()).muted is False
+
+
+async def test_publisher_failure_never_breaks_volume_operation(tmp_path):
+    async def fail(_context):
+        raise OSError("fanin unavailable")
+
+    coord, _cam, _persistence = _coord(tmp_path)
+    coord._volume_context_publisher = fail
+    assert await coord.set_listening_level(47) == 47
+
+
+async def test_context_snapshot_retries_after_concurrent_volume_change(tmp_path):
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(30)
+    cam = _FakeCamilla(db=percent_to_db(30))
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+    )
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+    real_read = coord._read_camilla_volume_and_mute
+    first = True
+
+    async def blocked_read():
+        nonlocal first
+        if first:
+            first = False
+            read_started.set()
+            await release_read.wait()
+        return await real_read()
+
+    coord._read_camilla_volume_and_mute = blocked_read
+    snapshot = asyncio.create_task(coord.effective_volume_context())
+    await read_started.wait()
+    await coord.set_listening_level(80)
+    release_read.set()
+    context = await snapshot
+
+    assert context.canonical_db == pytest.approx(percent_to_db(80))
+    assert context.downstream_db == pytest.approx(percent_to_db(80))
 
 
 # ---- cross-daemon duck-active probe -------------------------------------
@@ -2147,6 +2279,30 @@ async def test_observe_usbsink_same_level_repairs_camilla_drift(tmp_path):
     assert persistence.load().main_volume_db == pytest.approx(percent_to_db(0))
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(0))
     assert cam.mute_calls[-1] is True
+
+
+async def test_equal_usbsink_observation_publishes_repaired_downstream(tmp_path):
+    published = []
+
+    async def publish(context):
+        published.append(context)
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(50)
+    persistence.save_now(-20.0)
+    cam = _FakeCamilla(db=-20.0)
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={"usbsinkactive": True}),
+        volume_context_publisher=publish,
+    )
+    coord._level = 50
+
+    await coord.observe_source_volume(Source.USBSINK, 50)
+
+    assert len(published) == 1
+    assert published[0].downstream_db == pytest.approx(percent_to_db(50))
 
 
 async def test_observe_usbsink_same_level_repairs_mute_drift(tmp_path):

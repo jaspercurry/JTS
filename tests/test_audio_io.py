@@ -79,9 +79,9 @@ class _CaptureOutputdStream:
         provider: str,
         model: str,
         voice: str,
-        silence_target_lufs: float,
+        tts_envelope_lufs: float,
     ) -> None:
-        self.prepares.append((provider, model, voice, silence_target_lufs))
+        self.prepares.append((provider, model, voice, tts_envelope_lufs))
 
     def pause_content_meter(self) -> None:
         self.meter_pauses += 1
@@ -710,7 +710,7 @@ def test_outputd_stream_adapter_flush_sync_timeout_is_bounded(monkeypatch):
         child.close()
 
 
-def test_outputd_stream_adapter_sends_loudness_control_protocol():
+def test_outputd_stream_adapter_sends_loudness_control_protocol(monkeypatch):
     parent, child = socket.socketpair()
     adapter = audio_io_mod._OutputdStreamAdapter(parent)
     profile = AssistantLoudnessProfile(
@@ -724,11 +724,15 @@ def test_outputd_stream_adapter_sends_loudness_control_protocol():
         method="passive_live",
     )
     try:
+        monkeypatch.setattr(
+            "jasper.assistant_volume.volume_context_stamp_boot_ns",
+            lambda: 123456,
+        )
         adapter.prepare_assistant(
             provider="openai",
             model="gpt-realtime-2",
             voice="verse",
-            silence_target_lufs=-42.34,
+            tts_envelope_lufs=-42.34,
         )
         assert (
             child.recv(128)
@@ -738,14 +742,17 @@ def test_outputd_stream_adapter_sends_loudness_control_protocol():
             provider="openai",
             model="gpt-realtime-2",
             voice="verse",
-            silence_target_lufs=-42.34,
-            canonical_volume_db=-30.0,
-            downstream_volume_db=0.0,
-            muted=False,
+            tts_envelope_lufs=-42.34,
+            volume_context=audio_io_mod.EffectiveVolumeContext(
+                canonical_db=-30.0,
+                downstream_db=0.0,
+                tts_envelope_lufs=-42.34,
+                muted=False,
+            ),
         )
         assert child.recv(160) == (
-            b"PREPARE_ASSISTANT openai gpt-realtime-2 verse -42.34 "
-            b"-30.000 0.000 0\n"
+            b"VOLUME_CONTEXT -30.000 0.000 -42.340 0 123456\n"
+            b"PREPARE_ASSISTANT openai gpt-realtime-2 verse -42.34\n"
         )
         adapter.pause_content_meter()
         assert child.recv(128) == b"CONTENT_METER_PAUSE\n"
@@ -872,7 +879,7 @@ async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
         provider="openai",
         model="gpt-realtime-2",
         voice="marin",
-        silence_target_lufs=-41.0,
+        tts_envelope_lufs=-41.0,
     )
 
     assert broken_stream.closed
@@ -905,7 +912,7 @@ async def test_outputd_prepare_reconnect_failure_is_best_effort(
         provider="openai",
         model="gpt-realtime-2",
         voice="marin",
-        silence_target_lufs=-41.0,
+        tts_envelope_lufs=-41.0,
     )
 
     assert broken_stream.closed

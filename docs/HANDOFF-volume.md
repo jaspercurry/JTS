@@ -296,11 +296,27 @@ fan-in speech state.
 
 When the legacy lock is true, `listening_level` still persists and
 `Ducker.restore()` converges Camilla to `get_camilla_target_db()` at session
-end. In the normal fan-in path, the write lands immediately and the coordinator
-also publishes one absolute `VOLUME_CONTEXT` message to fan-in: canonical user
-dB, actual downstream Camilla dB, and mute. The message contains no source name
-or loudness policy, keeping source dispatch in `VolumeCoordinator` and
-measurement/reference policy in fan-in.
+end. In the normal pre-DSP fan-in path, the write lands immediately and the
+coordinator also publishes one absolute `VOLUME_CONTEXT` message: canonical
+user dB, actual downstream Camilla dB, the quiet-room TTS envelope target,
+mute, and a `CLOCK_BOOTTIME` nanosecond stamp captured after the snapshot.
+The mute bit is fail-safe: persisted pre-mute intent, canonical 0%, or observed
+Camilla mute can raise it; a stale/unreadable observation can never lower user
+intent.
+Fan-in rejects a context older than the last accepted stamp. Voice sends the
+same standalone message immediately before `PREPARE_ASSISTANT` on one ordered
+connection, which gives a restarted fan-in a current snapshot without letting
+PREPARE overwrite a newer dial update.
+
+The grouping reconciler is the single writer of `JASPER_TTS_MIX_STAGE`. A
+passive bonded member sets `post_dsp`, so voice and the coordinator publish no
+pre-DSP compensation to outputd's post-Camilla TTS socket. Absent means the
+normal `pre_dsp` fan-in path. Callers use
+`tts_socket_feeds_pre_dsp_fanin()` rather than inferring stage from a socket
+pathname or duck transport. The message contains no source name or gain policy:
+source dispatch stays in `VolumeCoordinator`, while fan-in owns
+measurement/reference policy. The complete loudness contract lives in
+[audio-paths.md](audio-paths.md#assistant-loudness-matching).
 
 #### Why the probe replaced the prior dB-comparison heuristic
 
@@ -334,11 +350,14 @@ defer" rationale was correct in spirit but the wrong target — what
 mattered was "is a duck *actually* active," not "would this write
 *look like* it's fighting a duck."
 
-TTS responds during playback. Fan-in applies the residual
-`canonical dB delta - downstream dB delta` to queued raw speech with a 100 ms
-ramp and the segment's existing peak cap. If Camilla already carried the user
-change, the deltas cancel; for Spotify/Bluetooth push mode, fan-in carries the
-delta because the source slider does not affect TTS. Mute is immediate.
+TTS responds during playback. For music-anchored speech, fan-in applies the
+residual `canonical dB delta - downstream dB delta` to queued raw speech. For
+no-music speech it instead follows the deliberately gentler TTS-envelope delta,
+minus the downstream delta, so turning the knob cannot switch to Camilla's
+steeper music curve. Both paths use a 100 ms ramp and the segment's existing
+peak cap; mute is immediate. Equal-level source observations that repair or
+clear the downstream Camilla carrier republish the context too, so an in-flight
+reply sees the real mutation even when `listening_level` did not change.
 
 ### Source handoff guard
 
@@ -455,11 +474,13 @@ Multiple guardrails sit on top:
 
 - `regress_listening_level_if_stale` clamps stale + extreme values
   into `[20%, 70%]` by default.
-- Assistant/TTS loudness has no fixed source-gain ceiling. Fan-in and
-  outputd match assistant loudness to measured content and cap the
-  result with the dynamic peak-aware limit (`max_peak_dbfs -
+- Pre-DSP fan-in assistant/TTS loudness has no fixed source-gain ceiling. It
+  matches assistant loudness to measured content or the quiet-room envelope
+  and caps the result with the dynamic peak-aware limit (`max_peak_dbfs -
   source_peak_dbfs`) so quiet voices are not pinned below music by a
-  stale global clamp.
+  stale global clamp. Passive bonded outputd TTS deliberately does not claim
+  volume-context parity yet; see the named follow-up in
+  [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
 - `volume_limit: 0.0` in every JTS CamillaDSP YAML — base,
   room-correction, sound-preference, and active-speaker baseline configs
   all cap the main fader at full scale.
@@ -642,4 +663,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-07-16 (fan-in/Camilla lock separation, absolute volume-context publication, and mid-TTS adjustment checked against focused Python tests plus Linux fan-in compile/tests; prior 2026-07-12 pass covered bounded CamillaDSP cancellation/retry; prior 2026-07-11 pass covered measurement-scoped reconciliation and STATUS observability)
+Last verified: 2026-07-16 (pre-DSP mix-stage ownership, stamped standalone volume context, quiet-room envelope tracking, and equal-level downstream republish checked against the PR #1542 implementation; prior pass covered fan-in/Camilla lock separation and mid-TTS adjustment; prior 2026-07-12 pass covered bounded CamillaDSP cancellation/retry; prior 2026-07-11 pass covered measurement-scoped reconciliation and STATUS observability)

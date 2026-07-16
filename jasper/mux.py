@@ -1038,7 +1038,10 @@ class Mux:
             spotify_router=self._ensure_spotify_router(),
             spotify_device_name=speaker_runtime_name(),
             duck_active_probe=_make_duck_active_probe(),
-            volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
+            volume_context_publisher=volume_context_publisher_for_runtime(
+                os.environ,
+                dynamic_topology=True,
+            ),
             handoff_settle_sec=float(os.environ.get(
                 "JASPER_SOURCE_HANDOFF_SETTLE_SEC", "0.45",
             )),

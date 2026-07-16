@@ -74,6 +74,8 @@ logger = logging.getLogger(__name__)
 OUTPUTD_TTS_SOCKET = _tts_routing.OUTPUTD_TTS_SOCKET
 OUTPUTD_TTS_SOCKET_ENV = _tts_routing.OUTPUTD_TTS_SOCKET_ENV
 VOICE_TTS_SOCKET_ENV = _tts_routing.VOICE_TTS_SOCKET_ENV
+TTS_MIX_STAGE_ENV = _tts_routing.TTS_MIX_STAGE_ENV
+TTS_MIX_STAGE_POST_DSP = _tts_routing.TTS_MIX_STAGE_POST_DSP
 
 
 # ---------- Unit names (single source of truth) ----------
@@ -731,7 +733,10 @@ def voice_grouping_env(
         env = (
             {}
             if route.voice_env_socket is None
-            else {VOICE_TTS_SOCKET_ENV: route.voice_env_socket}
+            else {
+                VOICE_TTS_SOCKET_ENV: route.voice_env_socket,
+                TTS_MIX_STAGE_ENV: TTS_MIX_STAGE_POST_DSP,
+            }
         )
         if route.voice_parked:
             # Parked routes stop voice (and the AEC stack) through the

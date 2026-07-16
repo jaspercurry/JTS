@@ -505,16 +505,9 @@ impl TtsBridge {
                     provider,
                     model,
                     voice,
-                    silence_target_lufs,
-                    volume_context,
+                    tts_envelope_lufs,
                 } => {
-                    core.prepare_assistant_context(
-                        provider,
-                        model,
-                        voice,
-                        silence_target_lufs,
-                        volume_context,
-                    );
+                    core.prepare_assistant_context(provider, model, voice, tts_envelope_lufs);
                 }
                 TtsCommand::VolumeContext(context) => core.update_volume_context(context),
                 TtsCommand::ContentMeterPause => core.pause_content_meter(),

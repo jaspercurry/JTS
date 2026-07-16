@@ -63,6 +63,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use jasper_tts_protocol::loudness::HeldLoudnessReference;
 use log::{info, warn};
 
 use crate::impulse_tap::{TapConfig, TapState};
@@ -1165,10 +1166,50 @@ impl StateServer {
                     1,
                 );
                 buf.push(',');
+                push_kv_f64_opt(
+                    &mut buf,
+                    "envelope_offset_lu",
+                    loudness.envelope_offset_lu,
+                    1,
+                );
+                buf.push(',');
                 match loudness.reference_kind {
                     Some(kind) => push_kv_str(&mut buf, "reference_kind", kind),
                     None => buf.push_str(r#""reference_kind":null"#),
                 }
+                buf.push(',');
+                buf.push_str(r#""volume_context":"#);
+                match loudness.volume_context {
+                    Some(context) => {
+                        buf.push('{');
+                        push_kv_f64(&mut buf, "canonical_db", context.canonical_db as f64, 1);
+                        buf.push(',');
+                        push_kv_f64(&mut buf, "downstream_db", context.downstream_db as f64, 1);
+                        buf.push(',');
+                        push_kv_f64(
+                            &mut buf,
+                            "tts_envelope_lufs",
+                            context.tts_envelope_lufs as f64,
+                            1,
+                        );
+                        buf.push(',');
+                        push_kv_bool(&mut buf, "muted", context.muted);
+                        buf.push(',');
+                        push_kv_u64(&mut buf, "stamp_boot_ns", context.stamp_boot_ns);
+                        buf.push('}');
+                    }
+                    None => buf.push_str("null"),
+                }
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "volume_context_rejected",
+                    loudness.volume_context_rejected,
+                );
+                buf.push(',');
+                push_reference(&mut buf, "held_content", loudness.held_content);
+                buf.push(',');
+                push_reference(&mut buf, "held_assistant", loudness.held_assistant);
                 buf.push('}');
             }
             None => {
@@ -1299,6 +1340,28 @@ fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: us
         Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
         None => buf.push_str("null"),
     }
+}
+
+fn push_reference(buf: &mut String, key: &str, reference: Option<HeldLoudnessReference>) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str("\":");
+    let Some(reference) = reference else {
+        buf.push_str("null");
+        return;
+    };
+    buf.push('{');
+    push_kv_f64(buf, "speaker_lufs", reference.speaker_lufs as f64, 1);
+    buf.push(',');
+    push_kv_f64(buf, "canonical_db", reference.canonical_db as f64, 1);
+    buf.push(',');
+    push_kv_f64(
+        buf,
+        "calibration_offset_lu",
+        reference.calibration_offset_lu as f64,
+        1,
+    );
+    buf.push('}');
 }
 
 #[cfg(test)]
@@ -1813,6 +1876,10 @@ mod tests {
         assert!(j.contains(r#""decision_seen":false"#));
         assert!(j.contains(r#""final_gain_db":null"#));
         assert!(j.contains(r#""reference_kind":null"#));
+        assert!(j.contains(r#""volume_context":null"#));
+        assert!(j.contains(r#""volume_context_rejected":0"#));
+        assert!(j.contains(r#""held_content":null"#));
+        assert!(j.contains(r#""held_assistant":null"#));
     }
 
     #[test]

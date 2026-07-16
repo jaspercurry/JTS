@@ -264,16 +264,10 @@ impl OutputCore {
         provider: String,
         model: String,
         voice: String,
-        silence_target_lufs: f32,
-        volume_context: Option<VolumeContext>,
+        tts_envelope_lufs: f32,
     ) {
-        self.loudness.prepare_context_with_volume(
-            provider,
-            model,
-            voice,
-            silence_target_lufs,
-            volume_context,
-        );
+        self.loudness
+            .prepare_context(provider, model, voice, tts_envelope_lufs);
     }
 
     pub fn update_volume_context(&mut self, context: VolumeContext) {

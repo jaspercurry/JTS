@@ -20,13 +20,17 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Mapping
 
 from .tts_routing import (
     DUCK_TRANSPORT_ENV,
     FANIN_TTS_SOCKET,
+    GROUPING_VOICE_ENV_FILE,
     VOICE_TTS_SOCKET_ENV,
+    resolved_tts_routing_env,
+    tts_socket_feeds_pre_dsp_fanin,
 )
 
 
@@ -34,10 +38,31 @@ from .tts_routing import (
 class EffectiveVolumeContext:
     canonical_db: float
     downstream_db: float
+    tts_envelope_lufs: float
     muted: bool
 
 
 VolumeContextPublisher = Callable[[EffectiveVolumeContext], Awaitable[None]]
+
+
+def volume_context_stamp_boot_ns() -> int:
+    """Timestamp an update in the boot-local clock domain used by fan-in."""
+    clock_id = getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC)
+    return time.clock_gettime_ns(clock_id)
+
+
+def serialize_volume_context(
+    context: EffectiveVolumeContext,
+    *,
+    stamp_boot_ns: int | None = None,
+) -> bytes:
+    """Serialize the one canonical Python representation of this command."""
+    stamp = volume_context_stamp_boot_ns() if stamp_boot_ns is None else stamp_boot_ns
+    return (
+        f"VOLUME_CONTEXT {context.canonical_db:.3f} "
+        f"{context.downstream_db:.3f} {context.tts_envelope_lufs:.3f} "
+        f"{1 if context.muted else 0} {int(stamp)}\n"
+    ).encode("ascii")
 
 
 def _send_volume_context(
@@ -46,11 +71,7 @@ def _send_volume_context(
     *,
     timeout: float = 0.5,
 ) -> None:
-    payload = (
-        f"VOLUME_CONTEXT {context.canonical_db:.3f} "
-        f"{context.downstream_db:.3f} {1 if context.muted else 0}\n"
-        "CLOSE\n"
-    ).encode("ascii")
+    payload = serialize_volume_context(context) + b"CLOSE\n"
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         sock.connect(socket_path)
@@ -70,6 +91,9 @@ def make_volume_context_publisher(
 
 def volume_context_publisher_for_runtime(
     env: Mapping[str, str],
+    *,
+    grouping_env_path: str | None = GROUPING_VOICE_ENV_FILE,
+    dynamic_topology: bool = False,
 ) -> VolumeContextPublisher | None:
     """Build a publisher only when fan-in owns the pre-DSP speech mix.
 
@@ -77,8 +101,36 @@ def volume_context_publisher_for_runtime(
     so Camilla gain is not its downstream attenuation and must not be sent as
     though it were.
     """
-    if env.get(DUCK_TRANSPORT_ENV, "fanin").strip().lower() != "fanin":
+    process_env = dict(env)
+    resolved = resolved_tts_routing_env(
+        env,
+        grouping_env_path=grouping_env_path,
+    )
+    if process_env.get(DUCK_TRANSPORT_ENV, "fanin").strip().lower() != "fanin":
+        return None
+    if dynamic_topology:
+        async def publish(context: EffectiveVolumeContext) -> None:
+            current = resolved_tts_routing_env(
+                process_env,
+                grouping_env_path=grouping_env_path,
+            )
+            if not tts_socket_feeds_pre_dsp_fanin(
+                current,
+                grouping_env_path=None,
+            ):
+                return
+            await asyncio.to_thread(
+                _send_volume_context,
+                current.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET),
+                context,
+            )
+
+        return publish
+    if not tts_socket_feeds_pre_dsp_fanin(
+        resolved,
+        grouping_env_path=None,
+    ):
         return None
     return make_volume_context_publisher(
-        env.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET),
+        resolved.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET),
     )

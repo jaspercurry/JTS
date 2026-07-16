@@ -85,11 +85,12 @@ def active_voice_identity(cfg: Any) -> tuple[str, str, str]:
     return provider, "", ""
 
 
-def silence_target_lufs_for_level(level: int | float | None) -> float:
+def tts_envelope_lufs_for_level(level: int | float | None) -> float:
     """Map user listening level to a conservative quiet-room target.
 
-    This only applies when outputd has no content loudness to anchor on.
-    With music playing, outputd uses the measured content baseline instead.
+    This is the final speaker-loudness target when fan-in has no current or
+    recently held music reference. With music, fan-in instead targets the
+    measured program loudness plus the ordinary assistant offset.
     """
     try:
         pct = float(level)

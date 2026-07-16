@@ -18,14 +18,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::loudness::HeldLoudnessReference;
 
-const RECORD_VERSION: u8 = 1;
+const RECORD_VERSION: u8 = 2;
 const MATERIAL_CHANGE_DB: f32 = 0.1;
+const MAX_CALIBRATION_OFFSET_LU: f32 = 24.0;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedAssistantReference {
     version: u8,
     achieved_speaker_lufs: f32,
     canonical_db: f32,
+    calibration_offset_lu: f32,
     updated_at_unix: u64,
 }
 
@@ -56,6 +58,7 @@ pub fn load(path: &Path) -> Option<HeldLoudnessReference> {
     if record.version != RECORD_VERSION
         || !valid_db(record.achieved_speaker_lufs)
         || !valid_db(record.canonical_db)
+        || !valid_calibration_offset(record.calibration_offset_lu)
     {
         warn!(
             "event=fanin.assistant_reference.load_failed path={} reason=invalid_record version={}",
@@ -73,6 +76,7 @@ pub fn load(path: &Path) -> Option<HeldLoudnessReference> {
     Some(HeldLoudnessReference {
         speaker_lufs: record.achieved_speaker_lufs,
         canonical_db: record.canonical_db,
+        calibration_offset_lu: record.calibration_offset_lu,
     })
 }
 
@@ -113,10 +117,15 @@ pub fn spawn_writer(
 fn materially_changed(a: HeldLoudnessReference, b: HeldLoudnessReference) -> bool {
     (a.speaker_lufs - b.speaker_lufs).abs() >= MATERIAL_CHANGE_DB
         || (a.canonical_db - b.canonical_db).abs() >= MATERIAL_CHANGE_DB
+        || (a.calibration_offset_lu - b.calibration_offset_lu).abs() >= MATERIAL_CHANGE_DB
 }
 
 fn valid_db(value: f32) -> bool {
     value.is_finite() && (-120.0..=24.0).contains(&value)
+}
+
+fn valid_calibration_offset(value: f32) -> bool {
+    value.is_finite() && value.abs() <= MAX_CALIBRATION_OFFSET_LU
 }
 
 fn write_atomic(path: &Path, reference: HeldLoudnessReference) -> std::io::Result<()> {
@@ -127,6 +136,7 @@ fn write_atomic(path: &Path, reference: HeldLoudnessReference) -> std::io::Resul
         version: RECORD_VERSION,
         achieved_speaker_lufs: reference.speaker_lufs,
         canonical_db: reference.canonical_db,
+        calibration_offset_lu: reference.calibration_offset_lu,
         updated_at_unix: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -156,11 +166,45 @@ mod tests {
         let reference = HeldLoudnessReference {
             speaker_lufs: -39.5,
             canonical_db: -30.0,
+            calibration_offset_lu: 0.5,
         };
         write_atomic(&path, reference).unwrap();
         assert_eq!(load(&path), Some(reference));
         fs::write(&path, b"not-json").unwrap();
         assert_eq!(load(&path), None);
+
+        for invalid in [
+            r#"{"version":1,"achieved_speaker_lufs":-39.5,"canonical_db":-30.0,"calibration_offset_lu":0.0,"updated_at_unix":1}"#,
+            r#"{"version":2,"achieved_speaker_lufs":-121.0,"canonical_db":-30.0,"calibration_offset_lu":0.0,"updated_at_unix":1}"#,
+            r#"{"version":2,"achieved_speaker_lufs":-39.5,"canonical_db":-30.0,"calibration_offset_lu":24.1,"updated_at_unix":1}"#,
+            r#"{"version":2,"achieved_speaker_lufs":null,"canonical_db":-30.0,"calibration_offset_lu":0.0,"updated_at_unix":1}"#,
+        ] {
+            fs::write(&path, invalid).unwrap();
+            assert_eq!(load(&path), None, "record should fail closed: {invalid}");
+        }
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn material_change_includes_bounded_calibration_offset() {
+        let base = HeldLoudnessReference {
+            speaker_lufs: -39.5,
+            canonical_db: -30.0,
+            calibration_offset_lu: 0.5,
+        };
+        assert!(!materially_changed(
+            base,
+            HeldLoudnessReference {
+                calibration_offset_lu: 0.55,
+                ..base
+            }
+        ));
+        assert!(materially_changed(
+            base,
+            HeldLoudnessReference {
+                calibration_offset_lu: 0.7,
+                ..base
+            }
+        ));
     }
 }

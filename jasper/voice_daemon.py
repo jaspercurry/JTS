@@ -28,8 +28,9 @@ from .audio_io import (
 )
 from .assistant_loudness import (
     active_voice_identity,
-    silence_target_lufs_for_level,
+    tts_envelope_lufs_for_level,
 )
+from .tts_routing import tts_socket_feeds_pre_dsp_fanin
 from .wake_events import (
     WakeEventStore,
     make_event_id,
@@ -2365,27 +2366,43 @@ class WakeLoop:
 
     async def _prepare_assistant_loudness_context(self) -> None:
         provider, model, voice = active_voice_identity(self._cfg)
-        silence_target = silence_target_lufs_for_level(
+        tts_envelope = tts_envelope_lufs_for_level(
             self._volume_coordinator.get_listening_level(),
         )
         prepare_kwargs = {
             "provider": provider,
             "model": model,
             "voice": voice,
-            "silence_target_lufs": silence_target,
+            "tts_envelope_lufs": tts_envelope,
         }
         context_reader = (
             getattr(self._volume_coordinator, "effective_volume_context", None)
-            if getattr(self._cfg, "duck_transport", "") == "fanin"
+            if (
+                getattr(self._cfg, "duck_transport", "") == "fanin"
+                and tts_socket_feeds_pre_dsp_fanin(os.environ)
+            )
             else None
         )
         if callable(context_reader):
-            volume_context = await context_reader()
-            prepare_kwargs.update(
-                canonical_volume_db=volume_context.canonical_db,
-                downstream_volume_db=volume_context.downstream_db,
-                muted=volume_context.muted,
-            )
+            try:
+                volume_context = await context_reader()
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                log_event(
+                    logger,
+                    "assistant_loudness.context_unavailable",
+                    exc_type=type(exc).__name__,
+                    detail=str(exc),
+                    level=logging.WARNING,
+                )
+            else:
+                prepare_kwargs.update(
+                    canonical_volume_db=volume_context.canonical_db,
+                    downstream_volume_db=volume_context.downstream_db,
+                    context_tts_envelope_lufs=(
+                        volume_context.tts_envelope_lufs
+                    ),
+                    muted=volume_context.muted,
+                )
         await self._tts.prepare_assistant_context(
             **prepare_kwargs,
         )

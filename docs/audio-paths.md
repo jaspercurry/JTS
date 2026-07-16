@@ -1,10 +1,11 @@
 # Audio paths and software volume knobs
 
-One audio path reaches the final output owner. Renderer audio and
-assistant TTS converge in `jasper-fanin` before CamillaDSP, then
-`jasper-outputd` owns the final hardware sink. Knowing that boundary
-matters when you're testing volume-controlled output and assistant
-loudness matching.
+One audio path reaches the final output owner. On solo and active-output
+speakers, renderer audio and assistant TTS converge in `jasper-fanin` before
+CamillaDSP, then `jasper-outputd` owns the final hardware sink. A passive
+bonded member is the deliberate exception: its local TTS enters outputd after
+CamillaDSP. Knowing that mix-stage boundary matters when testing
+volume-controlled output and assistant loudness matching.
 
 ## How we got here
 
@@ -254,7 +255,7 @@ convergence point here.
 
 | Knob | Where it lives | Music | TTS |
 |------|----------------|-------|----------------------------|
-| CamillaDSP `main_volume` (listening level/source volume) | DSP, websocket port 1234 | yes | yes |
+| CamillaDSP `main_volume` (listening level/source volume) | DSP, websocket port 1234 | yes | yes on pre-DSP fan-in; already upstream of passive outputd TTS |
 | fan-in program duck | `jasper-fanin` TTS socket | yes | no |
 | Source slider (iPhone, Spotify Connect, BT phone) | Renderer-side, before Loopback | yes | no |
 | Source amplitude (PCM data) | The WAV / TTS PCM buffer | yes | yes |
@@ -278,22 +279,26 @@ Two notes:
 
 ## Assistant Loudness Matching
 
-Since assistant audio enters the same DSP path as music, a fixed
-provider PCM level would ignore how the user currently listens to
-music. Current main keeps that compensation at the topology's TTS mix
-boundary: `jasper-fanin`.
+Since assistant audio normally enters the same DSP path as music, a fixed
+provider PCM level would ignore how the user currently listens to music.
+Current main keeps that compensation at one owner: the pre-DSP TTS mix boundary
+in `jasper-fanin`.
 
 1. The mix owner continuously measures content/music with a bounded
    K-weighted loudness window. In fan-in mode this measurement happens
    before program ducking and before TTS is mixed, so the assistant
    baseline tracks the renderer content level rather than the temporary
    ducked level.
-2. At wake turn start, `jasper-voice` sends `PREPARE_ASSISTANT` with
-   the active provider/model/voice, a conservative first-use speaker target
-   derived from `listening_level`, and one absolute volume context
-   (`canonical_db`, downstream Camilla dB, mute). Treating the fallback as a
-   speaker target is load-bearing: fan-in subtracts downstream attenuation
-   before gain calculation, so Camilla cannot attenuate the target twice.
+2. At wake turn start, `jasper-voice` writes a standalone
+   `VOLUME_CONTEXT` immediately before `PREPARE_ASSISTANT` on the same ordered
+   connection. The context is absolute: canonical user dB, downstream Camilla
+   dB, the quiet-room `tts_envelope(listening_level)` target, mute, and a
+   `CLOCK_BOOTTIME` nanosecond stamp captured after the snapshot. Fan-in rejects
+   a stamp older than the latest accepted one. PREPARE then supplies only the
+   active provider/model/voice and conservative envelope target; it cannot
+   overwrite a newer dial publisher. Treating the envelope as a speaker target
+   is load-bearing: fan-in subtracts downstream attenuation before gain
+   calculation, so Camilla cannot attenuate the target twice.
 3. The mix owner snapshots the current content loudness before ducking,
    then ignores content-meter updates while the voice turn or correction
    measurement window is active.
@@ -313,24 +318,53 @@ boundary: `jasper-fanin`.
    (`tests/test_tts_ipc_pacing.py`) pins the watermark against the
    Rust budget.
 5. The mix owner chooses one reference, in order: qualified live music,
-   held most-recent music, held most-recent achieved assistant, then the safe
-   first-use fallback. A music reference is held only after a full 3 s
-   short-term window while the current period is audible; silence and brief
-   cues cannot overwrite it. Music gets the default `+1.5 LU` assistant
-   offset. A held assistant already includes the achieved offset/peak cap, so
-   the offset is not applied again.
+   held most-recent music, held assistant envelope offset, then first use. A
+   music reference is held only after a full 3 s short-term window while the
+   current period is audible; silence and brief cues cannot overwrite it.
+   After 600 s of sustained content silence by default
+   (`JASPER_FANIN_HELD_CONTENT_TTL_SEC`), held music expires so an old song
+   cannot control speech hours later. Music gets the default `+1.5 LU`
+   assistant offset.
+
+   With no music, there is exactly one level function: the existing gentle
+   quiet-room `tts_envelope(level)` (`-54 + 26 * level/100` LUFS). That function
+   is the final speaker target: first use is exactly the envelope (offset zero),
+   and the ordinary `+1.5 LU` assistant offset applies only to music-relative
+   references. Completed assistant speech
+   learns only the difference between its achieved speaker loudness and that
+   deterministic target, clamps the learned correction to
+   `JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU` (default ±8 LU), persists
+   it in the versioned fail-soft record, and later targets
+   `envelope(current level) + offset`. It never turns the last response into a
+   second volume curve.
 6. Hearing safety is peak-aware and enforced at that boundary: the
    requested loudness gain is capped so the profiled source peak stays
    below the configured assistant peak ceiling (default `-3 dBFS`),
    then passed through the malformed-value floor. There is intentionally
    no fixed source-gain ceiling; the positive side is governed by the
    dynamic peak cap plus validated/fallback source-profile metadata.
-7. While speech is queued, each absolute `VOLUME_CONTEXT` update produces the
-   generic residual `canonical delta - downstream delta`. Fan-in applies it
-   at dequeue with a 100 ms ramp, mute override, and the original peak cap.
-   This makes Camilla-master edits cancel to zero at the mixer while push-mode
-   edits adjust TTS directly. A completed assistant segment records its actual
-   achieved speaker LUFS + canonical dB for the next silent turn.
+7. While speech is queued, each accepted `VOLUME_CONTEXT` re-targets gain at
+   dequeue with a 100 ms ramp, mute override, and the original peak cap. A
+   music-anchored segment uses `canonical delta - downstream delta`: a
+   Camilla-master edit cancels at the mixer, while a push-mode edit adjusts TTS
+   directly. A no-music segment uses
+   `envelope delta - downstream delta`, so knob tracking keeps the gentle
+   speech slope instead of switching to the steeper canonical music slope.
+   Equal-level observations that repair Camilla also republish, because the
+   downstream carrier changed even though the canonical percentage did not.
+8. `SEGMENT_END` commits the calibration only for completed assistant speech.
+   Fan-in remembers the last effective gain as audio drains, so it still commits
+   when the queue becomes empty just before end arrives. Flush clears that
+   candidate: interrupted/unheard tails, mute, cues, and chirps never train the
+   record.
+
+The passive bonded-member route is explicitly outside this parity claim. Its
+grouping env sets `JASPER_TTS_MIX_STAGE=post_dsp`, and voice/coordinator send no
+pre-DSP `VOLUME_CONTEXT` to outputd. Outputd continues the pre-volume-context
+post-round-trip behavior until the named **Outputd post-DSP assistant-volume
+parity** follow-up gives gain policy an explicit mix-stage input and adds mute
+plus live re-gain in outputd's mix loop. Do not reuse fan-in's
+`- downstream_db` algebra at a post-DSP mixer.
 
 Python owns only provider source profiles:
 
@@ -357,7 +391,7 @@ Python owns only provider source profiles:
   (`provider=jts`, `model=cue-...` / `dynamic-text`) with
   `segment_kind="cue"`. Standalone feedback paths prepare assistant
   loudness context before ducking, so fan-in uses the current content
-  baseline or listening-level-derived silence target instead of falling
+  baseline or listening-level-derived TTS envelope instead of falling
   back to its built-in quiet-room target.
 - `jasper-voice` serializes assistant-owned output before it reaches
   fan-in. One voice turn owns the wake chirp, live assistant TTS, and
@@ -385,16 +419,18 @@ JASPER_OUTPUTD_ASSISTANT_OFFSET_LU=1.5
 JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS=-3.0
 JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS=-24.0
 JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS=-6.0
-JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS=-41.0
+JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS=-41.0
 JASPER_OUTPUTD_CONTENT_SILENCE_LUFS=-60.0
+JASPER_FANIN_HELD_CONTENT_TTL_SEC=600
+JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU=8
 JASPER_FANIN_ASSISTANT_REFERENCE_PATH=/var/lib/jasper/assistant_volume_reference.json
 ```
 
 When a cue/chirp/assistant segment arrives without a prepared wake-turn
 context and without measurable content, fan-in uses
-`JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS` as the baseline
-instead of a fixed fallback gain. This keeps no-context feedback sounds
-on the same profile/peak-cap path as live assistant speech.
+`JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS` as the final quiet-room
+speaker target instead of a fixed fallback gain. This keeps no-context
+feedback sounds on the same profile/peak-cap path as live assistant speech.
 
 ### Debugging Assistant Gain
 
@@ -405,13 +441,17 @@ active mix owner:
 event=fanin.assistant_loudness kind=assistant provider=openai
   model=gpt-realtime-2 voice=verse reference=held_assistant
   calibrated=true confidence=0.82 baseline_lufs=-29.4 target_lufs=-27.9
-  target_speaker_lufs=-39.5 source_lufs=-18.2
+  target_speaker_lufs=-39.5 envelope_offset_lu=1.2 source_lufs=-18.2
   source_peak_dbfs=-2.5 requested_gain_db=-9.7 peak_cap_gain_db=-0.5
   final_gain_db=-9.7 reason=target
 ```
 
 `jasper-fanin` exposes the same decision fields under
-`tts.assistant_loudness` in `/run/jasper-fanin/control.sock`.
+`tts.assistant_loudness` in `/run/jasper-fanin/control.sock`, together with the
+accepted volume context and stamp, held content/assistant values, the live
+`envelope_offset_lu`, and `volume_context_rejected`. `/state.fanin`
+embeds that STATUS block verbatim.
+
 `jasper-doctor` warns if that telemetry is missing or malformed. Use
 that surface first when debugging a provider loudness report; it shows
 whether the system used a calibrated profile, what content baseline it
@@ -641,7 +681,7 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-07-16 (assistant reference priority, speaker-domain fallback compensation, persistence, and live volume adjustment rechecked against shared loudness and fan-in tests; prior 2026-07-15 DAC8x/two-way automatic crossover-commissioning
+Last verified: 2026-07-16 (pre-DSP loudness ownership, stamped FIFO volume state, gentle-envelope offset learning, music-reference expiry, drained-before-end commit, and passive outputd scope checked against PR #1542; prior pass covered assistant reference priority, speaker-domain fallback compensation, persistence, and live volume adjustment; prior 2026-07-15 DAC8x/two-way automatic crossover-commissioning
 launch gate rechecked; source-lifecycle ownership and add-a-source
 integration points rechecked against `jasper.source_intent` and
 `jasper.local_sources`; prior 2026-07-07 ring/default path text rechecked against

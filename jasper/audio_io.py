@@ -23,6 +23,7 @@ from .assistant_loudness import (
     profile_for_outputd,
     update_profile_from_measurement,
 )
+from .assistant_volume import EffectiveVolumeContext, serialize_volume_context
 from .log_event import log_event
 from .tts_routing import FANIN_TTS_SOCKET
 
@@ -619,9 +620,10 @@ class TtsPlayout:
         provider: str,
         model: str,
         voice: str,
-        silence_target_lufs: float,
+        tts_envelope_lufs: float,
         canonical_volume_db: float | None = None,
         downstream_volume_db: float | None = None,
+        context_tts_envelope_lufs: float | None = None,
         muted: bool | None = None,
     ) -> None:
         """Freeze final-output loudness context before a turn starts.
@@ -633,9 +635,10 @@ class TtsPlayout:
             provider,
             model,
             voice,
-            silence_target_lufs,
+            tts_envelope_lufs,
             canonical_volume_db,
             downstream_volume_db,
+            context_tts_envelope_lufs,
             muted,
         )
         return None
@@ -939,10 +942,8 @@ class _OutputdStreamAdapter:
         provider: str,
         model: str,
         voice: str,
-        silence_target_lufs: float,
-        canonical_volume_db: float | None = None,
-        downstream_volume_db: float | None = None,
-        muted: bool | None = None,
+        tts_envelope_lufs: float,
+        volume_context: EffectiveVolumeContext | None = None,
     ) -> None:
         if not (
             _outputd_token_ok(provider)
@@ -956,24 +957,18 @@ class _OutputdStreamAdapter:
             )
             return
         with self._lock:
+            payload = bytearray()
+            if volume_context is not None:
+                payload.extend(serialize_volume_context(volume_context))
             parts = [
                 "PREPARE_ASSISTANT",
                 provider,
                 model,
                 voice,
-                f"{float(silence_target_lufs):.2f}",
+                f"{float(tts_envelope_lufs):.2f}",
             ]
-            if (
-                canonical_volume_db is not None
-                and downstream_volume_db is not None
-                and muted is not None
-            ):
-                parts.extend((
-                    f"{float(canonical_volume_db):.3f}",
-                    f"{float(downstream_volume_db):.3f}",
-                    "1" if muted else "0",
-                ))
-            self._sendall_locked((" ".join(parts) + "\n").encode("ascii"))
+            payload.extend((" ".join(parts) + "\n").encode("ascii"))
+            self._sendall_locked(bytes(payload))
 
     def pause_content_meter(self) -> None:
         with self._lock:
@@ -1173,9 +1168,10 @@ class OutputdTtsPlayout(TtsPlayout):
         provider: str,
         model: str,
         voice: str,
-        silence_target_lufs: float,
+        tts_envelope_lufs: float,
         canonical_volume_db: float | None = None,
         downstream_volume_db: float | None = None,
+        context_tts_envelope_lufs: float | None = None,
         muted: bool | None = None,
     ) -> None:
         self._provider = provider
@@ -1193,16 +1189,18 @@ class OutputdTtsPlayout(TtsPlayout):
                     "provider": provider,
                     "model": model,
                     "voice": voice,
-                    "silence_target_lufs": silence_target_lufs,
+                    "tts_envelope_lufs": tts_envelope_lufs,
                 }
                 if (
                     canonical_volume_db is not None
                     and downstream_volume_db is not None
+                    and context_tts_envelope_lufs is not None
                     and muted is not None
                 ):
-                    prepare_kwargs.update(
-                        canonical_volume_db=canonical_volume_db,
-                        downstream_volume_db=downstream_volume_db,
+                    prepare_kwargs["volume_context"] = EffectiveVolumeContext(
+                        canonical_db=canonical_volume_db,
+                        downstream_db=downstream_volume_db,
+                        tts_envelope_lufs=context_tts_envelope_lufs,
                         muted=muted,
                     )
                 await asyncio.to_thread(

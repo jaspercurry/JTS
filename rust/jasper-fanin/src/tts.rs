@@ -72,6 +72,7 @@ pub struct FlushSummary {
 
 #[derive(Debug, Clone)]
 pub struct TtsMetrics {
+    loudness_state_seq: Arc<AtomicU64>,
     pending_frames: Arc<AtomicU64>,
     max_pending_frames: Arc<AtomicU64>,
     budget_frames: Arc<AtomicU64>,
@@ -94,12 +95,26 @@ pub struct TtsMetrics {
     assistant_peak_cap_gain_db_x10: Arc<AtomicI64>,
     assistant_final_gain_db_x10: Arc<AtomicI64>,
     assistant_target_speaker_lufs_x10: Arc<AtomicI64>,
+    assistant_envelope_offset_lu_x10: Arc<AtomicI64>,
     assistant_reference_kind: Arc<AtomicU64>,
+    volume_context_seen: Arc<AtomicBool>,
+    volume_context_canonical_db_x10: Arc<AtomicI64>,
+    volume_context_downstream_db_x10: Arc<AtomicI64>,
+    volume_context_tts_envelope_lufs_x10: Arc<AtomicI64>,
+    volume_context_muted: Arc<AtomicBool>,
+    volume_context_stamp_boot_ns: Arc<AtomicU64>,
+    volume_context_rejected: Arc<AtomicU64>,
+    held_content_speaker_lufs_x10: Arc<AtomicI64>,
+    held_content_canonical_db_x10: Arc<AtomicI64>,
+    held_assistant_speaker_lufs_x10: Arc<AtomicI64>,
+    held_assistant_canonical_db_x10: Arc<AtomicI64>,
+    held_assistant_calibration_offset_lu_x10: Arc<AtomicI64>,
 }
 
 impl Default for TtsMetrics {
     fn default() -> Self {
         Self {
+            loudness_state_seq: Arc::new(AtomicU64::new(0)),
             pending_frames: Arc::new(AtomicU64::new(0)),
             max_pending_frames: Arc::new(AtomicU64::new(0)),
             budget_frames: Arc::new(AtomicU64::new(0)),
@@ -122,7 +137,20 @@ impl Default for TtsMetrics {
             assistant_peak_cap_gain_db_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
             assistant_final_gain_db_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
             assistant_target_speaker_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
+            assistant_envelope_offset_lu_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
             assistant_reference_kind: Arc::new(AtomicU64::new(0)),
+            volume_context_seen: Arc::new(AtomicBool::new(false)),
+            volume_context_canonical_db_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
+            volume_context_downstream_db_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
+            volume_context_tts_envelope_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
+            volume_context_muted: Arc::new(AtomicBool::new(false)),
+            volume_context_stamp_boot_ns: Arc::new(AtomicU64::new(0)),
+            volume_context_rejected: Arc::new(AtomicU64::new(0)),
+            held_content_speaker_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
+            held_content_canonical_db_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
+            held_assistant_speaker_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
+            held_assistant_canonical_db_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
+            held_assistant_calibration_offset_lu_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
         }
     }
 }
@@ -142,7 +170,12 @@ pub struct TtsLoudnessSnapshot {
     pub peak_cap_gain_db: Option<f64>,
     pub final_gain_db: Option<f64>,
     pub target_speaker_lufs: Option<f64>,
+    pub envelope_offset_lu: Option<f64>,
     pub reference_kind: Option<&'static str>,
+    pub volume_context: Option<VolumeContext>,
+    pub volume_context_rejected: u64,
+    pub held_content: Option<HeldLoudnessReference>,
+    pub held_assistant: Option<HeldLoudnessReference>,
 }
 
 impl TtsMetrics {
@@ -191,6 +224,21 @@ impl TtsMetrics {
     }
 
     pub fn loudness_snapshot(&self) -> TtsLoudnessSnapshot {
+        loop {
+            let before = self.loudness_state_seq.load(Ordering::Acquire);
+            if before % 2 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let snapshot = self.loudness_snapshot_unchecked();
+            let after = self.loudness_state_seq.load(Ordering::Acquire);
+            if before == after {
+                return snapshot;
+            }
+        }
+    }
+
+    fn loudness_snapshot_unchecked(&self) -> TtsLoudnessSnapshot {
         let decision_seen = self.assistant_decision_seen.load(Ordering::Relaxed);
         TtsLoudnessSnapshot {
             content_short_lufs: unpack_optional_db(
@@ -248,8 +296,48 @@ impl TtsMetrics {
             } else {
                 None
             },
+            envelope_offset_lu: if decision_seen {
+                unpack_optional_db(
+                    self.assistant_envelope_offset_lu_x10
+                        .load(Ordering::Relaxed),
+                )
+            } else {
+                None
+            },
             reference_kind: unpack_reference_kind(
                 self.assistant_reference_kind.load(Ordering::Relaxed),
+            ),
+            volume_context: self.volume_context_seen.load(Ordering::Relaxed).then(|| {
+                VolumeContext {
+                    canonical_db: unpack_optional_db(
+                        self.volume_context_canonical_db_x10.load(Ordering::Relaxed),
+                    )
+                    .unwrap_or_default() as f32,
+                    downstream_db: unpack_optional_db(
+                        self.volume_context_downstream_db_x10
+                            .load(Ordering::Relaxed),
+                    )
+                    .unwrap_or_default() as f32,
+                    tts_envelope_lufs: unpack_optional_db(
+                        self.volume_context_tts_envelope_lufs_x10
+                            .load(Ordering::Relaxed),
+                    )
+                    .unwrap_or_default() as f32,
+                    muted: self.volume_context_muted.load(Ordering::Relaxed),
+                    stamp_boot_ns: self.volume_context_stamp_boot_ns.load(Ordering::Relaxed),
+                }
+            }),
+            volume_context_rejected: self.volume_context_rejected.load(Ordering::Relaxed),
+            held_content: unpack_reference(
+                self.held_content_speaker_lufs_x10.load(Ordering::Relaxed),
+                self.held_content_canonical_db_x10.load(Ordering::Relaxed),
+                0,
+            ),
+            held_assistant: unpack_reference(
+                self.held_assistant_speaker_lufs_x10.load(Ordering::Relaxed),
+                self.held_assistant_canonical_db_x10.load(Ordering::Relaxed),
+                self.held_assistant_calibration_offset_lu_x10
+                    .load(Ordering::Relaxed),
             ),
         }
     }
@@ -273,6 +361,53 @@ impl TtsMetrics {
         self.program_duck_active.store(active, Ordering::Relaxed);
     }
 
+    fn mark_volume_context(&self, context: VolumeContext) {
+        self.begin_loudness_state_write();
+        self.volume_context_canonical_db_x10.store(
+            pack_optional_db(Some(context.canonical_db)),
+            Ordering::Relaxed,
+        );
+        self.volume_context_downstream_db_x10.store(
+            pack_optional_db(Some(context.downstream_db)),
+            Ordering::Relaxed,
+        );
+        self.volume_context_tts_envelope_lufs_x10.store(
+            pack_optional_db(Some(context.tts_envelope_lufs)),
+            Ordering::Relaxed,
+        );
+        self.volume_context_muted
+            .store(context.muted, Ordering::Relaxed);
+        self.volume_context_stamp_boot_ns
+            .store(context.stamp_boot_ns, Ordering::Relaxed);
+        self.volume_context_seen.store(true, Ordering::Relaxed);
+        self.end_loudness_state_write();
+    }
+
+    fn mark_volume_context_rejected(&self) {
+        self.volume_context_rejected.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn mark_held_references(
+        &self,
+        content: Option<HeldLoudnessReference>,
+        assistant: Option<HeldLoudnessReference>,
+    ) {
+        self.begin_loudness_state_write();
+        store_reference(
+            content,
+            &self.held_content_speaker_lufs_x10,
+            &self.held_content_canonical_db_x10,
+            None,
+        );
+        store_reference(
+            assistant,
+            &self.held_assistant_speaker_lufs_x10,
+            &self.held_assistant_canonical_db_x10,
+            Some(&self.held_assistant_calibration_offset_lu_x10),
+        );
+        self.end_loudness_state_write();
+    }
+
     fn mark_flush(&self, requests: usize, frames: u64) {
         self.flush_requests
             .fetch_add(requests as u64, Ordering::Relaxed);
@@ -285,6 +420,7 @@ impl TtsMetrics {
         content_anchor_lufs: Option<f32>,
         decision: Option<&AssistantGainDecision>,
     ) {
+        self.begin_loudness_state_write();
         self.content_short_lufs_x10
             .store(pack_optional_db(content_short_lufs), Ordering::Relaxed);
         self.content_anchor_lufs_x10
@@ -329,11 +465,24 @@ impl TtsMetrics {
                 pack_optional_db(decision.target_speaker_lufs),
                 Ordering::Relaxed,
             );
+            self.assistant_envelope_offset_lu_x10.store(
+                pack_optional_db(decision.envelope_offset_lu),
+                Ordering::Relaxed,
+            );
             self.assistant_reference_kind.store(
                 pack_reference_kind(decision.reference_kind),
                 Ordering::Relaxed,
             );
         }
+        self.end_loudness_state_write();
+    }
+
+    fn begin_loudness_state_write(&self) {
+        self.loudness_state_seq.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn end_loudness_state_write(&self) {
+        self.loudness_state_seq.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -376,6 +525,7 @@ pub struct TtsMixer {
     active_segment_decision: Option<AssistantGainDecision>,
     active_segment_serial: u64,
     next_segment_serial: u64,
+    assistant_segment_playback: Option<AssistantSegmentPlayback>,
     gain_ramp: GainRamp,
     assistant_reference_tx: Option<Sender<HeldLoudnessReference>>,
     loudness: AssistantLoudness,
@@ -388,6 +538,9 @@ impl TtsMixer {
     pub fn new(input: TtsInput) -> Self {
         let mut loudness = AssistantLoudness::new(input.assistant_loudness);
         loudness.set_held_assistant(input.assistant_reference);
+        input
+            .metrics
+            .mark_held_references(None, loudness.held_assistant());
         Self {
             rx: input.rx,
             flush_rx: input.flush_rx,
@@ -407,6 +560,7 @@ impl TtsMixer {
             active_segment_decision: None,
             active_segment_serial: 0,
             next_segment_serial: 1,
+            assistant_segment_playback: None,
             gain_ramp: GainRamp::default(),
             assistant_reference_tx: input.assistant_reference_tx,
             loudness,
@@ -433,6 +587,8 @@ impl TtsMixer {
                 self.loudness.content_anchor_lufs(),
                 self.loudness.last_decision(),
             );
+            self.metrics
+                .mark_held_references(self.loudness.held_content(), self.loudness.held_assistant());
         }
     }
 
@@ -443,10 +599,8 @@ impl TtsMixer {
                 break;
             };
             let target_gain_db = self.target_gain_db(front);
-            let muted = self
-                .loudness
-                .current_volume_context()
-                .is_some_and(|context| context.muted);
+            let playout_context = self.loudness.current_volume_context();
+            let muted = playout_context.is_some_and(|context| context.muted);
             let gain = if muted {
                 self.gain_ramp.force_silent();
                 0.0
@@ -455,6 +609,7 @@ impl TtsMixer {
                 self.gain_ramp.next_frame()
             };
 
+            let mut assistant_playback = None;
             let mut completed_reference = None;
             let block_finished;
             {
@@ -466,28 +621,38 @@ impl TtsMixer {
                 front.cursor += CHANNELS as usize;
                 self.pending_samples = self.pending_samples.saturating_sub(CHANNELS as u64);
                 block_finished = front.cursor >= front.samples.len();
-                if block_finished && front.completes_assistant_reference {
-                    completed_reference = front
-                        .decision
-                        .clone()
-                        .map(|decision| (decision, linear_to_db(gain)));
+                if front.assistant_reference_eligible && !muted {
+                    assistant_playback = front.decision.clone().and_then(|decision| {
+                        playout_context.map(|context| AssistantSegmentPlayback {
+                            segment_serial: front.segment_serial,
+                            decision,
+                            effective_gain_db: linear_to_db(gain),
+                            context,
+                        })
+                    });
                 }
+                if block_finished && front.completes_assistant_reference {
+                    completed_reference = front.decision.clone().and_then(|decision| {
+                        playout_context.map(|context| {
+                            (front.segment_serial, decision, linear_to_db(gain), context)
+                        })
+                    });
+                }
+            }
+            if let Some(playback) = assistant_playback {
+                self.assistant_segment_playback = Some(playback);
             }
             if block_finished {
                 self.queue.pop_front();
             }
-            if let Some((decision, effective_gain_db)) = completed_reference {
-                if let Some(reference) = self
-                    .loudness
-                    .complete_assistant_segment(&decision, effective_gain_db)
+            if let Some((serial, decision, effective_gain_db, context)) = completed_reference {
+                self.complete_assistant_reference(&decision, effective_gain_db, context);
+                if self
+                    .assistant_segment_playback
+                    .as_ref()
+                    .is_some_and(|playback| playback.segment_serial == serial)
                 {
-                    info!(
-                        "event=fanin.assistant_reference.updated speaker_lufs={:.1} canonical_db={:.1}",
-                        reference.speaker_lufs, reference.canonical_db
-                    );
-                    if let Some(tx) = &self.assistant_reference_tx {
-                        let _ = tx.send(reference);
-                    }
+                    self.assistant_segment_playback = None;
                 }
             }
         }
@@ -562,6 +727,8 @@ impl TtsMixer {
                             .map_or(gain_db, |value| value.peak_cap_gain_db),
                         decision,
                         segment_serial: self.active_segment_serial,
+                        assistant_reference_eligible: self.active_segment_kind
+                            == Some(SegmentKind::Assistant),
                         completes_assistant_reference: false,
                     });
                     // Only accounted after the budget check above passes, so
@@ -576,6 +743,7 @@ impl TtsMixer {
                     self.active_segment_gain_db = None;
                     self.active_segment_kind = None;
                     self.active_segment_decision = None;
+                    self.assistant_segment_playback = None;
                     // Defensive: flushes are normally intercepted before the
                     // command channel (see `handle_tts_client`) and handled by
                     // `drain_flushes`. If one ever reaches here, keep the
@@ -610,16 +778,10 @@ impl TtsMixer {
                     provider,
                     model,
                     voice,
-                    silence_target_lufs,
-                    volume_context,
+                    tts_envelope_lufs,
                 } => {
-                    self.loudness.prepare_context_with_volume(
-                        provider,
-                        model,
-                        voice,
-                        silence_target_lufs,
-                        volume_context,
-                    );
+                    self.loudness
+                        .prepare_context(provider, model, voice, tts_envelope_lufs);
                     self.metrics.mark_loudness(
                         self.loudness.content_short_lufs(),
                         self.loudness.content_anchor_lufs(),
@@ -627,11 +789,26 @@ impl TtsMixer {
                     );
                 }
                 TtsCommand::VolumeContext(context) => {
-                    self.loudness.update_volume_context(context);
-                    info!(
-                        "event=fanin.volume_context canonical_db={:.1} downstream_db={:.1} muted={}",
-                        context.canonical_db, context.downstream_db, context.muted
-                    );
+                    if self.loudness.update_volume_context(context) {
+                        self.metrics.mark_volume_context(context);
+                        info!(
+                            "event=fanin.volume_context canonical_db={:.1} downstream_db={:.1} tts_envelope_lufs={:.1} muted={} stamp_boot_ns={}",
+                            context.canonical_db,
+                            context.downstream_db,
+                            context.tts_envelope_lufs,
+                            context.muted,
+                            context.stamp_boot_ns,
+                        );
+                    } else {
+                        self.metrics.mark_volume_context_rejected();
+                        warn!(
+                            "event=fanin.volume_context_rejected reason=stale_or_invalid incoming_stamp_boot_ns={} accepted_stamp_boot_ns={}",
+                            context.stamp_boot_ns,
+                            self.loudness
+                                .current_volume_context()
+                                .map_or(0, |accepted| accepted.stamp_boot_ns),
+                        );
+                    }
                 }
                 TtsCommand::ContentMeterPause => {
                     self.content_meter_paused = true;
@@ -654,6 +831,7 @@ impl TtsMixer {
                     self.begin_segment_gain(kind, profile);
                 }
                 TtsCommand::SegmentEnd => {
+                    let mut drained_completion = None;
                     if self.active_segment_kind == Some(SegmentKind::Assistant) {
                         if let Some(block) = self
                             .queue
@@ -662,12 +840,23 @@ impl TtsMixer {
                             .find(|block| block.segment_serial == self.active_segment_serial)
                         {
                             block.completes_assistant_reference = true;
+                        } else if let Some(playback) = self.assistant_segment_playback.take() {
+                            if playback.segment_serial == self.active_segment_serial {
+                                drained_completion = Some(playback);
+                            }
                         }
                     }
                     self.active_segment_gain_db = None;
                     self.active_segment_kind = None;
                     self.active_segment_decision = None;
                     self.ledger.end_segment();
+                    if let Some(playback) = drained_completion {
+                        self.complete_assistant_reference(
+                            &playback.decision,
+                            playback.effective_gain_db,
+                            playback.context,
+                        );
+                    }
                 }
                 TtsCommand::Close => {}
             }
@@ -700,6 +889,7 @@ impl TtsMixer {
     }
 
     fn begin_segment_gain(&mut self, kind: SegmentKind, profile: Option<AssistantProfile>) -> f32 {
+        self.assistant_segment_playback = None;
         let decision = self
             .loudness
             .decide_gain(kind, self.current_gain_db, profile);
@@ -725,6 +915,32 @@ impl TtsMixer {
             .map_or(0.0, |decision| self.loudness.live_gain_delta_db(decision));
         sanitize_tts_gain_db((block.base_gain_db + residual).min(block.peak_cap_gain_db))
             .max(MIN_TTS_GAIN_DB)
+    }
+
+    fn complete_assistant_reference(
+        &mut self,
+        decision: &AssistantGainDecision,
+        effective_gain_db: f32,
+        playout_context: VolumeContext,
+    ) {
+        let Some(reference) = self.loudness.complete_assistant_segment_at(
+            decision,
+            effective_gain_db,
+            playout_context,
+        ) else {
+            return;
+        };
+        info!(
+            "event=fanin.assistant_reference.updated speaker_lufs={:.1} canonical_db={:.1} calibration_offset_lu={:.1}",
+            reference.speaker_lufs,
+            reference.canonical_db,
+            reference.calibration_offset_lu,
+        );
+        if let Some(tx) = &self.assistant_reference_tx {
+            let _ = tx.send(reference);
+        }
+        self.metrics
+            .mark_held_references(self.loudness.held_content(), self.loudness.held_assistant());
     }
 
     fn drain_flushes(&mut self) {
@@ -757,6 +973,7 @@ impl TtsMixer {
         self.active_segment_gain_db = None;
         self.active_segment_kind = None;
         self.active_segment_decision = None;
+        self.assistant_segment_playback = None;
         self.metrics.mark_flush(requests, flushed);
         self.metrics.mark_pending(0);
         let summary = FlushSummary::from_parts(requests, pending, flushed, &events);
@@ -789,7 +1006,15 @@ struct QueuedAudioBlock {
     peak_cap_gain_db: f32,
     decision: Option<AssistantGainDecision>,
     segment_serial: u64,
+    assistant_reference_eligible: bool,
     completes_assistant_reference: bool,
+}
+
+struct AssistantSegmentPlayback {
+    segment_serial: u64,
+    decision: AssistantGainDecision,
+    effective_gain_db: f32,
+    context: VolumeContext,
 }
 
 #[derive(Default)]
@@ -1123,6 +1348,40 @@ fn unpack_optional_db(value: i64) -> Option<f64> {
     Some(value as f64 / 10.0)
 }
 
+fn store_reference(
+    reference: Option<HeldLoudnessReference>,
+    speaker: &AtomicI64,
+    canonical: &AtomicI64,
+    calibration: Option<&AtomicI64>,
+) {
+    speaker.store(
+        pack_optional_db(reference.map(|value| value.speaker_lufs)),
+        Ordering::Relaxed,
+    );
+    canonical.store(
+        pack_optional_db(reference.map(|value| value.canonical_db)),
+        Ordering::Relaxed,
+    );
+    if let Some(calibration) = calibration {
+        calibration.store(
+            pack_optional_db(reference.map(|value| value.calibration_offset_lu)),
+            Ordering::Relaxed,
+        );
+    }
+}
+
+fn unpack_reference(
+    speaker: i64,
+    canonical: i64,
+    calibration: i64,
+) -> Option<HeldLoudnessReference> {
+    Some(HeldLoudnessReference {
+        speaker_lufs: unpack_optional_db(speaker)? as f32,
+        canonical_db: unpack_optional_db(canonical)? as f32,
+        calibration_offset_lu: unpack_optional_db(calibration)? as f32,
+    })
+}
+
 fn pack_reference_kind(kind: ReferenceKind) -> u64 {
     match kind {
         ReferenceKind::LiveContent => 1,
@@ -1144,7 +1403,7 @@ fn unpack_reference_kind(value: u64) -> Option<&'static str> {
 
 fn log_assistant_loudness_decision(kind: SegmentKind, decision: &AssistantGainDecision) {
     info!(
-        "event=fanin.assistant_loudness kind={} provider={} model={} voice={} reference={} calibrated={} confidence={:.2} baseline_lufs={:.1} target_lufs={:.1} target_speaker_lufs={} source_lufs={:.1} source_peak_dbfs={:.1} requested_gain_db={:.1} peak_cap_gain_db={:.1} final_gain_db={:.1} reason={}",
+        "event=fanin.assistant_loudness kind={} provider={} model={} voice={} reference={} calibrated={} confidence={:.2} baseline_lufs={:.1} target_lufs={:.1} target_speaker_lufs={} envelope_offset_lu={} source_lufs={:.1} source_peak_dbfs={:.1} requested_gain_db={:.1} peak_cap_gain_db={:.1} final_gain_db={:.1} reason={}",
         kind.as_str(),
         decision.provider.as_deref().unwrap_or("-"),
         decision.model.as_deref().unwrap_or("-"),
@@ -1156,6 +1415,10 @@ fn log_assistant_loudness_decision(kind: SegmentKind, decision: &AssistantGainDe
         decision.target_lufs,
         decision
             .target_speaker_lufs
+            .map(|value| format!("{value:.1}"))
+            .unwrap_or_else(|| "-".to_string()),
+        decision
+            .envelope_offset_lu
             .map(|value| format!("{value:.1}"))
             .unwrap_or_else(|| "-".to_string()),
         decision.source_lufs,
@@ -1280,8 +1543,7 @@ mod tests {
                 provider: "openai".to_string(),
                 model: "gpt-realtime-2".to_string(),
                 voice: "marin".to_string(),
-                silence_target_lufs: -38.5,
-                volume_context: None,
+                tts_envelope_lufs: -38.5,
             })
         );
         assert_eq!(
@@ -1366,8 +1628,7 @@ mod tests {
                 provider: "openai".to_string(),
                 model: "gpt-realtime-2".to_string(),
                 voice: "marin".to_string(),
-                silence_target_lufs: -38.0,
-                volume_context: None,
+                tts_envelope_lufs: -38.0,
             },
         })
         .unwrap();
@@ -1419,6 +1680,7 @@ mod tests {
             assistant_reference: Some(HeldLoudnessReference {
                 speaker_lufs: -30.0,
                 canonical_db: -30.0,
+                calibration_offset_lu: 0.0,
             }),
             assistant_reference_tx: Some(reference_tx),
         });
@@ -1427,7 +1689,9 @@ mod tests {
             command: TtsCommand::VolumeContext(VolumeContext {
                 canonical_db: -30.0,
                 downstream_db: 0.0,
+                tts_envelope_lufs: -41.0,
                 muted: false,
+                stamp_boot_ns: 1,
             }),
         })
         .unwrap();
@@ -1437,8 +1701,7 @@ mod tests {
                 provider: "openai".to_string(),
                 model: "gpt-realtime-2".to_string(),
                 voice: "marin".to_string(),
-                silence_target_lufs: -41.0,
-                volume_context: None,
+                tts_envelope_lufs: -41.0,
             },
         })
         .unwrap();
@@ -1479,7 +1742,9 @@ mod tests {
             command: TtsCommand::VolumeContext(VolumeContext {
                 canonical_db: -24.0,
                 downstream_db: 0.0,
+                tts_envelope_lufs: -39.44,
                 muted: false,
+                stamp_boot_ns: 2,
             }),
         })
         .unwrap();
@@ -1497,6 +1762,202 @@ mod tests {
             .expect("completed assistant reference");
         assert!((reference.speaker_lufs - -24.0).abs() < 0.02);
         assert_eq!(reference.canonical_db, -24.0);
+    }
+
+    #[test]
+    fn drained_audio_then_segment_end_commits_playout_time_reference() {
+        let (tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(12_000);
+        let (reference_tx, reference_rx) = mpsc::channel();
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 12_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+            assistant_reference: None,
+            assistant_reference_tx: Some(reference_tx),
+        });
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::VolumeContext(VolumeContext {
+                canonical_db: -30.0,
+                downstream_db: 0.0,
+                tts_envelope_lufs: -41.0,
+                muted: false,
+                stamp_boot_ns: 1,
+            }),
+        })
+        .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::PrepareAssistant {
+                provider: "openai".to_string(),
+                model: "m".to_string(),
+                voice: "v".to_string(),
+                tts_envelope_lufs: -41.0,
+            },
+        })
+        .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("late_end".to_string()),
+                profile: Some(AssistantProfile {
+                    provider: "openai".to_string(),
+                    model: "m".to_string(),
+                    voice: "v".to_string(),
+                    source_lufs: Some(-30.0),
+                    source_peak_dbfs: Some(-20.0),
+                    confidence: 1.0,
+                }),
+            },
+        })
+        .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![10_000, 10_000]),
+        })
+        .unwrap();
+
+        let mut sum = vec![0i32; 2];
+        assert!(mixer.prepare_period());
+        mixer.mix_period(&mut sum);
+        assert!(reference_rx.try_recv().is_err());
+
+        // A dial update after playout but before provider SEGMENT_END must not
+        // be combined with the old effective gain.
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::VolumeContext(VolumeContext {
+                canonical_db: -20.0,
+                downstream_db: 0.0,
+                tts_envelope_lufs: -36.0,
+                muted: false,
+                stamp_boot_ns: 2,
+            }),
+        })
+        .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentEnd,
+        })
+        .unwrap();
+        mixer.prepare_period();
+
+        let reference = reference_rx.try_recv().expect("late END commits");
+        assert!((reference.speaker_lufs - -41.0).abs() < 0.02);
+        assert_eq!(reference.canonical_db, -30.0);
+        assert!((reference.calibration_offset_lu - 0.0).abs() < 0.02);
+    }
+
+    #[test]
+    fn loudness_metrics_expose_accepted_context_rejections_and_held_reference() {
+        let (tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(12_000);
+        let held = HeldLoudnessReference {
+            speaker_lufs: -41.0,
+            canonical_db: -30.0,
+            calibration_offset_lu: 0.5,
+        };
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics: metrics.clone(),
+            max_pending_frames: 12_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+            assistant_reference: Some(held),
+            assistant_reference_tx: None,
+        });
+        let accepted = VolumeContext {
+            canonical_db: -20.0,
+            downstream_db: -20.0,
+            tts_envelope_lufs: -38.0,
+            muted: false,
+            stamp_boot_ns: 20,
+        };
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::VolumeContext(accepted),
+        })
+        .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::VolumeContext(VolumeContext {
+                stamp_boot_ns: 10,
+                ..accepted
+            }),
+        })
+        .unwrap();
+        mixer.prepare_period();
+
+        let snapshot = metrics.loudness_snapshot();
+        assert_eq!(snapshot.volume_context, Some(accepted));
+        assert_eq!(snapshot.volume_context_rejected, 1);
+        assert_eq!(snapshot.held_assistant, Some(held));
+    }
+
+    #[test]
+    fn flush_clears_drained_assistant_completion_candidate() {
+        let (tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(12_000);
+        let (reference_tx, reference_rx) = mpsc::channel();
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 12_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+            assistant_reference: None,
+            assistant_reference_tx: Some(reference_tx),
+        });
+        for command in [
+            TtsCommand::VolumeContext(VolumeContext {
+                canonical_db: -30.0,
+                downstream_db: 0.0,
+                tts_envelope_lufs: -41.0,
+                muted: false,
+                stamp_boot_ns: 1,
+            }),
+            TtsCommand::PrepareAssistant {
+                provider: "openai".to_string(),
+                model: "m".to_string(),
+                voice: "v".to_string(),
+                tts_envelope_lufs: -41.0,
+            },
+            TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("flushed".to_string()),
+                profile: Some(AssistantProfile {
+                    provider: "openai".to_string(),
+                    model: "m".to_string(),
+                    voice: "v".to_string(),
+                    source_lufs: Some(-30.0),
+                    source_peak_dbfs: Some(-20.0),
+                    confidence: 1.0,
+                }),
+            },
+            TtsCommand::Audio(vec![10_000, 10_000]),
+        ] {
+            tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
+        }
+        let mut sum = vec![0i32; 2];
+        assert!(mixer.prepare_period());
+        mixer.mix_period(&mut sum);
+
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Flush,
+        })
+        .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentEnd,
+        })
+        .unwrap();
+        mixer.prepare_period();
+        assert!(reference_rx.try_recv().is_err());
     }
 
     #[test]

@@ -116,7 +116,11 @@ pub struct AssistantProfile {
 pub struct VolumeContext {
     pub canonical_db: f32,
     pub downstream_db: f32,
+    /// Product loudness envelope for speech when no music reference exists.
+    pub tts_envelope_lufs: f32,
     pub muted: bool,
+    /// CLOCK_BOOTTIME nanoseconds from the publisher's current boot.
+    pub stamp_boot_ns: u64,
 }
 
 pub const MIN_ASSISTANT_PROFILE_DB: f32 = -120.0;
@@ -137,8 +141,7 @@ pub enum TtsCommand {
         provider: String,
         model: String,
         voice: String,
-        silence_target_lufs: f32,
-        volume_context: Option<VolumeContext>,
+        tts_envelope_lufs: f32,
     },
     VolumeContext(VolumeContext),
     ContentMeterPause,
@@ -213,19 +216,35 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
                 "missing VOLUME_CONTEXT downstream dB",
             )
         })?;
+        let tts_envelope_lufs = parts.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing VOLUME_CONTEXT silence target",
+            )
+        })?;
         let muted = parts.next().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "missing VOLUME_CONTEXT mute")
+        })?;
+        let stamp_boot_ns = parts.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing VOLUME_CONTEXT stamp")
         })?;
         if parts.next().is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "VOLUME_CONTEXT expects exactly three arguments",
+                "VOLUME_CONTEXT expects exactly five arguments",
             ));
         }
         return Ok(Some(TtsCommand::VolumeContext(VolumeContext {
             canonical_db: parse_required_f32(canonical_db, "VOLUME_CONTEXT canonical dB")?,
             downstream_db: parse_required_f32(downstream_db, "VOLUME_CONTEXT downstream dB")?,
+            tts_envelope_lufs: parse_required_f32(
+                tts_envelope_lufs,
+                "VOLUME_CONTEXT silence target",
+            )?,
             muted: parse_bool_token(muted, "VOLUME_CONTEXT mute")?,
+            stamp_boot_ns: stamp_boot_ns.parse::<u64>().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid VOLUME_CONTEXT stamp")
+            })?,
         })));
     }
     if let Some(rest) = line.strip_prefix("AUDIO ") {
@@ -357,41 +376,16 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
                 "missing PREPARE_ASSISTANT voice",
             )
         })?;
-        let silence_target = parts.next().ok_or_else(|| {
+        let tts_envelope = parts.next().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "missing PREPARE_ASSISTANT silence target",
             )
         })?;
-        let volume_context = match parts.next() {
-            None => None,
-            Some(canonical_db) => {
-                let downstream_db = parts.next().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "missing PREPARE_ASSISTANT downstream dB",
-                    )
-                })?;
-                let muted = parts.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "missing PREPARE_ASSISTANT mute")
-                })?;
-                Some(VolumeContext {
-                    canonical_db: parse_required_f32(
-                        canonical_db,
-                        "PREPARE_ASSISTANT canonical dB",
-                    )?,
-                    downstream_db: parse_required_f32(
-                        downstream_db,
-                        "PREPARE_ASSISTANT downstream dB",
-                    )?,
-                    muted: parse_bool_token(muted, "PREPARE_ASSISTANT mute")?,
-                })
-            }
-        };
         if parts.next().is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "PREPARE_ASSISTANT expects four or seven arguments",
+                "PREPARE_ASSISTANT expects exactly four arguments",
             ));
         }
         validate_token(provider, "PREPARE_ASSISTANT provider")?;
@@ -401,11 +395,10 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
             provider: provider.to_string(),
             model: model.to_string(),
             voice: voice.to_string(),
-            silence_target_lufs: parse_required_f32(
-                silence_target,
+            tts_envelope_lufs: parse_required_f32(
+                tts_envelope,
                 "PREPARE_ASSISTANT silence target",
             )?,
-            volume_context,
         }));
     }
     Err(io::Error::new(
@@ -543,28 +536,25 @@ mod tests {
     }
 
     #[test]
-    fn parser_accepts_absolute_volume_context_and_extended_prepare() {
+    fn parser_accepts_stamped_volume_context_and_separate_prepare() {
         let cmds = parse_all(
-            b"VOLUME_CONTEXT -36.4 -36.4 0\nPREPARE_ASSISTANT openai m v -45.2 -36.4 -36.4 1\n",
+            b"VOLUME_CONTEXT -36.4 -36.4 -45.2 0 123456\nPREPARE_ASSISTANT openai m v -45.2\n",
         );
         assert_eq!(
             cmds[0],
             TtsCommand::VolumeContext(VolumeContext {
                 canonical_db: -36.4,
                 downstream_db: -36.4,
+                tts_envelope_lufs: -45.2,
                 muted: false,
+                stamp_boot_ns: 123456,
             })
         );
         match &cmds[1] {
-            TtsCommand::PrepareAssistant { volume_context, .. } => {
-                assert_eq!(
-                    *volume_context,
-                    Some(VolumeContext {
-                        canonical_db: -36.4,
-                        downstream_db: -36.4,
-                        muted: true,
-                    })
-                );
+            TtsCommand::PrepareAssistant {
+                tts_envelope_lufs, ..
+            } => {
+                assert_eq!(*tts_envelope_lufs, -45.2);
             }
             other => panic!("unexpected {other:?}"),
         }

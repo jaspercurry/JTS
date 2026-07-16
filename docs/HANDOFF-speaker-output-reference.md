@@ -138,23 +138,30 @@ TTS is already a core realtime-voice component:
   a passive bonded non-sub multiroom member, the grouping reconciler instead
   points voice at `/run/jasper-outputd/tts.sock` so assistant audio mixes
   post-round-trip at the final output owner.
-- Fan-in and outputd speak the same `jasper-tts-protocol` wire
-  vocabulary and share the same assistant loudness policy. `jasper-fanin`
-  owns assistant gain in the solo packaged topology: it snapshots
-  pre-duck content loudness, applies the provider source-loudness profile
-  and peak-capped gain policy, emits `event=fanin.assistant_loudness`, and
-  publishes the latest decision under `tts.assistant_loudness` in its
-  STATUS payload. On a bonded member, outputd applies the same loudness
-  policy at the post-round-trip mix point. Python seeds and learns
-  profiles but does not set final gain.
+- Fan-in and outputd speak the same `jasper-tts-protocol` wire vocabulary,
+  but **volume-context parity is not claimed across their different mix
+  stages**. `jasper-fanin` owns assistant gain in the solo/active pre-DSP
+  topology: it snapshots pre-duck content loudness, applies the provider
+  source-loudness profile and peak-capped gain policy, emits
+  `event=fanin.assistant_loudness`, and publishes the accepted stamped volume
+  context, held references, rejection count, and latest decision under
+  `tts.assistant_loudness` in STATUS. Python seeds/learns source profiles and
+  publishes speaker-volume facts; it does not set final gain.
+- On a passive bonded member, the grouping reconciler routes TTS to outputd and
+  writes `JASPER_TTS_MIX_STAGE=post_dsp`. Voice and the coordinator then send no
+  `VOLUME_CONTEXT`: post-DSP outputd must not inherit fan-in's downstream
+  pre-compensation, and today it has neither equivalent mute semantics nor
+  live re-gain for queued speech. It keeps the pre-volume-context bonded-member
+  behavior. The named follow-up **Outputd post-DSP assistant-volume parity**
+  must make mix stage an explicit input to `decide_gain`, add mute, and apply
+  live re-gain in outputd's mix loop before parity can be claimed.
 - Cues and chirps route through the same `TtsPlayout` object. They
   inherit fan-in routing, drain behavior, flush behavior, and
   profile/peak-capped gain policy without training live assistant
   profiles, then pass through CamillaDSP crossover/protection with the
   rest of the audio stream. If a feedback sound arrives with no
   wake-turn context and no measured content baseline, fan-in uses the
-  configured default
-  silence target rather than a fixed legacy gain.
+  configured default TTS envelope rather than a fixed legacy gain.
 
 That is good groundwork, but it is not a complete "what did the user
 hear?" ledger. Robust barge-in needs both a true AEC reference and
@@ -1471,7 +1478,7 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-07-14 (DAC connection declaration and output-hardware USB
+Last verified: 2026-07-16 (pre-DSP fan-in volume-context ownership and the explicit passive-outputd parity scope checked against PR #1542; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
 role artifact rechecked; prior 2026-07-12 outputd control-socket command cap/deadline and
 STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
 historical readiness entry marked superseded by the
