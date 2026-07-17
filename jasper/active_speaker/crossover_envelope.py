@@ -204,10 +204,16 @@ def _active_level_solve_refusal(
     return refusal
 
 
-# Closed-loop level solver (W2.1) refusal copy. ONE mapping owns code -> user
-# copy, mirroring jasper.correction.level_match.describe_ramp_refusal (#1534)
-# -- neither this function nor any caller hand-rolls its own sentence.
+# Closed-loop level solver (W2.1/W2.2) refusal copy. ONE mapping owns
+# code -> user copy, mirroring jasper.correction.level_match.describe_ramp_refusal
+# (#1534) -- neither this function nor any caller hand-rolls its own
+# sentence. Values are literal strings, not imports from
+# jasper.audio_measurement.level_solver -- mirrors the existing
+# room_too_noisy duplication so this module stays free of a solver import.
 _LEVEL_SOLVE_REFUSAL_CODE_ROOM_TOO_NOISY = "room_too_noisy_for_safe_measurement"
+_LEVEL_SOLVE_REFUSAL_CODE_MEASUREMENT_WINDOW_UNREACHABLE = (
+    "measurement_window_unreachable"
+)
 
 
 def _describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
@@ -219,6 +225,21 @@ def _describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
     room requires re-locking -- see the branch comments at the call sites).
     The copy must not imply the saved levels survive the redo.
     """
+
+    code = str(refusal.get("code") or "")
+    if code == _LEVEL_SOLVE_REFUSAL_CODE_MEASUREMENT_WINDOW_UNREACHABLE:
+        # W2.2: the target burned its bounded clip/SNR correction budget
+        # (see CrossoverLevelLease.record_solve_correction) and rejected
+        # again. Unlike room_too_noisy this is a mic-placement problem, not
+        # a room-noise problem -- the level lock is unaffected, so the
+        # remedy is repositioning and re-measuring, not redoing the level
+        # check.
+        return (
+            "The microphone can't get a clean reading at this distance — "
+            "it's picking up too much on loud passages and too little on "
+            "quiet ones. Move the phone close to the driver being measured "
+            "(about 3 cm / just over an inch away), then measure again."
+        )
 
     band = refusal.get("failing_band_hz")
     lo, hi = (
@@ -235,9 +256,9 @@ def _describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
         "Quiet the room or move the microphone closer, then redo the quick "
         "level check (about 2 minutes) to measure again."
     )
-    if str(refusal.get("code") or "") != _LEVEL_SOLVE_REFUSAL_CODE_ROOM_TOO_NOISY:
-        # Only one code exists today; an unrecognized future one still gets
-        # levers-naming copy rather than a bare technical string.
+    if code != _LEVEL_SOLVE_REFUSAL_CODE_ROOM_TOO_NOISY:
+        # An unrecognized future code still gets levers-naming copy rather
+        # than a bare technical string.
         return (
             f"{band_text} could not be measured reliably at a safe level. "
             f"{remedy}"
@@ -827,7 +848,16 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "to fix in the room. Try again."
             )
         elif latest_rejection.get("clipping") is True:
-            text = "The latest sweep clipped. Keep the microphone still and reduce the input gain."
+            # Honest about the automatic fix: a calibrated measurement mic
+            # has no input-gain control, so "reduce the input gain" was
+            # actionable advice for nobody. The closed-loop level solver
+            # (W2.2) de-escalates the sweep level from the clipped
+            # capture's own measured evidence -- see
+            # CrossoverLevelLease.record_solve_correction.
+            text = (
+                "That sweep was too loud for the microphone at this "
+                "distance. JTS will try again a bit quieter."
+            )
         elif (shortfall := finite_float(
             latest_rejection.get("snr_shortfall_db")
         )) is not None:
@@ -1128,20 +1158,24 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         elif (
             solve_refusal := _active_level_solve_refusal(status, target_id)
         ) is not None:
-            # Closed-loop level solver (W2.1): no safe sweep level clears even
-            # the bare SNR floor for this driver. Fired BEFORE any tone
-            # plays -- render the honest pre-flight terminal instead of
+            # Closed-loop level solver (W2.1/W2.2): no safe sweep level
+            # clears even the bare SNR floor (room_too_noisy), or the
+            # target burned its bounded clip/SNR correction budget
+            # (measurement_window_unreachable -- see
+            # CrossoverLevelLease.record_solve_correction). Fired BEFORE any
+            # tone plays -- render the honest pre-flight terminal instead of
             # letting a doomed sweep burn a bounded repeat attempt. The
-            # refusal itself never touched the saved levels, but the offered
-            # remedy DOES redo the level check from the start: today the
-            # room's ambient reading is a byproduct of the level ramp, so a
-            # quieter room can only be re-measured by re-running the guided
-            # sequence (which invalidates the prior locks -- see
-            # _handle_crossover_relay_level_match's `continuing` gate). A
-            # per-driver retained-locks retry is the planned seam for the
-            # phone ambient-stats PR (fresh per-band ambient without a
-            # re-lock) plus the W2.5 invalidation-semantics design; the copy
-            # below is honest about the redo until then.
+            # refusal itself never touched the saved levels; the offered
+            # remedy still redoes the level check from the start for BOTH
+            # codes -- for room_too_noisy because a quieter room can only be
+            # re-measured by re-running the guided sequence (a per-driver
+            # retained-locks retry is the planned seam for the phone
+            # ambient-stats PR plus the W2.5 invalidation-semantics design);
+            # for measurement_window_unreachable the level lock itself is
+            # unaffected, but redoing the level check is still the safe
+            # remedy today (the verdict copy's real instruction is "move the
+            # mic closer"). The copy below is honest about the redo until a
+            # narrower per-driver retry lands.
             screen = "level_solve_refused"
             verdict = _describe_level_solve_refusal(solve_refusal)
             action = {
@@ -1293,10 +1327,11 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         elif (
             solve_refusal := _active_level_solve_refusal(status, physical_target_id)
         ) is not None:
-            # Closed-loop level solver (W2.1): same pre-flight refusal as the
-            # near-field branch above, for the fixed reference-axis sweep --
-            # including the same honest-copy rule (the offered remedy redoes
-            # the level check from the start; see that branch's comment).
+            # Closed-loop level solver (W2.1/W2.2): same pre-flight refusal
+            # as the near-field branch above, for the fixed reference-axis
+            # sweep -- including the same honest-copy rule (the offered
+            # remedy redoes the level check from the start; see that
+            # branch's comment).
             screen = "level_solve_refused"
             verdict = _describe_level_solve_refusal(solve_refusal)
             action = {

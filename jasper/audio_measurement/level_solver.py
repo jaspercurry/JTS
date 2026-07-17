@@ -89,6 +89,20 @@ ceiling -8 dBFS, floor 20 dB + margin 6 dB -> the woofer solve predicts
 >=26 dB worst-band SNR using main_volume_db alone; the tweeter solve pins
 main_volume_db at its cap and engages commissioning_gain_db to close as much
 of the gap as the ceilings allow.
+
+W2.2 clip-aware correction (hardware run 18, same day): the woofer solve
+above cleared its SNR target using ``gain_map_db`` from the level-match
+ramp's single 250 Hz lock tone -- but a DIFFERENT run's tone read
+``gain_map_db=-0.1`` (near-unity), predicted a comfortably quiet mic peak,
+and the mic clipped at 0 dBFS anyway: one lock-tone frequency does not
+reliably characterize a full sweep's hottest band. ``MIC_TARGET_PEAK_DBFS``
+and ``CLIP_UNDERESTIMATE_ALLOWANCE_DB`` exist for the caller
+(:class:`~jasper.web.correction_crossover_backend.CrossoverLevelLease`) to
+de-escalate from that clipped capture's OWN measured mic peak rather than
+the tone -- see ``solve_level``'s ``mic_clip_gain_map_db`` parameter and the
+caller's ``record_solve_correction``/``record_measured_gain``. Regression
+anchor: ``tests/test_audio_measurement_level_solver.py``'s
+``test_regression_run18_clip_deescalation_lands_predicted_peak_at_target``.
 """
 from __future__ import annotations
 
@@ -109,6 +123,27 @@ SOLVER_MARGIN_DB = 6.0
 # mic peak must stay. A solve that itself clips the mic corrupts the very
 # capture it exists to enable.
 MIC_CLIP_CEILING_DBFS = -6.0
+
+# Bounded clip correction (W2 clip-aware level correction, hardware run 18):
+# once a sweep has ACTUALLY clipped the mic, the tone-derived ``gain_map_db``
+# is proven wrong for this driver's hottest band -- the caller replaces it
+# with a gain measured from the clipped attempt's own evidence (see
+# ``solve_level``'s ``mic_clip_gain_map_db`` parameter) and targets a much
+# more conservative mic peak than the bare ``MIC_CLIP_CEILING_DBFS``, because
+# a clipped/clamped mic reading is a floor on the true peak, not the true
+# peak itself.
+MIC_TARGET_PEAK_DBFS = -12.0
+# A clipped capture's peak reading is clamped at (or near) digital full
+# scale, so it UNDERSTATES the true acoustic peak by an unknown amount. This
+# pads the assumed true peak upward before computing how far to back off, so
+# the correction errs quieter rather than risking a repeat clip.
+CLIP_UNDERESTIMATE_ALLOWANCE_DB = 3.0
+
+# Typed refusal for a target that has burned its bounded clip/SNR correction
+# budget (see ``jasper.web.correction_crossover_backend.CrossoverLevelLease``)
+# and rejected again -- the mic cannot get a clean reading at this
+# distance/placement, and a third guessed level is not the fix.
+REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE = "measurement_window_unreachable"
 
 # Fallback low-frequency ambient synthesis (see the module docstring). A band
 # centered at or below LF_MARGIN_FULL_HZ gets the full margin; at or above
@@ -276,6 +311,7 @@ def solve_level(
     solver_margin_db: float = SOLVER_MARGIN_DB,
     sweep_amplitude_dbfs: float = AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
     tone_amplitude_dbfs: float = AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+    mic_clip_gain_map_db: float | None = None,
 ) -> SolvedLevel | LevelSolveRefusal:
     """Choose the quietest safe (main_volume_db, commissioning_gain_db).
 
@@ -295,6 +331,18 @@ def solve_level(
     weighting. When absent or empty after clipping to the admitted band, the
     solver synthesizes a conservative per-band estimate from
     ``ambient_broadband_dbfs`` (see the module docstring).
+
+    ``mic_clip_gain_map_db`` overrides ``gain_map_db`` for the mic-clip
+    ceiling ONLY (hardware run 18: a single 250 Hz lock tone underestimated a
+    woofer sweep's hottest band by ~17 dB, so the ceiling derived from it let
+    a "safe" solve clip the mic at 0 dBFS). The SNR-target math
+    (``required_sum``, ``predicted_worst_band_snr_db``) always uses
+    ``gain_map_db`` unchanged -- only the caller (which has actually measured
+    a mic peak from a real sweep -- see
+    ``jasper.web.correction_crossover_backend.CrossoverLevelLease.record_measured_gain``)
+    can supply a gain grounded in the driver's own hottest-band behavior
+    rather than one lock tone. ``None`` (the default) keeps today's
+    single-``gain_map_db`` behavior exactly.
     """
 
     admitted_lo, admitted_hi = float(admitted_band_hz[0]), float(admitted_band_hz[1])
@@ -325,19 +373,26 @@ def solve_level(
         )
         return effective_peak_dbfs + gain_map_db - tone_amplitude_dbfs
 
-    def sum_for_target_mic_dbfs(target_mic_dbfs: float) -> float:
+    def sum_for_target_mic_dbfs(
+        target_mic_dbfs: float, *, gain_db: float = gain_map_db
+    ) -> float:
         """The (commissioning_gain_db + main_volume_db) total achieving
         ``target_mic_dbfs`` at the mic, given the fixed sweep amplitude."""
         return (
             target_mic_dbfs
-            - gain_map_db
+            - gain_db
             + tone_amplitude_dbfs
             - sweep_amplitude_dbfs
         )
 
     max_sum_from_levers = main_volume_cap_db + 0.0  # V<=cap, C<=0
     max_sum_from_peak_ceiling = max_effective_peak_dbfs - sweep_amplitude_dbfs
-    max_sum_from_mic_clip = sum_for_target_mic_dbfs(MIC_CLIP_CEILING_DBFS)
+    max_sum_from_mic_clip = sum_for_target_mic_dbfs(
+        MIC_CLIP_CEILING_DBFS,
+        gain_db=(
+            gain_map_db if mic_clip_gain_map_db is None else mic_clip_gain_map_db
+        ),
+    )
     max_sum = min(max_sum_from_levers, max_sum_from_peak_ceiling, max_sum_from_mic_clip)
 
     worst_band = max(bands, key=lambda band: band.rms_dbfs)

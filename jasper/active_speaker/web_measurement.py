@@ -1281,6 +1281,19 @@ def record_driver_capture(
             {},
         )
         gating_block = _mapping_value(acoustic_block.get("gating"))
+        # peak_dbfs/effective_peak_dbfs: the just-analyzed capture's measured
+        # mic peak and this attempt's OWN played level (sweep amplitude +
+        # commissioning gain + main volume). Both are always populated
+        # regardless of verdict -- peak_dbfs comes straight off the capture
+        # quality report (DriverAcousticResult.peak_dbfs), and
+        # effective_peak_dbfs is the excitation ledger `raw["excitation"]`
+        # already carries from play_driver_capture_sweep's response, echoed
+        # back by the phone -- so even an unusable_capture (clipped) rejection
+        # carries the evidence the closed-loop level solver's clip-aware
+        # correction needs (see
+        # jasper.web.correction_crossover_backend.CrossoverLevelLease
+        # .record_solve_correction / .record_measured_gain).
+        raw_excitation = _mapping_value(raw.get("excitation"))
         admission_result = {
             "accepted": latest_attempt.get("accepted"),
             "reject_reason": latest_attempt.get("reject_reason"),
@@ -1291,6 +1304,8 @@ def record_driver_capture(
             "clipping": latest_attempt.get("clipping"),
             "above_validity_floor": latest_attempt.get("above_validity_floor"),
             "validity_floor_hz": gating_block.get("f_valid_floor_hz"),
+            "peak_dbfs": acoustic_block.get("peak_dbfs"),
+            "effective_peak_dbfs": raw_excitation.get("effective_peak_dbfs"),
         }
         strict_isolated_required = bool(
             authoritative_recorder is not None
