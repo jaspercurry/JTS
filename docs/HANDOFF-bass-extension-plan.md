@@ -1,7 +1,8 @@
 # Handoff: Bass Extension — volume-scheduled low-frequency alignment (plan of record)
 
-> **Status: planning brief / execution plan of record (2026-07-16).**
-> No bass-extension code exists yet. This document is the architecture
+> **Status: planning brief / execution plan of record (2026-07-17).**
+> Waves 1–2 (numerics, profile, and observability skeleton) are merged;
+> runtime/audio emission has not shipped. This document is the architecture
 > and phased implementation plan for the feature; it was produced by a
 > six-agent survey of the codebase at `origin/main` `7dd803c8d`
 > (2026-07-16) plus external loudspeaker-science research. Every code
@@ -14,6 +15,12 @@
 > prior-art/validation report (patents, T/S-drift data, port-compression
 > data, perceptual JNDs). Deltas listed in §2.5 and folded into
 > §§5–8, 12–15 in place.
+>
+> **Revision 2026-07-17:** resolves the Wave 1/Wave 3 frozen-contract
+> contradiction found by draft PR #1558. The first runtime slice is
+> sealed-only; ported/PR profiles remain retained and observable but
+> are not armed until a fixed graph for their changing filter shapes
+> is separately designed and proved.
 
 ## 0. One-paragraph summary
 
@@ -22,10 +29,13 @@ volume-scheduled low-frequency alignment** for an active speaker: at
 low listening levels the speaker plays a deeper-than-natural neutral
 bass alignment (Linkwitz-Transform-style for sealed boxes; bounded
 EQ-plus-subsonic-protection families for ported and passive-radiator
-boxes); as the canonical `listening_level` rises the runtime smoothly
-retreats through a small commissioned family of progressively
-shallower targets until, near maximum volume, the speaker plays its
-natural protected response. Commissioning reuses the calibrated
+boxes). The first runtime slice arms only sealed profiles: as the
+canonical `listening_level` rises it smoothly retreats through a
+small commissioned family of progressively shallower targets until,
+near maximum volume, the speaker plays its natural protected
+response. Ported/PR commissioning profiles are retained for the later
+runtime carrier but do not alter the live graph in this slice.
+Commissioning reuses the calibrated
 phone-mic relay, the synchronized-ESS measurement kernel, the
 excitation-admission chain, and the commissioning apply/restore
 transaction that already exist; the runtime is a handful of extra IIR
@@ -288,10 +298,12 @@ ladder HTTP backend, and the hardware-validation scripts.
   baseline) — it describes the physical bass system, is commissioned
   once per hardware build, and is bound to the applied baseline. It
   is *not* room correction (Layer B) or preference EQ (Layer C).
-  Volume-dependence is architecturally novel for Layer A; the graph
-  stays a static compiled artifact and only the **parameters of one
-  named filter pair** (or one fader pair) move at runtime, inside
-  bounds frozen into the profile.
+  Volume-dependence is architecturally novel for Layer A. In the
+  sealed first runtime slice, the graph stays a static compiled
+  artifact and only the **parameters of one named filter pair** move
+  at runtime, inside bounds frozen into the profile. Ported/PR
+  profiles remain Layer-A commissioning artifacts, but have no live
+  carrier in this slice.
 - **Extensibility contract:** per `docs/extensibility.md` this is
   **not** a new contract and not a Pattern-3 hardware-presence
   profile — it is a sub-artifact of the existing active-speaker
@@ -351,7 +363,7 @@ back as a decision input.
      //                        empirical model predicted_response builds on */ }}
      // passive_radiator:  {"fb_hz": 41.0, "notch_hz": 24.5, natural_curve, ...}
   },
-  // ---- the commissioned family, deepest first; target 0 is ALWAYS
+  // ---- the commissioned family, deepest first; the final target is ALWAYS
   //      the natural/safest member (the fallback identity target)
   "targets": [
     {"target_id": "t31", "fp_hz": 31.0, "qp": 0.65,
@@ -396,8 +408,10 @@ Design points:
   the same graph shape, and the fallback story stays one sentence.
 - **Filters are stored as exact CamillaDSP parameter dicts**, frozen
   at accept time. The runtime never re-derives filter math; it
-  selects among frozen members. This is the "no free-form optimizer"
-  guarantee made structural.
+  selects among frozen members. In the first runtime slice that
+  selection is sealed-only; accepted ported/PR profiles retain these
+  dicts as commissioned evidence but are not armed. This is the "no
+  free-form optimizer" guarantee made structural.
 
 ### 5.2 Staleness and authorization
 
@@ -407,8 +421,11 @@ mirrors `evaluate_driver_safety_profile`'s ladder:
 fingerprint mismatches (baseline re-applied, topology changed,
 adapter version bumped, algorithm version bumped). **Stale or missing
 never blocks music** — the runtime simply holds the natural target
-(§10.2). Only an `accepted` + current profile authorizes the
-scheduler to leave the natural target.
+(§10.2). Only an `accepted` + current **sealed_v1** profile authorizes
+the first-slice scheduler to leave the natural target. Accepted
+ported/PR profiles remain valid and visible but report runtime
+ineligible; acceptance is not permission to synthesize a graph shape
+their adapter did not define.
 
 ### 5.3 What it deliberately does not claim
 
@@ -551,6 +568,22 @@ Ported adapter with three deltas:
 - Steeper natural ultimate rolloff (~30 dB/oct) means lower-order
   subsonic filters suffice; the family generator accounts for the
   summed slope when computing `boost_headroom_db`.
+
+**Runtime boundary for ported/PR (2026-07-17 revision).** Wave 1's
+adapter truth is retained unchanged: every ported/PR target has
+`qp=None` and no LT, while its `filters` tuple may shed a shelf or
+peak and may add a separate retreat high-pass; the natural member has
+an empty tuple. These members therefore cannot transition through the
+sealed `bass_ext_lt` identity slot. A zero-gain shelf/peak could be an
+identity in isolation, but the retreat high-pass has no exact valid
+pass-through parameterization, and Wave 0 measured `PatchConfig`
+coefficient changes on an already-present named LT — not filter
+add/remove, type changes, or bypass machinery. A fixed ported/PR slot
+graph would consequently require new carrier/bypass structure and a
+fresh audio-safety/re-proof program, materially expanding Waves 3/5.
+The 80/20 decision is explicit: ported/PR profiles remain
+commissionable, persisted, and observable, but the first runtime
+slice does not arm them or emit any `bass_ext_*` block.
 
 Multi-driver / multi-port / TL / open-baffle / horn:
 `ENCLOSURE_UNSUPPORTED` in v1, listed as future adapters. The
@@ -743,9 +776,10 @@ through a sweep-shaped request.
 
 ### 8.1 Graph placement
 
-Bass extension lives **post-split on the bass-owner chain**, i.e. as
-Layer-A per-driver filters exactly where the layer model puts driver
-linearization — after the split mixer, before the existing
+Bass extension's first runtime slice is **sealed-only** and lives
+post-split on the bass-owner chain, i.e. as Layer-A per-driver filters
+exactly where the layer model puts driver linearization — after the
+split mixer, before the existing
 `driver_delay → driver_baseline_gain → driver_baseline_limiter`
 suffix ordering (concretely: `[bass_management_hp?] → crossover
 biquads → bass_ext_lt → bass_ext_subsonic → delay → gain → limiter`).
@@ -760,16 +794,28 @@ Rationale:
 - The per-driver limiter (`clip_limit −1 dB`) downstream is the
   digital backstop for any headroom-math error — worst case is
   graceful limiting, never wrap/clip.
-- Local-sub topologies emit the same pair on the sub chain instead.
+- Local-sub topologies with a sealed bass owner emit the same pair on
+  the sub chain instead.
 
-The emitted **static** graph always carries the filters at the
-**natural target's parameters** (LT with `freq_act == freq_target`,
-`q_act == q_target` is an exact pass-through; subsonic HP always
-active for ported/PR). Extension is an *actively maintained
-enhancement*: the scheduler patches deeper only while it is alive and
-confirmed; every reset/reload/boot lands on natural. Fail-safe by
-construction, and it means `classify_camilla_graph` re-proof and the
-statefile never see a "deep" graph at rest.
+An accepted, current sealed profile's emitted **static** graph always
+carries the pair at the **natural target's parameters** (LT with
+`freq_act == freq_target`, `q_act == q_target` is an exact
+pass-through). Extension is an *actively maintained enhancement*: the
+scheduler patches deeper only while it is alive and confirmed; every
+reset/reload/boot lands on natural. Fail-safe by construction, and it
+means `classify_camilla_graph` re-proof and the statefile never see a
+"deep" graph at rest.
+
+Accepted ported/PR profiles emit **no `bass_ext_*` block** and must be
+byte-identical to the ordinary baseline. They stay persisted with
+`status="accepted"`, while `/state` reports their `adapter_id`,
+`runtime_eligible=false`, and
+`runtime_deferred_reason="fixed_graph_not_defined"`. This separates
+"commissioned profile retained" from "runtime armed" without
+changing Wave 1 or inventing an audio parameter. `runtime_eligible`
+is adapter-level graph support, not live state; Wave 5's
+`runtime_armed` is true only when an accepted, current eligible
+profile has a live, confirmed scheduler.
 
 ### 8.2 The controller (scheduler)
 
@@ -787,6 +833,13 @@ delta #6): each transition's effective bass-level trajectory moves in
 corner *frequency* motion itself is not the audible quantity — the
 level trajectory is — so smoothness of level beats exactness of
 corner path.
+
+This selection logic arms only when the profile is accepted, current,
+and its adapter is in
+`BASS_EXTENSION_RUNTIME_ADAPTER_IDS = frozenset({"sealed_v1"})`.
+For accepted ported/PR profiles it deterministically returns
+`natural` with reason `adapter_deferred`, does not start dwell/rate
+timers, and never reads or patches CamillaDSP.
 
 Placement — two hooks calling one idempotent
 `ensure_bass_target(level)`:
@@ -812,14 +865,15 @@ which `VolumeCoordinator` maintains across both carrier modes, so the
 mapping holds; source-side curve mismatch is absorbed by the digital
 margin (§8.4) and the limiter backstop.
 
-### 8.3 The transition mechanism — Wave-0 prototype decides
+### 8.3 The transition mechanism — Wave 0 chose sealed R1
 
 CamillaDSP documents smooth ramping **only** for fader gains;
-coefficient updates are undocumented (assume hard swap). Two
-candidates, one decision prototype:
+coefficient updates are undocumented (assume hard swap). Wave 0
+measured the two candidates and chose R1 for the fixed sealed graph;
+R2 remains the rejected fallback record:
 
-- **R1 — stepped `PatchConfig` on the live filter pair (preferred if
-  clean).** Interpolate `(fp, Qp)` — the *design parameters*, which
+- **R1 — stepped `PatchConfig` on the live sealed filter pair
+  (confirmed).** Interpolate `(fp, Qp)` — the *design parameters*, which
   is the stability-safe interpolation domain — in enough steps that
   no step changes the response by more than ~1 dB anywhere
   (typically 4–8 steps for adjacent members), spread over
@@ -827,7 +881,8 @@ candidates, one decision prototype:
   low-Q and ≤ ~3 dB apart, literature expectation is transients
   < −60 dBFS, and the concurrent volume ramp masks further. Zero
   graph-structure cost. Precedent: `runtime_balance.py` patches a
-  named Gain live today.
+  named Gain live today. Wave 0 measured ≥15 dB burst margin below
+  the bench threshold for the micro-stepped LT transition.
 - **R2 — parallel A/B branches crossfaded by Aux faders (documented-
   safe fallback).** Split the bass-owner channels into an A and B
   lane (one extra mixer pair), each lane carrying its own LT+HP set
@@ -839,6 +894,12 @@ candidates, one decision prototype:
   right tool for profile apply/bypass, too heavy and unproven-
   continuous for a knob-coupled runtime path.
 
+R1 changes only parameters of definitions already present in the
+emitted graph; it never changes pipeline or filter-map structure.
+The Wave 0 evidence does not authorize ported/PR member transitions:
+those would add/remove filters or change slot types unless a new fixed
+carrier/bypass design were introduced and independently measured.
+
 **Both mechanisms add zero buffer latency** (minimum-phase IIR; no
 chunk/queue/rate changes), so the 40 ms USB cert is untouched — the
 cert measures broadband arrival, not LF group delay (which any
@@ -846,7 +907,7 @@ alignment, physical or DSP, inherently shapes). CPU: ≤ 4 extra
 biquads (R1) or ≤ 10 (R2) — far below 1 % of a Pi 5 core against
 CamillaDSP's published FIR benchmarks.
 
-⚠ One discovered gotcha either way: **`PatchConfig` state does not
+⚠ One discovered gotcha: **`PatchConfig` state does not
 survive a config reload from file.** Any `apply_dsp_config` (room
 correction save, preference EQ change, deploy bounce) resets the
 filters to the emitted natural params. This is *fail-safe by
@@ -875,7 +936,8 @@ scheduler that stopped re-converging.
   it exceeds budget as a WARN, not a block (tinkerer philosophy).
 - **Target-coupled limiter threshold (deep-research delta #3).** The
   bass-owner chain's existing `driver_baseline_limiter` slot stops
-  being a fixed −1 dB digital clip guard when a profile is accepted:
+  being a fixed −1 dB digital clip guard when a sealed profile is
+  accepted and runtime-eligible:
   each family member carries `limiter_threshold_dbfs` = the maximum
   digital drive *verified clean for that member* (ladder + sustain
   evidence) + margin, and the runtime patches the limiter threshold
@@ -889,40 +951,45 @@ scheduler that stopped re-converging.
   fault-mode clipping proves audible in practice, the upgrade path is
   a CamillaDSP `Compressor` processor in the same slot (no lookahead
   → no latency). The natural member's threshold is the baseline
-  −1 dB.
+  −1 dB. Ported/PR members retain their commissioned threshold facts,
+  but the first runtime slice does not patch them.
 - UI representation: each target row shows "needs X dB headroom →
   usable below level N (digital) / level M (measured)".
 
 ### 8.5 Emit gate (mirrors the L0 tweeter gate)
 
 `_assert_bass_extension_safe(emitted_text, profile)` re-parses the
-just-emitted YAML and raises unless: (a) every accepted profile
-carries the subsonic HP on every bass-owner channel with corner
-within the adapter's legal window (all three enclosure kinds — the
-sealed one is expert-removable, and its removal must be recorded in
-the profile, not silently absent); (b) the LT/EQ params exactly match
-a frozen family member; (c) `boost_headroom_db` of the *emitted*
-member is 0.0 (the at-rest graph must be natural); (d) the downstream
-limiter is present with the natural member's threshold and
-`volume_limit ≤ 0` survives. Independent re-proof, not emitter
-trust — same philosophy, new predicate in `graph_safety.py`.
+just-emitted YAML. For an accepted, current sealed profile it raises
+unless: (a) the subsonic HP is on every bass-owner channel with a
+legal corner (unless expert removal is explicitly recorded); (b) the
+LT params exactly match the frozen natural member; (c)
+`boost_headroom_db` of the emitted member is 0.0; and (d) the
+downstream limiter is present with the natural member's threshold and
+`volume_limit ≤ 0` survives. For ported/PR, bypassed, stale, or
+missing profiles it requires **no `bass_ext_*` definitions or chain
+references**; any injected block fails closed. Independent re-proof,
+not emitter trust — same philosophy, new predicate in
+`graph_safety.py`.
 
 ### 8.6 Apply / bypass / fallback
 
-Profile accept and bypass are full-graph transactions mirroring
+Sealed profile accept and bypass are full-graph transactions mirroring
 `commissioning_apply.apply_measured_candidate`: compile via
 `build_baseline_profile_candidate` (now bass-extension-aware) →
 predecessor `snapshot_exact_dsp_state` as rollback artifact →
 `apply_dsp_config` → fresh readback must match expected graph
-fingerprint + unchanged volume + protection classification →
-retained proof; any failure restores the exact predecessor with
-readback proof. Bypass = re-emit without the extension block (or,
-cheaper and equivalent, scheduler pinned to natural + profile marked
-`bypassed` — v1 does the cheap one, the graph already carries natural
-at rest). Missing/stale/invalid profile → scheduler never arms →
-ordinary applied baseline behavior. **There is no failure mode that
-requires the graph to change to become safe** — that is the payoff of
-emitting natural-at-rest.
+fingerprint + unchanged volume + protection classification → retained
+proof; any failure restores the exact predecessor with readback proof.
+Bypass pins the scheduler to natural and marks the profile `bypassed`;
+the graph already carries the natural identity pair at rest.
+
+Ported/PR acceptance retains `status="accepted"` and its evidence but
+does not run a graph transaction or alter the baseline candidate/YAML;
+bypass is likewise profile-state-only. Missing/stale/invalid/deferred
+profiles never arm the scheduler and keep ordinary applied-baseline
+behavior. **There is no failure mode that requires the graph to change
+to become safe**: sealed reloads land on identity, while deferred
+adapters never add the block.
 
 ---
 
@@ -969,25 +1036,32 @@ few per volume swing — no journal spam.
 ### 10.2 `/state.bass_extension`
 
 `{commissioned, profile_id, status: accepted|bypassed|stale|absent,
-current_target, current_extension_hz, deepest_hz, natural_hz,
-anchors: [...], scheduler_alive, last_transition_at}` — read fresh
-from disk + best-effort camilla, fail-soft null like every other
-section.
+adapter_id, runtime_eligible, runtime_deferred_reason,
+runtime_armed, current_target, current_extension_hz, deepest_hz,
+natural_hz, anchors: [...], scheduler_alive, last_transition_at}` —
+read fresh from disk + best-effort camilla, fail-soft null like every
+other section. Accepted ported/PR is an ordinary healthy state:
+`runtime_eligible=false`,
+`runtime_deferred_reason="fixed_graph_not_defined"`,
+`runtime_armed=false`, and `current_target="natural"`.
 
 ### 10.3 Doctor (flat, one `CheckResult` each)
 
 `check_bass_extension_profile`: absent → OK ("not commissioned");
 stale bindings → WARN with the mismatched fingerprint named;
-accepted + emitted graph missing the frozen filter names → FAIL;
-scheduler heartbeat stale while profile accepted → WARN; live filter
-params ∉ frozen family (best-effort read) → WARN
-("drifted, reconciler should converge; investigate if persistent").
+accepted sealed + emitted graph missing the frozen filter names →
+FAIL; sealed scheduler heartbeat stale → WARN; sealed live filter
+params ∉ frozen family (best-effort read) → WARN ("drifted,
+reconciler should converge; investigate if persistent"). Accepted
+ported/PR → OK with explicit "runtime deferred" detail; absence of
+`bass_ext_*` filters and a runtime heartbeat is correct, not drift.
 
 ### 10.4 Failure ladder
 
 | Failure | Behavior |
 |---|---|
-| Profile missing/stale/bypassed | Graph is already natural at rest; scheduler never arms. Silent-by-design (WARN in doctor, status on overview page) |
+| Profile missing/stale/bypassed | Sealed graph is already natural at rest (or block absent); scheduler never arms. Silent-by-design (missing/bypassed are OK; stale WARNs; status on overview page) |
+| Accepted ported/PR profile | Profile/evidence retained; ordinary baseline graph stays active; scheduler reports `adapter_deferred` and never patches. `/state` + doctor make the deferral explicit. |
 | Scheduler process dies | Filters stay at last patched target; **worst case is bounded**: deepest target at rising volume is still inside the limiter backstop and the digital margin; partner-process hook or 1 Hz reconciler (whichever survives) converges; doctor WARNs on heartbeat |
 | CamillaDSP restart / config reload | Filters reset to natural (emitted params); reconciler re-extends within ~1 s if level permits — fail-safe direction |
 | camilla unreachable during transition | `patch_config(best_effort=True)` no-ops; reconciler retries; scheduler holds *shallower* of (current, desired) |
@@ -1010,35 +1084,41 @@ and doctor surface.
   sweeps (inject known H2/H3, recover THD within 1 dB down to 20 Hz);
   compression curves on synthetic soft-clipped ladders; anchor
   derivation (equal-excursion + digital clamp) pinned; scheduler
-  hysteresis property tests (never extends above anchor, retreat
-  monotone in level, natural at boot).
+  hysteresis property tests for sealed profiles (never extends above
+  anchor, retreat monotone in level, natural at boot), plus ported/PR
+  always-natural `adapter_deferred` tests.
 - **Contract tests:** profile schema round-trip + staleness matrix
   (every binding mismatch → stale); refusal vocabulary completeness;
-  emit-gate red-team (strip subsonic HP → raises; off-family params →
-  raises; non-natural at-rest params → raises); `classify_camilla_graph`
-  accepts extension-bearing baselines and still rejects tampered ones;
-  targets[last]-is-natural invariant; ladder state machine transition
-  table (mirror `test_commissioning_lifecycle` style).
+  sealed emit-gate red-team (strip subsonic HP → raises; off-family
+  params → raises; non-natural at-rest params → raises);
+  `classify_camilla_graph` accepts sealed extension-bearing baselines
+  and still rejects tampered ones; accepted ported/PR emits the
+  byte-identical ordinary baseline, reports runtime-ineligible, and
+  rejects any injected `bass_ext_*` block; targets[last]-is-natural
+  invariant; ladder state machine transition table (mirror
+  `test_commissioning_lifecycle` style).
 - **Integration (mocked camilla/relay):** ladder end-to-end with
   scripted rung results including mid-ladder abort/restore; apply
   transaction rollback on injected readback mismatch; scheduler +
-  fake VolumeCoordinator dispatch ordering (retreat-before-louder).
+  fake VolumeCoordinator dispatch ordering (retreat-before-louder);
+  accepted ported/PR never calls graph apply or `PatchConfig`.
 - **Browser (harness per existing JS conventions):** wizard module
   conventions test coverage (auto via
   `test_web_wizard_conventions.py`), Stop-button wiring test.
-- **Pi performance:** camilla CPU% with the extension block (R1) and
-  the A/B block (R2) vs baseline; `PatchConfig` round-trip latency
-  under load; scheduler wall-time per tick.
+- **Pi performance:** camilla CPU% with the sealed extension block
+  (R1) vs baseline; `PatchConfig` round-trip latency under load;
+  scheduler wall-time per tick.
 - **Latency:** re-run the existing route-latency cert after Wave 3 on
   the lab box — expected delta zero; the cert gate is the proof.
 - **Hardware validation (Wave 7, the only paid-in-time wave):**
   transition-audibility bench (Wave 0 rig, re-run on final code);
   full sealed commission on a lab box incl. deliberately-wrong cases
   (mic bumped mid-ladder → refusal fires; AGC phone → ramp refuses);
-  ported + PR commission on whatever boxes exist (borrow/build —
-  a cheap PR bookshelf is worth buying for this); one week of daily
-  listening with the family armed, checking `event=bass_ext.*`
-  cadence and the overview page.
+  ported + PR **commissioning/profile-retention** on whatever boxes
+  exist (borrow/build — a cheap PR bookshelf is worth buying for
+  this), confirming the UI/state says runtime deferred; one week of
+  daily listening with a sealed family armed, checking
+  `event=bass_ext.*` cadence and the overview page.
 
 ---
 
@@ -1067,7 +1147,7 @@ wave keeps out of the god-files. Every implementation PR runs
 | 0 | [wave-0](bass-extension-waves/wave-0-hardware-spikes.md) | spikes 1–3 done 2026-07-16 — **R1 confirmed** ([memo](research/2026-07-16-bass-extension-spikes/README.md)); spike 4 + ears-on listen with operator |
 | 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | **merged 2026-07-16** (#1549, contract rev 3; review-gate loop caught 6 rev-1 spec contradictions → rev 2) |
 | 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | **merged 2026-07-16** (#1553; clean gate after 3 review findings fixed in-session) |
-| 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | not started |
+| 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | implementation parked after draft #1558 stop report; contract rev 2 narrows runtime to sealed-only |
 | 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | not started |
 | 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | not started |
 | 6 | [wave-6](bass-extension-waves/wave-6-ui.md) | not started |
@@ -1120,7 +1200,9 @@ Depends: Wave 1 dataclasses.
 ### Wave 3 — Graph emission + apply transaction (⚠ hot-file wave; small PRs)
 
 `camilla_emit.py` LT/Butterworth-HP emitters;
-`camilla_yaml.py` bass-extension block (natural-at-rest invariant);
+`camilla_yaml.py` sealed-only bass-extension block (natural-at-rest
+invariant); ported/PR profiles remain accepted/observable but emit the
+byte-identical ordinary baseline;
 `graph_safety.py` predicate + emit gate;
 `runtime_contract.py` classification extension (**land this in the
 same PR as the emitter change** — a split ships a graph the contract
@@ -1143,13 +1225,15 @@ with mocked camilla/relay per §11. Depends: Waves 1–3.
 
 ### Wave 5 — Runtime scheduler
 
-`scheduler.py` (pure) + `runtime.py` transition executor (mechanism
-per Wave 0; ≤1 dB micro-steps over 0.5–1 s; limiter threshold patched
-in the same transition as the alignment per §8.4), `VolumeCoordinator`
-dispatch hook (retreat-first ordering), re-extend rate limiting per
-§8.2, 1 Hz reconciler in the existing `VolumeObserver`, `/state` live
-fields, doctor heartbeat/drift checks, failure-ladder tests. Depends:
-Waves 2–3; mechanism decision from Wave 0.
+`scheduler.py` (pure) + `runtime.py` sealed-only transition executor
+(R1 per Wave 0; ≤1 dB micro-steps over 0.5–1 s; limiter threshold
+patched in the same transition as the alignment per §8.4),
+`VolumeCoordinator` dispatch hook (retreat-first ordering), re-extend
+rate limiting per §8.2, 1 Hz reconciler in the existing
+`VolumeObserver`, `/state` live/deferred fields, doctor
+heartbeat/drift/deferred checks, failure-ladder tests. Ported/PR is a
+tested no-patch `adapter_deferred` state. Depends: Waves 2–3;
+mechanism decision from Wave 0.
 
 ### Wave 6 — UI
 
@@ -1173,9 +1257,10 @@ env knobs added.
 
 ### Risks
 
-1. **Transition clicks (R1 unproven).** Mitigation: Wave 0 decides
-   with measurements; R2 is documented-safe; transitions are rare and
-   volume-ramp-masked.
+1. **Transition clicks (R1 bench-proven; ears-on final listen open).**
+   Wave 0 measured ≥15 dB burst margin for sealed micro-steps; retain
+   the operator's final ears-on check. R2 remains the documented
+   fallback; transitions are rare and volume-ramp-masked.
 2. **Hot-file collision with the crossover program** (main is
    churning in `camilla_yaml`/`runtime_contract`/correction backend
    *today*). Mitigation: wave ordering puts pure-new-file work first;
@@ -1207,7 +1292,8 @@ env knobs added.
    even contains our 1 dB ↔ 1/12-octave mapping) and is close to
    **US12,342,139** (volume-indexed LT lookup table + multiband
    compressor, microspeakers; we differ by having no compressor-as-
-   protection, per-unit measurement, and ported/PR handling). The
+   protection, per-unit measurement, and retained ported/PR
+   commissioning without runtime arming). The
    commissioning workflow appears free of located prior art. JTS is
    open-source and non-commercial, but before this feature is
    promoted as a product capability — and certainly before any
@@ -1237,6 +1323,10 @@ env knobs added.
 - No signal-aware (program-dependent) controller — designed-for but
   explicitly after the volume-linked product works; the scheduler
   seam (`select_target`) is where it would slot in.
+- No ported/PR runtime emission or scheduling in the first shipped
+  slice. Their Wave 1 adapters, commissioning evidence, accepted
+  profiles, and UI/state visibility remain in scope; only live graph
+  arming is deferred behind the fixed-graph proof in §14.
 - No far-field reconstruction / splice / baffle-step claims — the
   profile's claims are fixed-position-relative by design; the splice
   lane upgrades the *display* later, not the decision.
@@ -1257,10 +1347,12 @@ env knobs added.
 
 ## 14. Decisions requiring a focused prototype before implementation
 
-1. **R1 vs R2 transition mechanism** — Wave 0.1 (the only decision
-   that changes emitted graph *structure*).
-2. **`PatchConfig` reset semantics across reload paths** — Wave 0.3
-   (changes reconciler test expectations, not architecture).
+1. **R1 vs R2 transition mechanism — decided for sealed:** Wave 0.1
+   confirmed micro-stepped R1. This does not authorize changing graph
+   structure for another adapter.
+2. **`PatchConfig` reset semantics — decided:** Wave 0.3 confirmed
+   patches survive volume writes and reset on file reload; the sealed
+   reconciler encodes that result.
 3. **Ported family shape** (pure sliding-HPF vs HPF+shelf composite)
    — decide after the first real ported fit; both are inside the
    `ported_v1` adapter's parameter space, so this is a tuning
@@ -1277,6 +1369,14 @@ env knobs added.
    within 10 %, the import stays a rarely-used expert feature; if
    they disagree on ordinary boxes, promote it in the wizard copy for
    ported/PR (where fb matters most). Decided by Wave-7 data.
+7. **Ported/PR fixed runtime graph** — deferred beyond the sealed
+   first slice. Before either adapter can arm, a focused contract and
+   hardware prototype must prove one static, re-proofable graph across
+   every frozen family member (including members whose current
+   `filters` tuples add/remove the retreat high-pass), click-safe
+   transitions, natural-at-rest/reset behavior, limiter coupling, and
+   no invented Q/filter parameters. Until then those profiles remain
+   retained and observable with `fixed_graph_not_defined`.
 
 ## 15. External references
 
@@ -1324,4 +1424,4 @@ From the 2026-07-16 deep-research report:
 
 ---
 
-Last verified: 2026-07-16
+Last verified: 2026-07-17
