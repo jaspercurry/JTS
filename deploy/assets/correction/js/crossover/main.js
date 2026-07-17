@@ -4,9 +4,11 @@
 
 import { getJSON, postJSON } from '/assets/shared/js/http.js';
 import { renderRelayQr } from '/assets/shared/js/qr.js';
+import { jtsConfirm } from '/assets/shared/js/dialog.js';
 
 const els = {
   verdict: document.getElementById('crossover-verdict'),
+  startOver: document.getElementById('crossover-start-over'),
   steps: document.getElementById('crossover-steps'),
   nudges: document.getElementById('crossover-nudges'),
   review: document.getElementById('crossover-review'),
@@ -306,6 +308,52 @@ async function stopRelay() {
   }
 }
 
+function startOverConfirmMessage() {
+  // Grouping-aware: a bonded speaker's group crossover is rebuilt from the
+  // measurement evidence this clears, so it fails back to a plain solo
+  // crossover on the next group re-form until re-measured (the driver setup
+  // is kept either way). Solo speakers keep exactly what is playing now.
+  if (envelope && envelope.grouping_member) {
+    return 'This speaker is grouped. Starting the crossover calibration over ' +
+      'clears your measurement progress, so this speaker will fall back to a ' +
+      'plain solo crossover the next time the group re-forms, until you ' +
+      'measure it again. Your driver setup is kept.';
+  }
+  return 'Start the crossover calibration over? This clears your measurement ' +
+    'progress. Your driver setup and the crossover that’s playing now stay ' +
+    'exactly as they are — you’ll just measure the crossover again.';
+}
+
+async function startOver() {
+  if (busy) return;
+  const ok = await jtsConfirm(startOverConfirmMessage(), {danger: true});
+  if (!ok) return;
+  busy = true;
+  renderEpoch += 1;
+  els.startOver.disabled = true;
+  setStatus('Starting over…');
+  try {
+    const response = await postJSON('/correction/crossover/reset', {});
+    render(response);
+    const reset = response && response.reset;
+    if (reset && reset.status && reset.status !== 'cleared') {
+      // Partial unlink (an errors entry): do not paint it green.
+      setStatus(
+        'Some measurement files could not be cleared. Check the speaker ' +
+          'and try Start over again.',
+        'bad',
+      );
+    } else {
+      setStatus('Measurement progress cleared. Ready to start again.', 'ok');
+    }
+  } catch (error) {
+    setStatus(error && error.message ? error.message : String(error), 'bad');
+  } finally {
+    busy = false;
+    els.startOver.disabled = false;
+  }
+}
+
 async function runAction(action, button) {
   if (busy || !action.endpoint) return;
   busy = true;
@@ -409,6 +457,7 @@ function refresh() {
 
 if (typeof document !== 'undefined') {
   els.relayStop.addEventListener('click', stopRelay);
+  els.startOver.addEventListener('click', startOver);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       // Re-apply whichever cadence is already in effect — schedulePoll()

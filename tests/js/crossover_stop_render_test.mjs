@@ -40,6 +40,7 @@ function element(id = "") {
 
 const ids = [
   "crossover-verdict",
+  "crossover-start-over",
   "crossover-steps",
   "crossover-nudges",
   "crossover-review",

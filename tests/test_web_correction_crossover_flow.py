@@ -2017,6 +2017,22 @@ def test_action_row_has_a_single_render_authority():
     assert result == {"ok": True, "passed": 15}
 
 
+def test_start_over_confirm_is_grouping_aware_and_partial_is_honest():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not on PATH")
+    harness = Path("tests/js/crossover_start_over_test.mjs")
+    proc = subprocess.run(
+        [node, str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result == {"ok": True, "passed": 9}
+
+
 # --- passive-gating: Layer A hidden for a full-range passive speaker ----------
 
 

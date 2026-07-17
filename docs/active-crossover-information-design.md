@@ -721,8 +721,12 @@ Beyond the refusal-pending restart case, a target's correction state
 clears only on: its repeat set finalizing with a *sufficient* aggregate
 verdict, the relay microphone changing (a different mic is different
 physics), or a true full reset (`invalidate_comparison_context` without
-the between-set-restart flag — no production surface calls this today; it
-is the contract for any future whole-flow reset). It never clears on a
+the between-set-restart flag). As of 2026-07-17 this IS called by a
+production surface — the in-flow "Start over" control
+(`POST /crossover/reset` →
+`correction_crossover_backend.reset_measurement_journey`, see
+docs/HANDOFF-correction.md "Scoped crossover reset") — the whole-flow reset
+this contract anticipated. It never clears on a
 terminal refusal (insufficient accepted repeats), since that failure
 mode's physical cause is very likely still present on the next attempt.
 `measurement.level_solved` carries the signed `adjustment_db` (the
@@ -2031,4 +2035,22 @@ usable, verdict `present`, mic not clipping, repeats accepted == 3,
 placement proof) is unchanged. Checked against the current
 implementation and pinned by a repro built through the real
 `record_driver_measurement` write path (not a synthetic status dict);
-not yet hardware re-validated on jts3.
+not yet hardware re-validated on jts3. Same-day follow-up (2026-07-17):
+the whole-flow reset this section's "true full reset
+(`invalidate_comparison_context` without the between-set-restart flag)"
+contract anticipated now has a caller — `POST /crossover/reset`
+(`jasper.web.correction_crossover_backend.reset_measurement_journey`),
+an in-flow "Start over" scoped to the measurement journey (comparison
+set, level locks, driver/summed captures, staged candidate). It keeps
+the design draft (driver research/manual settings) and the SOLO applied
+crossover untouched. Multiroom is not protected by that: the
+active-leader/follower builders REBUILD the driver-domain graph from the
+CLEARED measurement evidence, so a bonded speaker fails safe to
+solo-active on its next re-prove until re-measured — the "Start over"
+confirm copy is grouping-aware for exactly this reason. See
+docs/HANDOFF-correction.md "Scoped crossover reset" for the full
+KEEP/CLEAR rationale, the multiroom fail-safe path, and the
+JTS3-hardware-verified reason `startup_load` state is excluded. Checked
+against the current implementation and pinned by
+`tests/test_active_speaker_reset.py` +
+`tests/test_correction_crossover_reset.py`; not yet hardware-validated.

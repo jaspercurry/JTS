@@ -473,6 +473,7 @@ def test_known_post_routes_reach_csrf_guard():
         "/crossover/region-geometry", "/crossover/candidate",
         "/crossover/apply", "/crossover/restore",
         "/crossover/relay-capture", "/crossover/relay-cancel",
+        "/crossover/reset",
         "/crossover/driver-test",
         "/crossover/driver-confirm", "/crossover/driver-abort",
         "/crossover/summed-test", "/crossover/driver-capture-sweep",

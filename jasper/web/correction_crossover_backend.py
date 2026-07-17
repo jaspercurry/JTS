@@ -2252,6 +2252,93 @@ def level_lease() -> CrossoverLevelLease:
     return _LEVEL_LEASE
 
 
+class MeasurementJourneyResetRefused(RuntimeError):
+    """Raised when the scoped crossover reset cannot run safely right now."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def reset_measurement_journey() -> dict[str, Any]:
+    """Clear the active-crossover MEASUREMENT JOURNEY in place.
+
+    The scoped sibling of the nuclear ``/sound/`` Advanced-setup reset
+    (``jasper.active_speaker.reset.clear_active_speaker_setup_state``):
+    restarts the guided capture flow — comparison set, level locks, driver
+    captures, summed validation, and the compiled-but-not-loaded protected
+    candidate — without losing driver research
+    (``design_draft``) or disturbing whatever audio graph is currently
+    applied/loaded (``baseline_profile``, ``startup_load``). See
+    ``jasper.active_speaker.reset`` for the artifact-by-artifact rationale.
+
+    Callers MUST stop any in-flight relay/level-match session before
+    calling this — see ``_handle_crossover_reset`` in
+    ``jasper.web.correction_setup``, which reuses the relay-cancel path
+    first. This function only owns the in-process lease and the durable
+    journey files; it never touches CamillaDSP.
+
+    Fails closed: :meth:`CrossoverLevelLease.invalidate_comparison_context`
+    raises if a level match is still running or the crossover volume-safety
+    state is unresolved — in either case nothing here is cleared. Re-raised
+    as :class:`MeasurementJourneyResetRefused` with a stable ``reason`` the
+    HTTP layer can map to a household-facing message.
+    """
+
+    from jasper.active_speaker.reset import (
+        active_speaker_measurement_journey_paths,
+        active_speaker_setup_state_paths,
+        clear_active_speaker_measurement_journey,
+    )
+
+    lease = level_lease()
+    if lease.unresolved_volume_safety is not None:
+        raise MeasurementJourneyResetRefused(
+            "the crossover listening volume is not confirmed safe; JTS must "
+            "restore it before starting over",
+            reason="crossover_volume_safety_unresolved",
+        )
+    try:
+        lease.invalidate_comparison_context()
+    except RuntimeError as exc:
+        raise MeasurementJourneyResetRefused(
+            "a crossover measurement is still stopping; try Start over again "
+            "in a moment",
+            reason="measurement_in_progress",
+        ) from exc
+
+    reset_result = clear_active_speaker_measurement_journey()
+    # Report what actually happened, not the static intent: a file that failed
+    # to unlink lands in ``errors`` and flips ``status`` to ``partial`` — the
+    # UI must not paint that green. ``cleared`` are the files this call removed;
+    # ``missing`` were already absent (also fine); ``errors`` are the honest
+    # failures. ``kept`` is the by-design KEEP set (design_draft, baseline_profile,
+    # startup_load), which this call never touches.
+    cleared_ids = sorted(e["id"] for e in reset_result.get("cleared", []))
+    missing_ids = sorted(e["id"] for e in reset_result.get("missing", []))
+    error_ids = sorted(e["id"] for e in reset_result.get("errors", []))
+    kept_ids = sorted(
+        set(active_speaker_setup_state_paths())
+        - set(active_speaker_measurement_journey_paths())
+    )
+    log_event(
+        logger,
+        "correction.crossover_reset",
+        status=reset_result.get("status"),
+        cleared=cleared_ids,
+        missing=missing_ids,
+        errors=error_ids,
+        kept=kept_ids,
+    )
+    return {
+        **reset_result,
+        "cleared_ids": cleared_ids,
+        "missing_ids": missing_ids,
+        "error_ids": error_ids,
+        "kept_ids": kept_ids,
+    }
+
+
 def claim_level_run_owner() -> dict[str, Any] | None:
     """Service-lifecycle adapter for the Room-owned web entry point."""
 

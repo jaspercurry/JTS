@@ -9,6 +9,23 @@
   margin-bottom: 0.25rem;
 }
 
+/* "Start over" (scoped measurement-journey reset) sits in the header card's
+ * footer alongside the subordinate, unmistakably-heavier nuclear-reset link
+ * to /sound/. Ghost styling (not primary/danger) keeps it discoverable
+ * without competing with the step-driven action row below — it clears
+ * measurement progress only; the /sound/ link is the one that gives up the
+ * driver setup. */
+.crossover-card__footer {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+}
+.crossover-card__footer .form-hint {
+  margin: 0;
+}
+
 /* Step indicator + homeowner nudges — mirrors correction.css's `.wizard-step`
  * / `.wizard-nudge` block (the room flow's page_css). Crossover renders the
  * same wizard-steps/wizard-nudges markup (crossover/main.js renderSteps() /
