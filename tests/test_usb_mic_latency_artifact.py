@@ -184,6 +184,48 @@ def test_artifact_rejects_status_gap_or_relay_restart() -> None:
         _artifact(snapshots)
 
 
+def test_artifact_coalesces_repeated_status_generation() -> None:
+    snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
+    repeated = dict(snapshots[5])
+    repeated["sample_observed_epoch_sec"] += 0.65
+    snapshots.insert(6, repeated)
+
+    artifact = _artifact(snapshots)
+
+    assert artifact["status"] == "pass"
+    assert artifact["metrics"]["sample_ticks_total"] == 16
+
+
+def test_artifact_checks_freshness_at_latest_duplicate_observation() -> None:
+    snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
+    repeated = dict(snapshots[5])
+    repeated["sample_observed_epoch_sec"] = repeated["updated_epoch_sec"] + 1.3
+    for index in range(6, len(snapshots)):
+        snapshots[index]["sample_observed_epoch_sec"] += 0.3
+    snapshots.insert(6, repeated)
+
+    with pytest.raises(ValueError, match="relay status was stale"):
+        _artifact(snapshots)
+
+
+def test_artifact_requires_minimum_unique_status_ticks_after_coalescing() -> None:
+    snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
+    repeated = dict(snapshots[-2])
+    repeated["sample_observed_epoch_sec"] = snapshots[-1]["sample_observed_epoch_sec"]
+    snapshots[-1] = repeated
+
+    with pytest.raises(ValueError, match="16 unique relay status ticks"):
+        _artifact(snapshots)
+
+
+def test_artifact_rejects_status_epoch_regression() -> None:
+    snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
+    snapshots[6]["updated_epoch_sec"] = snapshots[5]["updated_epoch_sec"] - 0.1
+
+    with pytest.raises(ValueError, match="moved backwards"):
+        _artifact(snapshots)
+
+
 def test_artifact_requires_schema_and_counters() -> None:
     snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
     snapshots[2].pop("writer_xruns")

@@ -182,10 +182,43 @@ def build_usb_mic_latency_artifact(
 ) -> dict[str, Any]:
     """Bind an uninterrupted active-capture status window to runtime identity."""
 
-    samples = tuple(dict(snapshot) for snapshot in snapshots)
+    raw_samples = tuple(dict(snapshot) for snapshot in snapshots)
+    raw_observed = tuple(
+        _finite_float(
+            sample.get("sample_observed_epoch_sec"),
+            field="sample_observed_epoch_sec",
+        )
+        for sample in raw_samples
+    )
+    if any(
+        current <= previous for previous, current in zip(raw_observed, raw_observed[1:])
+    ):
+        raise ValueError("sampler gap or clock regression detected")
+    if any(
+        current - previous > MAX_STATUS_GAP_SECONDS
+        for previous, current in zip(raw_observed, raw_observed[1:])
+    ):
+        raise ValueError(f"sampler gap exceeded {MAX_STATUS_GAP_SECONDS:.2f}s")
+    samples_by_status_tick: list[dict[str, Any]] = []
+    last_status_epoch: float | None = None
+    for sample in raw_samples:
+        status_epoch = _finite_float(
+            sample.get("updated_epoch_sec"), field="updated_epoch_sec"
+        )
+        if last_status_epoch is not None and status_epoch < last_status_epoch:
+            raise ValueError("relay status moved backwards during the window")
+        if status_epoch == last_status_epoch:
+            # Polling and status publication are independent clocks. Keep the
+            # latest observation of one atomic status generation without
+            # weighting its percentiles twice.
+            samples_by_status_tick[-1] = sample
+        else:
+            samples_by_status_tick.append(sample)
+        last_status_epoch = status_epoch
+    samples = tuple(samples_by_status_tick)
     if len(samples) < MIN_SAMPLE_TICKS:
         raise ValueError(
-            f"at least {MIN_SAMPLE_TICKS} relay status samples are required"
+            f"at least {MIN_SAMPLE_TICKS} unique relay status ticks are required"
         )
     if not host_os.strip() or not host_app.strip():
         raise ValueError("host OS and application identity are required")
@@ -222,13 +255,14 @@ def build_usb_mic_latency_artifact(
         age = observed_epoch - status_epoch
         if age < 0 or age > MAX_STATUS_GAP_SECONDS:
             raise ValueError(f"relay status was stale at sample {index}")
-    for label, values in (("relay status", updated), ("sampler", observed)):
-        if any(
-            current - previous > MAX_STATUS_GAP_SECONDS
-            for previous, current in zip(values, values[1:])
-        ):
-            raise ValueError(f"{label} gap exceeded {MAX_STATUS_GAP_SECONDS:.2f}s")
-    duration_seconds = observed[-1] - observed[0]
+    if any(
+        current - previous > MAX_STATUS_GAP_SECONDS
+        for previous, current in zip(updated, updated[1:])
+    ):
+        raise ValueError(f"relay status gap exceeded {MAX_STATUS_GAP_SECONDS:.2f}s")
+    observation_started_epoch_sec = raw_observed[0]
+    observation_ended_epoch_sec = raw_observed[-1]
+    duration_seconds = observation_ended_epoch_sec - observation_started_epoch_sec
     if duration_seconds < MIN_DURATION_SECONDS:
         raise ValueError(
             f"certification window must be at least {MIN_DURATION_SECONDS:.0f}s"
@@ -324,7 +358,7 @@ def build_usb_mic_latency_artifact(
         turnover_anchor_index = next(
             index
             for index, status_epoch in enumerate(updated)
-            if status_epoch >= observed[0]
+            if status_epoch >= observation_started_epoch_sec
         )
     except StopIteration as exc:
         raise ValueError(
@@ -333,7 +367,8 @@ def build_usb_mic_latency_artifact(
     metric_indexes = tuple(
         index
         for index, observed_epoch in enumerate(observed)
-        if observed_epoch - observed[0] >= ROLLING_WINDOW_WARMUP_SECONDS
+        if observed_epoch - observation_started_epoch_sec
+        >= ROLLING_WINDOW_WARMUP_SECONDS
         and samples_appended[index] - samples_appended[turnover_anchor_index]
         >= SOURCE_AGE_WINDOW_PERIODS
     )
@@ -421,8 +456,8 @@ def build_usb_mic_latency_artifact(
             ),
         },
         "observation_window": {
-            "started_epoch_sec": observed[0],
-            "ended_epoch_sec": observed[-1],
+            "started_epoch_sec": observation_started_epoch_sec,
+            "ended_epoch_sec": observation_ended_epoch_sec,
         },
         "host": {"os": host_os.strip(), "app": host_app.strip()},
     }
