@@ -405,8 +405,8 @@ capture_spec:
                               # calibration_id} (+ model, display-only) for
                               # the Pi to resolve via the household-mic
                               # record — gated on `resolvable: true`, the
-                              # marker the Pi-side stored-mode build (in
-                              # flight: adds the mode="stored" branch to
+                              # marker the Pi-side stored-mode branch (the
+                              # mode="stored" arm of
                               # _relay_calibration_from_setup) mints when
                               # the ID currently resolves. Without the
                               # marker (older Pi) the page renders the plain
