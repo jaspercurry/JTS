@@ -573,6 +573,10 @@ def _applied_chip(status: Mapping[str, Any]) -> dict[str, str]:
         return {"state": "automatic", "label": "Automatic crossover applied"}
     if owner == "manual":
         return {"state": "manual", "label": "Manual crossover applied"}
+    # Defensive default for a valid-but-ownerless applied contract (a
+    # malformed durable file). Unreachable for the two production owners
+    # (manual / automatic), but a corrupted contract still gets an honest
+    # "a profile is applied" chip rather than falling through to "none".
     return {"state": "applied", "label": "Speaker profile applied"}
 
 
@@ -796,7 +800,12 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     if applied_ready and not automatic_remeasure and not strict_isolated_complete:
         done.add("apply")
     if automatic_applied and not automatic_remeasure:
-        done.update({"microphone", "drivers"})
+        # A completed automatic run applies the declared crossover frequency +
+        # slope alongside the level-matched driver trims, so the crossover IS
+        # aligned on this terminal (by declaration + level-match, not a
+        # combined-response sweep). Backfill "alignment" too, so the monotonic
+        # run stepper doesn't break at the skipped sweep step and drop "apply".
+        done.update({"microphone", "drivers", "alignment"})
 
     nudges: list[dict[str, str]] = []
     level_run = _level_run(status)
@@ -1176,7 +1185,13 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "label": "Correct the room",
             "href": "/correction/room/",
         }
-        active_step = "apply"
+        # Terminal sentinel (matching the verified terminal below), NOT "apply":
+        # this is the success screen, so no run step is "active" — the whole run
+        # is done. With "alignment" backfilled into `done`, the monotonic
+        # projection then renders all five steps done. Using "apply" here would
+        # exclude it from the done-prefix (`done - {active}`) and understate the
+        # completed apply as still-pending.
+        active_step = "complete"
         alternate_actions = [
             {
                 "id": "retune_automatic",
@@ -1923,5 +1938,6 @@ def build_crossover_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]
         nudge_count=len(envelope["nudges"]),
         action=(envelope.get("next_action") or {}).get("id"),
         alternate_action_count=len(envelope.get("alternate_actions") or []),
+        applied=(envelope.get("applied") or {}).get("state"),
     )
     return envelope

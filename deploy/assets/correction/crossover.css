@@ -34,8 +34,14 @@
   background: color-mix(in oklab, var(--tone, var(--status-idle)) 18%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone, var(--status-idle)) 50%, transparent);
 }
+/* manual / automatic are the two production owners; "applied" is the
+ * defensive ownerless-but-valid contract (see _applied_chip). All three mean
+ * "a profile is applied", so all three read as the OK tone. Any other/unknown
+ * state still renders via the base rule's `var(--tone, var(--status-idle))`
+ * fallback above rather than disappearing. */
 .applied-chip[data-state="manual"],
-.applied-chip[data-state="automatic"] {
+.applied-chip[data-state="automatic"],
+.applied-chip[data-state="applied"] {
   --tone: var(--status-ok);
 }
 

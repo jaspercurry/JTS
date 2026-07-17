@@ -5310,6 +5310,37 @@ def test_crossover_envelope_steps_are_always_monotonic():
         _assert_steps_monotonic(env["steps"], label)
 
 
+def test_crossover_envelope_automatic_done_terminal_marks_every_step_done():
+    """Completeness pin for the automatic success terminal (screen="done").
+
+    The general monotonic-invariant guard above CANNOT catch this: a stepper
+    of [done, done, done, pending, pending] is still monotonic, so an
+    understated apply slips past it silently. That was the real regression the
+    first monotonic projection introduced -- the automatic path legitimately
+    SKIPS the `alignment` sweep step, so `alignment` was never in the raw
+    `done` set and, with `active_step="apply"` excluded from the done-prefix
+    (`done - {active}`), the frontier broke at the missing `alignment` and
+    dropped `apply` to pending -- while the verdict, the `applied` chip, and
+    `progress` (5/5) all reported applied. The fix backfills `alignment` into
+    `done` for a completed automatic run (declared frequency+slope IS the
+    alignment) and uses the "complete" terminal sentinel for `active_step`
+    (matching the verified terminal). Mirrors the verified terminal's own
+    all-steps-done assertion in
+    test_crossover_envelope_projects_active_owned_alignment_actions.
+    """
+    from jasper.active_speaker import crossover_envelope
+
+    env = crossover_envelope.build_crossover_envelope(_automatic_done_status())
+
+    assert env["screen"] == "done"
+    assert all(step["status"] == "done" for step in env["steps"]), env["steps"]
+    assert env["progress"] == {"position": 5, "total": 5}
+    assert env["applied"] == {
+        "state": "automatic",
+        "label": "Automatic crossover applied",
+    }
+
+
 def test_crossover_envelope_done_manual_surfaces_interrupted_retune_nudge():
     """A manual profile is applied, but an in-progress automatic retune's
     level context was discarded (durable repeat safety state unavailable).
