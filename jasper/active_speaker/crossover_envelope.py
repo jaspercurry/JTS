@@ -24,7 +24,7 @@ from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
 
-CROSSOVER_ENVELOPE_SCHEMA_VERSION = 5
+CROSSOVER_ENVELOPE_SCHEMA_VERSION = 6
 
 _STEP_IDS = ("speaker_setup", "microphone", "drivers", "alignment", "apply")
 _STEP_LABELS = {
@@ -534,6 +534,52 @@ def _progress(active: str) -> dict[str, int]:
     return {"position": position, "total": len(_STEP_IDS)}
 
 
+def _project_run_steps(done: set[str], active: str) -> tuple[set[str], str]:
+    """Project the (possibly sparse) run-progress signals into a MONOTONIC
+    run stepper: a step is 'done' only if every earlier step is done, and the
+    active step is kept only when it is exactly the first not-yet-done step.
+    Durable applied-state (a manual/legacy crossover) must not make a later
+    run step read 'done' while earlier run steps are still pending.
+
+    ``active`` is excluded from the done-prefix candidates before the walk:
+    a level-solve refusal (or any other "redo this exact step") screen can
+    set ``active`` to a step that a prior lock already durably marked done
+    (e.g. "microphone" after ``_locked_level``, now being re-measured). That
+    step must render as the in-progress step being redone, not as already
+    done -- otherwise the frontier walks straight past it, `active` no
+    longer matches the next pending step, and progress collapses to
+    "complete" instead of naming where the redo is happening.
+    """
+    candidates = done - {active}
+    frontier = 0
+    for step_id in _STEP_IDS:
+        if step_id in candidates:
+            frontier += 1
+        else:
+            break
+    mono_done = set(_STEP_IDS[:frontier])
+    first_pending = _STEP_IDS[frontier] if frontier < len(_STEP_IDS) else ""
+    mono_active = active if active == first_pending else ""
+    return mono_done, mono_active
+
+
+def _applied_chip(status: Mapping[str, Any]) -> dict[str, str]:
+    """Durable applied-crossover status, separate from per-run progress."""
+    contract = _mapping(_mapping(status.get("setup")).get("applied_crossover"))
+    if contract.get("valid") is not True:
+        return {"state": "none", "label": "No speaker profile applied"}
+    owner = str(contract.get("owner") or "")
+    if owner == "automatic":
+        return {"state": "automatic", "label": "Automatic crossover applied"}
+    if owner == "manual":
+        return {"state": "manual", "label": "Manual crossover applied"}
+    # Defensive default for a valid-but-ownerless applied contract (a
+    # malformed durable file). Unreachable for the two production owners
+    # (manual / automatic), but a corrupted contract still gets an honest
+    # "a profile is applied" chip rather than falling through to "none".
+    return {"state": "applied", "label": "Speaker profile applied"}
+
+
 def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     active = bool(status.get("active"))
     if not active:
@@ -553,6 +599,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 "href": "/correction/room/",
             },
             "progress": {"position": 0, "total": len(_STEP_IDS)},
+            "applied": _applied_chip(status),
         }
 
     unresolved_volume = _mapping(
@@ -589,6 +636,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             },
             "alternate_actions": [],
             "progress": _progress("microphone"),
+            "applied": _applied_chip(status),
         }
 
     drivers = _targets(status, "drivers")
@@ -752,7 +800,12 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     if applied_ready and not automatic_remeasure and not strict_isolated_complete:
         done.add("apply")
     if automatic_applied and not automatic_remeasure:
-        done.update({"microphone", "drivers"})
+        # A completed automatic run applies the declared crossover frequency +
+        # slope alongside the level-matched driver trims, so the crossover IS
+        # aligned on this terminal (by declaration + level-match, not a
+        # combined-response sweep). Backfill "alignment" too, so the monotonic
+        # run stepper doesn't break at the skipped sweep step and drop "apply".
+        done.update({"microphone", "drivers", "alignment"})
 
     nudges: list[dict[str, str]] = []
     level_run = _level_run(status)
@@ -1132,7 +1185,13 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "label": "Correct the room",
             "href": "/correction/room/",
         }
-        active_step = "apply"
+        # Terminal sentinel (matching the verified terminal below), NOT "apply":
+        # this is the success screen, so no run step is "active" — the whole run
+        # is done. With "alignment" backfilled into `done`, the monotonic
+        # projection then renders all five steps done. Using "apply" here would
+        # exclude it from the done-prefix (`done - {active}`) and understate the
+        # completed apply as still-pending.
+        active_step = "complete"
         alternate_actions = [
             {
                 "id": "retune_automatic",
@@ -1847,17 +1906,19 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         # condition back through the earlier nudge-building code.
         nudges = [n for n in nudges if n.get("code") != "crossover_repeat_rejected"]
 
+    run_done, run_active = _project_run_steps(done, active_step)
     return {
         "schema_version": CROSSOVER_ENVELOPE_SCHEMA_VERSION,
         "screen": screen,
         "active": True,
-        "steps": _step_payload(done, active_step),
+        "steps": _step_payload(run_done, run_active),
         "verdict_text": verdict,
         "nudges": nudges,
         "relay": _mapping(status.get("relay")) or None,
         "next_action": action,
         "alternate_actions": alternate_actions,
-        "progress": _progress(active_step),
+        "progress": _progress(run_active),
+        "applied": _applied_chip(status),
         "candidate_review": (
             _mapping(region_commissioning.get("candidate"))
             if region_commissioning.get("status") == "candidate_ready"
@@ -1877,5 +1938,6 @@ def build_crossover_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]
         nudge_count=len(envelope["nudges"]),
         action=(envelope.get("next_action") or {}).get("id"),
         alternate_action_count=len(envelope.get("alternate_actions") or []),
+        applied=(envelope.get("applied") or {}).get("state"),
     )
     return envelope
