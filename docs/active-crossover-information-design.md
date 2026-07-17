@@ -650,23 +650,42 @@ plays, never invalidates the level lock" contract as
 the phone closer to the driver being measured, then measure again.
 
 **As of W2.3, the adjustment and the measured gain persist per (target,
-relay microphone identity) across a fresh ramp lock for that target's
-geometry** — hardware run 19's two repeat sets measured near-identical
-solve inputs before and after the household restarted the level check (set
-1 solved −26.25 dB effective, set 2 solved −27.9 dB, quieter only because
-the fresh ambient baseline happened to read lower), so clearing the
-correction on every re-lock just replayed the same doomed level. They clear
-only on: a driver's repeat set finalizing with a *sufficient* aggregate
-verdict for that target, the relay microphone changing (a different mic is
-different physics), or an explicit flow reset (a full comparison-set
-invalidate, i.e. starting the guided level-match sequence over from
-scratch) — never on a terminal refusal (insufficient accepted repeats)
-either, since that failure mode's physical cause is very likely still
-present on the next attempt. `measurement.level_solved` carries the signed
-`adjustment_db` (the persisted running total, so it reflects every prior
-write across re-locks) and a `gain_source` of `tone_gain_map` or
+relay microphone identity) across a fresh ramp lock — including the
+between-set level-check restart, the household's only mechanical path out
+of both terminals** — hardware run 19's two repeat sets measured
+near-identical solve inputs before and after the household restarted the
+level check (set 1 solved −26.25 dB effective, set 2 solved −27.9 dB,
+quieter only because the fresh ambient baseline happened to read lower), so
+clearing the correction on every re-lock or restart just replayed the same
+doomed level. The two restarts are distinguished by **stored state**, never
+by request shape (both terminals POST the same level-match endpoint with
+the same body):
+
+- a target whose correction budget is **not exhausted** keeps its signed
+  adjustment, write count, measured gain, and mic-identity binding across
+  the restart — this is what makes the completed-insufficient terminal's
+  "JTS will play the next measurement louder" promise come true;
+- a target whose budget **is exhausted** (the placement refusal was
+  showing — the user was told to move the phone) clears completely on the
+  restart: a fresh evaluation, so the refusal cannot latch, and if the
+  physics truly didn't change the machinery re-converges to the refusal
+  within the bounded write budget instead of looping on one identical
+  solve.
+
+Beyond the exhausted-restart case, a target's correction state clears only
+on: its repeat set finalizing with a *sufficient* aggregate verdict, the
+relay microphone changing (a different mic is different physics), or a
+true full reset (`invalidate_comparison_context` without the
+between-set-restart flag — no production surface calls this today; it is
+the contract for any future whole-flow reset). It never clears on a
+terminal refusal (insufficient accepted repeats), since that failure
+mode's physical cause is very likely still present on the next attempt.
+`measurement.level_solved` carries the signed `adjustment_db` (the
+persisted running total, so it reflects every prior write across re-locks
+and restarts) and a `gain_source` of `tone_gain_map` or
 `measured_band_peak` so the journal names which evidence a solve actually
-used.
+used; `correction.crossover_level_context_invalidated` names the preserved
+and exhausted-cleared targets on every between-set restart.
 
 ### Measurement validity: gating and the low-frequency floor
 
@@ -1845,9 +1864,12 @@ refusal — checked against the current implementation and pinned by a
 regression reproducing the triggering hardware run's numbers; not yet
 hardware-validated. Same-day follow-up: W2.3 completion-time correction and
 the persistence lifecycle change — the completed-but-insufficient
-finalization trigger, corrections now surviving a level re-lock and
-clearing instead on a sufficient finalization, a changed relay microphone
-identity, or an explicit flow reset, and the resulting reachable placement-
-lever refusal — checked against the current implementation and pinned by a
-regression reproducing hardware run 19's numbers; not yet hardware-
-validated.)
+finalization trigger, corrections now surviving a level re-lock AND the
+between-set level-check restart (non-exhausted targets preserved through
+the endpoint's invalidate; exhausted targets cleared there for a fresh
+evaluation), clearing otherwise only on a sufficient finalization, a
+changed relay microphone identity, or a true full reset, and the resulting
+reachable, non-latching placement-lever refusal — checked against the
+current implementation and pinned by regressions reproducing hardware run
+19's numbers, including an endpoint-level restart repro through the real
+level-match handler; not yet hardware-validated.)

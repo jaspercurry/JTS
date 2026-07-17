@@ -225,14 +225,20 @@ def _active_level_solve_refusal(
     bounded correction budget (``record_solve_correction``'s
     ``"completed_insufficient"`` trigger) WITHOUT any fresh solve attempt
     ever running -- the lease only solves again when the next sweep is
-    actually prepared. Without this, the completed-insufficient terminal
-    would keep offering a dead-end "restart the level check" action that
-    just refuses again on the very next attempt. So this also synthesizes
-    the SAME typed refusal straight from ``level_match.solve_correction``'s
-    ``exhausted`` flag the moment the budget runs out, reusing
-    ``_describe_level_solve_refusal``'s single code -> copy mapping (its
-    ``measurement_window_unreachable`` branch reads only ``code``, so the
-    minimal synthesized mapping is sufficient).
+    actually prepared. Without this, the exhausted target would keep
+    rendering the generic completed-insufficient terminal instead of the
+    placement-lever copy the household actually needs. So this also
+    synthesizes the SAME typed refusal straight from
+    ``level_match.solve_correction``'s ``exhausted`` flag the moment the
+    budget runs out, reusing ``_describe_level_solve_refusal``'s single
+    code -> copy mapping (its ``measurement_window_unreachable`` branch
+    reads only ``code``, so the minimal synthesized mapping is sufficient).
+    The offered "Redo the quick level check" action is a genuine escape
+    hatch, not a dead end: the between-set restart clears an EXHAUSTED
+    target's correction state for a fresh evaluation (see
+    ``CrossoverLevelLease.invalidate_comparison_context``'s
+    ``preserve_solve_corrections`` contract), so the refusal cannot latch
+    across the restart.
     """
 
     refusal = _mapping(_mapping(status.get("level_match")).get("solve_refusal"))

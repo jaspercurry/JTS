@@ -298,6 +298,23 @@ def _clip_ambient_bands(
     )
 
 
+def driver_solve_requirement_db(
+    model: QualityModel, solver_margin_db: float = SOLVER_MARGIN_DB
+) -> float:
+    """The worst-band SNR a solve targets: ``snr_warn_db`` + solver margin.
+
+    The ONE owner of the "floor + margin" figure (26 dB for the DRIVER
+    quality model today). Read by :func:`solve_level`'s target requirement
+    and by the completed-insufficient completion path
+    (``jasper.web.correction_crossover_backend.record_driver_capture``),
+    which sizes its correction from this SAME threshold minus the finalized
+    capture's measured worst-band SNR -- so the correction and the solve can
+    never disagree about what "enough" means.
+    """
+
+    return model.snr_warn_db + solver_margin_db
+
+
 def solve_level(
     *,
     gain_map_db: float,
@@ -359,7 +376,7 @@ def solve_level(
             admitted_lo, admitted_hi, ambient_broadband_dbfs
         )
 
-    requirement_db = model.snr_warn_db + solver_margin_db
+    requirement_db = driver_solve_requirement_db(model, solver_margin_db)
     bare_floor_db = model.snr_warn_db
 
     # The amplitude terms only matter when the sweep's own source peak

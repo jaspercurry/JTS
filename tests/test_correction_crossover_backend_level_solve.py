@@ -494,6 +494,67 @@ def test_measured_gain_cleared_by_set_completion_and_invalidate(
     assert lease._solve_measured_peak_dbfs == {}
 
 
+def test_between_set_invalidate_preserves_nonexhausted_and_clears_exhausted(
+    monkeypatch,
+):
+    """W2.3 endpoint amendment: the between-set restart
+    (invalidate_comparison_context(preserve_solve_corrections=True) -- the
+    endpoint's non-continuing branch) distinguishes the two restarts by
+    STORED STATE. A non-exhausted target's correction (the
+    completed-insufficient terminal promised "JTS will play the next
+    measurement louder") survives; an exhausted target (the placement
+    refusal was showing) clears for a fresh evaluation."""
+
+    topology, profile, targets = _safety_profile_and_targets()
+    _patch_solve_environment(monkeypatch, topology, profile)
+
+    # Non-exhausted woofer (1 write), exhausted tweeter (2 writes + the
+    # exhausted bump past the bound).
+    lease = CrossoverLevelLease()
+    _configure_lease(lease, targets)
+    lease.input_device = {"actual_device_id_hash": "mic-a"}
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="completed_insufficient", shortfall_db=12.3
+    )
+    for _ in range(3):
+        lease.record_solve_correction(
+            "mono", "tweeter", trigger="snr_shortfall", shortfall_db=2.0
+        )
+    assert lease._correction_budget_exhausted("mono:woofer") is False
+    assert lease._correction_budget_exhausted("mono:tweeter") is True
+
+    lease.invalidate_comparison_context(preserve_solve_corrections=True)
+
+    # Woofer preserved -- adjustment, write count, and mic identity binding.
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(12.3)}
+    assert lease._solve_correction_writes == {"mono:woofer": 1}
+    assert lease._solve_correction_device_key == {"mono:woofer": "mic-a"}
+    # Tweeter cleared -- fresh evaluation; the synthesized refusal (keyed
+    # off the same exhausted predicate) cannot latch across the restart.
+    assert "mono:tweeter" not in lease._solve_adjustment_db
+    assert "mono:tweeter" not in lease._solve_correction_writes
+    assert lease._correction_budget_exhausted("mono:tweeter") is False
+    # Everything else still reset exactly like the full invalidate.
+    assert lease._targets == {}
+    assert lease._outcomes == {}
+    assert lease.context_id is None
+    assert lease.input_device is None
+    assert lease._solve_refusal is None
+
+    # And the preserved correction still counts toward the bound afterwards:
+    # re-configure (the endpoint re-freezes targets right after invalidate)
+    # and stack a second write, then a third attempt exhausts.
+    _configure_lease(lease, targets)
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="completed_insufficient", shortfall_db=1.0
+    )
+    assert lease._solve_correction_writes == {"mono:woofer": 2}
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="completed_insufficient", shortfall_db=1.0
+    )
+    assert lease._correction_budget_exhausted("mono:woofer") is True
+
+
 def test_new_level_match_run_clears_solve_state(monkeypatch):
     topology, profile, targets = _safety_profile_and_targets()
     _patch_solve_environment(monkeypatch, topology, profile)
@@ -894,7 +955,7 @@ def test_record_driver_capture_writes_completion_correction_on_insufficient_aggr
         {"speaker_group_id": "mono", "role": "woofer"}, b"wav"
     )
 
-    required_db = DRIVER_QUALITY_MODEL.snr_warn_db + level_solver.SOLVER_MARGIN_DB
+    required_db = level_solver.driver_solve_requirement_db(DRIVER_QUALITY_MODEL)
     assert required_db == pytest.approx(26.0)
     assert lease._solve_adjustment_db == {
         "mono:woofer": pytest.approx(required_db - 13.7)
@@ -922,7 +983,7 @@ def test_record_driver_capture_completion_correction_stacks_across_relocked_sets
     monkeypatch.setattr(backend_mod, "_LEVEL_LEASE", lease)
     _, profile, targets = _safety_profile_and_targets()
     _configure_lease(lease, targets)
-    required_db = DRIVER_QUALITY_MODEL.snr_warn_db + level_solver.SOLVER_MARGIN_DB
+    required_db = level_solver.driver_solve_requirement_db(DRIVER_QUALITY_MODEL)
 
     monkeypatch.setattr(
         backend_mod.web_measurement,

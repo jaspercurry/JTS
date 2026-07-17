@@ -4969,7 +4969,18 @@ def _handle_crossover_relay_level_match(
             from jasper.active_speaker import repeat_admission
 
             repeat_admission.invalidate()
-            lease.invalidate_comparison_context()
+            # BETWEEN-SET RESTART (W2.3, hardware run 19): this branch is
+            # the household's only mechanical path out of both the
+            # completed-insufficient terminal and the placement refusal
+            # (the fully-locked lease reads ready=True there, so
+            # `continuing` is False for exactly the restarts that carry a
+            # freshly-written solve correction). A plain invalidate here
+            # wiped that correction before the next solve ever read it --
+            # run 19's identical-solve loop. preserve_solve_corrections
+            # keeps non-exhausted per-target correction state and clears
+            # exhausted targets for a fresh evaluation; see
+            # CrossoverLevelLease.invalidate_comparison_context.
+            lease.invalidate_comparison_context(preserve_solve_corrections=True)
             clear_active_comparison_set(topology)
             log_event(
                 logger,
