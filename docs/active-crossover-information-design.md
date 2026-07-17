@@ -749,6 +749,53 @@ last-result entry, independent of the eventual screen) alongside the
 `level_solve_refused` screen — that nudge's "nothing to fix in the room,
 try again" copy flatly contradicted the refusal's own verdict.
 
+**The per-band noise estimate must match measured reality (phantom
+noise-floor fix, hardware forensics 2026-07-17).** W2.1-W2.3 above were all
+built on an unquestioned input: the per-band SNR the ambient-noise
+deconvolution reported. Forensics on three real jts3 captures (sessions
+293cc36331f7, 70819cab996b, f44ecc33d071 — driver=main woofer, sweep
+f1=60 Hz/f2=4000 Hz) found that input itself was wrong. `sub_bass` (20-80
+Hz) straddles the sweep's own `f1` — the reference carries almost no
+deliberate energy there — so the regularized deconvolution
+(`jasper.audio_measurement.deconv.regularized_deconvolution_full`, a fixed,
+frequency-independent Tikhonov epsilon) was dividing by a near-zero
+reference spectrum: a well-known "resonance" artifact of that kind of
+regularization, not a measurement. Independent FFT analysis of the same raw
+quiet windows put the room's true `sub_bass` ambient at about −75 dBFS,
+stable across all three sessions; the deconvolved noise term the estimator
+reported was about −25 dBFS — **the reported per-band SNR was overstated by
+roughly 40-50 dB.** Every "insufficient" verdict W2.1's escalation, W2.2's
+clip correction, and W2.3's completion-time correction were built to react
+to — across the runs 1-20 correction/refusal cascade this section
+documents — was chasing that phantom, not real room noise: true `sub_bass`
+SNR was roughly 63-66 dB, comfortably "ok".
+
+Fix: `jasper.audio_measurement.snr_policy.excitation_covered_bands` flags
+any canonical band not ENTIRELY inside the reference sweep's `[f1, f2]`
+(no margin — widening the check to "give the fade some berth" would also
+flag bands that read fine today, trading a real bug for an unforced
+regression). `apply_noise_band_fallback` substitutes the raw
+(non-deconvolved) robust ambient reading — grounded truth for what the room
+actually did, already computed for the small robust-minus-baseline
+non-stationarity delta but previously unused for gating — for exactly those
+uncovered bands, UNLESS that raw reading is itself floor-clamped at
+`snr_policy.DBFS_FLOOR` (no real precision left to trust either; the real
+hardware `treble` shape, entirely above a woofer's `f2=4000 Hz`, where the
+phone mic's own noise floor at 4-12 kHz reads as pure digital silence — that
+band keeps its pre-fix deconvolved value rather than reporting a clamped
+number as a real measurement). Covered bands (bass/upper_bass/transition/mid
+in the real captures, and every band on the DEFAULT 20 Hz-20 kHz
+single-driver sweep) are completely untouched — the fix changes zero bits
+for them. This is scoped to the noise TERM only: the signal-side magnitude
+computation, the verdict vocabulary, and every consumer of the SNR block
+(`band_snr_verdicts`, `worst_band_verdict`, the W2.1-W2.3 completion-
+correction machinery above) are unchanged — their inputs simply became
+truthful. Ground-truth fixtures (compact per-band numeric tables, not WAV
+blobs) and the synthetic protective-power cases (a genuinely noisy quiet
+window must still read "insufficient") are pinned in
+`tests/test_audio_measurement_snr_policy.py` and
+`tests/test_active_speaker_driver_acoustics.py`.
+
 ### Measurement validity: gating and the low-frequency floor
 
 A domestic room contaminates a far-field capture with reflections a few
@@ -1950,4 +1997,13 @@ status line), and scoped the stale `crossover_repeat_rejected` nudge out
 of the `level_solve_refused` screen. Checked against the current
 implementation and pinned by regressions reproducing hardware run 20's
 numbers, including an endpoint-level restart repro through the real
-level-match handler; not yet hardware-validated.)
+level-match handler; not yet hardware-validated. Same-day follow-up
+(2026-07-17): the phantom noise-floor fix — the per-band ambient-noise
+estimator was overstating SNR by ~40-50 dB for any canonical band the
+reference sweep's own `[f1, f2]` did not fully excite, the root cause
+behind the runs-1-20 SNR shortfall W2.1-W2.4 above were built to react to
+— checked against three real jts3 hardware captures (ground-truth
+validation: sub_bass moved from 13-16 dB "insufficient" to 62-66 dB "ok"
+on all three; every other band's reported level is bit-for-bit unchanged)
+and pinned by ground-truth fixtures plus synthetic protective-power cases;
+not yet hardware-validated on a live re-measure.)

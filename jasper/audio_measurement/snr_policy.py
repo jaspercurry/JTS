@@ -216,6 +216,111 @@ def magnitude_band_levels(
     return out
 
 
+def excitation_covered_bands(
+    bands: Sequence[tuple[str, float, float]],
+    *,
+    f1_hz: float,
+    f2_hz: float,
+) -> dict[str, bool]:
+    """Which bands lie ENTIRELY inside the swept-sine reference's excited range.
+
+    A regularized deconvolution (:func:`jasper.audio_measurement.deconv.regularized_deconvolution_full`)
+    divides by the reference sweep's own spectrum, clamped by a fixed
+    (frequency-independent) Tikhonov epsilon. Outside ``[f1_hz, f2_hz]`` — and
+    right at that edge, where the sweep's fade-in/out tapers its energy toward
+    zero — the reference carries essentially no deliberate energy, so that
+    division is dominated by epsilon rather than real signal. Right at the
+    knee where the reference's power crosses epsilon, the regularized inverse
+    has a well-known resonant peak (its gain is maximized exactly where
+    ``|X(f)|**2 == epsilon``, tapering in both directions) that amplifies
+    whatever is on the OTHER side of the division — real driver output for a
+    signal capture, incoherent room noise for an ambient capture — well
+    beyond its true level. A signal capture usually swamps this artifact (a
+    near-mic'd driver is loud); an ambient capture has nothing to swamp it
+    with, so the artifact dominates and the reported noise floor is overstated
+    by tens of dB (see docs/HANDOFF-audio-measurement-core.md "SNR" section).
+
+    A band that is not fully covered by the reference is not safe to read
+    from the deconvolved domain at all — callers should fall back to a
+    non-deconvolved (raw) measurement for that band instead of trusting this
+    resonance-corrupted value. This check is deliberately exact (no margin):
+    widening it to "give the fade some berth" would also flag bands that
+    empirically read fine today (e.g. a band starting 20 Hz above ``f1_hz``),
+    trading a real bug for an unforced regression.
+    """
+
+    lo_hz, hi_hz = float(f1_hz), float(f2_hz)
+    return {
+        band_id: (float(low) >= lo_hz and float(high) <= hi_hz)
+        for band_id, low, high in bands
+    }
+
+
+def apply_noise_band_fallback(
+    noise_bands: Sequence[Mapping[str, Any]],
+    *,
+    robust_bands: Sequence[Mapping[str, Any]],
+    baseline_bands: Sequence[Mapping[str, Any]],
+    covered: Mapping[str, bool],
+) -> list[dict[str, Any]]:
+    """Robust-delta adjustment, with a raw-ambient fallback for uncovered bands.
+
+    ``noise_bands`` is the deconvolved-domain per-band noise report (e.g.
+    :func:`magnitude_band_levels` on a deconvolved+windowed ambient IR).
+    ``robust_bands``/``baseline_bands`` are the matching non-deconvolved
+    ambient reports (:func:`framed_ambient_band_report` at ``percentile=95``
+    and ``percentile=50``). ``covered`` is
+    :func:`excitation_covered_bands`'s per-band verdict for whether the
+    reference sweep actually excited that band.
+
+    For a COVERED band, this is the pre-existing behavior unchanged: the
+    deconvolved level plus the small robust-minus-baseline delta (a
+    non-stationarity correction — see :func:`framed_ambient_band_report`'s
+    docstring). For an UNCOVERED band, the deconvolved level is a Tikhonov
+    regularization artifact, not a measurement (see
+    :func:`excitation_covered_bands`), so this reports the raw robust (p95)
+    ambient level directly instead — UNLESS that raw reading is itself
+    floor-clamped at :data:`DBFS_FLOOR` (no real precision to trust either),
+    in which case the deconvolved+delta value is kept as the least-bad
+    available estimate. Each returned band carries a diagnostic ``"basis"``
+    key (``"deconvolved"`` or ``"raw_ambient_fallback"``) recording which path
+    was taken.
+    """
+
+    robust_by_id = {item["band_id"]: item for item in robust_bands}
+    baseline_by_id = {item["band_id"]: item for item in baseline_bands}
+    adjusted: list[dict[str, Any]] = []
+    for item in noise_bands:
+        band_id = item["band_id"]
+        robust_item = robust_by_id.get(band_id)
+        baseline_item = baseline_by_id.get(band_id)
+        delta = (
+            float(robust_item["level_dbfs"]) - float(baseline_item["level_dbfs"])
+            if robust_item is not None and baseline_item is not None
+            else 0.0
+        )
+        raw_robust_level = (
+            float(robust_item["level_dbfs"]) if robust_item is not None else None
+        )
+        if (
+            not covered.get(band_id, True)
+            and raw_robust_level is not None
+            and raw_robust_level > DBFS_FLOOR
+        ):
+            adjusted.append({
+                **item,
+                "level_dbfs": round(raw_robust_level, 2),
+                "basis": "raw_ambient_fallback",
+            })
+        else:
+            adjusted.append({
+                **item,
+                "level_dbfs": round(float(item["level_dbfs"]) + delta, 2),
+                "basis": "deconvolved",
+            })
+    return adjusted
+
+
 def unwrap_noise_report(
     report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None,
 ) -> tuple[str, Sequence[Mapping[str, Any]] | None]:
