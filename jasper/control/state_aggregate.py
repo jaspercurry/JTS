@@ -1063,6 +1063,22 @@ async def _get_state(
         logger.exception("active speaker setup status read failed")
         active_speaker_setup = None
 
+    try:
+        from ..bass_extension.profile import bass_extension_state_summary
+
+        bass_extension_state = bass_extension_state_summary()
+    except (
+        ImportError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        KeyError,
+        AttributeError,
+    ):
+        logger.exception("bass extension profile state read failed")
+        bass_extension_state = None
+
     # Transit city packs. Re-reads /var/lib/jasper/transit.env fresh (never
     # os.environ — jasper-control isn't restarted on a /transit/ save, only
     # jasper-voice is). read_transit_state is itself total, but guard the
@@ -1206,6 +1222,7 @@ async def _get_state(
         },
         "audio_graph": audio_graph_state,
         "active_speaker_setup": active_speaker_setup,
+        "bass_extension": bass_extension_state,
         "renderers": {
             "spotify": spotify,
             "airplay": (

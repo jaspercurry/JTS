@@ -3201,6 +3201,46 @@ def check_sound_profile() -> CheckResult:
     )
     return CheckResult("sound profile", status, detail)
 
+@doctor_check(order=30.5, group="audio")
+def check_bass_extension_profile() -> CheckResult:
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+    )
+    from jasper.bass_extension.profile import evaluate_bass_extension_profile
+    from jasper.output_topology import load_output_topology
+
+    evaluation = evaluate_bass_extension_profile(
+        topology=load_output_topology(),
+        applied_baseline_state=load_applied_baseline_profile_state(),
+    )
+    if evaluation.status == "missing":
+        return CheckResult(
+            "bass extension profile", "ok", "bass extension: not commissioned"
+        )
+    if evaluation.status == "malformed":
+        return CheckResult(
+            "bass extension profile",
+            "fail",
+            f"bass extension profile is malformed: {evaluation.detail}",
+        )
+    if evaluation.status == "stale":
+        return CheckResult(
+            "bass extension profile",
+            "warn",
+            f"bass extension profile is stale: {evaluation.detail}",
+        )
+    if evaluation.status == "bypassed":
+        return CheckResult(
+            "bass extension profile", "ok", "bass extension profile is bypassed"
+        )
+    assert evaluation.profile is not None
+    return CheckResult(
+        "bass extension profile",
+        "ok",
+        f"accepted; deepest={evaluation.profile.targets[0].fp_hz:g}Hz "
+        f"natural={evaluation.profile.targets[-1].fp_hz:g}Hz",
+    )
+
 @doctor_check(order=31, group="audio")
 def check_dsp_apply_state() -> CheckResult:
     from jasper.dsp_apply import last_dsp_apply_state
