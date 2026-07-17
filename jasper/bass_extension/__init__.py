@@ -632,6 +632,7 @@ async def apply_bass_extension(
                 config_dir=configs,
             )
 
+        committed = False
         try:
             graph_changed = desired_graph_bytes != predecessor_graph_bytes
             if graph_changed:
@@ -660,13 +661,14 @@ async def apply_bass_extension(
                 staged_metadata_path=staged_path,
             )
             _durable_unlink(intent_target)
-        except BaseException:
-            restore = asyncio.create_task(rollback())
-            try:
-                await asyncio.shield(restore)
-            except asyncio.CancelledError:
-                await restore
-            raise
+            committed = True
+        finally:
+            if not committed:
+                restore = asyncio.create_task(rollback())
+                try:
+                    await asyncio.shield(restore)
+                except asyncio.CancelledError:
+                    await restore
 
 
 async def bypass_bass_extension(*, profile_path: str | Path = "/var/lib/jasper/bass_extension_profile.json", **kwargs) -> None:

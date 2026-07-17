@@ -19,6 +19,7 @@ explicit statefile writer helper at the bottom.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import json
@@ -2977,6 +2978,14 @@ def classify_bass_extension_graph(
     return _unsafe_boundary("bass_extension_snapshot_unstable", "graph authority changed while it was read")
 
 
+async def _invoke_active_graph_reader(
+    reader: Callable[[], Awaitable[str | None]],
+) -> str | None:
+    """Invoke a live reader inside a task so arbitrary failures become evidence."""
+
+    return await reader()
+
+
 async def classify_active_bass_extension_graph(
     topology: OutputTopology,
     *,
@@ -3001,7 +3010,20 @@ async def classify_active_bass_extension_graph(
                 continue
             selected_path = Path(selected1_s)
             selected1 = selected_path.read_bytes()
-            active_text = await read_active_graph_text()
+        except (OSError, UnicodeError):
+            continue
+
+        (active_result,) = await asyncio.gather(
+            _invoke_active_graph_reader(read_active_graph_text),
+            return_exceptions=True,
+        )
+        if isinstance(active_result, asyncio.CancelledError):
+            raise active_result
+        if isinstance(active_result, BaseException):
+            continue
+        active_text = active_result
+
+        try:
             selected2 = selected_path.read_bytes()
             selector2 = statefile_path.read_bytes()
             selected2_s = parse_camilla_statefile_config_path(selector2.decode("utf-8"))
@@ -3009,7 +3031,7 @@ async def classify_active_bass_extension_graph(
             profile2 = _read_optional_bytes(profile_path)
             intent2 = _read_optional_bytes(intent_path)
             applied2 = _read_optional_bytes(applied_baseline_path)
-        except Exception:  # noqa: BLE001 - callback errors fail closed
+        except (OSError, UnicodeError):
             continue
         if (
             not isinstance(active_text, str)

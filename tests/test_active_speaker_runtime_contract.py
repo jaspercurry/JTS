@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 import json
 
@@ -552,6 +553,60 @@ async def test_live_boundary_keeps_readback_inside_whole_snapshot_sandwich(
 
     assert callback_count == 1
     assert graph.allowed is True
+
+
+async def test_live_boundary_fails_closed_on_arbitrary_reader_error(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2),
+    )
+    callback_count = 0
+
+    async def active_readback() -> str:
+        nonlocal callback_count
+        callback_count += 1
+        raise LookupError("untrusted live-reader failure")
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=active_readback,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert callback_count == 2
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_active_snapshot_unstable"
+
+
+async def test_live_boundary_propagates_reader_cancellation(tmp_path: Path) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2),
+    )
+
+    async def active_readback() -> str:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await classify_active_bass_extension_graph(
+            topology,
+            statefile_path=authority["statefile_path"],
+            read_active_graph_text=active_readback,
+            applied_baseline_path=authority["applied_baseline_path"],
+            profile_path=authority["profile_path"],
+            intent_path=authority["intent_path"],
+            staged_metadata_path=authority["staged_metadata_path"],
+        )
 
 
 def test_pending_intent_authorizes_only_recorded_graph_profile_pair(
