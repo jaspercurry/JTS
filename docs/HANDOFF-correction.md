@@ -1418,7 +1418,7 @@ them; design **with** them.
 | `master_gain` mixer **already exists** as identity | [deploy/camilladsp/outputd-cutover.yml](../deploy/camilladsp/outputd-cutover.yml) | The EQ slot is reserved. We add filters in front of it, leave it alone. |
 | CamillaDSP websocket **no auth, 127.0.0.1 only** | [PLAN.md](../PLAN.md) | `pycamilladsp` calls stay loopback. Web UI never proxies CamillaDSP WS to the LAN. |
 | Volume coordination is **canonical and persistent** | [docs/HANDOFF-volume.md](HANDOFF-volume.md), [jasper/volume_coordinator.py](../jasper/volume_coordinator.py) | Sweep playback should set its own absolute level (not via VolumeCoordinator), restore previous on exit. |
-| `Ducker` is **the only writer** to `main_volume` for voice | [jasper/camilla.py](../jasper/camilla.py) + `Ducker` | Measurement coordinator must coexist; voice session during measurement should be impossible (we pause WakeLoop). |
+| Voice-side Camilla ownership is explicit session state | [jasper/volume_coordinator.py](../jasper/volume_coordinator.py) + [jasper/camilla.py](../jasper/camilla.py) | Normal fan-in speech leaves `main_volume` with `VolumeCoordinator`. Only the legacy Camilla `Ducker` asserts `camilla_volume_locked` and defers coordinator writes. Measurement still pauses WakeLoop before taking absolute sweep-level ownership. |
 | Existing settings pages on **plain HTTP port 80** | [deploy/nginx-jasper.conf](../deploy/nginx-jasper.conf) | We add HTTPS as an additive 443 server block. Existing routes stay HTTP. |
 | `getUserMedia` **requires HTTPS** (browser policy) | Web spec | Cannot avoid TLS for this one feature. Private CA + iOS trust profile is the path. |
 | Existing web wizards are **stdlib `ThreadingHTTPServer`** | [jasper/web/voice_setup.py](../jasper/web/voice_setup.py), [jasper/web/dial_setup.py](../jasper/web/dial_setup.py) | We mirror this — no FastAPI / aiohttp. Browser state uses polling today. |
@@ -2853,7 +2853,9 @@ Internal:
 
 ---
 
-Last verified: 2026-07-16 (jts3 hardware finding: a single marginal
+Last verified: 2026-07-16 (voice-side Camilla ownership rechecked against
+`VolumeCoordinator.note_voice_session`, the legacy `Ducker`, and measurement
+pause; jts3 hardware finding: a single marginal
 `agc_suspected` estimate — 0.644 slope over 3 steps — refused a measurement
 whose mic later passed cleanly with more evidence. The gate now holds a
 first failing estimate open for one more staircase step before any

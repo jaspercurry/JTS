@@ -1081,6 +1081,8 @@ class Mux:
             prev_source, source, reason=reason,
         )
         if not getattr(handoff, "ok", False):
+            with contextlib.suppress(Exception):
+                await coordinator.publish_volume_context()
             self._record_handoff(
                 handoff, started, handoff_id=handoff_id, result=handoff.result,
             )
@@ -1103,6 +1105,8 @@ class Mux:
         except Exception as e:  # noqa: BLE001
             with contextlib.suppress(Exception):
                 await coordinator.abort_source_handoff(handoff)
+            with contextlib.suppress(Exception):
+                await coordinator.publish_volume_context()
             self._record_handoff(
                 handoff, started,
                 handoff_id=handoff_id,
@@ -1138,7 +1142,10 @@ class Mux:
                 },
                 level=logging.WARNING,
             )
-        if finalized:
+        # Prepare/finalize can mutate Camilla even when the handoff does not
+        # complete. Always converge the pre-DSP TTS context to the carrier that
+        # actually remains after success, rollback, or degraded failure.
+        with contextlib.suppress(Exception):
             await coordinator.publish_volume_context()
         result = handoff.result if finalized else "finalize_failed"
         self._record_handoff(

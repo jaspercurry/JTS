@@ -223,9 +223,9 @@ impl AssistantLoudness {
         if context.canonical_db.is_finite()
             && context.downstream_db.is_finite()
             && context.tts_envelope_lufs.is_finite()
-            && self
-                .current_volume_context
-                .is_none_or(|current| context.stamp_boot_ns >= current.stamp_boot_ns)
+            && self.current_volume_context.map_or(true, |current| {
+                context.stamp_boot_ns >= current.stamp_boot_ns
+            })
         {
             self.current_volume_context = Some(context);
             true

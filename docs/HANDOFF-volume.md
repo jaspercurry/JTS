@@ -299,7 +299,9 @@ When the legacy lock is true, `listening_level` still persists and
 end. In the normal pre-DSP fan-in path, the write lands immediately and the
 coordinator also publishes one absolute `VOLUME_CONTEXT` message: canonical
 user dB, actual downstream Camilla dB, the quiet-room TTS envelope target,
-mute, and a `CLOCK_BOOTTIME` nanosecond stamp captured after the snapshot.
+mute, and a `CLOCK_BOOTTIME` nanosecond stamp captured at snapshot acquisition
+and carried immutably through publication. An older snapshot therefore stays
+older even if its socket write is delayed until after a newer update.
 The mute bit is fail-safe: persisted pre-mute intent, canonical 0%, or observed
 Camilla mute can raise it; a stale/unreadable observation can never lower user
 intent.
@@ -308,10 +310,22 @@ same standalone message immediately before `PREPARE_ASSISTANT` on one ordered
 connection, which gives a restarted fan-in a current snapshot without letting
 PREPARE overwrite a newer dial update.
 
+Slow push-mode actuators are ordered differently from local Camilla writes.
+For Spotify/Bluetooth, the coordinator publishes the already-known user intent
+before awaiting the source round trip, then publishes a fresh converged
+snapshot after dispatch. Mute publishes `muted=true` to fan-in before even the
+best-effort Camilla final-output backstop, so neither cloud latency nor a wedged
+Camilla connection can delay the immediate TTS stop. Non-muted Camilla-master
+edits keep the single post-write publication; a provisional context there would
+briefly compensate against stale downstream gain and create a needless second
+ramp.
+
 The grouping reconciler is the single writer of `JASPER_TTS_MIX_STAGE`. A
 passive bonded member sets `post_dsp`, so voice and the coordinator publish no
 pre-DSP compensation to outputd's post-Camilla TTS socket. Absent means the
-normal `pre_dsp` fan-in path. Callers use
+normal `pre_dsp` fan-in path only when there is no grouping-owned socket
+override. A legacy socket-only grouping file is ambiguous during a rolling
+upgrade and fails closed (no pre-DSP compensation). Callers use
 `tts_socket_feeds_pre_dsp_fanin()` rather than inferring stage from a socket
 pathname or duck transport. The message contains no source name or gain policy:
 source dispatch stays in `VolumeCoordinator`, while fan-in owns

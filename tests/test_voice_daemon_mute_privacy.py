@@ -301,7 +301,7 @@ async def test_fanin_prepare_carries_absolute_volume_context() -> None:
             return 50
 
         async def effective_volume_context(self):
-            return EffectiveVolumeContext(-25.0, -25.0, -41.0, False)
+            return EffectiveVolumeContext(-25.0, -25.0, -41.0, False, 123)
 
     wl = WakeLoop.for_tests()
     wl._cfg.duck_transport = "fanin"
@@ -314,6 +314,7 @@ async def test_fanin_prepare_carries_absolute_volume_context() -> None:
     assert prepares[0]["downstream_volume_db"] == -25.0
     assert prepares[0]["context_tts_envelope_lufs"] == -41.0
     assert prepares[0]["muted"] is False
+    assert prepares[0]["context_stamp_boot_ns"] == 123
 
 
 async def test_post_dsp_prepare_omits_volume_context(monkeypatch) -> None:
@@ -333,6 +334,37 @@ async def test_post_dsp_prepare_omits_volume_context(monkeypatch) -> None:
             raise AssertionError("post-DSP voice must not read pre-DSP context")
 
     monkeypatch.setenv("JASPER_TTS_MIX_STAGE", "post_dsp")
+    wl = WakeLoop.for_tests()
+    wl._cfg.duck_transport = "fanin"
+    wl._tts = _Tts()
+    wl._volume_coordinator = _Volume()
+
+    await wl._prepare_assistant_loudness_context()
+
+    assert "canonical_volume_db" not in prepares[0]
+
+
+async def test_legacy_socket_only_prepare_omits_volume_context(monkeypatch) -> None:
+    from jasper.voice_daemon import WakeLoop
+
+    prepares = []
+
+    class _Tts:
+        async def prepare_assistant_context(self, **kwargs) -> None:
+            prepares.append(kwargs)
+
+    class _Volume:
+        def get_listening_level(self) -> int:
+            return 50
+
+        async def effective_volume_context(self):
+            raise AssertionError("ambiguous legacy route must fail closed")
+
+    monkeypatch.delenv("JASPER_TTS_MIX_STAGE", raising=False)
+    monkeypatch.setenv(
+        "JASPER_TTS_OUTPUTD_SOCKET",
+        "/run/jasper-outputd/tts.sock",
+    )
     wl = WakeLoop.for_tests()
     wl._cfg.duck_transport = "fanin"
     wl._tts = _Tts()

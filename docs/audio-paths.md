@@ -293,8 +293,9 @@ in `jasper-fanin`.
    `VOLUME_CONTEXT` immediately before `PREPARE_ASSISTANT` on the same ordered
    connection. The context is absolute: canonical user dB, downstream Camilla
    dB, the quiet-room `tts_envelope(listening_level)` target, mute, and a
-   `CLOCK_BOOTTIME` nanosecond stamp captured after the snapshot. Fan-in rejects
-   a stamp older than the latest accepted one. PREPARE then supplies only the
+   `CLOCK_BOOTTIME` nanosecond stamp captured at snapshot acquisition and
+   carried unchanged through publication. Fan-in rejects a stamp older than
+   the latest accepted one. PREPARE then supplies only the
    active provider/model/voice and conservative envelope target; it cannot
    overwrite a newer dial publisher. Treating the envelope as a speaker target
    is load-bearing: fan-in subtracts downstream attenuation before gain
@@ -342,7 +343,9 @@ in `jasper-fanin`.
    below the configured assistant peak ceiling (default `-3 dBFS`),
    then passed through the malformed-value floor. There is intentionally
    no fixed source-gain ceiling; the positive side is governed by the
-   dynamic peak cap plus validated/fallback source-profile metadata.
+   dynamic peak cap plus validated/fallback source-profile metadata. A new
+   segment's lower cap applies to every rendered frame immediately, even while
+   the continuity ramp is descending from a prior segment.
 7. While speech is queued, each accepted `VOLUME_CONTEXT` re-targets gain at
    dequeue with a 100 ms ramp, mute override, and the original peak cap. A
    music-anchored segment uses `canonical delta - downstream delta`: a
@@ -352,11 +355,18 @@ in `jasper-fanin`.
    speech slope instead of switching to the steeper canonical music slope.
    Equal-level observations that repair Camilla also republish, because the
    downstream carrier changed even though the canonical percentage did not.
+   For slow Spotify/Bluetooth writes, the coordinator publishes the already
+   known push-mode intent before waiting for the source actuator, then publishes
+   a fresh converged snapshot afterward. Mute is stricter: fan-in receives
+   `muted=true` before the best-effort Camilla backstop or source slider, so a
+   wedged local controller cannot delay the immediate speech stop. Ordinary
+   Camilla-master edits publish only after their fast local write, avoiding a
+   provisional two-ramp transient against stale downstream gain.
 8. `SEGMENT_END` commits the calibration only for completed assistant speech.
    Fan-in remembers the last effective gain as audio drains, so it still commits
    when the queue becomes empty just before end arrives. Flush clears that
-   candidate: interrupted/unheard tails, mute, cues, and chirps never train the
-   record.
+   candidate, and any muted rendered frame disqualifies the whole segment:
+   interrupted/unheard tails, mute, cues, and chirps never train the record.
 
 The passive bonded-member route is explicitly outside this parity claim. Its
 grouping env sets `JASPER_TTS_MIX_STAGE=post_dsp`, and voice/coordinator send no

@@ -522,10 +522,11 @@ pub struct TtsMixer {
     content_meter_paused: bool,
     active_segment_gain_db: Option<f32>,
     active_segment_kind: Option<SegmentKind>,
-    active_segment_decision: Option<AssistantGainDecision>,
+    active_segment_decision: Option<Arc<AssistantGainDecision>>,
     active_segment_serial: u64,
     next_segment_serial: u64,
     assistant_segment_playback: Option<AssistantSegmentPlayback>,
+    assistant_reference_disqualified_serial: Option<u64>,
     gain_ramp: GainRamp,
     assistant_reference_tx: Option<Sender<HeldLoudnessReference>>,
     loudness: AssistantLoudness,
@@ -561,6 +562,7 @@ impl TtsMixer {
             active_segment_serial: 0,
             next_segment_serial: 1,
             assistant_segment_playback: None,
+            assistant_reference_disqualified_serial: None,
             gain_ramp: GainRamp::default(),
             assistant_reference_tx: input.assistant_reference_tx,
             loudness,
@@ -601,17 +603,36 @@ impl TtsMixer {
             let target_gain_db = self.target_gain_db(front);
             let playout_context = self.loudness.current_volume_context();
             let muted = playout_context.is_some_and(|context| context.muted);
+            let segment_serial = front.segment_serial;
+            let assistant_reference_eligible = front.assistant_reference_eligible;
+            let starts_assistant_playback = assistant_reference_eligible
+                && !muted
+                && playout_context.is_some()
+                && self.assistant_reference_disqualified_serial != Some(segment_serial)
+                && self
+                    .assistant_segment_playback
+                    .as_ref()
+                    .map_or(true, |playback| playback.segment_serial != segment_serial);
+            // Arc-clone the owned identity strings once when this segment first
+            // reaches playout, never once per audio frame.
+            let playback_decision = starts_assistant_playback
+                .then(|| front.decision.as_ref().map(Arc::clone))
+                .flatten();
             let gain = if muted {
                 self.gain_ramp.force_silent();
                 0.0
             } else {
                 self.gain_ramp.retarget(target_gain_db);
-                self.gain_ramp.next_frame()
+                // The ramp is continuous across ordinary segment boundaries,
+                // but a new segment can have a lower profile-derived peak
+                // ceiling.  Attenuation for hearing/clip safety takes effect
+                // immediately; never let the old ramp state exceed the
+                // current block's cap, even for its first frame.
+                self.gain_ramp.next_frame().min(front.peak_cap_linear)
             };
 
-            let mut assistant_playback = None;
-            let mut completed_reference = None;
             let block_finished;
+            let completes_assistant_reference;
             {
                 let Some(front) = self.queue.front_mut() else {
                     break;
@@ -623,38 +644,51 @@ impl TtsMixer {
                 front.cursor += CHANNELS as usize;
                 self.pending_samples = self.pending_samples.saturating_sub(CHANNELS as u64);
                 block_finished = front.cursor >= front.samples.len();
-                if front.assistant_reference_eligible && !muted {
-                    assistant_playback = front.decision.clone().and_then(|decision| {
-                        playout_context.map(|context| AssistantSegmentPlayback {
-                            segment_serial: front.segment_serial,
-                            decision,
-                            effective_gain_db: linear_to_db(gain),
-                            context,
-                        })
-                    });
-                }
-                if block_finished && front.completes_assistant_reference {
-                    completed_reference = front.decision.clone().and_then(|decision| {
-                        playout_context.map(|context| {
-                            (front.segment_serial, decision, linear_to_db(gain), context)
-                        })
-                    });
-                }
+                completes_assistant_reference = front.completes_assistant_reference;
             }
-            if let Some(playback) = assistant_playback {
-                self.assistant_segment_playback = Some(playback);
+            if assistant_reference_eligible && muted {
+                self.assistant_reference_disqualified_serial = Some(segment_serial);
+                if self
+                    .assistant_segment_playback
+                    .as_ref()
+                    .is_some_and(|playback| playback.segment_serial == segment_serial)
+                {
+                    self.assistant_segment_playback = None;
+                }
+            } else if assistant_reference_eligible {
+                if let (Some(decision), Some(context)) = (playback_decision, playout_context) {
+                    self.assistant_segment_playback = Some(AssistantSegmentPlayback {
+                        segment_serial,
+                        decision,
+                        last_gain_linear: gain,
+                        context,
+                    });
+                } else if let (Some(playback), Some(context)) =
+                    (self.assistant_segment_playback.as_mut(), playout_context)
+                {
+                    if playback.segment_serial == segment_serial {
+                        playback.last_gain_linear = gain;
+                        playback.context = context;
+                    }
+                }
             }
             if block_finished {
                 self.queue.pop_front();
             }
-            if let Some((serial, decision, effective_gain_db, context)) = completed_reference {
-                self.complete_assistant_reference(&decision, effective_gain_db, context);
-                if self
-                    .assistant_segment_playback
-                    .as_ref()
-                    .is_some_and(|playback| playback.segment_serial == serial)
-                {
-                    self.assistant_segment_playback = None;
+            if block_finished && completes_assistant_reference {
+                if let Some(playback) = self.assistant_segment_playback.take() {
+                    if playback.segment_serial == segment_serial {
+                        self.complete_assistant_reference(
+                            &playback.decision,
+                            linear_to_db(playback.last_gain_linear),
+                            playback.context,
+                        );
+                    } else {
+                        self.assistant_segment_playback = Some(playback);
+                    }
+                }
+                if self.assistant_reference_disqualified_serial == Some(segment_serial) {
+                    self.assistant_reference_disqualified_serial = None;
                 }
             }
         }
@@ -718,15 +752,17 @@ impl TtsMixer {
                     }
                     let gain_db = self.active_segment_gain_db.unwrap_or(DEFAULT_TTS_GAIN_DB);
                     let decision = self.active_segment_decision.clone();
+                    let peak_cap_gain_db = decision
+                        .as_ref()
+                        .map_or(gain_db, |value| value.peak_cap_gain_db);
                     self.pending_samples =
                         self.pending_samples.saturating_add(samples.len() as u64);
                     self.queue.push_back(QueuedAudioBlock {
                         samples,
                         cursor: 0,
                         base_gain_db: gain_db,
-                        peak_cap_gain_db: decision
-                            .as_ref()
-                            .map_or(gain_db, |value| value.peak_cap_gain_db),
+                        peak_cap_gain_db,
+                        peak_cap_linear: gain_db_to_linear(peak_cap_gain_db),
                         decision,
                         segment_serial: self.active_segment_serial,
                         assistant_reference_eligible: self.active_segment_kind
@@ -855,9 +891,14 @@ impl TtsMixer {
                     if let Some(playback) = drained_completion {
                         self.complete_assistant_reference(
                             &playback.decision,
-                            playback.effective_gain_db,
+                            linear_to_db(playback.last_gain_linear),
                             playback.context,
                         );
+                    }
+                    if self.assistant_reference_disqualified_serial
+                        == Some(self.active_segment_serial)
+                    {
+                        self.assistant_reference_disqualified_serial = None;
                     }
                 }
                 TtsCommand::Close => {}
@@ -904,7 +945,7 @@ impl TtsMixer {
         );
         self.active_segment_gain_db = Some(gain_db);
         self.active_segment_kind = Some(kind);
-        self.active_segment_decision = Some(decision);
+        self.active_segment_decision = Some(Arc::new(decision));
         self.active_segment_serial = self.next_segment_serial;
         self.next_segment_serial = self.next_segment_serial.saturating_add(1);
         gain_db
@@ -976,6 +1017,7 @@ impl TtsMixer {
         self.active_segment_kind = None;
         self.active_segment_decision = None;
         self.assistant_segment_playback = None;
+        self.assistant_reference_disqualified_serial = None;
         self.metrics.mark_flush(requests, flushed);
         self.metrics.mark_pending(0);
         let summary = FlushSummary::from_parts(requests, pending, flushed, &events);
@@ -1006,7 +1048,8 @@ struct QueuedAudioBlock {
     cursor: usize,
     base_gain_db: f32,
     peak_cap_gain_db: f32,
-    decision: Option<AssistantGainDecision>,
+    peak_cap_linear: f32,
+    decision: Option<Arc<AssistantGainDecision>>,
     segment_serial: u64,
     assistant_reference_eligible: bool,
     completes_assistant_reference: bool,
@@ -1014,8 +1057,8 @@ struct QueuedAudioBlock {
 
 struct AssistantSegmentPlayback {
     segment_serial: u64,
-    decision: AssistantGainDecision,
-    effective_gain_db: f32,
+    decision: Arc<AssistantGainDecision>,
+    last_gain_linear: f32,
     context: VolumeContext,
 }
 
@@ -1671,6 +1714,78 @@ mod tests {
     }
 
     #[test]
+    fn new_segment_peak_cap_applies_to_every_frame_during_gain_ramp() {
+        let (tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 48_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+            assistant_reference: None,
+            assistant_reference_tx: None,
+        });
+
+        let profile = |source_lufs, source_peak_dbfs| AssistantProfile {
+            provider: "openai".to_string(),
+            model: "gpt-realtime-2".to_string(),
+            voice: "marin".to_string(),
+            source_lufs: Some(source_lufs),
+            source_peak_dbfs: Some(source_peak_dbfs),
+            confidence: 1.0,
+        };
+        for command in [
+            TtsCommand::PrepareAssistant {
+                provider: "openai".to_string(),
+                model: "gpt-realtime-2".to_string(),
+                voice: "marin".to_string(),
+                tts_envelope_lufs: -30.0,
+            },
+            TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("loud_prior".to_string()),
+                profile: Some(profile(-30.0, -20.0)),
+            },
+            TtsCommand::Audio(vec![30_000, 30_000]),
+            TtsCommand::SegmentEnd,
+        ] {
+            tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
+        }
+        let mut prior = [0i32; 2];
+        assert!(mixer.prepare_period());
+        mixer.mix_period(&mut prior);
+        assert_eq!(prior, [30_000, 30_000]);
+
+        for command in [
+            TtsCommand::PrepareAssistant {
+                provider: "openai".to_string(),
+                model: "gpt-realtime-2".to_string(),
+                voice: "marin".to_string(),
+                tts_envelope_lufs: -30.0,
+            },
+            TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("capped_next".to_string()),
+                profile: Some(profile(-50.0, 0.0)),
+            },
+            TtsCommand::Audio(vec![30_000; 128 * (CHANNELS as usize)]),
+            TtsCommand::SegmentEnd,
+        ] {
+            tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
+        }
+        let mut capped = vec![0i32; 128 * (CHANNELS as usize)];
+        assert!(mixer.prepare_period());
+        mixer.mix_period(&mut capped);
+
+        let cap = apply_gain_i16(30_000, gain_db_to_linear(-3.0)).abs() as i32;
+        assert!(
+            capped.iter().all(|sample| sample.abs() <= cap),
+            "every rendered frame must respect the new segment's -3 dB cap"
+        );
+    }
+
+    #[test]
     fn live_volume_update_ramps_queued_speech_and_commits_the_achieved_reference() {
         let (tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(12_000);
         let (reference_tx, reference_rx) = mpsc::channel();
@@ -1856,6 +1971,82 @@ mod tests {
         assert!((reference.speaker_lufs - -41.0).abs() < 0.02);
         assert_eq!(reference.canonical_db, -30.0);
         assert!((reference.calibration_offset_lu - 0.0).abs() < 0.02);
+    }
+
+    #[test]
+    fn muted_frame_disqualifies_late_end_assistant_reference() {
+        let (tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(12_000);
+        let (reference_tx, reference_rx) = mpsc::channel();
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 12_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+            assistant_reference: None,
+            assistant_reference_tx: Some(reference_tx),
+        });
+        for command in [
+            TtsCommand::VolumeContext(VolumeContext {
+                canonical_db: -30.0,
+                downstream_db: 0.0,
+                tts_envelope_lufs: -41.0,
+                muted: false,
+                stamp_boot_ns: 1,
+            }),
+            TtsCommand::PrepareAssistant {
+                provider: "openai".to_string(),
+                model: "m".to_string(),
+                voice: "v".to_string(),
+                tts_envelope_lufs: -41.0,
+            },
+            TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("muted_late_end".to_string()),
+                profile: Some(AssistantProfile {
+                    provider: "openai".to_string(),
+                    model: "m".to_string(),
+                    voice: "v".to_string(),
+                    source_lufs: Some(-41.0),
+                    source_peak_dbfs: Some(-20.0),
+                    confidence: 1.0,
+                }),
+            },
+            TtsCommand::Audio(vec![10_000; 4 * (CHANNELS as usize)]),
+        ] {
+            tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
+        }
+
+        let mut audible = [0i32; CHANNELS as usize];
+        assert!(mixer.prepare_period());
+        mixer.mix_period(&mut audible);
+        assert!(audible.iter().all(|sample| *sample != 0));
+
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::VolumeContext(VolumeContext {
+                canonical_db: -30.0,
+                downstream_db: 0.0,
+                tts_envelope_lufs: -41.0,
+                muted: true,
+                stamp_boot_ns: 2,
+            }),
+        })
+        .unwrap();
+        let mut muted_tail = [1i32; 3 * (CHANNELS as usize)];
+        assert!(mixer.prepare_period());
+        mixer.mix_period(&mut muted_tail);
+        assert!(muted_tail.iter().all(|sample| *sample == 1));
+
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentEnd,
+        })
+        .unwrap();
+        mixer.prepare_period();
+
+        assert!(reference_rx.try_recv().is_err());
     }
 
     #[test]

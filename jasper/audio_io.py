@@ -625,6 +625,7 @@ class TtsPlayout:
         downstream_volume_db: float | None = None,
         context_tts_envelope_lufs: float | None = None,
         muted: bool | None = None,
+        context_stamp_boot_ns: int | None = None,
     ) -> None:
         """Freeze final-output loudness context before a turn starts.
 
@@ -640,6 +641,7 @@ class TtsPlayout:
             downstream_volume_db,
             context_tts_envelope_lufs,
             muted,
+            context_stamp_boot_ns,
         )
         return None
 
@@ -1173,6 +1175,7 @@ class OutputdTtsPlayout(TtsPlayout):
         downstream_volume_db: float | None = None,
         context_tts_envelope_lufs: float | None = None,
         muted: bool | None = None,
+        context_stamp_boot_ns: int | None = None,
     ) -> None:
         self._provider = provider
         self._model = model
@@ -1196,12 +1199,14 @@ class OutputdTtsPlayout(TtsPlayout):
                     and downstream_volume_db is not None
                     and context_tts_envelope_lufs is not None
                     and muted is not None
+                    and context_stamp_boot_ns is not None
                 ):
                     prepare_kwargs["volume_context"] = EffectiveVolumeContext(
                         canonical_db=canonical_volume_db,
                         downstream_db=downstream_volume_db,
                         tts_envelope_lufs=context_tts_envelope_lufs,
                         muted=muted,
+                        stamp_boot_ns=context_stamp_boot_ns,
                     )
                 await asyncio.to_thread(
                     prepare,

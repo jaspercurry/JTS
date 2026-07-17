@@ -870,8 +870,9 @@ impl Config {
                     "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
                     loudness_defaults.fallback_source_peak_dbfs,
                 )?,
-                default_tts_envelope_lufs: env_f32(
+                default_tts_envelope_lufs: env_f32_fallback(
                     "JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS",
+                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
                     loudness_defaults.default_tts_envelope_lufs,
                 )?,
                 content_silence_lufs: env_f32(
@@ -1109,6 +1110,7 @@ mod tests {
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS", None),
                 ("JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS", None),
+                ("JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS", None),
                 ("JASPER_OUTPUTD_CONTENT_SILENCE_LUFS", None),
                 ("JASPER_FANIN_ASSISTANT_REFERENCE_PATH", None),
                 ("JASPER_DUCK_DB", None),
@@ -1645,6 +1647,43 @@ mod tests {
             || {
                 let cfg = Config::from_env().expect("duck fallback must parse");
                 assert_eq!(cfg.tts_program_duck_db, -18.5);
+            },
+        );
+    }
+
+    #[test]
+    fn legacy_silence_target_migrates_to_default_tts_envelope() {
+        with_env(
+            &[
+                ("JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS", None),
+                (
+                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
+                    Some("-37.5"),
+                ),
+            ],
+            || {
+                let cfg = Config::from_env().expect("legacy envelope must parse");
+                assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -37.5);
+            },
+        );
+    }
+
+    #[test]
+    fn new_default_tts_envelope_wins_over_legacy_silence_target() {
+        with_env(
+            &[
+                (
+                    "JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS",
+                    Some("-39.0"),
+                ),
+                (
+                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
+                    Some("-37.5"),
+                ),
+            ],
+            || {
+                let cfg = Config::from_env().expect("new envelope must parse");
+                assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -39.0);
             },
         );
     }

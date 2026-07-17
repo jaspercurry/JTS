@@ -50,7 +50,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
-from .assistant_volume import EffectiveVolumeContext, VolumeContextPublisher
+from .assistant_volume import (
+    EffectiveVolumeContext,
+    VolumeContextPublisher,
+    volume_context_stamp_boot_ns,
+)
 from .assistant_loudness import tts_envelope_lufs_for_level
 from .log_event import log_event
 from .music_sources import Source, VolumeMode, volume_mode
@@ -389,8 +393,16 @@ class VolumeCoordinator:
             self._level = target
             self._pre_mute_level = None  # any explicit set clears mute state
             self._persistence.save_pre_mute_level(None)
-            await self._dispatch(target, persist=True)
-        await self.publish_volume_context()
+            source = await self._active_source()
+            await self._publish_user_intent_context(
+                source, target, muted=self._main_mute_for_level(target),
+            )
+            if self._main_mute_for_level(target):
+                await self._set_camilla_main_mute(
+                    True, context="set_listening_level_intent",
+                )
+            await self._dispatch(target, persist=True, source=source)
+        await self.publish_volume_context(phase="converged")
         return target
 
     async def adjust_listening_level(self, delta: int) -> int:
@@ -405,8 +417,16 @@ class VolumeCoordinator:
             self._level = target
             self._pre_mute_level = None
             self._persistence.save_pre_mute_level(None)
-            await self._dispatch(target, persist=True)
-        await self.publish_volume_context()
+            source = await self._active_source()
+            await self._publish_user_intent_context(
+                source, target, muted=self._main_mute_for_level(target),
+            )
+            if self._main_mute_for_level(target):
+                await self._set_camilla_main_mute(
+                    True, context="adjust_listening_level_intent",
+                )
+            await self._dispatch(target, persist=True, source=source)
+        await self.publish_volume_context(phase="converged")
         return target
 
     async def mute(self) -> int:
@@ -421,8 +441,17 @@ class VolumeCoordinator:
             saved = self._pre_mute_level or 0
             self._level = 0
             self._persistence.save_pre_mute_level(self._pre_mute_level)
-            await self._dispatch(0, persist=False)
-        await self.publish_volume_context()
+            source = await self._active_source()
+            # Fan-in is the immediate TTS stop and does not depend on Camilla
+            # being healthy. Publish before touching the final-output backstop.
+            await self._publish_user_intent_context(source, saved, muted=True)
+            # Final-output mute is local and safety-critical; never wait for a
+            # Spotify/BT cloud or protocol round trip before asserting it.
+            await self._set_camilla_main_mute(
+                True, context="mute_intent",
+            )
+            await self._dispatch(0, persist=False, source=source)
+        await self.publish_volume_context(phase="converged")
         return saved
 
     async def unmute(self, fallback_level: int = 50) -> int:
@@ -435,8 +464,16 @@ class VolumeCoordinator:
             self._pre_mute_level = None
             self._persistence.save_pre_mute_level(None)
             self._level = target
-            await self._dispatch(target, persist=True)
-        await self.publish_volume_context()
+            source = await self._active_source()
+            await self._publish_user_intent_context(
+                source, target, muted=self._main_mute_for_level(target),
+            )
+            if self._main_mute_for_level(target):
+                await self._set_camilla_main_mute(
+                    True, context="unmute_intent",
+                )
+            await self._dispatch(target, persist=True, source=source)
+        await self.publish_volume_context(phase="converged")
         return target
 
     def _refresh_from_disk(self) -> None:
@@ -659,10 +696,17 @@ class VolumeCoordinator:
         return bool(guarded)
 
     async def _dispatch(
-        self, level: int, *, persist: bool, user_change: bool = True,
+        self,
+        level: int,
+        *,
+        persist: bool,
+        user_change: bool = True,
+        source: Source | None = None,
     ) -> None:
         """Push `level` to the active source (or camilla if idle)
-        and (optionally) persist. Caller holds the lock.
+        and (optionally) persist. Caller holds the mutation lock. Live user
+        calls persist and publish push-mode intent before entering this slow
+        actuator path; ``source`` avoids probing the same routing fact twice.
 
         `user_change` is forwarded to `save_listening_level` —
         determines whether `last_used_at` is bumped. Default True
@@ -677,7 +721,7 @@ class VolumeCoordinator:
         receiver-originated AirPlay 2 volume back to iOS/macOS, so JTS
         uses CamillaDSP as the AirPlay speaker-volume surface.
         """
-        source = await self._active_source()
+        source = source if source is not None else await self._active_source()
         try:
             if source == Source.AIRPLAY:
                 await self._set_airplay(level)
@@ -1272,6 +1316,10 @@ class VolumeCoordinator:
             # Camilla/source probes remain outside the lock; the second read
             # detects a mutation and retries the whole absolute snapshot.
             async with self._lock:
+                # This is the snapshot's ordering point. Keep it with the
+                # immutable context so delayed IPC cannot make old truth look
+                # newer than a later snapshot.
+                stamp_boot_ns = volume_context_stamp_boot_ns()
                 before = self._persistence.load()
                 level = (
                     int(before.listening_level)
@@ -1330,8 +1378,11 @@ class VolumeCoordinator:
                     downstream_db=float(downstream_db),
                     tts_envelope_lufs=tts_envelope_lufs_for_level(level),
                     muted=bool(muted),
+                    stamp_boot_ns=stamp_boot_ns,
                 )
-        latest = self._persistence.load()
+        async with self._lock:
+            stamp_boot_ns = volume_context_stamp_boot_ns()
+            latest = self._persistence.load()
         level = (
             int(latest.listening_level)
             if latest is not None and latest.listening_level is not None
@@ -1358,15 +1409,81 @@ class VolumeCoordinator:
             downstream_db=float(downstream_db),
             tts_envelope_lufs=tts_envelope_lufs_for_level(level),
             muted=bool(muted),
+            stamp_boot_ns=stamp_boot_ns,
         )
 
-    async def publish_volume_context(self) -> None:
+    async def _publish_user_intent_context(
+        self,
+        source: Source,
+        level: int,
+        *,
+        muted: bool,
+    ) -> None:
+        """Publish known intent before a slow or safety-critical actuator.
+
+        Caller holds ``_lock``. This deliberately does not call the ordinary
+        snapshot method (which would re-enter that lock). Non-muted
+        Camilla-master paths skip the provisional message because their local
+        write is already fast and publishing against the old downstream gain
+        would create a needless two-ramp transient. Mute always publishes first
+        so a wedged Camilla cannot delay the immediate TTS stop.
+        """
+        if (
+            self._volume_context_publisher is None
+            or (not muted and volume_mode(source) != VolumeMode.PUSH)
+        ):
+            return
+        try:
+            stamp_boot_ns = volume_context_stamp_boot_ns()
+            current_mute: bool | None = None
+            current_db: float | None
+            if muted:
+                current_db = None
+            else:
+                current_db, current_mute = (
+                    await self._read_camilla_volume_and_mute()
+                )
+            if current_db is None:
+                record = self._persistence.load()
+                current_db = (
+                    float(record.main_volume_db)
+                    if record is not None and record.main_volume_db is not None
+                    else 0.0
+                )
+            context = EffectiveVolumeContext(
+                canonical_db=float(percent_to_db(level)),
+                downstream_db=float(current_db),
+                tts_envelope_lufs=tts_envelope_lufs_for_level(level),
+                muted=bool(muted or current_mute is True),
+                stamp_boot_ns=stamp_boot_ns,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
+            self._log_volume_context_publish_failure(e, phase="intent")
+            return
+        await self._publish_effective_volume_context(context, phase="intent")
+
+    async def publish_volume_context(self, *, phase: str = "snapshot") -> None:
         """Best-effort absolute context update; never breaks volume control."""
+        if self._volume_context_publisher is None:
+            return
+        try:
+            context = await self.effective_volume_context()
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
+            self._log_volume_context_publish_failure(e, phase=phase)
+            return
+        await self._publish_effective_volume_context(context, phase=phase)
+
+    async def _publish_effective_volume_context(
+        self,
+        context: EffectiveVolumeContext,
+        *,
+        phase: str,
+    ) -> None:
+        """Publish one already-snapshotted context without taking ``_lock``."""
         publisher = self._volume_context_publisher
         if publisher is None:
             return
         try:
-            context = await self.effective_volume_context()
             await publisher(context)
             log_event(
                 logger,
@@ -1374,15 +1491,25 @@ class VolumeCoordinator:
                 canonical_db=f"{context.canonical_db:.1f}",
                 downstream_db=f"{context.downstream_db:.1f}",
                 muted=str(context.muted).lower(),
+                phase=phase,
             )
         except (OSError, RuntimeError, TypeError, ValueError) as e:
-            log_event(
-                logger,
-                "volume.context_publish_failed",
-                exc_type=type(e).__name__,
-                detail=str(e),
-                level=logging.WARNING,
-            )
+            self._log_volume_context_publish_failure(e, phase=phase)
+
+    @staticmethod
+    def _log_volume_context_publish_failure(
+        exc: Exception,
+        *,
+        phase: str,
+    ) -> None:
+        log_event(
+            logger,
+            "volume.context_publish_failed",
+            exc_type=type(exc).__name__,
+            detail=str(exc),
+            phase=phase,
+            level=logging.WARNING,
+        )
 
     async def note_measurement_active(self, active: bool) -> None:
         """Pause/resume this process's 1 Hz Camilla drift reconciler."""

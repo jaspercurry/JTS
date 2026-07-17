@@ -67,6 +67,7 @@ class _CaptureOutputdStream:
         self.segments_ended = 0
         self.flush_acks: list[dict] = []
         self.prepares: list[tuple[str, str, str, float]] = []
+        self.volume_contexts: list[object | None] = []
         self.meter_pauses = 0
         self.meter_resumes = 0
 
@@ -80,8 +81,10 @@ class _CaptureOutputdStream:
         model: str,
         voice: str,
         tts_envelope_lufs: float,
+        volume_context=None,
     ) -> None:
         self.prepares.append((provider, model, voice, tts_envelope_lufs))
+        self.volume_contexts.append(volume_context)
 
     def pause_content_meter(self) -> None:
         self.meter_pauses += 1
@@ -710,7 +713,7 @@ def test_outputd_stream_adapter_flush_sync_timeout_is_bounded(monkeypatch):
         child.close()
 
 
-def test_outputd_stream_adapter_sends_loudness_control_protocol(monkeypatch):
+def test_outputd_stream_adapter_sends_loudness_control_protocol():
     parent, child = socket.socketpair()
     adapter = audio_io_mod._OutputdStreamAdapter(parent)
     profile = AssistantLoudnessProfile(
@@ -724,10 +727,6 @@ def test_outputd_stream_adapter_sends_loudness_control_protocol(monkeypatch):
         method="passive_live",
     )
     try:
-        monkeypatch.setattr(
-            "jasper.assistant_volume.volume_context_stamp_boot_ns",
-            lambda: 123456,
-        )
         adapter.prepare_assistant(
             provider="openai",
             model="gpt-realtime-2",
@@ -748,6 +747,7 @@ def test_outputd_stream_adapter_sends_loudness_control_protocol(monkeypatch):
                 downstream_db=0.0,
                 tts_envelope_lufs=-42.34,
                 muted=False,
+                stamp_boot_ns=123456,
             ),
         )
         assert child.recv(160) == (
@@ -886,6 +886,39 @@ async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
     assert p._stream is replacement
     assert replacement.prepares == [
         ("openai", "gpt-realtime-2", "marin", -41.0)
+    ]
+
+
+async def test_outputd_prepare_preserves_snapshot_stamp() -> None:
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    stream = _CaptureOutputdStream()
+    p._stream = stream  # type: ignore[assignment]
+
+    await p.prepare_assistant_context(
+        provider="openai",
+        model="gpt-realtime-2",
+        voice="marin",
+        tts_envelope_lufs=-41.0,
+        canonical_volume_db=-30.0,
+        downstream_volume_db=0.0,
+        context_tts_envelope_lufs=-41.0,
+        muted=False,
+        context_stamp_boot_ns=123456,
+    )
+
+    assert stream.volume_contexts == [
+        audio_io_mod.EffectiveVolumeContext(
+            canonical_db=-30.0,
+            downstream_db=0.0,
+            tts_envelope_lufs=-41.0,
+            muted=False,
+            stamp_boot_ns=123456,
+        )
     ]
 
 

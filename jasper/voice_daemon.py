@@ -2402,6 +2402,7 @@ class WakeLoop:
                         volume_context.tts_envelope_lufs
                     ),
                     muted=volume_context.muted,
+                    context_stamp_boot_ns=volume_context.stamp_boot_ns,
                 )
         await self._tts.prepare_assistant_context(
             **prepare_kwargs,
