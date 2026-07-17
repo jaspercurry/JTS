@@ -153,7 +153,9 @@ def _usable_reference_axis_driver_acoustic(
     )
 
 
-def _completed_insufficient_verdict(role: str, progress: Any) -> str:
+def _completed_insufficient_verdict(
+    role: str, progress: Any, correction: Mapping[str, Any] | None
+) -> str:
     """Honest terminal copy for a fully-repeated but still-unusable driver.
 
     Reached only when the repeat set's own durable status is "completed"
@@ -166,8 +168,20 @@ def _completed_insufficient_verdict(role: str, progress: Any) -> str:
     fifth attempt to offer here -- repeat_admission.reserve() refuses a
     completed set -- so this names the shortfall with the same evidence
     style as an in-progress rejection ("17.4 dB SNR; 2.6 dB more needed" --
-    the design doc's Language guide) and points at the one legitimate
-    remedy: a fresh, louder level check.
+    the design doc's Language guide).
+
+    ``correction`` is this target's ``level_match.solve_correction`` snapshot
+    entry (``CrossoverLevelLease.level_match_snapshot`` /
+    ``_solve_correction_snapshot``), or ``None``. As of W2.3, a finalized-
+    but-insufficient set writes a completion-time correction
+    (``record_solve_correction``'s ``"completed_insufficient"`` trigger)
+    that escalates the NEXT solve -- so when ``correction["writes"] > 0``
+    this says so instead of telling the household to manually "raise the
+    measurement level" (the only lever #1552 offered). A target whose
+    correction budget is fully exhausted never reaches this function -- see
+    ``_active_level_solve_refusal``, which routes it to the placement-lever
+    refusal screen instead, checked earlier in the same elif chain this
+    function's callers sit in.
     """
     from .crossover_eligibility import finite_float
 
@@ -179,29 +193,60 @@ def _completed_insufficient_verdict(role: str, progress: Any) -> str:
         evidence = f" ({snr:.1f} dB SNR{band_clause}; {shortfall:.1f} dB more needed)"
     else:
         evidence = ""
+    writes = correction.get("writes") if isinstance(correction, Mapping) else None
+    corrected = isinstance(writes, int) and not isinstance(writes, bool) and writes > 0
+    remedy = (
+        "JTS will play the next measurement louder -- redo the quick level "
+        "check, then measure again."
+        if corrected
+        else (
+            "Raise the measurement level or quiet the room, then restart "
+            "the driver level check to measure again."
+        )
+    )
     return (
         f"The {role} measurement finished, but there wasn't enough signal "
-        f"above the room's noise to tune from{evidence}. Raise the "
-        "measurement level or quiet the room, then restart the driver "
-        "level check to measure again."
+        f"above the room's noise to tune from{evidence}. {remedy}"
     )
 
 
 def _active_level_solve_refusal(
     status: Mapping[str, Any], target_id: str
 ) -> Mapping[str, Any] | None:
-    """The closed-loop level solver's refusal (W2.1) for ``target_id``, if any.
+    """The closed-loop level solver's refusal (W2.1/W2.3) for ``target_id``.
 
     Sourced from ``CrossoverLevelLease.level_match_snapshot()``'s
-    ``solve_refusal`` -- the single most-recent solve refusal, cleared by a
-    fresh ramp lock or a new level-match run. ``None`` when there is no
-    refusal, or it belongs to a different driver.
+    ``solve_refusal`` -- the most recent refusal from an actual PRE-FLIGHT
+    solve attempt, cleared by a fresh ramp lock (stale solver inputs) or an
+    explicit flow reset (a full level-match retune), never by set
+    completion (W2.3).
+
+    W2.3: a completed-but-insufficient finalization can itself exhaust the
+    bounded correction budget (``record_solve_correction``'s
+    ``"completed_insufficient"`` trigger) WITHOUT any fresh solve attempt
+    ever running -- the lease only solves again when the next sweep is
+    actually prepared. Without this, the completed-insufficient terminal
+    would keep offering a dead-end "restart the level check" action that
+    just refuses again on the very next attempt. So this also synthesizes
+    the SAME typed refusal straight from ``level_match.solve_correction``'s
+    ``exhausted`` flag the moment the budget runs out, reusing
+    ``_describe_level_solve_refusal``'s single code -> copy mapping (its
+    ``measurement_window_unreachable`` branch reads only ``code``, so the
+    minimal synthesized mapping is sufficient).
     """
 
     refusal = _mapping(_mapping(status.get("level_match")).get("solve_refusal"))
-    if not refusal or str(refusal.get("target_id") or "") != target_id:
-        return None
-    return refusal
+    if refusal and str(refusal.get("target_id") or "") == target_id:
+        return refusal
+    correction = _mapping(
+        _mapping(status.get("level_match")).get("solve_correction")
+    ).get(target_id)
+    if isinstance(correction, Mapping) and correction.get("exhausted") is True:
+        return {
+            "target_id": target_id,
+            "code": _LEVEL_SOLVE_REFUSAL_CODE_MEASUREMENT_WINDOW_UNREACHABLE,
+        }
+    return None
 
 
 # Closed-loop level solver (W2.1/W2.2) refusal copy. ONE mapping owns
@@ -822,9 +867,10 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         })
     latest_rejection: Mapping[str, Any] = {}
     latest_status = ""
+    latest_rejection_terminal = False
     from .crossover_eligibility import finite_float, mapping_sequence
 
-    for entry in repeat_targets.values():
+    for rejection_target_id, entry in repeat_targets.items():
         if not isinstance(entry, Mapping):
             continue
         results = mapping_sequence(entry.get("results"))
@@ -832,6 +878,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         if candidate.get("accepted") is not True:
             latest_rejection = candidate
             latest_status = str(entry.get("status") or "")
+            latest_rejection_terminal = str(rejection_target_id) in terminal_controller_targets
     if latest_rejection or latest_status in {"refused", "aborted"}:
         reason = str(latest_rejection.get("reject_reason") or latest_status)
         # Infra failures (DSP-load convergence timeouts, gate/admission
@@ -854,9 +901,22 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             # (W2.2) de-escalates the sweep level from the clipped
             # capture's own measured evidence -- see
             # CrossoverLevelLease.record_solve_correction.
+            #
+            # "JTS will try again a bit quieter" is only true while the
+            # repeat set can actually still attempt again. Hardware run 19
+            # surfaced this nudge alongside a NON-RESUMABLE terminal
+            # ("The repeat sequence ended and cannot be resumed") whose
+            # attempt budget was already spent -- no automatic retry was
+            # ever coming. When this rejection's own target is terminal,
+            # say what the household must actually do instead.
             text = (
                 "That sweep was too loud for the microphone at this "
-                "distance. JTS will try again a bit quieter."
+                "distance. "
+                + (
+                    "Run the driver level check again before measuring."
+                    if latest_rejection_terminal
+                    else "JTS will try again a bit quieter."
+                )
             )
         elif (shortfall := finite_float(
             latest_rejection.get("snr_shortfall_db")
@@ -1226,7 +1286,10 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
                 # set (JTS3 run 13 hit exactly this, looping on an action that
                 # failed at reservation). Render the honest terminal instead.
                 screen = "microphone"
-                verdict = _completed_insufficient_verdict(role, progress)
+                correction = _mapping(
+                    _mapping(status.get("level_match")).get("solve_correction")
+                ).get(target_id)
+                verdict = _completed_insufficient_verdict(role, progress, correction)
                 action = {
                     "id": "level_match",
                     "label": f"Restart {role} driver level check",
@@ -1370,7 +1433,10 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             # attempt, but the target is still unusable (insufficient SNR).
             # No fifth attempt exists to offer; render the honest terminal.
             screen = "microphone"
-            verdict = _completed_insufficient_verdict(role, progress)
+            correction = _mapping(
+                _mapping(status.get("level_match")).get("solve_correction")
+            ).get(physical_target_id)
+            verdict = _completed_insufficient_verdict(role, progress, correction)
             action = {
                 "id": "level_match",
                 "label": f"Restart {role} driver level check",

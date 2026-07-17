@@ -1343,4 +1343,12 @@ adjustment slot, measured-gain mic-clip ceiling override, two-write bound,
 `measurement_window_unreachable` refusal — full detail in
 active-crossover-information-design.md "Level control and SNR") checked
 hardware-free against the triggering run-18 numbers; not yet
-hardware-validated)
+hardware-validated. Same-day follow-up: W2.3 completion-time correction
+(a repeat set can finalize with every attempt individually accepted yet
+the aggregate worst-band SNR still insufficient — the rejection path
+above never sees this shape) and the persistence lifecycle change
+(corrections now survive a level re-lock, clearing instead on a
+sufficient finalization, a changed relay mic, or an explicit flow reset
+— full detail in active-crossover-information-design.md "Level control
+and SNR") checked hardware-free against hardware run 19's numbers; not
+yet hardware-validated)

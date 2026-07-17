@@ -2464,6 +2464,53 @@ def test_repeat_rejection_nudge_clip_copy_is_honest_and_actionable():
     assert "input gain" not in nudge["text"].lower()
 
 
+def test_repeat_rejection_nudge_clip_copy_does_not_promise_a_retry_when_terminal():
+    """Hardware run 19: a NON-RESUMABLE repeat set ("The repeat sequence
+    ended and cannot be resumed") rendered the clip nudge's "JTS will try
+    again a bit quieter" alongside it -- a false promise, since the attempt
+    budget was already spent and no automatic retry was coming. Once the
+    owning target's repeat status is terminal (refused/aborted/malformed,
+    or a completed set the controller never durably observed), the nudge
+    must say what the household actually needs to do instead."""
+
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["level_match"]["repeats"] = {
+        "targets": {},
+        "failures": {},
+        "durable": {
+            "status": "active",
+            "targets": {
+                "mono:woofer": {
+                    "target_fingerprint": "6" * 64,
+                    "status": "refused",
+                    "attempts": 4,
+                    "results": [{
+                        "attempt": 4,
+                        "accepted": False,
+                        "reject_reason": "unusable_capture",
+                        "clipping": True,
+                        "estimated_snr_db": None,
+                    }],
+                },
+            },
+        },
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert "cannot be resumed" in env["verdict_text"]
+    nudge = next(
+        n for n in env["nudges"] if n["code"] == "crossover_repeat_rejected"
+    )
+    assert nudge["text"] == (
+        "That sweep was too loud for the microphone at this distance. "
+        "Run the driver level check again before measuring."
+    )
+    assert "try again" not in nudge["text"].lower()
+
+
 _COMPARISON_SET = {
     "schema_version": 2,
     "comparison_set_id": "1" * 32,
@@ -4144,6 +4191,71 @@ def test_completed_insufficient_woofer_repeat_set_renders_honest_terminal():
         assert banned not in lowered
 
 
+def test_completed_insufficient_with_active_correction_says_jts_plays_louder():
+    """W2.3 (hardware run 19): once the completion-time correction has
+    actually written (``level_match.solve_correction[target]["writes"] >
+    0`` -- see ``CrossoverLevelLease.record_solve_correction``'s
+    ``"completed_insufficient"`` trigger), the terminal copy must say that
+    JTS itself will play the next measurement louder, not tell the
+    household to manually "raise the measurement level" -- #1552 left that
+    as the only lever; W2.3 automates it."""
+
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _insufficient_driver_acoustic("woofer"),
+    }
+    _completed_insufficient_near_field_repeat_state(status)
+    status["level_match"]["solve_correction"] = {
+        "mono:woofer": {"writes": 1, "adjustment_db": 11.6, "exhausted": False},
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    verdict = env["verdict_text"]
+    assert "wasn't enough signal" in verdict
+    assert "JTS will play the next measurement louder" in verdict
+    assert "raise the measurement level" not in verdict.lower()
+
+
+def test_completed_insufficient_with_exhausted_correction_routes_to_refusal_screen():
+    """W2.3 (hardware run 19, REFUSAL REACHABILITY): once the completion-time
+    correction has exhausted the bounded budget
+    (``level_match.solve_correction[target]["exhausted"] is True``), the
+    envelope must route straight to the placement-lever refusal screen
+    instead of one more dead-end "restart the level check" round trip that
+    would just refuse again on the very next attempt -- see
+    ``_active_level_solve_refusal``."""
+
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _insufficient_driver_acoustic("woofer"),
+    }
+    _completed_insufficient_near_field_repeat_state(status)
+    status["level_match"]["solve_correction"] = {
+        "mono:woofer": {"writes": 3, "adjustment_db": 9.4, "exhausted": True},
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "level_solve_refused"
+    assert "move the phone close to the driver" in env["verdict_text"].lower()
+    assert env["next_action"] == {
+        "id": "level_match",
+        "label": "Redo the quick level check (about 2 minutes)",
+        "endpoint": "/correction/crossover/level-match",
+        "body": {},
+    }
+    # The level lock itself must be untouched by a synthesized refusal.
+    assert status["level_match"]["last"]["ramp"]["restored"] is True
+
+
 def test_missing_driver_with_clobbered_confirmation_offers_confirm_not_measure():
     """JTS3 run 13 -> run 14 (punch #29): the woofer's driver confirmation
     was clobbered by a later sweep capture, so ``current_driver_floor_evidence``
@@ -4274,6 +4386,71 @@ def test_completed_insufficient_fixed_axis_repeat_set_renders_honest_terminal():
     }
     assert "wasn't enough signal" in env["verdict_text"]
     assert "8.4 dB SNR" in env["verdict_text"]
+
+
+def test_completed_insufficient_fixed_axis_with_active_correction_says_jts_plays_louder():
+    """W2.3: the fixed-axis branch's own ``_completed_insufficient_verdict``
+    call site (a separate elif branch from the near-field one) must ALSO
+    read ``level_match.solve_correction`` keyed by the SAME
+    ``{group_id}:{role}`` physical target id and render the "JTS will play
+    louder" copy."""
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    _completed_near_field_repeat_state(status)
+    status["measurements"]["summary"][
+        "latest_reference_axis_driver_measurements"
+    ] = {
+        "mono:woofer": _insufficient_driver_acoustic("woofer"),
+    }
+    status["measurements"]["summary"]["latest_reference_axis_driver_measurements"][
+        "mono:woofer"
+    ]["acoustic"]["capture_geometry"] = "reference_axis"
+    status["measurements"]["summary"]["latest_reference_axis_driver_measurements"][
+        "mono:woofer"
+    ]["acoustic"]["gating"] = {"applied": True, "f_valid_floor_hz": 320.0}
+    status["measurements"]["summary"]["latest_reference_axis_driver_measurements"][
+        "mono:woofer"
+    ]["placement_proof"]["policy_id"] = "driver_reference_axis_v1"
+    _lock_reference_axis_driver(status, "woofer")
+    from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+    repeat_target_id, repeat_target_fingerprint = driver_repeat_binding(
+        speaker_group_id="mono",
+        role="woofer",
+        target_fingerprint="6" * 64,
+        capture_geometry="reference_axis",
+    )
+    entry = {
+        "target_fingerprint": repeat_target_fingerprint,
+        "status": "completed",
+        "attempts": 3,
+        "results": [
+            {
+                "attempt": attempt,
+                "accepted": True,
+                "estimated_snr_db": 8.4,
+                "snr_verdict": "insufficient",
+                "snr_shortfall_db": 11.6,
+                "worst_band_id": "upper_bass",
+            }
+            for attempt in (1, 2, 3)
+        ],
+    }
+    status["level_match"]["repeats"]["targets"][repeat_target_id] = entry
+    status["level_match"]["repeats"]["durable"]["targets"][repeat_target_id] = entry
+    status["level_match"]["solve_correction"] = {
+        "mono:woofer": {"writes": 1, "adjustment_db": 11.6, "exhausted": False},
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert "JTS will play the next measurement louder" in env["verdict_text"]
 
 
 def test_completed_sufficient_woofer_advances_to_next_driver_target():
