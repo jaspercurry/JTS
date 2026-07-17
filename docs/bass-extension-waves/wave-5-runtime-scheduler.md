@@ -1,6 +1,6 @@
 # Wave 5 — runtime scheduler (Codex prompt)
 
-> **Revision 6 (2026-07-17) — implementation blocked.** The eventual
+> **Revision 7 (2026-07-17) — implementation blocked.** The eventual
 > R1 scheduler remains sealed-only, but no Wave 5 implementation is
 > authorized by this prompt. `TargetSpec.limiter_threshold_dbfs` has
 > no frozen commissioning producer, and Wave 4 revision 5 remains blocked
@@ -24,6 +24,13 @@ micro-steps are clean; if it chose R2, STOP — revised prompt needed).
 > the replacement prompt must carry; they are not an implementation
 > authorization.
 
+A coordinator may launch this lane after Wave 3 while Wave 4 remains
+blocked, but under this revision that lane may only run the preflight,
+record that the measured limiter prerequisite is absent, and stop
+without editing implementation files. Launch order is not implementation
+authority; implementation still requires the merged Wave 4 producer and
+a replacement Wave 5 prompt.
+
 ## Intended mission after the safety gate is resolved
 
 The sealed-only volume-linked runtime: as canonical
@@ -46,7 +53,7 @@ structural patches for their changing filter tuples.
 1. `docs/HANDOFF-bass-extension-plan.md` §8.2–8.4 and §10 (read
    carefully — hysteresis, rate limits, micro-steps, limiter
    coupling, and the failure ladder are specified, not designable).
-2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 6,
+2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 7,
    then Wave 1's `TargetSpec` and ported/PR family sections. Read the
    fixed-graph scope and deferral contract carefully.
 3. `jasper/volume_coordinator.py` — fully: `_dispatch`, the observer
@@ -87,7 +94,7 @@ structural patches for their changing filter tuples.
 - Confirm Wave 3's one commit owner, source-explicit graph-
   classification boundary, natural predecessor normalization, and
   correction-process
-  recovery owner exist exactly as revision 6 specifies. A pending
+  recovery owner exist exactly as revision 7 specifies. A pending
   apply intent must be visible in static state and must authorize only
   its two exact natural graph/file fingerprints. Confirm the existing
   outputd boot selector is unchanged across Wave 3 commits and that all
@@ -394,6 +401,18 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 7 (2026-07-17)** — the final independent gate found that the
+  directory prerequisite table still permits a Wave 5 lane launch after
+  Wave 3, while this prompt correctly blocks implementation on Wave 4's
+  missing measured limiter producer. Rationale: define that early launch
+  as a mandatory preflight/stop audit only and keep implementation
+  authority behind the merged producer and a replacement prompt. This
+  reconciles execution order without changing the frozen coordinator
+  contract. Rejected alternatives were starting an inert scheduler or
+  partial transaction implementation before its safety input exists,
+  requiring a Wave 4 implementation that is itself blocked, or editing
+  coordinator policy in this contract-only revision.
 
 - **Rev 6 (2026-07-17)** — the second independent gate found that a
   bounded UDS timeout cannot distinguish pre-accept failure from an

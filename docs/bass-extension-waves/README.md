@@ -9,6 +9,9 @@ these prompts are the execution contracts derived from it.
 "Read `docs/bass-extension-waves/wave-N-….md` and execute it." Do not
 hand Codex more than one wave. Waves must land in order (each PR
 merged before the next starts) except where a prompt says otherwise.
+A Wave 5 lane launched after Wave 3 is currently only a mandatory
+preflight/stop audit; it is not implementation authority while Wave 4's
+measured limiter prerequisite remains unresolved.
 
 | Wave | Prompt file | Executor | Prereqs |
 |---|---|---|---|
@@ -17,7 +20,7 @@ merged before the next starts) except where a prompt says otherwise.
 | 2 | `wave-2-profile-observability.md` | Codex | Wave 1 merged |
 | 3 | `wave-3-graph-emission.md` | Codex | Waves 1–2 merged + Wave 0 memo |
 | 4 | `wave-4-commissioning-backend.md` | Codex | Waves 1–3 merged + crossover-program hardware burn-in |
-| 5 | `wave-5-runtime-scheduler.md` | Codex | Waves 2–3 merged + Wave 0 memo |
+| 5 | `wave-5-runtime-scheduler.md` | Codex | Waves 2–3 merged + Wave 0 memo for the mandatory stop audit; implementation additionally requires merged Wave 4 limiter producer + replacement Wave 5 prompt |
 | 6 | `wave-6-ui.md` | Codex | Wave 4 merged (Wave 5 for live status) |
 | 7 | `wave-7-hardware-validation.md` | Operator, Codex assists | everything |
 
