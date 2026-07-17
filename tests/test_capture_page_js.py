@@ -97,9 +97,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 3,
         "supported_capture_protocol_versions": [1, 2, 3],
-        "capture_page_build": "20260717.1",
+        "capture_page_build": "20260717.2",
     }
-    assert "main.js?v=20260717-1" in index_html
+    assert "main.js?v=20260717-2" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -571,23 +571,22 @@ def test_capture_page_ambient_stats_rides_the_armed_event_not_a_separate_post():
 
 def test_capture_page_one_tap_mic_confirm_renders_when_hint_is_valid():
     """Wave-2 household-mic prefill hint (CaptureSpec.default_setup_calibration,
-    #1540): the calibration screen shows "Using {label}{· serial}" as the
-    primary action with a safe "Use a different microphone" fallback to
-    today's full picker. Deliberately does NOT wire Confirm to submit a
-    relay setup-validation — see the STOP-and-report finding in the PR body:
-    jasper/web/correction_setup.py's _relay_calibration_from_setup has no
-    code path that resolves a bare calibration_id (mode="serial" requires
-    the raw serial, never persisted; mode="upload" requires the full
-    calibration text, also never persisted)."""
+    #1540, adjudicated stored-submit amendment): the calibration screen shows
+    "Using {label}{· serial}" as the primary action with a safe "Use a
+    different microphone" fallback to today's full picker. Only offered when
+    the Pi marked the hint `resolvable: true` (the stored-mode Pi build mints
+    that only when the calibration_id currently resolves); a hint without the
+    marker — an older Pi — renders the plain full picker (compat pin)."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     assert "function validDefaultSetupHint(spec) {" in main_js
+    assert "if (hint.resolvable !== true) return null;" in main_js
     assert "function renderCalibrationConfirm(screenEl, ctx, hint) {" in main_js
     assert (
         "const heading = serialDisplay ? `Using ${label} · ${serialDisplay}` : `Using ${label}`;"
         in main_js
     )
-    assert 'button("One tap to confirm", () => {' in main_js
+    assert 'button("One tap to confirm", async () => {' in main_js
     assert 'button("Use a different microphone", () => {' in main_js
     assert "renderCalibration(screenEl, ctx, { skipHint: true });" in main_js
     # The gate: renderCalibration only shows the hint screen on a FRESH
@@ -599,35 +598,60 @@ def test_capture_page_one_tap_mic_confirm_renders_when_hint_is_valid():
     )
 
 
-def test_capture_page_one_tap_confirm_never_submits_to_the_speaker():
-    """The primary Confirm action only pre-fills setupState.calibration and
-    re-renders the existing full picker — it never calls
-    validateSetupBeforeContinue/bindSetupBeforeLevel or posts a relay event.
-    A submission Pi cannot resolve is either a guaranteed loud failure
-    (fetch_vendor_calibration's "serial number is required" on an empty
-    serial) or worse, a validated-but-empty calibration file
-    (parse_calibration_text's row-count check saves this specific case, but
-    shipping a submit path that depends on that is the wrong layer to rely
-    on) — see the STOP condition in the task brief."""
+def test_capture_page_one_tap_confirm_submits_stored_and_falls_back_on_rejection():
+    """Adjudicated stored-submit contract (amendment to the original
+    stop-and-report): Confirm submits setup.calibration = {mode: "stored",
+    calibration_id} (+ model, display-only) through the SAME shared
+    post-calibration advance the picker's Continue uses
+    (continueFromCalibration → validateSetupBeforeContinue /
+    bindSetupBeforeLevel), and a Pi rejection (the household-mic record went
+    stale between spec mint and submit) falls back to the full picker with a
+    plain sentence — never a dead end — including the one DEFERRED-validation
+    path (a position-collecting level_ramp validates at the position screen's
+    bind). A failed one-tap is not re-offered within the page session
+    (storedHintFailed). Behavior is exercised end-to-end in
+    tests/js/capture_calibration_confirm_test.mjs; these pins keep the wiring
+    from silently regressing."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     start = main_js.index("function renderCalibrationConfirm(screenEl, ctx, hint) {")
     end = main_js.index("function renderCalibration(screenEl, ctx", start)
     confirm_body = main_js[start:end]
-    assert "postEvent" not in confirm_body
-    assert "validateSetupBeforeContinue" not in confirm_body
-    assert "bindSetupBeforeLevel" not in confirm_body
+    assert 'mode: "stored",' in confirm_body
+    assert "calibration_id: String(hint.calibration_id)," in confirm_body
+    assert 'model: String(hint.model || ""),' in confirm_body
+    assert "await continueFromCalibration(screenEl, ctx);" in confirm_body
+    assert "fallBackFromStoredCalibration(screenEl, ctx);" in confirm_body
+
+    # One shared advance for both the picker Continue and the stored Confirm.
+    assert "async function continueFromCalibration(screenEl, ctx) {" in main_js
+    assert main_js.count("await continueFromCalibration(screenEl, ctx);") == 2
+
+    # The rejection fallback: plain sentence, picker re-render, no re-offer.
+    assert "function fallBackFromStoredCalibration(screenEl, ctx) {" in main_js
+    assert (
+        "The speaker couldn't use the saved microphone calibration. "
+        "Set up the microphone manually instead." in main_js
+    )
+    assert "let storedHintFailed = false;" in main_js
+    assert "storedHintFailed = true;" in main_js
+    assert (
+        "const hint = !skipHint && !storedHintFailed ? validDefaultSetupHint(ctx.spec) : null;"
+        in main_js
+    )
+
+    # The deferred-validation path (position-collecting level_ramp) keeps the
+    # same rejection contract at its bind.
+    assert "if (usedStoredCalibration()) {" in main_js
 
 
-def test_capture_page_one_tap_confirm_upload_prefill_never_shows_a_misleading_note():
+def test_capture_page_upload_note_requires_actually_loaded_content():
     """The upload-mode picker's "Choose the file again only if you want to
-    replace the current selection" note used to check only
-    calibration.mode === "upload" — true (and misleading) the moment
-    renderCalibrationConfirm's one-tap prefill sets mode:"upload" without
-    ever having loaded file content (there is no remembered file to reuse,
-    only a calibration_id pointer). Requiring .content too keeps the note
-    accurate: it now only appears after a REAL upload landed in
-    setupState.calibration this session."""
+    replace the current selection" note requires calibration.content, not
+    just mode === "upload" — the note must only appear after a REAL upload
+    landed in setupState.calibration this session, never for a mode value
+    that arrived without file content (saveAndContinue's reuse branch also
+    requires .content, so the two stay consistent)."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     assert (

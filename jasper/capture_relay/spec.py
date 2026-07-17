@@ -272,19 +272,19 @@ class DefaultSetupCalibration:
     ``capture-page/js/main.js``'s ``renderCalibrationConfirm``) reads this
     field and shows a one-tap "Using {label} · {serial_display} — one tap to
     confirm" screen with a "Use a different microphone" fallback to the full
-    picker. **Confirm does not yet submit anything** — it only pre-selects
-    the hinted mode/model on the existing picker before showing it.
-    ``_relay_calibration_from_setup`` (``jasper/web/correction_setup.py``)
-    has no code path that resolves a bare ``calibration_id``:
-    ``mode="serial"`` requires the raw serial (never persisted — only a
-    last-4 ``serial_display`` is kept) and ``mode="upload"`` requires the
-    full calibration text (also never persisted). A true one-tap SUBMIT
-    needs a follow-up Pi-side capability (a new calibration mode, or
-    ``_relay_calibration_from_setup`` resolving ``calibration_id`` via
-    ``resolve_household_mic_calibration``) that this field's addition does
-    not itself provide. An OLDER capture page (pre-Wave-2) still ignores
-    this field entirely — it parses the spec as an opaque JSON object and
-    never rejects unknown top-level keys (see
+    picker. Confirm SUBMITS ``setup.calibration = {mode: "stored",
+    calibration_id}`` for the Pi to resolve via the household-mic record —
+    but ONLY when the hint carries ``resolvable: true``, the marker minted
+    by the Pi-side stored-mode build (in flight: it adds the
+    ``mode="stored"`` branch to ``_relay_calibration_from_setup`` in
+    ``jasper/web/correction_setup.py`` plus the ``resolvable`` field on
+    this dataclass) when the ``calibration_id`` currently resolves on
+    disk. Until that Pi build lands, no spec carries the marker and the
+    page renders the plain full picker — the pre-Wave-2 behavior, safe in
+    every deploy order; a page-side rejection of a gone-stale stored
+    record falls back to the same picker. An OLDER capture page
+    (pre-Wave-2) still ignores this field entirely — it parses the spec as
+    an opaque JSON object and never rejects unknown top-level keys (see
     ``capture-page/js/transport-integrity.js``'s ``verifyAndParseCaptureSpec``,
     which only checks it is a non-array object) — so shipping this field is
     safe against any deployed page, old or new.

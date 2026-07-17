@@ -394,25 +394,28 @@ capture_spec:
   default_setup:              # OPTIONAL household-mic prefill hint (Wave-2
     calibration:              # persistence, jasper/correction/household_mic.py):
       mode: "serial"          # "serial" | "upload"; the model key, a last-4
-      model: "minidsp_umik2"  # serial display form, and the resolvable
-      serial_display: "8494"  # calibration_id of the mic the household last
-      calibration_id: "..."   # used. The 2026-07 Wave-2 capture page READS
-                              # this and renders a one-tap "Using {label} ·
-                              # {serial_display} — one tap to confirm" screen
-                              # (capture-page/js/main.js's
+      model: "minidsp_umik2"  # serial display form, and the calibration_id
+      serial_display: "8494"  # of the mic the household last used.
+      calibration_id: "..."   # The 2026-07 Wave-2 capture page renders a
+      resolvable: true        # one-tap "Using {label} · {serial_display} —
+                              # one tap to confirm" screen (main.js's
                               # renderCalibrationConfirm) with a "Use a
-                              # different microphone" fallback to the full
-                              # picker. Confirm does NOT yet submit anything —
-                              # it only pre-selects the hinted mode/model on
-                              # the existing picker: _relay_calibration_from_
-                              # setup (jasper/web/correction_setup.py) has no
-                              # code path that resolves a bare calibration_id
-                              # (mode="serial" needs the raw serial, never
-                              # persisted; mode="upload" needs the full
-                              # calibration text, also never persisted). A
-                              # true one-tap SUBMIT is a follow-up Pi-side
-                              # change. An older page still ignores unknown
-                              # spec fields, so this stays safe either way.
+                              # different microphone" fallback. Confirm
+                              # SUBMITS setup.calibration = {mode: "stored",
+                              # calibration_id} (+ model, display-only) for
+                              # the Pi to resolve via the household-mic
+                              # record — gated on `resolvable: true`, the
+                              # marker the Pi-side stored-mode build (in
+                              # flight: adds the mode="stored" branch to
+                              # _relay_calibration_from_setup) mints when
+                              # the ID currently resolves. Without the
+                              # marker (older Pi) the page renders the plain
+                              # full picker; a rejection of a gone-stale
+                              # stored record also falls back to the picker
+                              # with a plain sentence — never a dead end. An
+                              # older page still ignores unknown spec
+                              # fields, so this is safe in every deploy
+                              # order.
   output:
     format: "wav"             # mono 16-bit PCM WAV at sample_rate_hz
   max_upload_bytes: 33554432  # 32 MB cap; mirror the Pi backend limit

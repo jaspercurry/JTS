@@ -45,13 +45,15 @@ persisted here (or anywhere else in the calibration registry — see
 The phone page's one-tap "Using {label} · {serial_display} — one tap to
 confirm" screen (``capture-page/js/main.js``'s ``renderCalibrationConfirm``,
 2026-07 Wave-2 batch) reads the capture spec's ``default_setup`` field this
-module feeds (``jasper/capture_relay/spec.py``'s ``_default_setup_calibration_
-for_spec``) and renders it — the read path is live. Confirm does not yet
-SUBMIT a resolvable setup, though: ``_relay_calibration_from_setup``
-(``jasper/web/correction_setup.py``) has no code path that accepts a bare
-``calibration_id`` (it needs either the raw serial or the full calibration
-text, neither of which this module persists). An older capture page ignores
-unknown spec fields (verified against
+module feeds (``correction_setup.py``'s
+``_default_setup_calibration_for_spec``) and — when the hint is marked
+``resolvable: true`` — submits ``setup.calibration = {mode: "stored",
+calibration_id}`` for the Pi to resolve via
+``resolve_household_mic_calibration`` below. The ``mode="stored"`` branch of
+``_relay_calibration_from_setup`` plus the ``resolvable`` marker ship in the
+in-flight Pi stored-mode PR; without the marker (older Pi, or an ID that no
+longer resolved at spec-mint time) the page renders its plain full picker.
+An older capture page ignores unknown spec fields (verified against
 ``capture-page/js/transport-integrity.js``), so shipping ``default_setup``
 is safe against any deployed page.
 """

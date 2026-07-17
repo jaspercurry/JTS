@@ -1552,10 +1552,12 @@ def _default_setup_calibration_for_spec() -> Any | None:
     from the household's remembered mic (Wave-2 household-mic persistence).
 
     Never binding — the 2026-07 Wave-2 capture page reads it and renders a
-    one-tap confirm screen (see `DefaultSetupCalibration`'s docstring for the
-    submission-side gap that remains); an older page still ignores unknown
-    spec fields, so this stays a safe no-op there. Fail-soft: any resolution
-    miss yields no hint rather than blocking the capture.
+    one-tap confirm screen that submits ``{mode: "stored", calibration_id}``
+    when the hint is marked ``resolvable: true`` (marker + the stored-mode
+    resolution branch ship in the in-flight Pi stored-mode PR — see
+    `DefaultSetupCalibration`'s docstring); an older page still ignores
+    unknown spec fields, so this stays a safe no-op there. Fail-soft: any
+    resolution miss yields no hint rather than blocking the capture.
     """
     from jasper.capture_relay.spec import DefaultSetupCalibration
 

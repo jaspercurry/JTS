@@ -620,13 +620,19 @@ function renderMicChoice(screenEl, ctx, inputs) {
 }
 
 // Wave-2 household-mic prefill hint (jasper.correction.household_mic via
-// CaptureSpec.default_setup_calibration, #1540). A HINT only — the mode must
-// be one Confirm can safely pre-select (serial|upload) and it must carry a
-// resolvable calibration_id, else there is nothing useful to offer.
+// CaptureSpec.default_setup_calibration, #1540). The one-tap Confirm SUBMITS
+// {mode: "stored", calibration_id} for the Pi to resolve via the household-
+// mic record, so the hint is only offered when the Pi marked it RESOLVABLE:
+// `resolvable === true` is minted by the Pi's stored-mode build only when
+// the calibration_id currently resolves on disk. A hint WITHOUT the marker
+// (an older Pi build, or an ID the Pi could not resolve at spec-mint time)
+// renders the plain full picker instead — the pre-Wave-2 behavior, pinned
+// as the compat path.
 function validDefaultSetupHint(spec) {
   const hint = spec && spec.default_setup && spec.default_setup.calibration;
   if (!hint || typeof hint !== "object") return null;
   if (hint.mode !== "serial" && hint.mode !== "upload") return null;
+  if (hint.resolvable !== true) return null;
   if (!hint.calibration_id) return null;
   return hint;
 }
@@ -637,25 +643,79 @@ function calibrationModelLabel(spec, modelKey) {
   return (found && found.label) || String(modelKey || "").trim() || "microphone";
 }
 
-// One-tap confirm screen for a remembered household mic. NOTE: Confirm does
-// NOT submit anything to the speaker — it only pre-selects the hinted
-// mode/model on the existing full picker before showing it. The Pi's
-// `_relay_calibration_from_setup` (jasper/web/correction_setup.py) has no
-// code path that resolves a bare `calibration_id`: mode="serial" requires
-// the raw serial (never persisted — only a last-4 `serial_display` is kept)
-// and mode="upload" requires the full calibration text (also never
-// persisted). Submitting either without that data is either a guaranteed
-// loud failure (empty serial) or, worse, a validated-but-empty calibration
-// file — see fetch_vendor_calibration()/parse_calibration_text()'s "serial
-// number is required" / "must contain at least 2 rows" ValueErrors. A real
-// one-tap SUBMIT needs a Pi-side capability this PR does not add (a new
-// calibration mode, or `_relay_calibration_from_setup` resolving
-// `calibration_id` via `resolve_household_mic_calibration`). Reported
-// separately; this screen ships the safe subset today.
+// The post-calibration advance shared by the picker's Continue tail and the
+// one-tap stored Confirm: move to the next screen for this spec kind,
+// running whichever setup validation the flow validates eagerly. Throws on
+// a validation failure — each caller owns its failure UX (the picker shows
+// captureFailureMessage; the stored confirm falls back to the picker).
+async function continueFromCalibration(screenEl, ctx) {
+  if (ctx.spec.kind === "level_ramp") {
+    if (collectsRoomPositions(ctx.spec)) {
+      renderPositionCount(screenEl, ctx);
+      return;
+    }
+    await bindSetupBeforeLevel(ctx);
+    renderLevelReady(screenEl, ctx);
+    return;
+  }
+  await validateSetupBeforeContinue(ctx);
+  renderPositionCount(screenEl, ctx);
+}
+
+// Once a stored one-tap submit has failed, never re-offer the confirm
+// screen in this page session — a Back-navigation replay of the same
+// guaranteed-to-fail tap would loop the household.
+let storedHintFailed = false;
+
+function usedStoredCalibration() {
+  return String((setupState.calibration || {}).mode || "") === "stored";
+}
+
+// The Pi could not use the stored household calibration — the record went
+// stale between spec mint and submit, or the resolution failed. Never a
+// dead end (adjudicated rejection contract): drop back to the full picker
+// with a plain sentence so the household can set the microphone up
+// manually. setStatus runs AFTER renderCalibration so the sentence wins
+// over the picker's own default status line.
+function fallBackFromStoredCalibration(screenEl, ctx) {
+  storedHintFailed = true;
+  setupState.calibration = { mode: "none" };
+  renderCalibration(screenEl, ctx, { skipHint: true });
+  setStatus(
+    "The speaker couldn't use the saved microphone calibration. Set up the microphone manually instead.",
+    "error",
+  );
+}
+
+// One-tap confirm screen for a remembered household mic. Confirm SUBMITS
+// the stored setup — setup.calibration = {mode: "stored", calibration_id}
+// (plus model, display-only) — which the Pi's stored-mode branch resolves
+// via the household-mic record (resolve_household_mic_calibration). The
+// spec only offers this screen with `resolvable: true`, minted when that
+// resolution succeeded at spec-mint time (see validDefaultSetupHint), so a
+// rejection here means the record went stale in between — handled by
+// falling back to the full picker, never a dead end.
 function renderCalibrationConfirm(screenEl, ctx, hint) {
   const label = calibrationModelLabel(ctx.spec, hint.model);
   const serialDisplay = String(hint.serial_display || "").trim();
   const heading = serialDisplay ? `Using ${label} · ${serialDisplay}` : `Using ${label}`;
+  const confirm = button("One tap to confirm", async () => {
+    confirm.disabled = true;
+    try {
+      setupState.calibration = {
+        mode: "stored",
+        calibration_id: String(hint.calibration_id),
+        model: String(hint.model || ""),
+      };
+      try {
+        await continueFromCalibration(screenEl, ctx);
+      } catch {
+        fallBackFromStoredCalibration(screenEl, ctx);
+      }
+    } finally {
+      confirm.disabled = false;
+    }
+  });
   setScreen(screenEl, [
     el("h1", { class: "cap-heading", text: heading }),
     el("p", {
@@ -663,10 +723,7 @@ function renderCalibrationConfirm(screenEl, ctx, hint) {
       text: "This is the microphone JTS remembers from last time.",
     }),
     el("div", { class: "cap-actions" }, [
-      button("One tap to confirm", () => {
-        setupState.calibration = { mode: hint.mode, model: hint.model };
-        renderCalibration(screenEl, ctx, { skipHint: true });
-      }),
+      confirm,
       button("Use a different microphone", () => {
         setupState.calibration = { mode: "none" };
         renderCalibration(screenEl, ctx, { skipHint: true });
@@ -680,7 +737,7 @@ function renderCalibrationConfirm(screenEl, ctx, hint) {
 }
 
 function renderCalibration(screenEl, ctx, { skipHint = false } = {}) {
-  const hint = !skipHint ? validDefaultSetupHint(ctx.spec) : null;
+  const hint = !skipHint && !storedHintFailed ? validDefaultSetupHint(ctx.spec) : null;
   if (hint && String((setupState.calibration || {}).mode || "none") === "none") {
     renderCalibrationConfirm(screenEl, ctx, hint);
     return;
@@ -811,26 +868,10 @@ function renderCalibration(screenEl, ctx, { skipHint = false } = {}) {
     } else {
       setupState.calibration = { mode: "none" };
     }
-    if (ctx.spec.kind === "level_ramp") {
-      if (collectsRoomPositions(ctx.spec)) {
-        renderPositionCount(screenEl, ctx);
-        return;
-      }
-      try {
-        await bindSetupBeforeLevel(ctx);
-      } catch (err) {
-        setStatus(captureFailureMessage(err), "error");
-        return;
-      }
-      renderLevelReady(screenEl, ctx);
-    } else {
-      try {
-        await validateSetupBeforeContinue(ctx);
-      } catch (err) {
-        setStatus(captureFailureMessage(err), "error");
-        return;
-      }
-      renderPositionCount(screenEl, ctx);
+    try {
+      await continueFromCalibration(screenEl, ctx);
+    } catch (err) {
+      setStatus(captureFailureMessage(err), "error");
     }
   };
 
@@ -930,6 +971,15 @@ function renderPositionCount(screenEl, ctx) {
     try {
       await bindSetupBeforeLevel(ctx);
     } catch (err) {
+      // The position-collecting level_ramp flow is the one path where the
+      // one-tap stored Confirm's validation is DEFERRED to this bind (the
+      // confirm advances straight to the position count). Keep the stored
+      // rejection contract here too: fall back to the full picker with the
+      // plain sentence, never a dead end.
+      if (usedStoredCalibration()) {
+        fallBackFromStoredCalibration(screenEl, ctx);
+        return;
+      }
       setStatus(captureFailureMessage(err), "error");
       return;
     }
@@ -2130,4 +2180,5 @@ export {
   isDeadSessionError,
   validDefaultSetupHint,
   calibrationModelLabel,
+  renderCalibration,
 };
