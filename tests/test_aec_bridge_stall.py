@@ -404,6 +404,7 @@ def test_usb_mic_source_resolves_primary_stale_and_software_modes() -> None:
         "selection": "primary",
         "mode": "chip_aec",
         "leg": "chip_aec_150",
+        "fallback_active": False,
     }
     assert aec_bridge._resolve_usb_mic_source(
         "stale_plan_leg",
@@ -414,6 +415,7 @@ def test_usb_mic_source_resolves_primary_stale_and_software_modes() -> None:
         "selection": "primary",
         "mode": "chip_aec",
         "leg": "chip_aec_150",
+        "fallback_active": False,
     }
     assert aec_bridge._resolve_usb_mic_source(
         "chip_aec_210",
@@ -424,6 +426,7 @@ def test_usb_mic_source_resolves_primary_stale_and_software_modes() -> None:
         "selection": "chip_aec_210",
         "mode": "software_aec3",
         "leg": "clean",
+        "fallback_active": False,
     }
 
 
@@ -439,7 +442,9 @@ def test_capture_latency_parses_from_env(monkeypatch, configured, expected):
     assert config.capture_latency == expected
 
 
-@pytest.mark.parametrize("configured", ["fast", "0", "-0.1", "nan", "inf"])
+@pytest.mark.parametrize(
+    "configured", ["fast", "0", "-0.1", "0.251", "nan", "inf"]
+)
 def test_capture_latency_invalid_values_fall_back_to_default(monkeypatch, configured):
     monkeypatch.setenv("JASPER_AEC_CAPTURE_LATENCY", configured)
     event = MagicMock()
@@ -1341,6 +1346,7 @@ def test_usb_host_mic_selects_plan_beam_without_changing_voice_gain(
         "selection": "chip_aec_210",
         "mode": "chip_aec",
         "leg": "chip_aec_210",
+        "fallback_active": False,
     }
 
 
@@ -1387,6 +1393,16 @@ def test_usb_host_mic_missing_selected_beam_falls_back_to_primary(monkeypatch):
         call.args[0][USB_MIC_HEADER_BYTES:]
         for call in usb_sock.sendto.call_args_list
     ] == primary_frames
+    stats = aec_bridge._bridge_stats.snapshot()
+    assert stats["active_capture_plan"]["usb_mic_source"] == {
+        "selection": "chip_aec_210",
+        "mode": "chip_aec",
+        "leg": "chip_aec_150",
+        "fallback_active": True,
+    }
+    assert stats["counters"]["usb_mic_source_fallback_frames"] == len(
+        primary_frames
+    )
 
 
 def test_mic_thread_logs_negotiated_input_latency(monkeypatch):

@@ -611,7 +611,7 @@ sudo /opt/jasper/.venv/bin/jasper-usb-mic-latency-artifact \
 
 The active-only 120 ms doctor budget and the exact artifact interpretation are
 canonical in
-[`HANDOFF-usb-gadget.md`](HANDOFF-usb-gadget.md#toggling-the-computer-microphone-from-wake).
+[`HANDOFF-usb-gadget.md`](HANDOFF-usb-gadget.md#toggling-and-choosing-the-computer-microphone-from-wake).
 Aggregation waits at least 11 seconds and also proves 512 exact source-age
 appends after the first post-start relay status, so delayed status reads cannot
 admit history from before the run. Use the documented 30-second command for

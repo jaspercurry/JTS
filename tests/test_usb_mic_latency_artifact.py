@@ -60,6 +60,7 @@ def _bridge_stats(
         "schema_version": 3,
         "pid": 123,
         "started_epoch_sec": 80.0,
+        "counters": {"usb_mic_source_fallback_frames": 0},
         "capture_stream": {
             "sample_rate_hz": 16_000,
             "block_frames": 320,
@@ -75,14 +76,21 @@ def _bridge_stats(
     }
 
 
-def _artifact(snapshots: list[dict], *, bridge_stats: dict | None = None) -> dict:
+def _artifact(
+    snapshots: list[dict],
+    *,
+    bridge_stats: dict | None = None,
+    bridge_stats_before: dict | None = None,
+) -> dict:
+    bridge_after = bridge_stats or _bridge_stats()
     return build_usb_mic_latency_artifact(
         snapshots,
         build_manifest=(
             "JASPER_GIT_SHA_FULL=abc1234567890def\nJASPER_GIT_BRANCH=codex/test\n"
         ),
         bcd_device="0x0210",
-        bridge_stats=bridge_stats or _bridge_stats(),
+        bridge_stats_before=bridge_stats_before or bridge_after,
+        bridge_stats=bridge_after,
         host_os="macOS 15",
         host_app="CoreAudio sounddevice",
         validated_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
@@ -105,8 +113,10 @@ def test_artifact_binds_identity_and_aggregates_known_percentiles() -> None:
     configuration = artifact["identity"]["configuration"]
     assert configuration["build_sha"] == "abc1234567890def"
     assert configuration["selected_source"] == {
+        "selection": "",
         "mode": "chip_aec",
         "leg": "chip_aec_150",
+        "fallback_active": False,
     }
     assert configuration["capture_geometry"]["input_latency_frames"] == 1280
     assert configuration["writer_geometry"]["buffer_frames"] == 640
@@ -234,6 +244,25 @@ def test_artifact_requires_schema_and_counters() -> None:
         _artifact(snapshots)
 
 
+def test_artifact_warns_when_selected_source_fell_back_during_window() -> None:
+    snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
+    before = _bridge_stats()
+    after = _bridge_stats()
+    after["counters"]["usb_mic_source_fallback_frames"] = 3
+
+    artifact = _artifact(
+        snapshots,
+        bridge_stats=after,
+        bridge_stats_before=before,
+    )
+
+    assert artifact["status"] == "warn"
+    assert artifact["counters"]["usb_mic_source_fallback_frames"] == {
+        "run_delta": 3,
+        "end_total": 3,
+    }
+
+
 def test_artifact_requires_source_window_turnover() -> None:
     snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
     for index, snapshot in enumerate(snapshots):
@@ -307,8 +336,10 @@ def test_artifact_identifies_software_aec_source() -> None:
     )
 
     assert artifact["identity"]["configuration"]["selected_source"] == {
+        "selection": "",
         "mode": "software_aec3",
         "leg": "clean",
+        "fallback_active": False,
     }
 
 

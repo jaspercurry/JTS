@@ -217,15 +217,23 @@ The adjacent source selector writes `JASPER_USB_MIC_LEG`. `primary` is the
 default and follows the same production-clean stream JTS uses for voice;
 additional options are derived from the reconciler-applied `ChipBeamPlan`, not
 hard-coded into the cross-profile UI or persistence contract. The control
-endpoint rejects a choice the active plan does not advertise. At the bridge's
+endpoint fresh-reads that reconciler-owned plan (rather than trusting the
+long-lived control process environment) and rejects a choice it does not
+advertise. At the bridge's
 USB-only emit site, an explicit chip beam receives the same post-AEC gain and
 soft-limit as `primary`; if its frame is absent for an iteration (including in
 software-AEC mode), that iteration falls back to the final `clean` frame. The
-normal `:9876` voice/session stream and all wake legs remain unchanged.
+bridge publishes the effective physical leg plus
+`usb_mic_source_fallback_frames`, so UI/artifact evidence cannot label fallback
+audio as the requested beam. The normal `:9876` voice/session stream and all
+wake legs remain unchanged.
 
 This source change has a deliberately narrower restart path than the On/Off
 toggle. `/aec/usb-mic-leg` saves the preference, then asks the restart broker to
-restart only `jasper-aec-bridge.service` with reason `usb_mic_leg`.
+restart only `jasper-aec-bridge.service` with reason `usb_mic_leg`. Saving the
+already-selected value is a no-op; a changed value first clears that unit's
+systemd start counter so deliberate rapid changes cannot consume the
+`StartLimitAction=reboot` crash-recovery budget.
 `jasper-usbmic.service` follows through its existing `PartOf=` relationship.
 The path does **not** invoke `jasper-usbmic-apply.service`, restart
 `jasper-usbgadget.service`, alter `p_chmask` / `bcdDevice`, re-enumerate the USB
@@ -239,7 +247,11 @@ splits each frame into two exact 10 ms writes; explicit four-period geometry
 realizes the verified 40 ms `plughw` buffer while preserving ALSA's proven
 16→48 kHz conversion. Capacity and target are distinct: a fresh PCM needs the
 full 40 ms start-threshold preload, then the writer lets occupancy settle to a
-20 ms target and uses a 10–30 ms operating band.
+30 ms target and uses a 20–40 ms operating band. One counted insert splice may
+write two exact 10 ms silence periods to correct one 20 ms source-frame
+deficit; `writer_silence_periods` retains the exact period count. A 20 ms target / 10–30 ms band
+was lower-latency but recorded an ordinary-load xrun after 15 minutes on real
+hardware; the extra 10 ms is the current lowest reliable posture.
 
 The writer is designed to remove host-idle history *before* resume can expose
 it. After `hw_ptr` is
@@ -285,6 +297,8 @@ the measured window to the installed build, microphone descriptor revision,
 resolved export source (software-clean carrier or chip beam), negotiated
 XVF/PortAudio capture geometry, realized
 ALSA writer geometry and target, host/app identity, and counter deltas. Its
+source identity is the effective runtime leg; any selected-beam fallback frame
+during the run increments a bound counter and makes the artifact warn.
 `configuration_sha256`, `identity_sha256`, and `content_sha256` bind stable
 configuration, run identity, and complete content respectively; none is a
 cryptographic operator signature. Certification requires at least 15 seconds

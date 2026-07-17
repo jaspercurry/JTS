@@ -114,7 +114,8 @@ host audio stack. The bridge logs the separately negotiated PortAudio input
 latency as `event=aec.mic_stream_latency`. `JASPER_AEC_CAPTURE_LATENCY` is an
 evidence-gated experiment knob: unset preserves PortAudio's current default,
 `low` requests the device's low-latency default, and a positive seconds value
-requests an explicit buffer. Because this one capture stream also feeds
+up to 0.25 requests an explicit buffer (0.01-0.08 is the normally useful
+experimental range). Because this one capture stream also feeds
 voice/wake, do not set a production value until hardware A/B evidence shows
 lower negotiated latency with no stalls, queue drops, or wake-rate regression.
 On 2026-07-16, build `1b1b36015` negotiated 80 ms with the knob unset and

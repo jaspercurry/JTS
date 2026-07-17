@@ -280,6 +280,7 @@ OUT_FRAME_SAMPLES = 1280
 OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
 BRIDGE_STATS_SCHEMA_VERSION = 3
+CAPTURE_LATENCY_MAX_SECONDS = 0.25
 
 # Drop-frame threshold. If queues fill faster than they drain,
 # something's wrong (CPU starvation, clock drift exceeded our
@@ -374,6 +375,7 @@ class BridgeConfig:
             if (
                 not math.isfinite(capture_latency_seconds)
                 or capture_latency_seconds <= 0
+                or capture_latency_seconds > CAPTURE_LATENCY_MAX_SECONDS
             ):
                 log_event(
                     log,
@@ -555,6 +557,7 @@ class _BridgeStats:
             self._counters = {
                 "frames_processed": 0,
                 "ref_starved_frames": 0,
+                "usb_mic_source_fallback_frames": 0,
                 "queue_drops": {
                     "mic": 0,
                     "chip": 0,
@@ -617,7 +620,7 @@ class _BridgeStats:
         beam_plan: dict[str, object],
         ports: dict[str, int],
         mic_reference_identity: dict[str, object],
-        usb_mic_source: dict[str, str] | None = None,
+        usb_mic_source: dict[str, object] | None = None,
         mic_fingerprint: str = "",
         dac_reference_fingerprint: str = "",
     ) -> None:
@@ -634,6 +637,23 @@ class _BridgeStats:
                 "mic_fingerprint": mic_fingerprint,
                 "dac_reference_fingerprint": dac_reference_fingerprint,
             }
+
+    def set_usb_mic_effective_source(
+        self,
+        *,
+        mode: str,
+        leg: str,
+        fallback_active: bool,
+    ) -> None:
+        """Publish the source actually exported, not just configured intent."""
+
+        with self._lock:
+            source = self._active_capture_plan.get("usb_mic_source")
+            if not isinstance(source, dict):
+                return
+            source["mode"] = mode
+            source["leg"] = leg
+            source["fallback_active"] = fallback_active
 
     def mark_leg_unavailable(self, leg: str, *, error: str) -> None:
         """Atomically withdraw a failed runtime leg from live bridge truth.
@@ -907,7 +927,7 @@ def _resolve_usb_mic_source(
     plan: _mic_profile.ChipBeamPlan | None,
     production_chip_aec_enabled: bool,
     chip_aec_primary_leg: str,
-) -> dict[str, str]:
+) -> dict[str, object]:
     """Resolve the configured selector to the physical stream being emitted."""
 
     allowed = {USB_MIC_PRIMARY_LEG, *(plan.leg_tokens if plan else ())}
@@ -926,6 +946,7 @@ def _resolve_usb_mic_source(
             "selection": selection,
             "mode": "software_aec3",
             "leg": "clean",
+            "fallback_active": False,
         }
     return {
         "selection": selection,
@@ -935,6 +956,7 @@ def _resolve_usb_mic_source(
             if selection == USB_MIC_PRIMARY_LEG
             else selection
         ),
+        "fallback_active": False,
     }
 
 
@@ -2290,6 +2312,8 @@ def _aec_loop(  # noqa: PLR0915
     frames_processed = 0
     chip_primary_missing_log = _DropLogDebouncer()
     usb_mic_leg_missing_log = _DropLogDebouncer()
+    usb_mic_effective_leg = str(usb_mic_source["leg"])
+    usb_mic_fallback_active = False
 
     # Optional debug WAV writers — see `_aec_loop` docstring.
     debug_dir = os.environ.get("JASPER_AEC_DEBUG_RECORD_DIR", "").strip()
@@ -2514,7 +2538,9 @@ def _aec_loop(  # noqa: PLR0915
             clean_aec_only = clean
             usb_mic_aec_only = clean_aec_only
             usb_mic_uses_clean = True
-            selected_usb_leg = usb_mic_source["leg"]
+            selected_usb_leg = str(usb_mic_source["leg"])
+            effective_usb_leg = selected_usb_leg
+            fallback_active = False
             if (
                 production_chip_aec_enabled
                 and selected_usb_leg != chip_aec_primary_leg
@@ -2523,17 +2549,32 @@ def _aec_loop(  # noqa: PLR0915
                 if selected_usb_frame:
                     usb_mic_aec_only = selected_usb_frame
                     usb_mic_uses_clean = False
-                elif outcome := usb_mic_leg_missing_log.record(time.monotonic()):
-                    drops, window_sec = outcome
-                    log_event(
-                        logger,
-                        "usb_mic.leg_missing",
-                        leg=selected_usb_leg,
-                        fallback=chip_aec_primary_leg,
-                        frames=drops,
-                        window_sec=f"{window_sec:.1f}",
-                        level=logging.WARNING,
-                    )
+                else:
+                    effective_usb_leg = chip_aec_primary_leg
+                    fallback_active = True
+                    _bridge_stats.inc("usb_mic_source_fallback_frames")
+                    if outcome := usb_mic_leg_missing_log.record(time.monotonic()):
+                        drops, window_sec = outcome
+                        log_event(
+                            logger,
+                            "usb_mic.leg_missing",
+                            leg=selected_usb_leg,
+                            fallback=chip_aec_primary_leg,
+                            frames=drops,
+                            window_sec=f"{window_sec:.1f}",
+                            level=logging.WARNING,
+                        )
+            if (
+                effective_usb_leg != usb_mic_effective_leg
+                or fallback_active != usb_mic_fallback_active
+            ):
+                _bridge_stats.set_usb_mic_effective_source(
+                    mode=str(usb_mic_source["mode"]),
+                    leg=effective_usb_leg,
+                    fallback_active=fallback_active,
+                )
+                usb_mic_effective_leg = effective_usb_leg
+                usb_mic_fallback_active = fallback_active
 
             # DTLN-aec parallel processing path (optional 3rd UDP leg).
             # Runs AFTER the AEC3 engine.process so the wake loop's

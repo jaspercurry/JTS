@@ -77,9 +77,12 @@ ALSA_BUFFER_FRAMES = ALSA_PERIOD_FRAMES * ALSA_PERIODS
 ALSA_PERIOD_MS = 10.0
 GADGET_RATE = 48_000
 GADGET_BUFFER_MS = 40.0
-WRITER_TARGET_MS = 20.0
-WRITER_LOW_MS = 10.0
-WRITER_HIGH_MS = 30.0
+# A 20-40 ms band is the lowest hardware-reliable posture observed on the Pi.
+# The original 10-30 ms band produced an ordinary-load xrun after 15 minutes;
+# retaining one extra 10 ms period still keeps measured p95 well below 80 ms.
+WRITER_TARGET_MS = 30.0
+WRITER_LOW_MS = 20.0
+WRITER_HIGH_MS = 40.0
 WRITER_POLL_SECONDS = 0.005
 SOURCE_PERIOD_WAIT_SECONDS = 0.005
 IDLE_SANITIZE_SECONDS = 0.2
@@ -675,6 +678,7 @@ class AlsaGadgetSink:
         # a one-write-per-10-ms relative timer can only fall behind.
         writes_allowed = 2 if fill_ms <= WRITER_LOW_MS else 1
         current_fill_ms = fill_ms
+        insert_splice_recorded = False
         for _index in range(writes_allowed):
             if current_fill_ms + ALSA_PERIOD_MS > WRITER_HIGH_MS:
                 return
@@ -709,7 +713,15 @@ class AlsaGadgetSink:
                 self._pending.popleft()
             if inserting_silence:
                 self._silence_periods += 1
-                self._record_splice(direction="insert", fill_ms=current_fill_ms)
+                # Two exact 10 ms sink periods restore one 20 ms source-frame
+                # deficit. Count that correction as one drift splice while the
+                # exact inserted-period total remains separately observable.
+                if not insert_splice_recorded:
+                    self._record_splice(
+                        direction="insert",
+                        fill_ms=current_fill_ms,
+                    )
+                    insert_splice_recorded = True
             current_fill_ms = min(
                 self._pcm_buffer_ms,
                 current_fill_ms + ALSA_PERIOD_MS,

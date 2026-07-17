@@ -84,6 +84,7 @@ from ..local_sources import (
 )
 from ..transit.state import read_state as read_transit_state
 from ..usb_mic import (
+    read_usb_mic_leg,
     usb_mic_leg_choices,
     write_usb_mic_enabled,
     write_usb_mic_leg,
@@ -125,6 +126,7 @@ _diagnostics_refresh_lock = threading.Lock()
 _diagnostics_refresh_requested_at: dict[str, float] = {}
 _USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
 _AEC_BRIDGE_UNIT = "jasper-aec-bridge.service"
+_usb_mic_leg_apply_lock = threading.Lock()
 
 
 def _diagnostics_result_path() -> str:
@@ -2959,7 +2961,9 @@ def _make_handler(
                 )
                 return
             leg = leg.strip()
-            choices = usb_mic_leg_choices(os.environ)
+            # Match GET /aec's fresh reconciler-owned view. jasper-control is
+            # long-lived, so its process environment can lag a mic hotplug.
+            choices = usb_mic_leg_choices(_aec_endpoints._fresh_jasper_env())
             allowed = {
                 str(choice.get("value") or "")
                 for choice in choices
@@ -2978,45 +2982,85 @@ def _make_handler(
                     status=409,
                 )
                 return
-            try:
-                write_usb_mic_leg(leg)
-            except ValueError as exc:
-                self._send_json({"error": str(exc)}, status=400)
-                return
-            except OSError as exc:
-                self._send_json(
-                    {"error": f"write usb_mic.env failed: {exc}"}, status=502,
+            # Serialize the read/write/apply decision across ThreadingHTTPServer
+            # workers. Same-value saves are true no-ops. A deliberate changed
+            # value clears systemd's crash-loop counter before restart so rapid
+            # authenticated changes cannot spend StartLimitAction=reboot's
+            # recovery budget (the reconciler uses the same safety contract).
+            with _usb_mic_leg_apply_lock:
+                persisted_matches = read_usb_mic_leg() == leg
+                if persisted_matches:
+                    current_status = _aec_full_status()
+                    selection = (
+                        (current_status.get("usb_mic") or {})
+                        .get("source_selection") or {}
+                    )
+                    applied = selection.get("applied") or {}
+                    if applied.get("value") == leg:
+                        log_event(
+                            logger,
+                            "usb_mic.leg_unchanged",
+                            leg=leg,
+                            client=self.address_string(),
+                        )
+                        self._send_json(current_status)
+                        return
+                else:
+                    try:
+                        write_usb_mic_leg(leg)
+                    except ValueError as exc:
+                        self._send_json({"error": str(exc)}, status=400)
+                        return
+                    except OSError as exc:
+                        self._send_json(
+                            {"error": f"write usb_mic.env failed: {exc}"},
+                            status=502,
+                        )
+                        return
+                log_event(
+                    logger,
+                    (
+                        "usb_mic.leg_reapply"
+                        if persisted_matches
+                        else "usb_mic.leg_set"
+                    ),
+                    leg=leg,
+                    client=self.address_string(),
                 )
-                return
-            log_event(
-                logger,
-                "usb_mic.leg_set",
-                leg=leg,
-                client=self.address_string(),
-            )
-            restart = restart_broker.manage_units(
-                _AEC_BRIDGE_UNIT,
-                verb="restart",
-                reason="usb_mic_leg",
-                no_block=True,
-                timeout=5.0,
-            )
-            if not restart.get("ok"):
-                failed_status = _aec_full_status()
-                self._send_json(
-                    {
-                        "error": (
-                            "Computer microphone source was saved, but the "
-                            "microphone bridge restart could not be scheduled."
-                        ),
-                        "code": "usb_mic_leg_restart_failed",
-                        "intent_saved": True,
-                        "requested_leg": leg,
-                        "usb_mic": failed_status.get("usb_mic") or {},
-                    },
-                    status=502,
+                reset = restart_broker.manage_units(
+                    _AEC_BRIDGE_UNIT,
+                    verb="reset-failed",
+                    reason="usb_mic_leg",
+                    no_block=False,
+                    timeout=5.0,
                 )
-                return
+                restart = (
+                    restart_broker.manage_units(
+                        _AEC_BRIDGE_UNIT,
+                        verb="restart",
+                        reason="usb_mic_leg",
+                        no_block=True,
+                        timeout=5.0,
+                    )
+                    if reset.get("ok")
+                    else {"ok": False}
+                )
+                if not reset.get("ok") or not restart.get("ok"):
+                    failed_status = _aec_full_status()
+                    self._send_json(
+                        {
+                            "error": (
+                                "Computer microphone source was saved, but the "
+                                "microphone bridge restart could not be scheduled."
+                            ),
+                            "code": "usb_mic_leg_restart_failed",
+                            "intent_saved": True,
+                            "requested_leg": leg,
+                            "usb_mic": failed_status.get("usb_mic") or {},
+                        },
+                        status=502,
+                    )
+                    return
             self._send_json(_aec_full_status())
             return
 

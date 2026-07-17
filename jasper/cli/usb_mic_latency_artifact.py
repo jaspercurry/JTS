@@ -109,7 +109,7 @@ def _build_sha(build_manifest: str) -> str:
     return build_sha
 
 
-def _selected_source(bridge_stats: Mapping[str, Any]) -> dict[str, str]:
+def _selected_source(bridge_stats: Mapping[str, Any]) -> dict[str, Any]:
     active_plan = _mapping(bridge_stats.get("active_capture_plan"))
     explicit = _mapping(active_plan.get("usb_mic_source"))
     if explicit:
@@ -117,17 +117,51 @@ def _selected_source(bridge_stats: Mapping[str, Any]) -> dict[str, str]:
         leg = str(explicit.get("leg") or "").strip()
         if not mode or not leg:
             raise ValueError("bridge USB microphone source identity is incomplete")
-        return {"mode": mode, "leg": leg}
+        return {
+            "selection": str(explicit.get("selection") or "").strip(),
+            "mode": mode,
+            "leg": leg,
+            "fallback_active": bool(explicit.get("fallback_active")),
+        }
     flags = _mapping(active_plan.get("enabled_corpus_flags"))
     if "production_chip_aec" not in flags:
         raise ValueError("bridge stats do not identify the production AEC mode")
     if not bool(flags.get("production_chip_aec")):
-        return {"mode": "software_aec3", "leg": "clean"}
+        return {
+            "selection": "",
+            "mode": "software_aec3",
+            "leg": "clean",
+            "fallback_active": False,
+        }
     beam_plan = _mapping(active_plan.get("beam_plan"))
     primary = str(beam_plan.get("primary_leg") or "").strip()
     if not primary:
         raise ValueError("bridge stats do not identify the active primary beam leg")
-    return {"mode": "chip_aec", "leg": primary}
+    return {
+        "selection": "",
+        "mode": "chip_aec",
+        "leg": primary,
+        "fallback_active": False,
+    }
+
+
+def _bridge_counter(bridge_stats: Mapping[str, Any], key: str) -> int:
+    counters = _mapping(bridge_stats.get("counters"))
+    if key not in counters:
+        raise ValueError(f"aec_bridge.counters.{key} is required")
+    return _nonnegative_int(counters[key], field=f"aec_bridge.counters.{key}")
+
+
+def _capture_plan_identity(bridge_stats: Mapping[str, Any]) -> dict[str, Any]:
+    """Stable plan identity excluding live fallback/effective source state."""
+
+    active = json.loads(json.dumps(_mapping(bridge_stats.get("active_capture_plan"))))
+    source = active.get("usb_mic_source")
+    if isinstance(source, dict):
+        active["usb_mic_source"] = {
+            "selection": str(source.get("selection") or "").strip(),
+        }
+    return active
 
 
 def _capture_geometry(bridge_stats: Mapping[str, Any]) -> dict[str, Any]:
@@ -175,6 +209,7 @@ def build_usb_mic_latency_artifact(
     *,
     build_manifest: str,
     bcd_device: str,
+    bridge_stats_before: Mapping[str, Any],
     bridge_stats: Mapping[str, Any],
     host_os: str,
     host_app: str,
@@ -425,6 +460,15 @@ def build_usb_mic_latency_artifact(
     ):
         delta, total = _counter_delta(samples, key)
         counter_payload[key] = {"run_delta": delta, "end_total": total}
+    fallback_key = "usb_mic_source_fallback_frames"
+    fallback_start = _bridge_counter(bridge_stats_before, fallback_key)
+    fallback_end = _bridge_counter(bridge_stats, fallback_key)
+    if fallback_end < fallback_start:
+        raise ValueError(f"aec_bridge.counters.{fallback_key} reset during window")
+    counter_payload[fallback_key] = {
+        "run_delta": fallback_end - fallback_start,
+        "end_total": fallback_end,
+    }
 
     writer_target_ms = writer_targets.pop()
     measurement_contract = {
@@ -579,17 +623,17 @@ def main(argv: list[str] | None = None) -> int:
         bridge_stats_age = time.time() - bridge_after_updated
         if bridge_stats_age < 0 or bridge_stats_age > MAX_STATUS_GAP_SECONDS:
             raise ValueError("AEC bridge stats are stale")
-        for field in ("active_capture_plan", "capture_stream"):
-            if bridge_before.get(field) != bridge_after.get(field):
-                raise ValueError(
-                    f"AEC bridge {field} changed during the certification window"
-                )
+        if bridge_before.get("capture_stream") != bridge_after.get("capture_stream"):
+            raise ValueError("AEC bridge capture_stream changed during the window")
+        if _capture_plan_identity(bridge_before) != _capture_plan_identity(bridge_after):
+            raise ValueError("AEC bridge active_capture_plan changed during the window")
         if build_before != build_after or bcd_before != bcd_after:
             raise ValueError("build or USB descriptor changed during the window")
         artifact = build_usb_mic_latency_artifact(
             snapshots,
             build_manifest=build_after,
             bcd_device=bcd_after,
+            bridge_stats_before=bridge_before,
             bridge_stats=bridge_after,
             host_os=args.host_os,
             host_app=args.host_app,

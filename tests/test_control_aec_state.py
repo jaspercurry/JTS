@@ -573,6 +573,7 @@ def test_aec_full_status_includes_legs_and_threshold(
                 "mode": "software_aec3",
                 "leg": "clean",
                 "effective_label": "Software-clean microphone",
+                "fallback_active": False,
             },
         ),
         (
@@ -588,6 +589,7 @@ def test_aec_full_status_includes_legs_and_threshold(
                 "mode": "chip_aec",
                 "leg": "chip_aec_150",
                 "effective_label": "Front hardware beam",
+                "fallback_active": False,
             },
         ),
     ],

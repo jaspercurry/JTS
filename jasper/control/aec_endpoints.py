@@ -719,7 +719,7 @@ def _fresh_bridge_usb_mic_source(
     *,
     bridge_active: bool,
     now: float | None = None,
-) -> dict[str, str] | None:
+) -> dict[str, Any] | None:
     """Return only an authoritative, fresh bridge-applied source.
 
     Persisted intent changes before the non-blocking bridge restart completes,
@@ -753,11 +753,16 @@ def _fresh_bridge_usb_mic_source(
     selection = str(source.get("selection") or "").strip()
     if not selection or not mode or not leg:
         return None
-    return {"selection": selection, "mode": mode, "leg": leg}
+    return {
+        "selection": selection,
+        "mode": mode,
+        "leg": leg,
+        "fallback_active": bool(source.get("fallback_active")),
+    }
 
 
 def _usb_mic_effective_label(
-    source: dict[str, str],
+    source: dict[str, Any],
     choices: list[dict[str, Any]],
 ) -> str:
     """Name the physical source proved by fresh bridge stats.
@@ -824,6 +829,7 @@ def _usb_mic_source_selection(
                 applied_source,
                 choices,
             ),
+            "fallback_active": bool(applied_source.get("fallback_active")),
         }
     return {
         "requested": requested,

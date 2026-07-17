@@ -86,7 +86,7 @@ jasper-doctor
 For the optional reverse `JTS Mic` direction, the active-only 120 ms doctor
 gate and the identity-bound `jasper-usb-mic-latency-artifact` certification
 workflow are canonical in
-[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#toggling-the-computer-microphone-from-wake).
+[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#toggling-and-choosing-the-computer-microphone-from-wake).
 That tool measures bridge-emit→final-ALSA-write; it does not claim the
 host-to-speaker route latency measured by the click/capture harness below in
 this document's historical appendix.

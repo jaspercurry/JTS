@@ -521,8 +521,6 @@ def test_writer_writes_each_source_frame_as_two_exact_periods(monkeypatch) -> No
     )
 
     sink._writer_step(now_monotonic=2.0)
-    reader.snapshot = HostPcmSnapshot(True, 300, 1260)
-    sink._writer_step(now_monotonic=2.01)
 
     assert pcm.writes == [
         audio[:ALSA_PERIOD_BYTES],
@@ -536,7 +534,7 @@ def test_writer_writes_each_source_frame_as_two_exact_periods(monkeypatch) -> No
 def test_writer_replaces_held_audio_only_when_newer_audio_reaches_high_watermark() -> (
     None
 ):
-    reader = _StatusReader(HostPcmSnapshot(True, 200, 1640))
+    reader = _StatusReader(HostPcmSnapshot(True, 200, 2120))
     sink, pcm, _reader, _fake_alsa = _active_sink(reader=reader)
     stale = QueuedFrame(1, 1, b"\x01\x02" * (PERIOD_BYTES // 2))
     fresh = QueuedFrame(2, 2, b"\x03\x04" * (PERIOD_BYTES // 2))
@@ -562,7 +560,7 @@ def test_writer_inserts_silence_only_when_low_and_source_stays_empty() -> None:
     sink._writer_step(now_monotonic=2.0)
 
     assert pcm.writes == [bytes(ALSA_PERIOD_BYTES)] * 2
-    assert sink.writer_snapshot().splices == 2
+    assert sink.writer_snapshot().splices == 1
     assert sink.writer_snapshot().silence_periods == 6
     sink.close()
 
@@ -651,8 +649,8 @@ def test_writer_sustains_clocked_ring_and_has_catch_up_authority() -> None:
     sink, _fake_alsa = _make_sink(pcms=[pcm], status_reader=ring)
     pcm.writes.clear()
     sink._settling = False
-    ring.hw_ptr = 960
-    sink._last_hw_ptr = 720
+    ring.hw_ptr = 720
+    sink._last_hw_ptr = 480
     sink._frozen_since_monotonic = 1.0
 
     for tick in range(1, 401):
@@ -663,7 +661,7 @@ def test_writer_sustains_clocked_ring_and_has_catch_up_authority() -> None:
         assert ring.hw_ptr <= ring.appl_ptr
         sink._writer_step(now_monotonic=2.0 + tick * 0.005)
         fill_ms = (ring.appl_ptr - ring.hw_ptr) / 48.0
-        assert 10.0 <= fill_ms <= 30.0
+        assert 20.0 <= fill_ms <= 40.0
 
     snapshot = sink.writer_snapshot()
     assert snapshot.xruns == 0
@@ -706,14 +704,14 @@ def test_writer_writes_two_periods_to_recover_from_missed_deadline() -> None:
 
 
 def test_writer_never_projects_a_write_above_high_watermark() -> None:
-    reader = _StatusReader(HostPcmSnapshot(True, 200, 1400))
+    reader = _StatusReader(HostPcmSnapshot(True, 200, 1880))
     sink, pcm, _reader, _fake_alsa = _active_sink(reader=reader)
     sink.queue.put(QueuedFrame(1, 1, bytes(PERIOD_BYTES)))
 
     sink._writer_step(now_monotonic=2.0)
 
     assert pcm.writes == []
-    assert sink.writer_snapshot().fill_ms == 25.0
+    assert sink.writer_snapshot().fill_ms == 35.0
     assert len(sink._pending) == 2
     sink.close()
 
@@ -834,8 +832,6 @@ def _write_one_frame(
         lambda _clock: now_ns,
     )
     sink._writer_step(now_monotonic=2.0)
-    reader.snapshot = HostPcmSnapshot(True, 300, 1260)
-    sink._writer_step(now_monotonic=2.01)
     return sink, pcm
 
 

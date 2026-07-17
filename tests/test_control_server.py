@@ -1208,10 +1208,17 @@ def test_usb_mic_leg_persists_then_restarts_only_aec_bridge(
     monkeypatch.setattr(
         srv_mod,
         "usb_mic_leg_choices",
-        lambda env: choices if env is os.environ else pytest.fail(
-            "choice validation must use the control process environment"
+        lambda env: choices if env == {"JASPER_AUDIO_INPUT_PROFILE": "fresh"}
+        else pytest.fail(
+            "choice validation must use the fresh reconciled environment"
         ),
     )
+    monkeypatch.setattr(
+        srv_mod._aec_endpoints,
+        "_fresh_jasper_env",
+        lambda: {"JASPER_AUDIO_INPUT_PROFILE": "fresh"},
+    )
+    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: "primary")
     monkeypatch.setattr(
         srv_mod,
         "write_usb_mic_leg",
@@ -1248,6 +1255,16 @@ def test_usb_mic_leg_persists_then_restarts_only_aec_bridge(
             "restart",
             "jasper-aec-bridge.service",
             {
+                "verb": "reset-failed",
+                "reason": "usb_mic_leg",
+                "no_block": False,
+                "timeout": 5.0,
+            },
+        ),
+        (
+            "restart",
+            "jasper-aec-bridge.service",
+            {
                 "verb": "restart",
                 "reason": "usb_mic_leg",
                 "no_block": True,
@@ -1265,6 +1282,7 @@ def test_usb_mic_leg_rejects_choice_not_advertised_by_server(
     import jasper.control.server as srv_mod
 
     choices = [{"value": "primary", "label": "Same as JTS voice"}]
+    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
     monkeypatch.setattr(
         srv_mod,
@@ -1287,6 +1305,85 @@ def test_usb_mic_leg_rejects_choice_not_advertised_by_server(
     assert status == 409
     assert body["requested_leg"] == "chip_aec_210"
     assert body["choices"] == choices
+
+
+def test_usb_mic_leg_same_value_is_noop(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    final_status = {
+        "usb_mic": {
+            "source_selection": {
+                "requested": "primary",
+                "applied": {"value": "primary"},
+            },
+        },
+    }
+    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(
+        srv_mod,
+        "usb_mic_leg_choices",
+        lambda _env: [{"value": "primary", "label": "Same as JTS voice"}],
+    )
+    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: "primary")
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda _leg: pytest.fail("same-value save must not write"),
+    )
+    monkeypatch.setattr(
+        srv_mod.restart_broker,
+        "manage_units",
+        lambda *_args, **_kwargs: pytest.fail("same-value save must not restart"),
+    )
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: final_status)
+
+    status, body = _post(f"{base}/aec/usb-mic-leg", {"leg": "primary"})
+
+    assert status == 200
+    assert body == final_status
+
+
+def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    state = {"leg": "primary"}
+    calls = []
+    choices = [
+        {"value": "primary", "label": "Same as JTS voice"},
+        {"value": "chip_aec_210", "label": "Rear hardware beam"},
+    ]
+    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: state["leg"])
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda leg: state.__setitem__("leg", leg),
+    )
+    monkeypatch.setattr(
+        srv_mod.restart_broker,
+        "manage_units",
+        lambda unit, **kwargs: calls.append((unit, kwargs["verb"])) or {"ok": True},
+    )
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"usb_mic": {}})
+
+    for leg in ("chip_aec_210", "primary") * 3:
+        status, _body = _post(f"{base}/aec/usb-mic-leg", {"leg": leg})
+        assert status == 200
+
+    assert calls == [
+        ("jasper-aec-bridge.service", verb)
+        for _change in range(6)
+        for verb in ("reset-failed", "restart")
+    ]
 
 
 def test_usb_mic_recompose_is_handed_to_durable_systemd_job(monkeypatch):
