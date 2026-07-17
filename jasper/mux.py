@@ -49,12 +49,33 @@ Renderer support:
             degrade to phone-side pause.
   USB sink (jasper-usbsink):
     detect: fan-in DIRECT-captures the gadget, so USB liveness comes
-            from fan-in DIRECT-lane telemetry.
-            See _usbsink_playing.
+            from fan-in DIRECT-lane telemetry. See _usbsink_playing.
+            NOTE: liveness is now purely "is the host streaming frames to
+            us" — there is no audio-LEVEL gate. A faint sound is still a
+            sound; if USB is the only source, we play it.
     pause:  MUTE the fan-in usbsink lane at its mix stage. When all
             other sources go idle, we release the preempt (unmute) so
             user-host transitions (pause then play on Mac) can re-take
             the speaker.
+
+Sticky sessions — the USB↔explicit-source asymmetry:
+  AirPlay / Spotify / Bluetooth are explicit, long-lived SESSIONS: starting one
+  is a deliberate "play here" act. USB is a dumb byte stream we can only infer
+  intent from (any app on the host — a Slack ding, a UI click — feeds it). So
+  the two are NOT peers under "latest-source-wins":
+    - An explicit session that STARTS preempts anything, including USB (a
+      deliberate cast wins). This is unchanged.
+    - USB is a PASSIVE source: it takes the speaker only when no explicit
+      session is active (uncontested, or after the session ends). A USB stream
+      opening does NOT preempt an active AirPlay/Spotify — otherwise an
+      incidental host sound would yank a housemate's cast and (because we pause
+      the preempted source) never hand it back. That "signal-sense auto-switch
+      grabs and doesn't switch back" failure is the well-known Sonos line-in /
+      AVR-input-sense pathology; sticky sessions avoid it structurally.
+  The user can always override via the /sources Source selector (manual pin).
+  See _pick_winner / _explicit_active and docs/HANDOFF-usbsink.md. A future
+  opt-in "sustained-audio grab" (USB preempts after N seconds of continuous
+  real audio) is noted there but deliberately NOT built.
 
 """
 from __future__ import annotations
@@ -82,12 +103,10 @@ from .audio_runtime_plan import (
 from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
-    USBSINK_PLAYING_RMS_DBFS,
     airplay_playing,
     bluetooth_playing,
     spotify_playing,
     usbsink_direct_frames_read,
-    usbsink_direct_rms_dbfs,
 )
 from .spotify_oauth import default_spotify_redirect_uri
 
@@ -162,19 +181,37 @@ def _usbsink_preempt_disabled() -> bool:
     ).strip().lower() == "disabled"
 
 
-# Combo-mode USB liveness debounce (mux ticks at POLL_INTERVAL_SEC = 1 Hz).
+# Combo-mode USB streaming debounce (mux ticks at POLL_INTERVAL_SEC = 1 Hz).
 # The liveness signal is fan-in's DIRECT-lane host-input counter, read via
-# usbsink_direct_frames_read().
+# usbsink_direct_frames_read(). The debounce rides through a brief delivery gap
+# (a status miss / a momentary stall) so the source doesn't flap; a real pause
+# stops the frames and macOS tears the stream down, so the counter genuinely
+# stalls and USB releases after this many ticks.
 USBSINK_COMBO_STOP_TICKS = 2
 
 
 @dataclass(frozen=True)
 class ComboLiveness:
-    """Temporal state for combo-mode USB frames-flowing detection."""
+    """Temporal state for combo-mode USB frames-flowing detection.
+
+    ``streaming`` is "is the host feeding us frames right now" — there is NO
+    audio-LEVEL component (removed with the sticky-session rework, 2026-07-17).
+    A faint sound and a loud one both stream frames; USB is the winner whenever
+    it streams and no explicit session is active (see the module docstring's
+    "Sticky sessions"). The old ``rms_dbfs > -60`` gate lived here to stop a
+    silently-streaming host from seizing the speaker; that job now belongs to
+    the arbiter (an explicit session simply outranks USB), so level dropped out
+    of liveness entirely. That fixed dropped-faint-audio and the level-driven
+    quiet-passage dropout (a quiet stretch keeps the counter advancing, so the
+    lane no longer reads "stopped"). It does NOT change the ~1-2 s cold-start
+    detect — that is this 1 Hz poll's 2-tick frames baseline, not the gate — nor
+    a dropout from the host actually tearing the stream down (frames stop; both
+    old and new drop identically). See docs/HANDOFF-usbsink.md §3.3 "Residual".
+    """
 
     prev_frames: int | None = None
     idle_ticks: int = 0
-    playing: bool = False
+    streaming: bool = False
 
 
 def step_combo_liveness(
@@ -182,48 +219,26 @@ def step_combo_liveness(
     frames: int | None,
     *,
     stop_ticks: int,
-    rms_dbfs: float | None = None,
-    rms_threshold_dbfs: float = USBSINK_PLAYING_RMS_DBFS,
 ) -> ComboLiveness:
-    """Advance the combo-USB liveness state by one mux tick.
+    """Advance the combo-USB streaming state by one mux tick.
 
-    A combo box "plays" on a tick iff BOTH:
-
-    - **frames advanced** — the fan-in DIRECT-lane counter ``frames`` grew since
-      the previous tick (the lane is being fed), AND
-    - **audible** — the lane's most-recent-period ``rms_dbfs`` is above
-      ``rms_threshold_dbfs`` (the shared :data:`USBSINK_PLAYING_RMS_DBFS` gate).
-
-    The audibility half is what a solo box gets for free from the bridge's
-    RMS-gated ``playing`` flag: a fan-in DIRECT lane keeps clocking silence
-    frames when the host is connected but emitting digital silence (a muted Zoom,
-    an idle tab — see rust/jasper-fanin/src/mixer.rs on
-    DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS), so frames-advanced ALONE would seize the
-    speaker on silence, where a solo box reads playing=false. Gating on level
-    makes combo == solo.
+    A combo box is ``streaming`` on a tick iff the fan-in DIRECT-lane counter
+    ``frames`` grew since the previous tick (the host is feeding the lane).
 
     Semantics:
 
-    - advanced AND audible -> playing, idle reset.
+    - advanced -> streaming, idle reset.
     - first reading or counter reset -> re-baseline without inventing a delta.
-    - flat / missing frames, OR advancing-but-silent -> non-advance; drop after
-      ``stop_ticks`` consecutive non-advancing ticks while playing (the fade-out
-      / pause edge). ``prev_frames`` still tracks the counter so a later audible
-      advance is seen.
-
-    ``rms_dbfs=None`` (an older fan-in build with no per-lane level) is treated
-    as audible so the pre-level frames-only behaviour is preserved for that
-    transition window — a deploy ships fan-in + mux together, so a real combo
-    box carries the level within a bounce.
+    - flat / missing frames -> non-advance; drop after ``stop_ticks`` consecutive
+      non-advancing ticks while streaming (the pause / stream-teardown edge).
+      ``prev_frames`` still tracks the counter so a later advance is seen.
     """
     prev = state.prev_frames
-    frames_advanced = frames is not None and prev is not None and frames > prev
-    audible = rms_dbfs is None or rms_dbfs > rms_threshold_dbfs
-    advanced = frames_advanced and audible
+    advanced = frames is not None and prev is not None and frames > prev
     new_prev = frames if frames is not None else prev
     if advanced:
         return ComboLiveness(new_prev, 0, True)
-    if not state.playing:
+    if not state.streaming:
         return ComboLiveness(new_prev, 0, False)
     idle = state.idle_ticks + 1
     return ComboLiveness(new_prev, idle, idle < stop_ticks)
@@ -346,24 +361,24 @@ class Mux:
         }
 
     async def _usbsink_playing(self) -> bool:
-        """"Is USB playing" for the source arbiter, off fan-in's DIRECT lane.
+        """"Is USB streaming to us" for the source arbiter, off fan-in's DIRECT
+        lane.
 
         fan-in DIRECT-captures the gadget as its sole live ingress owner, so
-        liveness comes from the DIRECT-lane counter advancing across
-        ticks. A missing/non-direct fan-in snapshot advances the debounce with
-        an unknown counter; do not issue a second STATUS probe on the 1 Hz mux
-        hot path.
+        liveness comes from the DIRECT-lane counter advancing across ticks —
+        purely "is the host feeding us frames", with NO audio-level gate (see
+        the module docstring's "Sticky sessions" and `ComboLiveness`). A
+        missing/non-direct fan-in snapshot advances the debounce with an unknown
+        counter; do not issue a second STATUS probe on the 1 Hz mux hot path.
         """
         fanin = await self._fanin_status_best_effort()
         frames = usbsink_direct_frames_read(fanin)
-        rms_dbfs = usbsink_direct_rms_dbfs(fanin)
         self._usbsink_combo = step_combo_liveness(
             self._usbsink_combo,
             frames,
             stop_ticks=USBSINK_COMBO_STOP_TICKS,
-            rms_dbfs=rms_dbfs,
         )
-        return self._usbsink_combo.playing
+        return self._usbsink_combo.streaming
 
     async def _fanin_status_best_effort(self) -> dict[str, Any] | None:
         """Read jasper-fanin's STATUS snapshot over its control UDS, fail-soft."""
@@ -445,34 +460,47 @@ class Mux:
 
         target: Source | None = None
         transition_reason = ""
-        if (
-            self._pending_auto_target is not None
-            and current.get(self._pending_auto_target, False)
-            and self._pending_auto_target != self._winner
-        ):
-            target = self._pending_auto_target
+        pending = self._pending_auto_target
+        # Sticky-session inputs (see the module docstring + _pick_winner):
+        # an explicit session (AirPlay/Spotify/BT) that STARTS preempts anything,
+        # including USB; a USB stream that starts takes the speaker only when no
+        # explicit session is active — it never preempts a cast.
+        explicit_started = [s for s in newly_started if s is not Source.USBSINK]
+        usb_started_free = (
+            Source.USBSINK in newly_started and not self._explicit_active(current)
+        )
+        pending_ok = (
+            pending is not None
+            and current.get(pending, False)
+            and pending != self._winner
+            and not (pending is Source.USBSINK and self._explicit_active(current))
+        )
+        if pending_ok:
+            target = pending
             transition_reason = "auto_retry"
-        elif self._pending_auto_target is not None:
-            self._pending_auto_target = None
-
-        if target is None and newly_started:
-            target = newly_started[-1]
-            transition_reason = "auto_new_source"
+        else:
+            if pending is not None:
+                self._pending_auto_target = None
+            if explicit_started:
+                target = explicit_started[-1]
+                transition_reason = "auto_new_source"
+            elif usb_started_free:
+                target = Source.USBSINK
+                transition_reason = "auto_new_source"
+            elif self._winner is not None and not current.get(self._winner, False):
+                target = self._pick_winner(current)
+                transition_reason = "auto_winner_stopped"
+            elif self._winner is None:
+                target = self._pick_winner(current)
+                if target is not None:
+                    transition_reason = "auto_startup_active"
+        if transition_reason == "auto_new_source":
             logger.info(
                 "source transition: %s started (was %s, age=%d ticks)",
-                target.value,
+                target.value if target else "none",
                 self._winner.value if self._winner else "none",
                 self._winner_age_ticks,
             )
-        elif self._winner is not None and not current.get(self._winner, False):
-            active_sources = self._active_sources(current)
-            target = active_sources[-1] if active_sources else None
-            transition_reason = "auto_winner_stopped"
-        elif self._winner is None:
-            active_sources = self._active_sources(current)
-            if active_sources:
-                target = active_sources[-1]
-                transition_reason = "auto_startup_active"
 
         if target is not None and target != self._winner:
             async with self._transition_lock:
@@ -721,14 +749,14 @@ class Mux:
         return self._status_payload(current)
 
     async def auto_select(self) -> dict[str, Any]:
-        """Return to latest-source-wins behavior."""
+        """Return to latest-source-wins behavior (sticky-session priority)."""
         gate_error = self._test_gate_error("automatic selection")
         if gate_error is not None:
             return gate_error
         current = await self._probe_sources()
         active_sources = self._active_sources(current)
-        if active_sources:
-            new_winner = active_sources[-1]
+        new_winner = self._pick_winner(current)
+        if new_winner is not None:
             async with self._transition_lock:
                 gate_error = self._test_gate_error("automatic selection")
                 if gate_error is not None:
@@ -976,6 +1004,32 @@ class Mux:
 
     def _active_sources(self, current: dict[Source, bool]) -> list[Source]:
         return [source for source in MUSIC_SOURCES if current.get(source, False)]
+
+    def _explicit_active(self, current: dict[Source, bool]) -> bool:
+        """Any explicit-session source (everything except the passive USB
+        stream) currently active. Used by the sticky-session rule: USB never
+        takes or holds the speaker against an active AirPlay/Spotify/Bluetooth
+        session."""
+        return any(
+            current.get(source, False)
+            for source in MUSIC_SOURCES
+            if source is not Source.USBSINK
+        )
+
+    def _pick_winner(self, current: dict[Source, bool]) -> Source | None:
+        """Choose the auto-mode winner under the sticky-session priority.
+
+        An explicit session (AirPlay/Spotify/Bluetooth) always outranks the
+        passive USB stream; USB wins only when no explicit session is active.
+        Among explicit sessions, enum order is the tiebreaker — recency-based
+        preemption is driven by the ``newly_started`` edge in ``_tick`` (and by
+        the pause of the loser), exactly as before; this fallback only decides
+        who owns a newly-free speaker."""
+        active = self._active_sources(current)
+        explicit = [s for s in active if s is not Source.USBSINK]
+        if explicit:
+            return explicit[-1]
+        return Source.USBSINK if Source.USBSINK in active else None
 
     async def _reassert_manual_source(self) -> None:
         async with self._transition_lock:
