@@ -26,8 +26,11 @@ These tests pin the contract:
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from queue import Empty
+import struct
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -267,7 +270,7 @@ def test_aec_loop_emits_both_streams(monkeypatch):
     socket_factory = MagicMock(side_effect=[aec_sock, raw_sock, raw0_sock])
     monkeypatch.setattr(real_socket, "socket", socket_factory)
 
-    # 8 frames of 320 samples each = 16 ms × 8 = 2 full 1280-sample
+    # 8 frames of 320 samples each = 20 ms × 8 = 2 full 1280-sample
     # batches per leg. Each mic frame is byte-distinct so we can
     # verify which bytes landed in which packet.
     mic_frames = [
@@ -992,34 +995,230 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     ]
 
 
-def test_usb_host_mic_packetizes_each_20ms_frame_without_changing_voice():
-    frame = bytes(FRAME_SAMPLES * 2)
-    voice_sock = MagicMock()
-    usb_sock = MagicMock()
-    voice = aec_bridge.LegEmitter(
-        voice_sock,
-        (OUT_HOST, OUT_PORT),
-        bytearray(),
-        "on",
+def test_usb_host_mic_emitter_prepends_v2_header(monkeypatch):
+    from jasper.usb_mic import (
+        USB_MIC_HEADER_BYTES,
+        USB_MIC_HEADER_STRUCT,
+        USB_MIC_PACKET_MAGIC,
+        USB_MIC_PACKET_VERSION,
     )
-    usb = aec_bridge.LegEmitter(
+
+    usb_sock = MagicMock()
+    usb = aec_bridge.TimestampedLegEmitter(
         usb_sock,
         (OUT_HOST, 9894),
         bytearray(),
         "usb_host_mic",
         frame_samples=FRAME_SAMPLES,
     )
+    timestamps = iter((1_000_000_000, 1_020_000_000))
+    clock_ids = []
 
-    for _ in range(3):
-        voice.emit(frame)
+    def clock_gettime_ns(clock_id):
+        clock_ids.append(clock_id)
+        return next(timestamps)
+
+    monkeypatch.setattr(
+        aec_bridge.time,
+        "clock_gettime_ns",
+        clock_gettime_ns,
+    )
+    frames = (
+        b"\x11\x22" * FRAME_SAMPLES,
+        b"\x33\x44" * FRAME_SAMPLES,
+    )
+
+    for frame in frames:
         usb.emit(frame)
 
-    voice_sock.sendto.assert_not_called()
-    assert usb_sock.sendto.call_count == 3
-    voice.emit(frame)
-    voice_sock.sendto.assert_called_once_with(
-        bytes(OUT_FRAME_BYTES),
+    assert usb_sock.sendto.call_count == 2
+    assert USB_MIC_HEADER_BYTES == 16
+    assert clock_ids == [aec_bridge.time.CLOCK_MONOTONIC] * 2
+    for seq, (call, frame, timestamp) in enumerate(zip(
+        usb_sock.sendto.call_args_list,
+        frames,
+        (1_000_000_000, 1_020_000_000),
+        strict=True,
+    )):
+        packet = call.args[0]
+        assert len(packet) == 656
+        assert struct.unpack(
+            USB_MIC_HEADER_STRUCT,
+            packet[:USB_MIC_HEADER_BYTES],
+        ) == (
+            USB_MIC_PACKET_MAGIC,
+            USB_MIC_PACKET_VERSION,
+            0,
+            seq,
+            timestamp,
+        )
+        assert packet[USB_MIC_HEADER_BYTES:] == frame
+        assert call.args[1] == (OUT_HOST, 9894)
+
+
+def test_usb_host_mic_sequence_wraps_u32(monkeypatch):
+    from jasper.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
+
+    sock = MagicMock()
+    emitter = aec_bridge.TimestampedLegEmitter(
+        sock,
+        (OUT_HOST, 9894),
+        bytearray(),
+        "usb_host_mic",
+        frame_samples=FRAME_SAMPLES,
+    )
+    emitter._seq = 0xFFFFFFFF
+    monkeypatch.setattr(aec_bridge.time, "clock_gettime_ns", lambda _clock: 1)
+
+    emitter.emit(bytes(FRAME_SAMPLES * 2))
+    emitter.emit(bytes(FRAME_SAMPLES * 2))
+
+    sequences = [
+        struct.unpack(
+            USB_MIC_HEADER_STRUCT,
+            call.args[0][:USB_MIC_HEADER_BYTES],
+        )[3]
+        for call in sock.sendto.call_args_list
+    ]
+    assert sequences == [0xFFFFFFFF, 0]
+
+
+def test_usb_host_mic_sequence_exposes_sender_drop(monkeypatch):
+    from jasper.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
+
+    sock = MagicMock()
+    sock.sendto.side_effect = (BlockingIOError("full"), None)
+    emitter = aec_bridge.TimestampedLegEmitter(
+        sock,
+        (OUT_HOST, 9894),
+        bytearray(),
+        "usb_host_mic",
+        frame_samples=FRAME_SAMPLES,
+    )
+    monkeypatch.setattr(
+        aec_bridge.time,
+        "clock_gettime_ns",
+        MagicMock(side_effect=(1, 2)),
+    )
+
+    emitter.emit(bytes(FRAME_SAMPLES * 2))
+    emitter.emit(bytes(FRAME_SAMPLES * 2))
+
+    second_packet = sock.sendto.call_args_list[1].args[0]
+    second_header = struct.unpack(
+        USB_MIC_HEADER_STRUCT,
+        second_packet[:USB_MIC_HEADER_BYTES],
+    )
+    assert second_header[3] == 1
+    counters = aec_bridge._bridge_stats.snapshot()["counters"]
+    assert counters["udp_send_drops_by_leg"]["usb_host_mic"] == 1
+    assert counters["packets_sent_by_leg"]["usb_host_mic"] == 1
+
+
+@pytest.mark.parametrize("leg", ["on", "off", "raw0"])
+def test_wake_legs_wire_format_unchanged(leg: str):
+    sock = MagicMock()
+    emitter = aec_bridge.LegEmitter(
+        sock,
         (OUT_HOST, OUT_PORT),
+        bytearray(),
+        leg,
+    )
+    pcm = b"\x12\x34" * aec_bridge.OUT_FRAME_SAMPLES
+
+    emitter.emit(pcm)
+
+    sock.sendto.assert_called_once_with(pcm, (OUT_HOST, OUT_PORT))
+
+
+def test_aec_loop_selects_timestamped_emitter_for_usb_host(monkeypatch):
+    import socket as real_socket
+    from jasper.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    sockets = [_mock_socket() for _ in range(4)]
+    monkeypatch.setattr(
+        real_socket,
+        "socket",
+        MagicMock(side_effect=sockets),
+    )
+    monkeypatch.setattr(
+        aec_bridge.time,
+        "clock_gettime_ns",
+        MagicMock(side_effect=(1, 2, 3, 4)),
+    )
+    config = replace(
+        aec_bridge.BridgeConfig.from_env(),
+        emit_usb_host_mic=True,
+    )
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    clean_frames = [bytes([i + 20]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    engine = MagicMock()
+    engine.process.side_effect = clean_frames
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        engine,
+        config=config,
+    )
+
+    on_sock, usb_sock, _raw_sock, _raw0_sock = sockets
+    on_sock.sendto.assert_called_once_with(
+        b"".join(clean_frames),
+        (config.out_host, config.out_port),
+    )
+    assert usb_sock.sendto.call_count == 4
+    sequences = []
+    for call, clean in zip(usb_sock.sendto.call_args_list, clean_frames, strict=True):
+        packet = call.args[0]
+        header = struct.unpack(
+            USB_MIC_HEADER_STRUCT,
+            packet[:USB_MIC_HEADER_BYTES],
+        )
+        sequences.append(header[3])
+        assert packet[USB_MIC_HEADER_BYTES:] == clean
+    assert sequences == [0, 1, 2, 3]
+
+
+def test_mic_thread_logs_negotiated_input_latency(monkeypatch):
+    stream = SimpleNamespace(latency=0.025)
+
+    class InputStream:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return stream
+
+        def __exit__(self, *_args):
+            return False
+
+    input_stream = MagicMock(side_effect=InputStream)
+    monkeypatch.setattr(aec_bridge, "sd", SimpleNamespace(InputStream=input_stream))
+    event = MagicMock()
+    monkeypatch.setattr(aec_bridge, "log_event", event)
+    aec_bridge._shutdown.set()
+    config = replace(aec_bridge.BridgeConfig.from_env(), mic_device="test-mic")
+
+    aec_bridge._mic_thread(MagicMock(), config=config)
+
+    input_stream.assert_called_once()
+    assert input_stream.call_args.kwargs == {
+        "device": "test-mic",
+        "samplerate": aec_bridge.SAMPLE_RATE,
+        "channels": aec_bridge.MIC_CHANNELS,
+        "dtype": "int16",
+        "blocksize": aec_bridge.FRAME_SAMPLES,
+        "callback": input_stream.call_args.kwargs["callback"],
+    }
+    event.assert_called_once_with(
+        aec_bridge.logger,
+        "aec.mic_stream_latency",
+        latency_s=0.025,
+        samplerate=aec_bridge.SAMPLE_RATE,
+        blocksize=aec_bridge.FRAME_SAMPLES,
     )
 
 

@@ -434,6 +434,8 @@ def test_index_html_renders_all_registry_entries():
     for entry in wake_models.REGISTRY:
         assert entry.label in html, f"{entry.label!r} missing from rendered page"
         assert f'value="{entry.key}"' in html
+    assert "Use JTS as a computer microphone" in html
+    assert "Use JTS as a Mac microphone" not in html
 
 
 def test_index_html_marks_active_row(monkeypatch):
@@ -1006,11 +1008,32 @@ def test_sensitivity_posts_aec_threshold(wired_server):
     assert parsed == {"threshold": 0.42}
 
 
-def test_layer_rejects_unknown_name(wired_server):
-    base, _, _, _ = wired_server
-    status, body = _json_post_with_csrf(base, "/layer/garbage", {"enabled": True})
-    assert status == 400
-    assert "unknown layer" in body["error"]
+@pytest.mark.parametrize("with_csrf", [False, True])
+def test_unknown_layer_returns_404_before_csrf(wired_server, with_csrf):
+    """Unknown routes must not reveal whether the CSRF token was valid."""
+    base, received, _, _ = wired_server
+    headers = {"Content-Type": "application/json"}
+    opener = urllib.request.build_opener()
+    if with_csrf:
+        from ._web_test_helpers import make_csrf_session
+
+        session = make_csrf_session(base, page_path="/")
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(session["jar"]),
+        )
+        headers["X-CSRF-Token"] = session["token"]
+    request = urllib.request.Request(
+        base + "/layer/garbage",
+        data=b'{"enabled":true}',
+        method="POST",
+        headers=headers,
+    )
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        opener.open(request, timeout=2)
+
+    assert exc_info.value.code == 404
+    assert not [entry for entry in received if entry[0] == "POST"]
 
 
 def test_layer_rejects_non_boolean_enabled(wired_server):

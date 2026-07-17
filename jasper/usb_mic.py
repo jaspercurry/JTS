@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import struct
 import subprocess
 import time
 from typing import Any, Callable, Mapping
@@ -34,6 +35,13 @@ RELAY_STATUS_PATH = "/run/jasper-usbmic/status.json"
 USBGADGET_UNIT = "jasper-usbgadget.service"
 USBMIC_UNIT = "jasper-usbmic.service"
 USB_HOST_MIC_UDP_PORT = 9894
+# The dedicated USB-host mic leg carries bridge-emit timing metadata. This is
+# intentionally not used by the wake/session legs, whose raw PCM wire contract
+# is frozen. The timestamp is bridge emit time, not physical capture time.
+USB_MIC_PACKET_MAGIC = b"JM"
+USB_MIC_PACKET_VERSION = 2
+USB_MIC_HEADER_STRUCT = "<2sBBIQ"
+USB_MIC_HEADER_BYTES = struct.calcsize(USB_MIC_HEADER_STRUCT)
 USB_MIC_BCD_DEVICE = "0x0210"
 USB_NO_MIC_BCD_DEVICE = "0x0200"
 RELAY_STATUS_FRESH_SECONDS = 3.0
@@ -146,6 +154,22 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _status_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _status_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def relay_audio_issue(relay: Mapping[str, Any]) -> str:
     """Return one stable operator-facing reason for unhealthy relay audio."""
 
@@ -244,16 +268,16 @@ def build_usb_mic_status(
     if not intent.enabled:
         if advertised or not descriptor_revision_ok:
             state = "stopping"
-            detail = "Removing the Mac microphone; USB is reconnecting."
+            detail = "Removing the computer microphone; USB is reconnecting."
         else:
             state = "off"
-            detail = blockers[0] if blockers else "Mac microphone is off."
+            detail = blockers[0] if blockers else "Computer microphone is off."
     elif blockers and not can_enable:
         state = "unavailable"
         detail = blockers[0]
     elif not advertised:
         state = "starting"
-        detail = "Adding the Mac microphone; USB is reconnecting."
+        detail = "Adding the computer microphone; USB is reconnecting."
     elif not descriptor_revision_ok:
         state = "degraded"
         detail = (
@@ -266,13 +290,13 @@ def build_usb_mic_status(
     elif relay_active and relay_fresh:
         state = "streaming" if host_streaming else "ready"
         detail = (
-            f"Your Mac is currently using {microphone_name}."
+            f"Your computer is currently using {microphone_name}."
             if host_streaming
-            else f"{microphone_name} is available on the connected Mac."
+            else f"{microphone_name} is available on the connected computer."
         )
     elif relay_active:
         state = "starting"
-        detail = "The Mac microphone relay is starting."
+        detail = "The computer microphone relay is starting."
     else:
         state = "degraded"
         detail = "The microphone is advertised, but its audio relay is not running."
@@ -293,7 +317,73 @@ def build_usb_mic_status(
         if relay_fresh
         else False,
         "relay_audio_issue": audio_issue,
-        "periods_dropped": int(relay.get("periods_dropped", 0) or 0)
+        "relay_schema_version": _status_int(relay.get("schema_version"))
+        if relay_fresh
+        else 0,
+        "source_age_basis": str(relay.get("source_age_basis") or "")
+        if relay_fresh
+        else "",
+        "source_age_scope": str(relay.get("source_age_scope") or "")
+        if relay_fresh
+        else "",
+        "source_age_sample_count": _status_int(
+            relay.get("source_age_sample_count")
+        )
+        if relay_fresh
+        else 0,
+        "source_age_window_generation": _status_int(
+            relay.get("source_age_window_generation")
+        )
+        if relay_fresh
+        else 0,
+        "source_age_window_started_epoch_sec": _status_optional_float(
+            relay.get("source_age_window_started_epoch_sec")
+        )
+        if relay_fresh
+        else None,
+        "source_age_ms_p50": _status_optional_float(
+            relay.get("source_age_ms_p50")
+        )
+        if relay_fresh
+        else None,
+        "source_age_ms_p95": _status_optional_float(
+            relay.get("source_age_ms_p95")
+        )
+        if relay_fresh
+        else None,
+        "source_age_ms_p99": _status_optional_float(
+            relay.get("source_age_ms_p99")
+        )
+        if relay_fresh
+        else None,
+        "packets_lost": _status_int(relay.get("packets_lost"))
+        if relay_fresh
+        else 0,
+        "sequence_resets": _status_int(relay.get("sequence_resets"))
+        if relay_fresh
+        else 0,
+        "sequence_reorders": _status_int(relay.get("sequence_reorders"))
+        if relay_fresh
+        else 0,
+        "sequence_discontinuities": _status_int(
+            relay.get("sequence_discontinuities")
+        )
+        if relay_fresh
+        else 0,
+        "periods_dropped_streaming": _status_int(
+            relay.get("periods_dropped_streaming")
+        )
+        if relay_fresh
+        else 0,
+        "periods_dropped_idle": _status_int(
+            relay.get("periods_dropped_idle")
+        )
+        if relay_fresh
+        else 0,
+        "drop_regime_basis": str(relay.get("drop_regime_basis") or "")
+        if relay_fresh
+        else "",
+        "periods_dropped": _status_int(relay.get("periods_dropped"))
         if relay_fresh
         else 0,
         "drop_rate_periods_per_sec": float(

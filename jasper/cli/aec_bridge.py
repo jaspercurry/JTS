@@ -88,11 +88,12 @@ Caveats this implementation does NOT yet address:
 from __future__ import annotations
 
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import os
 import socket
 import signal
+import struct
 import sys
 import threading
 import time
@@ -129,8 +130,14 @@ from jasper.wake_corpus.capture_plan import (
     PLAN_ID_ENV,
 )
 from jasper.log_event import log_event
-from jasper.usb_mic import INTENT_PATH as USB_MIC_INTENT_PATH
-from jasper.usb_mic import USB_HOST_MIC_UDP_PORT, usb_mic_enabled
+from jasper.usb_mic import (
+    INTENT_PATH as USB_MIC_INTENT_PATH,
+    USB_HOST_MIC_UDP_PORT,
+    USB_MIC_HEADER_STRUCT,
+    USB_MIC_PACKET_MAGIC,
+    USB_MIC_PACKET_VERSION,
+    usb_mic_enabled,
+)
 from ..mics import xvf3800 as _mic_profile
 
 logger = logging.getLogger("jasper.aec_bridge")
@@ -654,6 +661,23 @@ def _bridge_stats_writer(path: Path = BRIDGE_STATS_PATH) -> None:
     _bridge_stats.write_snapshot(path)
 
 
+def _send_packet(
+    *,
+    sock: socket.socket,
+    dest: tuple[str, int],
+    packet: bytes,
+    leg: str,
+) -> None:
+    """Send one non-blocking leg packet and preserve drop-newest stats."""
+
+    try:
+        sock.sendto(packet, dest)
+        _bridge_stats.inc_nested("packets_sent_by_leg", leg)
+    except BlockingIOError:
+        _bridge_stats.inc_nested("udp_send_drops_by_leg", leg)
+        logger.warning("udp %s sendto would block, dropping frame", leg)
+
+
 def emit_packet(
     *,
     sock: socket.socket,
@@ -666,12 +690,12 @@ def emit_packet(
     batch.extend(pcm)
     if len(batch) < frame_bytes:
         return
-    try:
-        sock.sendto(bytes(batch[:frame_bytes]), dest)
-        _bridge_stats.inc_nested("packets_sent_by_leg", leg)
-    except BlockingIOError:
-        _bridge_stats.inc_nested("udp_send_drops_by_leg", leg)
-        logger.warning("udp %s sendto would block, dropping frame", leg)
+    _send_packet(
+        sock=sock,
+        dest=dest,
+        packet=bytes(batch[:frame_bytes]),
+        leg=leg,
+    )
     del batch[:frame_bytes]
 
 
@@ -696,6 +720,41 @@ class LegEmitter:
 
     def close(self) -> None:
         self.sock.close()
+
+
+@dataclass
+class TimestampedLegEmitter(LegEmitter):
+    """Packetize the isolated USB-host mic leg with emit-time metadata.
+
+    ``t_capture_mono_ns`` in the wire header is deliberately a bridge-emit
+    timestamp: it measures bridge emit -> relay sink, while PortAudio's input
+    latency is observed separately when the capture stream opens.
+    """
+
+    _seq: int = field(default=0, init=False, repr=False)
+
+    def emit(self, pcm: bytes) -> None:
+        frame_bytes = self.frame_samples * 2
+        self.batch.extend(pcm)
+        if len(self.batch) < frame_bytes:
+            return
+        seq = self._seq
+        self._seq = (self._seq + 1) & 0xFFFFFFFF
+        header = struct.pack(
+            USB_MIC_HEADER_STRUCT,
+            USB_MIC_PACKET_MAGIC,
+            USB_MIC_PACKET_VERSION,
+            0,
+            seq,
+            time.clock_gettime_ns(time.CLOCK_MONOTONIC),
+        )
+        _send_packet(
+            sock=self.sock,
+            dest=self.dest,
+            packet=header + bytes(self.batch[:frame_bytes]),
+            leg=self.stats_key,
+        )
+        del self.batch[:frame_bytes]
 
 
 class BridgeStalled(RuntimeError):
@@ -1465,7 +1524,14 @@ def _mic_thread(
     with sd.InputStream(
         device=config.mic_device, samplerate=SAMPLE_RATE, channels=MIC_CHANNELS,
         dtype="int16", blocksize=FRAME_SAMPLES, callback=cb,
-    ):
+    ) as stream:
+        log_event(
+            logger,
+            "aec.mic_stream_latency",
+            latency_s=stream.latency,
+            samplerate=SAMPLE_RATE,
+            blocksize=FRAME_SAMPLES,
+        )
         _shutdown.wait()
 
 
@@ -1702,8 +1768,9 @@ def _aec_loop(  # noqa: PLR0915
         *,
         engine_token: str | None = None,
         frame_samples: int = OUT_FRAME_SAMPLES,
+        emitter_cls: type[LegEmitter] = LegEmitter,
     ) -> LegEmitter:
-        emitter = LegEmitter(
+        emitter = emitter_cls(
             sock=socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
             dest=(config.out_host, port),
             batch=bytearray(),
@@ -1725,6 +1792,7 @@ def _aec_loop(  # noqa: PLR0915
             "usb_host_mic",
             config.out_port_usb_host_mic,
             frame_samples=FRAME_SAMPLES,
+            emitter_cls=TimestampedLegEmitter,
         )
         if config.emit_usb_host_mic
         else None

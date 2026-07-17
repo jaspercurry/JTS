@@ -551,48 +551,66 @@ def _aec_full_status() -> dict:
     return _aec_endpoints._aec_full_status()
 
 
-def _schedule_usb_gadget_recompose() -> None:
+def _schedule_usb_gadget_recompose() -> bool:
     """Hand delayed, debounced apply to systemd before returning to the client.
 
     Restarting an already-running oneshot cancels its 350 ms grace sleep and
     begins it again, so rapid switch changes naturally debounce.  Unlike an
     in-process Timer, the durable intent's apply job survives jasper-control
-    exiting after this request.
+    exiting after this request.  Reset the unit's failure/start-rate state so
+    each explicit user action gets a fresh, bounded retry budget.
     """
 
-    try:
-        result = subprocess.run(
+    commands = (
+        (
+            "retry_budget_reset",
+            ["systemctl", "reset-failed", _USB_MIC_APPLY_UNIT],
+        ),
+        (
+            "enqueue",
             ["systemctl", "restart", "--no-block", _USB_MIC_APPLY_UNIT],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        log_event(
-            logger,
-            "usb_mic.recompose_failed",
-            unit=_USB_MIC_APPLY_UNIT,
-            error=str(exc),
-            level=logging.ERROR,
-        )
-        return
-    if result.returncode != 0:
-        log_event(
-            logger,
-            "usb_mic.recompose_failed",
-            unit=_USB_MIC_APPLY_UNIT,
-            returncode=result.returncode,
-            detail=(result.stderr or result.stdout).strip().replace("\n", " | "),
-            level=logging.ERROR,
-        )
-        return
+        ),
+    )
+    for phase, command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            log_event(
+                logger,
+                "usb_mic.recompose_failed",
+                unit=_USB_MIC_APPLY_UNIT,
+                phase=phase,
+                error=str(exc),
+                level=logging.ERROR,
+            )
+            return False
+        if result.returncode != 0:
+            log_event(
+                logger,
+                "usb_mic.recompose_failed",
+                unit=_USB_MIC_APPLY_UNIT,
+                phase=phase,
+                returncode=result.returncode,
+                detail=(result.stderr or result.stdout).strip().replace(
+                    "\n", " | ",
+                ),
+                level=logging.ERROR,
+            )
+            return False
     log_event(
         logger,
         "usb_mic.recompose_scheduled",
         unit=_USB_MIC_APPLY_UNIT,
         grace_ms=350,
+        max_attempts=4,
     )
+    return True
 
 
 def _load_dial_heartbeat() -> dict[str, Any]:
@@ -2904,7 +2922,22 @@ def _make_handler(
                 enabled=enabled,
                 client=self.address_string(),
             )
-            _schedule_usb_gadget_recompose()
+            if not _schedule_usb_gadget_recompose():
+                failed_status = _aec_full_status()
+                self._send_json(
+                    {
+                        "error": (
+                            "USB microphone preference was saved, but its "
+                            "hardware update could not be scheduled."
+                        ),
+                        "code": "usb_mic_recompose_schedule_failed",
+                        "intent_saved": True,
+                        "requested_enabled": enabled,
+                        "usb_mic": failed_status.get("usb_mic") or {},
+                    },
+                    status=502,
+                )
+                return
             self._send_json(_aec_full_status())
             return
 

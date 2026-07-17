@@ -414,7 +414,7 @@ def test_apply_aec_layer_off_is_noop_when_software_aec3_bypassed(monkeypatch):
     assert calls == ["GET /aec"]
 
 
-def test_post_layer_unknown_layer_400(tmp_path, monkeypatch):
+def test_post_layer_unknown_layer_404(tmp_path, monkeypatch):
     _make_request.state_path = str(tmp_path / "wake_model.env")
     monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *a, **k: True)
     h, cap = _make_request(
@@ -423,7 +423,7 @@ def test_post_layer_unknown_layer_400(tmp_path, monkeypatch):
         headers={"Content-Type": "application/json"},
     )
     h.do_POST()
-    assert cap["status"] == 400
+    assert cap["status"] == 404
 
 
 def test_post_sensitivity_validates_range(tmp_path, monkeypatch):

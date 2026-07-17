@@ -41,6 +41,7 @@ from jasper.audio_validation import (
     write_artifact,
     write_latest_pointer,
 )
+from jasper.percentiles import nearest_rank_percentile
 # The control-socket / state paths live in ONE route-latency home
 # (jasper.route_latency.status_socket) so the artifact writer and the
 # click/capture harness can never drift. Do not re-declare them here.
@@ -66,21 +67,6 @@ class RouteLatencyMetrics:
 class _RouteLiveState:
     issues: tuple[str, ...] = ()
     negotiated_buffer_frames: int | None = None
-
-
-def nearest_rank_percentile(samples: Iterable[float], percentile: float) -> float | None:
-    """Return the nearest-rank percentile for measured latency samples."""
-
-    values = sorted(float(sample) for sample in samples)
-    if not values:
-        return None
-    p = float(percentile)
-    if p > 1.0:
-        p = p / 100.0
-    if not 0.0 < p < 1.0:
-        raise ValueError(f"percentile must be in (0, 1), got {percentile!r}")
-    idx = max(0, min(len(values) - 1, int(math.ceil(p * len(values))) - 1))
-    return values[idx]
 
 
 def metrics_from_samples(

@@ -5,6 +5,10 @@
 [Unit]
 Description=Apply the desired JTS USB microphone shape
 Documentation=file:///opt/jasper/docs/HANDOFF-usb-gadget.md
+# One accepted apply gets at most four starts (the initial try plus three
+# retries). jasper-control resets this budget before each explicit user action.
+StartLimitIntervalSec=5min
+StartLimitBurst=4
 
 [Service]
 Type=oneshot
@@ -20,6 +24,11 @@ ExecStartPost=/usr/bin/logger --tag jasper-usbmic-apply event=usb_mic.recompose_
 # silent on success and emits the stable failed event for every failed result.
 ExecStopPost=/usr/local/sbin/jasper-usbmic-apply-result
 TimeoutStartSec=30s
+# A failed bridge/gadget restart must not leave durable intent unapplied after
+# one transient failure. ExecStartPost failure makes the oneshot fail, so PID 1
+# retries the complete desired-state apply with a bounded backoff.
+Restart=on-failure
+RestartSec=2s
 User=root
 Group=root
 NoNewPrivileges=true
