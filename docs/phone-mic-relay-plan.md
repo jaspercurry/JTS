@@ -547,8 +547,31 @@ capture, deterministically, on every driver sweep. Fixed by
 reservation is the live, matching (speaker_group_id, role, capture_geometry)
 admission, it — not a second envelope-derivation — is treated as the
 server-owned admission, and the redundant guard is skipped for exactly that
-capture. The guard is unchanged for every wizard-initiated v2/direct
-request (a stale tab racing a fresher server-driven step still refuses).
+capture. This covers **both** near-field AND reference-axis driver captures
+(both run v3 and both reserve). The guard is unchanged for every
+wizard-initiated v2/direct request (a stale tab racing a fresher
+server-driven step still refuses).
+
+The sibling **fixed-axis LEVEL-CHECK** guard
+(`_assert_crossover_reference_axis_level_action`) needs no such exemption,
+for a structural reason: the level check holds **no `repeat_admission`
+reservation of its own** — its handler
+(`_handle_crossover_relay_level_match`) only ever calls
+`repeat_admission.invalidate()`, never `reserve()` — so there is no in-flight
+reservation for its own envelope recompute to misread. (Reference-axis driver
+*captures* do reserve, but they are guarded by the driver guard above, which
+is already fixed.)
+
+Both guards now raise a typed `ServerOwnedNextStepMismatch` (a `ValueError`
+subclass) carrying `code`/`user_message`, so the refusal maps to one
+household sentence — never the raw "…is not the server-owned next step"
+string — on every reachable household surface: the async wizard status line
+(`_relay_failure_message` in `_run_relay_capture`), the **synchronous
+POST-time dispatch** (`_dispatch_crossover`, which previously returned
+`str(exc)` verbatim on a stale-tab re-POST), and the phone capture page's
+`sweep_failed` host event (`correction_crossover_flow._phone_failure_text`).
+The raw string stays in the `event=capture_relay.server_owned_step_mismatch`
+structured log only.
 
 ---
 

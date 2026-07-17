@@ -8922,6 +8922,37 @@ def test_capture_sweep_played_reads_the_nested_playback_shape():
     assert flow.playback_issue_text({}, "fallback") == "fallback"
 
 
+def test_phone_sweep_failed_maps_only_the_guard_refusal_to_household_copy():
+    """Run-21 review S1 (defensive): ``on_armed``'s
+    ``validate_current_context()`` can raise ``ServerOwnedNextStepMismatch``,
+    and the phone capture page renders the ``sweep_failed`` host event's
+    ``error`` field verbatim. That ONE exception routes through the same
+    single-source household copy (its own ``user_message``); every other
+    exception keeps ``str(exc)`` unchanged, so the mapping stays scoped to the
+    observed-broken path."""
+
+    from jasper.web import correction_setup
+
+    guard_exc = correction_setup.ServerOwnedNextStepMismatch(
+        "the requested driver capture is not the server-owned next step"
+    )
+    mapped = flow._phone_failure_text(guard_exc)
+    assert mapped == guard_exc.user_message
+    assert "server-owned next step" not in mapped
+    # Single source: the phone-post copy is byte-identical to the wizard
+    # status-line copy (_relay_failure_message reads the same attribute).
+    assert mapped == correction_setup._relay_failure_message(guard_exc)
+
+    # Unmapped: an unrelated failure still surfaces its own str(exc) — the
+    # defensive routing does not swallow other errors' detail.
+    assert flow._phone_failure_text(RuntimeError("camilla is unavailable")) == (
+        "camilla is unavailable"
+    )
+    assert flow._phone_failure_text(ValueError("device mismatch")) == (
+        "device mismatch"
+    )
+
+
 def test_crossover_relay_endpoint_refuses_while_other_measurement_active(
     monkeypatch,
 ):
@@ -9066,6 +9097,80 @@ def test_crossover_sweep_endpoint_still_refuses_other_blocked_setups(
                 {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"}
             )
         )
+
+
+def test_dispatch_maps_post_time_guard_refusal_to_household_copy(monkeypatch):
+    """Run-21 review S1: the SYNCHRONOUS POST-time dispatch of
+    ``/crossover/relay-capture`` must not leak the raw guard string. A stale
+    wizard tab re-POSTing a driver capture the server no longer offers (here:
+    reference_axis when near_field is the offered step) trips
+    ``_assert_crossover_driver_action`` at POST time — inside
+    ``_handle_crossover_relay_capture``, BEFORE any relay registration — and
+    that ``ServerOwnedNextStepMismatch`` propagates into
+    ``_dispatch_crossover``'s ``except``. The response body the wizard renders
+    verbatim (``postJSON`` -> ``Error(body.error)`` -> ``setStatus``) must
+    carry the plain household sentence, NOT "...is not the server-owned next
+    step". The raw string stays in the structured
+    ``event=capture_relay.server_owned_step_mismatch`` log only."""
+
+    import jasper.output_topology as output_topology
+    from jasper.web import correction_setup
+
+    status = _mid_sequence_sweep_status()
+    monkeypatch.setattr(backend, "status_payload", lambda: status)
+    monkeypatch.setattr(
+        backend,
+        "level_lease",
+        lambda: SimpleNamespace(unresolved_volume_safety=None),
+    )
+    monkeypatch.setattr(
+        output_topology,
+        "load_output_topology",
+        lambda: SimpleNamespace(topology_id="topology-1"),
+    )
+    monkeypatch.setattr(
+        correction_setup, "_require_relay_base", lambda: "https://relay.test"
+    )
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    # The guard trips at POST time, before registration — prove it by failing
+    # loudly if the relay is ever reached.
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_relay_capture",
+        lambda *_a, **_k: pytest.fail("guard must refuse before relay registration"),
+    )
+
+    body = json.dumps(
+        {
+            "kind": "driver",
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "capture_geometry": "reference_axis",  # near_field is what's offered
+        }
+    ).encode()
+    handler_type = correction_setup._make_handler({"hostname": "jts.local"})
+    handler = handler_type.__new__(handler_type)
+    handler.headers = {"Content-Length": str(len(body))}
+    handler.rfile = io.BytesIO(body)
+    sent = []
+    handler._send_json = lambda payload, status=200: sent.append((payload, status))
+
+    handler._dispatch_crossover("/crossover/relay-capture")
+
+    assert len(sent) == 1
+    payload, http_status = sent[0]
+    assert int(http_status) == 400
+    assert payload["ok"] is False
+    # The mapped household copy, NOT the raw guard string.
+    assert payload["error"] == (
+        "This measurement step changed on the speaker before the phone "
+        "confirmed it. Reopen the phone link and try again."
+    )
+    assert "server-owned next step" not in payload["error"]
+    # And it is the SAME single source the async surfacing uses.
+    assert payload["error"] == correction_setup._relay_failure_message(
+        correction_setup.ServerOwnedNextStepMismatch("x")
+    )
 
 
 @pytest.mark.parametrize(

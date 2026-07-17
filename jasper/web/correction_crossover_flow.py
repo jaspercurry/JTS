@@ -492,6 +492,30 @@ def playback_issue_text(payload: Any, fallback: str) -> str:
     return fallback
 
 
+def _phone_failure_text(exc: BaseException) -> str:
+    """Household-safe text for a ``sweep_failed`` host event sent to the phone.
+
+    ``on_armed``'s ``validate_current_context()`` can raise
+    ``correction_setup.ServerOwnedNextStepMismatch`` (the envelope-derivation
+    guard's refusal). Its raw ``str(exc)`` is programmer jargon; the phone
+    capture page renders the ``error`` field verbatim, so route that ONE
+    exception through the same single-source household copy the wizard status
+    line uses (the exception's own ``user_message``). Every other exception
+    keeps ``str(exc)`` unchanged — scope stays on the observed-broken path.
+
+    Lazy import: ``correction_setup`` imports THIS module at call time (never
+    at its own module top level), and this module never imports
+    ``correction_setup`` at top level, so resolving the type here — only on
+    the error path, well after both modules are loaded — cannot form an
+    import cycle.
+    """
+    from . import correction_setup
+
+    if isinstance(exc, correction_setup.ServerOwnedNextStepMismatch):
+        return exc.user_message
+    return str(exc)
+
+
 def capture_sweep_played(payload: Any) -> bool:
     """Whether a driver/summed capture-sweep payload reports real audio.
 
@@ -1011,7 +1035,9 @@ async def run_crossover_relay_transport(
             post_phase("sweep_complete")
         except (RuntimeError, OSError, ValueError) as exc:
             if not isinstance(exc, CaptureStopped):
-                post_terminal_best_effort("sweep_failed", error=str(exc))
+                post_terminal_best_effort(
+                    "sweep_failed", error=_phone_failure_text(exc)
+                )
             raise
 
     capture_task = asyncio.create_task(
@@ -1860,7 +1886,9 @@ def build_crossover_relay_plan_run_and_consume(
                 post_phase("sweep_complete")
             except (RuntimeError, OSError, ValueError) as exc:
                 if not isinstance(exc, CaptureStopped):
-                    post_terminal_best_effort("sweep_failed", error=str(exc))
+                    post_terminal_best_effort(
+                        "sweep_failed", error=_phone_failure_text(exc)
+                    )
                 raise
 
         def consume_capture(

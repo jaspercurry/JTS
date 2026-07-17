@@ -619,8 +619,12 @@
   `_plan_admission_matches` (`jasper/web/correction_setup.py`): a matching,
   live capture-plan reservation for the exact (speaker_group_id, role,
   capture_geometry) IS the server-owned admission, so the redundant
-  envelope-derivation guard is skipped for that one capture; every
-  wizard-initiated v2/direct request still runs the full guard unchanged. See
+  envelope-derivation guard is skipped for that one capture (near-field AND
+  reference-axis driver captures both covered); every wizard-initiated
+  v2/direct request still runs the full guard unchanged. The refusal is a
+  typed `ServerOwnedNextStepMismatch` so it maps to one household sentence on
+  every reachable surface — wizard status line, the synchronous POST-time
+  dispatch, and the phone `sweep_failed` event — never the raw string. See
   [phone-mic-relay-plan.md](phone-mic-relay-plan.md)'s "Session-spanning
   capture plans" section for the full mechanism.
 
