@@ -582,22 +582,24 @@ def _capture_to_magnitude(
             sr,
             percentile=50,
         )
-        robust_by_id = {item["band_id"]: item for item in robust["bands"]}
-        baseline_by_id = {item["band_id"]: item for item in baseline["bands"]}
-        adjusted = []
-        for item in noise_bands:
-            robust_item = robust_by_id.get(item["band_id"])
-            baseline_item = baseline_by_id.get(item["band_id"])
-            delta = (
-                float(robust_item["level_dbfs"])
-                - float(baseline_item["level_dbfs"])
-                if robust_item is not None and baseline_item is not None
-                else 0.0
-            )
-            adjusted.append({
-                **item,
-                "level_dbfs": round(float(item["level_dbfs"]) + delta, 2),
-            })
+        # A band the reference sweep never excited (or barely reaches, at its
+        # fade edges) is not safe to read from the deconvolved domain — see
+        # snr_policy.excitation_covered_bands. apply_noise_band_fallback
+        # substitutes the raw (non-deconvolved) robust ambient reading for
+        # those bands instead, since it does not depend on the reference
+        # spectrum at all and is grounded truth for what the room actually
+        # did.
+        covered = snr_policy.excitation_covered_bands(
+            snr_policy.CROSSOVER_SNR_BANDS_HZ,
+            f1_hz=float(sweep_meta["f1"]),
+            f2_hz=float(sweep_meta["f2"]),
+        )
+        adjusted = snr_policy.apply_noise_band_fallback(
+            noise_bands,
+            robust_bands=robust["bands"],
+            baseline_bands=baseline["bands"],
+            covered=covered,
+        )
         ambient_report = {
             "schema_version": 2,
             "domain": "deconvolved",

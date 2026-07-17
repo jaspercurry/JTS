@@ -616,6 +616,29 @@ create a second retention system.
   them at reduced confidence; fewer than two refuses the set.
   This closes the prior live-hardware `acoustic.snr: null` path without making
   the probe's raw RMS an acoustic SNR verdict.
+- **Phantom noise-floor fix (2026-07-17).** The mechanism above — ambient
+  noise deconvolved through the SAME regularized inverse as the signal —
+  has a blind spot: outside the reference sweep's own excited range
+  `[f1, f2]` (a per-driver CONFIRMED safe band, routinely narrower than the
+  analysis' full canonical band table — e.g. a real woofer sweep's
+  `f1=60 Hz, f2=4000 Hz`), that inverse divides by a near-zero reference
+  spectrum — a well-known Tikhonov regularization "resonance" artifact, not
+  a measurement. Three real jts3 hardware captures showed `sub_bass`
+  (20-80 Hz, straddling `f1`) reporting a deconvolved noise floor
+  ~40-50 dB louder than the room's real ambient (independently verified via
+  a plain FFT of the same quiet window), driving a false "insufficient"
+  verdict even in a quiet room — the root cause behind the SNR-shortfall
+  correction cascade this section and "Level control and SNR" describe.
+  `snr_policy.excitation_covered_bands` flags any canonical band not
+  ENTIRELY inside `[f1, f2]`; `apply_noise_band_fallback` substitutes the
+  raw (non-deconvolved) robust ambient reading for those bands, unless that
+  raw reading is itself floor-clamped (no real precision to trust either —
+  the real hardware `treble` shape, entirely above a woofer's `f2`, where
+  phone-mic self-noise reads as pure digital silence, so it keeps its
+  pre-fix deconvolved value). Covered bands are untouched — same bytes as
+  before. Full detail, the ground-truth validation table, and doc
+  cross-reference in active-crossover-information-design.md "Level control
+  and SNR".
 - **Lane B fixed-axis admission contract (2026-07-12).** Driver analysis no
   longer accepts `capture_geometry` from the browser. It derives near-field vs
   reference-axis from a complete relay proof revalidated against the active
@@ -1364,4 +1387,13 @@ restart and re-refusing identically with no tone played; full detail
 in active-crossover-information-design.md "Level control and SNR")
 checked hardware-free against hardware run 20's numbers, including an
 endpoint-level restart repro through the real level-match handler; not
-yet hardware-validated)
+yet hardware-validated. Same-day follow-up (2026-07-17): the phantom
+noise-floor fix — the per-band ambient-noise estimator was overstating
+SNR by ~40-50 dB for any canonical band the reference sweep's own
+`[f1, f2]` did not fully excite, the root cause behind the SNR-shortfall
+correction cascade W2.1-W2.4 above were built to react to — checked
+against three real jts3 hardware captures (sub_bass moved from 13-16 dB
+"insufficient" to 62-66 dB "ok" on all three; every other band's reported
+level is bit-for-bit unchanged) and pinned by ground-truth fixtures plus
+synthetic protective-power cases; not yet hardware-validated on a live
+re-measure)
