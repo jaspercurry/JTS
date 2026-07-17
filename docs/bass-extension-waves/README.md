@@ -24,6 +24,11 @@ merged before the next starts) except where a prompt says otherwise.
 Every wave prompt **incorporates this README by reference**. Codex:
 read this file completely before your wave file.
 
+**Program coordination** may be run by a dedicated Codex coordinator
+session — its master prompt, merge-gate duties, sequencing rules, and
+escalation boundaries live in [`coordinator.md`](coordinator.md). The
+coordinator launches the wave sessions; it never implements.
+
 ---
 
 ## The engineering charter (binding for every wave)
