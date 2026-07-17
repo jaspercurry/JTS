@@ -133,12 +133,56 @@ def test_no_state_resolves_to_no_bass_management(
 ) -> None:
     _no_topology(monkeypatch, tmp_path)
     _no_grouping(monkeypatch, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_BASS_EXTENSION_PROFILE_STATE",
+        str(tmp_path / "does_not_exist_bass_extension.json"),
+    )
 
     state = bm.resolve_bass_management()
     assert state.corner_hz is None
     assert state.owner is None
     assert state.sub_present is False
+    assert state.bass_extension is None
+    assert "bass_extension" not in state.to_dict()
     assert bm.active_crossover_corner_hz() is None
+
+
+def test_resolver_adds_profile_summary_without_changing_corner_resolution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from jasper.bass_extension import profile as profile_mod
+
+    _no_topology(monkeypatch, tmp_path)
+    _no_grouping(monkeypatch, tmp_path)
+    summary = {
+        "commissioned": True,
+        "status": "accepted",
+        "profile_id": "bex-123456789abc",
+    }
+    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", lambda: summary)
+
+    state = bm.resolve_bass_management()
+
+    assert state.corner_hz is None
+    assert state.owner is None
+    assert state.sub_present is False
+    assert state.mains_highpass_enabled is False
+    assert state.bass_extension == summary
+
+
+def test_profile_summary_failure_is_fail_soft_for_resolver(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from jasper.bass_extension import profile as profile_mod
+
+    _no_topology(monkeypatch, tmp_path)
+    _no_grouping(monkeypatch, tmp_path)
+
+    def boom():
+        raise RuntimeError("profile read failed")
+
+    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", boom)
+    assert bm.resolve_bass_management() == bm._NO_BASS_MANAGEMENT
 
 
 def test_local_dac_sub_corner_is_read_from_topology(

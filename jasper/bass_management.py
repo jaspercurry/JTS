@@ -94,6 +94,9 @@ class BassManagementState:
     # MAINS_HP_UNWIRED_ACTIVE_ENDPOINT. None whenever the on/off state is the
     # whole truth.
     mains_highpass_unwired_reason: str | None = None
+    # Read-only commissioned Bass Extension Profile summary. This is an inert
+    # fact in Wave 2; it does not change crossover ownership or routing.
+    bass_extension: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -160,6 +163,25 @@ def _is_active_speaker_box() -> bool:
     return is_active_speaker_box()
 
 
+def _bass_extension_summary() -> dict[str, object] | None:
+    """Read the inert commissioned-profile summary, fail-soft."""
+    try:
+        from jasper.bass_extension.profile import bass_extension_state_summary
+
+        return bass_extension_state_summary()
+    except (
+        ImportError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        KeyError,
+        AttributeError,
+    ):
+        logger.debug("bass extension profile summary read failed", exc_info=True)
+        return None
+
+
 def resolve_bass_management() -> BassManagementState:
     """Resolve the live bass-management corner + ownership, fail-soft.
 
@@ -167,6 +189,8 @@ def resolve_bass_management() -> BassManagementState:
     wireless-sub bond. When neither is present, returns the "no bass management"
     state (``corner_hz=None``).
     """
+    bass_extension = _bass_extension_summary()
+
     # 1) Local-DAC active-speaker sub — highest precedence.
     local_corner = _local_dac_sub_corner()
     if local_corner is not None:
@@ -179,6 +203,7 @@ def resolve_bass_management() -> BassManagementState:
             # upper half). There is no per-speaker "disable" toggle — the local
             # sub is only ever wired WITH bass management.
             mains_highpass_enabled=True,
+            bass_extension=bass_extension,
         )
 
     # 2) Wireless-sub bond — defers to a local sub, but wins over nothing.
@@ -207,13 +232,22 @@ def resolve_bass_management() -> BassManagementState:
                 sub_present=True,
                 mains_highpass_enabled=wired,
                 mains_highpass_unwired_reason=unwired_reason,
+                bass_extension=bass_extension,
             )
     except (OSError, ValueError, TypeError, AttributeError, ImportError):
         # Fail-soft: `load_config` is itself total (returns disabled on a
         # missing/bad file), so this only guards the import + attribute reads.
         logger.debug("wireless-sub corner read failed", exc_info=True)
 
-    return _NO_BASS_MANAGEMENT
+    if bass_extension is None:
+        return _NO_BASS_MANAGEMENT
+    return BassManagementState(
+        corner_hz=None,
+        owner=None,
+        sub_present=False,
+        mains_highpass_enabled=False,
+        bass_extension=bass_extension,
+    )
 
 
 def active_crossover_corner_hz() -> float | None:
