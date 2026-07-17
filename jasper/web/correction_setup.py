@@ -3255,6 +3255,12 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
                 "the remembered microphone calibration is no longer available; "
                 "set it up again"
             )
+        # `serial=` is documented as the RAW serial, but a stored re-confirm
+        # never sees one — the phone only echoes calibration_id + model. The
+        # already-truncated last-4 display is fed back deliberately:
+        # serial_display_from_raw is idempotent for values of <= 4 characters
+        # (returns them unchanged), so the household record keeps its
+        # "...1234" display across re-confirms instead of blanking it.
         _save_household_mic(
             resolved,
             serial=previous.serial_display if previous is not None else None,

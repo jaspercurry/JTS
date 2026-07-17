@@ -15,11 +15,11 @@
 
 ## Status
 
-- 🧱 **Wave-2 household-mic persistence (Pi-side; phone confirm UI is a
-  follow-up).** Before this, nothing about the measurement mic survived
-  across sessions: the phone relay's setup validates against a per-run
-  `setup_binding_id` (a fresh `session_id`/`context_id` every run), and an
-  uploaded calibration is stored with `serial=None`
+- 🧱 **Wave-2 household-mic persistence — loop complete (Pi record + phone
+  one-tap confirm).** Before this, nothing about the measurement mic
+  survived across sessions: the phone relay's setup validates against a
+  per-run `setup_binding_id` (a fresh `session_id`/`context_id` every run),
+  and an uploaded calibration is stored with `serial=None`
   (`store_calibration(provider="manual_upload", ...)`), so the vendor-cache
   lookup keyed by `serial_hash` + model + orientation could never reach it.
   Every session made the household re-type a serial or re-upload a file.
@@ -27,23 +27,31 @@
   `/var/lib/jasper/correction/household_mic.json`, atomic tempfile+rename,
   mode 0644, no secrets (a `serial_hash` plus an optional last-4
   `serial_display`) — written after every SUCCESSFULLY established
-  calibration from both the phone-relay flow (room and crossover share
+  calibration AND after every stored-mode re-confirm (the one-tap below),
+  from both the phone-relay flow (room and crossover share
   `_relay_calibration_from_setup` in `jasper/web/correction_setup.py`) and
   the local/laptop flow (`/calibration/fetch`, `/calibration/upload`).
   `jasper.audio_measurement.calibration.find_stored_calibration_by_content_hash`
   is the additive lookup that makes an upload (no serial) resolvable again
   purely from its content hash. Two consumers read the record: the
   `CaptureSpec.default_setup.calibration` OPTIONAL prefill hint
-  (`jasper/capture_relay/spec.py`) — inert on the current capture page,
-  which parses the spec as an opaque JSON object and never rejects unknown
-  top-level keys — and the local `/correction/` wizard's server-rendered
-  "Using {label} — change" banner. A session that establishes a DIFFERENT
-  mic is never blocked; the new success replaces the record
-  (`event=correction.household_mic_replaced`). The phone page's matching
-  one-tap confirm UI (reading `default_setup`) is the follow-up that makes
-  the hint actionable on that surface; until it ships, the phone flow is
-  unaffected and the local wizard is the only surface where the household
-  visibly benefits.
+  (`jasper/capture_relay/spec.py`) and the local `/correction/` wizard's
+  server-rendered "Using {label} — change" banner. The phone side SHIPPED
+  (#1560): the capture page's one-tap "Using {label} · {serial_display} —
+  one tap to confirm" screen (`capture-page/js/main.js`'s
+  `renderCalibrationConfirm`) reads the hint and submits
+  `setup.calibration = {mode: "stored", calibration_id, model}`, which the
+  Pi resolves via `resolve_household_mic_calibration` in the
+  `mode="stored"` branch of `_relay_calibration_from_setup` — gated on the
+  hint's `resolvable: true` marker, minted only when the `calibration_id`
+  resolves on disk at spec-build time (a second, fresh resolver call). No
+  marker (older Pi build, or a record gone stale) → the page renders its
+  plain full picker; a stale record rejected at submit time falls back to
+  the same picker with a plain sentence — never a dead end. An older
+  capture page still ignores unknown spec fields, so every deploy order is
+  safe. A session that establishes a DIFFERENT mic is never blocked; the
+  new success replaces the record
+  (`event=correction.household_mic_replaced`).
 - 🧱 **Wave 2 playback core extracted; Room behavior retained.**
   `jasper.audio_measurement.playback` now owns policy-free WAV-process cleanup
   and deterministic sine-WAV generation. This Room module keeps
@@ -2906,7 +2914,16 @@ Internal:
 
 ---
 
-Last verified: 2026-07-16 (voice-side Camilla ownership rechecked against
+Last verified: 2026-07-17 (Wave-2 household-mic Status bullet updated to the
+completed loop: the phone one-tap confirm shipped in the capture page's
+2026-07 Wave-2 batch and the Pi's `mode="stored"` branch +
+`default_setup.calibration.resolvable` marker complete it; the stored-mode
+re-confirm is now a household-record write trigger alongside newly
+established calibrations. Checked against `_relay_calibration_from_setup` /
+`_default_setup_calibration_for_spec` in `jasper/web/correction_setup.py`,
+`jasper/capture_relay/spec.py`'s `DefaultSetupCalibration`, and
+`capture-page/js/main.js`'s `renderCalibrationConfirm`; hardware-free tests
+only.) Prior 2026-07-16 (voice-side Camilla ownership rechecked against
 `VolumeCoordinator.note_voice_session`, the legacy `Ducker`, and measurement
 pause; jts3 hardware finding: a single marginal
 `agc_suspected` estimate — 0.644 slope over 3 steps — refused a measurement
