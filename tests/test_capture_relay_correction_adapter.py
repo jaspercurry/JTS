@@ -1280,7 +1280,14 @@ async def test_relay_level_stale_page_never_starts_tone_and_reaches_phone(
 
     terminal = host_events[-1]["ramp"]
     assert terminal["state"] == "error"
-    assert "incompatible" in terminal["error"]
+    # The phone shows the mapped household copy (see
+    # correction_setup._relay_failure_message), never the raw
+    # "capture page is incompatible ... (expected protocol N ...)"
+    # diagnostic — that stays in the journal.
+    assert terminal["error"] == (
+        "The phone page is out of date for this speaker. "
+        "Close the phone tab and open a fresh link from this page."
+    )
 
 
 @pytest.mark.asyncio
