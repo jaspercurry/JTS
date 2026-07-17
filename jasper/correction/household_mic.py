@@ -24,17 +24,18 @@ calibration (re-type a serial or re-upload a file) from scratch.
 This module owns exactly ONE durable JSON record —
 ``/var/lib/jasper/correction/household_mic.json`` — recording the mic/
 calibration that most recently succeeded. It is written after every
-SUCCESSFUL calibration establishment (a vendor fetch or an accepted upload),
-from both the phone-relay flow (room + crossover share
-``_relay_calibration_from_setup`` in ``jasper/web/correction_setup.py``) and
-the local/laptop flow (``_handle_calibration_fetch`` /
-``_handle_calibration_upload`` in the same module). Downstream consumers —
-the capture-spec ``default_setup`` prefill hint
-(``jasper/capture_relay/spec.py``) and the room wizard's server-rendered mic
-selection — read it so the household does not re-enter what it already told
-JTS. A session that establishes a DIFFERENT mic is never blocked; the new
-success simply replaces the record (see ``correction.household_mic_replaced``
-in ``jasper/web/correction_setup.py``).
+SUCCESSFUL calibration establishment (a vendor fetch or an accepted upload)
+or explicit re-confirmation of the current one (a phone one-tap "Using
+{mic} — confirm"), from both the phone-relay flow (room + crossover share
+``_relay_calibration_from_setup`` in ``jasper/web/correction_setup.py``,
+whose ``mode="stored"`` branch is the re-confirm path) and the local/laptop
+flow (``_handle_calibration_fetch`` / ``_handle_calibration_upload`` in the
+same module). Downstream consumers — the capture-spec ``default_setup``
+prefill hint (``jasper/capture_relay/spec.py``) and the room wizard's
+server-rendered mic selection — read it so the household does not re-enter
+what it already told JTS. A session that establishes a DIFFERENT mic is
+never blocked; the new success simply replaces the record (see
+``correction.household_mic_replaced`` in ``jasper/web/correction_setup.py``).
 
 No secrets land in the record: ``serial_hash`` is the same one-way hash the
 calibration record itself carries, and ``serial_display`` is at most the
@@ -48,14 +49,20 @@ confirm" screen (``capture-page/js/main.js``'s ``renderCalibrationConfirm``,
 module feeds (``correction_setup.py``'s
 ``_default_setup_calibration_for_spec``) and — when the hint is marked
 ``resolvable: true`` — submits ``setup.calibration = {mode: "stored",
-calibration_id}`` for the Pi to resolve via
-``resolve_household_mic_calibration`` below. The ``mode="stored"`` branch of
-``_relay_calibration_from_setup`` plus the ``resolvable`` marker ship in the
-in-flight Pi stored-mode PR; without the marker (older Pi, or an ID that no
-longer resolved at spec-mint time) the page renders its plain full picker.
-An older capture page ignores unknown spec fields (verified against
+calibration_id}`` (plus ``model``, display-only) for the Pi to resolve via
+``resolve_household_mic_calibration`` below, through the ``mode="stored"``
+branch of ``_relay_calibration_from_setup``. ``resolvable`` is minted fresh
+at spec-build time (a second, independent resolver call — not inferred from
+the hint existing at all), so a household record whose calibration has gone
+missing from disk since the last session still ships the OTHER hint fields
+but without the marker, and an older Pi build (pre-``stored``-mode) never
+mints it either; either way the page falls back to its plain full picker. A
+rejection at submit time (the record went stale in the narrow window
+between mint and tap) is not a dead end either — the page catches it and
+re-offers the full picker with a plain sentence. An older capture page
+ignores unknown spec fields (verified against
 ``capture-page/js/transport-integrity.js``), so shipping ``default_setup``
-is safe against any deployed page.
+is safe against any deployed page in either direction.
 """
 from __future__ import annotations
 

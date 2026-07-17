@@ -237,7 +237,11 @@ def _household_hint(**overrides) -> DefaultSetupCalibration:
         calibration_id="minidsp-minidsp_umik2-abc123456789",
     )
     kwargs.update(overrides)
-    return DefaultSetupCalibration(**kwargs)
+    # `resolvable` (bool) alongside the rest (str) makes `**kwargs` unpacking
+    # against DefaultSetupCalibration's mixed signature un-typeable without a
+    # TypedDict; not worth it for a test helper, and tests/ is outside the
+    # CI mypy gate's `files = ["jasper"]` scope.
+    return DefaultSetupCalibration(**kwargs)  # type: ignore[arg-type]
 
 
 def test_default_setup_calibration_round_trips_and_is_omitted_when_absent():
@@ -270,6 +274,49 @@ def test_default_setup_calibration_from_dict_is_strict():
         DefaultSetupCalibration.from_dict({**good, "serial": "700-1234"})
     with pytest.raises(CaptureSpecError, match="must be an object"):
         DefaultSetupCalibration.from_dict(["not", "a", "mapping"])
+
+
+# --- resolvable — gates the phone page's one-tap "stored" confirm (W2 addendum) -
+
+
+def test_resolvable_true_round_trips_and_is_present_on_the_wire():
+    populated = build_level_ramp_spec(
+        default_setup_calibration=_household_hint(resolvable=True),
+    )
+    payload = populated.to_dict()
+    assert payload["default_setup"]["calibration"]["resolvable"] is True
+    again = CaptureSpec.from_dict(payload)
+    assert again.default_setup_calibration.resolvable is True
+    assert again.to_dict() == payload  # stable round-trip
+
+
+def test_resolvable_false_is_omitted_from_the_wire_payload():
+    # Default False (unset) — byte-identical to the pre-`resolvable` 4-key
+    # shape so existing callers/pages are unaffected.
+    populated = build_level_ramp_spec(default_setup_calibration=_household_hint())
+    payload = populated.to_dict()
+    assert "resolvable" not in payload["default_setup"]["calibration"]
+    assert payload["default_setup"]["calibration"] == {
+        "mode": "serial",
+        "model": "minidsp_umik2",
+        "serial_display": "8494",
+        "calibration_id": "minidsp-minidsp_umik2-abc123456789",
+    }
+
+    explicit_false = build_level_ramp_spec(
+        default_setup_calibration=_household_hint(resolvable=False),
+    )
+    assert "resolvable" not in explicit_false.to_dict()["default_setup"]["calibration"]
+
+    # Absent on the wire round-trips back to False, not an error.
+    again = CaptureSpec.from_dict(payload)
+    assert again.default_setup_calibration.resolvable is False
+
+
+def test_resolvable_must_be_a_boolean():
+    good = _household_hint().to_dict()
+    with pytest.raises(CaptureSpecError, match="resolvable must be a boolean"):
+        DefaultSetupCalibration.from_dict({**good, "resolvable": "yes"})
 
 
 def test_default_setup_calibration_vocabulary_is_enforced():

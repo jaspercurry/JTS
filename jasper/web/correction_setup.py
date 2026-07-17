@@ -1502,13 +1502,16 @@ def _save_household_mic(record: Any, *, serial: str | None = None) -> None:
     measurement mic (Wave-2 household-mic persistence,
     ``jasper.correction.household_mic``).
 
-    Called from every point a calibration is NEWLY and SUCCESSFULLY
-    established: the phone relay flow (``_relay_calibration_from_setup``,
-    shared by the room and crossover flows) and the local/laptop flow
-    (``_handle_calibration_fetch`` / ``_handle_calibration_upload``, below).
-    Handlers that merely load an already-established ``calibration_id``
+    Called from every point a calibration is NEWLY established, or the
+    household's already-remembered one is explicitly RE-confirmed: the phone
+    relay flow (``_relay_calibration_from_setup``, shared by the room and
+    crossover flows — its ``serial``/``upload`` modes establish a new
+    calibration, its ``stored`` mode re-confirms the current one) and the
+    local/laptop flow (``_handle_calibration_fetch`` /
+    ``_handle_calibration_upload``, below). Handlers that merely load an
+    already-established ``calibration_id`` WITHOUT the household saying so
     (``_handle_start``, ``_handle_local_capture_setup``) do not call this —
-    the household record only moves when a NEW calibration succeeds.
+    the household record only moves on a new success or an explicit confirm.
 
     Fail-soft: a write failure must never block the calibration that
     triggered it. A different mic than the currently-remembered one is
@@ -1587,25 +1590,39 @@ def _default_setup_calibration_for_spec() -> Any | None:
     from the household's remembered mic (Wave-2 household-mic persistence).
 
     Never binding — the 2026-07 Wave-2 capture page reads it and renders a
-    one-tap confirm screen that submits ``{mode: "stored", calibration_id}``
-    when the hint is marked ``resolvable: true`` (marker + the stored-mode
-    resolution branch ship in the in-flight Pi stored-mode PR — see
-    `DefaultSetupCalibration`'s docstring); an older page still ignores
+    one-tap confirm screen that submits ``{mode: "stored", calibration_id,
+    model}`` when the hint is marked ``resolvable: true`` (minted by the
+    ``mode="stored"`` branch of ``_relay_calibration_from_setup`` below —
+    see `DefaultSetupCalibration`'s docstring); an older page still ignores
     unknown spec fields, so this stays a safe no-op there. Fail-soft: any
     resolution miss yields no hint rather than blocking the capture.
+
+    ``resolvable`` is a SECOND, freshly-taken resolver call — not inferred
+    from ``found`` succeeding above — so the flag always reflects a
+    just-checked fact rather than "resolved a moment ago, presumed still
+    good." `resolve_household_mic_calibration` is itself documented
+    fail-soft (returns `None`, never raises), so this stays a plain call: a
+    miss here simply leaves `resolvable` at its `False` default, which
+    `DefaultSetupCalibration.to_dict()` omits from the wire payload.
     """
     from jasper.capture_relay.spec import DefaultSetupCalibration
+    from jasper.correction.household_mic import resolve_household_mic_calibration
 
     found = _resolved_household_mic()
     if found is None:
         return None
     household, resolved = found
     mode = "upload" if household.provider == "manual_upload" else "serial"
+    resolvable = (
+        resolve_household_mic_calibration(household, root=_calibration_root())
+        is not None
+    )
     return DefaultSetupCalibration(
         mode=mode,
         model=household.model_key,
         serial_display=household.serial_display or "",
         calibration_id=resolved.calibration_id,
+        resolvable=resolvable,
     )
 
 
@@ -3147,17 +3164,20 @@ def _handle_calibration_upload(
 def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
     """Materialize the phone wizard's calibration choice on the Pi.
 
-    The phone cannot call the Pi directly, so serial/upload choices ride the
-    relay event that arms the sweep. This mirrors the local `/calibration/*`
-    handlers and returns the stored calibration record, or None for phone/no
-    calibration.
+    The phone cannot call the Pi directly, so serial/upload/stored choices
+    ride the relay event that arms the sweep. This mirrors the local
+    `/calibration/*` handlers and returns the stored calibration record, or
+    None for phone/no calibration.
 
     Shared by BOTH the room and crossover flows (both drive their level
     match through `_run_relay_level_match`, which calls this via
     `_apply_relay_setup_to_session`) — this is the ONE point where a
     successfully-established relay calibration is persisted as the
     household's default mic (`_save_household_mic`, Wave-2 household-mic
-    persistence).
+    persistence). `mode == "stored"` (the one-tap "Using {mic} — confirm"
+    follow-up) re-confirms an already-remembered calibration rather than
+    establishing a new one, but still counts as success here for the same
+    reason: the household explicitly confirmed intent to use it.
     """
     calibration = setup.get("calibration") if isinstance(setup, dict) else None
     if not isinstance(calibration, dict):
@@ -3199,6 +3219,47 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
         )
         _save_household_mic(record)
         return record
+    if mode == "stored":
+        from jasper.correction.household_mic import (
+            HouseholdMicRecord,
+            read_household_mic,
+            resolve_household_mic_calibration,
+        )
+
+        calibration_id = str(calibration.get("calibration_id") or "").strip()
+        if not calibration_id:
+            raise ValueError("calibration_id is required for a stored calibration")
+        model = str(calibration.get("model") or "").strip()
+        # The one-tap confirm only ever echoes calibration_id + model (no raw
+        # serial, no file hash) — see DefaultSetupCalibration. Thread the
+        # household's OWN file_sha256/serial_display through when the id still
+        # matches the current default, so resolution gets the same content-hash
+        # fallback a full HouseholdMicRecord would carry, and a re-confirm
+        # doesn't blank out the "...1234" display on the next hint.
+        previous = read_household_mic(path=_household_mic_path())
+        if previous is not None and previous.calibration_id != calibration_id:
+            previous = None
+        candidate = HouseholdMicRecord(
+            model_key=model,
+            label=model or "Stored microphone",
+            calibration_id=calibration_id,
+            file_sha256=previous.file_sha256 if previous is not None else "",
+            orientation="unknown",
+            provider="stored",
+        )
+        resolved = resolve_household_mic_calibration(
+            candidate, root=_calibration_root(),
+        )
+        if resolved is None:
+            raise ValueError(
+                "the remembered microphone calibration is no longer available; "
+                "set it up again"
+            )
+        _save_household_mic(
+            resolved,
+            serial=previous.serial_display if previous is not None else None,
+        )
+        return resolved
     raise ValueError(f"unknown calibration mode: {mode}")
 
 
