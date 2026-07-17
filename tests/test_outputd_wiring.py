@@ -375,11 +375,21 @@ def test_fanin_exposes_outputd_compatible_tts_socket():
     assert "TtsCommand::FlushSync" in tts_rs
     assert "TtsCommand::ProgramDuckOn" in tts_rs
     assert "prepare_period()" in mixer_rs
-    assert "program_gain" in mixer_rs
-    assert "apply_gain_to_sum(&mut self.sum_buf, program_gain)" in mixer_rs
+    # Program ducking is applied to the renderer sum BEFORE TTS is mixed
+    # in, so renderer lanes duck while TTS/cues stay unattenuated. The
+    # duck engages/releases as a per-sample ramp (`ramp_program_duck`)
+    # toward the per-period `program_target`, with a flat-multiply
+    # steady-state fast path; both write `self.sum_buf` before
+    # `tts.mix_period`.
+    assert "program_target" in mixer_rs
+    assert "ramp_program_duck(" in mixer_rs
+    assert (
+        "apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current)"
+        in mixer_rs
+    )
     assert "tts.mix_period(&mut self.sum_buf)" in mixer_rs
     assert mixer_rs.index(
-        "apply_gain_to_sum(&mut self.sum_buf, program_gain)"
+        "apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current)"
     ) < mixer_rs.index("tts.mix_period(&mut self.sum_buf)")
     # The wire layer itself (command vocabulary + parser) lives ONCE in
     # the shared crate; both daemons consume it as a path dependency —
