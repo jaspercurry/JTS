@@ -2426,35 +2426,31 @@ def _active_graph_allowed(
         GRAPH_ALL_MUTED_ACTIVE_STARTUP,
         GRAPH_GUARDED_COMMISSIONING,
     }
-    if staged_dependent and (not staged_path or not config_path):
-        issues.append(_issue(
-            "blocker",
-            "active_staged_metadata_missing",
-            "guarded active graphs require a staged locator and graph path",
-        ))
-    if (
-        classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
-        and staged_path
-        and config_path
-        and not _path_matches(config_path, staged_path)
-    ):
-        issues.append(_issue(
-            "blocker",
-            "active_staged_locator_mismatch",
-            "all-muted active startup path does not match staged metadata",
-        ))
-    if staged_dependent and staged_path and config_path and not staged_match:
-        issues.append(_issue(
-            "blocker",
-            "active_staged_metadata_mismatch",
-            "guarded active graph no longer matches saved topology metadata",
-        ))
-    if staged_dependent and staged_path and config_path and not staged_guard_ready:
-        issues.append(_issue(
-            "blocker",
-            "active_staged_guard_not_ready",
-            "staged active metadata does not prove software guard readiness",
-        ))
+    if staged_dependent:
+        if not staged_path or not config_path:
+            issues.append(_issue(
+                "blocker",
+                "active_staged_metadata_missing",
+                "guarded active graphs require a staged locator and graph path",
+            ))
+        elif not _path_matches(config_path, staged_path):
+            issues.append(_issue(
+                "blocker",
+                "active_staged_locator_mismatch",
+                "guarded active graph path does not match staged metadata",
+            ))
+        if not staged_match:
+            issues.append(_issue(
+                "blocker",
+                "active_staged_metadata_mismatch",
+                "guarded active graph no longer matches saved topology metadata",
+            ))
+        if not staged_guard_ready:
+            issues.append(_issue(
+                "blocker",
+                "active_staged_guard_not_ready",
+                "staged active metadata does not prove software guard readiness",
+            ))
 
     allowed = classification in {
         GRAPH_ALL_MUTED_ACTIVE_STARTUP,

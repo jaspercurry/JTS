@@ -30,6 +30,7 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_FLAT_FULL_RANGE,
     GRAPH_GUARDED_COMMISSIONING,
     GRAPH_PROGRAM_BAKE_PIPE,
+    GRAPH_UNSAFE,
     CONTRACT_ACTIVE_MONO_2WAY,
     CONTRACT_ACTIVE_MONO_3WAY,
     CONTRACT_ACTIVE_STEREO_2WAY,
@@ -380,10 +381,28 @@ def test_persisted_boot_boundary_accepts_stable_no_profile_baseline(
     )
 
 
-@pytest.mark.parametrize("audible_outputs", [set(), {0}, {1}])
-def test_persisted_boot_guarded_graph_requires_staged_authority(
+@pytest.mark.parametrize(
+    ("audible_outputs", "graph_class"),
+    [
+        (frozenset(), GRAPH_ALL_MUTED_ACTIVE_STARTUP),
+        (frozenset({0}), GRAPH_GUARDED_COMMISSIONING),
+    ],
+)
+@pytest.mark.parametrize(
+    ("authority_mutation", "expected_issue"),
+    [
+        ("missing", "active_staged_metadata_missing"),
+        ("locator", "active_staged_locator_mismatch"),
+        ("topology", "active_staged_metadata_mismatch"),
+        ("guard", "active_staged_guard_not_ready"),
+    ],
+)
+def test_persisted_guarded_graphs_require_complete_staged_authority(
     tmp_path: Path,
-    audible_outputs: set[int],
+    audible_outputs: frozenset[int],
+    graph_class: str,
+    authority_mutation: str,
+    expected_issue: str,
 ) -> None:
     topology = _active_topology("mono", "active_2_way")
     authority = _persisted_boundary(
@@ -391,6 +410,18 @@ def test_persisted_boot_guarded_graph_requires_staged_authority(
         topology=topology,
         graph_text=_active_yaml("mono", 2, audible_outputs),
     )
+    staged_path = authority["staged_metadata_path"]
+    if authority_mutation == "missing":
+        staged_path.unlink()
+    else:
+        staged = _staged_metadata(topology, authority["config"])
+        if authority_mutation == "locator":
+            staged["config"]["path"] = str(tmp_path / "other.yml")
+        elif authority_mutation == "topology":
+            staged["topology"]["topology_id"] = "wrong-topology"
+        else:
+            staged["software_guard"]["passed"] = False
+        staged_path.write_text(json.dumps(staged), encoding="utf-8")
 
     graph = classify_bass_extension_graph(
         topology,
@@ -399,13 +430,11 @@ def test_persisted_boot_guarded_graph_requires_staged_authority(
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
-        staged_metadata_path=authority["staged_metadata_path"],
+        staged_metadata_path=staged_path,
     )
 
-    assert graph.allowed is False
-    assert "active_staged_metadata_missing" in {
-        issue["code"] for issue in graph.issues
-    }
+    assert graph.allowed is False, graph_class
+    assert expected_issue in {issue["code"] for issue in graph.issues}
 
 
 def test_desired_boundary_is_disk_free_and_rejects_persisted_paths(
@@ -1760,7 +1789,10 @@ def test_safe_graph_decision_does_not_persist_guarded_commissioning(
 
     assert decision.status == "select_active_startup"
     assert decision.current_graph is not None
-    assert decision.current_graph.classification == GRAPH_GUARDED_COMMISSIONING
+    assert decision.current_graph.classification == GRAPH_UNSAFE
+    assert "active_staged_locator_mismatch" in {
+        issue["code"] for issue in decision.current_graph.issues
+    }
     assert decision.selected_config_path == str(staged_path)
 
 
