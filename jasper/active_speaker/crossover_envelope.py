@@ -248,6 +248,26 @@ def _describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
     )
 
 
+def _plan_measuring_verdict(plan_progress: Mapping[str, Any]) -> str:
+    """Passive copy for an active session-spanning capture set (SPEC W2.3).
+
+    The relay snapshot's ``capture_plan`` progress mapping carries
+    ``{role, capture_target, accepted}``; the wizard mirrors it and offers no
+    action — the phone drives the whole set ("zero wizard interactions per
+    driver" acceptance criterion)."""
+
+    def _count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    role = str(plan_progress.get("role") or "driver")
+    done = _count(plan_progress.get("accepted"))
+    target = _count(plan_progress.get("capture_target"))
+    return (
+        f"Measuring the {role} — follow your phone. "
+        f"{done} of {target} done."
+    )
+
+
 def _level_state(status: Mapping[str, Any]) -> tuple[bool, str, bool]:
     level = _mapping(status.get("level_match"))
     last = _mapping(level.get("last"))
@@ -1012,10 +1032,22 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         ]
     elif _relay_active(status) or _level_run_active(status) or level_running:
         screen = "waiting"
-        relay_phase = str(_mapping(status.get("relay")).get("status") or "")
+        relay_snapshot = _mapping(status.get("relay"))
+        relay_phase = str(relay_snapshot.get("status") or "")
+        # Session-spanning capture plan (protocol v3, SPEC W2.3): while one
+        # relay session carries a driver's whole repeat set, the wizard is a
+        # passive progress mirror — the phone owns every next action, and the
+        # page's red Stop stays the only wizard control (`next_action` is None
+        # on this screen, and the per-repeat driver actions further down this
+        # chain are unreachable while the relay is active). Session death (TTL
+        # / failure) leaves the in-flight statuses, so the ordinary v2 driver
+        # branches return as the recovery path.
+        plan_progress = _mapping(relay_snapshot.get("capture_plan"))
         verdict = (
             "JTS is stopping playback and restoring the speaker safely."
             if relay_phase == "stopping"
+            else _plan_measuring_verdict(plan_progress)
+            if plan_progress
             else "The phone is finishing and uploading this measurement."
             if relay_phase == "finishing"
             else "JTS is saving the verified measurement."

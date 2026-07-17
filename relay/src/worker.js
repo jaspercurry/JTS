@@ -42,6 +42,16 @@ const DEFAULT_MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
 
 // A capture spec is ~1 KB; cap the opaque string well above that but bounded.
 const MAX_SPEC_BYTES = 64 * 1024;
+
+// Session-spanning capture plans (Pi protocol v3, SPEC W2.3) key each admitted
+// attempt's blob by a small integer `?index=` (absent = 0 → the legacy
+// un-indexed key, byte-identical back-compat). One blob per admitted attempt,
+// `capture_index = attempt - 1`, so the valid indexes are EXACTLY
+// 0..MAX_CAPTURE_PLAN_ATTEMPTS-1 — the same value as the Pi-side plan attempt
+// cap, applied to indexes with a strict inequality. Keep in lockstep with
+// MAX_CAPTURE_PLAN_ATTEMPTS in jasper/capture_relay/spec.py (pinned by
+// tests/test_capture_relay_spec.py).
+const MAX_CAPTURE_PLAN_ATTEMPTS = 8;
 // Relay-control event envelopes carry setup/progress metadata: phone
 // {setup_validate:true, setup:{...}} / {armed:true, noise_floor:{...}} and host
 // {phase:"setup_validated"|"sweep_complete"}. They are not audio payloads; the
@@ -65,6 +75,12 @@ const REGISTRATION_TOKEN_HEADER = "X-JTS-Relay-Registration-Token";
 // The router is storage-agnostic so it is unit-testable with an in-memory store.
 // Production binds an R2 bucket; tests inject makeMemoryStore().
 
+// Blob key for one capture index. Index 0 keeps the historical un-indexed key
+// so every pre-v3 session (and a v3 plan's first attempt) is byte-identical.
+function blobKey(id, index) {
+  return index ? `blob/${id}/${index}` : `blob/${id}`;
+}
+
 export function makeR2Store(bucket) {
   return {
     async getMeta(id) {
@@ -80,16 +96,16 @@ export function makeR2Store(bucket) {
     async deleteMeta(id) {
       await bucket.delete(`meta/${id}`);
     },
-    async getBlob(id) {
-      const obj = await bucket.get(`blob/${id}`);
+    async getBlob(id, index = 0) {
+      const obj = await bucket.get(blobKey(id, index));
       if (!obj) return null;
       return new Uint8Array(await obj.arrayBuffer());
     },
-    async putBlob(id, bytes) {
-      await bucket.put(`blob/${id}`, bytes);
+    async putBlob(id, bytes, index = 0) {
+      await bucket.put(blobKey(id, index), bytes);
     },
-    async deleteBlob(id) {
-      await bucket.delete(`blob/${id}`);
+    async deleteBlob(id, index = 0) {
+      await bucket.delete(blobKey(id, index));
     },
     // Phone-owned control envelope — its OWN key so a phone POST /event can
     // never read-modify-write the Pi's host_event (see postEvent/postHostEvent
@@ -136,15 +152,15 @@ export function makeMemoryStore() {
     async deleteMeta(id) {
       meta.delete(id);
     },
-    async getBlob(id) {
-      const v = blob.get(id);
+    async getBlob(id, index = 0) {
+      const v = blob.get(blobKey(id, index));
       return v ? new Uint8Array(v) : null;
     },
-    async putBlob(id, bytes) {
-      blob.set(id, new Uint8Array(bytes));
+    async putBlob(id, bytes, index = 0) {
+      blob.set(blobKey(id, index), new Uint8Array(bytes));
     },
-    async deleteBlob(id) {
-      blob.delete(id);
+    async deleteBlob(id, index = 0) {
+      blob.delete(blobKey(id, index));
     },
     async getEvent(id) {
       const v = event.get(id);
@@ -265,6 +281,23 @@ async function registrationAuthorized(env, request) {
   return timingSafeEqualHex(presented, expected);
 }
 
+// Delete every stored artefact of a session: the legacy blob key, every
+// indexed blob the meta records (session-spanning plans), and the meta/event
+// keys. Shared by DELETE and proactive TTL expiry.
+async function deleteSessionState(store, id, meta) {
+  await store.deleteBlob(id, 0);
+  const indexed = meta && meta.blobs ? Object.keys(meta.blobs) : [];
+  for (const key of indexed) {
+    const index = Number(key);
+    if (Number.isInteger(index) && index > 0) {
+      await store.deleteBlob(id, index);
+    }
+  }
+  await store.deleteMeta(id);
+  await store.deleteEvent(id);
+  await store.deleteHostEvent(id);
+}
+
 // Returns the live meta, or null if missing/expired. Expired sessions are
 // proactively deleted so the bucket self-cleans even before the R2 lifecycle
 // rule fires.
@@ -272,13 +305,23 @@ async function loadLive(store, id, env) {
   const meta = await store.getMeta(id);
   if (!meta) return null;
   if (nowMs(env) > meta.expires_at) {
-    await store.deleteMeta(id);
-    await store.deleteBlob(id);
-    await store.deleteEvent(id);
-    await store.deleteHostEvent(id);
+    await deleteSessionState(store, id, meta);
     return null;
   }
   return meta;
+}
+
+// Parse `?index=` off a blob route (session-spanning plans). Absent = 0 (the
+// legacy key). Returns null for anything but an integer in
+// 0..MAX_CAPTURE_PLAN_ATTEMPTS-1 (one slot per admitted attempt,
+// capture_index = attempt - 1), so a hostile/buggy index can never mint a key
+// no attempt could ever be authorized for.
+function parseCaptureIndex(url) {
+  const raw = url.searchParams.get("index");
+  if (raw === null) return 0;
+  if (!/^(0|[1-9][0-9]*)$/.test(raw)) return null;
+  const index = Number(raw);
+  return index >= MAX_CAPTURE_PLAN_ATTEMPTS ? null : index;
 }
 
 // --- Split-field readers (event / host_event) ---------------------------------
@@ -485,8 +528,19 @@ async function postHostEvent(request, store, meta, id, env, cors) {
   return json({ ok: true }, 200, cors);
 }
 
-async function putBlob(request, store, meta, id, env, cors) {
-  if (meta.state === "ready") {
+async function putBlob(request, store, meta, id, env, cors, url) {
+  const index = parseCaptureIndex(url);
+  if (index === null) {
+    return json(
+      { error: "bad_capture_index", max: MAX_CAPTURE_PLAN_ATTEMPTS - 1 }, 400, cors,
+    );
+  }
+  const explicitIndex = url.searchParams.get("index") !== null;
+  // One upload per key: the legacy/index-0 slot keeps its historical
+  // state-based guard; indexed slots (plans) are guarded per index.
+  const indexTaken =
+    meta.blobs && Object.prototype.hasOwnProperty.call(meta.blobs, String(index));
+  if (index === 0 ? meta.state === "ready" : indexTaken) {
     return json({ error: "already_uploaded" }, 409, cors);
   }
   const contentLength = Number(request.headers.get("content-length") || "-1");
@@ -516,14 +570,29 @@ async function putBlob(request, store, meta, id, env, cors) {
     return json({ error: "empty_blob" }, 400, cors);
   }
 
-  await store.putBlob(id, buf);
+  await store.putBlob(id, buf, index);
   // The relay stores the integrity CLAIM and relays it; it cannot verify it (it
   // never sees plaintext). The Pi verifies after decrypt.
-  meta.integrity = { plaintext_len: plaintextLen, sha256: plaintextSha };
-  meta.size = buf.length;
-  meta.state = "ready";
+  const integrity = { plaintext_len: plaintextLen, sha256: plaintextSha };
+  if (explicitIndex) {
+    // Per-index summary for plan-aware Pis. Recorded only for requests that
+    // opted into indexing, so a legacy upload's meta stays byte-identical.
+    meta.blobs = {
+      ...(meta.blobs || {}),
+      [String(index)]: { integrity, size: buf.length },
+    };
+  }
+  if (index === 0) {
+    meta.integrity = integrity;
+    meta.size = buf.length;
+    meta.state = "ready";
+    await store.putMeta(id, meta);
+    return json({ ok: true, state: "ready", size: buf.length }, 200, cors);
+  }
   await store.putMeta(id, meta);
-  return json({ ok: true, state: "ready", size: buf.length }, 200, cors);
+  return json(
+    { ok: true, capture_index: index, size: buf.length }, 200, cors,
+  );
 }
 
 async function getStatus(store, meta, id, cors) {
@@ -539,6 +608,10 @@ async function getStatus(store, meta, id, cors) {
       event,
       host_event: hostEvent,
       expires_at: meta.expires_at,
+      // Per-index blob summary (session-spanning plans). Additive: present
+      // only once an indexed upload landed, so pre-v3 sessions keep the
+      // exact historical status shape.
+      ...(meta.blobs ? { blobs: meta.blobs } : {}),
     },
     200,
     cors,
@@ -558,7 +631,32 @@ async function getPhoneStatus(store, meta, id, cors) {
   );
 }
 
-async function getBlob(meta, store, id, cors) {
+async function getBlob(meta, store, id, cors, url) {
+  const index = parseCaptureIndex(url);
+  if (index === null) {
+    return json(
+      { error: "bad_capture_index", max: MAX_CAPTURE_PLAN_ATTEMPTS - 1 }, 400, cors,
+    );
+  }
+  if (index > 0) {
+    const entry = meta.blobs ? meta.blobs[String(index)] : undefined;
+    if (!entry) {
+      return json({ error: "not_ready", capture_index: index }, 409, cors);
+    }
+    const bytes = await store.getBlob(id, index);
+    if (!bytes) {
+      return json({ error: "blob_missing" }, 410, cors);
+    }
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "content-type": "application/octet-stream",
+        "X-Plaintext-Length": String(entry.integrity?.plaintext_len ?? ""),
+        "X-Plaintext-Sha256": entry.integrity?.sha256 ?? "",
+        ...cors,
+      },
+    });
+  }
   if (meta.state !== "ready") {
     return json({ error: "not_ready", state: meta.state }, 409, cors);
   }
@@ -578,11 +676,8 @@ async function getBlob(meta, store, id, cors) {
   return new Response(bytes, { status: 200, headers });
 }
 
-async function deleteSession(store, id, cors) {
-  await store.deleteBlob(id);
-  await store.deleteMeta(id);
-  await store.deleteEvent(id);
-  await store.deleteHostEvent(id);
+async function deleteSession(store, id, meta, cors) {
+  await deleteSessionState(store, id, meta);
   return new Response(null, { status: 204, headers: cors });
 }
 
@@ -627,7 +722,7 @@ export async function handle(request, store, env) {
       if (!(await authorize(meta, request, "pull"))) {
         return json({ error: "unauthorized" }, 401, cors);
       }
-      return deleteSession(store, id, cors);
+      return deleteSession(store, id, meta, cors);
     }
 
     // GET /sessions/:id/status  (pull_token)
@@ -646,12 +741,12 @@ export async function handle(request, store, env) {
       return postHostEvent(request, store, meta, id, env, cors);
     }
 
-    // GET /sessions/:id/blob  (pull_token)
+    // GET /sessions/:id/blob[?index=N]  (pull_token)
     if (sub === "blob" && request.method === "GET") {
       if (!(await authorize(meta, request, "pull"))) {
         return json({ error: "unauthorized" }, 401, cors);
       }
-      return getBlob(meta, store, id, cors);
+      return getBlob(meta, store, id, cors, url);
     }
 
     // --- phone-facing (upload_token), rate-limited ---
@@ -670,7 +765,7 @@ export async function handle(request, store, env) {
       if (sub === "spec") return getSpec(meta, store, id, env, cors);
       if (sub === "phone-status") return getPhoneStatus(store, meta, id, cors);
       if (sub === "event") return postEvent(request, store, meta, id, env, cors);
-      if (sub === "blob") return putBlob(request, store, meta, id, env, cors);
+      if (sub === "blob") return putBlob(request, store, meta, id, env, cors, url);
     }
 
     return json({ error: "not_found" }, 404, cors);

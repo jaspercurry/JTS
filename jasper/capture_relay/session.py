@@ -27,9 +27,9 @@ import re
 import secrets
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 from jasper.capture_relay.client import RelayClient, RelayError
 from jasper.capture_relay.cues import classify_failure_cue
@@ -51,6 +51,21 @@ logger = logging.getLogger(__name__)
 DEFAULT_TTL_S = 900
 DEFAULT_POLL_INTERVAL_S = 0.75
 DEFAULT_TIMEOUT_S = 120.0
+
+# --- Protocol v3 (session-spanning capture plans, SPEC W2.3) -------------------
+# Event vocabulary. The phone requests each capture of the set with an
+# authenticated `begin_capture {index, attempt}` field (`index` = 1-based
+# measurement slot of `capture_target`; `attempt` = 1-based Pi-admitted attempt
+# of `max_attempts`); every later event of that capture carries the same
+# context. The Pi answers over the host-event channel with the phases below.
+# The blob for an admitted attempt rides relay `capture_index = attempt - 1`
+# (attempt 1 uses the legacy un-indexed key).
+BEGIN_CAPTURE_EVENT_KEY = "begin_capture"
+HOST_PHASE_CAPTURE_AUTHORIZED = "capture_authorized"
+HOST_PHASE_CAPTURE_RESULT = "capture_result"
+HOST_PHASE_CAPTURE_REFUSED = "capture_refused"
+HOST_PHASE_CAPTURE_SET_COMPLETE = "capture_set_complete"
+HOST_PHASE_CAPTURE_SET_EXHAUSTED = "capture_set_exhausted"
 
 
 class CaptureTimeout(RuntimeError):
@@ -75,6 +90,22 @@ class CaptureStopped(RuntimeError):
 
 class CapturePageIncompatible(RuntimeError):
     """The public capture page does not implement this Pi's protocol."""
+
+
+class CaptureBeginRefused(RuntimeError):
+    """The Pi refused a phone ``begin_capture`` request (protocol v3).
+
+    Admission stays Pi-owned (SPEC W2.3): the host's injected
+    ``authorize_begin`` raises this to refuse — most importantly when
+    ``repeat_admission`` refuses the attempt budget. ``code`` is the stable
+    machine reason; ``user_message`` is the phone/operator-facing copy
+    (refusal-naming pattern, #1534). Both ride the refusal host event so the
+    phone can show why nothing started."""
+
+    def __init__(self, code: str, user_message: str = "") -> None:
+        super().__init__(user_message or code)
+        self.code = str(code)
+        self.user_message = str(user_message or code)
 
 
 @dataclass(frozen=True)
@@ -170,6 +201,12 @@ class PollState:
     setup_token: str = ""
     capture_page: dict | None = None
     acknowledgement: dict | None = None
+    # Protocol v3 (session-spanning plans): the phone's current
+    # `begin_capture {index, attempt}` request context, and the relay's
+    # per-index blob summary (`{"<capture_index>": {size, integrity}}`).
+    # Both `None` on v2 sessions — v2 readers never touch them.
+    begin_capture: dict | None = None
+    blobs: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -219,6 +256,15 @@ class PhoneEventVerifier:
         self._event = verified
         return verified
 
+    @property
+    def sequence(self) -> int:
+        """The last verified event sequence (0 before any verified event).
+
+        The relay `event` slot persists between polls, so a plan runner needs
+        the sequence to tell "the same event, still sitting there" from "the
+        phone posted a new event" (protocol-v3 begin dedup vs replay)."""
+        return self._sequence
+
 
 class CaptureActivityProbe:
     """Fail closed when a long host stimulus outlives the phone recorder.
@@ -230,7 +276,13 @@ class CaptureActivityProbe:
     exactly like the main capture loop before an abort can affect playback.
     """
 
-    def __init__(self, client: RelayClient, session: PiCaptureSession) -> None:
+    def __init__(
+        self,
+        client: RelayClient,
+        session: PiCaptureSession,
+        *,
+        capture_index: int | None = None,
+    ) -> None:
         if session.spec.capture_protocol_version < 2:
             raise CaptureFailed(
                 "abort-aware host playback requires authenticated capture protocol v2"
@@ -239,6 +291,11 @@ class CaptureActivityProbe:
         self._session = session
         self._verifier = PhoneEventVerifier(session)
         self._lock = threading.Lock()
+        # Protocol v3: "the recorder finished" is per-capture, not per-session.
+        # A prior attempt's blob leaves the legacy `state == ready` set for the
+        # whole session, so a plan-aware probe checks THIS capture's index in
+        # the per-index blob map instead.
+        self._capture_index = capture_index
 
     def assert_active(self) -> None:
         with self._lock:
@@ -253,7 +310,12 @@ class CaptureActivityProbe:
                 raise CaptureAborted(
                     f"phone aborted the capture ({state.abort_reason or 'no reason'})"
                 )
-            if state.ready:
+            capture_ended = (
+                state.ready
+                if self._capture_index is None
+                else _plan_blob_ready(state, self._capture_index)
+            )
+            if capture_ended:
                 raise CaptureAborted(
                     "phone capture ended before host playback completed"
                 )
@@ -292,8 +354,18 @@ def classify_status(status_payload: dict) -> PollState:
         if isinstance(event.get("acknowledgement"), dict)
         else None
     )
+    begin_capture = (
+        event.get(BEGIN_CAPTURE_EVENT_KEY)
+        if isinstance(event.get(BEGIN_CAPTURE_EVENT_KEY), dict)
+        else None
+    )
     ready = status_payload.get("state") == "ready"
     integrity = status_payload.get("integrity")
+    blobs = (
+        status_payload.get("blobs")
+        if isinstance(status_payload.get("blobs"), dict)
+        else None
+    )
     return PollState(
         armed=armed,
         ready=ready,
@@ -308,6 +380,8 @@ def classify_status(status_payload: dict) -> PollState:
         setup_token=setup_token,
         capture_page=capture_page,
         acknowledgement=acknowledgement,
+        begin_capture=begin_capture,
+        blobs=blobs,
     )
 
 
@@ -430,8 +504,10 @@ def run_capture(
     `CaptureStopped` is expected control flow: it is logged without a failure
     cue.
     """
-    try:
-        return _poll_until_capture(
+    return _run_with_failure_cues(
+        session,
+        play_cue,
+        lambda: _poll_until_capture(
             client,
             session,
             on_armed=on_armed,
@@ -441,7 +517,28 @@ def run_capture(
             sleep=sleep,
             monotonic=monotonic,
             stop_requested=stop_requested,
-        )
+        ),
+    )
+
+
+_T = TypeVar("_T")
+
+
+def _run_with_failure_cues(
+    session: PiCaptureSession,
+    play_cue: Callable[[str], None] | None,
+    runner: Callable[[], _T],
+) -> _T:
+    """The no-silent-failure tail shared by every capture runner.
+
+    Explicit Stop is expected control flow — logged, never cued. Any other
+    failure gets both halves: the operator-facing WARNING with the failure
+    type + cue slug plus the traceback (so an *unexpected* error — e.g. a bug
+    in the host's on_armed/stimulus playback — is diagnosable even though the
+    household only hears the generic measurement_failed cue), and the
+    household-facing cue, best-effort."""
+    try:
+        return runner()
     except CaptureStopped:
         log_event(
             logger,
@@ -452,10 +549,6 @@ def run_capture(
         raise
     except Exception as exc:  # noqa: BLE001 — cue on ANY failure, then re-raise
         slug = classify_failure_cue(exc)
-        # Operator-facing half of no-silent-failure: a WARNING with the failure
-        # type + cue slug, plus the traceback (so an *unexpected* error — e.g. a
-        # bug in the host's on_armed/stimulus playback — is diagnosable even
-        # though the household only hears the generic measurement_failed cue).
         failure_fields: dict[str, Any] = {}
         if isinstance(exc, CaptureTimeout) and exc.phase is not None:
             failure_fields["phase"] = exc.phase
@@ -474,6 +567,142 @@ def run_capture(
                 play_cue(slug)
             except Exception:  # noqa: BLE001 — the cue is best-effort
                 pass
+        raise
+
+
+def _verify_phone_event(
+    client: RelayClient,
+    session: PiCaptureSession,
+    verifier: PhoneEventVerifier,
+    status: dict,
+) -> dict:
+    """Authenticate the relay's mutable event slot before any field is read.
+
+    On an integrity failure this logs, tells the phone (best-effort), and
+    raises ``CaptureFailed`` — the identical handling both the single-capture
+    poll loop and the protocol-v3 plan runner need."""
+    relay_event = status.get("event") if isinstance(status, dict) else None
+    if session.spec.capture_protocol_version < 2 or relay_event is None:
+        return status
+    try:
+        verified_event = verifier.verify(relay_event)
+    except CaptureIntegrityError as exc:
+        log_event(
+            logger,
+            "capture_relay.phone_event_integrity_failed",
+            level=logging.WARNING,
+            session_id=session.session_id,
+            kind=session.spec.kind,
+            reason=str(exc),
+        )
+        try:
+            client.post_host_event(
+                session.session_id,
+                session.pull_token,
+                {
+                    "phase": "capture_incompatible",
+                    "error": "capture control integrity check failed",
+                },
+            )
+        except (OSError, RelayError):
+            logger.warning(
+                "could not publish capture integrity failure",
+                exc_info=True,
+            )
+        raise CaptureFailed(
+            "capture control integrity check failed"
+        ) from exc
+    return {**status, "event": verified_event}
+
+
+def _ensure_page_compatible(
+    client: RelayClient,
+    session: PiCaptureSession,
+    state: PollState,
+) -> None:
+    """Establish the independently-deployed page's protocol contract.
+
+    Runs before setup callbacks or ``on_armed`` can reach an audio player, so
+    a stale page fails visibly and cannot start a tone."""
+    try:
+        validate_capture_page(state.capture_page, session.spec)
+    except CapturePageIncompatible as exc:
+        log_event(
+            logger,
+            "capture_relay.page_incompatible",
+            level=logging.WARNING,
+            session_id=session.session_id,
+            expected_protocol=session.spec.capture_protocol_version,
+            observed_protocol=(state.capture_page or {}).get(
+                "capture_protocol_version"
+            ),
+            observed_build=(state.capture_page or {}).get(
+                "capture_page_build"
+            ),
+        )
+        try:
+            client.post_host_event(
+                session.session_id,
+                session.pull_token,
+                {
+                    "phase": "capture_incompatible",
+                    "error": str(exc),
+                    "expected_protocol": session.spec.capture_protocol_version,
+                },
+            )
+        except (OSError, RelayError):
+            logger.warning(
+                "could not publish capture-page incompatibility",
+                exc_info=True,
+            )
+        raise
+    log_event(
+        logger,
+        "capture_relay.page_compatible",
+        session_id=session.session_id,
+        protocol=session.spec.capture_protocol_version,
+        page_build=(state.capture_page or {}).get("capture_page_build"),
+    )
+
+
+def _verify_acknowledgement_or_refuse(
+    client: RelayClient,
+    session: PiCaptureSession,
+    state: PollState,
+) -> None:
+    """Verify the spec-bound operator acknowledgement; refuse loudly if stale."""
+    try:
+        validate_capture_acknowledgement(state, session.spec)
+    except CaptureFailed:
+        log_event(
+            logger,
+            "capture_relay.acknowledgement_refused",
+            level=logging.WARNING,
+            session_id=session.session_id,
+            kind=session.spec.kind,
+            policy=(
+                session.spec.acknowledgement.id
+                if session.spec.acknowledgement
+                else None
+            ),
+        )
+        try:
+            client.post_host_event(
+                session.session_id,
+                session.pull_token,
+                {
+                    "phase": "sweep_failed",
+                    "error": (
+                        "Confirm the microphone placement before "
+                        "starting the sweep."
+                    ),
+                },
+            )
+        except (OSError, RelayError):
+            logger.warning(
+                "could not publish acknowledgement refusal",
+                exc_info=True,
+            )
         raise
 
 
@@ -505,37 +734,7 @@ def _poll_until_capture(
         raise_if_stopped()
         status = client.status(session.session_id, session.pull_token)
         raise_if_stopped()
-        relay_event = status.get("event") if isinstance(status, dict) else None
-        if session.spec.capture_protocol_version >= 2 and relay_event is not None:
-            try:
-                verified_event = event_verifier.verify(relay_event)
-            except CaptureIntegrityError as exc:
-                log_event(
-                    logger,
-                    "capture_relay.phone_event_integrity_failed",
-                    level=logging.WARNING,
-                    session_id=session.session_id,
-                    kind=session.spec.kind,
-                    reason=str(exc),
-                )
-                try:
-                    client.post_host_event(
-                        session.session_id,
-                        session.pull_token,
-                        {
-                            "phase": "capture_incompatible",
-                            "error": "capture control integrity check failed",
-                        },
-                    )
-                except (OSError, RelayError):
-                    logger.warning(
-                        "could not publish capture integrity failure",
-                        exc_info=True,
-                    )
-                raise CaptureFailed(
-                    "capture control integrity check failed"
-                ) from exc
-            status = {**status, "event": verified_event}
+        status = _verify_phone_event(client, session, event_verifier, status)
         state = classify_status(status)
         if state.device is not None:
             capture_device = state.device  # phone-reported mic; persists to ready
@@ -555,46 +754,8 @@ def _poll_until_capture(
         if not page_compatible and (
             state.setup_validate or state.armed or state.ready
         ):
-            try:
-                validate_capture_page(state.capture_page, session.spec)
-            except CapturePageIncompatible as exc:
-                log_event(
-                    logger,
-                    "capture_relay.page_incompatible",
-                    level=logging.WARNING,
-                    session_id=session.session_id,
-                    expected_protocol=session.spec.capture_protocol_version,
-                    observed_protocol=(state.capture_page or {}).get(
-                        "capture_protocol_version"
-                    ),
-                    observed_build=(state.capture_page or {}).get(
-                        "capture_page_build"
-                    ),
-                )
-                try:
-                    client.post_host_event(
-                        session.session_id,
-                        session.pull_token,
-                        {
-                            "phase": "capture_incompatible",
-                            "error": str(exc),
-                            "expected_protocol": session.spec.capture_protocol_version,
-                        },
-                    )
-                except (OSError, RelayError):
-                    logger.warning(
-                        "could not publish capture-page incompatibility",
-                        exc_info=True,
-                    )
-                raise
+            _ensure_page_compatible(client, session, state)
             page_compatible = True
-            log_event(
-                logger,
-                "capture_relay.page_compatible",
-                session_id=session.session_id,
-                protocol=session.spec.capture_protocol_version,
-                page_build=(state.capture_page or {}).get("capture_page_build"),
-            )
 
         if (
             on_setup is not None
@@ -613,39 +774,7 @@ def _poll_until_capture(
 
         if state.armed and not armed_fired:
             raise_if_stopped()
-            try:
-                validate_capture_acknowledgement(state, session.spec)
-            except CaptureFailed:
-                log_event(
-                    logger,
-                    "capture_relay.acknowledgement_refused",
-                    level=logging.WARNING,
-                    session_id=session.session_id,
-                    kind=session.spec.kind,
-                    policy=(
-                        session.spec.acknowledgement.id
-                        if session.spec.acknowledgement
-                        else None
-                    ),
-                )
-                try:
-                    client.post_host_event(
-                        session.session_id,
-                        session.pull_token,
-                        {
-                            "phase": "sweep_failed",
-                            "error": (
-                                "Confirm the microphone placement before "
-                                "starting the sweep."
-                            ),
-                        },
-                    )
-                except (OSError, RelayError):
-                    logger.warning(
-                        "could not publish acknowledgement refusal",
-                        exc_info=True,
-                    )
-                raise
+            _verify_acknowledgement_or_refuse(client, session, state)
             armed_fired = True
             # The pre-arm wait is operator time: opening the trusted page,
             # selecting the microphone, and confirming placement.  Do not let
@@ -708,6 +837,555 @@ def _poll_until_capture(
             else:
                 detail = f"phone never armed within {timeout_s:.0f}s"
                 phase = "awaiting_arm"
+            raise CaptureTimeout(
+                f"{detail} (session {session.session_id})",
+                phase=phase,
+            )
+        sleep(poll_interval_s)
+
+
+# --- Session-spanning plan runner (protocol v3, SPEC W2.3) ---------------------
+
+
+def parse_begin_capture(
+    payload: Any,
+    *,
+    capture_target: int,
+    max_attempts: int,
+) -> tuple[int, int]:
+    """Strictly parse a phone ``begin_capture`` request into (index, attempt).
+
+    Shape validation only — ordering and the Pi-owned attempt budget are
+    enforced by the plan runner plus the host's injected admission
+    (``repeat_admission``). ``index`` is the 1-based measurement slot
+    (``"Measurement N of {capture_target}"``); ``attempt`` is the 1-based
+    admission attempt whose blob rides relay ``capture_index = attempt - 1``.
+    Raises ``CaptureBeginRefused`` (code ``begin_malformed``) on any drift —
+    no Postel-style liberality on an authenticated control field."""
+    if not isinstance(payload, Mapping):
+        raise CaptureBeginRefused(
+            "begin_malformed", "begin_capture must be an object"
+        )
+    if set(payload) != {"index", "attempt"}:
+        raise CaptureBeginRefused(
+            "begin_malformed",
+            "begin_capture must carry exactly index and attempt",
+        )
+    index = payload.get("index")
+    attempt = payload.get("attempt")
+    for name, value, bound in (
+        ("index", index, capture_target),
+        ("attempt", attempt, max_attempts),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 1 <= value <= bound
+        ):
+            raise CaptureBeginRefused(
+                "begin_malformed",
+                f"begin_capture.{name} must be an integer in 1..{bound}",
+            )
+    assert isinstance(index, int) and isinstance(attempt, int)
+    if index > attempt:
+        # Slot N cannot be reached before its Nth admission attempt.
+        raise CaptureBeginRefused(
+            "begin_malformed", "begin_capture.index cannot exceed attempt"
+        )
+    return index, attempt
+
+
+def _plan_blob_ready(state: PollState, capture_index: int) -> bool:
+    """Whether the blob for one admitted attempt is uploaded.
+
+    Per-index readiness comes from the Worker's ``blobs`` summary; the legacy
+    session-wide ``state == "ready"`` remains an accepted signal for index 0
+    (the un-indexed key it aliases)."""
+    entry = (state.blobs or {}).get(str(capture_index))
+    if isinstance(entry, dict):
+        return True
+    return capture_index == 0 and state.ready
+
+
+def _plan_blob_integrity(state: PollState, capture_index: int) -> dict | None:
+    entry = (state.blobs or {}).get(str(capture_index))
+    if isinstance(entry, dict) and isinstance(entry.get("integrity"), dict):
+        return entry["integrity"]
+    if capture_index == 0:
+        return state.integrity
+    return None
+
+
+@dataclass(frozen=True)
+class PlanCaptureOutcome:
+    """One admitted, uploaded, and host-consumed attempt of a capture plan."""
+
+    index: int
+    attempt: int
+    accepted: bool
+    verdict: dict[str, Any]
+    result: CaptureResult
+
+
+def run_capture_plan(
+    client: RelayClient,
+    session: PiCaptureSession,
+    *,
+    authorize_begin: Callable[[int, int], None],
+    on_armed: Callable[..., None],
+    consume_capture: Callable[[int, int, CaptureResult], Mapping[str, Any]],
+    on_setup: Callable[..., None] | None = None,
+    poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+    play_cue: Callable[[str], None] | None = None,
+    stop_requested: Callable[[], bool] | None = None,
+) -> list[PlanCaptureOutcome]:
+    """Run one session-spanning capture SET (protocol v3, SPEC W2.3).
+
+    One relay session covers ``capture_plan.capture_target`` accepted captures
+    within ``capture_plan.max_attempts`` admitted attempts. Per capture N the
+    choreography is: the phone posts an authenticated ``begin_capture
+    {index, attempt}`` → the host's injected ``authorize_begin(index, attempt)``
+    admits it (budget stays PI-OWNED — wire ``repeat_admission`` there; raise
+    ``CaptureBeginRefused`` to refuse, which is published to the phone as a
+    named ``capture_refused`` host event) → the Pi ACKs ``capture_authorized``
+    → the phone records and posts ``armed`` carrying the same begin context
+    (placement acknowledgement and page identity are validated per capture,
+    exactly as the single-capture runner does) → ``on_armed`` plays the host
+    stimulus → the phone uploads its blob at ``capture_index = attempt - 1`` →
+    the Pi pulls/decrypts/verifies and hands the ``CaptureResult`` to
+    ``consume_capture(index, attempt, result)``, whose returned mapping (with
+    at least ``accepted: bool``; every other field is relayed to the phone)
+    becomes the ``capture_result`` host event. The set ends with
+    ``capture_set_complete`` (target met) or ``capture_set_exhausted``
+    (attempt budget spent) and returns every outcome in order.
+
+    The phone NEVER decides admission; out-of-order, replayed, or malformed
+    begins are refused loudly (named host event + ``CaptureFailed``). Failure
+    semantics — timeout phases, abort, stop, cues, logging — mirror
+    ``run_capture``. Accepted captures the host already committed durably
+    (ledger writes inside ``consume_capture``) persist across a later abort or
+    Stop; this runner never rolls them back.
+    """
+    plan = session.spec.capture_plan
+    if plan is None or session.spec.capture_protocol_version < 3:
+        raise CaptureFailed(
+            "run_capture_plan requires a capture_plan spec (capture protocol 3)"
+        )
+    return _run_with_failure_cues(
+        session,
+        play_cue,
+        lambda: _poll_capture_plan(
+            client,
+            session,
+            plan_target=plan.capture_target,
+            plan_max_attempts=plan.max_attempts,
+            authorize_begin=authorize_begin,
+            on_armed=on_armed,
+            consume_capture=consume_capture,
+            on_setup=on_setup,
+            poll_interval_s=poll_interval_s,
+            timeout_s=timeout_s,
+            sleep=sleep,
+            monotonic=monotonic,
+            stop_requested=stop_requested,
+        ),
+    )
+
+
+def _poll_capture_plan(
+    client: RelayClient,
+    session: PiCaptureSession,
+    *,
+    plan_target: int,
+    plan_max_attempts: int,
+    authorize_begin: Callable[[int, int], None],
+    on_armed: Callable[..., None],
+    consume_capture: Callable[[int, int, CaptureResult], Mapping[str, Any]],
+    on_setup: Callable[..., None] | None,
+    poll_interval_s: float,
+    timeout_s: float,
+    sleep: Callable[[float], None],
+    monotonic: Callable[[], float],
+    stop_requested: Callable[[], bool] | None,
+) -> list[PlanCaptureOutcome]:
+    def raise_if_stopped() -> None:
+        if stop_requested is not None and stop_requested():
+            raise CaptureStopped("capture stopped")
+
+    def post_refusal_best_effort(
+        index: int | None, attempt: int | None, code: str, message: str
+    ) -> None:
+        payload: dict[str, Any] = {
+            "phase": HOST_PHASE_CAPTURE_REFUSED,
+            "code": code,
+            "error": message,
+        }
+        if index is not None:
+            payload["index"] = index
+        if attempt is not None:
+            payload["attempt"] = attempt
+        try:
+            client.post_host_event(
+                session.session_id, session.pull_token, payload
+            )
+        except (OSError, RelayError):
+            logger.warning(
+                "could not publish capture-begin refusal", exc_info=True
+            )
+
+    def refuse_begin_order(
+        index: int, attempt: int, code: str, message: str
+    ) -> None:
+        log_event(
+            logger,
+            "capture_relay.plan_refused",
+            level=logging.WARNING,
+            session_id=session.session_id,
+            index=index,
+            attempt=attempt,
+            code=code,
+        )
+        post_refusal_best_effort(index, attempt, code, message)
+        raise CaptureFailed(message)
+
+    outcomes: list[PlanCaptureOutcome] = []
+    accepted_count = 0
+    attempts_used = 0
+    current: tuple[int, int] | None = None
+    processed: set[tuple[int, int]] = set()
+    phase = "awaiting_begin"
+    armed_fired = False
+    page_compatible = False
+    begin_handled_sequence = 0
+    capture_device: dict | None = None
+    capture_noise_floor: dict | None = None
+    capture_setup: dict | None = None
+    setup_tokens_seen: set[str] = set()
+    event_verifier = PhoneEventVerifier(session)
+    deadline = monotonic() + timeout_s
+    while True:
+        raise_if_stopped()
+        status = client.status(session.session_id, session.pull_token)
+        raise_if_stopped()
+        status = _verify_phone_event(client, session, event_verifier, status)
+        state = classify_status(status)
+        if state.device is not None:
+            capture_device = state.device
+        if state.noise_floor is not None:
+            capture_noise_floor = state.noise_floor
+        if state.setup is not None:
+            capture_setup = state.setup
+
+        if state.aborted:
+            raise CaptureAborted(
+                f"phone aborted the capture ({state.abort_reason or 'no reason'})"
+            )
+
+        if not page_compatible and (
+            state.setup_validate
+            or state.armed
+            or state.ready
+            or state.begin_capture is not None
+        ):
+            _ensure_page_compatible(client, session, state)
+            page_compatible = True
+
+        if (
+            on_setup is not None
+            and state.setup_validate
+            and state.setup is not None
+            and state.setup_token
+            and state.setup_token not in setup_tokens_seen
+        ):
+            setup_tokens_seen.add(state.setup_token)
+            log_event(
+                logger,
+                "capture_relay.setup_validate",
+                session_id=session.session_id,
+            )
+            _call_state_callback(on_setup, state)
+
+        # --- begin_capture: act only on NEW events (the relay event slot
+        # persists between polls; the verifier's sequence tells them apart) ---
+        sequence = event_verifier.sequence
+        if sequence > begin_handled_sequence:
+            begin_handled_sequence = sequence
+            if state.begin_capture is not None:
+                try:
+                    index, attempt = parse_begin_capture(
+                        state.begin_capture,
+                        capture_target=plan_target,
+                        max_attempts=plan_max_attempts,
+                    )
+                except CaptureBeginRefused as refusal:
+                    log_event(
+                        logger,
+                        "capture_relay.plan_refused",
+                        level=logging.WARNING,
+                        session_id=session.session_id,
+                        code=refusal.code,
+                    )
+                    post_refusal_best_effort(
+                        None, None, refusal.code, refusal.user_message
+                    )
+                    raise CaptureFailed(refusal.user_message) from refusal
+                pair = (index, attempt)
+                if pair in processed:
+                    if phase == "awaiting_begin" or pair != current:
+                        refuse_begin_order(
+                            index,
+                            attempt,
+                            "begin_replayed",
+                            "this capture attempt was already processed",
+                        )
+                    # else: the current capture's context riding a newer
+                    # event (e.g. its own armed post) — nothing to do.
+                elif phase != "awaiting_begin":
+                    refuse_begin_order(
+                        index,
+                        attempt,
+                        "begin_out_of_order",
+                        "a capture attempt is already in progress",
+                    )
+                elif pair != (accepted_count + 1, attempts_used + 1):
+                    refuse_begin_order(
+                        index,
+                        attempt,
+                        "begin_out_of_order",
+                        (
+                            f"expected capture {accepted_count + 1} attempt "
+                            f"{attempts_used + 1}"
+                        ),
+                    )
+                else:
+                    raise_if_stopped()
+                    try:
+                        authorize_begin(index, attempt)
+                    except CaptureBeginRefused as refusal:
+                        log_event(
+                            logger,
+                            "capture_relay.plan_refused",
+                            level=logging.WARNING,
+                            session_id=session.session_id,
+                            index=index,
+                            attempt=attempt,
+                            code=refusal.code,
+                        )
+                        post_refusal_best_effort(
+                            index, attempt, refusal.code, refusal.user_message
+                        )
+                        raise
+                    except (OSError, RuntimeError, ValueError):
+                        # Admission crashed (not a policy refusal) — the named
+                        # family the admission ledger raises. Still tell the
+                        # phone why nothing will start, then fail loud.
+                        post_refusal_best_effort(
+                            index,
+                            attempt,
+                            "authorize_failed",
+                            "the speaker could not admit this capture",
+                        )
+                        raise
+                    processed.add(pair)
+                    current = pair
+                    attempts_used = attempt
+                    armed_fired = False
+                    phase = "awaiting_arm"
+                    # Between-capture operator time (tapping Next / Retry)
+                    # must not consume the acoustic/upload window.
+                    deadline = monotonic() + timeout_s
+                    log_event(
+                        logger,
+                        "capture_relay.plan_authorized",
+                        session_id=session.session_id,
+                        index=index,
+                        attempt=attempt,
+                    )
+                    client.post_host_event(
+                        session.session_id,
+                        session.pull_token,
+                        {
+                            "phase": HOST_PHASE_CAPTURE_AUTHORIZED,
+                            "index": index,
+                            "attempt": attempt,
+                        },
+                    )
+
+        if phase == "awaiting_arm" and state.armed and not armed_fired:
+            raise_if_stopped()
+            context = state.begin_capture
+            context_pair: tuple[int, int] | None = None
+            if context is not None:
+                try:
+                    context_pair = parse_begin_capture(
+                        context,
+                        capture_target=plan_target,
+                        max_attempts=plan_max_attempts,
+                    )
+                except CaptureBeginRefused:
+                    context_pair = None
+            if context_pair != current:
+                raise CaptureFailed(
+                    "armed event does not carry the authorized capture context"
+                )
+            _verify_acknowledgement_or_refuse(client, session, state)
+            armed_fired = True
+            deadline = monotonic() + timeout_s
+            if session.spec.acknowledgement is not None:
+                log_event(
+                    logger,
+                    "capture_relay.acknowledgement_verified",
+                    session_id=session.session_id,
+                    kind=session.spec.kind,
+                    policy=session.spec.acknowledgement.id,
+                )
+            log_event(
+                logger,
+                "capture_relay.armed",
+                session_id=session.session_id,
+                index=current[0] if current else None,
+                attempt=current[1] if current else None,
+            )
+            _call_state_callback(on_armed, state)
+            raise_if_stopped()
+            phase = "awaiting_upload"
+
+        if phase == "awaiting_upload" and current is not None:
+            index, attempt = current
+            capture_index = attempt - 1
+            if _plan_blob_ready(state, capture_index):
+                raise_if_stopped()
+                log_event(
+                    logger,
+                    "capture_relay.ready",
+                    session_id=session.session_id,
+                    capture_index=capture_index,
+                )
+                blob, header_integrity = client.pull_blob(
+                    session.session_id,
+                    session.pull_token,
+                    capture_index=capture_index,
+                )
+                raise_if_stopped()
+                integrity = (
+                    _plan_blob_integrity(state, capture_index)
+                    or header_integrity
+                )
+                try:
+                    expected_len = int(integrity["plaintext_len"])
+                    expected_sha = str(integrity["sha256"])
+                    wav = decrypt_and_verify(
+                        session.content_key, blob, expected_len, expected_sha
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise CaptureFailed(
+                        "relay-pulled capture failed decrypt/integrity"
+                    ) from exc
+                raise_if_stopped()
+                result = CaptureResult(
+                    wav=wav,
+                    device=capture_device,
+                    noise_floor=capture_noise_floor,
+                    setup=capture_setup,
+                )
+                log_event(
+                    logger,
+                    "capture_relay.captured",
+                    session_id=session.session_id,
+                    wav_bytes=len(wav),
+                    device=(capture_device or {}).get("label") or "",
+                    index=index,
+                    attempt=attempt,
+                )
+                verdict = dict(consume_capture(index, attempt, result) or {})
+                accepted = verdict.get("accepted") is True
+                outcomes.append(
+                    PlanCaptureOutcome(
+                        index=index,
+                        attempt=attempt,
+                        accepted=accepted,
+                        verdict=verdict,
+                        result=result,
+                    )
+                )
+                if accepted:
+                    accepted_count += 1
+                log_event(
+                    logger,
+                    "capture_relay.plan_result",
+                    session_id=session.session_id,
+                    index=index,
+                    attempt=attempt,
+                    accepted=accepted,
+                )
+                client.post_host_event(
+                    session.session_id,
+                    session.pull_token,
+                    {
+                        "phase": HOST_PHASE_CAPTURE_RESULT,
+                        "index": index,
+                        "attempt": attempt,
+                        "accepted": accepted,
+                        **{
+                            k: v for k, v in verdict.items() if k != "accepted"
+                        },
+                    },
+                )
+                if accepted_count >= plan_target:
+                    client.post_host_event(
+                        session.session_id,
+                        session.pull_token,
+                        {
+                            "phase": HOST_PHASE_CAPTURE_SET_COMPLETE,
+                            "accepted": accepted_count,
+                            "capture_target": plan_target,
+                        },
+                    )
+                    log_event(
+                        logger,
+                        "capture_relay.plan_complete",
+                        session_id=session.session_id,
+                        accepted=accepted_count,
+                        attempts=attempts_used,
+                    )
+                    return outcomes
+                if attempts_used >= plan_max_attempts:
+                    client.post_host_event(
+                        session.session_id,
+                        session.pull_token,
+                        {
+                            "phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED,
+                            "accepted": accepted_count,
+                            "capture_target": plan_target,
+                            "attempts": attempts_used,
+                        },
+                    )
+                    log_event(
+                        logger,
+                        "capture_relay.plan_exhausted",
+                        level=logging.WARNING,
+                        session_id=session.session_id,
+                        accepted=accepted_count,
+                        attempts=attempts_used,
+                    )
+                    return outcomes
+                phase = "awaiting_begin"
+                deadline = monotonic() + timeout_s
+
+        if monotonic() >= deadline:
+            if phase == "awaiting_upload":
+                detail = (
+                    f"phone never uploaded within {timeout_s:.0f}s after arming"
+                )
+            elif phase == "awaiting_arm":
+                detail = f"phone never armed within {timeout_s:.0f}s"
+            else:
+                detail = (
+                    f"phone never began the next capture within {timeout_s:.0f}s"
+                )
             raise CaptureTimeout(
                 f"{detail} (session {session.session_id})",
                 phase=phase,

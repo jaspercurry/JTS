@@ -557,3 +557,184 @@ def test_contract_constants_are_self_consistent():
     assert spec_mod.DEFAULT_THEME["font"] in spec_mod.THEME_FONTS
     assert spec_mod.REQUIRED_SAMPLE_RATE_HZ == 48000
     assert spec_mod.DEFAULT_MAX_UPLOAD_BYTES <= spec_mod.HARD_MAX_UPLOAD_BYTES
+
+
+# --- capture_plan (session-spanning protocol v3, SPEC W2.3) --------------------
+
+
+def _plan_spec(**overrides):
+    from jasper.capture_relay.spec import CapturePlan
+
+    kwargs = dict(
+        driver_label="Woofer driver",
+        driver_role="woofer",
+        acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+        stimulus_duration_ms=4000,
+        capture_plan=CapturePlan(capture_target=3, max_attempts=4),
+    )
+    kwargs.update(overrides)
+    return build_crossover_sweep_spec(**kwargs)
+
+
+def test_capture_plan_marker_is_dormant_for_every_shipped_builder():
+    # PR-1 dormancy: NO shipped builder emits the v3 marker or a plan. The
+    # follow-up capture-page PR flips it on; until then every emitted spec is
+    # byte-identical to the pre-plan contract.
+    from jasper.capture_relay.spec import BUILDERS
+
+    for kind, builder in BUILDERS.items():
+        spec = (
+            builder(acknowledgement_binding="placement_abcdefghijklmnopqrstuv")
+            if kind == "crossover_sweep"
+            else builder()
+        )
+        assert spec.capture_plan is None, kind
+        assert "capture_plan" not in spec.to_dict(), kind
+        assert spec.capture_protocol_version < 3, kind
+
+
+def test_capture_plan_opts_the_crossover_spec_into_protocol_three():
+    spec = _plan_spec()
+    assert spec.capture_protocol_version == 3
+    d = spec.to_dict()
+    assert d["capture_protocol_version"] == 3
+    assert d["capture_plan"] == {
+        "schema_version": 1,
+        "capture_target": 3,
+        "max_attempts": 4,
+    }
+    # Round-trips through the inbound validation path.
+    rebuilt = CaptureSpec.from_dict(d)
+    assert rebuilt.capture_plan == spec.capture_plan
+    assert rebuilt.capture_protocol_version == 3
+
+
+def test_capture_plan_requires_an_acknowledgement_binding():
+    with pytest.raises(CaptureSpecError, match="acknowledgement_binding"):
+        _plan_spec(acknowledgement_binding="")
+
+
+def test_capture_plan_requires_protocol_three_and_vice_versa():
+    from dataclasses import replace
+
+    from jasper.capture_relay.spec import CapturePlan
+
+    base = _plan_spec()
+    with pytest.raises(CaptureSpecError, match="capture protocol 3"):
+        replace(base, capture_protocol_version=2).validate()
+    with pytest.raises(CaptureSpecError, match="requires a capture_plan"):
+        replace(base, capture_plan=None).validate()
+    # A plan-free spec at protocol 2 stays valid (the v2 path).
+    replace(
+        base, capture_plan=None, capture_protocol_version=2
+    ).validate()
+    assert CapturePlan(capture_target=3, max_attempts=4).schema_version == 1
+
+
+@pytest.mark.parametrize(
+    ("target", "attempts", "match"),
+    [
+        (0, 4, "1..max_attempts"),
+        (5, 4, "1..max_attempts"),
+        (3, 9, "<= 8"),
+        (True, 4, "integer"),
+        (3, None, "integer"),
+    ],
+    ids=["zero-target", "target-over-budget", "over-ceiling", "bool", "none"],
+)
+def test_capture_plan_bounds_are_strict(target, attempts, match):
+    from dataclasses import replace
+
+    from jasper.capture_relay.spec import CapturePlan
+
+    base = _plan_spec()
+    plan = CapturePlan(capture_target=target, max_attempts=attempts)
+    with pytest.raises(CaptureSpecError, match=match):
+        replace(base, capture_plan=plan).validate()
+
+
+def test_capture_plan_from_dict_is_strict():
+    from jasper.capture_relay.spec import CapturePlan
+
+    with pytest.raises(CaptureSpecError, match="unknown keys"):
+        CapturePlan.from_dict(
+            {"schema_version": 1, "capture_target": 3, "max_attempts": 4, "x": 1}
+        )
+    with pytest.raises(CaptureSpecError, match="capture_target"):
+        CapturePlan.from_dict({"schema_version": 1, "max_attempts": 4})
+    with pytest.raises(CaptureSpecError, match="must be an object"):
+        CaptureSpec.from_dict({**_plan_spec().to_dict(), "capture_plan": "3"})
+    with pytest.raises(CaptureSpecError, match="schema_version"):
+        CaptureSpec.from_dict(
+            {
+                **_plan_spec().to_dict(),
+                "capture_plan": {
+                    "schema_version": 2,
+                    "capture_target": 3,
+                    "max_attempts": 4,
+                },
+            }
+        )
+
+
+def test_plan_attempt_ceiling_stays_in_lockstep_with_the_worker():
+    # Each admitted attempt's blob rides relay capture_index = attempt - 1
+    # (attempt in 1..MAX_CAPTURE_PLAN_ATTEMPTS), so the valid blob indexes are
+    # EXACTLY 0..MAX_CAPTURE_PLAN_ATTEMPTS-1. The Worker must carry the SAME
+    # attempt cap and apply it to indexes with a strict inequality — a bare
+    # equal-constant check would happily pin an off-by-one storable-but-never-
+    # authorized slot.
+    from pathlib import Path
+
+    worker_src = (
+        Path(__file__).resolve().parent.parent / "relay" / "src" / "worker.js"
+    ).read_text(encoding="utf-8")
+    assert (
+        f"const MAX_CAPTURE_PLAN_ATTEMPTS = {spec_mod.MAX_CAPTURE_PLAN_ATTEMPTS};"
+        in worker_src
+    ), "worker attempt cap drifted from the Pi-side plan attempt cap"
+    assert "index >= MAX_CAPTURE_PLAN_ATTEMPTS ? null : index" in worker_src, (
+        "worker must reject index >= the attempt cap (valid indexes are "
+        "exactly 0..cap-1, one per admitted attempt)"
+    )
+    assert spec_mod.SUPPORTED_CAPTURE_PROTOCOL_VERSIONS == (1, 2, 3)
+
+
+def test_compat_matrix_v3_spec_refuses_todays_v2_page():
+    # v3 Pi session + v2-only page → fail closed BEFORE any tone (the page
+    # cannot run the session-spanning choreography it never implemented).
+    from jasper.capture_relay.session import (
+        CapturePageIncompatible,
+        validate_capture_page,
+    )
+
+    spec = _plan_spec()
+    todays_page = {
+        "schema_version": 1,
+        "capture_protocol_version": 2,
+        "supported_capture_protocol_versions": [1, 2],
+        "capture_page_build": "20260716.1",
+    }
+    with pytest.raises(CapturePageIncompatible, match="expected protocol 3"):
+        validate_capture_page(todays_page, spec)
+
+
+def test_compat_matrix_v3_page_serves_v2_spec():
+    # A future page that ALSO supports protocol 3 keeps serving today's v2
+    # specs — the marker, not the page build, selects the choreography.
+    from jasper.capture_relay.session import validate_capture_page
+
+    v2_spec = build_crossover_sweep_spec(
+        driver_label="Woofer driver",
+        driver_role="woofer",
+        acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+        stimulus_duration_ms=4000,
+    )
+    assert v2_spec.capture_protocol_version == 2
+    v3_page = {
+        "schema_version": 1,
+        "capture_protocol_version": 3,
+        "supported_capture_protocol_versions": [1, 2, 3],
+        "capture_page_build": "20260801.1",
+    }
+    validate_capture_page(v3_page, v2_spec)  # no raise

@@ -443,6 +443,45 @@ CSS-variable allowlist).
 **Why DATA and not executable HTML/CSS/JS — this is a security boundary, not a
 style choice. See §8.**
 
+### Session-spanning capture plans — protocol v3 (SPEC W2.3; dormant)
+
+Protocol v3 lets **one relay session carry a driver's whole repeat SET** so a
+3-repeat crossover driver needs zero wizard interactions after the initial
+"Measure" click. The spec gains an optional `capture_plan` block plus the
+`capture_protocol_version: 3` capability marker (both in
+`jasper/capture_relay/spec.py`; `CapturePlan`):
+
+```
+capture_plan:
+  schema_version: 1
+  capture_target: 3    # accepted captures that finish the set
+  max_attempts: 4      # total admitted attempts, retries included (<= 8)
+```
+
+Choreography per capture N (`run_capture_plan` in
+`jasper/capture_relay/session.py`): the phone posts an authenticated
+`begin_capture {index, attempt}` event (`index` = 1-based slot of
+`capture_target`; `attempt` = 1-based admission attempt) → the Pi validates it
+with the **Pi-owned** admission ledger (`repeat_admission` — the phone NEVER
+decides budget; a refused begin gets a named `capture_refused` host event) →
+the Pi ACKs `capture_authorized {index, attempt}` → the phone records and posts
+`armed` carrying the same begin context (page identity + placement
+acknowledgement validated per capture, exactly as v2) → the Pi plays the
+stimulus → the phone uploads its blob at relay **`capture_index = attempt - 1`**
+(each attempt gets its own key; attempt 1 aliases the legacy un-indexed key) →
+the Pi pulls/decrypts/verifies, analyzes, and posts `capture_result {index,
+attempt, accepted, verdict fields}` → the phone renders "Measurement N of
+{target} ✓ — Next" (or Retry: same index, attempt k+1). The set terminates with
+`capture_set_complete` or `capture_set_exhausted`. Out-of-order / replayed /
+malformed begins are refused loudly; per-event replay is already blocked by the
+protocol-v2 authenticated-envelope sequence.
+
+**Dormant until the page PR:** no shipped builder emits the marker or a plan
+(pinned by `tests/test_capture_relay_spec.py`), so today's page and flow are
+byte-identical. A v3 spec against today's v2 page fails the page-identity check
+before any tone. Deploy sequencing: Pi (dormant) → Worker (indexed blobs,
+back-compat) → page → flip the marker on.
+
 ---
 
 ## 7. Relay API (minimal, stateless, opaque)
@@ -466,13 +505,20 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
 - `POST   /sessions/:id/host-event` — Pi posts bounded progress metadata such as
   `{phase:"sweep_started"}` / `{phase:"sweep_complete"}` / `{phase:"sweep_failed"}`
   (auth: pull_token).
-- `PUT    /sessions/:id/blob` — phone uploads `IV ‖ ciphertext` + integrity
-  `{plaintext_len, sha256}` (auth: upload_token); enforce `max_upload_bytes` +
-  Content-Type at the Worker; set state `ready`.
+- `PUT    /sessions/:id/blob[?index=N]` — phone uploads `IV ‖ ciphertext` +
+  integrity `{plaintext_len, sha256}` (auth: upload_token); enforce
+  `max_upload_bytes` + Content-Type at the Worker; set state `ready`. The
+  optional `index` (0..7 — one slot per admitted attempt,
+  `capture_index = attempt - 1` under the 8-attempt plan cap; absent = 0 = the
+  legacy key) stores one blob per admitted attempt of a protocol-v3 capture
+  plan; one upload per index.
 - `GET    /sessions/:id/status` — Pi polls `{state, size, integrity, event,
-  host_event}` (auth: pull_token).
-- `GET    /sessions/:id/blob` — Pi pulls ciphertext (auth: pull_token).
-- `DELETE /sessions/:id` — Pi purges (auth: pull_token).
+  host_event}` (auth: pull_token) plus, once an indexed upload landed, the
+  additive per-index `blobs` summary (`{"<index>": {size, integrity}}`).
+- `GET    /sessions/:id/blob[?index=N]` — Pi pulls ciphertext (auth:
+  pull_token), per index for capture plans.
+- `DELETE /sessions/:id` — Pi purges (auth: pull_token), indexed blobs
+  included.
 
 ---
 

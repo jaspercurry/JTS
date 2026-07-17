@@ -45,8 +45,23 @@ SCHEMA_VERSION = 1
 # schema: additive spec fields may remain schema-compatible while choreography
 # changes (for example, setup binding or a level stream) require a matching
 # public page before the Pi is allowed to play a tone.
+#
+# Protocol 3 (SPEC W2.3) is the session-spanning capture protocol: one relay
+# session covers a driver's whole repeat SET, choreographed by a `capture_plan`
+# (below). The Pi validates and runs v3 sessions, but NO shipped builder emits
+# the marker yet — the follow-up capture-page PR flips it on. A v3 spec against
+# today's page fails the page-identity check loudly before any tone can play.
 CAPTURE_PROTOCOL_VERSION = 1
-SUPPORTED_CAPTURE_PROTOCOL_VERSIONS = (1, 2)
+SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION = 3
+SUPPORTED_CAPTURE_PROTOCOL_VERSIONS = (1, 2, 3)
+
+# Hard ceiling on a capture plan's attempt budget. Each admission attempt's
+# blob rides its own relay key (capture_index = attempt - 1), so the storable
+# blob indexes are EXACTLY 0..MAX_CAPTURE_PLAN_ATTEMPTS-1: the Worker applies
+# this same value to indexes with a strict inequality (index >= cap rejected).
+# Keep in lockstep with `MAX_CAPTURE_PLAN_ATTEMPTS` in relay/src/worker.js
+# (pinned by tests/test_capture_relay_spec.py).
+MAX_CAPTURE_PLAN_ATTEMPTS = 8
 
 # The capture/upload contract mirrors the existing Pi backend so a relay-pulled
 # WAV drops into the same analysis as today's same-origin upload
@@ -292,6 +307,56 @@ class DefaultSetupCalibration:
         )
 
 
+CAPTURE_PLAN_KEYS = ("schema_version", "capture_target", "max_attempts")
+
+
+@dataclass(frozen=True)
+class CapturePlan:
+    """Session-spanning capture plan (capture protocol v3, SPEC W2.3).
+
+    One relay session covers a driver's whole repeat SET instead of one
+    capture per session: the phone requests each capture with an authenticated
+    ``begin_capture {index, attempt}`` event, the Pi admits it (budget stays
+    Pi-owned — ``repeat_admission`` — never phone-decided), and each admitted
+    attempt's blob rides its own relay key (``capture_index = attempt - 1``).
+
+    - ``capture_target`` — accepted captures required to finish the set
+      (e.g. 3 driver repeats).
+    - ``max_attempts`` — total admission attempts the set may consume,
+      including rejected/retried ones (e.g. 4). Bounded by
+      ``MAX_CAPTURE_PLAN_ATTEMPTS`` so a plan can never authorize a blob index
+      past the Worker's key ceiling.
+
+    Carried as DATA in the spec so a single spec drives both sides; per-capture
+    presentation params are a page-PR follow-up (additive)."""
+
+    capture_target: int
+    max_attempts: int
+    schema_version: int = 1
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "schema_version": self.schema_version,
+            "capture_target": self.capture_target,
+            "max_attempts": self.max_attempts,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> CapturePlan:
+        if not isinstance(data, Mapping):
+            raise CaptureSpecError("capture_plan must be an object")
+        extra = set(data) - set(CAPTURE_PLAN_KEYS)
+        if extra:
+            raise CaptureSpecError(
+                f"capture_plan has unknown keys: {sorted(extra)}"
+            )
+        return cls(
+            capture_target=_as_int(data, "capture_target"),
+            max_attempts=_as_int(data, "max_attempts"),
+            schema_version=_as_int(data, "schema_version", default=1),
+        )
+
+
 # --- Server-driven-UI builders (data, never markup) ---------------------------
 
 
@@ -377,6 +442,9 @@ class CaptureSpec:
     # Optional household-mic prefill hint (Wave-2 persistence). See
     # `DefaultSetupCalibration` — never binding, ignored by the current page.
     default_setup_calibration: DefaultSetupCalibration | None = None
+    # Session-spanning capture plan (protocol v3, SPEC W2.3). `None` for every
+    # shipped builder today — presence requires (and is required by) protocol 3.
+    capture_plan: CapturePlan | None = None
     capture_protocol_version: int = CAPTURE_PROTOCOL_VERSION
     schema_version: int = SCHEMA_VERSION
 
@@ -442,6 +510,11 @@ class CaptureSpec:
                 if self.default_setup_calibration is not None
                 else {}
             ),
+            **(
+                {"capture_plan": self.capture_plan.to_dict()}
+                if self.capture_plan is not None
+                else {}
+            ),
             "output": {"format": self.output_format},
             "max_upload_bytes": self.max_upload_bytes,
         }
@@ -490,6 +563,9 @@ class CaptureSpec:
                 default_setup_calibration = DefaultSetupCalibration.from_dict(
                     calibration_raw
                 )
+        capture_plan_raw = data.get("capture_plan")
+        if capture_plan_raw is not None and not isinstance(capture_plan_raw, Mapping):
+            raise CaptureSpecError("capture_plan must be an object or null")
         spec = cls(
             kind=str(data.get("kind", "")),
             duration_ms=_as_int(data, "duration_ms"),
@@ -543,6 +619,11 @@ class CaptureSpec:
             ),
             run_token=str(data.get("run_token") or ""),
             default_setup_calibration=default_setup_calibration,
+            capture_plan=(
+                CapturePlan.from_dict(capture_plan_raw)
+                if isinstance(capture_plan_raw, Mapping)
+                else None
+            ),
             capture_protocol_version=_as_int(
                 data,
                 "capture_protocol_version",
@@ -609,6 +690,10 @@ class CaptureSpec:
         _validate_run_token(self.run_token)
         _validate_acknowledgement(
             self.acknowledgement,
+            capture_protocol_version=self.capture_protocol_version,
+        )
+        _validate_capture_plan(
+            self.capture_plan,
             capture_protocol_version=self.capture_protocol_version,
         )
         if self.setup_binding_id and not re.fullmatch(
@@ -849,6 +934,37 @@ def _validate_acknowledgement(
         raise CaptureSpecError("acknowledgement.binding_id is invalid")
     if not acknowledgement.label or len(acknowledgement.label) > 360:
         raise CaptureSpecError("acknowledgement.label must be 1..360 characters")
+
+
+def _validate_capture_plan(
+    capture_plan: CapturePlan | None,
+    *,
+    capture_protocol_version: int,
+) -> None:
+    if capture_plan is None:
+        if capture_protocol_version >= SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION:
+            raise CaptureSpecError(
+                "capture protocol 3 requires a capture_plan"
+            )
+        return
+    if capture_protocol_version < SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION:
+        raise CaptureSpecError("capture_plan requires capture protocol 3")
+    if capture_plan.schema_version != 1:
+        raise CaptureSpecError("capture_plan.schema_version must be 1")
+    for name, value in (
+        ("capture_target", capture_plan.capture_target),
+        ("max_attempts", capture_plan.max_attempts),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise CaptureSpecError(f"capture_plan.{name} must be an integer")
+    if not 1 <= capture_plan.capture_target <= capture_plan.max_attempts:
+        raise CaptureSpecError(
+            "capture_plan.capture_target must be in 1..max_attempts"
+        )
+    if capture_plan.max_attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
+        raise CaptureSpecError(
+            f"capture_plan.max_attempts must be <= {MAX_CAPTURE_PLAN_ATTEMPTS}"
+        )
 
 
 def _validate_return_url(return_url: str) -> None:
@@ -1128,6 +1244,7 @@ def build_crossover_sweep_spec(
     font: str = "figtree",
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ambient_duration_ms: int = 0,
+    capture_plan: CapturePlan | None = None,
 ) -> CaptureSpec:
     """`kind="crossover_sweep"` — per-driver frequency response for active
     crossover work. Same acoustic shape as `room_sweep` (a clean log sweep,
@@ -1153,6 +1270,15 @@ def build_crossover_sweep_spec(
     the Pi's ``sweep_complete`` relay event and the deadline is only the
     backstop — never the working margin. Pinned by
     ``tests/test_capture_relay_kinds.py``.
+
+    ``capture_plan`` opts the spec into the session-spanning capture protocol
+    (v3, SPEC W2.3): one relay session for the driver's whole repeat set, the
+    phone requesting each capture with an authenticated ``begin_capture``
+    event. **No production caller passes it yet** — the marker stays dormant
+    until the follow-up capture-page PR flips it — so the default output is
+    byte-identical to the pre-plan builder. A plan requires an
+    ``acknowledgement_binding`` (placement gates run per capture, exactly as
+    today).
     """
     if stimulus_duration_ms is None:
         # Lazy import: the kernel module pulls numpy/scipy, and the socket-
@@ -1227,6 +1353,10 @@ def build_crossover_sweep_spec(
         if acknowledgement_binding
         else None
     )
+    if capture_plan is not None and acknowledgement is None:
+        raise CaptureSpecError(
+            "a crossover capture_plan requires an acknowledgement_binding"
+        )
     return CaptureSpec(
         kind="crossover_sweep",
         duration_ms=duration_ms,
@@ -1264,7 +1394,14 @@ def build_crossover_sweep_spec(
         ),
         max_upload_bytes=max_upload_bytes,
         acknowledgement=acknowledgement,
-        capture_protocol_version=2 if acknowledgement else CAPTURE_PROTOCOL_VERSION,
+        capture_plan=capture_plan,
+        capture_protocol_version=(
+            SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION
+            if capture_plan is not None
+            else 2
+            if acknowledgement
+            else CAPTURE_PROTOCOL_VERSION
+        ),
     ).validate()
 
 
