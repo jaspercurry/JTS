@@ -106,10 +106,12 @@ feature, the bridge duplicates the final cleaned 16 kHz mono stream to
 localhost UDP `:9894`; `jasper-usbmic` alone consumes that port and writes the
 UAC2 Pi-to-host direction. This consumer emits each native 320-sample AEC frame
 immediately (20 ms) with a 16-byte v2 `JM` header carrying a uint32 sequence and
-`CLOCK_MONOTONIC` bridge-emit timestamp. That timestamp measures bridge emit to
-relay dequeue; it does not include XVF capture, PortAudio, the mic queue, or AEC
-processing. The bridge logs the separately negotiated PortAudio input latency
-as `event=aec.mic_stream_latency`. Voice/wake legs keep their established raw
+`CLOCK_MONOTONIC` bridge-emit timestamp. The relay's in-process ALSA writer
+uses it to measure bridge emit through the frame's final successful ALSA period
+write; it does not include
+XVF capture, PortAudio, the mic queue, AEC processing, gadget fill, USB, or the
+host audio stack. The bridge logs the separately negotiated PortAudio input
+latency as `event=aec.mic_stream_latency`. Voice/wake legs keep their established raw
 1280-sample / 80 ms packet contract with no header.
 
 There is **no independent computer-microphone leg picker yet**. Export mirrors
@@ -127,23 +129,13 @@ compatibility is intentionally one-way: an old relay cannot decode the new
 its `PartOf=` relay at one revision. A staged rollout is unsupported in this
 slice; supporting one would require an earlier separately deployed receiver-
 only revision. The relay's drop-oldest queue is two 20 ms periods and its
-ALSA period is 10 ms because the Pi kernel fixes this UAC2 playback ring at four
-periods; hardware validation therefore realizes the intended 40 ms buffer
-instead of the 80 ms ring negotiated from a 20 ms period. Those latency
-reductions remain local to the computer microphone rather than changing wake/session
-timing. The normal
-voice/session stream stays on `:9876`. When the feature is off, the extra emitter
-is not created. The `/wake/` switch restarts the bridge so intent and producer
-agree, while
-[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) owns descriptor composition and
+downstream buffering and occupancy control remain local to the computer
+microphone rather than changing wake/session timing. The normal voice/session
+stream stays on `:9876`. When the feature is off, the extra emitter is not
+created. The `/wake/` switch restarts the bridge so intent and producer agree.
+[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) owns the relay writer, status
+schema, descriptor composition, and latency acceptance gates;
 [PRIVACY.md](../PRIVACY.md) owns mic-mute behavior.
-
-Relay schema 3 names this partial measurement with
-`source_age_scope=bridge_emit_to_relay_dequeue`. Its bounded percentile window
-is rotated while the sampled host `hw_ptr` is not advancing, and status exposes
-the window generation and start time. That prevents a prior or idle recording
-window from silently contaminating resumed-session percentiles; it still does
-not turn the value into an end-to-end host latency measurement.
 
 The chip-AEC profile's default wake surface is deliberately one detector:
 the primary/session beam (`JASPER_MIC_DEVICE=udp:9876`, wake leg `on`).
@@ -2786,7 +2778,8 @@ build, with reasoning so we don't keep re-litigating:
 
 Last verified: 2026-07-16 (the optional USB-host-mic duplicate on dedicated
 `:9894`, v2-only timestamp header, one-way rollout compatibility, negotiated
-capture-latency log, and frozen `:9876` voice wire contract were rechecked
+capture-latency log, schema-4 bridge-emit-to-ALSA-write scope, in-process
+occupancy-targeted relay, and frozen `:9876` voice wire contract were rechecked
 against `jasper/cli/aec_bridge.py`, `jasper/cli/usb_mic.py`,
 `jasper/usb_mic.py`, and focused bridge/relay tests. Prior 2026-07-12 pass:
 `jasper-aec-tune` mic card and capture-width
