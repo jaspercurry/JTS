@@ -6045,6 +6045,88 @@ def test_live_relay_does_not_misclassify_its_inflight_repeat_as_orphaned(
     )
 
 
+def test_v3_capture_plan_session_renders_passive_measuring_state():
+    """SPEC W2.3: while one relay session carries the driver's whole repeat
+    set (protocol v3), the wizard is a passive progress mirror — no wizard
+    action (the page's red Stop is the only control), and the per-repeat
+    "Measure {role}" actions never render."""
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["relay"] = {
+        "status": "awaiting_phone",
+        "kind": "crossover_sweep:driver",
+        "capture_plan": {
+            "role": "woofer",
+            "capture_target": 3,
+            "accepted": 1,
+        },
+    }
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "waiting"
+    assert env["verdict_text"] == (
+        "Measuring the woofer — follow your phone. 1 of 3 done."
+    )
+    assert env["next_action"] is None
+    assert env["alternate_actions"] == []
+    # The relay snapshot (with its Stop affordance) passes through untouched.
+    assert env["relay"]["capture_plan"]["capture_target"] == 3
+
+    # The passive copy holds through the per-capture finishing/committing
+    # phases too — the phone still owns the next action mid-set.
+    for phase in ("finishing", "committing"):
+        status["relay"]["status"] = phase
+        env = crossover_envelope.build_crossover_envelope(status)
+        assert env["screen"] == "waiting"
+        assert "follow your phone" in env["verdict_text"]
+        assert env["next_action"] is None
+
+
+def test_v3_capture_plan_stop_keeps_the_honest_stopping_copy():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["relay"] = {
+        "status": "stopping",
+        "kind": "crossover_sweep:driver",
+        "capture_plan": {
+            "role": "woofer",
+            "capture_target": 3,
+            "accepted": 2,
+        },
+    }
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "waiting"
+    assert "restoring the speaker safely" in env["verdict_text"]
+    assert env["next_action"] is None
+
+
+def test_v3_session_death_recovers_through_the_existing_driver_terminal():
+    """Session death (TTL / failure) leaves the in-flight relay statuses, so
+    the envelope falls back to the ordinary v2 per-driver action — the
+    documented recovery path (SPEC W2.3)."""
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["relay"] = {
+        "status": "failed",
+        "kind": "crossover_sweep:driver",
+        "error": "phone never armed within 120s",
+        "capture_plan": {
+            "role": "woofer",
+            "capture_target": 3,
+            "accepted": 1,
+        },
+    }
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "driver"
+    assert env["next_action"]["id"] == "measure_driver"
+    assert env["next_action"]["body"]["role"] == "woofer"
+
+
 def test_durable_level_run_keeps_waiting_without_volatile_relay_state():
     from jasper.active_speaker import crossover_envelope
 

@@ -223,13 +223,29 @@ class RelayClient:
         return self._json(resp)
 
     def pull_blob(
-        self, session_id: str, pull_token: str
+        self,
+        session_id: str,
+        pull_token: str,
+        *,
+        capture_index: int = 0,
     ) -> tuple[bytes, dict[str, Any]]:
         """Return (ciphertext blob, integrity) where integrity is the phone's
-        plaintext length + SHA-256 (relayed via headers)."""
+        plaintext length + SHA-256 (relayed via headers).
+
+        ``capture_index`` selects one blob of a session-spanning capture plan
+        (protocol v3): the Worker keys each admitted attempt's blob by index.
+        The default ``0`` keeps the request byte-identical to the single-blob
+        v2 contract (the Worker treats an absent index as 0)."""
+        if (
+            isinstance(capture_index, bool)
+            or not isinstance(capture_index, int)
+            or capture_index < 0
+        ):
+            raise ValueError(f"capture_index must be an int >= 0, got {capture_index!r}")
+        suffix = "/blob" if capture_index == 0 else f"/blob?index={capture_index}"
         resp = self._transport(
             "GET",
-            self._session_url(session_id, "/blob"),
+            self._session_url(session_id, suffix),
             {"Authorization": f"Bearer {pull_token}"},
             None,
         )
