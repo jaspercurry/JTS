@@ -2008,4 +2008,27 @@ behind the runs-1-20 SNR shortfall W2.1-W2.4 above were built to react to
 validation: sub_bass moved from 13-16 dB "insufficient" to 62-66 dB "ok"
 on all three; every other band's reported level is bit-for-bit unchanged)
 and pinned by ground-truth fixtures plus synthetic protective-power cases;
-not yet hardware-validated on a live re-measure.)
+not yet hardware-validated on a live re-measure.) Same-day follow-up
+(2026-07-17): the durable-record eligibility fix — JTS3 run 22 accepted a
+full woofer near-field repeat set (60.9 dB SNR, `overlap_levels` usable)
+yet the wizard still rendered the completed-insufficient terminal above.
+Root cause: `crossover_eligibility.driver_acoustic_usable` gated on
+`record.get("captured") is True`, but `measurement.record_driver_measurement`'s
+`captured` flag also requires this record's own played tone to
+byte-match a separately-recorded, earlier by-ear floor confirmation's
+playback (`_floor_confirmation_issues`) — an equality the sweep/repeat
+capture flow can never satisfy, since each accepted repeat plays its own
+sweep tone. So `captured` is *always* False on an acoustic-bearing
+record from the repeat-set flow, by design (pinned by
+`test_active_speaker_measurement.py::
+test_sweep_evidence_never_clobbers_the_confirmation_gate`), which meant
+`driver_acoustic_usable` refused every real, fully-accepted driver
+unconditionally — not a stale-record-selection edge case. The fix reads
+the acoustic-capture-quality signal directly (mic meter not
+clipping/too_loud, no blocker issue outside the floor-replay-mismatch
+family) instead of the floor-replay flag; every other gate (overlap
+usable, verdict `present`, mic not clipping, repeats accepted == 3,
+placement proof) is unchanged. Checked against the current
+implementation and pinned by a repro built through the real
+`record_driver_measurement` write path (not a synthetic status dict);
+not yet hardware re-validated on jts3.
