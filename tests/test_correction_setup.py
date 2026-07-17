@@ -495,6 +495,31 @@ def test_relay_failure_message_translates_incompatible_page_to_an_action():
         assert jargon not in message.lower()
 
 
+def test_server_owned_step_mismatch_message_is_plain_not_the_raw_guard_string():
+    """Hardware run 21: the envelope-derivation guard's own raw ValueError
+    ("...is not the server-owned next step") reached the wizard status line
+    unchanged before this mapping existed. It stays reachable on the v2/
+    wizard-initiated path (a stale tab racing a fresher server-driven step),
+    so it must translate to plain, actionable copy — never the programmer
+    string — and log a stable, non-exception-class reason."""
+
+    exc = correction_setup.ServerOwnedNextStepMismatch(
+        "the requested driver capture is not the server-owned next step"
+    )
+    message = correction_setup._relay_failure_message(exc)
+    assert "server-owned next step" not in message
+    assert "reopen the phone link" in message.lower()
+
+    assert (
+        correction_setup._relay_failure_reason(exc) == "server_owned_step_mismatch"
+    )
+    assert correction_setup._relay_failure_reason(exc) != "ServerOwnedNextStepMismatch"
+
+    # Still a ValueError -- every existing except ValueError / except
+    # (RuntimeError, OSError, ValueError) upstream keeps working unchanged.
+    assert isinstance(exc, ValueError)
+
+
 def test_run_async_timeout_waits_for_coroutine_cleanup():
     started = threading.Event()
     cleanup_started = threading.Event()

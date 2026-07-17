@@ -531,6 +531,48 @@ plays — a safe, visible failure, but the wrong order: deploying the Pi flip
 before the page publish would make every driver-sweep capture request error
 until the page catches up.
 
+**Hardware blocker found and fixed (run 21, jts3 @ 62af5b206): the v3 order
+was never validated against the wizard's own envelope-derivation guard.**
+`_assert_crossover_driver_action` / `_assert_crossover_reference_axis_level_action`
+(`jasper/web/correction_setup.py`) re-derive "is this the server-owned next
+step" from `build_crossover_envelope` a second time, independent of
+`authorize_begin`'s `repeat_admission` reservation — built for the v2 order
+(guard → reserve → capture). Protocol v3 flips that order (reserve → phone
+arms → guard): by the time `on_armed` calls the guard, the SAME attempt's
+own reservation is live in the ledger, and the guard's envelope recompute
+(which blanks `relay` to avoid seeing its own session) reads that live
+reservation as an orphaned one — so it vetoed the plan's own authorized
+capture, deterministically, on every driver sweep. Fixed by
+`_plan_admission_matches`: when the CURRENT session's capture-plan
+reservation is the live, matching (speaker_group_id, role, capture_geometry)
+admission, it — not a second envelope-derivation — is treated as the
+server-owned admission, and the redundant guard is skipped for exactly that
+capture. This covers **both** near-field AND reference-axis driver captures
+(both run v3 and both reserve). The guard is unchanged for every
+wizard-initiated v2/direct request (a stale tab racing a fresher
+server-driven step still refuses).
+
+The sibling **fixed-axis LEVEL-CHECK** guard
+(`_assert_crossover_reference_axis_level_action`) needs no such exemption,
+for a structural reason: the level check holds **no `repeat_admission`
+reservation of its own** — its handler
+(`_handle_crossover_relay_level_match`) only ever calls
+`repeat_admission.invalidate()`, never `reserve()` — so there is no in-flight
+reservation for its own envelope recompute to misread. (Reference-axis driver
+*captures* do reserve, but they are guarded by the driver guard above, which
+is already fixed.)
+
+Both guards now raise a typed `ServerOwnedNextStepMismatch` (a `ValueError`
+subclass) carrying `code`/`user_message`, so the refusal maps to one
+household sentence — never the raw "…is not the server-owned next step"
+string — on every reachable household surface: the async wizard status line
+(`_relay_failure_message` in `_run_relay_capture`), the **synchronous
+POST-time dispatch** (`_dispatch_crossover`, which previously returned
+`str(exc)` verbatim on a stale-tab re-POST), and the phone capture page's
+`sweep_failed` host event (`correction_crossover_flow._phone_failure_text`).
+The raw string stays in the `event=capture_relay.server_owned_step_mismatch`
+structured log only.
+
 ---
 
 ## 7. Relay API (minimal, stateless, opaque)
