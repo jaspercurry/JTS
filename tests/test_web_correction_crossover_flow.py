@@ -8411,17 +8411,22 @@ async def test_required_host_event_failure_consumes_repeat_without_stray_audio(
 
 @pytest.mark.asyncio
 async def test_ambient_started_host_event_still_carries_duration_s(monkeypatch):
-    """W2.2 countdown regression check (hardware run 18 saw NO phone
-    countdown and ~4-5s more arm->tone latency than run 16's working
-    countdown). The phone-side countdown is driven entirely by this event's
-    ``duration_s`` field, so the first thing to rule out is the wire
-    contract silently dropping it after #1543's changes. It has not:
-    ``run_crossover_relay_transport`` still posts
-    ``{"phase": "ambient_started", "duration_s": ambient_duration_s}``
-    unconditionally whenever ``ambient_duration_s > 0``, and #1543 never
-    touched this function -- see the PR body for where the extra latency
-    actually comes from (prepare_play's solver work, which now runs AFTER
-    this event posts but BEFORE the real quiet-window sleep starts)."""
+    """The phone-side countdown is driven entirely by this event's
+    ``duration_s`` field, so it must never silently drop off the wire. This
+    pins the LEGACY-``play_sequence`` fallback path specifically (a
+    ``play_sequence`` with the pre-W2.6 single-``on_sweep_ready`` argument
+    shape -- exactly what the summed-commissioning host's own
+    ``_play_sequence`` in ``correction_setup.py`` still has, since it has no
+    ``prepare_play`` phase to fire the post from): ``duration_s`` carries and
+    the relative order (``ambient_started`` before ``sweep_started``) holds,
+    but the exact WHEN (before ``play_sequence`` even starts) is
+    intentionally unchanged from before W2.6 -- see
+    ``test_ambient_started_falls_back_to_eager_post_for_legacy_play_sequence``
+    for that ordering pinned explicitly, and
+    ``test_ambient_started_fires_after_prepare_work_and_before_the_real_sleep``
+    for the FIXED ordering a ``play_sequence`` that accepts
+    ``on_ambient_ready`` (``correction_crossover_flow._play``, used by every
+    driver capture, v2 and v3) now gets."""
 
     import asyncio
 
@@ -8449,6 +8454,164 @@ async def test_ambient_started_host_event_still_carries_duration_s(monkeypatch):
     assert phases.index("ambient_started") < phases.index("sweep_started")
     ambient_event = host_events[phases.index("ambient_started")]
     assert ambient_event == {"phase": "ambient_started", "duration_s": 2.5}
+
+
+@pytest.mark.asyncio
+async def test_ambient_started_falls_back_to_eager_post_for_legacy_play_sequence(
+    monkeypatch,
+):
+    """Backward-compat half of the W2.6 fix: a ``play_sequence`` that does
+    not accept ``on_ambient_ready`` (today, only the summed-commissioning
+    host's ``_play_sequence`` in ``correction_setup.py``) keeps its ORIGINAL
+    ordering byte-for-byte -- the post fires before ``play_sequence`` starts
+    at all, exactly as every crossover capture behaved before this PR."""
+
+    import asyncio
+
+    _fake_relay_transport(monkeypatch)
+    order: list[str] = []
+
+    def post_host_event(_sid, _token, payload):
+        order.append(f"event:{payload.get('phase')}")
+
+    async def legacy_play_sequence(on_sweep_ready):
+        order.append("play_sequence_started")
+        if on_sweep_ready is not None:
+            await asyncio.to_thread(on_sweep_ready)
+        return {"status": "completed"}
+
+    result, _played = await flow.run_crossover_relay_transport(
+        object(),
+        _relay_pi_session("driver"),
+        run_async=lambda coro, timeout=None: _run_coro(coro),
+        play_sequence=legacy_play_sequence,
+        validate_playback=lambda _payload: None,
+        prepare_armed=lambda _state, _ack: None,
+        post_host_event=post_host_event,
+        ambient_duration_s=2.5,
+    )
+    assert result is not None
+    assert order == [
+        "event:ambient_started",
+        "play_sequence_started",
+        "event:sweep_started",
+        "event:sweep_complete",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ambient_started_fires_after_prepare_work_and_before_the_real_sleep(
+    monkeypatch,
+):
+    """W2.6 countdown-accuracy fix (SPEC W2.3): a ``play_sequence`` that
+    accepts ``on_ambient_ready`` (``correction_crossover_flow._play``, used
+    by every driver capture sweep -- v2 single-capture AND the v3
+    session-spanning plan runner) now gets the post threaded through as a
+    callback it fires ITSELF, after its own prepare work (solve + volume
+    acquire) and immediately before the real quiet-window sleep -- not
+    synchronously in ``on_armed`` before ``play_sequence`` even starts.
+
+    Hardware run 18 saw no phone countdown and ~4-5s more arm->tone latency
+    than expected; PR #1552's own investigation ("Countdown finding")
+    confirmed the structural cause: #1543's ``prepare_play`` (real solve
+    work — topology/design-draft loads, ``level_solver.solve_level``, two
+    CamillaDSP round trips) ran in the gap between the event posting and the
+    real sleep starting, so the phone's countdown (driven by ``duration_s``
+    from the moment it observes this event) could reach zero before the tone
+    ever played. This test proves the relocated post actually lands after
+    prepare work and before the sleep, not just that ordering metadata is
+    unchanged."""
+
+    import asyncio
+
+    _fake_relay_transport(monkeypatch)
+    order: list[str] = []
+
+    def post_host_event(_sid, _token, payload):
+        order.append(f"event:{payload.get('phase')}")
+
+    async def prepare_then_play(
+        on_sweep_ready, on_ambient_ready=None
+    ) -> dict:
+        order.append("prepare_work")
+        if on_ambient_ready is not None:
+            await asyncio.to_thread(on_ambient_ready)
+        order.append("sleep")
+        if on_sweep_ready is not None:
+            await asyncio.to_thread(on_sweep_ready)
+        return {"status": "completed"}
+
+    result, _played = await flow.run_crossover_relay_transport(
+        object(),
+        _relay_pi_session("driver"),
+        run_async=lambda coro, timeout=None: _run_coro(coro),
+        play_sequence=prepare_then_play,
+        validate_playback=lambda _payload: None,
+        prepare_armed=lambda _state, _ack: None,
+        post_host_event=post_host_event,
+        ambient_duration_s=2.5,
+    )
+    assert result is not None
+    assert order == [
+        "prepare_work",
+        "event:ambient_started",
+        "sleep",
+        "event:sweep_started",
+        "event:sweep_complete",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_driver_capture_sweep_play_fires_ambient_ready_after_prepare_play(
+    monkeypatch, tmp_path
+):
+    """The SAME fix, exercised at the ``build_crossover_relay_run_and_consume``
+    layer (the real ``_play`` v2 driver captures use) rather than the raw
+    ``run_crossover_relay_transport`` seam above — proves the wiring inside
+    ``_play`` itself, not just a hand-rolled ``play_sequence`` double."""
+
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    order: list[str] = []
+
+    async def prepare() -> bool:
+        order.append("prepare_play")
+        return True
+
+    async def play(*_args, **_kwargs):
+        order.append("play_sweep")
+        # Stop here — deliberately before record_driver_capture, which needs
+        # a full real topology/comparison-set fixture this test does not
+        # set up. Only the play-phase ordering above is under test.
+        raise RuntimeError("stop before record")
+
+    def post_host_event(_sid, _token, payload):
+        phase = payload.get("phase")
+        if phase in ("ambient_started", "sweep_started"):
+            order.append(f"event:{phase}")
+
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        post_host_event=post_host_event,
+        reserve_repeat_attempt=lambda: {"token": "token", "attempt": 1},
+        finish_failed_repeat_attempt=lambda reservation, failure_type: None,
+        prepare_play=prepare,
+        ambient_duration_s=1.5,
+        comparison_set=_COMPARISON_SET,
+        target_fingerprint="target-fp",
+    )
+    with pytest.raises(RuntimeError, match="stop before record"):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+    assert order == [
+        "prepare_play",
+        "event:ambient_started",
+        "event:sweep_started",
+        "play_sweep",
+    ]
 
 
 async def _async_true():
@@ -9616,3 +9779,687 @@ async def test_unresolved_volume_refuses_direct_level_capture_and_apply_boundari
             expected_candidate_fingerprint="candidate",
             camilla_factory=lambda: object(),
         )
+
+
+# --- v3 session-spanning capture plan — endpoint-level driver run (SPEC W2.3) --
+
+
+def _v3_driver_plan_fixture(
+    monkeypatch,
+    tmp_path,
+    *,
+    capture_geometry: str = "near_field",
+    target_fingerprint: str = "c" * 64,
+):
+    """The SAME analyzer-boundary mocking
+    ``test_driver_capture_wires_three_repeats_before_one_durable_record`` uses
+    for v2 (``jasper.active_speaker.commissioning_capture
+    .record_driver_acoustic_capture`` faked; everything above it — the real
+    ``repeat_admission`` ledger, ``web_measurement.record_driver_capture``,
+    ``correction_crossover_backend.record_driver_capture``'s solve-correction
+    wiring — genuinely runs) so a v3 session-spanning plan exercises the
+    IDENTICAL per-capture analysis/record path, just driven through
+    ``build_crossover_relay_plan_run_and_consume`` instead of one direct call
+    per repeat.
+
+    ``fixture.verdicts[attempt] = {"accepted": False, "estimated_snr_db": ...}``
+    controls one attempt's per-capture acoustic verdict before driving it;
+    ``fixture.finalize`` controls the WINNER's own re-analysis at set
+    completion (``{"verdict": "insufficient", "snr_db": ...}`` drives the
+    completed-insufficient correction path).
+    """
+    import jasper.active_speaker.bundles as active_speaker_bundles
+    import jasper.active_speaker.calibration_level as calibration_level
+    import jasper.active_speaker.commissioning_admission as commissioning_admission
+    import jasper.active_speaker.commissioning_capture as capture
+    import jasper.active_speaker.measurement as measurement
+    from jasper.active_speaker import repeat_admission
+    from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+    topology = object()
+    wav_path = tmp_path / "driver.wav"
+    wav_path.write_bytes(b"wav")
+    comparison_set = dict(_COMPARISON_SET)
+    repeat_target_id, repeat_target_fingerprint = driver_repeat_binding(
+        speaker_group_id="mono",
+        role="woofer",
+        target_fingerprint=target_fingerprint,
+        capture_geometry=capture_geometry,
+    )
+    admission_path = tmp_path / "repeat-admission.json"
+    # web_measurement.record_driver_capture's OWN deep calls into
+    # repeat_admission.finish/complete/abort_ready never pass path= --  the
+    # env var is the only way to redirect them off the real
+    # /var/lib/jasper default in a hardware-free test (mirrors
+    # test_driver_capture_wires_three_repeats_before_one_durable_record).
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE", str(admission_path)
+    )
+
+    monkeypatch.setattr(web_measurement, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        web_measurement, "capture_preset", lambda _topology, supplied=None: supplied
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_wav_path",
+        lambda raw, kind, wav_bytes=None: wav_path,
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_sweep_meta",
+        lambda raw: {
+            "sample_rate": 48000,
+            "n_samples": 48000,
+            "f1": 20.0,
+            "f2": 12000.0,
+            "duration_s": 1.0,
+            "amplitude_dbfs": -12.0,
+        },
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_calibration",
+        lambda raw: (None, None, {"mode": "magnitude_only"}),
+    )
+    ambient = {
+        "schema_version": 1,
+        "domain": "deconvolved",
+        "method": "deconvolved_band_difference",
+        "bands": [],
+    }
+    monkeypatch.setattr(
+        web_measurement, "_stored_ambient_report", lambda *a, **k: ambient
+    )
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    monkeypatch.setattr(
+        web_measurement,
+        "_resolve_bundle_for_capture",
+        lambda *a, **k: (bundle_dir, "captures/driver.wav"),
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "_driver_target_fingerprint",
+        lambda *a, **k: target_fingerprint,
+    )
+    monkeypatch.setattr(calibration_level, "load_calibration_level_state", lambda: {})
+    monkeypatch.setattr(
+        commissioning_admission,
+        "validate_capture_admission_handoff",
+        lambda handoff, **_kwargs: (dict(handoff) if handoff else None),
+    )
+    monkeypatch.setattr(
+        measurement,
+        "load_measurement_state",
+        lambda _topology: {"active_comparison_set": comparison_set},
+    )
+    monkeypatch.setattr(
+        measurement,
+        "current_driver_floor_evidence",
+        lambda *_a, **_k: {
+            "valid": True,
+            "source": "durable_current_driver_measurement",
+            "confirmation": {},
+        },
+    )
+    monkeypatch.setattr(
+        active_speaker_bundles,
+        "append_repeat_capture",
+        lambda *_a, **kwargs: {
+            "artifact_path": f"captures/repeat-{kwargs['index']}.wav"
+        },
+    )
+    monkeypatch.setattr(
+        active_speaker_bundles,
+        "record_repeat_progress",
+        lambda *_a, **kwargs: dict(kwargs),
+    )
+    monkeypatch.setattr(active_speaker_bundles, "append_capture", lambda *a, **k: None)
+
+    attempt_counter = {"n": 0}
+    verdicts: dict = {}
+    finalize: dict = {"verdict": "ok", "snr_db": 31.0}
+
+    def fake_analyze(*_args, **kwargs):
+        if kwargs.get("record") is not None:
+            attempt_counter["n"] += 1
+            attempt = attempt_counter["n"]
+            verdict = verdicts.get(
+                attempt, {"accepted": True, "estimated_snr_db": 31.0}
+            )
+            accepted = verdict.get("accepted", True)
+            snr_verdict = "ok" if accepted else "insufficient"
+            return {
+                "recorded": True,
+                "verdict": "present" if accepted else "unusable_capture",
+                "outcome": "heard_correct_driver" if accepted else None,
+                "acoustic": {
+                    "verdict": "present" if accepted else "unusable_capture",
+                    "capture_geometry": capture_geometry,
+                    "observed_mic_dbfs": -30.0 + attempt / 10.0,
+                    "mic_clipping": False,
+                    "snr": {
+                        "verdict": snr_verdict,
+                        "worst_relevant": {
+                            "band_id": "mid",
+                            "estimated_snr_db": verdict.get(
+                                "estimated_snr_db", 31.0
+                            ),
+                            "verdict": snr_verdict,
+                        },
+                    },
+                },
+                "excitation": {},
+                "placement_proof": kwargs.get("placement_proof"),
+            }
+        repeats = kwargs["repeats"]
+        return {
+            "recorded": True,
+            "verdict": "present",
+            "acoustic": {
+                "verdict": "present",
+                "capture_geometry": capture_geometry,
+                "snr": {
+                    "verdict": finalize["verdict"],
+                    "worst_relevant": {
+                        "band_id": "mid",
+                        "estimated_snr_db": finalize["snr_db"],
+                        "verdict": finalize["verdict"],
+                    },
+                },
+            },
+            "measurement": {"repeats": repeats},
+            "placement_proof": kwargs.get("placement_proof"),
+        }
+
+    monkeypatch.setattr(capture, "record_driver_acoustic_capture", fake_analyze)
+
+    repeat_admission.activate(comparison_set, path=admission_path)
+    monkeypatch.setattr(backend, "_LEVEL_LEASE", backend.CrossoverLevelLease())
+
+    return SimpleNamespace(
+        comparison_set=comparison_set,
+        admission_path=admission_path,
+        repeat_target_id=repeat_target_id,
+        repeat_target_fingerprint=repeat_target_fingerprint,
+        verdicts=verdicts,
+        finalize=finalize,
+        repeat_admission=repeat_admission,
+    )
+
+
+def _drive_v3_driver_plan(
+    monkeypatch,
+    fixture,
+    *,
+    ambient_duration_s: float = 0.0,
+    play_fails_on_attempt: int | None = None,
+):
+    """Build and return (run_and_consume, client, session, phone,
+    relay_backend, progress_calls, finish_failed_calls) wired against
+    ``fixture`` (from :func:`_v3_driver_plan_fixture`)."""
+    import urllib.parse
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.capture_relay.client import RelayClient
+    from jasper.capture_relay.session import mint_session, register_session
+    from jasper.capture_relay.spec import CapturePlan, build_crossover_sweep_spec
+    from jasper.correction import coordinator
+    from tests.test_capture_relay_plan import _BINDING, FakePlanRelayBackend, PhonePlanDriver, _wav
+
+    class _UploadingPhoneDriver(PhonePlanDriver):
+        """``PhonePlanDriver`` plus the "upload once the sweep finishes"
+        reaction the real capture page performs. ``test_capture_relay_plan
+        .py``'s own suite sidesteps this by uploading straight from a
+        TEST-ONLY ``on_armed`` (its ``_plan_callbacks`` helper) instead of the
+        phone reacting to ``sweep_complete`` -- this test drives the REAL
+        production ``on_armed`` (which only plays the sweep and posts
+        ``sweep_complete``, never uploads), so the phone driver itself must
+        react to it, exactly as the future capture page will."""
+
+        def __init__(self, backend, session, *, page=None):
+            super().__init__(backend, session, page=page)
+            self._uploaded_for: set[tuple[int, int]] = set()
+
+        def step(self):
+            if not self.finished:
+                host = (
+                    self.backend.sessions[self.session.session_id]["host_event"]
+                    or {}
+                )
+                if (
+                    host.get("phase") == "sweep_complete"
+                    and self.begun is not None
+                    and self.begun not in self._uploaded_for
+                ):
+                    _index, attempt = self.begun
+                    self.backend.phone_upload(
+                        self.session.session_id,
+                        self.session.content_key,
+                        _wav(attempt),
+                        index=attempt - 1,
+                    )
+                    self._uploaded_for.add(self.begun)
+            super().step()
+
+    class AlwaysActive:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def assert_active(self):
+            return None
+
+    # Isolates the real coordinator.measurement_window() (a UDS call to
+    # jasper-mux) hardware-free -- the same seam _fake_relay_transport
+    # stubs for the v2 tests. CaptureActivityProbe also stubbed: its own
+    # background watchdog polls client.status() concurrently with the main
+    # loop, which would double-drive PhonePlanDriver's reactive step().
+    async def acquire_measurement_gate():
+        return None
+
+    async def release_measurement_gate(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        coordinator, "_acquire_measurement_gate", acquire_measurement_gate
+    )
+    monkeypatch.setattr(
+        coordinator, "_release_measurement_gate", release_measurement_gate
+    )
+    monkeypatch.setattr(relay_session, "CaptureActivityProbe", AlwaysActive)
+
+    play_calls: list[int] = []
+
+    async def play(*_args, **_kwargs):
+        play_calls.append(len(play_calls) + 1)
+        if play_fails_on_attempt == len(play_calls):
+            raise RuntimeError("simulated sweep playback failure")
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+            "sweep_meta": {"sample_rate": 48000},
+            "playback_id": f"play-{len(play_calls)}",
+            "test_level_dbfs": -72.0,
+            "excitation": {},
+        }
+
+    monkeypatch.setattr(backend, "play_driver_capture_sweep", play)
+
+    relay_backend = FakePlanRelayBackend()
+    spec = build_crossover_sweep_spec(
+        driver_label="Woofer driver",
+        driver_role="woofer",
+        acknowledgement_binding=_BINDING,
+        stimulus_duration_ms=4000,
+        capture_plan=CapturePlan(capture_target=3, max_attempts=4),
+    )
+    session = mint_session(
+        spec, relay_base="https://relay.test", capture_origin="capture.test"
+    )
+    register_session(
+        RelayClient("https://relay.test", transport=relay_backend), session
+    )
+    phone = _UploadingPhoneDriver(relay_backend, session)
+
+    def transport(method, url, headers, body):
+        if method == "GET" and urllib.parse.urlsplit(url).path.endswith("/status"):
+            phone.step()
+        return relay_backend(method, url, headers, body)
+
+    client = RelayClient("https://relay.test", transport=transport)
+
+    def reserve_repeat_attempt():
+        return fixture.repeat_admission.reserve(
+            fixture.comparison_set,
+            target_id=fixture.repeat_target_id,
+            target_fingerprint=fixture.repeat_target_fingerprint,
+            path=fixture.admission_path,
+        )
+
+    finish_failed_calls: list[tuple[dict, str]] = []
+
+    def finish_failed_repeat_attempt(reservation, failure_type):
+        finish_failed_calls.append((dict(reservation), failure_type))
+        fixture.repeat_admission.finish(
+            fixture.comparison_set,
+            target_id=fixture.repeat_target_id,
+            target_fingerprint=fixture.repeat_target_fingerprint,
+            token=str(reservation.get("token") or ""),
+            result={"accepted": False, "reject_reason": "capture_failed"},
+            status=fixture.repeat_admission.failure_status(
+                reservation.get("attempt")
+            ),
+        )
+
+    progress_calls: list[int] = []
+
+    run_and_consume = flow.build_crossover_relay_plan_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        post_host_event=client.post_host_event,
+        reserve_repeat_attempt=reserve_repeat_attempt,
+        finish_failed_repeat_attempt=finish_failed_repeat_attempt,
+        publish_progress=lambda n: progress_calls.append(n),
+        comparison_set=fixture.comparison_set,
+        target_fingerprint="c" * 64,
+        ambient_duration_s=ambient_duration_s,
+    )
+    return (
+        run_and_consume,
+        client,
+        session,
+        phone,
+        relay_backend,
+        progress_calls,
+        finish_failed_calls,
+        play_calls,
+    )
+
+
+@pytest.mark.asyncio
+async def test_v3_driver_plan_completes_a_full_repeat_set_and_advances(
+    monkeypatch, tmp_path
+):
+    """The headline SPEC W2.3 acceptance shape: one relay session carries
+    all 3 accepted captures of a driver's repeat set. Real
+    ``repeat_admission`` ledger throughout — proves ``authorize_begin``'s
+    ``reserve_repeat_attempt`` seam and ``consume_capture``'s
+    ``record_driver_capture`` call finalize the SAME way the v2 per-HTTP-call
+    path does, just driven by the phone's own begin/authorize/result loop
+    instead of 3 separate wizard POSTs."""
+
+    fixture = _v3_driver_plan_fixture(monkeypatch, tmp_path)
+    (
+        run_and_consume,
+        client,
+        session,
+        _phone,
+        relay_backend,
+        progress_calls,
+        finish_failed_calls,
+        play_calls,
+    ) = _drive_v3_driver_plan(monkeypatch, fixture)
+
+    await run_and_consume(client, session)
+
+    assert play_calls == [1, 2, 3]
+    assert finish_failed_calls == []
+    # Progress publishes once at session start (0) and once per capture.
+    assert progress_calls == [0, 1, 2, 3]
+    phases = relay_backend.phases(session.session_id)
+    assert phases[-1] == "capture_set_complete"
+    assert "sweep_failed" not in phases
+
+    snapshot = fixture.repeat_admission.snapshot(
+        fixture.comparison_set, path=fixture.admission_path
+    )
+    target_state = snapshot["targets"][fixture.repeat_target_id]
+    assert target_state["status"] == "completed"
+    assert target_state["attempts"] == 3
+    assert len(target_state["results"]) == 3
+    assert all(r["accepted"] is True for r in target_state["results"])
+
+
+@pytest.mark.asyncio
+async def test_v3_driver_plan_rejection_mid_set_retries_same_index(
+    monkeypatch, tmp_path
+):
+    """A rejected capture (SNR insufficient) retries the SAME measurement
+    slot at the next admitted attempt — the set still reaches 3 accepted
+    within the 4-attempt budget. Proves consume_capture's accepted/not
+    signal drives run_capture_plan's own index/attempt bookkeeping
+    correctly for a non-trivial (rejected-then-retried) sequence."""
+
+    fixture = _v3_driver_plan_fixture(monkeypatch, tmp_path)
+    fixture.verdicts[2] = {"accepted": False, "estimated_snr_db": 10.0}
+    (
+        run_and_consume,
+        client,
+        session,
+        _phone,
+        relay_backend,
+        progress_calls,
+        finish_failed_calls,
+        play_calls,
+    ) = _drive_v3_driver_plan(monkeypatch, fixture)
+
+    await run_and_consume(client, session)
+
+    # 4 total admitted attempts (one rejected), all 4 played.
+    assert play_calls == [1, 2, 3, 4]
+    assert finish_failed_calls == []
+    phases = relay_backend.phases(session.session_id)
+    assert phases[-1] == "capture_set_complete"
+
+    results = [
+        e for e in relay_backend.host_events[session.session_id]
+        if e.get("phase") == "capture_result"
+    ]
+    assert [r["accepted"] for r in results] == [True, False, True, True]
+    # Rejected attempt (attempt 2) retries the SAME index (2), then the
+    # successful retry (attempt 3) advances to index 3.
+    assert [r["index"] for r in results] == [1, 2, 2, 3]
+    assert [r["attempt"] for r in results] == [1, 2, 3, 4]
+
+    snapshot = fixture.repeat_admission.snapshot(
+        fixture.comparison_set, path=fixture.admission_path
+    )
+    target_state = snapshot["targets"][fixture.repeat_target_id]
+    assert target_state["status"] == "completed"
+    assert target_state["attempts"] == 4
+
+
+@pytest.mark.asyncio
+async def test_v3_driver_plan_budget_enforcement_after_four_rejections(
+    monkeypatch, tmp_path
+):
+    """Every one of the 4 admitted attempts rejects — the SAME
+    repeat_admission budget v2 enforces refuses a 5th, and the SESSION ends
+    via ``capture_set_exhausted`` (never an unhandled CaptureBeginRefused
+    error) because run_capture_plan's own ``max_attempts=4`` matches the
+    ledger's ``MAX_ATTEMPTS`` exactly."""
+
+    from jasper.active_speaker import repeat_admission as repeat_admission_mod
+
+    assert repeat_admission_mod.MAX_ATTEMPTS == 4
+
+    fixture = _v3_driver_plan_fixture(monkeypatch, tmp_path)
+    for attempt in (1, 2, 3, 4):
+        fixture.verdicts[attempt] = {"accepted": False, "estimated_snr_db": 5.0}
+    (
+        run_and_consume,
+        client,
+        session,
+        _phone,
+        relay_backend,
+        progress_calls,
+        finish_failed_calls,
+        play_calls,
+    ) = _drive_v3_driver_plan(monkeypatch, fixture)
+
+    await run_and_consume(client, session)
+
+    assert play_calls == [1, 2, 3, 4]
+    assert finish_failed_calls == []
+    phases = relay_backend.phases(session.session_id)
+    assert phases[-1] == "capture_set_exhausted"
+    assert progress_calls[-1] == 0  # never a single accepted capture
+
+    snapshot = fixture.repeat_admission.snapshot(
+        fixture.comparison_set, path=fixture.admission_path
+    )
+    target_state = snapshot["targets"][fixture.repeat_target_id]
+    assert target_state["status"] == "refused"
+    assert target_state["attempts"] == 4
+
+    # A 5th begin would be refused by the durable ledger, not silently
+    # admitted -- pin the actual seam authorize_begin wraps. The target's
+    # own status already moved from "active" to the terminal "refused"
+    # (repeat_admission.finish's status=failure_status(4)), so THIS
+    # rejection is the "already refused" branch, not the in-flight
+    # "already used four attempts" one.
+    with pytest.raises(ValueError, match="is refused"):
+        fixture.repeat_admission.reserve(
+            fixture.comparison_set,
+            target_id=fixture.repeat_target_id,
+            target_fingerprint=fixture.repeat_target_fingerprint,
+            path=fixture.admission_path,
+        )
+
+
+@pytest.mark.asyncio
+async def test_v3_driver_plan_writes_completed_insufficient_correction_per_capture(
+    monkeypatch, tmp_path
+):
+    """#1555 extended to v3: every individual attempt is accepted (the
+    per-attempt rejection path never fires), but the FINALIZING re-analysis
+    (the winner's own acoustic.snr) reads "insufficient" -- the completion-
+    time correction (record_solve_correction(trigger="completed_insufficient"))
+    must still fire, exactly as it does through the v2 HTTP path, because
+    consume_capture calls the IDENTICAL
+    correction_crossover_backend.record_driver_capture wrapper."""
+
+    fixture = _v3_driver_plan_fixture(monkeypatch, tmp_path)
+    fixture.finalize.update({"verdict": "insufficient", "snr_db": 13.7})
+    (
+        run_and_consume,
+        client,
+        session,
+        _phone,
+        relay_backend,
+        progress_calls,
+        finish_failed_calls,
+        play_calls,
+    ) = _drive_v3_driver_plan(monkeypatch, fixture)
+
+    # The completion-time correction path (record_solve_correction) needs a
+    # configured target on the module's level lease -- mirrors
+    # test_correction_crossover_backend_level_solve.py's fixtures.
+    backend._LEVEL_LEASE.configure_targets(
+        [
+            {
+                "target_id": "mono:woofer",
+                "speaker_group_id": "mono",
+                "role": "woofer",
+                "geometry": "near_field_driver:mono:woofer",
+                "tone_frequency_hz": 250.0,
+                "commissioning_gain_db": -3.0,
+                "target_fingerprint": "c" * 64,
+            }
+        ]
+    )
+
+    await run_and_consume(client, session)
+
+    assert play_calls == [1, 2, 3]
+    phases = relay_backend.phases(session.session_id)
+    assert phases[-1] == "capture_set_complete"
+
+    from jasper.audio_measurement import level_solver
+    from jasper.audio_measurement.quality_model import DRIVER as DRIVER_QUALITY_MODEL
+
+    required_db = level_solver.driver_solve_requirement_db(DRIVER_QUALITY_MODEL)
+    assert backend._LEVEL_LEASE._solve_adjustment_db == {
+        "mono:woofer": pytest.approx(required_db - 13.7)
+    }
+
+
+@pytest.mark.asyncio
+async def test_v3_driver_plan_transport_failure_finishes_the_reservation(
+    monkeypatch, tmp_path
+):
+    """A mid-set TRANSPORT failure (the sweep itself fails to play) between
+    authorize_begin succeeding and consume_capture running must not leave
+    the reservation stuck ``active``/``inflight`` forever --
+    finish_failed_repeat_attempt (the SAME escalation seam v2 uses) is
+    called exactly once, and the session ends with the failure — never a
+    silent hang."""
+
+    fixture = _v3_driver_plan_fixture(monkeypatch, tmp_path)
+    (
+        run_and_consume,
+        client,
+        session,
+        _phone,
+        relay_backend,
+        progress_calls,
+        finish_failed_calls,
+        play_calls,
+    ) = _drive_v3_driver_plan(monkeypatch, fixture, play_fails_on_attempt=2)
+
+    with pytest.raises(RuntimeError, match="simulated sweep playback failure"):
+        await run_and_consume(client, session)
+
+    assert play_calls == [1, 2]
+    assert len(finish_failed_calls) == 1
+    reservation, failure_type = finish_failed_calls[0]
+    assert reservation["attempt"] == 2
+    assert failure_type == "RuntimeError"
+
+    snapshot = fixture.repeat_admission.snapshot(
+        fixture.comparison_set, path=fixture.admission_path
+    )
+    target_state = snapshot["targets"][fixture.repeat_target_id]
+    assert target_state["inflight"] is None
+    assert target_state["status"] == "active"  # first accepted capture stands
+    assert target_state["attempts"] == 2
+
+
+def test_v3_capture_plan_progress_renders_in_the_wizard_envelope():
+    """The write side (correction_setup._publish_crossover_capture_plan_progress)
+    and the read side (crossover_envelope._plan_measuring_verdict, landed
+    dormant with #1550) agree on the SAME shape:
+    ``{role, capture_target, accepted}``."""
+
+    from jasper.active_speaker import crossover_envelope
+    from jasper.web import correction_setup
+
+    correction_setup._begin_relay_capture("crossover_sweep:driver")
+    correction_setup._set_relay_capture(
+        {"status": "awaiting_phone", "kind": "crossover_sweep:driver", "tap_link": "x"}
+    )
+    try:
+        correction_setup._publish_crossover_capture_plan_progress(
+            "crossover_sweep:driver",
+            {"role": "woofer", "capture_target": 3, "accepted": 1},
+        )
+        relay_snapshot = correction_setup._get_relay_capture_for(
+            "crossover_sweep:", "level_ramp:crossover"
+        )
+        assert relay_snapshot is not None
+        assert relay_snapshot["capture_plan"] == {
+            "role": "woofer",
+            "capture_target": 3,
+            "accepted": 1,
+        }
+        verdict = crossover_envelope._plan_measuring_verdict(
+            relay_snapshot["capture_plan"]
+        )
+        assert verdict == "Measuring the woofer — follow your phone. 1 of 3 done."
+    finally:
+        correction_setup._set_relay_capture(None)
+
+
+def test_v3_capture_plan_progress_drops_silently_for_a_stale_owner():
+    """A concurrent Stop (or the session already ending) has already moved
+    the global relay slot on — the progress publish must not resurrect it or
+    clobber whatever now owns the slot."""
+
+    from jasper.web import correction_setup
+
+    correction_setup._set_relay_capture(
+        {"status": "stopped", "kind": "crossover_sweep:driver"}
+    )
+    try:
+        correction_setup._publish_crossover_capture_plan_progress(
+            "crossover_sweep:driver",
+            {"role": "woofer", "capture_target": 3, "accepted": 2},
+        )
+        assert correction_setup._get_relay_capture() == {
+            "status": "stopped",
+            "kind": "crossover_sweep:driver",
+        }
+    finally:
+        correction_setup._set_relay_capture(None)

@@ -534,7 +534,20 @@
   carries `duration_s`) instead of an unexplained silent wait, and the phone
   can Stop a driver sweep or level ramp itself — a new "stop" screen action
   wired to the same abort() path the visibility-abort case already used
-  (`capture-page/js/main.js`'s `stopCapture`). The generic builder retains the 30 s floor like `room_sweep`'s
+  (`capture-page/js/main.js`'s `stopCapture`). **W2.6 (2026-07-17):**
+  `ambient_started` now fires from INSIDE the play sequence
+  (`correction_crossover_flow._play`), immediately after `prepare_play`'s
+  solve/volume-acquire work finishes and right before the real
+  `asyncio.sleep(ambient_duration_s)` — not synchronously in `on_armed`
+  before `prepare_play` even starts. PR #1552's own investigation
+  ("Countdown finding") traced hardware run 18's missing countdown plus
+  ~4-5s extra arm→tone latency to exactly this gap; the fix threads the
+  post through as a callback `_play` fires itself (backward-compatible: a
+  `play_sequence` that does not accept the callback, e.g. the
+  summed-commissioning host's own `_play_sequence` in
+  `correction_setup.py`, keeps the old eager-post ordering — see
+  `_play_sequence_accepts_ambient_ready` in `correction_crossover_flow.py`).
+  The generic builder retains the 30 s floor like `room_sweep`'s
   `hard_timeout_ms` (normal recorder completion is the Pi's `sweep_complete` relay
   event; the deadline is only the backstop). During the quiet interval and
   playback, an authenticated phone-activity watchdog cancels on backgrounding,
@@ -561,6 +574,46 @@
   on real drivers are not exercised hardware-free (same status as the
   room/sync relay). Design of record:
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §4 P7.
+  **Session-spanning capture protocol v3 (SPEC W2.3, Wave-2 Pi finale,
+  2026-07-17):** driver-sweep relay captures now build their spec with a
+  `capture_plan` (`capture_target=3`, `max_attempts=4` — the SAME numbers
+  `commissioning_capture.DEFAULT_REPEAT_TARGET` /
+  `repeat_admission.MAX_ATTEMPTS` already enforce) and are driven by
+  `correction_crossover_flow.build_crossover_relay_plan_run_and_consume`
+  instead of the v2 per-capture runner — one relay session now carries a
+  driver's whole 3-repeat set, the phone requesting each capture itself over
+  the authenticated relay event channel (`jasper.capture_relay.session
+  .run_capture_plan`, landed dormant with #1550). `authorize_begin` wraps the
+  SAME `repeat_admission` reservation seam the v2 path used (budget stays
+  Pi-owned, unchanged); `consume_capture` calls the SAME
+  `record_driver_capture` analysis/record path, so per-capture solve
+  escalation and the completion-time correction (#1555) are unchanged —
+  they are the identical function call, just invoked from inside the plan
+  loop instead of once per wizard POST. Session progress publishes into the
+  relay status snapshot so the wizard envelope's passive "N of 3 done"
+  mirror (`crossover_envelope._plan_measuring_verdict`) has live data.
+  Summed/verification captures and `level_ramp` are untouched (still v2,
+  one session per capture). **The marker (`capture_protocol_version: 3`) is
+  emitted unconditionally in code for every driver capture — there is no env
+  gate.** Dormancy now rests on deploy sequencing alone (the in-repo Wave-2
+  page declares protocols `[1, 2, 3]` since #1560): a v3 spec against an
+  OLDER pre-Wave-2 DEPLOYED page fails the page-identity check
+  (`validate_capture_page`) before any tone plays, so the rollout order is
+  Worker → page publish → the Pi build carrying this flip deploys last. See
+  [phone-mic-relay-plan.md](phone-mic-relay-plan.md)'s "Session-spanning
+  capture plans" section for the wire choreography.
+
+  **W2.6 fix landed in the same PR:** the exhausted-budget
+  `measurement_window_unreachable` refusal's `required_db`/`available_db`
+  now read coherently with `room_too_noisy`'s (required = the worst band's
+  needed SNR via `level_solver.driver_solve_requirement_db`, available =
+  what the ceilings could actually deliver, derived from the SAME
+  `solve_level` call the non-exhausted path already ran) — previously it
+  paired `level_solver.MIC_TARGET_PEAK_DBFS` (a dBFS mic-peak target) with a
+  raw measured mic peak (also dBFS, not a dB SNR figure), a unit mismatch
+  flagged in #1552's review. See
+  `correction_crossover_backend._exhausted_refusal_snr_terms`.
+
   The first JTS3 H2 attempt exposed and closed a comparison-validity bug:
   the migrated relay screen had weakened the canonical per-driver placement
   from the same ~2–5 cm near-field geometry to merely “close to the speaker
