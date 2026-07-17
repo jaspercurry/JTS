@@ -39,6 +39,16 @@ STATUS_SOCKETS = {
     "voice": "/run/jasper/voice.sock",
 }
 
+# Resident daemons that matter to whole-system soak evidence but are not part
+# of the management dashboard's curated service inventory. The adjacent USB
+# gadget, USB input, and volume-bridge units already come from
+# JASPER_SERVICE_GROUPS; the transient jasper-usbmic-apply oneshot is not a
+# resource-soak target.
+SOAK_EXTRA_UNITS = {
+    "jasper-usbmic.service",
+    "jasper-usbnet-dhcp.service",
+}
+
 
 def _utc_iso(ts: float | None = None) -> str:
     dt = datetime.fromtimestamp(time.time() if ts is None else ts, timezone.utc)
@@ -67,7 +77,11 @@ def parse_duration(raw: str) -> int:
 
 
 def _tracked_units() -> list[str]:
-    return sorted(set(JASPER_SERVICE_GROUPS) | set(EXTRA_SERVICE_GROUPS))
+    return sorted(
+        set(JASPER_SERVICE_GROUPS)
+        | set(EXTRA_SERVICE_GROUPS)
+        | SOAK_EXTRA_UNITS
+    )
 
 
 def _control_group_dir(control_group: str) -> Path | None:

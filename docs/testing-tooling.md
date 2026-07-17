@@ -972,7 +972,10 @@ Artifact contract, schema v1:
   (`ActiveState`, `SubState`, `NRestarts`, `MainPID`, tasks,
   `MemoryCurrent`, `CPUUsageNSec` delta-derived CPU%), cgroup
   `cpu.stat`, `memory.events`, PSI when available, and outputd/fanin/
-  mux/voice STATUS snapshots.
+  mux/voice STATUS snapshots. The tracked inventory includes the resident
+  USB host-microphone export path (`jasper-usbgadget`, `jasper-usbmic`, and
+  `jasper-usbnet-dhcp`); it deliberately excludes the transient
+  `jasper-usbmic-apply` oneshot.
 - `journal`: count/byte summary by unit and priority for the soak
   window. It intentionally does **not** store raw message text, which
   keeps routine resource artifacts out of the log-redaction business.

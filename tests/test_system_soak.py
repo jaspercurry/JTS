@@ -18,6 +18,18 @@ def test_parse_duration_units() -> None:
     assert system_soak.parse_duration("42") == 42
 
 
+def test_tracked_units_cover_resident_usb_mic_export_path() -> None:
+    units = set(system_soak._tracked_units())
+
+    assert {
+        "jasper-aec-bridge.service",
+        "jasper-usbgadget.service",
+        "jasper-usbmic.service",
+        "jasper-usbnet-dhcp.service",
+    } <= units
+    assert "jasper-usbmic-apply.service" not in units
+
+
 def test_journal_summary_counts_without_storing_messages(monkeypatch) -> None:
     class FakeProc:
         returncode = 0
