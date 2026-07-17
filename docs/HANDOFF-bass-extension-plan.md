@@ -1,7 +1,8 @@
 # Handoff: Bass Extension — volume-scheduled low-frequency alignment (plan of record)
 
-> **Status: planning brief / execution plan of record (2026-07-16).**
-> No bass-extension code exists yet. This document is the architecture
+> **Status: planning brief / execution plan of record (2026-07-17).**
+> Waves 1–2 (numerics, profile, and observability skeleton) are merged;
+> runtime/audio emission has not shipped. This document is the architecture
 > and phased implementation plan for the feature; it was produced by a
 > six-agent survey of the codebase at `origin/main` `7dd803c8d`
 > (2026-07-16) plus external loudspeaker-science research. Every code
@@ -14,6 +15,43 @@
 > prior-art/validation report (patents, T/S-drift data, port-compression
 > data, perceptual JNDs). Deltas listed in §2.5 and folded into
 > §§5–8, 12–15 in place.
+>
+> **Revision 2026-07-17:** resolves the Wave 1/Wave 3 frozen-contract
+> contradiction found by draft PR #1558. Static graph groundwork is
+> sealed-only; ported/PR profiles remain retained and observable but
+> are not armed until a fixed graph for their changing filter shapes
+> is separately designed and proved. Adversarial review then found
+> that the target-coupled limiter has no frozen commissioning producer,
+> so Wave 5 is explicitly blocked rather than inventing a protection
+> value. Wave 3 remains authorized only for natural-at-rest graph
+> groundwork and a two-authority apply/bypass transaction. The resumed
+> cross-wave review made the graph verifier's evidence explicit, named
+> Wave 3's sole predecessor-aware commit owner, assigned synchronous
+> recovery to the existing correction process, and made Wave 5 no-arm
+> while recovery is pending. It also confirmed that current
+> ladder/sustain/digital evidence cannot determine a Camilla-stage
+> limiter threshold, so Wave 4 is blocked behind a focused measured-
+> derivation prerequisite rather than guessing. A fresh independent
+> review then closed four remaining seams: deferred replacement is
+> predecessor-aware, persisted classification snapshots graph and
+> authority together, profile publication/restoration is fsync-durable,
+> and jasper-voice is the sole serialized runtime patch owner. A second
+> gate then found that the guard was not on the true global Camilla
+> mutation path and that durable profile/intent files did not make DSP
+> graph-file authority durable. The final revision places every graph
+> mutation under the existing reentrant writer lock, records/restores
+> exact durable graph-file bytes, and treats lost UDS responses as
+> unconfirmed rather than unchanged. The final independent gate also
+> closed the startup/fallback evidence gap: the same canonical resolver
+> now snapshots each existing unselected fallback candidate, while the
+> existing selector remains the sole owner of fallback policy. Its
+> final follow-up adds staged guard metadata to that snapshot and gives
+> live hosts an awaitable fail-closed entry point matching the existing
+> Camilla client. The last cross-path gate keeps the accepted sealed
+> natural pair on the existing local active-speaker driver-domain graph
+> at bond entry, while refusing profile mutation and future runtime
+> arming during a bond until multi-Camilla ownership is separately
+> proved.
 
 ## 0. One-paragraph summary
 
@@ -22,14 +60,21 @@ volume-scheduled low-frequency alignment** for an active speaker: at
 low listening levels the speaker plays a deeper-than-natural neutral
 bass alignment (Linkwitz-Transform-style for sealed boxes; bounded
 EQ-plus-subsonic-protection families for ported and passive-radiator
-boxes); as the canonical `listening_level` rises the runtime smoothly
-retreats through a small commissioned family of progressively
-shallower targets until, near maximum volume, the speaker plays its
-natural protected response. Commissioning reuses the calibrated
+boxes). After its protection gate is resolved, the planned first
+runtime slice would arm only sealed profiles: as the
+canonical `listening_level` rises it smoothly retreats through a
+small commissioned family of progressively shallower targets until,
+near maximum volume, the speaker plays its natural protected
+response. Ported/PR commissioning profiles are retained for a later
+runtime carrier but do not alter the live graph. Wave 3 may prepare
+the sealed identity graph; active scheduling remains blocked until
+commissioning has a reviewed producer for every target's protective
+limiter value.
+Commissioning reuses the calibrated
 phone-mic relay, the synchronized-ESS measurement kernel, the
 excitation-admission chain, and the commissioning apply/restore
 transaction that already exist; the runtime is a handful of extra IIR
-biquads inside the existing CamillaDSP graph plus a small
+biquads inside the existing CamillaDSP graph plus a planned small
 volume-watching scheduler — no new daemon, no added audio latency, no
 runtime microphone.
 
@@ -230,13 +275,13 @@ orchestration + per-rung retention, (d) LT/subsonic graph emission,
 | Evidence identity + bundles | `jasper/audio_measurement/evidence_identity.py` (`json_fingerprint`, `ArtifactIdentity`, `ExactDspStateIdentity`), `bundles.py` | All profile fingerprints and forensic storage |
 | Volume model | `jasper/volume_coordinator.py`, `volume_curve.py` (`percent_to_db`), `volume_persistence.py` (`speaker_volume.json`) | Scheduler input; canonical `listening_level` |
 | Live single-filter patch | `jasper/camilla.py` (`patch_config` → CamillaDSP 4.1 `PatchConfig`); precedent `jasper/multiroom/runtime_balance.py` | Candidate runtime mechanism (Wave 0 decides) |
-| Full-graph swap transaction | `jasper/dsp_apply.py` (`apply_dsp_config`, `dsp_writer_lock`) | Profile apply/bypass |
+| Full-graph swap transaction | `jasper/dsp_apply.py` (`apply_dsp_config`, `dsp_writer_lock`) | Profile accept/replacement/bypass |
 
 ### Mirrored patterns (copy the shape, new instance)
 
 | Pattern | Source | New instance |
 |---|---|---|
-| Apply/restore with CAS + fresh-readback proof | `jasper/active_speaker/commissioning_apply.py` (predecessor snapshot → mutation intent → apply → readback verify graph+volume+protection → retained proof; any failure unwinds via proven restore) | Bass-extension profile apply/bypass |
+| Apply/restore with durable intent + fresh-readback proof | `jasper/active_speaker/commissioning_apply.py` (predecessor snapshot → durable mutation intent → apply → readback verify graph+volume+protection → retained proof; cancellation/restart unwinds via proven restore) | Bass-extension profile apply/bypass, with one immutable local intent, shielded rollback, and conservative predecessor recovery owned by `jasper-correction-web` |
 | Excitation limits derivation | `jasper/active_speaker/excitation_safety_plan.py` | `bass_extension` limits derivation from the driver-safety profile's bass-owner target |
 | Typed fail-closed refusal vocabulary | `jasper/active_speaker/reconstruction_capability.py` | `BassExtensionRefusal` (§5.4) |
 | Bounded candidate search + repeat admission + fail-closed restore | `jasper/audio_measurement/null_walk.py`, `jasper/active_speaker/repeat_admission.py` | Ladder rung admission (3 repeats at anchor rungs, spread bound) |
@@ -249,7 +294,8 @@ orchestration + per-rung retention, (d) LT/subsonic graph emission,
 |---|---|
 | `jasper/camilla_emit.py` | `emit_linkwitz_transform_biquad()`, `emit_butterworth_highpass()` (subsonic), shared bounds constants |
 | `jasper/active_speaker/camilla_yaml.py` | Optional bass-extension block on the bass-owner chain in `_emit_baseline_pipeline`; emit-gate extension |
-| `jasper/active_speaker/runtime_contract.py` | Teach `classify_camilla_graph` that a baseline graph carrying the bass-extension filter set is still `approved_active_runtime` (⚠ without this, every re-proof fails closed — see §12 risks) |
+| `jasper/active_speaker/runtime_contract.py` | Teach the graph contract that an authorized baseline carrying the bass-extension filter set is still `approved_active_runtime`; one source-explicit boundary snapshots graph plus authority evidence for persisted state or accepts a complete desired in-memory candidate, while the low-level classifier remains disk-I/O-free (⚠ without this, startup/doctor/re-proof fails closed — see §12 risks) |
+| `jasper/dsp_apply.py` + `jasper/camilla.py` | Carry the existing writer-lock ownership task-locally and make every production file load, active-raw swap, patch, and reload enter it; refuse ordinary graph mutations while the durable bass apply intent exists, with only the Wave 3 recovery owner authorized |
 | `jasper/bass_management.py` | Extend the read resolver to also report bass-extension status (still read-only) |
 | `jasper/audio_measurement/deconv.py` | `harmonic_impulse_offsets(meta, orders)` + `extract_harmonic_windows(full_ir, meta, orders)` — new consumers of the *existing* unwindowed IR |
 | `jasper/audio_measurement/analysis.py` | `compression_curve()`, `thd_curve()`, `tracking_error()` (§7.5) |
@@ -258,12 +304,12 @@ orchestration + per-rung retention, (d) LT/subsonic graph emission,
 
 ### Genuinely new (the build)
 
-New package `jasper/bass_extension/` (pure numerics + profile +
-scheduler; no HTTP, no subprocess):
+New package `jasper/bass_extension/` (pure numerics + profile,
+graph-apply seam, and planned scheduler; no HTTP, no subprocess):
 
 ```
 jasper/bass_extension/
-  __init__.py          # public seam: load_profile(), scheduler entry
+  __init__.py          # public seam + local durable graph/profile apply intent
   alignment.py         # LT math, biquad response eval, boost calc — pure
   adapters/
     base.py            # EnclosureAdapter Protocol + ADAPTERS registry
@@ -288,10 +334,12 @@ ladder HTTP backend, and the hardware-validation scripts.
   baseline) — it describes the physical bass system, is commissioned
   once per hardware build, and is bound to the applied baseline. It
   is *not* room correction (Layer B) or preference EQ (Layer C).
-  Volume-dependence is architecturally novel for Layer A; the graph
-  stays a static compiled artifact and only the **parameters of one
-  named filter pair** (or one fader pair) move at runtime, inside
-  bounds frozen into the profile.
+  Volume-dependence is architecturally novel for Layer A. In the
+  sealed first runtime slice, the graph stays a static compiled
+  artifact and only the **parameters of one named filter pair** move
+  at runtime, inside bounds frozen into the profile. Ported/PR
+  profiles remain Layer-A commissioning artifacts, but have no live
+  carrier in this slice.
 - **Extensibility contract:** per `docs/extensibility.md` this is
   **not** a new contract and not a Pattern-3 hardware-presence
   profile — it is a sub-artifact of the existing active-speaker
@@ -300,10 +348,18 @@ ladder HTTP backend, and the hardware-validation scripts.
   Protocol + dict registry (three real implementations justify it;
   no generic plugin framework).
 - **Config ownership:** the profile is wizard/flow-owned state in
-  `/var/lib/jasper/bass_extension_profile.json` (mode 0640, atomic
-  write), same pattern as `active_speaker_baseline_profile.json`. No
-  new `jasper/config.py` fields except (possibly) one scheduler
-  enable/override env with a documented `.env.example` comment.
+  `/var/lib/jasper/bass_extension_profile.json` (mode 0640, atomic and
+  power-loss-durable write), same pattern as
+  `active_speaker_baseline_profile.json`. A
+  single local apply intent at
+  `/var/lib/jasper/bass_extension_apply_intent.json` uses the same
+  ownership/mode and exists only while profile+DSP commit may need
+  exact predecessor recovery. `jasper-correction-web` is its sole
+  process owner: that existing root service already has write access
+  to both state directories and claims recovery synchronously before
+  ready, under the existing measurement window. No service, daemon,
+  task, route, or permission is added. No new `jasper/config.py` field
+  or scheduler environment override is authorized.
 - **Bass-owner identity:** `resolve_bass_management()` precedence is
   reused. Exactly one physical bass system receives extension:
   - Local-DAC subwoofer present → the **sub chain** owns extension;
@@ -311,7 +367,10 @@ ladder HTTP backend, and the hardware-validation scripts.
   - No sub → the **woofer way** owns it (both sides, linked).
   - Wireless-sub bonds → **out of scope v1** (§13); the profile
     refuses to arm when the box is in a bonded topology whose bass
-    owner is remote.
+    owner is remote. An active-speaker bond with a local bass owner may
+    preserve the already-accepted natural pair on its driver-domain
+    graph, but profile mutation and runtime scheduling still refuse
+    while bonded.
 
 ---
 
@@ -334,7 +393,8 @@ back as a decision input.
   "algorithm_version": "bass_extension_v1",     // thresholds ride this
   // ---- bindings (all must match at load time or the profile is stale)
   "baseline_fingerprint": "...",   // baseline_candidate_fingerprint of the
-                                   // applied recomposition_snapshot
+                                   // applied recomposition_snapshot; Layer-A
+                                   // only, never profile_id/bass overlay
   "topology_id": "...", "topology_fingerprint": "...",
   "bass_owner": {"kind": "woofer_way" | "local_sub",
                  "roles": ["woofer"], "channels": [2, 3]},
@@ -351,19 +411,19 @@ back as a decision input.
      //                        empirical model predicted_response builds on */ }}
      // passive_radiator:  {"fb_hz": 41.0, "notch_hz": 24.5, natural_curve, ...}
   },
-  // ---- the commissioned family, deepest first; target 0 is ALWAYS
+  // ---- the commissioned family, deepest first; the final target is ALWAYS
   //      the natural/safest member (the fallback identity target)
   "targets": [
     {"target_id": "t31", "fp_hz": 31.0, "qp": 0.65,
      "filters": [ /* exact CamillaDSP filter param dicts */ ],
      "boost_headroom_db": 11.8,          // max over freq grid vs natural
-     "limiter_threshold_dbfs": -5.2,     // verified max digital drive + margin (§8.4)
+     "limiter_threshold_dbfs": null,     // reserved; no frozen producer yet (§8.4)
      "subsonic": {"type": "ButterworthHighpass", "freq": 22.0, "order": 4}},
     ...
     {"target_id": "natural", "fp_hz": 61.2, "qp": 0.72,
      "filters": [], "boost_headroom_db": 0.0,
-     "limiter_threshold_dbfs": -1.0,     // baseline limiter default
-     "subsonic": {...}}                  // always present; expert-removable
+     "limiter_threshold_dbfs": null,     // Wave 3 leaves baseline limiter unchanged
+     "subsonic": {...}}                  // required in the first graph slice
   ],
   // ---- level anchors: listening_level (0-100) ceilings per target
   "anchors": [
@@ -393,11 +453,21 @@ Design points:
   file (predecessor archived in the bundle).
 - **`targets[last]` is always the natural alignment** with empty
   filter list — so "retreat fully" and "profile bypassed" converge on
-  the same graph shape, and the fallback story stays one sentence.
+  zero LT boost. They do **not** have the same graph structure in the
+  sealed slice: accepted natural retains the mandatory named
+  LT+subsonic pair, while bypass removes the pair.
 - **Filters are stored as exact CamillaDSP parameter dicts**, frozen
   at accept time. The runtime never re-derives filter math; it
-  selects among frozen members. This is the "no free-form optimizer"
-  guarantee made structural.
+  selects among frozen members. The planned runtime selection is
+  sealed-only; accepted ported/PR profiles retain these dicts as
+  commissioned evidence but are not armed. `limiter_threshold_dbfs`
+  remains optional/`None` in the already-merged schema, but Wave 4
+  revision 6 is blocked and may not accept a sealed profile until a
+  focused measured-derivation prerequisite revises the contract and
+  produces a finite value for every sealed target. Wave 5 cannot
+  consume or fill it. Ported/PR retention does not imply a runtime
+  threshold contract. This is the "no free-form optimizer" guarantee
+  made structural.
 
 ### 5.2 Staleness and authorization
 
@@ -406,9 +476,15 @@ mirrors `evaluate_driver_safety_profile`'s ladder:
 `missing → malformed → stale → accepted`. Stale iff any binding
 fingerprint mismatches (baseline re-applied, topology changed,
 adapter version bumped, algorithm version bumped). **Stale or missing
-never blocks music** — the runtime simply holds the natural target
-(§10.2). Only an `accepted` + current profile authorizes the
-scheduler to leave the natural target.
+never blocks music** — the graph stays natural or omits the extension
+block (§10.2). An `accepted` + current **sealed_v1** profile authorizes
+Wave 3's natural identity block only; no scheduler may leave natural
+until the Wave 5 safety gate is revised. Accepted
+ported/PR profiles remain valid and visible but report runtime
+ineligible; acceptance is not permission to synthesize a graph shape
+their adapter did not define. `/state` separately reports
+`apply_recovery_required=true` while a durable apply intent exists;
+that flag is transaction state, not profile validity.
 
 ### 5.3 What it deliberately does not claim
 
@@ -480,11 +556,13 @@ class EnclosureAdapter(Protocol):
   warning). `Qp = 0.65` default (between Bessel transient behavior
   and Butterworth flatness; expert-overridable 0.5–0.71).
   Intermediate targets spaced ~3 dB of boost apart (fp ratio ≈ 1.19).
-- **Subsonic:** 2nd-order HP at ~0.5·fp_deepest, **default-on**
-  (expert-removable). Sealed boxes unload gracefully, so this is
+- **Subsonic:** 2nd-order HP at ~0.5·fp_deepest, **required in the
+  first graph slice**. Sealed boxes unload gracefully, so this is
   mostly rumble hygiene — but it also bounds the LT's sub-band boost
   against pathological program material, which matters more now that
-  the schedule is open-loop by design.
+  the planned schedule is open-loop by design. A later contract may
+  revisit removal; Wave 3 must refuse a profile missing this protection
+  before graph or profile mutation.
 - **Fit-error tolerance:** ±10 % f0 or ±0.1 Qtc error yields ~±1–1.5
   dB local ripple at low Q — acceptable; the verification rung
   catches worse. Known physics (Linkwitz's caveat, quantified by
@@ -552,6 +630,22 @@ Ported adapter with three deltas:
   subsonic filters suffice; the family generator accounts for the
   summed slope when computing `boost_headroom_db`.
 
+**Runtime boundary for ported/PR (2026-07-17 revision).** Wave 1's
+adapter truth is retained unchanged: every ported/PR target has
+`qp=None` and no LT, while its `filters` tuple may shed a shelf or
+peak and may add a separate retreat high-pass; the natural member has
+an empty tuple. These members therefore cannot transition through the
+sealed `bass_ext_lt` identity slot. A zero-gain shelf/peak could be an
+identity in isolation, but the retreat high-pass has no exact valid
+pass-through parameterization, and Wave 0 measured `PatchConfig`
+coefficient changes on an already-present named LT — not filter
+add/remove, type changes, or bypass machinery. A fixed ported/PR slot
+graph would consequently require new carrier/bypass structure and a
+fresh audio-safety/re-proof program, materially expanding Waves 3/5.
+The 80/20 decision is explicit: ported/PR profiles remain
+commissionable, persisted, and observable, but the first runtime
+slice does not arm them or emit any `bass_ext_*` block.
+
 Multi-driver / multi-port / TL / open-baffle / horn:
 `ENCLOSURE_UNSUPPORTED` in v1, listed as future adapters. The
 contract already carries `radiator_count` for that day.
@@ -602,7 +696,7 @@ idle
                        #  points (§7.4); digital clamp throughout
  → review              # operator sees family, anchors, evidence,
                        #  margin selector; explicit accept
- → accepted            # profile written, apply transaction (§8.6)
+ → accepted            # desired profile committed by apply transaction (§8.6)
  (any state) → aborted # graceful_stop fade-down + exact restore
 ```
 
@@ -743,9 +837,10 @@ through a sweep-shaped request.
 
 ### 8.1 Graph placement
 
-Bass extension lives **post-split on the bass-owner chain**, i.e. as
-Layer-A per-driver filters exactly where the layer model puts driver
-linearization — after the split mixer, before the existing
+Bass extension's first graph slice is **sealed-only** and lives
+post-split on the bass-owner chain, i.e. as Layer-A per-driver filters
+exactly where the layer model puts driver linearization — after the
+split mixer, before the existing
 `driver_delay → driver_baseline_gain → driver_baseline_limiter`
 suffix ordering (concretely: `[bass_management_hp?] → crossover
 biquads → bass_ext_lt → bass_ext_subsonic → delay → gain → limiter`).
@@ -760,18 +855,55 @@ Rationale:
 - The per-driver limiter (`clip_limit −1 dB`) downstream is the
   digital backstop for any headroom-math error — worst case is
   graceful limiting, never wrap/clip.
-- Local-sub topologies emit the same pair on the sub chain instead.
+- Local-sub topologies with a sealed bass owner emit the same pair on
+  the sub chain instead.
 
-The emitted **static** graph always carries the filters at the
-**natural target's parameters** (LT with `freq_act == freq_target`,
-`q_act == q_target` is an exact pass-through; subsonic HP always
-active for ported/PR). Extension is an *actively maintained
-enhancement*: the scheduler patches deeper only while it is alive and
-confirmed; every reset/reload/boot lands on natural. Fail-safe by
-construction, and it means `classify_camilla_graph` re-proof and the
-statefile never see a "deep" graph at rest.
+The same local Layer-A pair is present in both the solo baseline and
+the existing active-speaker driver-domain graph used for a bonded
+leader/follower member. A transport-role change must not drop the
+commissioned subsonic protection, and the multiroom precheck re-proves
+that driver-domain graph before bonding. This narrowly reuses the
+existing driver-domain builder/emitter seam; it does not authorize
+generic multiroom carrier, remote bass-owner, or state-writer changes.
+
+An accepted, current sealed profile's emitted **static** graph always
+carries the pair at the **natural target's parameters** (LT with
+`freq_act == freq_target`, `q_act == q_target` is an exact
+pass-through). Every target must carry Wave 1's subsonic protection;
+expert removal is not supported in this first graph slice. Wave 3
+never patches deeper and leaves the existing downstream baseline
+limiter unchanged. A future scheduler may patch deeper only after the
+Wave 5 safety gate is resolved; every reset/reload/boot must still land
+on natural. This keeps `classify_camilla_graph` re-proof and the
+statefile from ever seeing a "deep" graph at rest.
+
+Accepted ported/PR profiles emit **no `bass_ext_*` block** and must be
+byte-identical to the ordinary baseline. They stay persisted with
+`status="accepted"`, while `/state` reports their `adapter_id`,
+`runtime_eligible=false`, and
+`runtime_deferred_reason="fixed_graph_not_defined"`. This separates
+"commissioned profile retained" from "runtime armed" without
+changing Wave 1 or inventing an audio parameter. `runtime_eligible`
+is adapter-level graph support, not live state; Wave 5's
+`runtime_armed` will be true only after a revised Wave 5 ships and an
+accepted, current eligible profile has a live, confirmed scheduler.
 
 ### 8.2 The controller (scheduler)
+
+**Implementation is blocked.** Wave 0 proved R1 coefficient
+micro-steps, but neither Wave 4 nor another frozen contract produces
+`limiter_threshold_dbfs`. The current ladder proves acoustic linearity
+for one admitted sweep peak, the sustain test proves one admitted noise
+waveform, and the digital clamp proves arithmetic headroom; those facts
+do not bound arbitrary program peaks at the downstream limiter's
+detector or define its Camilla-stage dBFS reference. Wave 4 revision 6
+therefore blocks before implementation. A focused measured-derivation
+result must identify the stage/units, determine whether extra evidence
+is needed, freeze a deterministic per-target producer and refusal, and
+provide retained-evidence test vectors plus on-device justification.
+`None`, the baseline −1 dB limiter, subtracting boost/digital margin,
+an assumed crest factor, or a scheduler-local formula are not
+fallbacks.
 
 Pure function first: `select_target(profile, listening_level,
 current_target) -> TargetDecision`, with **safety-asymmetric
@@ -788,17 +920,53 @@ corner *frequency* motion itself is not the audible quantity — the
 level trajectory is — so smoothness of level beats exactness of
 corner path.
 
-Placement — two hooks calling one idempotent
+This selection logic arms only when the profile is accepted, current,
+and its adapter is in
+`BASS_EXTENSION_RUNTIME_ADAPTER_IDS = frozenset({"sealed_v1"})`.
+For accepted ported/PR profiles it deterministically returns
+no live target (`next_target_id=null`) with reason
+`adapter_deferred`, does not start dwell/rate timers, and never reads
+or patches CamillaDSP. The ordinary baseline does not implement the
+ported/PR natural `TargetSpec`, so state must not fabricate that label.
+
+It also never arms while Wave 3 reports
+`apply_recovery_required=true`. A pending transaction authorizes only
+its exact predecessor or desired natural graph; the scheduler performs
+no patch, starts no timers, and never repairs or completes the commit.
+It returns a confirmed safe state only when the canonical resolver
+proves one of those natural fingerprints. `MEASURE_PAUSE` sets the
+existing jasper-voice process-local measurement gate; because
+jasper-voice is the only bass patch owner, that gate suppresses both
+hook- and tick-driven patches during commit/recovery. The next ordinary
+tick resumes after the correction owner clears the intent.
+
+Once that prerequisite exists, one runtime in jasper-voice owns every
+`PatchConfig`; its in-process lock serializes the two call paths into
 `ensure_bass_target(level)`:
 
-1. **Synchronous, retreat-first:** inside
-   `VolumeCoordinator._dispatch`, immediately **before** the
-   `main_volume` write when the level is rising across an anchor, and
-   after it when falling. Both host processes (`jasper-voice`
-   long-lived coordinator, `jasper-control` per-request coordinators)
-   run the same convergent logic; concurrent writes patch identical
-   values, so the race is benign. CamillaDSP's own 400 ms
-   `main_volume` ramp perceptually masks the concurrent target step.
+1. **Awaited, retreat-first:** capture `previous_level` before mutation.
+   For every louder change, the long-lived voice coordinator first
+   persists the requested target under its existing mutation lock,
+   then awaits retreat before the first actuator that can raise audible
+   level — Camilla master, Spotify, or Bluetooth. This ordering makes
+   a simultaneous reconciler see the new louder target, so it cannot
+   re-deepen between retreat and actuator. Failed/unconfirmed retreat
+   restores the prior canonical level and blocks the louder write; boot
+   applies the same gate before restoring a persisted louder level. For
+   a same/quieter change, move the carrier first and then converge
+   best-effort; a failure leaves the already-safer level in place.
+   Eligible web/dial set, adjust, and unmute operations, plus any such
+   operation while a Wave 3 intent is pending, delegate their absolute
+   target through the existing voice UDS to this same coordinator.
+   jasper-control never constructs a bass runtime. Only an explicit
+   `applied` or `rejected` response is confirmed. A connection error,
+   timeout, EOF, malformed reply, or lost response for a louder target
+   is `volume_change_unconfirmed`: the request may have been accepted,
+   so control performs no direct fallback/automatic retry and makes no
+   unchanged-state claim. Same/quieter absolute fallback remains safe
+   even if the voice mutation completed, because duplicate attenuation
+   or mute is monotonic and does not patch bass. Ineligible/deferred
+   paths retain today's direct coordinator behavior.
 2. **1 Hz reconciler backstop** in `jasper-voice`'s existing
    `VolumeObserver._tick` (the established polling pattern): re-read
    `speaker_volume.json` + the live filter params (`get_config`
@@ -806,20 +974,31 @@ Placement — two hooks calling one idempotent
    unreachable, profile stale, params unreadable) — **converge toward
    natural**, never toward deep.
 
-PUSH-source subtlety (Spotify/BT pin camilla at 0 dB and carry level
-source-side): the scheduler keys off canonical `listening_level`,
-which `VolumeCoordinator` maintains across both carrier modes, so the
-mapping holds; source-side curve mismatch is absorbed by the digital
-margin (§8.4) and the limiter backstop.
+The voice control-socket command is a bounded extension of an existing
+process, not a new HTTP route, daemon, task, lock service, or second
+patch owner. A held measurement gate refuses louder dispatch and
+suppresses every bass patch; same/quieter carrier changes remain safe.
+An explicit user retry after an unconfirmed result is a new absolute
+request through current state, never a blind transport retry.
 
-### 8.3 The transition mechanism — Wave-0 prototype decides
+PUSH-source subtlety (Spotify/BT pin camilla at 0 dB and carry level
+source-side): ordering is around the **source actuator**, not a
+Camilla write that does not occur on success. Direct source-side
+changes observed after the fact are one reason the target-coupled
+protection prerequisite cannot be dropped.
+
+### 8.3 The transition mechanism — Wave 0 chose sealed R1
+
+This records the measured mechanism; it is not authorization to run
+Wave 5 before §8.2's protection prerequisite is resolved.
 
 CamillaDSP documents smooth ramping **only** for fader gains;
-coefficient updates are undocumented (assume hard swap). Two
-candidates, one decision prototype:
+coefficient updates are undocumented (assume hard swap). Wave 0
+measured the two candidates and chose R1 for the fixed sealed graph;
+R2 remains the rejected fallback record:
 
-- **R1 — stepped `PatchConfig` on the live filter pair (preferred if
-  clean).** Interpolate `(fp, Qp)` — the *design parameters*, which
+- **R1 — stepped `PatchConfig` on the live sealed filter pair
+  (confirmed).** Interpolate `(fp, Qp)` — the *design parameters*, which
   is the stability-safe interpolation domain — in enough steps that
   no step changes the response by more than ~1 dB anywhere
   (typically 4–8 steps for adjacent members), spread over
@@ -827,7 +1006,8 @@ candidates, one decision prototype:
   low-Q and ≤ ~3 dB apart, literature expectation is transients
   < −60 dBFS, and the concurrent volume ramp masks further. Zero
   graph-structure cost. Precedent: `runtime_balance.py` patches a
-  named Gain live today.
+  named Gain live today. Wave 0 measured ≥15 dB burst margin below
+  the bench threshold for the micro-stepped LT transition.
 - **R2 — parallel A/B branches crossfaded by Aux faders (documented-
   safe fallback).** Split the bass-owner channels into an A and B
   lane (one extra mixer pair), each lane carrying its own LT+HP set
@@ -839,6 +1019,12 @@ candidates, one decision prototype:
   right tool for profile apply/bypass, too heavy and unproven-
   continuous for a knob-coupled runtime path.
 
+R1 changes only parameters of definitions already present in the
+emitted graph; it never changes pipeline or filter-map structure.
+The Wave 0 evidence does not authorize ported/PR member transitions:
+those would add/remove filters or change slot types unless a new fixed
+carrier/bypass design were introduced and independently measured.
+
 **Both mechanisms add zero buffer latency** (minimum-phase IIR; no
 chunk/queue/rate changes), so the 40 ms USB cert is untouched — the
 cert measures broadband arrival, not LF group delay (which any
@@ -846,13 +1032,14 @@ alignment, physical or DSP, inherently shapes). CPU: ≤ 4 extra
 biquads (R1) or ≤ 10 (R2) — far below 1 % of a Pi 5 core against
 CamillaDSP's published FIR benchmarks.
 
-⚠ One discovered gotcha either way: **`PatchConfig` state does not
+⚠ One discovered gotcha: **`PatchConfig` state does not
 survive a config reload from file.** Any `apply_dsp_config` (room
 correction save, preference EQ change, deploy bounce) resets the
 filters to the emitted natural params. This is *fail-safe by
-direction* (resets go shallow, never deep) and the 1 Hz reconciler
-re-converges within a second; the doctor check (§10.3) watches for a
-scheduler that stopped re-converging.
+direction* (resets go shallow, never deep). After Wave 5's protection
+gate is resolved, its 1 Hz reconciler must re-converge within a second
+and the doctor check (§10.3) must watch for a scheduler that stopped
+re-converging.
 
 ### 8.4 Digital headroom — calculation and representation
 
@@ -874,55 +1061,240 @@ scheduler that stopped re-converging.
   wizard surfaces `max boost + current room-EQ low-band boost` when
   it exceeds budget as a WARN, not a block (tinkerer philosophy).
 - **Target-coupled limiter threshold (deep-research delta #3).** The
-  bass-owner chain's existing `driver_baseline_limiter` slot stops
-  being a fixed −1 dB digital clip guard when a profile is accepted:
-  each family member carries `limiter_threshold_dbfs` = the maximum
-  digital drive *verified clean for that member* (ladder + sustain
-  evidence) + margin, and the runtime patches the limiter threshold
-  **in the same transition as the alignment**. This is the cheap
-  answer to "an open-loop schedule has no runtime protection": the
-  fault coupling is in the safe direction — a scheduler wedged on a
-  deep target is also wedged on that target's *conservative*
-  threshold, so sustained bass beyond the verified envelope clips
-  gracefully at the verified ceiling instead of over-driving the
-  woofer. It is a last resort, not the control mechanism; if
-  fault-mode clipping proves audible in practice, the upgrade path is
-  a CamillaDSP `Compressor` processor in the same slot (no lookahead
-  → no latency). The natural member's threshold is the baseline
-  −1 dB.
+  current schema reserves `limiter_threshold_dbfs`, but **no frozen
+  wave defines how ladder/sustain evidence becomes that Camilla-stage
+  dBFS value**. Wave 3 therefore leaves the existing −1 dB baseline
+  limiter unchanged, Wave 4 revision 6 stops before implementation,
+  and Wave 5 is blocked. The focused prerequisite must identify the
+  detector stage/units, prove whether the retained rung/sustain/digital
+  evidence is sufficient (or specify the smallest added measurement),
+  and then revise Wave 4 with a deterministic pure producer, refusal
+  on missing evidence, test vectors, and hardware justification. The
+  replacement Wave 5 contract must
+  install a deeper target's more-conservative limiter **before**
+  adding boost, and on retreat remove boost **before** relaxing the
+  limiter. Ported/PR remains outside runtime regardless.
 - UI representation: each target row shows "needs X dB headroom →
   usable below level N (digital) / level M (measured)".
 
 ### 8.5 Emit gate (mirrors the L0 tweeter gate)
 
 `_assert_bass_extension_safe(emitted_text, profile)` re-parses the
-just-emitted YAML and raises unless: (a) every accepted profile
-carries the subsonic HP on every bass-owner channel with corner
-within the adapter's legal window (all three enclosure kinds — the
-sealed one is expert-removable, and its removal must be recorded in
-the profile, not silently absent); (b) the LT/EQ params exactly match
-a frozen family member; (c) `boost_headroom_db` of the *emitted*
-member is 0.0 (the at-rest graph must be natural); (d) the downstream
-limiter is present with the natural member's threshold and
-`volume_limit ≤ 0` survives. Independent re-proof, not emitter
-trust — same philosophy, new predicate in `graph_safety.py`.
+just-emitted YAML. For an accepted, current sealed profile it raises
+unless: (a) the subsonic HP is on every bass-owner channel with a
+legal corner; (b) the
+LT params exactly match the frozen natural member; (c)
+`boost_headroom_db` of the emitted member is 0.0; and (d) the
+downstream baseline limiter remains present with its existing
+`BASELINE_LIMITER_CLIP_LIMIT_DB` parameters and `volume_limit ≤ 0`
+survives. An accepted/current sealed profile with any target missing
+subsonic protection is refused before mutation; an accepted/current
+sealed graph missing either named filter is unsafe. For ported/PR,
+bypassed, stale, or
+missing profiles it requires **no `bass_ext_*` definitions or chain
+references**; any injected block fails closed. Independent re-proof,
+not emitter trust — same philosophy, new predicate in
+`graph_safety.py`.
+
+The proof table is complete: accepted/current sealed with protection
+requires exactly the natural LT+subsonic pair in every baseline-shaped
+solo or active driver-domain graph; accepted/current sealed
+with any missing subsonic has no approved graph and cannot apply;
+accepted/current ported/PR requires no `bass_ext_*` block; and
+bypassed/stale/malformed/missing requires no block. Every other
+profile-state/filter-set combination is unsafe. In particular, an
+accepted/current sealed profile with no block is not an ordinary
+baseline exception. The sole transient exception is a valid pending
+intent, which authorizes only its exact predecessor or desired natural
+graph fingerprint with the corresponding recorded profile evaluation;
+it is recovery-required and never runtime-armed.
+
+One canonical graph-classification boundary has two transport-shaped
+entry points in `runtime_contract.py`, not two policies. The synchronous
+`classify_bass_extension_graph(topology, *, evidence_source, ...)`
+handles `persisted_boot`, host-restricted `persisted_candidate`, and
+disk-free `desired`. The async-only
+`classify_active_bass_extension_graph(...)` awaits the existing
+`CamillaController.get_active_config_raw(best_effort=False)` callback
+inside the persisted snapshot and fails closed on exception, `None`,
+non-string, or malformed readback. Both entry points construct one
+immutable graph/authority snapshot and call one private disk-I/O-free
+evaluator for staged-guard parsing, bass-profile/intent policy, and the
+final low-level verifier; they do not duplicate policy or add a wrapper
+type.
+
+All persisted paths require explicit applied-baseline/profile/intent
+and staged-metadata paths. Boot and active also require the outputd
+statefile; the resolver—not its callers—parses that statefile's
+`config_path` and reads the selected graph twice inside the authority
+sandwich. The async entry additionally requires live readback's
+normalized fingerprint to equal that stable selected file. Paired
+authority/graph-file reads match byte-for-byte and the parsed selector
+target remains equal; unrelated volume/mute fields may change.
+A paired missing staged-metadata file is empty evidence and can never
+authorize a guarded/all-muted graph; graph classes that do not depend
+on that evidence retain their current proof.
+
+`persisted_candidate` is limited to
+`safe_graph_for_current_topology` and its existing unselected candidates:
+an explicit current override, the applied-baseline candidate, loopback/
+ring flat fallbacks, and the staged all-muted fallback. It forbids the
+statefile and reads the candidate twice inside the applied-baseline/
+intent/profile/staged-metadata sandwich. Its fixed `candidate_kind`
+distinguishes the explicit current/flat/ring paths from locators derived
+inside paired applied-baseline or staged-metadata bytes. The resolver
+passes the immutable staged mapping to the low-level verifier, so the
+staged locator, topology identity, and software guard remain mandatory.
+`applied_baseline.config.path` is a rebuildable fallback locator, not
+current-graph or live-graph authority. The existing safe-graph function
+continues to own selection policy. Production startup/doctor hosts pass
+the CLI `--staged-metadata` path or existing `staged_metadata_path()`
+default into the boundary; they do not pre-parse staged authority.
+
+One bounded whole-snapshot retry covers a concurrent commit, then
+instability fails closed. `desired` forbids disk paths/callbacks,
+requires the complete in-memory graph, applied-baseline state, and
+desired profile, and performs no disk read. Exactly one source is legal,
+and callers neither parse authority bytes nor read graph bytes outside
+this boundary. Its applied-baseline input is the current `Mapping[str,
+Any]`; its result is the existing `GraphSafety`. No new applied-state or
+classification wrapper type is introduced.
+
+The lower-level `classify_camilla_graph` remains a pure verifier over
+that frozen snapshot: it does not read disk, invoke the persisted
+boundary, or treat omission as a missing profile. The source mapping is
+fixed: startup/fallback uses `persisted_boot` for the selected graph and
+`persisted_candidate` only for the enumerated unselected candidates;
+doctor uses `persisted_boot`; live correction, commissioning, and
+multiroom use the async active entry; only the pre-publish transaction
+uses `desired`. Those host boundaries thread
+the result into nested proofs. A pending intent may authorize
+only its recorded predecessor/desired natural graph fingerprints with
+their recorded profile bytes. Any third baseline-shaped graph, bytes, or malformed
+intent is unsafe; exact pending authorization exists only to keep
+startup available until conservative rollback. Non-baseline flat/
+program-pipe and guarded/all-muted classes keep their independent
+proof, but are never runtime-armed and cannot complete the transaction.
 
 ### 8.6 Apply / bypass / fallback
 
-Profile accept and bypass are full-graph transactions mirroring
-`commissioning_apply.apply_measured_candidate`: compile via
-`build_baseline_profile_candidate` (now bass-extension-aware) →
-predecessor `snapshot_exact_dsp_state` as rollback artifact →
-`apply_dsp_config` → fresh readback must match expected graph
-fingerprint + unchanged volume + protection classification →
-retained proof; any failure restores the exact predecessor with
-readback proof. Bypass = re-emit without the extension block (or,
-cheaper and equivalent, scheduler pinned to natural + profile marked
-`bypassed` — v1 does the cheap one, the graph already carries natural
-at rest). Missing/stale/invalid profile → scheduler never arms →
-ordinary applied baseline behavior. **There is no failure mode that
-requires the graph to change to become safe** — that is the payoff of
-emitting natural-at-rest.
+Profile accept, replacement, and bypass recompose only from
+`recompose_applied_baseline_yaml`'s immutable applied snapshot plus
+the currently persisted program-layer overlays. They never call
+mutable-candidate `apply_baseline_profile` and never consume current
+design drafts, crossover previews, or measurement stores.
+`baseline_candidate_fingerprint` remains the bass-independent Layer-A
+binding stored by the profile; adding/removing the bass overlay must
+not change it. The applied baseline JSON remains immutable
+recomposition/provenance: its compiled-candidate `config.path/sha256`
+is not current composite-graph authority. The canonical resolver locates
+that authority only through the explicit outputd statefile, and an
+ordinary baseline reapply still rebuilds its generated cache before
+validation.
+
+`apply_bass_extension(desired_profile)` is the only production commit
+owner for profile and graph; bypass delegates to it. Wave 4 constructs
+desired state and supplies the existing `measurement_window()`, but
+never saves profile bytes or loads a bass graph itself.
+
+That owner refuses apply, replacement, and bypass before any mutation
+while a bonded program-bake or driver-domain carrier is active, leaving
+the profile and every Camilla graph byte-for-byte unchanged. Bond entry
+may compile and re-prove an already-accepted/current sealed profile's
+natural pair on the existing local driver-domain graph, but Wave 3 does
+not grow a two-Camilla transaction or overwrite that carrier with a
+solo recompose. Profile changes require leaving the bond first.
+
+Inside that audio-isolated window and the existing DSP writer lock,
+first recover any older intent. Reload and prove the currently
+persisted predecessor's canonical natural graph, deliberately
+discarding any ephemeral Wave 5 target; no profile or graph semantics
+change in this pre-intent step, and interruption converges safe. Snapshot that
+normalized graph, exact profile bytes/absence, the current config
+path's exact readable bytes/mode/fingerprint, and the existing outputd
+statefile's `config_path`. Refuse before mutation if the live path and
+durable selector differ or if that graph file is outside the correction
+service's existing writable paths or cannot be durably restored.
+Recompose and prove the desired graph. Before intent publication,
+atomically rewrite the same
+predecessor bytes/mode with `durable=True`, fsync the parent, and
+re-read/re-prove them; interruption leaves old-or-identical safe bytes.
+Recompose and prove the desired natural graph in memory, use an
+operation-unique unreferenced scratch file under the existing Camilla
+config directory for the existing syntax preflight, fingerprint the
+exact desired bytes, and unlink the scratch. Only then
+atomically persist and directory-fsync one immutable intent containing
+both profile byte sets, the natural predecessor
+`ExactDspStateIdentity`, both predecessor/desired byte identities for
+the same selected graph path, the unchanged boot selector, and both
+normalized fingerprints. Intent existence always means rollback; there
+are no phases. A crash-left scratch file is not authority.
+
+Atomically replace that same selected path with the desired bytes using
+`durable=True`, fsync its parent, invoke guarded
+`CamillaController.reload()` without calling `set_config_file_path` or
+editing the outputd statefile, and prove boot selector + active path +
+active graph + on-disk bytes first. Publish and fsync the desired
+profile and its parent directory second; resolve and prove the complete
+persisted authority; clear/directory-fsync the intent last.
+Wave 4 transitions its session from review to accepted only after this
+returns. Any exception restores and re-proves **both** exact
+predecessors: durably restore the recorded graph-file bytes/mode and
+parent directory, guarded-reload/prove its unchanged boot selector,
+path, and active graph, then durably
+restore or remove the profile and prove the whole authority.
+Cancellation drains a shielded rollback before
+propagating. A process kill or power loss leaves the intent and only
+one of its two pre-proved natural graphs; recovery always restores the
+predecessor, never completes forward.
+
+The existing root `jasper-correction-web` process is the lifecycle and
+permission owner. Its current
+`_claim_crossover_state_owners()` hook synchronously attempts
+measurement-isolated recovery before `_systemd.notify_ready()`; every
+bass POST repeats the guard before mutation. No GET handler recovers,
+there is no recovery route/task/daemon, and the existing unit already
+has both required write paths. Failure to isolate or prove retains the
+intent, reports `apply_recovery_required`, and blocks forward bass POSTs while
+read-only/non-DSP correction routes and natural music remain available. The
+never-409 red Stop may retire session state but cannot clear the intent
+or start forward work. After
+a power cycle the intent may wait for the next socket activation, but
+startup/fallback accepts only the two exact natural fingerprints and
+Wave 5 stays no-arm until the owner repairs it.
+
+Global mutation admission is the existing DSP writer lock carried
+task-locally for reentrant controller calls. The private lock path used
+by `apply_dsp_config` and all four `CamillaController` graph mutations
+(`set_config_file_path`, `set_active_config_raw`, `patch_config`,
+`reload`) enter
+the same canonical production path,
+`/var/lib/camilladsp/configs/.dsp_apply.lock`; test-path injection is
+allowed, but no production env/per-candidate lock is. A direct caller
+therefore cannot bypass it. Under a
+pending intent every ordinary graph mutation refuses; only this Wave 3
+commit/recovery owner carries explicit recovery permission. If another
+mutation acquired the lock first it completes before intent
+publication; if the intent was published first, the later mutation is
+refused. This prevents sound, startup, capture-entry, correction,
+commissioning, or multiroom graph changes from overtaking rollback
+without adding a daemon, service, or second lock.
+
+Ported/PR acceptance retains `status="accepted"` and its evidence but
+the same owner is predecessor-aware: sealed→deferred first loads and
+proves the ordinary no-block baseline, while an already no-block
+predecessor may skip the redundant DSP load. Bypass follows the same
+rule. Missing/stale/invalid/deferred profiles never arm the scheduler
+and keep ordinary applied-baseline behavior. Stable states are coherent
+by construction: accepted/current sealed has the natural pair, while
+deferred/bypassed/stale/missing has no block. Any failed state
+transition restores both predecessor authorities before returning.
+
+Wave 4 constructs the desired accepted profile in memory and hands it
+to this transaction; it never calls `save_bass_extension_profile`
+first. The transaction entry point owns predecessor-aware ported/PR
+publication too, so the commissioning backend has one commit boundary
+for every adapter and cannot strand a sealed block.
 
 ---
 
@@ -952,7 +1324,9 @@ emitting natural-at-rest.
   `_graceful_stop`, honoring the `/sound/` combined-test wedge
   lesson: Stop must not depend on page reload); explicit "measured
   clean operating envelope, not a driver warranty" copy; expert
-  drawer for Qp, boost cap, rung size, subsonic overrides.
+  drawer for Qp, boost cap, rung size, and bounded subsonic parameter
+  overrides. The first graph slice does not permit removing the
+  subsonic filter.
 
 ---
 
@@ -969,28 +1343,52 @@ few per volume swing — no journal spam.
 ### 10.2 `/state.bass_extension`
 
 `{commissioned, profile_id, status: accepted|bypassed|stale|absent,
-current_target, current_extension_hz, deepest_hz, natural_hz,
-anchors: [...], scheduler_alive, last_transition_at}` — read fresh
-from disk + best-effort camilla, fail-soft null like every other
-section.
+adapter_id, runtime_eligible, runtime_deferred_reason,
+apply_recovery_required,
+runtime_armed, current_target, current_extension_hz, deepest_hz,
+natural_hz, anchors: [...], scheduler_alive, last_transition_at}` —
+static fields read fresh from disk. Wave 3 may add
+`adapter_id`/eligibility/deferred reason; live fields do not ship until
+a revised Wave 5. When they do, jasper-voice is the sole authoritative
+heartbeat/current-target owner and publishes the exact
+`bass_extension_runtime` object through its existing `STATUS` reply;
+jasper-control merges that object into the static section. For an
+accepted/current sealed profile, unavailable/missing STATUS means
+`scheduler_alive=false`, `runtime_armed=false`, `current_target=null`,
+and `last_transition_at=null` — unknown is never fabricated as
+natural. Accepted ported/PR is an ordinary healthy static state:
+`runtime_eligible=false`,
+`runtime_deferred_reason="fixed_graph_not_defined"`,
+`runtime_armed=false`, `current_target=null`, and
+`current_extension_hz=null`. The ordinary graph is safe but does not
+implement the stored ported/PR natural member.
+While `apply_recovery_required=true`, sealed runtime is never armed or
+patched. `current_target="natural"` is reported only when the canonical
+resolver proves one of the intent's exact natural graphs; malformed or
+unproved pending state reports `null`.
 
 ### 10.3 Doctor (flat, one `CheckResult` each)
 
 `check_bass_extension_profile`: absent → OK ("not commissioned");
 stale bindings → WARN with the mismatched fingerprint named;
-accepted + emitted graph missing the frozen filter names → FAIL;
-scheduler heartbeat stale while profile accepted → WARN; live filter
-params ∉ frozen family (best-effort read) → WARN
-("drifted, reconciler should converge; investigate if persistent").
+accepted sealed + emitted graph missing the frozen filter names →
+FAIL. After a revised Wave 5 ships: sealed scheduler STATUS
+missing/stale → WARN; sealed live filter
+params ∉ frozen family (best-effort read) → WARN ("drifted,
+reconciler should converge; investigate if persistent"). Accepted
+ported/PR → OK with explicit "runtime deferred" detail; absence of
+`bass_ext_*` filters and a runtime heartbeat is correct, not drift.
 
 ### 10.4 Failure ladder
 
 | Failure | Behavior |
 |---|---|
-| Profile missing/stale/bypassed | Graph is already natural at rest; scheduler never arms. Silent-by-design (WARN in doctor, status on overview page) |
-| Scheduler process dies | Filters stay at last patched target; **worst case is bounded**: deepest target at rising volume is still inside the limiter backstop and the digital margin; partner-process hook or 1 Hz reconciler (whichever survives) converges; doctor WARNs on heartbeat |
-| CamillaDSP restart / config reload | Filters reset to natural (emitted params); reconciler re-extends within ~1 s if level permits — fail-safe direction |
-| camilla unreachable during transition | `patch_config(best_effort=True)` no-ops; reconciler retries; scheduler holds *shallower* of (current, desired) |
+| Profile missing/stale/bypassed | Sealed graph is already natural at rest (or block absent); scheduler never arms. Silent-by-design (missing/bypassed are OK; stale WARNs; status on overview page) |
+| Accepted ported/PR profile | Profile/evidence retained; ordinary baseline graph stays active; Wave 3 state reports the stable deferral with no live profile target. Sealed→deferred replacement first removes/proves the sealed pair. A future scheduler returns `adapter_deferred` and never patches. `/state` + doctor make the deferral explicit. |
+| Interrupted profile+DSP commit | Pre-intent normalization means both recorded graphs are exact natural-at-rest states even after Wave 5 ships. The intent records exact predecessor/desired bytes for the unchanged boot-selected graph path plus profile bytes; recovery durably restores and proves selector + predecessor file + active graph/path + profile. The canonical graph/evidence sandwich accepts only those fingerprints; Wave 5 never arms, and every controller graph mutation enters the existing writer lock and refuses ordinary work. The correction process attempts measurement-isolated predecessor rollback before ready and before every state-advancing bass POST. GET is read-only; failed recovery retains the intent and blocks forward bass/DSP mutations without blocking the never-409 red Stop, read-only/non-DSP correction routes, or natural music. |
+| Scheduler process dies | **Not reachable until Wave 5's protection gate is resolved.** The replacement contract must keep the deeper target coupled to its produced conservative limiter, publish heartbeat through voice STATUS, and converge natural on restart; doctor WARNs on missing/stale STATUS. |
+| CamillaDSP restart / config reload | Filters reset to natural (emitted params) — fail-safe direction. After Wave 5 is unblocked, its reconciler may re-extend within ~1 s if level and protection permit. |
+| camilla unreachable during transition | Future Wave 5 only: failed pre-louder retreat blocks the louder actuator; otherwise the reconciler retries and the scheduler holds *shallower* of (current, desired). |
 | Mid-ladder crash during commissioning | Coordinator lease expiry restores renderers; commissioning-runtime bounded transaction restores the exact entry graph with readback proof; session store marks `interrupted` (crossover_level_run pattern) |
 
 No audible-cue additions needed: nothing here can block wake/voice,
@@ -1009,36 +1407,81 @@ and doctor surface.
   offsets pinned against `Δt_n = L·ln(n)` on synthetically distorted
   sweeps (inject known H2/H3, recover THD within 1 dB down to 20 Hz);
   compression curves on synthetic soft-clipped ladders; anchor
-  derivation (equal-excursion + digital clamp) pinned; scheduler
-  hysteresis property tests (never extends above anchor, retreat
-  monotone in level, natural at boot).
+  derivation (equal-excursion + digital clamp) pinned. Scheduler tests
+  remain blocked with Wave 5; its replacement contract must restore
+  sealed hysteresis properties plus ported/PR no-live-target
+  `adapter_deferred` coverage after the protection producer lands.
 - **Contract tests:** profile schema round-trip + staleness matrix
   (every binding mismatch → stale); refusal vocabulary completeness;
-  emit-gate red-team (strip subsonic HP → raises; off-family params →
-  raises; non-natural at-rest params → raises); `classify_camilla_graph`
-  accepts extension-bearing baselines and still rejects tampered ones;
-  targets[last]-is-natural invariant; ladder state machine transition
-  table (mirror `test_commissioning_lifecycle` style).
+  sealed emit-gate red-team (strip subsonic HP → raises; off-family
+  params → raises; non-natural at-rest params → raises; any missing
+  sealed subsonic → apply refuses before mutation);
+  `classify_camilla_graph` accepts sealed extension-bearing solo and
+  active driver-domain baselines and still rejects tampered ones;
+  follower/leader prechecks pin the same pair before bonding, while
+  bonded apply/replacement/bypass refuses with both graphs and the
+  profile unchanged; its source-explicit graph/
+  authority boundary is
+  exercised through startup/fallback, doctor, correction,
+  commissioning, and multiroom call paths, while the low-level
+  classifier performs no disk I/O and the pre-publish graph uses only
+  desired in-memory evidence; graph/applied-baseline/profile/intent
+  sandwich instability, malformed intent, and third-graph fingerprints
+  fail closed; accepted ported/PR emits the
+  byte-identical ordinary baseline, reports runtime-ineligible, and
+  rejects any injected `bass_ext_*` block; targets[last]-is-natural
+  invariant; ladder state machine transition table (mirror
+  `test_commissioning_lifecycle` style).
 - **Integration (mocked camilla/relay):** ladder end-to-end with
   scripted rung results including mid-ladder abort/restore; apply
-  transaction rollback on injected readback mismatch; scheduler +
-  fake VolumeCoordinator dispatch ordering (retreat-before-louder).
+  two-authority accept/bypass rollback on injected DSP readback,
+  durable profile publish, and final re-proof failures;
+  sealed→ported/PR and sealed→bypassed replacements remove the exact
+  sealed pair before publication; cancellation/restart
+  after intent, graph, profile, and final-proof commit points restores
+  both exact predecessors from a freshly reopened durable intent;
+  deletion/truncation/replacement of the selected graph file proves
+  durable predecessor restoration, unchanged boot-selector authority,
+  and desired power-cycle reload;
+  process claim occurs before correction ready, recovery holds the
+  measurement window, GET remains read-only, and failed recovery blocks
+  forward bass POSTs and direct file-load/active-raw/patch/reload callers while
+  retaining the intent; race the controller mutation and intent lock in
+  both acquisition orders; the red Stop still
+  retires session state without clearing recovery evidence;
+  save → apply → reload
+  stays current with unchanged Layer-A fingerprint; staged Layer-A
+  edits remain unapplied and program overlays survive. After Wave 5 is
+  unblocked: fake awaited VolumeCoordinator gate ordering for Camilla,
+  Spotify, and Bluetooth, including failed-retreat blocks-louder;
+  already-no-block ported/PR avoids a redundant graph load and never
+  calls `PatchConfig`; pending intent and held correction measurement
+  gate suppress all Wave 5 patches/timers until exact recovery clears.
+  Voice and delegated control volume requests use one long-lived
+  coordinator/runtime; a persisted louder target invalidates stale tick
+  decisions before retreat. Inject louder UDS response loss before and
+  after acceptance: it reports `volume_change_unconfirmed`, never
+  falls back/retries automatically, and never claims persistence or the
+  actuator was unchanged; same/quieter duplicate fallback remains
+  monotonic.
 - **Browser (harness per existing JS conventions):** wizard module
   conventions test coverage (auto via
   `test_web_wizard_conventions.py`), Stop-button wiring test.
-- **Pi performance:** camilla CPU% with the extension block (R1) and
-  the A/B block (R2) vs baseline; `PatchConfig` round-trip latency
-  under load; scheduler wall-time per tick.
+- **Pi performance:** camilla CPU% with the sealed extension block
+  (R1) vs baseline; `PatchConfig` round-trip latency under load;
+  scheduler wall-time per tick.
 - **Latency:** re-run the existing route-latency cert after Wave 3 on
   the lab box — expected delta zero; the cert gate is the proof.
 - **Hardware validation (Wave 7, the only paid-in-time wave):**
   transition-audibility bench (Wave 0 rig, re-run on final code);
   full sealed commission on a lab box incl. deliberately-wrong cases
   (mic bumped mid-ladder → refusal fires; AGC phone → ramp refuses);
-  ported + PR commission on whatever boxes exist (borrow/build —
-  a cheap PR bookshelf is worth buying for this); one week of daily
-  listening with the family armed, checking `event=bass_ext.*`
-  cadence and the overview page.
+  ported + PR **commissioning/profile-retention** on whatever boxes
+  exist (borrow/build — a cheap PR bookshelf is worth buying for
+  this), confirming the UI/state says runtime deferred; one week of
+  daily listening with a sealed family armed only after the Wave 5
+  protection gate is resolved, checking `event=bass_ext.*` cadence and
+  the overview page.
 
 ---
 
@@ -1067,9 +1510,9 @@ wave keeps out of the god-files. Every implementation PR runs
 | 0 | [wave-0](bass-extension-waves/wave-0-hardware-spikes.md) | spikes 1–3 done 2026-07-16 — **R1 confirmed** ([memo](research/2026-07-16-bass-extension-spikes/README.md)); spike 4 + ears-on listen with operator |
 | 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | **merged 2026-07-16** (#1549, contract rev 3; review-gate loop caught 6 rev-1 spec contradictions → rev 2) |
 | 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | **merged 2026-07-16** (#1553; clean gate after 3 review findings fixed in-session) |
-| 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | not started |
-| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | not started |
-| 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | not started |
+| 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | implementation parked after draft #1558 stop report; contract rev 9 authorizes sealed natural-at-rest solo + local driver-domain graph groundwork plus durable predecessor-aware apply/recovery, with bonded profile mutation refused |
+| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **blocked at contract rev 6** — no implementation until the focused measured limiter-derivation prerequisite is frozen and this prompt is revised |
+| 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | **blocked at contract rev 9** — a post-Wave-3 launch may only record the mandatory stop; no implementation until the Wave 4 prerequisite, replacement contract, and finite sealed thresholds land; bonded roles remain no-arm/no-patch |
 | 6 | [wave-6](bass-extension-waves/wave-6-ui.md) | not started |
 | 7 | [wave-7](bass-extension-waves/wave-7-hardware-validation.md) | not started |
 
@@ -1120,16 +1563,45 @@ Depends: Wave 1 dataclasses.
 ### Wave 3 — Graph emission + apply transaction (⚠ hot-file wave; small PRs)
 
 `camilla_emit.py` LT/Butterworth-HP emitters;
-`camilla_yaml.py` bass-extension block (natural-at-rest invariant);
+`camilla_yaml.py` sealed-only bass-extension block in both the solo
+baseline and existing active-speaker driver-domain pipeline
+(natural-at-rest invariant); ported/PR profiles remain
+accepted/observable but emit the
+byte-identical ordinary baseline;
 `graph_safety.py` predicate + emit gate;
 `runtime_contract.py` classification extension (**land this in the
 same PR as the emitter change** — a split ships a graph the contract
-re-proof rejects); apply/bypass transaction. Red-team contract tests.
+re-proof rejects), including one source-explicit persisted/desired
+graph+authority classification boundary and a disk-I/O-free low-level
+classifier, including sandwiched proof of the startup selector's
+existing unselected candidates and staged guard metadata plus an
+awaitable live-read entry; immutable-snapshot apply/bypass/deferred
+replacement with
+one commit owner, natural predecessor normalization, and a durable
+local intent with exact profile+DSP predecessor restoration across
+cancellation/restart/power loss. The intent records exact predecessor
+and desired bytes for the existing boot-selected graph path as well as
+profile bytes; the outputd statefile selector never changes. The
+existing private writer lock path and every controller graph mutation,
+including reload, share one reentrant admission and refuse ordinary
+work while that intent exists. The Layer-A candidate fingerprint
+remains bass-independent, the existing baseline limiter is unchanged,
+profiles missing sealed subsonic protection cannot apply, and
+apply/replacement/bypass refuses before mutation while a bonded
+program-bake or driver-domain carrier is active. Bond entry may only
+emit and re-prove the already-accepted profile's natural pair on the
+local driver-domain graph. These
+mutation seams have no production caller/route until revised Wave 4
+lands the correction-process host. Red-team
+contract tests.
 Depends: Wave 2. Coordinate with any in-flight crossover-program PRs
 touching the same files; rebase before push per AGENTS.md.
 
 ### Wave 4 — Commissioning backend
 
+**No implementation is authorized by revision 6.** First complete the
+focused measured limiter prerequisite in §14.8 and revise the prompt
+with the deterministic producer. The intended wave then contains
 `ladder.py` state machine (pure) + web backend module (new file, thin
 routing seam into `/correction/`), relay `build_bass_nearfield_spec`,
 per-rung retention store, integration of ramp/admission/
@@ -1139,17 +1611,44 @@ duration/band/level + mandatory cooldown — do not push a 60 s hold
 through a sweep-shaped `ExcitationRequest`), and the
 characterize→fit→propose→verify→ladder→sustain→anchors→review HTTP
 endpoints returning JSON the Wave-6 UI consumes. Integration tests
-with mocked camilla/relay per §11. Depends: Waves 1–3.
+with mocked camilla/relay per §11. The current evidence does **not**
+derive `limiter_threshold_dbfs`; the prerequisite must first determine
+the stage/units, evidence sufficiency, producer/refusal, test vectors,
+and hardware justification. Every adapter's accept passes desired
+state in memory to Wave 3's sole predecessor-aware commit owner inside
+`measurement_window()` and never persists first. Sealed→deferred
+replacement removes the old sealed pair before publication. The
+existing correction process synchronously claims
+pending recovery before ready and before bass POSTs; GET remains
+read-only and there is no recovery route/task/service; the red Stop
+remains the only no-forward-work exception. Depends: Waves
+1–3 plus the focused prerequisite.
 
 ### Wave 5 — Runtime scheduler
 
-`scheduler.py` (pure) + `runtime.py` transition executor (mechanism
-per Wave 0; ≤1 dB micro-steps over 0.5–1 s; limiter threshold patched
-in the same transition as the alignment per §8.4), `VolumeCoordinator`
-dispatch hook (retreat-first ordering), re-extend rate limiting per
-§8.2, 1 Hz reconciler in the existing `VolumeObserver`, `/state` live
-fields, doctor heartbeat/drift checks, failure-ladder tests. Depends:
-Waves 2–3; mechanism decision from Wave 0.
+**No implementation is authorized by revision 9.** A coordinator may
+launch this lane after Wave 3 only to execute and record its mandatory
+preflight stop while Wave 4 is blocked; that launch is not authority to
+edit implementation files. A replacement prompt depends on the Wave 4
+measured prerequisite, revised producer
+contract, and
+implementation. It must retain sealed-only R1, conservative limiter
+before boost / relaxation after boost removal, an awaited
+previous→target gate before every louder Camilla/Spotify/Bluetooth
+actuator, one voice-owned runtime/patch owner, eligible control-volume
+delegation through the existing voice UDS, target persistence before
+retreat to invalidate stale ticks, the 1 Hz voice-owned reconciler,
+voice `STATUS` → `/state` live telemetry, the tested ported/PR
+no-live-target/no-patch `adapter_deferred` state, and no-arm/no-patch
+while Wave 3 recovery is pending or the correction measurement gate is
+held. It must also remain no-arm/no-patch while a bonded program-bake
+or driver-domain carrier is active unless a later contract proves the
+multi-Camilla runtime owner and conservative transition ordering.
+Louder UDS transport/response failures are observable as
+unconfirmed and never trigger fallback, automatic retry, or an
+unchanged-state claim.
+Depends: Waves 2–4 and the
+Wave 0 mechanism decision.
 
 ### Wave 6 — UI
 
@@ -1164,8 +1663,7 @@ The §11 hardware program on the lab boxes; threshold tuning from real
 ladders (expect the §7.5 numbers to move — they ride
 `algorithm_version`); `docs/HANDOFF-bass-extension.md` operational
 doc (current-state-first, this plan gets the historical tag); README
-atlas + `docs/doc-map.toml` entries; `.env.example` comments for any
-env knobs added.
+atlas + `docs/doc-map.toml` entries. No scheduler env knob is planned.
 
 ---
 
@@ -1173,9 +1671,10 @@ env knobs added.
 
 ### Risks
 
-1. **Transition clicks (R1 unproven).** Mitigation: Wave 0 decides
-   with measurements; R2 is documented-safe; transitions are rare and
-   volume-ramp-masked.
+1. **Transition clicks (R1 bench-proven; ears-on final listen open).**
+   Wave 0 measured ≥15 dB burst margin for sealed micro-steps; retain
+   the operator's final ears-on check. R2 remains the documented
+   fallback; transitions are rare and volume-ramp-masked.
 2. **Hot-file collision with the crossover program** (main is
    churning in `camilla_yaml`/`runtime_contract`/correction backend
    *today*). Mitigation: wave ordering puts pure-new-file work first;
@@ -1197,9 +1696,12 @@ env knobs added.
    margin. Mitigation: WARN surface + limiter backstop + margin;
    full budget unification with `active_baseline_headroom` is
    deliberately deferred (a later `algorithm_version`).
-7. **Two-process scheduler writes** (voice + control) race in theory.
-   Mitigation: idempotent convergent target selection; worst case is
-   a duplicate patch of identical values; reconciler converges.
+7. **Runtime/volume ordering spans process-facing callers.** A stale
+   quieter level could otherwise re-deepen after retreat. Mitigation:
+   jasper-voice is the sole patch owner; eligible control mutations
+   delegate the whole operation through its existing UDS, and the
+   long-lived coordinator persists a louder target before retreat so
+   its serialized reconciler cannot act on the predecessor level.
 8. **Patents (deep-research finding; technical characterization, not
    legal advice).** The runtime behavior likely reads on the broad
    independent claims of Google **US10,200,003 / US10,666,217**
@@ -1207,7 +1709,8 @@ env knobs added.
    even contains our 1 dB ↔ 1/12-octave mapping) and is close to
    **US12,342,139** (volume-indexed LT lookup table + multiband
    compressor, microspeakers; we differ by having no compressor-as-
-   protection, per-unit measurement, and ported/PR handling). The
+   protection, per-unit measurement, and retained ported/PR
+   commissioning without runtime arming). The
    commissioning workflow appears free of located prior art. JTS is
    open-source and non-commercial, but before this feature is
    promoted as a product capability — and certainly before any
@@ -1232,18 +1735,28 @@ env knobs added.
   (maintainer decision 2026-07-16): the deep-research report's
   "switch to a live excursion model if you add sensing" branch is
   closed — the impedance cross-check stays file-import only, and the
-  open-loop schedule + sustain test + target-coupled limiter is the
-  design, not a stopgap.
+  intended open-loop schedule still requires the sustain test plus a
+  target-coupled limiter. The missing deterministic limiter producer
+  is a release blocker, not permission to omit protection or add
+  sensing.
 - No signal-aware (program-dependent) controller — designed-for but
   explicitly after the volume-linked product works; the scheduler
   seam (`select_target`) is where it would slot in.
+- No ported/PR runtime emission or scheduling in the first shipped
+  slice. Their Wave 1 adapters, commissioning evidence, accepted
+  profiles, and UI/state visibility remain in scope; only live graph
+  arming is deferred behind the fixed-graph proof in §14.
 - No far-field reconstruction / splice / baffle-step claims — the
   profile's claims are fixed-position-relative by design; the splice
   lane upgrades the *display* later, not the decision.
-- No wireless-sub or bonded-pair emission (refusal
-  `BONDED_BASS_OWNER_REMOTE`); no passive full-range (non-active)
-  speakers — the math generalizes but the graph carrier work is its
-  own slice; no multi-driver/multi-port/TL/OB/horn adapters
+- No wireless-sub or remote bonded bass-owner shaping (refusal
+  `BONDED_BASS_OWNER_REMOTE`). The existing active-speaker
+  driver-domain graph may carry the same local natural-at-rest Layer-A
+  pair so bonding cannot drop commissioned subsonic protection; no
+  generic multiroom carrier, state-writer, bonded profile mutation, or
+  two-Camilla transaction is authorized. No passive full-range
+  (non-active) speakers — the math generalizes but the graph carrier
+  work is its own slice; no multi-driver/multi-port/TL/OB/horn adapters
   (`ENCLOSURE_UNSUPPORTED`, future adapters).
 - No loudness compensation (separate feature; explicitly kept
   composable and distinct).
@@ -1257,10 +1770,12 @@ env knobs added.
 
 ## 14. Decisions requiring a focused prototype before implementation
 
-1. **R1 vs R2 transition mechanism** — Wave 0.1 (the only decision
-   that changes emitted graph *structure*).
-2. **`PatchConfig` reset semantics across reload paths** — Wave 0.3
-   (changes reconciler test expectations, not architecture).
+1. **R1 vs R2 transition mechanism — decided for sealed:** Wave 0.1
+   confirmed micro-stepped R1. This does not authorize changing graph
+   structure for another adapter.
+2. **`PatchConfig` reset semantics — decided:** Wave 0.3 confirmed
+   patches survive volume writes and reset on file reload; the sealed
+   reconciler encodes that result.
 3. **Ported family shape** (pure sliding-HPF vs HPF+shelf composite)
    — decide after the first real ported fit; both are inside the
    `ported_v1` adapter's parameter space, so this is a tuning
@@ -1277,6 +1792,29 @@ env knobs added.
    within 10 %, the import stays a rarely-used expert feature; if
    they disagree on ordinary boxes, promote it in the wizard copy for
    ported/PR (where fb matters most). Decided by Wave-7 data.
+7. **Ported/PR fixed runtime graph** — deferred beyond the sealed
+   first slice. Before either adapter can arm, a focused contract and
+   hardware prototype must prove one static, re-proofable graph across
+   every frozen family member (including members whose current
+   `filters` tuples add/remove the retreat high-pass), click-safe
+   transitions, natural-at-rest/reset behavior, limiter coupling, and
+   no invented Q/filter parameters. Until then those profiles remain
+   retained and observable with `fixed_graph_not_defined`.
+8. **Sealed target-coupled limiter producer — open, blocks Wave 5.**
+   The schema field exists but no frozen contract maps ladder/sustain
+   evidence to the limiter's Camilla-stage dBFS value. Review found the
+   existing records insufficient: they cover one admitted sweep peak,
+   one admitted sustain waveform, and an arithmetic digital clamp, but
+   do not map arbitrary program peaks to the downstream limiter
+   detector. Before Wave 4 implementation, a focused measured result
+   must identify the exact stage/units; determine whether those records
+   suffice or specify the smallest added measurement; freeze a
+   deterministic per-sealed-target producer with missing-evidence
+   refusal and conservative ordering; provide retained-evidence test
+   vectors and on-device justification; and revise Wave 4 accordingly.
+   Do not infer a value from the illustrative schema, reuse −1 dB,
+   subtract boost/digital margin, assume a crest factor, or derive it
+   inside Wave 5.
 
 ## 15. External references
 
@@ -1324,4 +1862,4 @@ From the 2026-07-16 deep-research report:
 
 ---
 
-Last verified: 2026-07-16
+Last verified: 2026-07-17
