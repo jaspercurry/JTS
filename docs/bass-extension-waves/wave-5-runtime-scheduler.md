@@ -1,13 +1,14 @@
 # Wave 5 — runtime scheduler (Codex prompt)
 
-> **Revision 3 (2026-07-17) — implementation blocked.** The eventual
+> **Revision 4 (2026-07-17) — implementation blocked.** The eventual
 > R1 scheduler remains sealed-only, but no Wave 5 implementation is
 > authorized by this prompt. `TargetSpec.limiter_threshold_dbfs` has
-> no frozen commissioning producer, and deriving one here would invent
-> an audio-safety parameter. A focused commissioning/protection
-> contract must revise Wave 4 and then this prompt before work starts.
-> Ported/PR profiles remain retained and observable. Findings and
-> rationale are in the changelog.
+> no frozen commissioning producer, and Wave 4 revision 3 now blocks
+> behind a focused measured-derivation prerequisite rather than
+> inventing one. This revision also freezes scheduler behavior around
+> Wave 3's durable natural-at-rest commit/recovery boundary. Ported/PR
+> profiles remain retained and observable. Findings and rationale are
+> in the changelog.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Waves 2–3 merged AND the Wave-0
@@ -43,7 +44,7 @@ tuples.
 1. `docs/HANDOFF-bass-extension-plan.md` §8.2–8.4 and §10 (read
    carefully — hysteresis, rate limits, micro-steps, limiter
    coupling, and the failure ladder are specified, not designable).
-2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 3,
+2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 4,
    then Wave 1's `TargetSpec` and ported/PR family sections. Read the
    fixed-graph scope and deferral contract carefully.
 3. `jasper/volume_coordinator.py` — fully: `_dispatch`, the observer
@@ -81,13 +82,21 @@ tuples.
   `BASS_EXTENSION_RUNTIME_ADAPTER_IDS = frozenset({"sealed_v1"})`.
   If it implemented any ported/PR runtime block or structural slot
   scheme, STOP and report.
-- Confirm a **merged, dated Wave 4 contract revision** defines a
+- Confirm Wave 3's one commit owner, source-explicit graph-evidence
+  resolver, natural predecessor normalization, and correction-process
+  recovery owner exist exactly as revision 4 specifies. A pending
+  apply intent must be visible in static state and must authorize only
+  its two exact natural graph fingerprints. If recovery is implicit in
+  GET, runs in a new process/task, or may leave a deep graph, STOP.
+- Confirm a **merged, dated replacement for Wave 4 revision 3** defines a
   deterministic evidence → `limiter_threshold_dbfs` derivation for
   every sealed target, its units/stage in the Camilla graph, refusal on
   missing evidence, and hardware-free tests; confirm Wave 4 implements
   it and accepted sealed profiles carry finite thresholds. No such
-  contract exists as of this revision, so this check currently fails
-  and Wave 5 must stop. Do not design the derivation in Wave 5.
+  contract exists as of this revision: Wave 4 revision 3 explicitly
+  found that its existing evidence is insufficient and blocks behind
+  the focused measured-derivation prerequisite. This check therefore
+  fails and Wave 5 must stop. Do not design the derivation in Wave 5.
 
 ## Future file allowlist (inactive until a replacement prompt)
 
@@ -125,6 +134,12 @@ Modify (small, seam-only):
   Treat `runtime_eligible` as adapter-level graph support;
   `runtime_armed` is true only for an accepted, current eligible
   profile whose runtime is live and confirmed.
+  Preserve Wave 3's `apply_recovery_required` unchanged. While it is
+  true, sealed state is `runtime_armed=false` and
+  `current_target="natural"` only when the canonical resolver proves
+  one of the intent's exact natural graphs; malformed/unproved pending
+  state reports `current_target=null`. This transaction gate takes
+  precedence over accepted/current profile state.
   For accepted ported/PR profiles: `current_target="natural"`,
   `runtime_armed=false`, and
   `runtime_deferred_reason="fixed_graph_not_defined"`.
@@ -182,6 +197,20 @@ Constants as literals with names (`REEXTEND_HYSTERESIS_LEVELS = 4`,
   and returns without reading or patching CamillaDSP. Its awaited gate
   result distinguishes `confirmed` from `failed`; a louder caller may
   continue only on `confirmed`.
+- Before reading or patching live bass params, re-evaluate Wave 3's
+  static state. If `apply_recovery_required=true`, do not call
+  `PatchConfig`, do not start/deepen timers, and publish
+  `runtime_armed=false`. Return `confirmed` to a volume gate only when
+  the canonical resolver proves the live graph is one of the intent's
+  exact natural fingerprints; otherwise return `failed`. Recovery is
+  never a Wave 5 action.
+- The existing correction measurement gate applies to **both** the
+  1 Hz reconciler and hook-driven transitions. While it is held, no
+  Wave 5 process patches bass filters. This lets Wave 3 normalize,
+  commit, or recover the graph without a racing scheduler. On gate
+  release, the next ordinary tick re-evaluates the now-persisted
+  profile; no new cross-process lock, pause API, task, or handshake is
+  introduced.
 - Transition execution (R1, sealed only): interpolate
   `(freq_target, q_target)` from current to next member in N steps
   such that no step changes predicted response by more than 1 dB
@@ -210,6 +239,14 @@ Constants as literals with names (`REEXTEND_HYSTERESIS_LEVELS = 4`,
   in-process state, exported only through `STATUS` and then curated by
   jasper-control into `/state`.
 
+Wave 3's commit owner intentionally reloads the predecessor's persisted
+natural graph inside `measurement_window()` before it records an
+intent. Therefore cancellation, process death, and power loss can
+leave only the intent's predecessor or desired **natural** graph.
+Wave 5's pending-intent no-arm rule preserves that state until the
+existing correction process rolls back; the scheduler never guesses
+which profile side won and never completes the commit forward.
+
 R1 is a parameter-only mechanism over a graph whose named filter
 definitions and pipeline references never change. No transition may
 add, remove, rename, or change the type of a filter.
@@ -228,7 +265,11 @@ add, remove, rename, or change the type of a filter.
   then reconciler converges; reconciler steps toward natural on
   unreadable params; duplicate concurrent `ensure_bass_target` calls
   produce identical final patches (no oscillation); accepted
-  ported/PR calls never read or patch CamillaDSP.
+  ported/PR calls never read or patch CamillaDSP. A pending apply
+  intent never patches or advances timers, returns `confirmed` only
+  for an exactly proved natural graph, and resumes ordinary selection
+  only after the intent clears. A held correction measurement gate
+  suppresses both tick- and hook-driven patches.
 - Coordinator hook: retreat-before-louder ordering (hook fires before
   the first audible-level actuator on every rising change) — test at
   the seam with a fake awaited runtime recording call order for
@@ -238,7 +279,9 @@ add, remove, rename, or change the type of a filter.
 - State: accepted ported/PR preserves the commissioned profile fields,
   reports `current_target="natural"`, `runtime_armed=false`, and the
   exact deferred reason; sealed reports `runtime_armed=true` only
-  when the accepted/current block is present and the runtime owns it.
+  when the accepted/current block is present, no apply intent exists,
+  every target threshold is finite, and the runtime owns it. Pending
+  exact-natural state is not armed; malformed pending state is unknown.
 - STATUS/state: jasper-voice publishes the exact live object;
   jasper-control pulls it through; unavailable STATUS produces the
   sealed unknown/not-armed semantics above, never a fabricated
@@ -264,6 +307,11 @@ the coordinator hook seam requires more than ~20 lines in
 Do not add ported/PR identity filters, named shaping slots, filter
 bypasses, or structural `PatchConfig` updates; that is a separately
 budgeted graph-design/proof problem, not this wave.
+Do not read or repair Wave 3's intent, publish a profile, reload a full
+graph, or add a scheduler-specific transaction/quiesce protocol. The
+runtime only observes the canonical state/measurement gates, stays
+natural and unarmed while recovery is pending, and resumes after the
+existing correction owner clears the intent.
 
 ## Acceptance commands
 
@@ -280,6 +328,20 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 4 (2026-07-17)** — the resumed cross-wave review found that a
+  durable Wave 3 commit also needs a scheduler-side exclusion rule:
+  otherwise a restarted voice/control runtime could deepen or race a
+  graph while the profile+DSP intent remains unresolved. Rationale:
+  require Wave 3 to record only exact natural predecessor/desired
+  graphs, treat intent presence as a hard no-arm/no-patch state, and
+  reuse the existing correction measurement gate to exclude both tick-
+  and hook-driven patches during commit/recovery. Wave 4 revision 3
+  separately establishes that its current measurements cannot derive
+  the limiter threshold and blocks behind a focused measured
+  prerequisite. Rejected alternatives were scheduler-owned recovery,
+  a new cross-process lock/handshake, forward-completing an ambiguous
+  commit, arming from a pending profile, or inventing a threshold.
 
 - **Rev 3 (2026-07-17)** — adversarial review found no producer for
   `limiter_threshold_dbfs`, reversed limiter transition ordering, an

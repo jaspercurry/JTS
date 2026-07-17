@@ -1,12 +1,13 @@
 # Wave 3 — graph emission + contract + apply (Codex prompt)
 
-> **Revision 3 (2026-07-17).** Static graph groundwork remains
+> **Revision 4 (2026-07-17).** Static graph groundwork remains
 > narrowed to `sealed_v1`; ported/passive-radiator profiles remain
 > valid retained commissioning artifacts. This revision also freezes
-> immutable recomposition, bass-independent baseline identity, and
-> symmetric profile+DSP rollback. Wave 5 is not yet authorized to arm
-> the graph; see its revision 3 safety gate. Findings and rationale are
-> in the changelog.
+> an explicit graph-evidence resolver, one predecessor-aware commit
+> owner, and a durable profile+DSP recovery contract owned by the
+> existing correction process. Wave 5 is not yet authorized to arm
+> the graph; see its revision 4 safety gate. Findings and rationale
+> are in the changelog.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Waves 1–2 merged AND the Wave-0
@@ -30,8 +31,9 @@ invariant), extend the safety contract so such graphs re-prove as
 approved runtime, add the emit gate, and wire sealed profile
 accept/bypass through a local two-authority transaction built from the
 existing writer-lock, validation, DSP readback, and rollback primitives.
-After this wave the speaker sounds *identical* — the emitted sealed
-filters are exact pass-throughs — but the graph is structurally ready
+After this wave no extension boost is active: the natural LT is exact
+identity, while the mandatory protective subsonic high-pass may change
+only the intended sub-band response. The graph is structurally ready
 for a later, safety-complete Wave 5 revision. This wave does not
 authorize a deep target or consume `limiter_threshold_dbfs`; the
 existing downstream baseline limiter remains byte-for-byte and
@@ -131,6 +133,55 @@ Modify:
   evidence according to the complete state table below. The proof
   takes the evaluated bass profile as separate evidence; it does not
   infer permission from filter names or mutate Layer-A identity.
+  Freeze one canonical resolver with an explicit source:
+
+  ```python
+  resolve_bass_extension_graph_evidence(
+      topology, applied_baseline_state, *,
+      evidence_source: Literal["persisted", "desired"],
+      profile_path: Path | None = None,
+      intent_path: Path | None = None,
+      desired_profile: BassExtensionProfile | None = None,
+  ) -> BassExtensionGraphEvidence
+  ```
+
+  Exactly one source is legal. `persisted` requires both explicit
+  paths, reads the intent, profile, then intent again, and accepts the
+  snapshot only when the two intent reads match (one bounded retry is
+  allowed; instability then fails closed). `desired` requires the
+  in-memory profile and performs no disk read. The resolver owns all
+  profile evaluation and returns immutable evidence; callers never
+  parse profile or intent bytes themselves.
+
+  `classify_camilla_graph` remains a pure graph verifier and takes the
+  returned `bass_extension_evidence` explicitly. It must not read
+  profile/intent files, invoke the resolver implicitly, or interpret
+  omitted evidence as "no profile." A baseline-shaped graph whose
+  bass evidence is omitted is unsafe; graph classes that cannot carry
+  the optional baseline block (flat/program-pipe and guarded/all-muted
+  commissioning graphs) retain their existing proof.
+
+  A valid pending intent supplies the exact predecessor and desired
+  normalized-graph fingerprints plus the exact predecessor and desired
+  profile bytes. The persisted resolver may authorize only those two
+  already-proved natural graphs while recovery is pending, selecting
+  the matching profile evaluation by graph fingerprint. A malformed
+  intent, profile bytes other than the recorded predecessor/desired
+  bytes, or any third graph fingerprint is unsafe. This is narrow
+  restart availability, not forward completion: the transaction owner
+  still rolls back to the predecessor.
+
+  Audit every production `classify_camilla_graph` call with `rg`.
+  Persisted startup/fallback, doctor, correction, commissioning, and
+  multiroom paths resolve the canonical persisted source once at their
+  host boundary and thread the immutable evidence into every nested
+  proof. A staged pre-publication graph uses only `desired`. Add the
+  necessary seam-only caller edits to
+  `jasper/correction/runtime_safety.py`,
+  `jasper/active_speaker/commissioning_{runtime,capture_producer,apply}.py`,
+  `jasper/cli/doctor/audio.py`, and
+  `jasper/multiroom/{active_leader_config,follower_config}.py`; do not
+  add caller-specific profile policy.
 - `jasper/active_speaker/baseline_profile.py` — thread the accepted
   sealed profile into **`recompose_applied_baseline_yaml`**, the
   immutable production carrier. Default production recomposition
@@ -158,19 +209,54 @@ Modify:
   mutable candidate inputs and could promote unrelated staged speaker
   work. Define the one shared graph-scope constant here as
   `BASS_EXTENSION_RUNTIME_ADAPTER_IDS = frozenset({"sealed_v1"})`.
-  For ported/PR, accepting retains `status="accepted"` but does not
-  call the graph transaction; bypass remains a profile-state change
-  only.
+  For ported/PR, the entry point atomically retains
+  `status="accepted"` but does not call the graph transaction; bypass
+  remains a profile-state change only. Commissioning callers hand the
+  desired profile to this entry point and never save it first.
 
-  Sealed apply/bypass is one local compensating transaction over two
-  authorities, not a new generic transaction framework:
+  `apply_bass_extension(desired_profile)` is the **only production
+  commit owner** for both authorities. Wave 4 may construct a profile
+  and provide audio isolation, but it never publishes profile bytes or
+  applies a bass graph itself. `bypass_bass_extension()` constructs the
+  desired bypassed profile and delegates to the same owner.
+  Wave 3 may land these seams and their tests, but must add **no
+  production caller, route, or startup invocation**: mutation remains
+  unreachable until the revised Wave 4 implementation lands the
+  correction-process isolation/recovery host.
 
-  1. Under the existing DSP writer lock, snapshot the exact predecessor
-     bass-profile bytes (or absence) and exact loaded predecessor graph.
-  2. Build the desired profile in memory, recompose from the immutable
+  Sealed apply/bypass is one local durable transaction over two
+  authorities, not a new generic transaction framework. Keep the
+  intent helpers private to this module and persist one immutable pending
+  record at
+  `/var/lib/jasper/bass_extension_apply_intent.json` (test-path
+  override only, same atomic-write/mode/owner handling as the profile).
+  The record contains a kind/schema, operation id, exact predecessor
+  and desired profile bytes (or an explicit predecessor-absent marker),
+  the natural predecessor `ExactDspStateIdentity`, and the exact
+  normalized desired-graph fingerprint. Atomically write and
+  directory-fsync it before the first authority mutation. Do not add
+  phases or a second journal: record existence is the complete
+  rollback instruction.
+  A surviving intent always means "roll back," never "finish forward":
+
+  1. The sole production host (Wave 4's existing
+     `jasper-correction-web` process) opens the existing
+     `measurement_window()` before calling this owner. Under the DSP
+     writer lock, first recover any older intent. Then reload and
+     freshly prove the currently persisted predecessor's canonical
+     **natural-at-rest** graph. This pre-intent normalization changes no
+     profile or graph file and deliberately discards any ephemeral Wave
+     5 target; if interrupted, reload semantics already converge in the
+     safe direction. Refuse if natural state cannot be proved.
+  2. Snapshot that normalized exact predecessor graph and predecessor
+     profile bytes/absence. Build the desired profile in memory,
+     recompose from the immutable
      applied baseline plus the currently persisted program-layer
      overlays, and validate/re-proof that candidate against the desired
      profile. Staged design/preview/measurement edits are never inputs.
+     Durably publish the one intent containing both sides only after
+     both natural graphs have been proved; intent-write failure refuses
+     before either authority changes.
   3. Load and read back the candidate graph using the existing DSP
      transaction primitives. The persisted bass profile is still the
      predecessor at this point.
@@ -179,7 +265,44 @@ Modify:
   5. Any failure after either authority changes restores **both** the
      exact predecessor graph and exact predecessor profile bytes (or
      removes the file if it was previously absent), then proves the
-     restored pair. Apply and bypass use the same ordering.
+     restored pair. Apply and bypass use the same ordering. Clear and
+     directory-fsync the intent only after the desired pair's final
+     proof; if a crash leaves an intent after a successful proof,
+     recovery still conservatively restores the predecessor.
+
+  Cancellation after intent publication drains a shielded exact
+  rollback before propagating cancellation (mirror
+  `commissioning_apply._shielded_restore_locked`). A process kill or
+  power loss is handled from the durable record.
+
+  `recover_pending_bass_extension_apply()` is idempotent, runs under
+  the same writer lock while the host holds `measurement_window()`,
+  restores profile bytes and DSP state from the intent, freshly proves
+  the predecessor pair through the canonical resolver, and only then
+  clears the intent. It runs before every new apply/bypass. Wave 4's
+  existing socket-activated correction process is the named lifecycle
+  and permission owner: on every process claim, before
+  `_systemd.notify_ready()`, it synchronously attempts recovery; every
+  bass POST repeats the guard before mutation. No GET handler performs
+  recovery and there is no recovery endpoint, daemon, background task,
+  or new permission. If recovery cannot obtain the measurement window
+  or prove both predecessors, retain the intent, expose
+  `apply_recovery_required=true`, and reject state-advancing bass POSTs while leaving
+  unrelated correction GET/routes available. Wave 4's red Stop is the
+  sole safety exception: it may abort/retire session state while
+  leaving the intent pending, but cannot start forward work or clear
+  recovery evidence.
+
+  `jasper-correction-web` already runs as root (the unit has no
+  `User=`), has `ReadWritePaths=/var/lib/jasper /var/lib/camilladsp`,
+  and owns the existing process-claim hook in
+  `_claim_crossover_state_owners`; no service or permission change is
+  authorized. On power-up the intent may remain until the next socket
+  activation, but the canonical startup classifier accepts only its
+  two recorded natural graphs, and Wave 5 revision 4 treats intent
+  presence as no-arm. Thus music remains available and natural while
+  convergence is pending; the next correction-process claim repairs
+  it before serving a mutating bass action.
 
   A sealed profile with any target's `subsonic is None` is outside this
   first slice: refuse before graph or profile mutation. Current Wave 1
@@ -187,10 +310,13 @@ Modify:
   identity substitute, or new refusal vocabulary here.
 - `jasper/bass_extension/profile.py` — small observability-only
   extension to `bass_extension_state_summary`: add `adapter_id`,
-  `runtime_eligible`, and `runtime_deferred_reason`. The last is
-  `null` for sealed and the exact stable value
+  `runtime_eligible`, `runtime_deferred_reason`, and
+  `apply_recovery_required`. The deferred reason is `null` for sealed
+  and the exact stable value
   `"fixed_graph_not_defined"` for ported/PR. Derive this from the
   shared runtime-scope constant; do not change profile schema/status.
+  `apply_recovery_required` is true exactly while the durable intent
+  exists; it is transaction observability, not profile validity.
   `runtime_eligible` is adapter-level graph support only; it does not
   imply that a profile is accepted, current, or live-armed. Wave 5's
   `runtime_armed` owns that live-state distinction.
@@ -202,7 +328,10 @@ Modify:
   `tests/test_active_speaker_graph_safety.py`,
   `tests/test_bass_extension_profile.py` (apply/bypass seams),
   `tests/test_sound_graph_carrier.py` (program-overlay preservation),
-  extend only.
+  extend only. The runtime-contract tests must exercise the canonical
+  persisted source through startup/fallback, doctor, correction, and
+  representative commissioning/multiroom call paths, plus the explicit
+  desired source before profile publish.
 
 **Same-PR rule (non-negotiable):** the `camilla_yaml.py` emission
 change and the `runtime_contract.py` classification change land in
@@ -217,19 +346,22 @@ ONE PR. Shipping either alone produces graphs the re-proof rejects
 | accepted + current `sealed_v1`, any target has `subsonic is None` | none; apply is refused before mutation and any observed graph/profile pair is `unsafe` |
 | accepted + current ported/PR | no `bass_ext_*` definitions or references (ordinary baseline; runtime deferred) |
 | bypassed, stale, malformed, or missing profile | no `bass_ext_*` definitions or references |
+| valid pending apply intent | only the intent's exact predecessor or desired natural graph, matched by normalized fingerprint to its recorded profile evaluation; recovery required, never runtime-armed |
 
 Every combination not listed as approved is `unsafe`, including an
 accepted/current sealed profile whose expected pair disappeared, a
 partial pair, wrong channels, non-natural at-rest params, or any
 injected block for a deferred/bypassed/stale/missing profile. There is
-no "no filters regardless of profile" escape hatch.
+no "no filters regardless of profile" escape hatch; the pending row is
+an exact two-fingerprint crash-recovery proof, not a state wildcard.
 
 ## Invariants your tests must red-team
 
 - Emitted graph with an accepted sealed profile: classification is
   `approved_active_runtime`; the LT params equal the natural member;
-  boost of the emitted member is 0.0; the pre-existing baseline
-  limiter name/type/params are unchanged.
+  boost of the emitted member is 0.0; the protective subsonic remains
+  active at its commissioned natural parameter; the pre-existing
+  baseline limiter name/type/params are unchanged.
 - Strip the subsonic filter from the emitted text → emit gate raises;
   hand-edit the emitted text's LT to a non-natural member →
   `classify_camilla_graph` → `unsafe`.
@@ -255,6 +387,25 @@ no "no filters regardless of profile" escape hatch.
   graph **and** predecessor profile bytes/absence. Pin that an unrelated
   staged design/crossover/measurement edit is not promoted and current
   program-layer overlays are preserved.
+- Durable recovery: cancel or simulate process death after intent
+  publication, after graph readback, after profile publication, and
+  after final proof but before intent removal; reopen state as a fresh
+  process and prove idempotent exact predecessor restoration. A failed
+  recovery retains the intent and reports
+  `apply_recovery_required=true`; no new forward operation may start.
+- Evidence ownership: the canonical persisted resolver is exercised by
+  existing startup/fallback, doctor, correction, commissioning, and
+  multiroom classifier callers; its double-read snapshot accepts only
+  stable or exact pending evidence. The staged desired graph can pass
+  only `evidence_source="desired"`. The low-level classifier performs
+  no disk I/O, and omitted evidence never means a missing profile.
+- Commit/recovery ordering: Wave 4 never invokes the profile saver or
+  graph loader directly; it enters `measurement_window()` and calls
+  the one Wave 3 owner. Cancellation is shielded. A fresh
+  `jasper-correction-web` process claims recovery before ready; GET
+  remains read-only; failed isolation/proof keeps the intent and blocks
+  state-advancing bass POSTs (apart from the never-409 safety Stop).
+  With a pending intent, Wave 5 never patches/deepens.
 - Identity: save → accept/apply → reload/evaluate remains current and
   `baseline_candidate_fingerprint(applied_snapshot)` is unchanged.
 
@@ -266,15 +417,17 @@ member (runtime target changes are Wave 5's `PatchConfig` job, never
 emission's); add identity LTs/Q values, placeholder shaping slots,
 filter bypasses, or add/remove-at-runtime machinery for ported/PR;
 change Wave 1 adapters or `TargetSpec`; add new transaction/rollback
-framework (the local two-authority compensation above is required);
+framework (the one immutable local intent and recovery above are required);
 call mutable-candidate `apply_baseline_profile`; introduce a
 "filter block" abstraction into `camilla_emit.py` (two plain emit
 functions, same shape as the neighbors); touch the flat/stereo
 emitter (`jasper/sound/camilla_yaml.py`), passive/unknown/multiroom
 graph carriers, multiroom emission, or the
-statefile writers; add doctor checks (Wave 5); modify
+statefile writers; add a new doctor result (the existing classifier
+caller receives evidence; Wave 5 owns runtime checks); modify
 `reconstruction_capability.py`, `driver_safety.py`, or any
-commissioning module. If `runtime_contract.py` has drifted so far
+commissioning behavior beyond the allowlisted evidence seams. If
+`runtime_contract.py` has drifted so far
 that the evidence seam you need doesn't resemble the one described,
 STOP and report — do not restructure the contract to fit.
 
@@ -287,6 +440,10 @@ STOP and report — do not restructure the contract to fit.
   tests/test_bass_extension_profile.py \
   tests/test_sound_graph_carrier.py -q
 .venv/bin/pytest tests/ -q -k "emit_gate or camilla or bass_extension"
+.venv/bin/pytest tests/test_correction_runtime_safety.py \
+  tests/test_active_speaker_commissioning_runtime.py \
+  tests/test_multiroom_leader_config.py \
+  tests/test_multiroom_follower_config.py tests/test_doctor.py -q
 scripts/test-fast
 ```
 
@@ -296,6 +453,27 @@ byte identical emission for the no-profile, ported-profile, and
 PR-profile cases vs. pre-change main.
 
 ## Changelog
+
+- **Rev 4 (2026-07-17)** — independent adversarial review found three
+  remaining cross-authority gaps: Wave 4 still saved the profile before
+  DSP apply, exception-only compensation could strand profile and DSP
+  across cancellation/restart, and existing classifier callers had no
+  frozen owner for separate profile evidence. It also found that only
+  the natural LT, not the required subsonic high-pass, is exact
+  pass-through. The resumed cross-wave review then found that an
+  implicit disk-reading classifier still left caller policy and
+  crash-time evidence ambiguous, and that first-mutation recovery had
+  no process/audio-isolation owner. Rationale: make the low-level
+  classifier pure; require one explicit, source-tagged evidence
+  resolver across every host; make Wave 3's function the sole
+  profile+graph commit owner; normalize both intent candidates to
+  natural; and assign synchronous, measurement-isolated recovery to
+  the already-root, already-authorized correction process. Wave 4
+  passes desired state in memory, and the mission promises no extension
+  boost rather than byte-identical response. Rejected alternatives
+  were a generic transaction framework, hidden or caller-specific
+  profile reads, an HTTP recovery action, a new daemon or boot service,
+  and treating a live protective high-pass as identity.
 
 - **Rev 3 (2026-07-17)** — adversarial review found that revision 2
   self-invalidated `baseline_fingerprint` by adding `profile_id`,

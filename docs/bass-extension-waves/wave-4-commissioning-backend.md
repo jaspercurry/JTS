@@ -1,19 +1,63 @@
 # Wave 4 — commissioning backend (Codex prompt)
 
+> **Revision 3 (2026-07-17) — implementation blocked.** Accept hands
+> the desired profile in memory to Wave 3's sole profile+DSP commit
+> owner; it never persists first. The existing correction process owns
+> synchronous recovery before readiness and mutating bass routes. The
+> current ladder/sustain/digital evidence still cannot determine a
+> Camilla-stage limiter threshold, so a focused measured-derivation
+> prerequisite is mandatory before any Wave 4 code. Findings and
+> rationale are in the changelog.
+
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Waves 1–3 merged, AND the
 operator has confirmed the crossover program's measurement machinery
 has had its on-device burn-in (ask if unstated — this wave builds
 directly on it).
 
-## Mission
+> ⚠ **Mandatory stop — limiter derivation prerequisite.** Do not
+> create or modify any Wave 4 implementation file from this revision.
+> The frozen ladder proves acoustic linearity at one admitted sweep
+> peak and the sustain test proves one admitted noise waveform; the
+> digital clamp proves arithmetic headroom for the alignment. None
+> defines how those observations bound arbitrary program peaks at the
+> downstream per-driver limiter's detector, nor the limiter's exact
+> Camilla-stage dBFS reference. Subtracting `boost_headroom_db`, reusing
+> `digital_margin_db`, copying the baseline −1 dB value, or assuming a
+> crest factor would invent an audio-safety parameter.
+>
+> Before this prompt can authorize implementation, merge a dated,
+> focused measurement/protection result and revise this prompt. That
+> prerequisite must:
+>
+> 1. identify the exact existing limiter definition and detector point
+>    in the emitted bass-owner chain, with units;
+> 2. state whether the already-recorded commanded volume, admitted
+>    stimulus peak, rung clean ceiling, sustain result, target boost,
+>    and digital-clamp evidence are sufficient; if not, specify the
+>    smallest additional measured stimulus/evidence needed;
+> 3. freeze one deterministic evidence-to-threshold derivation for
+>    every sealed target, including missing/invalid-evidence refusal
+>    and conservative ordering across targets;
+> 4. provide hardware-free test vectors derived from retained evidence
+>    plus the on-device validation that justifies the mapping; and
+> 5. revise Wave 4 to name the pure producer and require every accepted
+>    sealed target to carry a finite `limiter_threshold_dbfs`.
+>
+> This is a focused prerequisite, not permission to add a compressor,
+> signal-aware controller, new threshold knob, default, or formula in
+> this prompt. Ported/PR profile retention remains in the intended Wave
+> 4 flow, but this blocked prompt publishes no new profile of any kind.
+
+## Intended mission after the prerequisite is resolved
 
 The commissioning flow: a ladder state machine that characterizes the
 bass owner from nearfield sweeps, fits the plant, proposes a family,
 verifies the deepest target with a stepped-level ladder plus a
-sustain stress test, derives anchors, and writes the accepted
-profile. Backend + HTTP only — the browser UI is Wave 6, and this
-wave's JSON contracts are what Wave 6 builds against.
+sustain stress test, derives anchors, and commits the accepted
+profile through Wave 3's transaction. Backend + HTTP only — the
+browser UI is Wave 6, and this wave's JSON contracts are what Wave 6
+builds against.
 
 ## Required reading (in order)
 
@@ -91,11 +135,15 @@ Modify (additive):
   `_POST_ROUTES` and one `/bassext/` prefix dispatch block in each
   ladder, mirroring the existing `/crossover/` and `/sync/` blocks,
   with every handler body living in `bassext_backend.py`. Keep this
-  file's diff to dispatch lines — its split is a separately planned
-  project.
-- `deploy/systemd/jasper-web.socket` ONLY IF the flow genuinely needs
-  a new port (it should not — it rides the existing correction
-  server; if you believe otherwise, stop and report).
+  file's diff to dispatch lines plus one
+  `claim_bass_extension_apply_owner` entry in the existing
+  `_claim_crossover_state_owners()` lifecycle list. That claim runs
+  before socket adoption and `_systemd.notify_ready()`; it is not an
+  HTTP handler. The file's split is a separately planned project.
+Do not modify a systemd unit or socket: the flow rides the existing
+correction server and the recovery owner already has the required
+paths and lifecycle hook. If current main no longer matches those
+facts, stop and revise the contract rather than adding a host seam.
 
 ## The ladder state machine (`ladder.py`, pure)
 
@@ -135,9 +183,63 @@ mirror `CrossoverLevelRunStore`'s shape, including `interrupted`
 disposition. Raw WAVs + per-rung analysis JSON into a commissioning
 bundle via `bundles.py` (`record_artifact`/`write_json_artifact`);
 the session JSON stores `ArtifactIdentity` pointers, never inline
-data. Accept writes the profile via Wave 2's
-`save_bass_extension_profile` then calls Wave 3's
-`apply_bass_extension()`.
+data.
+
+The existing socket-activated **`jasper-correction-web` process is the
+sole lifecycle and permission owner** for the Wave 3 apply intent. Its
+systemd unit already runs as root (no `User=`), already grants
+`ReadWritePaths=/var/lib/jasper /var/lib/camilladsp`, and already calls
+`_claim_crossover_state_owners()` before ready. Do not edit the unit or
+add permissions.
+
+`bassext_backend.claim_bass_extension_apply_owner()` first checks for
+an intent without mutation. When one exists, it synchronously enters
+the existing `measurement_window()`, calls Wave 3's idempotent rollback
+under its writer lock, and returns only after exact predecessor
+profile+graph proof or a retained-intent failure. Register that claim
+in `_claim_crossover_state_owners()` before
+`_systemd.notify_ready()`. This is the existing process-claim pattern,
+not a daemon, background task, timer, or HTTP recovery action. Every
+bass POST repeats the same guarded recovery before its own mutation;
+failed isolation/proof returns a stable 409 with
+`apply_recovery_required=true`. Other correction routes remain
+available.
+
+`GET /bassext/state` never invokes recovery. It reads state and reports
+Wave 3's `apply_recovery_required`; while true, `available_actions` is
+empty and state-advancing bass routes are blocked unless their entry
+guard first completes recovery. The red Stop remains the safety
+exception: it may retire/abort the session and report recovery still
+pending, but never clears the intent or returns 409. A socket-activating GET may wait for the
+process-level claim that precedes all request dispatch, but the GET
+handler itself is read-only and there is no state-changing GET route.
+
+Accept constructs the complete desired `BassExtensionProfile` in
+memory and, for sealed profiles, enters `measurement_window()` before
+passing it to Wave 3's
+`apply_bass_extension(desired_profile)`. That Wave 3 function is the
+one commit owner. **Do not call `save_bass_extension_profile`, a graph
+loader, or a second transaction helper first or directly.** Wave 3
+normalizes the predecessor to its persisted natural graph, snapshots
+that predecessor, proves the desired natural graph, durably records
+both, loads/readbacks DSP, publishes the desired profile, proves the
+persisted pair, and clears the intent in that order. Only after it
+returns success may the backend transition the session from `review`
+to `accepted`.
+
+Cancellation of the backend task propagates only after Wave 3 drains
+its shielded rollback. For ported/PR profiles, that same entry point
+publishes the accepted profile without a graph transaction or audio-
+isolation requirement and returns the stable runtime deferral. A
+failed accept leaves the exact predecessor profile/graph pair and the
+session in `review`.
+
+This revision does **not** derive or publish
+`limiter_threshold_dbfs`; the mandatory stop above applies before any
+Wave 4 implementation. The replacement prompt must name the measured
+pure producer, and accepted sealed profiles must then contain a finite
+threshold for every target. Ported/PR remains profile-retention-only
+and does not imply a runtime threshold contract.
 
 ## HTTP contract (frozen — Wave 6 builds against this)
 
@@ -148,7 +250,9 @@ allowlist → `guard_mutating_request()` → `read_json_object`).
 - `GET  /bassext/state` → the full session snapshot (server-driven:
   includes `available_actions: [...]` so the UI renders state, not
   logic) + profile summary + preconditions (refusals when not
-  commissionable).
+  commissionable). This route never performs recovery or another
+  mutation; while an intent exists it returns no available action and
+  reports `apply_recovery_required=true`.
 - `POST /bassext/session/start` `{margin}` → `{session_id}` or 409
   with refusals.
 - `POST /bassext/capture/start` `{role}` → relay session payload
@@ -158,8 +262,9 @@ allowlist → `guard_mutating_request()` → `read_json_object`).
 - `POST /bassext/verify/start` `{}` → begins verify_deepest.
 - `POST /bassext/ladder/start` `{}` / `POST /bassext/ladder/abort`.
 - `POST /bassext/sustain/start` `{}`.
-- `POST /bassext/accept` `{}` → writes profile, applies, returns
-  evaluation.
+- `POST /bassext/accept` `{}` → builds the desired profile in memory,
+  invokes Wave 3's transaction, and only on its success returns the
+  committed evaluation. The handler never persists first.
 - `POST /bassext/stop` `{}` → the red Stop: graceful fade-down, abort
   session, restore. Must work in every state; never 409s.
 
@@ -200,7 +305,17 @@ sneaky segments.
   `accepted`; Stop in mid-ladder restores and marks aborted; second
   concurrent session 409s; malformed bodies rejected via the shared
   reader; every response shape matches this contract (schema-check
-  the JSON keys — Wave 6 depends on them).
+  the JSON keys — Wave 6 depends on them). Pin that accept passes the
+  desired profile in memory, never calls
+  `save_bass_extension_profile`, and does not enter `accepted` when
+  Wave 3 returns a failure. Pin `measurement_window` → Wave 3 commit →
+  session `accepted` ordering and shielded cancellation. Reopen with a
+  pending Wave 3 intent and prove the process claim runs before ready,
+  exact recovery happens under the measurement window, GET state is
+  read-only with no actions, and every POST retries recovery before its
+  own mutation. Failed recovery retains the intent and blocks forward
+  work without blocking the red Stop or unrelated correction routes;
+  Stop cannot clear the intent.
 - Spec builder: registry round-trip, constraints mono/48k/EC-off
   (mirror the existing builder tests).
 
@@ -213,6 +328,11 @@ add SSE/websockets/queues; add per-rung retry loops (a failed rung is
 a result, not an error to retry); parallelize captures; write a
 scheduler or touch volume-coordinator code (Wave 5); create UI
 (Wave 6); add config knobs beyond the one session-path env override.
+Do not derive, guess, or default `limiter_threshold_dbfs` in this
+revision, and do not bypass Wave 3 by persisting an accepted profile
+directly. Do not add a recovery route, state-changing GET, process,
+thread, task, timer, systemd edit, or permission; recovery is a
+synchronous claim/mutating-request guard in the existing process.
 The deep mode (full per-target ladders) is the SAME code path with
 more (target, level) pairs — if you find yourself writing a second
 ladder implementation for it, stop.
@@ -226,3 +346,33 @@ ladder implementation for it, stop.
 .venv/bin/pytest tests/test_capture_relay_*.py -q
 scripts/test-fast
 ```
+
+## Changelog
+
+- **Rev 3 (2026-07-17)** — the resumed cross-wave review found that
+  first-mutation recovery was not durable across a power loss, had no
+  audio-isolation or permission owner, and was exposed as an
+  unnecessary HTTP action. It also confirmed that the current
+  ladder/sustain/digital records observe one admitted sweep/noise
+  program but do not define the downstream limiter detector's dBFS
+  bound for arbitrary content. Rationale: assign synchronous claim-time
+  and pre-POST recovery to the existing root correction process under
+  its existing measurement window and permissions; keep GET read-only;
+  retain Wave 3 as the one commit owner; and block all Wave 4
+  implementation behind a focused measured limiter-derivation result.
+  Rejected alternatives were a recovery daemon/task/route, profile-
+  first publication, copying −1 dB, subtracting boost or digital
+  margin, assuming program crest factor, and shipping commissioning
+  with null sealed thresholds for later repair.
+
+- **Rev 2 (2026-07-17)** — independent review found that the frozen
+  accept path saved the profile before calling Wave 3, so Wave 3 would
+  snapshot the new bytes as its predecessor and could not restore the
+  prior authority after a DSP failure. Rationale: keep desired state in
+  memory and make the Wave 3 entry point the sole commit owner; invoke
+  its durable recovery before exposing backend state. The same review
+  confirmed that no frozen evidence-to-limiter-threshold producer
+  exists, so this wave records null as reserved and leaves Wave 5
+  blocked. Rejected alternatives were profile-first save with
+  best-effort compensation and inventing a protective threshold in the
+  commissioning host adapter.
