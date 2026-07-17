@@ -397,6 +397,7 @@ _POST_ROUTES = frozenset({
     "/crossover/candidate",
     "/crossover/relay-capture",
     "/crossover/relay-cancel",
+    "/crossover/reset",
     "/crossover/apply",
     "/crossover/restore",
     "/crossover/recover-volume",
@@ -6369,6 +6370,30 @@ def _handle_crossover_relay_cancel() -> dict[str, Any]:
     return {"relay": relay}
 
 
+def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
+    """POST /crossover/reset: in-flow "start over" for the crossover flow.
+
+    Unlike ``_handle_crossover_relay_cancel``, an unstarted relay is the
+    COMMON case here (most Start-over clicks happen between measurements,
+    not mid-capture), so a "nothing to stop" ``ValueError`` is swallowed
+    rather than surfaced. Any crossover-owned relay or level-match ramp is
+    requested to stop first; the actual state clear
+    (``correction_crossover_flow.handle_reset``) fails closed if that stop
+    has not finished draining yet, rather than racing it.
+    """
+
+    try:
+        _request_relay_stop("crossover_sweep:", "level_ramp:crossover")
+    except ValueError:
+        pass
+
+    from . import correction_crossover_flow
+
+    return correction_crossover_flow.handle_reset(
+        relay=_get_relay_capture_for("crossover_sweep:", "level_ramp:crossover"),
+    )
+
+
 def _maybe_restore_main_volume(sess, cam) -> None:
     """If autolevel ran and locked a measurement-friendly level,
     restore main_volume to the pre-autolevel value after the
@@ -7315,6 +7340,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/crossover/driver-test",
                 "/crossover/summed-test",
                 "/crossover/driver-capture-sweep",
+                "/crossover/reset",
             }
             lease = crossover_backend.level_lease()
             if (
@@ -7401,6 +7427,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
                 if path == "/crossover/relay-cancel":
                     self._send_json(_handle_crossover_relay_cancel())
+                    return
+
+                if path == "/crossover/reset":
+                    payload, status = _handle_crossover_reset()
+                    self._send_json(payload, status=int(status))
                     return
 
                 if path == "/crossover/level-match":

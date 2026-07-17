@@ -49,6 +49,13 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <p class="eyebrow">Speaker layer</p>
     <h2 class="section__title">Calibrate the active crossover</h2>
     <p id="crossover-verdict" class="form-hint">Checking the speaker…</p>
+    <div class="crossover-card__footer">
+      <button id="crossover-start-over" class="btn btn--ghost" type="button">Start over</button>
+      <p class="form-hint">
+        <a href="http://{html.escape(hostname, quote=True)}/sound/">Remove the active crossover entirely</a>
+        — this returns the speaker to a plain stereo crossover.
+      </p>
+    </div>
   </section>
 
   <section class="info-card" aria-label="Crossover calibration progress">
@@ -144,6 +151,34 @@ def handle_status(
     return payload, HTTPStatus.OK
 
 
+def _active_group_member() -> bool:
+    """True when this speaker is an active multi-room group member.
+
+    Read fresh from ``grouping.env`` via the pure declared-config predicates
+    (``is_active_leader`` / ``is_bonded_follower``) — no cross-origin HTTP,
+    so it is cheap to compute on the correction daemon. Fail-open to ``False``
+    (a read failure must never over-warn a solo household). The "Start over"
+    confirm copy uses this: a bonded speaker's group crossover is rebuilt from
+    the CLEARED measurement evidence, so it needs re-measurement after a scoped
+    reset (fail-safe to solo) — see ``jasper.active_speaker.reset`` and
+    ``jasper.web.correction_crossover_backend.reset_measurement_journey``.
+    """
+    try:
+        from jasper.multiroom.config import (
+            is_active_leader,
+            is_bonded_follower,
+            load_config,
+        )
+    except ImportError:
+        # Fail-open to the solo copy if the multiroom module is unavailable.
+        return False
+    # load_config is total (documented never-raises: a missing/unreadable
+    # grouping.env resolves to the all-off config), and the two predicates are
+    # pure, so no broad catch is warranted here.
+    cfg = load_config()
+    return is_active_leader(cfg) or is_bonded_follower(cfg)
+
+
 def handle_envelope(
     *, relay: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], HTTPStatus]:
@@ -156,7 +191,59 @@ def handle_envelope(
     )
 
     status, _ = handle_status(relay=relay)
-    return build_crossover_envelope_logged(status), HTTPStatus.OK
+    envelope = build_crossover_envelope_logged(status)
+    # The "Start over" confirm copy is grouping-aware; carry the (cheap,
+    # fail-open) member flag on every polled envelope so the button that is
+    # always visible confirms with copy that is true in the current state.
+    envelope["grouping_member"] = _active_group_member()
+    return envelope, HTTPStatus.OK
+
+
+def handle_reset(
+    *, relay: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    """POST /crossover/reset: scoped "start over" for the measurement journey.
+
+    Clears comparison-set/level-lock state and the driver/summed/staged
+    measurement evidence, then returns the same envelope shape
+    :func:`handle_envelope` does so the page can re-render from a clean
+    start screen in one round trip. Driver research and whatever crossover
+    is currently applied/loaded are untouched — see
+    ``jasper.web.correction_crossover_backend.reset_measurement_journey``.
+
+    The caller (``correction_setup._handle_crossover_reset``) has already
+    requested a stop of any crossover-owned relay before this runs; ``relay``
+    here is only the freshest relay snapshot for the response, matching
+    :func:`handle_status`/:func:`handle_envelope`.
+    """
+    from . import correction_crossover_backend as backend
+    from jasper.active_speaker.crossover_envelope import (
+        build_crossover_envelope_logged,
+    )
+
+    try:
+        reset_result = backend.reset_measurement_journey()
+    except backend.MeasurementJourneyResetRefused as exc:
+        return {
+            "status": "refused",
+            "reason": exc.reason,
+            "error": str(exc),
+        }, HTTPStatus.CONFLICT
+
+    status, _ = handle_status(relay=relay)
+    envelope = build_crossover_envelope_logged(status)
+    envelope["grouping_member"] = _active_group_member()
+    # Surface the honest outcome, not the static intent: ``status`` is
+    # ``partial`` when any file failed to unlink, and ``errors`` names them —
+    # the page branches its message on this rather than always painting green.
+    envelope["reset"] = {
+        "status": reset_result.get("status"),
+        "cleared": reset_result.get("cleared_ids"),
+        "missing": reset_result.get("missing_ids"),
+        "errors": reset_result.get("error_ids"),
+        "kept": reset_result.get("kept_ids"),
+    }
+    return envelope, HTTPStatus.OK
 
 
 def handle_apply(

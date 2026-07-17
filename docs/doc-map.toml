@@ -745,6 +745,7 @@ code = [
   "jasper/web/pair_flow.py",
   "deploy/assets/correction/js/**",
   "deploy/assets/correction/correction.css",
+  "deploy/assets/correction/crossover.css",
   "deploy/jasper-correction-web.*",
   "docs/room-correction-information-design.md",
   "docs/active-crossover-information-design.md",

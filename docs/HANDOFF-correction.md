@@ -1748,8 +1748,110 @@ POST /crossover/relay-capture driver body: {kind: driver, speaker_group_id,
 POST /crossover/relay-cancel cooperatively stop the active crossover level/sweep
                              relay; reports `stopping` until exact cleanup drains
                              and refuses Stop during `finishing`/`committing`
+POST /crossover/reset        scoped in-flow "start over": stops any active relay/
+                             level-match, clears the driver/summed measurement
+                             evidence and compiled candidate, and returns a fresh
+                             envelope. Keeps driver research and the SOLO applied
+                             crossover; a bonded speaker fails safe to solo on its
+                             next re-prove — see "Scoped crossover reset" below
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
+
+### Scoped crossover reset — "Start over" (2026-07-17)
+
+`/correction/crossover/` previously had no in-flow reset: leaving it over
+half-measured evidence to start clean meant going to `/sound/` Advanced
+setup and hitting its RESET control — a device-perspective detour, and
+that control is nuclear (`jasper.web.sound_setup._reset_output_topology_payload`
+→ `jasper.active_speaker.reset.clear_active_speaker_setup_state()` +
+`jasper.cli.output_topology_reset.reset_to_detected_passive()`): it
+unlinks the driver research/manual-settings design draft AND resets output
+topology to passive, so "start over" meant losing the driver setup and
+going silent.
+
+`POST /crossover/reset` is the scoped sibling. It clears ONLY the
+measurement journey — comparison set, level locks
+(`CrossoverLevelLease.invalidate_comparison_context`), driver/summed
+captures, and the compiled-but-not-loaded protected-startup candidate —
+via `jasper.active_speaker.reset.clear_active_speaker_measurement_journey()`.
+It deliberately does **not** touch:
+
+- `design_draft` — driver research, manual crossover settings, topology
+  intent. Losing it would force re-researching drivers, not just
+  re-measuring them.
+- `baseline_profile` — the **solo** applied Layer-A anchor. Once a baseline
+  has been applied, this file's `applied_recomposition_profile` is the sole
+  durable record of the corrections the solo speaker is playing, read as the
+  "what is currently applied" SSOT by `jasper.sound.graph_carrier` and
+  `jasper-doctor`.
+- `startup_load` — the load/rollback bookkeeping for whichever protected
+  candidate CamillaDSP is currently running. Hardware-verified on JTS3
+  (2026-07-17): this file's `previous_config_path` was, at that moment,
+  the only recorded path back to the config playing before the flow's
+  muted candidate load. Clearing it would not stop any audio by itself,
+  but would strand the rollback pointer.
+
+**Multiroom is NOT protected by keeping `baseline_profile` — it needs
+re-measurement after a scoped reset (fail-safe to solo).** The
+active-leader/follower builders
+(`jasper/multiroom/active_leader_config.py` / `follower_config.py`) never
+read `baseline_profile`; they REBUILD the driver-domain graph from
+`design_draft` (KEPT) plus `crossover_preview` + `measurements` (both
+CLEARED) via `build_baseline_profile_candidate(driver_domain=True)`. So a
+scoped reset keeps the solo applied audio, but a bonded speaker's next
+re-prove sees empty measurements → `may_apply=False` →
+`ActiveLeaderError`/`ActiveFollowerError` → the grouping reconciler's
+readiness gate fails **safe to solo-active** (no mute, no loud output;
+self-recovers when the household re-measures and re-groups). The "Start
+over" confirm copy is therefore grouping-aware: for an active group member
+(`is_active_leader`/`is_bonded_follower`, read fresh from `grouping.env`
+and carried on the envelope as `grouping_member`) it says the speaker will
+fall back to a plain solo crossover on the next group re-form until
+re-measured; for a solo speaker it keeps the accurate "the crossover that's
+playing now stays exactly as it is" copy.
+
+The KEEP/CLEAR split (all nine artifacts `active_speaker_setup_state_paths()`
+enumerates) lives as a comment on
+`jasper.active_speaker.reset._MEASUREMENT_JOURNEY_ARTIFACT_IDS`; the tests
+in `tests/test_active_speaker_reset.py` and `tests/test_correction_crossover_reset.py`
+pin it.
+
+Endpoint shape mirrors `/crossover/relay-cancel`: same
+`_POST_ROUTES`/`guard_mutating_request`/CSRF path, plus the existing
+`volume_sensitive_routes` gate (refuses while the crossover listening
+volume is unresolved). `_handle_crossover_reset` in `correction_setup.py`
+best-effort stops any crossover-owned relay first (an unstarted relay is
+the common case, unlike Stop), then
+`correction_crossover_backend.reset_measurement_journey()` invalidates the
+lease and clears the journey files, failing closed
+(`MeasurementJourneyResetRefused`) if a level match is still draining or
+volume safety is unresolved. The response is the same envelope shape as
+`GET /crossover/envelope` (so the page re-renders in one round trip) plus
+a `reset: {status, cleared, missing, errors, kept}` summary that reports
+the ACTUAL outcome, not the static intent — `status` is `partial` (and
+`errors` names the files) when any unlink fails, and the page branches its
+message on `status !== "cleared"` rather than always painting green. UI: a
+ghost "Start over" button in the header info-card, gated by
+`jtsConfirm(…, {danger: true})`
+(`deploy/assets/correction/js/crossover/main.js`), next to a subordinate
+link to `/sound/` labeled "Remove the active crossover entirely" for the
+still-nuclear path.
+
+**Relationship to Wave-3 kit W3.2.**
+[`docs/correction-ux-wave3/w3.2-one-crossover-surface.md`](correction-ux-wave3/w3.2-one-crossover-surface.md)
+plans a larger page-surface move: relocating the *entire* `/sound/`
+active-speaker setup section (driver layout, LLM research/import, manual
+settings, staging preview, and the **nuclear** RESET control) into
+`/correction/crossover/` over HTTPS, byte-identical behavior preserved.
+This change is narrower and lands first: it adds a new scoped action W3.2
+never specified (W3.2's RESET is explicitly the same nuclear
+`clear_active_speaker_setup_state` call, relocated, not a scoped
+alternative), so it does not fulfill or conflict with W3.2 — but it does
+mean the "Remove the active crossover entirely" link this PR ships as a
+stopgap should become an in-flow nuclear action once W3.2's Stage B route
+surface lands, rather than staying an out-link to `/sound/`. Whoever picks
+up W3.2 should read this section before touching the crossover page's
+reset affordances.
 
 Browser polls `GET /status` every 500 ms only while a Room operation is in
 flight, then stops in terminal/static states. The presentation envelope polls
@@ -2931,7 +3033,13 @@ Internal:
 
 ---
 
-Last verified: 2026-07-17 (hardware run 21, jts3 @ 62af5b206: the v3
+Last verified: 2026-07-17 (in-flow scoped crossover reset added —
+`POST /crossover/reset` / `clear_active_speaker_measurement_journey`; see
+the new "Scoped crossover reset" section above. KEEP/CLEAR split for
+`startup_load`/`baseline_profile` confirmed against read-only JTS3 state
+(`active_speaker_startup_load.json`, `active_speaker_baseline_profile.json`);
+hardware-free tests only for the new endpoint itself — on-device exercise
+of the "Start over" button still owed.) Prior 2026-07-17 (hardware run 21, jts3 @ 62af5b206: the v3
 session-spanning driver-capture guard/reservation SSOT conflict fixed —
 `_plan_admission_matches` in `jasper/web/correction_setup.py` — see the
 "Session-spanning capture protocol v3" bullet above and
