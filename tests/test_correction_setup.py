@@ -3413,6 +3413,166 @@ def test_household_mic_write_failure_never_blocks_the_calibration(
     assert "failed to persist household mic record" in caplog.text
 
 
+# --- Wave-2 addendum: mode="stored" — the one-tap "Using {mic} — confirm" ------
+#
+# The phone page's one-tap confirm (a separate capture-page PR, gated on the
+# spec hint's `resolvable` flag) replays the household's own calibration_id
+# back to the Pi as `setup.calibration = {mode: "stored", calibration_id,
+# model}`. These tests cover both origins a stored calibration can have
+# (vendor-cached fetch and manual upload — resolve_household_mic_calibration's
+# ID lookup handles both identically) and the named-rejection shape on a miss.
+
+
+def test_relay_calibration_stored_mode_resolves_vendor_cached(
+    tmp_path, monkeypatch, caplog,
+):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+
+    from jasper.audio_measurement import calibration
+    from jasper.correction.household_mic import read_household_mic
+
+    record = calibration.store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="minidsp",
+        model="minidsp_umik2",
+        label="miniDSP UMIK-2",
+        source="https://vendor.example/cal.txt",
+        serial="810-8494",
+        root=tmp_path / "cal",
+    )
+    # Seed the household record the same way `_save_household_mic` would have
+    # after the original vendor fetch, including the serial_display the
+    # confirm flow has no raw serial to re-derive.
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        write_household_mic,
+    )
+
+    write_household_mic(
+        household_mic_from_calibration(record, serial="810-8494"),
+        path=household_path,
+    )
+    caplog.clear()
+
+    sess = SimpleNamespace(
+        current_position=0, total_positions=1, mic_calibration=None,
+    )
+    correction_setup._apply_relay_setup_to_session(
+        sess,
+        {
+            "calibration": {
+                "mode": "stored",
+                "calibration_id": record.calibration_id,
+                "model": "minidsp_umik2",
+            },
+        },
+    )
+    assert sess.mic_calibration is not None
+    assert sess.mic_calibration.calibration_id == record.calibration_id
+
+    saved = read_household_mic(path=household_path)
+    assert saved is not None
+    assert saved.calibration_id == record.calibration_id
+    assert saved.provider == "minidsp"  # re-derived from the resolved record
+    # A re-confirm of the SAME mic is not a swap: no _replaced event, and the
+    # "...8494" display survives even though the confirm payload carried no
+    # raw serial to re-derive it from.
+    assert saved.serial_display == "8494"
+    assert "event=correction.household_mic_saved" in caplog.text
+    assert "event=correction.household_mic_replaced" not in caplog.text
+
+
+def test_relay_calibration_stored_mode_resolves_upload(tmp_path, monkeypatch):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+
+    from jasper.audio_measurement import calibration
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        read_household_mic,
+        write_household_mic,
+    )
+
+    record = calibration.store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="manual_upload",
+        model="other",
+        label="Lab mic",
+        source="uploaded:lab.txt",
+        root=tmp_path / "cal",
+    )
+    write_household_mic(household_mic_from_calibration(record), path=household_path)
+
+    sess = SimpleNamespace(
+        current_position=0, total_positions=1, mic_calibration=None,
+    )
+    correction_setup._apply_relay_setup_to_session(
+        sess,
+        {
+            "calibration": {
+                "mode": "stored",
+                "calibration_id": record.calibration_id,
+                "model": "other",
+            },
+        },
+    )
+    assert sess.mic_calibration is not None
+    assert sess.mic_calibration.calibration_id == record.calibration_id
+
+    saved = read_household_mic(path=household_path)
+    assert saved is not None
+    assert saved.provider == "manual_upload"
+    assert saved.serial_display is None  # uploads never carry a serial
+
+
+def test_relay_calibration_stored_mode_unresolvable_id_is_named_rejection(
+    tmp_path, monkeypatch,
+):
+    """Mirrors an invalid vendor serial: the resolution failure raises loudly
+    (never crashes, never silently no-ops) with an operator-facing message,
+    and the session's prior calibration is left untouched because the
+    exception fires before `_apply_relay_setup_to_session` can assign it."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+
+    sess = SimpleNamespace(
+        current_position=0, total_positions=1, mic_calibration="previous",
+    )
+    with pytest.raises(ValueError, match="no longer available"):
+        correction_setup._apply_relay_setup_to_session(
+            sess,
+            {
+                "calibration": {
+                    "mode": "stored",
+                    "calibration_id": "does-not-exist",
+                    "model": "minidsp_umik2",
+                },
+            },
+        )
+    assert sess.mic_calibration == "previous"  # never overwritten on failure
+    assert not household_path.exists()  # no write on a resolution miss
+
+
+def test_relay_calibration_stored_mode_requires_calibration_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    monkeypatch.setenv(
+        "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
+    )
+    sess = SimpleNamespace(
+        current_position=0, total_positions=1, mic_calibration=None,
+    )
+    with pytest.raises(ValueError, match="calibration_id is required"):
+        correction_setup._apply_relay_setup_to_session(
+            sess,
+            {"calibration": {"mode": "stored", "model": "minidsp_umik2"}},
+        )
+
+
 def test_e2e_calibration_fetch_success_saves_household_mic(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     household_path = tmp_path / "household_mic.json"
@@ -3533,6 +3693,63 @@ def test_default_setup_calibration_for_spec_present_and_absent(tmp_path, monkeyp
     assert hint.model == "minidsp_umik2"
     assert hint.serial_display == "8494"
     assert hint.calibration_id == record.calibration_id
+    # A record that resolves cleanly gates the phone page's one-tap "stored"
+    # confirm (a separate capture-page PR) on this flag.
+    assert hint.resolvable is True
+
+
+def test_default_setup_calibration_for_spec_resolvable_is_a_fresh_check(
+    tmp_path, monkeypatch,
+):
+    """`resolvable` is deliberately a SECOND, independent resolver call, not
+    inferred from `_resolved_household_mic()` having just succeeded — so a
+    resolver hiccup between the two calls degrades to "no one-tap" (the hint
+    still ships, just without `resolvable`) instead of dropping the whole
+    hint or raising."""
+    cal_root = tmp_path / "cal"
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(cal_root))
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+
+    from jasper.audio_measurement.calibration import store_calibration
+    from jasper.correction import household_mic
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        resolve_household_mic_calibration,
+        write_household_mic,
+    )
+
+    record = store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="minidsp",
+        model="minidsp_umik2",
+        label="miniDSP UMIK-2",
+        source="https://vendor.example/cal.txt",
+        serial="810-8494",
+        root=cal_root,
+    )
+    write_household_mic(
+        household_mic_from_calibration(record, serial="810-8494"),
+        path=household_path,
+    )
+
+    calls = []
+
+    def flaky_resolve(household, *, root=None):
+        calls.append(household)
+        # First call is `_resolved_household_mic()` building the hint's other
+        # fields; second is the dedicated `resolvable` check.
+        if len(calls) == 1:
+            return resolve_household_mic_calibration(household, root=root)
+        return None
+
+    monkeypatch.setattr(household_mic, "resolve_household_mic_calibration", flaky_resolve)
+
+    hint = correction_setup._default_setup_calibration_for_spec()
+    assert hint is not None  # the hint itself still ships
+    assert hint.calibration_id == record.calibration_id
+    assert hint.resolvable is False  # but the one-tap confirm is not offered
+    assert len(calls) == 2
 
 
 def test_render_page_omits_household_mic_island_data_when_absent(

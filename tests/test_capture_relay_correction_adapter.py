@@ -243,6 +243,42 @@ def test_pi_setup_binding_accepts_only_the_validated_compact_identity():
         )
 
 
+def test_pi_setup_binding_accepts_the_stored_calibration_mode():
+    """The sha256 binding hashes `setup` generically — it has no opinion on
+    `calibration.mode`, so the one-tap "stored" confirm payload (Wave-2
+    addendum) validates identically to `serial`/`upload`/`none`."""
+    from jasper.web import correction_setup
+
+    owner = SimpleNamespace()
+    setup = {
+        "total_positions": 1,
+        "calibration": {
+            "mode": "stored",
+            "calibration_id": "minidsp-minidsp_umik2-abc123456789",
+            "model": "minidsp_umik2",
+        },
+    }
+    binding_id = "room-session-98765"
+    digest = correction_setup._setup_digest(setup)
+    identity = {"schema": 1, "binding_id": binding_id, "sha256": digest}
+
+    correction_setup._bind_relay_setup(
+        owner, setup, identity, expected_binding_id=binding_id,
+    )
+    correction_setup._assert_relay_setup_binding(
+        owner, {"binding": identity}, expected_binding_id=binding_id,
+    )
+
+    # A mutated calibration_id after binding is caught exactly like any other
+    # tampered field — the digest is over the whole setup, not just mode.
+    tampered = dict(setup)
+    tampered["calibration"] = {**setup["calibration"], "calibration_id": "different"}
+    with pytest.raises(ValueError, match="setup identity does not match"):
+        correction_setup._validated_relay_setup_binding(
+            tampered, identity, expected_binding_id=binding_id,
+        )
+
+
 def test_run_and_store_feeds_the_verified_wav(tmp_path):
     backend = FakeRelayBackend()
     client = RelayClient("https://relay.test", transport=backend)

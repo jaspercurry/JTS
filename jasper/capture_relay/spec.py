@@ -106,9 +106,15 @@ CLOCK_DRIFT_MODES = ("ignore", "single_window", "critical")
 # for a bring-your-own file. There is no "none" here — a household record is
 # only ever written after a calibration successfully established, so the
 # hint is either present and actionable or absent entirely (`default_setup`
-# stays `None`).
+# stays `None`). This vocabulary describes how the ORIGINAL calibration was
+# established, not what the phone echoes back — the phone's one-tap "Using
+# {mic} — confirm" (gated on `resolvable`, below) replies with its OWN
+# `setup.calibration.mode = "stored"`, a third value `_relay_calibration_from_setup`
+# accepts but that never appears in this outbound hint.
 DEFAULT_SETUP_CALIBRATION_MODES = ("serial", "upload")
-DEFAULT_SETUP_CALIBRATION_KEYS = ("mode", "model", "serial_display", "calibration_id")
+DEFAULT_SETUP_CALIBRATION_KEYS = (
+    "mode", "model", "serial_display", "calibration_id", "resolvable",
+)
 
 # The Pi is the only stimulus player today; the phone never plays anything.
 STIMULUS_PLAYERS = ("pi",)
@@ -282,35 +288,51 @@ class DefaultSetupCalibration:
     field and shows a one-tap "Using {label} · {serial_display} — one tap to
     confirm" screen with a "Use a different microphone" fallback to the full
     picker. Confirm SUBMITS ``setup.calibration = {mode: "stored",
-    calibration_id}`` for the Pi to resolve via the household-mic record —
-    but ONLY when the hint carries ``resolvable: true``, the marker minted
-    by the Pi-side stored-mode build (in flight: it adds the
-    ``mode="stored"`` branch to ``_relay_calibration_from_setup`` in
-    ``jasper/web/correction_setup.py`` plus the ``resolvable`` field on
-    this dataclass) when the ``calibration_id`` currently resolves on
-    disk. Until that Pi build lands, no spec carries the marker and the
-    page renders the plain full picker — the pre-Wave-2 behavior, safe in
-    every deploy order; a page-side rejection of a gone-stale stored
-    record falls back to the same picker. An OLDER capture page
+    calibration_id, model}`` (``model`` is display-only there) for the Pi to
+    resolve via the household-mic record — but ONLY when the hint carries
+    ``resolvable: true``, the marker minted by the ``mode="stored"`` branch
+    of ``_relay_calibration_from_setup`` in
+    ``jasper/web/correction_setup.py`` when the ``calibration_id`` currently
+    resolves on disk. A hint without the marker (an older Pi build predating
+    ``stored`` mode, or a household calibration that has since gone missing
+    from disk) still ships the rest of the hint, so the page renders its
+    plain full picker instead — the pre-Wave-2 behavior, safe in every
+    deploy order; a page-side rejection of a gone-stale stored record (the
+    record changed in the narrow window between spec mint and tap) falls
+    back to the same picker rather than dead-ending. An OLDER capture page
     (pre-Wave-2) still ignores this field entirely — it parses the spec as
     an opaque JSON object and never rejects unknown top-level keys (see
     ``capture-page/js/transport-integrity.js``'s ``verifyAndParseCaptureSpec``,
     which only checks it is a non-array object) — so shipping this field is
     safe against any deployed page, old or new.
+
+    ``resolvable`` is a SEPARATE, freshly-checked flag from the fact that
+    this hint exists at all: the Pi re-resolves ``calibration_id`` against
+    the calibration store a second time at spec-build time (see
+    ``jasper.web.correction_setup._default_setup_calibration_for_spec``) and
+    only sets it ``True`` when THAT resolves cleanly, rather than trusting
+    that an earlier resolve (used to build the hint's other fields) is still
+    good. Defaults ``False`` and is omitted from the wire JSON in that
+    case — the existing 4-key shape is unchanged for every caller that
+    predates this field.
     """
 
     mode: str
     model: str = ""
     serial_display: str = ""
     calibration_id: str = ""
+    resolvable: bool = False
 
-    def to_dict(self) -> dict[str, str]:
-        return {
+    def to_dict(self) -> dict[str, str | bool]:
+        data: dict[str, str | bool] = {
             "mode": self.mode,
             "model": self.model,
             "serial_display": self.serial_display,
             "calibration_id": self.calibration_id,
         }
+        if self.resolvable:
+            data["resolvable"] = True
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> DefaultSetupCalibration:
@@ -326,6 +348,7 @@ class DefaultSetupCalibration:
             model=str(data.get("model") or ""),
             serial_display=str(data.get("serial_display") or ""),
             calibration_id=str(data.get("calibration_id") or ""),
+            resolvable=_as_bool(data, "resolvable", default=False),
         )
 
 
